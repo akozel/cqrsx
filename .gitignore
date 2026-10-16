@@ -1,0 +1,22 @@
+# Rust build and coverage artifacts
+/target/
+**/*.rs.bk
+*.profraw
+*.profdata
+/coverage/
+/lcov.info
+/cobertura.xml
+
+# Local environment
+.env
+.env.*
+!.env.example
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db

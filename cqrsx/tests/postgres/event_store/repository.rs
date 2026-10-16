@@ -1,0 +1,407 @@
+use cqrsx::cqrs::store::snapshot::SnapshotUpdate;
+// Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
+use super::support::Database;
+use super::support::repository::*;
+use cqrsx::cqrs::store::PersistenceError;
+
+// Characterization of the open snapshot issue, not the desired future contract.
+// Change this expectation when repairing doc/known_issues/cqrs_snapshot_event_reapplication.md.
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+struct History {
+    entries: Vec<i32>,
+}
+
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+struct Appended(i32);
+
+impl cqrsx::cqrs::event::DomainEvent for Appended {
+    fn event_type(&self) -> String {
+        "Appended".into()
+    }
+    fn event_version(&self) -> String {
+        "1".into()
+    }
+}
+
+impl cqrsx::cqrs::aggregate::Aggregate for History {
+    const TYPE: &'static str = "snapshot_reapplication_characterization";
+    type Command = i32;
+    type Event = Appended;
+    type Error = std::convert::Infallible;
+    type Services = ();
+
+    async fn handle(&mut self, value: i32, _: &(), sink: &cqrsx::cqrs::event_sink::EventSink<Self>) -> Result<(), Self::Error> {
+        sink.write(Appended(value), self).await;
+        Ok(())
+    }
+
+    fn apply(&mut self, event: Appended) {
+        self.entries.push(event.0);
+    }
+}
+
+#[tokio::test]
+async fn snapshot_command_applies_one_event_once() {
+    use cqrsx::postgres::command::{PostgresCommandConfig, command_executor};
+    let db = Database::new().await;
+    let config = PostgresCommandConfig::new(1, Default::default()).unwrap();
+    let executor = command_executor::<History>(db.pool.clone(), config);
+    executor.execute("history", 7, vec![]).await.unwrap();
+    let store = PersistedEventStore::<_, History>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 1);
+    assert_eq!(store.load_events("history").await.unwrap().len(), 1);
+    let context = store.load_aggregate("history").await.unwrap();
+    assert_eq!(context.current_sequence, 1);
+    assert_eq!(context.snapshot_version, Some(1));
+    assert_eq!(context.aggregate.entries, vec![7]);
+    db.close().await;
+}
+use cqrsx::cqrs::store::repository::PersistedEventRepository;
+use cqrsx::postgres::event_repository::PostgresEventRepository;
+
+#[tokio::test]
+async fn custom_tables_keep_event_snapshot_and_stream_contracts() {
+    let db = Database::new().await;
+    sqlx::raw_sql(
+        "CREATE TABLE custom_events (LIKE events INCLUDING ALL); CREATE TABLE custom_snapshots (LIKE snapshots INCLUDING ALL)",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let repository = PostgresEventRepository::new(db.pool.clone())
+        .with_tables("custom_events", "custom_snapshots")
+        .with_streaming_channel_size(1);
+    let mut event = test_serialized_event("custom", 1, TestEvent::Created(Created { id: "custom".into() }));
+    event.metadata = serde_json::json!({});
+    let aggregate = serde_json::json!({"id": "custom", "description": "", "tests": []});
+    repository
+        .persist::<TestAggregate>(
+            std::slice::from_ref(&event),
+            Some(SnapshotUpdate {
+                aggregate_id: "custom".into(),
+                payload: aggregate.clone(),
+                last_sequence: 1,
+                next_version: 1,
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(
+        repository.get_events::<TestAggregate>("custom").await.unwrap(),
+        vec![event.clone()]
+    );
+    assert!(
+        repository
+            .get_events_after::<TestAggregate>("custom", 1)
+            .await
+            .unwrap()
+            .is_empty()
+    );
+    assert_eq!(
+        repository.get_snapshot::<TestAggregate>("custom").await.unwrap(),
+        Some(serialized_snapshot("custom".into(), 1, 1, aggregate))
+    );
+    let mut stream = repository.stream_events::<TestAggregate>("custom").await.unwrap();
+    let found = stream.next::<TestAggregate>(&[]).await.unwrap().unwrap();
+    assert_eq!(found.payload, serde_json::from_value::<TestEvent>(event.payload).unwrap());
+    assert!(stream.next::<TestAggregate>(&[]).await.is_none());
+    let default = PostgresEventRepository::new(db.pool.clone());
+    assert!(default.get_events::<TestAggregate>("custom").await.unwrap().is_empty());
+    db.close().await;
+}
+
+#[tokio::test]
+async fn event_repositories() {
+    let db = Database::new().await;
+    let pool = db.pool.clone();
+    let id = uuid::Uuid::new_v4().to_string();
+    let event_repo: PostgresEventRepository = PostgresEventRepository::new(pool.clone()).with_streaming_channel_size(1);
+    let events = event_repo.get_events::<TestAggregate>(&id).await.unwrap();
+    assert!(events.is_empty());
+
+    event_repo
+        .persist::<TestAggregate>(
+            &[
+                test_serialized_event(&id, 1, TestEvent::Created(Created { id: id.clone() })),
+                test_serialized_event(
+                    &id,
+                    2,
+                    TestEvent::Tested(Tested {
+                        test_name: "a test was run".to_string(),
+                    }),
+                ),
+            ],
+            None,
+        )
+        .await
+        .unwrap();
+    let events = event_repo.get_events::<TestAggregate>(&id).await.unwrap();
+    assert_eq!(2, events.len());
+    events.iter().for_each(|e| assert_eq!(&id, &e.aggregate_id));
+
+    // Optimistic lock error
+    let result = event_repo
+        .persist::<TestAggregate>(
+            &[
+                test_serialized_event(
+                    &id,
+                    3,
+                    TestEvent::SomethingElse(SomethingElse {
+                        description: "this should not persist".to_string(),
+                    }),
+                ),
+                test_serialized_event(
+                    &id,
+                    2,
+                    TestEvent::SomethingElse(SomethingElse {
+                        description: "bad sequence number".to_string(),
+                    }),
+                ),
+            ],
+            None,
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(result, PersistenceError::OptimisticLockError),
+        "invalid error result found during insert: {result}"
+    );
+
+    let events = event_repo.get_events::<TestAggregate>(&id).await.unwrap();
+    assert_eq!(2, events.len());
+
+    verify_replay_stream(&id, event_repo).await;
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn snapshot_repositories() {
+    let db = Database::new().await;
+    let pool = db.pool.clone();
+    let id = uuid::Uuid::new_v4().to_string();
+    let event_repo: PostgresEventRepository = PostgresEventRepository::new(pool.clone());
+    let snapshot = event_repo.get_snapshot::<TestAggregate>(&id).await.unwrap();
+    assert_eq!(None, snapshot);
+
+    let test_description = "some test snapshot here".to_string();
+    let test_tests = vec!["testA".to_string(), "testB".to_string()];
+    event_repo
+        .persist::<TestAggregate>(
+            &[],
+            Some(SnapshotUpdate {
+                aggregate_id: id.clone(),
+                payload: serde_json::to_value(TestAggregate {
+                    id: id.clone(),
+                    description: test_description.clone(),
+                    tests: test_tests.clone(),
+                })
+                .unwrap(),
+                last_sequence: 0,
+                next_version: 1,
+            }),
+        )
+        .await
+        .unwrap();
+
+    let snapshot = event_repo.get_snapshot::<TestAggregate>(&id).await.unwrap();
+    assert_eq!(
+        Some(serialized_snapshot(
+            id.clone(),
+            0,
+            1,
+            serde_json::to_value(TestAggregate {
+                id: id.clone(),
+                description: test_description.clone(),
+                tests: test_tests.clone(),
+            })
+            .unwrap()
+        )),
+        snapshot
+    );
+
+    // sequence iterated, does update
+    event_repo
+        .persist::<TestAggregate>(
+            &[],
+            Some(SnapshotUpdate {
+                aggregate_id: id.clone(),
+                payload: serde_json::to_value(TestAggregate {
+                    id: id.clone(),
+                    description: "a test description that should be saved".to_string(),
+                    tests: test_tests.clone(),
+                })
+                .unwrap(),
+                last_sequence: 0,
+                next_version: 2,
+            }),
+        )
+        .await
+        .unwrap();
+
+    let snapshot = event_repo.get_snapshot::<TestAggregate>(&id).await.unwrap();
+    assert_eq!(
+        Some(serialized_snapshot(
+            id.clone(),
+            0,
+            2,
+            serde_json::to_value(TestAggregate {
+                id: id.clone(),
+                description: "a test description that should be saved".to_string(),
+                tests: test_tests.clone(),
+            })
+            .unwrap()
+        )),
+        snapshot
+    );
+
+    // sequence out of order or not iterated, does not update
+    let result = event_repo
+        .persist::<TestAggregate>(
+            &[],
+            Some(SnapshotUpdate {
+                aggregate_id: id.clone(),
+                payload: serde_json::to_value(TestAggregate {
+                    id: id.clone(),
+                    description: "a test description that should not be saved".to_string(),
+                    tests: test_tests.clone(),
+                })
+                .unwrap(),
+                last_sequence: 0,
+                next_version: 2,
+            }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(result, PersistenceError::OptimisticLockError),
+        "invalid error result found during insert: {result}"
+    );
+
+    let snapshot = event_repo.get_snapshot::<TestAggregate>(&id).await.unwrap();
+    assert_eq!(
+        Some(serialized_snapshot(
+            id.clone(),
+            0,
+            2,
+            serde_json::to_value(TestAggregate {
+                id: id.clone(),
+                description: "a test description that should be saved".to_string(),
+                tests: test_tests.clone(),
+            })
+            .unwrap()
+        )),
+        snapshot
+    );
+
+    db.close().await;
+}
+async fn verify_replay_stream(id: &str, event_repo: PostgresEventRepository) {
+    let expected = event_repo.get_events::<TestAggregate>(id).await.unwrap();
+    assert_eq!(expected.len(), 2);
+    let mut stream = event_repo.stream_events::<TestAggregate>(id).await.unwrap();
+    let mut found = Vec::new();
+    while let Some(item) = stream.next::<TestAggregate>(&[]).await {
+        found.push(cqrsx::cqrs::store::serialized_event::SerializedEvent::try_from(&item.unwrap()).unwrap());
+    }
+    assert_eq!(found, expected);
+    let mut stream = event_repo.stream_all_events::<TestAggregate>().await.unwrap();
+    let mut found = Vec::new();
+    while let Some(item) = stream.next::<TestAggregate>(&[]).await {
+        found.push(cqrsx::cqrs::store::serialized_event::SerializedEvent::try_from(&item.unwrap()).unwrap());
+    }
+    assert_eq!(found, expected);
+}
+
+use super::support::repository::customer::Customer;
+use super::support::repository::customer::CustomerEvent;
+use cqrsx::cqrs::store::EventStore;
+use cqrsx::cqrs::store::persisted::PersistedEventStore;
+use cqrsx::cqrs::store::upcaster::NumericVersionUpcaster;
+use serde_json::Value;
+use std::collections::HashMap;
+async fn simple_es_commit_and_load_test(event_store: PersistedEventStore<PostgresEventRepository, Customer>) {
+    let id = uuid::Uuid::new_v4().to_string();
+    assert_eq!(0, event_store.load_events(id.as_str()).await.unwrap().len());
+    let context = event_store.load_aggregate(id.as_str()).await.unwrap();
+
+    event_store
+        .commit(
+            vec![
+                CustomerEvent::NameAdded {
+                    name: "test_event_A".to_string(),
+                },
+                CustomerEvent::EmailUpdated {
+                    new_email: "email A".to_string(),
+                },
+            ],
+            context,
+            HashMap::default(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(2, event_store.load_events(id.as_str()).await.unwrap().len());
+    let context = event_store.load_aggregate(id.as_str()).await.unwrap();
+
+    event_store
+        .commit(
+            vec![CustomerEvent::EmailUpdated {
+                new_email: "email B".to_string(),
+            }],
+            context,
+            HashMap::default(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(3, event_store.load_events(id.as_str()).await.unwrap().len());
+}
+fn new_test_event_store(pool: sqlx::PgPool) -> PersistedEventStore<PostgresEventRepository, Customer> {
+    let repo = PostgresEventRepository::new(pool);
+    PersistedEventStore::<PostgresEventRepository, Customer>::new_event_store(repo)
+}
+
+#[tokio::test]
+async fn commit_and_load_events() {
+    let db = Database::new().await;
+    let pool = db.pool.clone();
+    let repo = PostgresEventRepository::new(pool);
+    let event_store = PersistedEventStore::<PostgresEventRepository, Customer>::new_event_store(repo);
+
+    simple_es_commit_and_load_test(event_store).await;
+
+    db.close().await;
+}
+
+#[tokio::test]
+async fn upcasted_event() {
+    let db = Database::new().await;
+    let pool = db.pool.clone();
+    sqlx::query("INSERT INTO events VALUES ($1, $2, 1, 'NameAdded', '0.1.0', $3, '{}')")
+        .bind("Customer")
+        .bind("previous_event_in_need_of_upcast")
+        .bind(serde_json::json!({"NameAdded": {"legacy_name": "original"}}))
+        .execute(&pool)
+        .await
+        .unwrap();
+    let upcaster = NumericVersionUpcaster::new(
+        "NameAdded",
+        "1.0.1",
+        Box::new(|mut event| match event.get_mut("NameAdded").unwrap() {
+            Value::Object(object) => {
+                object.insert("name".to_string(), Value::String("UNKNOWN".to_string()));
+                event
+            }
+            _ => panic!("not the expected object"),
+        }),
+    );
+    let event_store = new_test_event_store(pool).with_upcasters(vec![Box::new(upcaster)]);
+
+    let id = "previous_event_in_need_of_upcast".to_string();
+    let result = event_store.load_aggregate(id.as_str()).await.unwrap();
+    assert_eq!(1, result.current_sequence);
+    assert_eq!(None, result.snapshot_version);
+    assert_eq!(result.aggregate.name, "UNKNOWN");
+
+    db.close().await;
+}

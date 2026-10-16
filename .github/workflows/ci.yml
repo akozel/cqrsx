@@ -1,0 +1,168 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_TEST_THREADS: 2
+  PROPTEST_RNG_SEED: '42'
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  check:
+    needs: build
+    name: Check
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Compile
+        run: cargo check --locked --workspace --all-targets --all-features
+
+  formatting:
+    needs: build
+    name: Fmt
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Check formatting
+        run: cargo fmt --all --check
+
+  clippy:
+    needs: build
+    name: Clippy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
+
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Build
+        run: cargo build --locked --workspace --all-features
+
+  coverage:
+    needs: [check, formatting, clippy, tests, features, properties-and-stress]
+    name: Coverage
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Workspace coverage (97%)
+        run: cargo llvm-cov --locked --workspace --all-features --color never --fail-under-lines 97
+
+      - name: cqrsx coverage (97%)
+        run: cargo llvm-cov --locked -p cqrsx --all-features --color never --fail-under-lines 97
+
+  tests:
+    needs: build
+    name: Workspace tests and doctests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup toolchain install --no-self-update
+      - run: cargo test --locked --workspace --all-features
+      - name: Upload minimized property regressions
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: property-regressions
+          path: target/stage4/proptest-regressions.txt
+          if-no-files-found: ignore
+
+  features:
+    needs: build
+    name: Independent runtime features (${{ matrix.features }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        features: ["", "--features postgres", "--features worker", "--features host", "--features logging"]
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup toolchain install --no-self-update
+      - run: cargo check --locked -p cqrsx --no-default-features --lib ${{ matrix.features }}
+      - run: cargo test --locked -p cqrsx --no-default-features ${{ matrix.features }}
+      - name: Upload minimized property regressions
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: runtime-feature-regressions-${{ strategy.job-index }}
+          path: target/stage4/proptest-regressions.txt
+          if-no-files-found: ignore
+
+  properties-and-stress:
+    needs: build
+    name: Model properties and controlled database races
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - run: rustup toolchain install --no-self-update
+      - name: Properties with the commit seed (1024 cases each)
+        run: |
+          export PROPTEST_RNG_SEED=$(printf '%u' "0x${GITHUB_SHA:0:16}")
+          printf 'Property test seed: %s\n' "$PROPTEST_RNG_SEED"
+          cargo test --locked -p cqrsx --all-features property_
+      - run: cargo test --locked -p cqrsx --all-features --test postgres stress_
+      - name: Upload minimized property regressions
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: commit-property-regressions
+          path: target/stage4/proptest-regressions.txt
+          if-no-files-found: ignore
