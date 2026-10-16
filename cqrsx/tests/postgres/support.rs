@@ -32,6 +32,9 @@ impl Database {
         let options = format!("postgresql://outbox_test:outbox_test@{host}:{port}/outbox_test")
             .parse::<sqlx::postgres::PgConnectOptions>()
             .unwrap()
+            // This local fixture has no TLS. Keep early connection closes on the
+            // retryable I/O path instead of SQLx's SSLRequest protocol error path.
+            .ssl_mode(sqlx::postgres::PgSslMode::Disable)
             .options([("statement_timeout", "30000"), ("lock_timeout", "15000")]);
         // Poll the actual protocol endpoint: log delivery may lag under Podman.
         // This is startup readiness, not a retry of a failed test or command.
