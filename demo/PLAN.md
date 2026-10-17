@@ -677,8 +677,8 @@ demo/
 │   └── src/
 │       ├── main.rs             сборка компонентов, host::lifecycle::run
 │       ├── config.rs
-│       ├── domain/             venue.rs, concert/{mod.rs, command.rs, event.rs, error.rs, tests.rs},
-│       │                       fan/{mod.rs, command.rs, event.rs, error.rs, tests.rs}
+│       ├── domain.rs, domain/  venue.rs, concert.rs + concert/{command.rs, event.rs, error.rs, tests.rs},
+│       │                       fan.rs + fan/{command.rs, event.rs, error.rs, tests.rs}
 │       ├── app/                command_service.rs (два CqrsCommandExecutor: Concert и Fan, метаданные),
 │       │                       tasks.rs (4 TaskPayload + конструкторы NewTask), seed.rs, rebuild.rs,
 │       │                       verify.rs [P1], time_travel.rs, activity.rs, personas.rs
@@ -686,7 +686,7 @@ demo/
 │       │                       fan_wallet.rs (View<Fan>), notifying.rs, progress.rs (декоратор replay)
 │       ├── outbox/             flaky_mail.rs, chaos.rs, record_ticket.rs, record_cancellation.rs,
 │       │                       send_e_ticket.rs, issue_refund.rs, adapter.rs (enum EncoreTaskAdapter), dispatcher.rs
-│       └── http/               mod.rs (router), commands.rs, queries.rs, projections.rs, activity.rs, error.rs
+│       └── http.rs (router), http/ commands.rs, queries.rs, projections.rs, activity.rs, error.rs
 ├── sidecar/                    crate `encore-sidecar`
 │   ├── Cargo.toml
 │   ├── Dockerfile              [P1]
