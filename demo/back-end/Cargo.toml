@@ -28,6 +28,9 @@ dotenvy.workspace = true
 sha2.workspace = true
 hex.workspace = true
 
+[dev-dependencies]
+testcontainers = "0.28"
+
 [lints.clippy]
 unwrap_used = "warn"
 expect_used = "warn"

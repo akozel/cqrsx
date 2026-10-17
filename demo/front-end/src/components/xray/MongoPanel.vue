@@ -6,9 +6,11 @@ import JsonView from './JsonView.vue'
 import { useXrayStore } from '@/stores/xray'
 import { useSessionStore } from '@/stores/session'
 import { changedPaths } from '@/lib/diff'
+import { useTraceStore } from '@/stores/trace'
 
 const xray = useXrayStore()
 const session = useSessionStore()
+const trace = useTraceStore()
 const { t } = useI18n()
 const tab = ref<'concert_halls' | 'fan_wallets'>('concert_halls')
 
@@ -35,7 +37,7 @@ const docs = computed(() => {
     </div>
     <p v-if="docs.length === 0" class="text-xs opacity-60">{{ t('states.wiped') }}</p>
     <ul class="space-y-1">
-      <li v-for="d in docs" :key="d.id" class="rounded border border-border/60 px-2 py-1" :class="{ 'border-neon-lime/60': d.current }">
+      <li v-for="d in docs" :key="d.id" class="rounded border border-border/60 px-2 py-1" :class="{ 'border-neon-lime/60': d.current, 'ring-1 ring-neon-violet': trace.aggregateId !== null && d.id === trace.aggregateId }">
         <JsonView :value="d.doc" :changed="d.changed" :expanded="d.current" />
       </li>
     </ul>

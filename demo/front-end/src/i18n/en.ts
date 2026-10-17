@@ -204,6 +204,48 @@ export default {
     'rebuild.finished': 'Encore! finished',
     'rebuild.failed': 'Encore! failed',
   },
+  chapters: {
+    bar: 'Chapters',
+    next: 'Next →',
+    try_it: 'Try it',
+    done: 'Close',
+    events: {
+      title: '① Event store',
+      body: 'Nothing is ever edited or deleted. Every accepted decision — "seat B4 sold to Alice" — is appended to the events table, like a ledger. The current state of the hall is simply all of the concert\'s records read in order. Every 10 events the engine stores a bookmark (snapshot) so it doesn\'t have to reread the whole book.',
+      try: 'Book a random seat and find the new row in 🐘 events; drag the ⏳ time machine.',
+    },
+    rules: {
+      title: '② Commands and rules',
+      body: 'A click is a command — a request, not a fact. The Concert aggregate rebuilds itself from the ledger and checks the rules: the seat exists, it is free, no more than 4 tickets per fan. If a rule is broken, the command is rejected and not a single row is written.',
+      try: 'Click a taken seat (or any 🧪 button).',
+    },
+    outbox: {
+      title: '③ Transactional outbox',
+      body: 'After buying a seat, the fan must get an e-ticket. We don\'t send the email "right now": in the same transaction as the event, a "send ticket" task goes into the outbox table — like an envelope dropped into the out-tray. Either both are written or neither. A background worker picks tasks up and delivers them. Our mail server is moody: it fails 20 % of the time 🎲 and the task is retried later. The ticket still arrives — exactly once.',
+      try: 'Book a seat and follow its task in 🐘 outbox and the email in 📬.',
+    },
+    projections: {
+      title: '④ Projections',
+      body: 'A screen needs data shaped for it, not a ledger. Event handlers turn events into MongoDB documents: a seat map from the concert\'s ledger and a wallet from the fan\'s ledger. One click, two event streams, two different read models, and the wallet catches up one step later. MongoDB is a shop window that is safe to break: the truth lives only in the PostgreSQL ledger.',
+      try: 'Book a seat and compare the concert_halls and fan_wallets documents.',
+    },
+    encore: {
+      title: '⑤ Encore! (replay)',
+      body: 'Wipe the read models — the hall goes dark, but the rules keep working: decisions are made from the ledger, not the shop window. Press "Encore!" — every event is played again and the read models come back exactly the same. No email is re-sent: side effects live in the outbox, not in read models.',
+      try: '🧨 Wipe the read models (then click a taken seat and press ⏪ Encore!).',
+    },
+  },
+  announce: {
+    button: '+ Announce a concert',
+    title: 'Announce a concert',
+    artist: 'Artist',
+    city: 'City',
+    date: 'Date',
+    submit: 'Announce',
+    id_hint: 'concert_id will be {id}',
+  },
+  trace: { hint: 'hover an event to highlight its task and document (same correlation_id)' },
+  verify: { ok: '✅ read models match the ledger ({halls} halls, {wallets} wallets)', diff: '❌ {n} differences', running: 'verifying…' },
   toasts: { accepted: 'Accepted: {what}', warning: 'Warning' },
   common: {
     loading: 'Loading…',

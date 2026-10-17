@@ -204,16 +204,24 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 - Environment limitation: no `podman build` / compose in the sandbox → `make full` and the image
   builds are **untested**; README says so.
 
-## Phase 9 — polish [P1] — partially done
+## Phase 9 — polish [P1] — ✅ done (browser steps need a human)
 
-- Done: ⚡ Race (`ActionBar`, `Promise.all` of two `BookSeat`, result card with the optimistic-locking
-  text), 🔍 Verify (`app::verify` rebuilds into `concert_halls_verify` / `fan_wallets_verify` with the
-  same `ViewProjection`s, compares canonical JSON without `version`, drops the temp collections;
+- ⚡ Race (`ActionBar`, `Promise.all` of two `BookSeat`, result card + optimistic-locking text).
+- 🔍 Verify: `app::verify` rebuilds into `concert_halls_verify` / `fan_wallets_verify` with the same
+  `ViewProjection`s, compares canonical JSON without `version`, drops the temp collections;
   `GET /api/projections/verify` → `{"ok":true,"checked":{"concert_halls":3,"fan_wallets":53}}` live,
-  56 `missing` after a wipe, `ok` again after Encore!), 📸 markers (`sequence % snapshot_every == 0`),
-  X-ray tabs on medium screens, `/inspect/postgres/tables`.
-- Not done: chapters ①–⑤ (`ChapterBar`/`ChapterCallout`), `AnnounceDialog`, correlation-id hover
-  trace, keyboard navigation of the seat map, back-end integration tests with testcontainers.
+  56 `missing` after a wipe, `ok` again after Encore!; button in `EncorePanel`.
+- 📸 markers, chapters ①–⑤ (`ChapterBar`, `ChapterCallout` with "Try it" actions, other panels dimmed to
+  40 %), correlation-id hover trace (event → its outbox rows and its Mongo document), `AnnounceDialog`
+  (`concert_id = <city-slug>-<4 hex>`), arrow-key navigation of the seat map, X-ray tabs on medium screens,
+  `/inspect/postgres/tables`.
+- Back-end split into `lib.rs` + `main.rs`; integration test `back-end/tests/write_side.rs`
+  (testcontainers PostgreSQL 18.6-alpine): accepted command → one event row with the metadata map and
+  one `encore_record_ticket` row on the same sequence/correlation id, rejected command → nothing.
+  Run: `DOCKER_HOST=… cargo test -p encore-backend --test write_side` → 1 passed (through the shim here).
+  Not written: the full-chain / wipe-rebuild-verify integration tests with a MongoDB container.
+- Front-end checks after the polish: typecheck, eslint, 14 vitest, build green.
+- **Manual:** demo step 8 (⚡ Race) and the chapter walkthrough in a browser.
 
 ## Phase table
 
@@ -230,7 +238,7 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 | 7 | ✅ done | curl all /inspect endpoints, SSE counts, PostgreSQL stop/start | — |
 | 8 | ✅ done | typecheck, eslint, 14 vitest (incl. jsdom smoke), build, Vite proxy curls | demo script steps 1–7 in a browser |
 | 10 | ✅ written | files reviewed; README | `make full` (image builds) on a machine with podman |
-| 9 | ◐ partial | verify curls, race via vitest-typed code | step 8 (⚡ Race) in a browser; verify button |
+| 9 | ✅ done | verify curls, integration test, front-end checks | step 8 and the chapters in a browser |
 
 ## Blockers
 

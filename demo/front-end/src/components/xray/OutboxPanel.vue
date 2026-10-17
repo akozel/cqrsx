@@ -8,8 +8,10 @@ import Countdown from '@/components/ui/Countdown.vue'
 import { useXrayStore } from '@/stores/xray'
 import { deriveTaskStatus, retryCountdownMs, taskKind } from '@/lib/outboxStatus'
 import { shortId } from '@/lib/format'
+import { useTraceStore } from '@/stores/trace'
 
 const xray = useXrayStore()
+const trace = useTraceStore()
 const { t, te } = useI18n()
 const now = ref(Date.now())
 let timer: ReturnType<typeof setInterval> | null = null
@@ -33,7 +35,7 @@ function reason(code: string | null) {
     </div>
     <p v-if="rows.length === 0" class="text-xs opacity-60">{{ t('xray.no_rows') }}</p>
     <TransitionGroup name="row" tag="ul" class="space-y-1">
-      <li v-for="row in rows" :key="row.id" class="rounded border border-border/60 px-2 py-1 text-xs" :class="{ 'row-fresh': xray.freshTasks.has(row.id) }">
+      <li v-for="row in rows" :key="row.id" class="rounded border border-border/60 px-2 py-1 text-xs" :class="{ 'row-fresh': xray.freshTasks.has(row.id), 'ring-1 ring-neon-violet': trace.correlationId !== null && row.metadata.correlation_id === trace.correlationId }">
         <div class="flex flex-wrap items-center gap-2 font-mono">
           <span>{{ icon(row.task_type) }}</span>
           <span class="opacity-60">{{ shortId(row.id) }}</span>

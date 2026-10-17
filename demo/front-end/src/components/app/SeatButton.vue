@@ -30,6 +30,7 @@ const color = computed(() => ZONE_COLORS[props.seat.zone])
       'seat-shake': outcome === 'rejected' && !pending,
     }"
     :style="{ '--zone': color }"
+    :data-seat="seat.id"
     :aria-label="label"
     :title="label + (fanName ? ` · ${fanName}` : '')"
     :disabled="history"

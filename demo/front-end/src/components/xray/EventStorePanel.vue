@@ -7,10 +7,12 @@ import { useXrayStore } from '@/stores/xray'
 import { useSessionStore } from '@/stores/session'
 import { useTimeMachineStore } from '@/stores/timemachine'
 import { msAgo } from '@/lib/format'
+import { useTraceStore } from '@/stores/trace'
 
 const xray = useXrayStore()
 const session = useSessionStore()
 const timeMachine = useTimeMachineStore()
+const trace = useTraceStore()
 const { t } = useI18n()
 const onlyConcert = ref(false)
 const onlyFan = ref(false)
@@ -29,6 +31,7 @@ const updated = computed(() => msAgo(xray.state.polled_at))
       <label class="flex items-center gap-1"><input v-model="onlyFan" type="checkbox" /> {{ t('xray.only_fan') }}</label>
     </div>
     <p v-if="rows.length === 0" class="text-xs opacity-60">{{ t('xray.no_rows') }}</p>
+    <p v-else class="text-[10px] opacity-40 mb-1">{{ t('trace.hint') }}</p>
     <TransitionGroup name="row" tag="ul" class="space-y-1">
       <li
         v-for="row in rows"
@@ -37,7 +40,10 @@ const updated = computed(() => msAgo(xray.state.polled_at))
         :class="{
           'row-fresh': xray.freshEvents.has(xray.eventKey(row)),
           'ring-1 ring-neon-amber': timeMachine.active && row.aggregate_id === session.concertId && row.sequence === timeMachine.sequence,
+          'ring-1 ring-neon-violet': trace.correlationId !== null && row.metadata.correlation_id === trace.correlationId,
         }"
+        @mouseenter="trace.set(row.metadata.correlation_id, row.aggregate_id)"
+        @mouseleave="trace.clear()"
       >
         <div class="flex items-center gap-2 font-mono">
           <span class="rounded px-1 text-[10px]" :class="row.aggregate_type === 'Concert' ? 'bg-cyan-500/20 text-neon-cyan' : 'bg-violet-500/20 text-neon-violet'">{{ row.aggregate_type }}</span>

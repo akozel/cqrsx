@@ -49,6 +49,25 @@ async function onSeat(seat: string) {
   await commands.send(session.concertId, { type: 'BookSeat', seat, fan_id: me.fan_id, fan_name: me.name })
 }
 
+/** [P1] Arrow keys move focus across the hall; Enter/Space click as usual. */
+function onKey(event: KeyboardEvent) {
+  const target = event.target as HTMLElement | null
+  const id = target?.getAttribute('data-seat')
+  if (!id) return
+  const rowsList = session.config.venue.rows
+  const row = rowsList.indexOf(id[0] ?? '')
+  const n = Number(id.slice(1))
+  let next: string | null = null
+  if (event.key === 'ArrowLeft') next = n > 1 ? `${id[0]}${n - 1}` : null
+  if (event.key === 'ArrowRight') next = n < session.config.venue.seats_per_row ? `${id[0]}${n + 1}` : null
+  if (event.key === 'ArrowUp') next = row > 0 ? `${rowsList[row - 1]}${n}` : null
+  if (event.key === 'ArrowDown') next = row < rowsList.length - 1 ? `${rowsList[row + 1]}${n}` : null
+  if (next) {
+    event.preventDefault()
+    ;(target?.closest('.seat-grid')?.querySelector(`[data-seat="${next}"]`) as HTMLElement | null)?.focus()
+  }
+}
+
 async function confirmCancel() {
   const prompt = cancelPrompt.value
   cancelPrompt.value = null
@@ -69,7 +88,7 @@ async function confirmCancel() {
         🎤 {{ t('seatmap.stage') }} <span class="opacity-70">· {{ artist }}</span>
       </div>
       <div v-if="soldOut" class="absolute left-1/2 top-10 -translate-x-1/2 text-3xl font-extrabold text-neon-pink sold-out-sign pointer-events-none">SOLD OUT</div>
-      <div class="flex flex-col gap-1.5">
+      <div class="seat-grid flex flex-col gap-1.5" @keydown="onKey">
         <div v-for="r in rows" :key="r.row" class="flex items-center gap-1.5">
           <span class="w-5 text-xs font-mono opacity-60">{{ r.row }}</span>
           <SeatButton

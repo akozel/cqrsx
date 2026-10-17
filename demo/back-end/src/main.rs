@@ -1,16 +1,5 @@
 //! Encore back-end: composition root (see PLAN.md §6.3).
-#![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
-// Items for the outbox chain and the read side land in Phases 4–6; until then they are unused.
-#![allow(dead_code)]
-// `ApiError` is an HTTP response payload built only on error paths; its size is irrelevant.
 #![allow(clippy::result_large_err)]
-mod app;
-mod config;
-mod domain;
-mod http;
-mod outbox;
-mod projections;
-
 use app::{
     activity::ActivityHub,
     command_service::{ConcertCommands, Executors, FanCommands, HandlerFactory},
@@ -32,6 +21,7 @@ use cqrsx::{
 };
 use domain::concert::ConcertServices;
 use domain::{concert::Concert, fan::Fan};
+use encore_backend::{app, config, domain, http, outbox, projections};
 use outbox::{
     dispatcher::{DispatcherDeps, dispatcher_factory},
     flaky_mail::{MailSettings, MongoInbox},

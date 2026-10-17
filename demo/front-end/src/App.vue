@@ -3,6 +3,9 @@ import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import confetti from 'canvas-confetti'
 import AppHeader from '@/components/layout/AppHeader.vue'
+import ChapterBar from '@/components/layout/ChapterBar.vue'
+import ChapterCallout from '@/components/layout/ChapterCallout.vue'
+import AnnounceDialog from '@/components/app/AnnounceDialog.vue'
 import PipelineStrip from '@/components/pipeline/PipelineStrip.vue'
 import ConcertTabs from '@/components/app/ConcertTabs.vue'
 import PersonaPicker from '@/components/app/PersonaPicker.vue'
@@ -26,6 +29,7 @@ import { useActivityStore } from '@/stores/activity'
 import { useXrayStore } from '@/stores/xray'
 import { useRebuildStore } from '@/stores/rebuild'
 import { useTimeMachineStore } from '@/stores/timemachine'
+import { CHAPTER_PANELS, useTourStore } from '@/stores/tour'
 
 const { t } = useI18n()
 const session = useSessionStore()
@@ -35,6 +39,8 @@ const activity = useActivityStore()
 const xray = useXrayStore()
 const rebuild = useRebuildStore()
 const timeMachine = useTimeMachineStore()
+const tour = useTourStore()
+const dim = (panel: string) => (tour.current && !CHAPTER_PANELS[tour.current].includes(panel) ? 'opacity-40 transition-opacity' : 'transition-opacity')
 
 type XrayTab = 'events' | 'outbox' | 'mongo' | 'mail' | 'snapshots' | 'activity'
 const xrayTab = ref<XrayTab>('events')
@@ -75,6 +81,7 @@ watch(
 <template>
   <div class="min-h-screen flex flex-col">
     <AppHeader />
+    <div class="px-4 py-1 border-b border-border bg-panel/40"><ChapterBar /></div>
     <PipelineStrip />
     <div v-if="!session.bannerDismissed" class="mx-4 mt-3 rounded-lg border border-neon-cyan/50 bg-neon-cyan/5 px-4 py-3 text-sm flex gap-3">
       <div>
@@ -87,24 +94,24 @@ watch(
     <main class="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-4 p-4 min-h-0">
       <!-- APP: the box office -->
       <section class="flex flex-col gap-3 rounded-lg border border-border bg-panel p-4 min-w-0">
-        <ConcertTabs />
+        <div class="flex flex-wrap items-start gap-2"><ConcertTabs /><AnnounceDialog /></div>
         <PersonaPicker />
-        <SeatMap />
-        <TimeMachine />
-        <ActionBar />
-        <RuleBreaker />
-        <WalletPanel />
-        <EncorePanel />
+        <div :class="dim('seatmap')"><SeatMap /></div>
+        <div :class="dim('timemachine')"><TimeMachine /></div>
+        <div :class="dim('actions')"><ActionBar /></div>
+        <div :class="dim('rulebreaker')"><RuleBreaker /></div>
+        <div :class="dim('wallet')"><WalletPanel /></div>
+        <div :class="dim('encore')"><EncorePanel /></div>
       </section>
       <!-- X-RAY: what the databases hold -->
       <section class="min-w-0 flex flex-col gap-3">
         <div class="hidden 2xl:grid grid-cols-2 grid-rows-2 gap-3 h-[calc(100vh-11rem)] min-h-[40rem]">
-          <EventStorePanel />
-          <OutboxPanel />
-          <MongoPanel />
+          <div :class="dim('events')"><EventStorePanel /></div>
+          <div :class="dim('outbox')"><OutboxPanel /></div>
+          <div :class="dim('mongo')"><MongoPanel /></div>
           <div class="grid grid-rows-2 gap-3 min-h-0">
-            <MailboxPanel />
-            <ActivityFeed />
+            <div :class="dim('inbox')"><MailboxPanel /></div>
+            <div :class="dim('activity')"><ActivityFeed /></div>
           </div>
         </div>
         <div class="2xl:hidden flex flex-col gap-2 h-[70vh] min-h-[32rem]">
@@ -123,6 +130,7 @@ watch(
         <div class="hidden 2xl:block h-56"><SnapshotsPanel /></div>
       </section>
     </main>
+    <ChapterCallout />
     <Toasts />
   </div>
 </template>
