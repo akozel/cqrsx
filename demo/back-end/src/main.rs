@@ -1,6 +1,8 @@
 //! Encore back-end: composition root. Phase 1 serves only `/api/health`.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 mod config;
+#[allow(dead_code)] // wired up from Phase 3 on
+mod domain;
 
 use axum::{Json, Router, routing::get};
 use config::Config;
