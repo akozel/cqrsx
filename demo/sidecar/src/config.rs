@@ -10,7 +10,7 @@ pub struct ConfigError {
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // fields are consumed from Phase 3 (back-end) / Phase 7 (sidecar) on
+
 pub struct Config {
     pub database_url: String,
     pub mongodb_uri: String,
