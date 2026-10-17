@@ -14,7 +14,7 @@ const ICONS: Record<string, string> = {
   'command.failed': '⚠️',
   'projection.updated': '🍃',
   'projection.failed': '🍂',
-  'task.attempt.started': '⚙',
+  'task.attempt.started': '⚙️',
   'task.attempt.failed': '🎲',
   'task.attempt.succeeded': '📬',
   'projections.wiped': '🧨',

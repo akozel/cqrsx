@@ -1258,7 +1258,7 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 | Компонент | Приоритет | Поведение |
 |---|---|---|
 | `AppHeader` | P0 | логотип, переключатель языка, ⓘ — открыть баннер «Как читать экран» |
-| `PipelineStrip` | P0 | диаграмма архитектуры по `docs/img.png` на холсте **Vue Flow** (`@vue-flow/core`, статичный: без drag/pan/zoom, вписан в блок, zoom ≤ 1) в блоке верхнего ряда (50 % ширины, рядом с панелями events и outbox): три рамки сервисов — `Concert service` (Command → Aggregate → events + outbox → `Outbox worker → Fan`), `Fan service` (Command → Aggregate → events + outbox → `Outbox worker → email`), `projection` (read database → ◇ UI); ромбы-актёры ◇ user, ◇ email; снаружи — «почтовый сервер 🎲» с обратным ребром retry к events + outbox; сигналы — кружки, бегущие по рёбрам (рёбра ортогональные, узлы на сетке: Command над Aggregate, Outbox worker над events + outbox); подсветка по таблице ниже; на холсте только названия блоков — без подписей и пояснений; **клик по любому блоку или рамке** открывает модальное окно `PipelineExplain` с развёрнутым пояснением (`explain.<id>` в i18n), для агрегатов — таблица правил R1–R8 / R9–R11. Данные графа — `pipeline/graph.ts`, хореография сигналов — `pipeline/choreography.ts` |
+| `PipelineStrip` | P0 | диаграмма архитектуры по `docs/img.png` на холсте **Vue Flow** (`@vue-flow/core`, статичный: без drag/pan/zoom, вписан в блок, zoom ≤ 1) в блоке верхнего ряда (50 % ширины, рядом с панелями events и outbox): три рамки сервисов — `Concert service` (Command → Aggregate → events + outbox → `Outbox worker → Fan`), `Fan service` (Command → Aggregate → events + outbox → `Outbox worker → email`), `projection` (read database → ◇ UI); ромбы ◇ UI (касса, под сервисом Concert) и ◇ email; внизу круг с персонажем (🦊 Fox…), соединённый с обоими ◇ UI и с ◇ email; снаружи — «почтовый сервер 🎲» с обратным ребром retry к events + outbox; сигналы — кружки, бегущие по рёбрам (рёбра ортогональные, узлы на сетке: Command над Aggregate, Outbox worker над events + outbox); подсветка по таблице ниже; на холсте только названия блоков — без подписей и пояснений; **клик по любому блоку или рамке** открывает модальное окно `PipelineExplain` с развёрнутым пояснением (`explain.<id>` в i18n), для агрегатов — таблица правил R1–R8 / R9–R11. Данные графа — `pipeline/graph.ts`, хореография сигналов — `pipeline/choreography.ts` |
 | `ConcertTabs` | P0 | концерты из `/api/concerts`; прогресс sold/capacity; бейджи SOLD OUT и ⚠️ incomplete; если витрина пуста — вкладки из `config.seed_concerts` с «?» |
 | `PersonaPicker` | P0 | четыре больших аватара; у каждого «билетов n/4» на текущем концерте |
 | `SeatMap`, `SeatButton` | P0 | сцена со свечением и именем артиста, ряды A–E, легенда зон; состояния — §8.6; клики — ниже |
@@ -1319,13 +1319,13 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 
 | Триггер | Анимация |
 |---|---|
-| UI отправил команду (локально) | кружок ◇ user → Команда → Агрегат; на Агрегате янтарное кольцо «busy» |
-| ответ `accepted` | Агрегат зелёный; кружок Агрегат → events + outbox (бокс вспыхивает розовым: «1 транзакция») → read database → ◇ UI |
+| UI отправил команду (локально) | кружок ● персонаж → ◇ UI → Command → Aggregate; на Aggregate янтарное кольцо «busy» |
+| ответ `accepted` | Aggregate зелёный; кружок Aggregate → events + outbox (бокс вспыхивает розовым: «1 транзакция») → read database → ◇ UI → ● персонаж |
 | ответ `rejected` | Агрегат мигает красным, пузырь с кодом правила; стрелка Агрегат → events + outbox перечёркнута, подпись «ничего не записано» |
 | `command.*` с `aggregate_type: Fan` (из activity) | кружок events + outbox (Concert) → `Outbox worker → Fan` → Command (Fan) → Агрегат (Fan); `accepted` — дальше events + outbox (Fan) → read database → ◇ UI; `rejected` — как выше, на агрегате Fan |
 | `task.attempt.started` | кружок events + outbox (Fan) → `Outbox worker → email` → mail server; на сервере янтарное кольцо «busy» |
 | `task.attempt.failed` | 🎲 «бросок», красное кольцо и пузырь с `reason_code` на почтовом сервере; красный кружок бежит по пунктирному ребру «retry» обратно в events + outbox |
-| `task.attempt.succeeded` | 🎲 «бросок», зелёное кольцо на сервере; кружок почтовый сервер → ◇ email |
+| `task.attempt.succeeded` | 🎲 «бросок», зелёное кольцо на сервере; кружок mail server → ◇ email → ● персонаж |
 | `projections.wiped` | рамка `projection` и read database гаснут, подпись «пусто» |
 | `rebuild.progress` | по обеим стрелкам events + outbox → read database бежит розовый пунктир, подпись «⏪ replay» |
 

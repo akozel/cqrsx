@@ -18,7 +18,7 @@ const icon = computed(() => {
     case 'failed':
       return { glyph: '❌', cls: 'text-neon-red' }
     case 'processing':
-      return { glyph: '⚙', cls: 'text-neon-cyan animate-pulse' }
+      return { glyph: '⚙️', cls: 'text-neon-cyan animate-pulse' }
     default:
       return props.row.attempts > 0
         ? { glyph: '🎲', cls: 'text-neon-amber' }

@@ -20,10 +20,10 @@ const glowing = (state: string) =>
     .map(([n]) => n)
 
 describe('graph', () => {
-  it('describes the sketch: three services, thirteen components and actors, fourteen edges', () => {
+  it('describes the sketch: three services, fourteen components and actors, seventeen edges', () => {
     expect(GROUPS.map((g) => g.id)).toEqual(['svc_concert', 'svc_fan', 'svc_projection'])
-    expect(NODES).toHaveLength(13)
-    expect(EDGES).toHaveLength(14)
+    expect(NODES).toHaveLength(14)
+    expect(EDGES).toHaveLength(17)
     const ids = new Set(NODES.map((n) => n.id))
     for (const e of EDGES) {
       expect(e.id).toBe(`${e.from}-${e.to}`)
@@ -39,25 +39,28 @@ describe('graph', () => {
 })
 
 describe('choreography', () => {
-  it('walks our own command user → command → aggregate, then through the store to the UI', () => {
+  it('walks our own command user → UI → command → aggregate, then through the store back to the user', () => {
     c.onCommand({ phase: 'sent' })
-    expect(edgeOf('cmd')).toBe('user-command')
-    expect(c.litEdges.has('user-command')).toBe(true)
+    expect(edgeOf('cmd')).toBe('user-ui_in')
+    expect(c.litEdges.has('user-ui_in')).toBe(true)
+    vi.advanceTimersByTime(300)
+    expect(edgeOf('cmd')).toBe('ui_in-command')
+    expect(c.glow.ui_in).toBe('pulse')
     vi.advanceTimersByTime(300)
     expect(edgeOf('cmd')).toBe('command-aggregate')
     expect(c.glow.command).toBe('pulse')
     vi.advanceTimersByTime(300)
     expect(c.glow.aggregate).toBe('busy')
 
-    vi.advanceTimersByTime(100) // the "sent" scene (500 ms) and its gap are over
+    vi.advanceTimersByTime(100) // the "sent" scene (750 ms) and its gap are over
     c.onCommand({ phase: 'accepted' })
     expect(c.glow.aggregate).toBe('ok')
     const seen: string[] = [edgeOf('cmd')!]
-    for (let i = 0; i < 6; i++) {
+    for (let i = 0; i < 8; i++) {
       vi.advanceTimersByTime(300)
       seen.push(edgeOf('cmd') ?? '-')
     }
-    expect(seen.slice(0, 3)).toEqual(['aggregate-store', 'store-read_db', 'read_db-ui'])
+    expect(seen.slice(0, 4)).toEqual(['aggregate-store', 'store-read_db', 'read_db-ui', 'ui-user'])
     expect(c.transactionFlash.value).toBe(1)
     expect(seen.at(-1)).toBe('-')
     expect(glowing('ok')).toEqual([])
@@ -89,17 +92,18 @@ describe('choreography', () => {
 
     c.onFanCommand({ type: 'command.accepted', entry: { aggregate_type: 'Fan' } })
     const seen: string[] = [edgeOf('fan')!]
-    for (let i = 0; i < 8; i++) {
+    for (let i = 0; i < 9; i++) {
       vi.advanceTimersByTime(i < 2 ? 250 : 300)
       seen.push(edgeOf('fan') ?? '-')
     }
-    expect(seen.slice(0, 6)).toEqual([
+    expect(seen.slice(0, 7)).toEqual([
       'store-handler_a',
       'handler_a-fan_command',
       'fan_command-fan_aggregate',
       'fan_aggregate-fan_store',
       'fan_store-read_db',
       'read_db-ui',
+      'ui-user',
     ])
     expect(seen.at(-1)).toBe('-')
   })
@@ -178,9 +182,9 @@ describe('choreography', () => {
     vi.advanceTimersByTime(20)
     c.onCommand({ phase: 'accepted' }) // the server answers in 20 ms…
     c.onFanCommand({ type: 'command.accepted', entry: { aggregate_type: 'Fan' } }) // …and the chain follows at once
-    expect(edgeOf('cmd')).toBe('user-command') // the "sent" scene is still playing
+    expect(edgeOf('cmd')).toBe('user-ui_in') // the "sent" scene is still playing
     expect(c.tokens.fan).toBeNull()
-    vi.advanceTimersByTime(700) // sent (500) + gap → accepted starts
+    vi.advanceTimersByTime(950) // sent (750) + gap → accepted starts
     expect(edgeOf('cmd')).toBe('aggregate-store')
     expect(c.tokens.fan).toBeNull()
     vi.advanceTimersByTime(500) // the token reaches events + outbox: the fork
@@ -200,11 +204,11 @@ describe('choreography', () => {
     c.dispose()
     c = createChoreography({ speed: () => 0.5 })
     c.onCommand({ phase: 'sent' })
-    expect(c.tokens.cmd).toMatchObject({ edge: 'user-command', ms: 500 })
+    expect(c.tokens.cmd).toMatchObject({ edge: 'user-ui_in', ms: 500 })
     vi.advanceTimersByTime(300)
-    expect(edgeOf('cmd')).toBe('user-command') // not yet: 250 ms of animation is 500 ms of clock
+    expect(edgeOf('cmd')).toBe('user-ui_in') // not yet: 250 ms of animation is 500 ms of clock
     vi.advanceTimersByTime(300)
-    expect(edgeOf('cmd')).toBe('command-aggregate')
+    expect(edgeOf('cmd')).toBe('ui_in-command')
   })
 
   it('skips scenes that would start more than four seconds behind reality (a crowd)', () => {

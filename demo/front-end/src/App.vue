@@ -83,7 +83,7 @@ watch(
       <!-- Top: the architecture diagram with the live events and outbox under it; the box office on the right -->
       <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4">
         <div class="flex flex-col gap-4 min-w-0">
-          <div class="h-[27rem] shrink-0"><PipelineStrip /></div>
+          <div class="h-[32rem] shrink-0"><PipelineStrip /></div>
           <!-- About twelve rows each; the rest scrolls inside the panel -->
           <div class="grid grid-cols-1 md:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] gap-4 h-[25rem] shrink-0">
             <div class="h-full min-h-0" :class="dim('events')"><EventStorePanel /></div>

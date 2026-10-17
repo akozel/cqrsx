@@ -59,9 +59,17 @@ export default {
       'The mail inbox is not a projection: a replay never resends an e-mail.',
     ],
   },
+  ui_in: {
+    title: 'UI (the box office)',
+    lead: 'The same screen, seen from the write side: every click becomes a command sent over HTTP.',
+    points: [
+      'BookSeat on a free (or taken!) seat, CancelBooking on your own; the 🤖 and 🌊 buttons fire many of them.',
+      'The UI never checks the rules itself. The aggregate decides; the UI only shows the answer.',
+    ],
+  },
   user: {
     title: 'user',
-    lead: 'You, as one of the personas: 🦊 Fox, 🐼 Panda, 🦄 Unicorn or 🤖 Arbitrage Bot.',
+    lead: 'You, as one of the personas: 🦊 Fox, 🐼 Panda, 🦄 Unicorn or 🤖 Arbitrage Bot (or any fan of the crowd).',
     points: [
       'A click on a seat is a command: BookSeat on a free (or taken!) seat, CancelBooking on your own.',
       'The UI never checks the rules itself. The aggregate decides; the UI only shows the answer.',

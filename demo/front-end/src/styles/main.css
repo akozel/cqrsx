@@ -201,6 +201,12 @@ body {
   transform: rotate(45deg);
   transition: box-shadow 0.2s;
 }
+.pipe-person-shape {
+  inset: 4%;
+  border-radius: 9999px;
+  transform: none;
+  border-color: color-mix(in srgb, var(--color-neon-cyan) 70%, transparent);
+}
 .pipe-actor-label {
   position: relative;
   display: flex;

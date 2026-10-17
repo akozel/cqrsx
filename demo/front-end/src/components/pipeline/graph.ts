@@ -19,6 +19,7 @@ export type PipeNodeId =
   | 'mail_server'
   | 'read_db'
   | 'ui'
+  | 'ui_in'
   | 'email'
 export type PipeEdgeId = `${PipeNodeId}-${PipeNodeId}`
 /** Side of a box a signal leaves from or arrives at; also the handle id (`bottom-left` sits at a
@@ -39,7 +40,8 @@ export interface PipeGroup {
 
 export interface PipeNode {
   id: PipeNodeId
-  kind: 'box' | 'actor'
+  /** `box`: a component; `actor`: a diamond (a screen, a mailbox); `person`: a circle (the fan). */
+  kind: 'box' | 'actor' | 'person'
   parent?: PipeGroupId
   /** i18n key under `pipeline.` */
   label: string
@@ -64,7 +66,7 @@ const BOX = { w: 170, h: 44 }
 const ACTOR = 72
 
 /** The exact bounds of the drawing (frame titles included), so the fit is symmetric. */
-export const CANVAS = { w: 1206, h: 346 }
+export const CANVAS = { w: 1206, h: 472 }
 
 export const GROUPS: readonly PipeGroup[] = [
   { id: 'svc_concert', label: 'concert_service', tone: 'cyan', x: 0, y: 10, w: 458, h: 198 },
@@ -96,9 +98,10 @@ const actor = (
   x: number,
   y: number,
   parent?: PipeGroupId,
+  kind: 'actor' | 'person' = 'actor',
 ): PipeNode => ({
   id,
-  kind: 'actor',
+  kind,
   parent,
   label,
   icon,
@@ -109,16 +112,17 @@ const actor = (
 })
 
 export const NODES: readonly PipeNode[] = [
-  actor('user', 'user', '🧑', 73, 267),
+  // The command side of the UI (the box office), below the Concert service
+  actor('ui_in', 'ui', '🖥️', 73, 267),
   // Concert service: Command above Aggregate, the outbox worker above events + outbox
   box('command', 'command', '📨', 24, 44, 'svc_concert'),
-  box('handler_a', 'task_handler_a', '⚙', 264, 44, 'svc_concert'),
-  box('aggregate', 'aggregate', '🛡', 24, 140, 'svc_concert'),
+  box('handler_a', 'task_handler_a', '⚙️', 264, 44, 'svc_concert'),
+  box('aggregate', 'aggregate', '🛡️', 24, 140, 'svc_concert'),
   box('store', 'store', '🐘', 264, 140, 'svc_concert'),
   // Fan service: the same shape
   box('fan_command', 'command', '📨', 542, 44, 'svc_fan'),
-  box('handler_b', 'task_handler_b', '⚙', 782, 44, 'svc_fan'),
-  box('fan_aggregate', 'aggregate', '🛡', 542, 140, 'svc_fan'),
+  box('handler_b', 'task_handler_b', '⚙️', 782, 44, 'svc_fan'),
+  box('fan_aggregate', 'aggregate', '🛡️', 542, 140, 'svc_fan'),
   box('fan_store', 'store', '🐘', 782, 140, 'svc_fan'),
   // To the right of the Fan service: the flaky mail server (DEMO ONLY: 20 % failures); the mailbox
   // sits below it, on the same row as the user
@@ -126,7 +130,9 @@ export const NODES: readonly PipeNode[] = [
   actor('email', 'email', '📬', 1085, 267),
   // Projection
   box('read_db', 'read_database', '🍃', 424, 281, 'svc_projection'),
-  actor('ui', 'ui', '🖥', 652, 267, 'svc_projection'),
+  actor('ui', 'ui', '🖥️', 652, 267, 'svc_projection'),
+  // The person at the bottom: clicks in the UI, watches the screen, receives the e-mail
+  actor('user', 'user', '🧑', 652, 400, undefined, 'person'),
 ]
 
 const edge = (from: PipeNodeId, fromSide: Side, to: PipeNodeId, toSide: Side, kind?: 'retry'): PipeEdge => ({
@@ -139,7 +145,8 @@ const edge = (from: PipeNodeId, fromSide: Side, to: PipeNodeId, toSide: Side, ki
 })
 
 export const EDGES: readonly PipeEdge[] = [
-  edge('user', 'top', 'command', 'bottom'),
+  edge('user', 'left', 'ui_in', 'bottom'),
+  edge('ui_in', 'top', 'command', 'bottom'),
   edge('command', 'bottom', 'aggregate', 'top'),
   edge('aggregate', 'right', 'store', 'left'),
   edge('store', 'top', 'handler_a', 'bottom'),
@@ -153,6 +160,8 @@ export const EDGES: readonly PipeEdge[] = [
   edge('store', 'bottom', 'read_db', 'top'),
   edge('fan_store', 'bottom', 'read_db', 'top'),
   edge('read_db', 'right', 'ui', 'left'),
+  edge('ui', 'bottom', 'user', 'top'),
+  edge('email', 'bottom', 'user', 'right'),
 ]
 
 export const NODE_IDS: readonly PipeNodeId[] = NODES.map((n) => n.id)
@@ -167,7 +176,11 @@ export const GROUP_BY_ID: Readonly<Record<PipeGroupId, PipeGroup>> = Object.from
 export function toneOf(id: PipeNodeId | PipeGroupId): Tone {
   if (id in GROUP_BY_ID) return GROUP_BY_ID[id as PipeGroupId].tone
   const node = NODES.find((n) => n.id === id)
-  return node?.parent ? GROUP_BY_ID[node.parent].tone : node?.id === 'user' ? 'cyan' : 'amber'
+  return node?.parent
+    ? GROUP_BY_ID[node.parent].tone
+    : node?.id === 'user' || node?.id === 'ui_in'
+      ? 'cyan'
+      : 'amber'
 }
 
 /** Vue Flow handle positions by side. */

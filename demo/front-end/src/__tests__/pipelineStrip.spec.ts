@@ -50,9 +50,10 @@ describe('PipelineStrip', () => {
     const titles = w.findAll('.pipe-service-title').map((t) => t.text())
     expect(titles).toEqual(['Concert service', 'Fan service', 'projection'])
     expect(w.findAll('.pipe-node')).toHaveLength(10)
-    expect(w.findAll('.pipe-actor')).toHaveLength(3)
-    expect(w.findAll('.vue-flow__edge')).toHaveLength(14)
-    expect(w.findAll('path.pipe-edge')).toHaveLength(14)
+    expect(w.findAll('.pipe-actor')).toHaveLength(4) // three diamonds and the person
+    expect(w.findAll('.pipe-person-shape')).toHaveLength(1)
+    expect(w.findAll('.vue-flow__edge')).toHaveLength(17)
+    expect(w.findAll('path.pipe-edge')).toHaveLength(17)
     for (const text of [
       'Command',
       'Aggregate (rules)',
@@ -110,9 +111,9 @@ describe('PipelineStrip', () => {
     await vi.advanceTimersByTimeAsync(300) // at 1× the token would already be on command → aggregate
     // 250 ms of animation at 0.5× of the base pace (1/1.33): 250 / (0.5 / 1.33) = 665 ms
     expect(w.find('g.pipe-token').attributes('style')).toContain('animation-duration: 665ms')
-    expect(edge(w, 'command-aggregate').classes()).not.toContain('pipe-edge-lit')
+    expect(edge(w, 'ui_in-command').classes()).not.toContain('pipe-edge-lit')
     await vi.advanceTimersByTimeAsync(400)
-    expect(edge(w, 'command-aggregate').classes()).toContain('pipe-edge-lit')
+    expect(edge(w, 'ui_in-command').classes()).toContain('pipe-edge-lit')
   })
 
   it('the user diamond wears the persona and its explanation switches personas', async () => {
@@ -136,10 +137,11 @@ describe('PipelineStrip', () => {
     commands.signal = { phase: 'sent', seq: 1 }
     await w.vm.$nextTick()
     expect(tokens(w)).toHaveLength(1)
-    expect(edge(w, 'user-command').classes()).toContain('pipe-edge-lit')
-    await vi.advanceTimersByTimeAsync(600)
+    expect(edge(w, 'user-ui_in').classes()).toContain('pipe-edge-lit')
+    await vi.advanceTimersByTimeAsync(800)
     expect(glow(w, 'busy')).toBe(1)
 
+    await vi.advanceTimersByTimeAsync(200) // the "sent" scene and its gap are over
     commands.signal = { phase: 'accepted', seq: 2 }
     await vi.advanceTimersByTimeAsync(700)
     expect(glow(w, 'ok')).toBeGreaterThan(0)

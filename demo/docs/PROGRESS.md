@@ -307,3 +307,7 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
 - **2026-10-17, forks on the diagram**: accepted scenes hold the queue only until the token reaches
   events + outbox; the next scene (task chain, mail attempt) starts at that moment while the projection
   branch finishes, mirroring the single transaction. 46 vitest tests.
+- **2026-10-17, the person below the diagram** (restore point: tag `restore-before-actor-rework`):
+  the bottom-left diamond is now the command side of the UI, the persona is a circle at the bottom
+  connected to both UI diamonds and to email; scenes start at and return to the person. Canvas
+  1206×472, diagram block 32 rem. 46 vitest tests.

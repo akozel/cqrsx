@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// An actor outside the code: a diamond (the user, the fan's mailbox, the screen). The user diamond
+// An actor outside the code: a diamond for a screen or a mailbox, a circle for the person. The person
 // wears the selected persona: its avatar and name.
 import { computed, inject } from 'vue'
 import { Handle, type NodeProps } from '@vue-flow/core'
@@ -20,7 +20,10 @@ const label = computed(() => (isUser.value ? ctx.persona.value.name : t(`pipelin
 <template>
   <div class="pipe-actor">
     <Handle v-for="side in SIDES" :id="side" :key="side" type="source" :position="SIDE_POSITION[side]" />
-    <span class="pipe-actor-shape" :class="`pipe-glow-${glow}`" />
+    <span
+      class="pipe-actor-shape"
+      :class="[`pipe-glow-${glow}`, { 'pipe-person-shape': data.kind === 'person' }]"
+    />
     <span class="pipe-actor-label"
       ><span class="pipe-actor-icon">{{ icon }}</span
       >{{ label }}</span

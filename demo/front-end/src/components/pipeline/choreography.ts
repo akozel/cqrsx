@@ -149,9 +149,10 @@ export function createChoreography(options: ChoreographyOptions = {}) {
   // --- Our own command: the HTTP round trip (user → Concert service → projection → UI) -----------
   function onCommand(s: CommandSignal) {
     if (s.phase === 'sent') {
-      enqueue('cmd', 500, () => {
-        travel('cmd', 'user-command', 'cyan', 250, 'pulse', 350)
-        later('cmd', 250, () => travel('cmd', 'command-aggregate', 'amber', 250, 'busy', 4000))
+      enqueue('cmd', 750, () => {
+        travel('cmd', 'user-ui_in', 'cyan', 250, 'pulse', 350)
+        later('cmd', 250, () => travel('cmd', 'ui_in-command', 'cyan', 250, 'pulse', 350))
+        later('cmd', 500, () => travel('cmd', 'command-aggregate', 'amber', 250, 'busy', 4000))
       })
     } else if (s.phase === 'accepted') {
       // Forks at events + outbox: the read model and the outbox task are written in one transaction.
@@ -161,7 +162,7 @@ export function createChoreography(options: ChoreographyOptions = {}) {
         () => {
           flash('cmd', 'aggregate', 'ok', 600)
           later('cmd', 200, () => transactionFlash.value++)
-          const ms = 200 + walk('cmd', ['aggregate-store', 'store-read_db', 'read_db-ui'], 'lime')
+          const ms = 200 + walk('cmd', ['aggregate-store', 'store-read_db', 'read_db-ui', 'ui-user'], 'lime')
           hide('cmd', ms + 500)
         },
         0,
@@ -189,7 +190,11 @@ export function createChoreography(options: ChoreographyOptions = {}) {
         later('fan', into, () => {
           if (accepted) {
             flash('fan', 'fan_aggregate', 'ok', 600)
-            const ms = walk('fan', ['fan_aggregate-fan_store', 'fan_store-read_db', 'read_db-ui'], 'lime')
+            const ms = walk(
+              'fan',
+              ['fan_aggregate-fan_store', 'fan_store-read_db', 'read_db-ui', 'ui-user'],
+              'lime',
+            )
             hide('fan', ms + 500)
           } else {
             reject(
@@ -225,10 +230,10 @@ export function createChoreography(options: ChoreographyOptions = {}) {
         hide('mail', 1500)
       })
     } else if (s.type === 'task.attempt.succeeded') {
-      enqueue('mail', STEP_MS + 600, () => {
+      enqueue('mail', 2 * STEP_MS + 600, () => {
         diceRoll.value++
         flash('mail', 'mail_server', 'ok', 600)
-        const ms = walk('mail', ['mail_server-email'], 'lime')
+        const ms = walk('mail', ['mail_server-email', 'email-user'], 'lime')
         hide('mail', ms + 600)
       })
     }

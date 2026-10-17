@@ -192,6 +192,7 @@ onBeforeUnmount(() => {
         <template #node-service="p"><ServiceNode v-bind="p" /></template>
         <template #node-box="p"><BoxNode v-bind="p" /></template>
         <template #node-actor="p"><ActorNode v-bind="p" /></template>
+      <template #node-person="p"><ActorNode v-bind="p" /></template>
         <template #edge-signal="p"><SignalEdge v-bind="p" /></template>
       </VueFlow>
     </div>
