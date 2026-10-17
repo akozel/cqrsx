@@ -8,7 +8,7 @@ use cqrsx::{
     postgres::{EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA},
 };
 use encore_backend::{
-    app::{
+    application::{
         activity::ActivityHub,
         command_service::{CommandMetadata, CommandOutcome, ConcertCommands, Executors},
         lock::BoxOfficeLock,

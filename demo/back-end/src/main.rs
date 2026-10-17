@@ -1,13 +1,10 @@
 //! Encore back-end: composition root (see PLAN.md §6.3).
 #![allow(clippy::result_large_err)]
-use app::{
+use application::{
     activity::ActivityHub,
     command_service::{ConcertCommands, Executors, FanCommands, NamedHandler},
     lock::BoxOfficeLock,
-    read_side::{CONCERT_HALLS, FAN_WALLETS, MAIL_INBOX, ReadSide},
-    rebuild::RebuildService,
-    time_travel::TimeTravel,
-    verify::VerifyService,
+    operations::{rebuild::RebuildService, time_travel::TimeTravel, verify::VerifyService},
 };
 use config::Config;
 use cqrsx::{
@@ -17,10 +14,11 @@ use cqrsx::{
     postgres::{command::PostgresCommandConfig, pool::connect_pool, task_runtime::prepare_task_runtime},
 };
 use domain::concert::ConcertServices;
-use encore_backend::{app, config, domain, http, outbox};
-use outbox::{
-    dispatcher::{DispatcherDeps, dispatcher_factory},
-    flaky_mail::{MailSettings, MongoInbox},
+use encore_backend::{application, config, domain, infrastructure, presentation::http};
+use infrastructure::{
+    mail::flaky_mail_server::{MailSettings, MongoInbox},
+    mongo::read_side::{CONCERT_HALLS, FAN_WALLETS, MAIL_INBOX, ReadSide},
+    task_runtime::dispatcher::{DispatcherDeps, dispatcher_factory},
 };
 use sqlx::postgres::PgConnectOptions;
 use std::{future::IntoFuture, sync::Arc};

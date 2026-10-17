@@ -1,5 +1,7 @@
 use super::*;
-use cqrsx::cqrs::testing::TestFramework;
+use crate::domain::shared::venue::{SeatId, Zone};
+use cqrsx::cqrs::{aggregate::Aggregate, testing::TestFramework};
+use uuid::Uuid;
 
 fn seat(raw: &str) -> SeatId {
     SeatId::parse(raw).unwrap()

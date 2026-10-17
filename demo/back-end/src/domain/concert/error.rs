@@ -1,4 +1,4 @@
-use crate::domain::venue::SeatId;
+use crate::domain::shared::venue::SeatId;
 use serde_json::{Value, json};
 use thiserror::Error;
 

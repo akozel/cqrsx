@@ -1,8 +1,14 @@
 //! One test per rule R1–R8 with a recognizable name, happy paths for the three commands, and the
 //! D-02 safeguard ("every accepted command yields exactly one event").
 use super::*;
-use crate::domain::venue::{VENUE, Zone};
+use crate::domain::{
+    FanId,
+    shared::venue::{SeatId, VENUE, Zone},
+};
+use chrono::NaiveDate;
+use cqrsx::cqrs::aggregate::Aggregate;
 use cqrsx::cqrs::testing::TestFramework;
+use uuid::Uuid;
 
 fn services() -> ConcertServices {
     ConcertServices { ticket_limit: 4 }

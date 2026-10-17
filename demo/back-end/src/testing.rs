@@ -1,6 +1,6 @@
 //! Test fixtures that need no running database: lazily connecting PostgreSQL pools and MongoDB
 //! clients, enough to wire services and exercise every branch that returns before storage.
-use crate::app::read_side::ReadSide;
+use crate::infrastructure::mongo::read_side::ReadSide;
 use mongodb::{Client, options::ClientOptions};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::time::Duration;

@@ -1,9 +1,8 @@
-//! Domain model: the venue (reference data), the `Concert` aggregate (seats and all business
-//! rules), the downstream `Fan` aggregate (a fan's ticket ledger, fed by outbox tasks) and the
-//! validated identifiers both share.
+//! Domain model: the `Concert` aggregate (seats and all business rules), the downstream `Fan`
+//! aggregate (a fan's ticket ledger, fed by outbox tasks) and the shared kernel of value objects
+//! both use (validated identifiers, the venue).
 pub mod concert;
 pub mod fan;
-pub mod ids;
-pub mod venue;
+pub mod shared;
 
-pub use ids::{ConcertId, FanId, InvalidConcertId, InvalidFanId};
+pub use shared::ids::{ConcertId, FanId, InvalidConcertId, InvalidFanId};
