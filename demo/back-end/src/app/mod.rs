@@ -3,6 +3,7 @@
 pub mod activity;
 pub mod command_service;
 pub mod personas;
+pub mod read_side;
 pub mod rebuild;
 pub mod seed;
 pub mod tasks;

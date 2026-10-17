@@ -9,13 +9,16 @@ mod config;
 mod domain;
 mod http;
 mod outbox;
+mod projections;
 
 use app::{
     activity::ActivityHub,
-    command_service::{ConcertCommands, Executors, FanCommands},
+    command_service::{ConcertCommands, Executors, FanCommands, HandlerFactory},
+    read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide},
     rebuild::RebuildService,
 };
 use config::Config;
+use cqrsx::cqrs::{event_handler::EventHandler, projection::ViewProjection};
 use cqrsx::{
     cqrs::command::retry::AggregateConflictRetryPolicy,
     host::{lifecycle, signal::shutdown_signal},
@@ -26,10 +29,12 @@ use cqrsx::{
     },
 };
 use domain::concert::ConcertServices;
+use domain::{concert::Concert, fan::Fan};
 use outbox::{
     dispatcher::{DispatcherDeps, dispatcher_factory},
     flaky_mail::{MailSettings, MongoInbox},
 };
+use projections::notifying::NotifyingHandler;
 use sqlx::postgres::PgConnectOptions;
 use std::{future::IntoFuture, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -63,11 +68,18 @@ async fn main() {
         .unwrap_or_else(|e| fail(format!("cannot connect to PostgreSQL: {e}")));
 
     // MongoDB: read models (`encore_read`) and the simulated external mail service (`mail_service`).
-    let mongo = mongodb::Client::with_uri_str(&config.mongodb_uri)
+    // Short server-selection timeout: when MongoDB is down a command must still answer quickly
+    // (200 + `projection_failed` warning), not hang for the driver's default 30 s.
+    let mut mongo_options = mongodb::options::ClientOptions::parse(&config.mongodb_uri)
         .await
         .unwrap_or_else(|e| fail(format!("ENCORE_MONGODB_URI: {e}")));
+    mongo_options.server_selection_timeout = Some(std::time::Duration::from_secs(3));
+    mongo_options.connect_timeout = Some(std::time::Duration::from_secs(3));
+    mongo_options.app_name = Some("encore-backend".into());
+    let mongo = mongodb::Client::with_options(mongo_options).unwrap_or_else(|e| fail(format!("MongoDB client: {e}")));
     let mail_db = mongo.database(&config.mail_db);
     let inbox = Arc::new(MongoInbox::new(mail_db.collection("inbox")));
+    let read = Arc::new(ReadSide::new(&mongo.database(&config.read_db), &mail_db));
 
     let activity = Arc::new(ActivityHub::new(1024, 100));
     let rebuild = Arc::new(RebuildService::new());
@@ -78,11 +90,36 @@ async fn main() {
         snapshot_every: command_config.snapshot_interval(),
         retry: command_config.conflict_retry(),
     };
-    // Event handlers (projections) are registered in Phase 5; until then every framework has none.
+    // Event-handler factories: called for every framework (one per command). Handlers are cheap —
+    // they hold an Arc to the view repository — and are wrapped so the activity log sees
+    // `projection.updated` / `projection.failed`. Registration order = index in
+    // `CommittedWithEventHandlerFailure`, hence the parallel name lists.
+    let concert_handlers: HandlerFactory<Concert> = {
+        let halls = read.halls.clone();
+        let activity = activity.clone();
+        Arc::new(move || {
+            vec![Box::new(NotifyingHandler::new(
+                ViewProjection::new(halls.clone()),
+                CONCERT_HALLS,
+                activity.clone(),
+            )) as Box<dyn EventHandler<Concert>>]
+        })
+    };
+    let fan_handlers: HandlerFactory<Fan> = {
+        let wallets = read.wallets.clone();
+        let activity = activity.clone();
+        Arc::new(move || {
+            vec![Box::new(NotifyingHandler::new(
+                ViewProjection::new(wallets.clone()),
+                FAN_WALLETS,
+                activity.clone(),
+            )) as Box<dyn EventHandler<Fan>>]
+        })
+    };
     let concert_commands = Arc::new(ConcertCommands::new(
         &executors,
-        Arc::new(Vec::new),
-        vec![],
+        concert_handlers,
+        vec![CONCERT_HALLS],
         ConcertServices {
             ticket_limit: config.ticket_limit,
         },
@@ -90,7 +127,12 @@ async fn main() {
         rebuild.clone(),
         config.task_max_attempts,
     ));
-    let fan_commands = Arc::new(FanCommands::new(&executors, Arc::new(Vec::new), vec![], activity.clone()));
+    let fan_commands = Arc::new(FanCommands::new(
+        &executors,
+        fan_handlers,
+        vec![FAN_WALLETS],
+        activity.clone(),
+    ));
 
     if config.seed {
         app::seed::run(&concert_commands).await;
@@ -128,6 +170,7 @@ async fn main() {
         fan_commands,
         activity,
         rebuild,
+        read,
         shutdown: shutdown.clone(),
     };
     // axum 0.8: `with_graceful_shutdown` returns an `IntoFuture`, not a `Future`.

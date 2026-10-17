@@ -106,6 +106,23 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
   chain outcome table, task formats. `cargo test -p encore-backend` → 37 passed; clippy/fmt clean.
 - Note: rand 0.10 renamed the extension trait to `RngExt` (`random_bool`, `random_range`).
 
+## Phase 5 — projections and read API — ✅ done
+
+- `projections::{mongo_view_repository, concert_hall (View<Concert>), fan_wallet (View<Fan>), notifying, progress}`,
+  `app::read_side`, read endpoints `GET /api/concerts`, `/api/concerts/{id}`, `/api/fans/{id}/wallet`,
+  `/api/fans/{id}/inbox`; both projections registered as `NotifyingHandler(ViewProjection)` (D-06).
+- Verified: after `BookSeat C6 alice` the `concert_halls/tbilisi-2026` document shows `C6` booked with
+  `sequence`, `changed_at` from the event metadata, `sold`/`revenue` recomputed; `fan_wallets/alice`
+  appears one chain step later with `active_count: 1`; inbox lists alice's e-mails; unknown fan/concert
+  → 404 `projection_missing`. LWW unit tests (order 7→6 = 6→7, repeats harmless, tombstones, derived
+  fields, `incomplete`) → `cargo test -p encore-backend` 44 passed; clippy/fmt clean.
+- MongoDB stopped (`containers/encore-sandbox-mongo/stop`): `BookSeat E7 bob` → 200 `accepted` with
+  `warnings: [{code: projection_failed, projection: concert_halls}]` in 3.0 s (driver
+  `server_selection_timeout` set to 3 s); `GET /api/concerts/{id}` → 503 `unavailable`; after
+  `start` the chain tasks completed, the read models lag until Encore! (Phase 6).
+- Note: history written before Phase 5 is not projected until the first rebuild (expected: the
+  projections are in-process handlers without replay of the past).
+
 ## Phase table
 
 | Phase | Status | Verified by | Manual check needed |
@@ -116,7 +133,7 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 | 2 | ✅ done | `cargo test -p encore-backend domain` (25) | — |
 | 3 | ✅ done | curl + SQL + SSE + SIGINT | — |
 | 4 | ✅ done | SQL + mongosh + log after 50 bookings, SIGINT drain, unit tests | — |
-| 5 | pending | | |
+| 5 | ✅ done | curl read API, MongoDB stop/start, LWW unit tests | — |
 | 6 | pending | | |
 | 7 | pending | | |
 | 8 | pending | | |
