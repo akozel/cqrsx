@@ -88,4 +88,18 @@ mod tests {
             ]
         );
     }
+
+    #[test]
+    fn params_carry_what_the_ui_texts_interpolate() {
+        let seat = SeatId::parse("B4").unwrap();
+        assert_eq!(
+            ConcertError::SeatTaken { seat, by: "Fox".into() }.params(),
+            serde_json::json!({ "seat": "B4", "by": "Fox" })
+        );
+        assert_eq!(
+            ConcertError::TicketLimit { limit: 4 }.params(),
+            serde_json::json!({ "limit": 4 })
+        );
+        assert_eq!(ConcertError::NotYourTicket.params(), serde_json::json!({}));
+    }
 }

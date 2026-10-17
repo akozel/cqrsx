@@ -1,6 +1,10 @@
 //! The `Fan` state (the ticket ledger) and its `impl Aggregate`.
 use crate::domain::{
-    fan::{FanCommand, FanError, FanEvent},
+    ConcertId,
+    fan::{
+        FanCommand, FanError, FanEvent,
+        events::{TicketCancelled, TicketRecorded},
+    },
     shared::venue::{SeatId, Zone},
 };
 use cqrsx::cqrs::{aggregate::Aggregate, event_sink::EventSink};
@@ -17,7 +21,7 @@ pub enum TicketState {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Ticket {
-    pub concert_id: String,
+    pub concert_id: ConcertId,
     pub seat: SeatId,
     pub zone: Zone,
     pub price: u32,
@@ -61,69 +65,28 @@ impl Aggregate for Fan {
     type Error = FanError;
     type Services = ();
 
-    // Exactly one event per accepted command (D-02), like `Concert`.
-    async fn handle(&mut self, command: FanCommand, _: &(), sink: &EventSink<Self>) -> Result<(), FanError> {
-        match command {
-            FanCommand::RecordTicket {
-                booking_id,
-                concert_id,
-                seat,
-                zone,
-                price,
-                fan_name,
-            } => {
-                if self.tickets.contains_key(&booking_id) {
-                    return Err(FanError::AlreadyRecorded { booking_id }); // R9: redelivered task
-                }
-                sink.write(
-                    FanEvent::TicketRecorded {
-                        booking_id,
-                        concert_id,
-                        seat,
-                        zone,
-                        price,
-                        fan_name,
-                    },
-                    self,
-                )
-                .await;
-            }
-            FanCommand::RecordCancellation {
-                booking_id,
-                cancellation_id,
-                refund,
-            } => {
-                // R10: the cancellation task overtook the record task → the handler retries later.
-                let ticket = self.tickets.get(&booking_id).ok_or(FanError::UnknownTicket { booking_id })?;
-                if ticket.state == TicketState::Cancelled {
-                    return Err(FanError::AlreadyCancelled { booking_id }); // R11: redelivered task
-                }
-                sink.write(
-                    FanEvent::TicketCancelled {
-                        booking_id,
-                        cancellation_id,
-                        concert_id: ticket.concert_id.clone(),
-                        seat: ticket.seat.clone(),
-                        refund,
-                    },
-                    self,
-                )
-                .await;
-            }
-        }
+    /// Each command decides itself (see `commands/`); exactly one event per accepted command
+    /// (D-02), like `Concert`.
+    async fn handle(&mut self, command: FanCommand, services: &(), sink: &EventSink<Self>) -> Result<(), FanError> {
+        let event = match command {
+            FanCommand::RecordTicket(command) => command.decide(self, services)?,
+            FanCommand::RecordCancellation(command) => command.decide(self, services)?,
+        };
+        sink.write(event, self).await;
         Ok(())
     }
 
+    /// The state machine. Cancelled tickets stay in the ledger: they are history.
     fn apply(&mut self, event: FanEvent) {
         match event {
-            FanEvent::TicketRecorded {
+            FanEvent::TicketRecorded(TicketRecorded {
                 booking_id,
                 concert_id,
                 seat,
                 zone,
                 price,
                 fan_name,
-            } => {
+            }) => {
                 self.name.get_or_insert(fan_name);
                 self.tickets.insert(
                     booking_id,
@@ -136,12 +99,66 @@ impl Aggregate for Fan {
                     },
                 );
             }
-            FanEvent::TicketCancelled { booking_id, .. } => {
+            FanEvent::TicketCancelled(TicketCancelled { booking_id, .. }) => {
                 if let Some(ticket) = self.tickets.get_mut(&booking_id) {
                     ticket.state = TicketState::Cancelled;
                 }
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::fan::test_support::{cancel, cancelled, record, recorded, seat};
+    use cqrsx::cqrs::testing::TestFramework;
+
+    #[test]
+    fn derived_counters_ignore_cancelled_tickets_and_name_comes_from_the_first_ticket() {
+        let first = Uuid::new_v4();
+        let second = Uuid::new_v4();
+        let mut fan = Fan::default();
+        fan.apply(recorded(first));
+        fan.apply(FanEvent::TicketRecorded(TicketRecorded {
+            booking_id: second,
+            concert_id: ConcertId::parse("rammstein-2026-12-05").unwrap(),
+            seat: seat("A1"),
+            zone: Zone::Vip,
+            price: 120,
+            fan_name: "Fox (renamed)".into(),
+        }));
+        assert_eq!(fan.name(), Some("Fox"));
+        assert_eq!((fan.active_count(), fan.total_spent()), (2, 200));
+        fan.apply(cancelled(first, Uuid::new_v4()));
+        assert_eq!((fan.active_count(), fan.total_spent()), (1, 120));
+        assert_eq!(fan.tickets().len(), 2, "cancelled tickets remain as history");
+        let json = serde_json::to_value(&fan).unwrap();
+        assert!(json["tickets"][first.to_string()].is_object());
+        let restored: Fan = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, fan);
+    }
+
+    /// Decision D-02 for the downstream aggregate.
+    #[test]
+    fn d02_every_accepted_fan_command_yields_exactly_one_event() {
+        let id = Uuid::new_v4();
+        let states = vec![vec![], vec![recorded(id)], vec![recorded(id), cancelled(id, Uuid::new_v4())]];
+        let commands = vec![record(id), record(Uuid::new_v4()), cancel(id, Uuid::new_v4())];
+        let mut accepted = 0;
+        for state in &states {
+            for command in &commands {
+                if let Ok(events) = TestFramework::<Fan>::with(())
+                    .given(state.clone())
+                    .when(command.clone())
+                    .inspect_result()
+                {
+                    accepted += 1;
+                    assert_eq!(events.len(), 1, "{command:?} produced {events:?}");
+                }
+            }
+        }
+        assert!(accepted >= 3);
     }
 }
 

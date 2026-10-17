@@ -9,7 +9,10 @@ use crate::{
     application::{activity::ActivityHub, lock::BoxOfficeLock, projections::notifying::NotifyingHandler, tasks},
     domain::{
         ConcertId, FanId,
-        concert::{Concert, ConcertCommand, ConcertError, ConcertServices},
+        concert::{
+            Concert, ConcertCommand, ConcertError, ConcertServices,
+            commands::{BookSeat, CancelBooking},
+        },
         fan::{Fan, FanCommand, FanError},
         shared::venue::VENUE,
     },
@@ -262,35 +265,35 @@ impl ConcertCommands {
         metadata: &CommandMetadata,
     ) -> Result<Vec<NewTask>, String> {
         let task = match command {
-            ConcertCommand::AnnounceConcert { .. } => return Ok(vec![]),
-            ConcertCommand::BookSeat {
+            ConcertCommand::AnnounceConcert(_) => return Ok(vec![]),
+            ConcertCommand::BookSeat(BookSeat {
                 seat,
                 fan_id,
                 fan_name,
                 booking_id,
-            } => {
+            }) => {
                 let Some(info) = VENUE.seat(seat) else { return Ok(vec![]) };
                 tasks::new_task(
                     tasks::RecordTicketV1 {
                         booking_id: *booking_id,
-                        concert_id: concert_id.to_string(),
+                        concert_id: concert_id.clone(),
                         seat: info.id,
                         zone: info.zone,
                         price: info.price,
-                        fan_id: fan_id.to_string(),
+                        fan_id: fan_id.clone(),
                         fan_name: fan_name.clone(),
                     },
                     metadata,
-                    concert_id.as_str(),
-                    fan_id.as_str(),
+                    concert_id,
+                    fan_id,
                     self.task_max_attempts,
                 )
             }
-            ConcertCommand::CancelBooking {
+            ConcertCommand::CancelBooking(CancelBooking {
                 seat,
                 fan_id,
                 cancellation_id,
-            } => {
+            }) => {
                 let Some(info) = VENUE.seat(seat) else { return Ok(vec![]) };
                 // The booking identity and the refund ("what was paid back then") live in the
                 // concert's history, so read the committed state first. If the booking changes
@@ -309,14 +312,14 @@ impl ConcertCommands {
                     tasks::RecordCancellationV1 {
                         booking_id: booking.booking_id,
                         cancellation_id: *cancellation_id,
-                        concert_id: concert_id.to_string(),
+                        concert_id: concert_id.clone(),
                         seat: info.id,
-                        fan_id: fan_id.to_string(),
+                        fan_id: fan_id.clone(),
                         refund: booking.price,
                     },
                     metadata,
-                    concert_id.as_str(),
-                    fan_id.as_str(),
+                    concert_id,
+                    fan_id,
                     self.task_max_attempts,
                 )
             }
@@ -507,6 +510,7 @@ fn publish_outcome<E>(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::fan::commands::RecordCancellation;
 
     #[test]
     fn ui_metadata_uses_one_id_for_all_three_roles_and_fixed_width_time() {
@@ -597,11 +601,11 @@ mod tests {
         let executed = concerts
             .execute(
                 &concert_id,
-                ConcertCommand::CancelBooking {
+                ConcertCommand::CancelBooking(CancelBooking {
                     seat: "B4".into(),
                     fan_id: fan_id.clone(),
                     cancellation_id: Uuid::now_v7(),
-                },
+                }),
                 CommandMetadata::ui(),
             )
             .await;
@@ -609,11 +613,11 @@ mod tests {
         let executed = fans
             .execute(
                 &fan_id,
-                FanCommand::RecordCancellation {
+                FanCommand::RecordCancellation(RecordCancellation {
                     booking_id: Uuid::now_v7(),
                     cancellation_id: Uuid::now_v7(),
                     refund: 80,
-                },
+                }),
                 CommandMetadata::ui(),
                 vec![],
             )

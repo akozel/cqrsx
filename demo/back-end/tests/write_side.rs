@@ -15,7 +15,10 @@ use encore_backend::{
     },
     domain::{
         ConcertId, FanId,
-        concert::{ConcertCommand, ConcertError, ConcertServices},
+        concert::{
+            ConcertCommand, ConcertError, ConcertServices,
+            commands::{AnnounceConcert, BookSeat},
+        },
     },
 };
 use serde_json::Value;
@@ -91,11 +94,11 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     };
     let commands = ConcertCommands::new(&executors, vec![], ConcertServices { ticket_limit: 4 }, activity, lock, 6);
     let concert_id = ConcertId::parse("test-2026").expect("concert id");
-    let announce = ConcertCommand::AnnounceConcert {
+    let announce = ConcertCommand::AnnounceConcert(AnnounceConcert {
         artist: "A".into(),
         city: "C".into(),
         date: NaiveDate::from_ymd_opt(2026, 11, 21).expect("date"),
-    };
+    });
     assert!(
         commands
             .execute(&concert_id, announce, CommandMetadata::with_source("seed"))
@@ -105,12 +108,12 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     );
 
     let metadata = CommandMetadata::ui();
-    let book = ConcertCommand::BookSeat {
+    let book = ConcertCommand::BookSeat(BookSeat {
         seat: "B4".into(),
         fan_id: FanId::parse("alice").expect("fan"),
         fan_name: "Alice".into(),
         booking_id: metadata.command_id,
-    };
+    });
     let executed = commands.execute(&concert_id, book, metadata.clone()).await;
     assert!(executed.outcome.is_accepted());
     assert_eq!(executed.tasks, vec!["encore_record_ticket v1".to_owned()]);
@@ -118,12 +121,12 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     let rejected = commands
         .execute(
             &concert_id,
-            ConcertCommand::BookSeat {
+            ConcertCommand::BookSeat(BookSeat {
                 seat: "B4".into(),
                 fan_id: FanId::parse("bob").expect("fan"),
                 fan_name: "Bob".into(),
                 booking_id: Uuid::now_v7(),
-            },
+            }),
             CommandMetadata::ui(),
         )
         .await;

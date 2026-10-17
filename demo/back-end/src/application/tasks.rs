@@ -6,7 +6,10 @@
 //! nothing, so a task is never published without its event.
 use crate::{
     application::command_service::CommandMetadata,
-    domain::shared::venue::{SeatId, Zone},
+    domain::{
+        ConcertId, FanId,
+        shared::venue::{SeatId, Zone},
+    },
 };
 use cqrsx::task::{NewTask, TaskValidationError, format::TaskPayload};
 use serde::{Deserialize, Serialize};
@@ -17,11 +20,11 @@ use uuid::Uuid;
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct RecordTicketV1 {
     pub booking_id: Uuid,
-    pub concert_id: String,
+    pub concert_id: ConcertId,
     pub seat: SeatId,
     pub zone: Zone,
     pub price: u32,
-    pub fan_id: String,
+    pub fan_id: FanId,
     pub fan_name: String,
 }
 
@@ -34,9 +37,9 @@ impl TaskPayload for RecordTicketV1 {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct SendETicketV1 {
     pub booking_id: Uuid,
-    pub concert_id: String,
+    pub concert_id: ConcertId,
     pub seat: SeatId,
-    pub fan_id: String,
+    pub fan_id: FanId,
     pub fan_name: String,
     pub price: u32,
 }
@@ -51,9 +54,9 @@ impl TaskPayload for SendETicketV1 {
 pub struct RecordCancellationV1 {
     pub booking_id: Uuid,
     pub cancellation_id: Uuid,
-    pub concert_id: String,
+    pub concert_id: ConcertId,
     pub seat: SeatId,
-    pub fan_id: String,
+    pub fan_id: FanId,
     pub refund: u32,
 }
 
@@ -67,9 +70,9 @@ impl TaskPayload for RecordCancellationV1 {
 pub struct IssueRefundV1 {
     pub cancellation_id: Uuid,
     pub booking_id: Uuid,
-    pub concert_id: String,
+    pub concert_id: ConcertId,
     pub seat: SeatId,
-    pub fan_id: String,
+    pub fan_id: FanId,
     pub amount: u32,
 }
 
@@ -83,8 +86,8 @@ impl TaskPayload for IssueRefundV1 {
 pub fn new_task<T: TaskPayload>(
     payload: T,
     metadata: &CommandMetadata,
-    concert_id: &str,
-    fan_id: &str,
+    concert_id: &ConcertId,
+    fan_id: &FanId,
     max_attempts: i32,
 ) -> Result<NewTask, TaskValidationError> {
     NewTask::new(payload)?
@@ -114,18 +117,20 @@ mod tests {
             assert_eq!(format.unwrap().to_string(), expected);
         }
         let metadata = CommandMetadata::ui();
+        let concert_id = ConcertId::parse("radiohead-2026-11-21").unwrap();
+        let fan_id = FanId::parse("fox").unwrap();
         let task = new_task(
             SendETicketV1 {
                 booking_id: metadata.command_id,
-                concert_id: "radiohead-2026-11-21".into(),
+                concert_id: concert_id.clone(),
                 seat: SeatId::parse("B4").unwrap(),
-                fan_id: "fox".into(),
+                fan_id: fan_id.clone(),
                 fan_name: "Fox".into(),
                 price: 80,
             },
             &metadata,
-            "radiohead-2026-11-21",
-            "fox",
+            &concert_id,
+            &fan_id,
             6,
         )
         .unwrap();

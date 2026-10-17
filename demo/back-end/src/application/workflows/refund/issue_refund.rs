@@ -19,13 +19,13 @@ pub fn refund_mail(payload: &IssueRefundV1) -> Mail {
     Mail {
         id: format!("refund:{}", payload.cancellation_id),
         kind: "refund",
-        to_fan_id: payload.fan_id.clone(),
-        to_name: payload.fan_id.clone(),
+        to_fan_id: payload.fan_id.to_string(),
+        to_name: payload.fan_id.to_string(),
         subject: format!(
             "💸 Refund {} € for {}, seat {}",
             payload.amount, payload.concert_id, payload.seat
         ),
-        concert_id: payload.concert_id.clone(),
+        concert_id: payload.concert_id.to_string(),
         seat: payload.seat.to_string(),
         amount: payload.amount,
     }

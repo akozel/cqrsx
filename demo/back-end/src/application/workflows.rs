@@ -13,7 +13,7 @@ use crate::{
         tasks::new_task,
     },
     domain::{
-        FanId,
+        ConcertId, FanId,
         fan::{FanCommand, FanError},
     },
 };
@@ -75,23 +75,21 @@ pub fn correlation_of(metadata: &serde_json::Value, task_id: Uuid) -> Uuid {
 
 /// One link of the aggregate chain: the `Fan` command to run and the task to publish with it.
 pub struct ChainStep<'a, F: TaskPayload> {
-    pub concert_id: &'a str,
-    pub fan_id: &'a str,
+    pub concert_id: &'a ConcertId,
+    pub fan_id: &'a FanId,
     pub command: FanCommand,
     pub follow_up: F,
     pub follow_up_max_attempts: i32,
 }
 
-/// Runs one chain step on behalf of a task of type `P`. A malformed payload is permanent (it will
-/// never parse better); a closed box office waits a little and then asks for a later redelivery
-/// without spending a command on it.
+/// Runs one chain step on behalf of a task of type `P`. A malformed payload never reaches this
+/// point: the JSON adapter rejects it permanently, ids included. A closed box office waits a
+/// little and then asks for a later redelivery without spending a command on it.
 pub async fn run_chain_step<P: TaskPayload, F: TaskPayload>(
     fan_commands: &FanCommands,
     attempt: &TaskAttempt,
     step: ChainStep<'_, F>,
 ) -> Result<(), TaskHandlerError> {
-    let permanent = |reason: String| TaskHandlerError::Permanent { reason };
-    let fan_id = FanId::parse(step.fan_id).map_err(|e| permanent(format!("invalid task payload: {e}")))?;
     let metadata = CommandMetadata::from_task(
         correlation_of(attempt.metadata(), attempt.task_id()),
         attempt.task_id(),
@@ -101,14 +99,18 @@ pub async fn run_chain_step<P: TaskPayload, F: TaskPayload>(
         step.follow_up,
         &metadata,
         step.concert_id,
-        fan_id.as_str(),
+        step.fan_id,
         step.follow_up_max_attempts,
     )
-    .map_err(|e| permanent(format!("cannot build follow-up task: {e}")))?;
+    .map_err(|e| TaskHandlerError::Permanent {
+        reason: format!("cannot build follow-up task: {e}"),
+    })?;
     if !wait_for_unlock(fan_commands.lock()).await {
         return Err(locked_retry());
     }
-    let executed = fan_commands.execute(&fan_id, step.command, metadata, vec![follow_up]).await;
+    let executed = fan_commands
+        .execute(step.fan_id, step.command, metadata, vec![follow_up])
+        .await;
     map_fan_outcome(executed.outcome)
 }
 

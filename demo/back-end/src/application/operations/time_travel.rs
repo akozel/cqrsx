@@ -25,9 +25,9 @@ pub struct TimeTravel {
 /// One row of the timeline under the slider.
 fn summary(event: &ConcertEvent) -> String {
     match event {
-        ConcertEvent::ConcertAnnounced { artist, city, .. } => format!("{artist} · {city}"),
-        ConcertEvent::SeatBooked { seat, fan_name, .. } => format!("{seat} → {fan_name}"),
-        ConcertEvent::BookingCancelled { seat, refund, .. } => format!("{seat} ✕ (refund {refund} €)"),
+        ConcertEvent::ConcertAnnounced(e) => format!("{} · {}", e.artist, e.city),
+        ConcertEvent::SeatBooked(e) => format!("{} → {}", e.seat, e.fan_name),
+        ConcertEvent::BookingCancelled(e) => format!("{} ✕ (refund {} €)", e.seat, e.refund),
     }
 }
 

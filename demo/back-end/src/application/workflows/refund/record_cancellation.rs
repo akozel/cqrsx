@@ -5,7 +5,7 @@ use crate::{
         tasks::{IssueRefundV1, RecordCancellationV1},
         workflows::{ChainStep, run_chain_step},
     },
-    domain::fan::FanCommand,
+    domain::fan::{FanCommand, commands::RecordCancellation},
 };
 use cqrsx::task::{
     attempt::TaskAttempt,
@@ -28,11 +28,11 @@ impl TaskHandler<RecordCancellationV1> for RecordCancellationHandler {
             fan_id: payload.fan_id.clone(),
             amount: payload.refund,
         };
-        let command = FanCommand::RecordCancellation {
+        let command = FanCommand::RecordCancellation(RecordCancellation {
             booking_id: payload.booking_id,
             cancellation_id: payload.cancellation_id,
             refund: payload.refund,
-        };
+        });
         run_chain_step::<RecordCancellationV1, _>(
             &self.fan_commands,
             attempt,

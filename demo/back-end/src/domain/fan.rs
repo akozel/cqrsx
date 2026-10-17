@@ -6,7 +6,7 @@ pub mod commands;
 pub mod error;
 pub mod events;
 #[cfg(test)]
-mod tests;
+mod test_support;
 
 pub use aggregate::{Fan, Ticket, TicketState};
 pub use commands::FanCommand;

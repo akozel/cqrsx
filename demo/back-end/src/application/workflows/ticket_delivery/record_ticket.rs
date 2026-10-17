@@ -5,7 +5,7 @@ use crate::{
         tasks::{RecordTicketV1, SendETicketV1},
         workflows::{ChainStep, run_chain_step},
     },
-    domain::fan::FanCommand,
+    domain::fan::{FanCommand, commands::RecordTicket},
 };
 use cqrsx::task::{
     attempt::TaskAttempt,
@@ -28,14 +28,14 @@ impl TaskHandler<RecordTicketV1> for RecordTicketHandler {
             fan_name: payload.fan_name.clone(),
             price: payload.price,
         };
-        let command = FanCommand::RecordTicket {
+        let command = FanCommand::RecordTicket(RecordTicket {
             booking_id: payload.booking_id,
             concert_id: payload.concert_id.clone(),
             seat: payload.seat,
             zone: payload.zone,
             price: payload.price,
             fan_name: payload.fan_name,
-        };
+        });
         run_chain_step::<RecordTicketV1, _>(
             &self.fan_commands,
             attempt,

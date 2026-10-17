@@ -6,7 +6,10 @@
 //! `sold_out`) are recomputed from the map, never incremented. Result: idempotent and
 //! order-independent updates — handlers of parallel commands and replays all converge.
 use crate::domain::{
-    concert::{Concert, ConcertEvent},
+    concert::{
+        Concert, ConcertEvent,
+        events::{BookingCancelled, ConcertAnnounced, SeatBooked},
+    },
     shared::venue::{VENUE, Zone},
 };
 use cqrsx::cqrs::{event::EventEnvelope, projection::View};
@@ -83,12 +86,12 @@ impl View<Concert> for ConcertHallView {
         let sequence = envelope.sequence as i64;
         let changed_at = recorded_at(envelope);
         match &envelope.payload {
-            ConcertEvent::ConcertAnnounced {
+            ConcertEvent::ConcertAnnounced(ConcertAnnounced {
                 artist,
                 city,
                 date,
                 capacity,
-            } => {
+            }) => {
                 self.concert = Some(ConcertSummary {
                     artist: artist.clone(),
                     city: city.clone(),
@@ -97,14 +100,14 @@ impl View<Concert> for ConcertHallView {
                 self.capacity = i64::from(*capacity);
                 self.incomplete = false;
             }
-            ConcertEvent::SeatBooked {
+            ConcertEvent::SeatBooked(SeatBooked {
                 seat,
                 zone,
                 price,
                 fan_id,
                 fan_name,
                 booking_id,
-            } => {
+            }) => {
                 if self.seat_is_older(seat.as_str(), sequence) {
                     self.seats.insert(
                         seat.to_string(),
@@ -121,7 +124,7 @@ impl View<Concert> for ConcertHallView {
                     );
                 }
             }
-            ConcertEvent::BookingCancelled { seat, .. } => {
+            ConcertEvent::BookingCancelled(BookingCancelled { seat, .. }) => {
                 if self.seat_is_older(seat.as_str(), sequence) {
                     self.seats.insert(
                         seat.to_string(),
@@ -171,12 +174,12 @@ mod tests {
     fn announced(sequence: usize) -> EventEnvelope<Concert> {
         envelope(
             sequence,
-            ConcertEvent::ConcertAnnounced {
+            ConcertEvent::ConcertAnnounced(ConcertAnnounced {
                 artist: "A".into(),
                 city: "C".into(),
                 date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
                 capacity: 40,
-            },
+            }),
         )
     }
 
@@ -184,27 +187,27 @@ mod tests {
         let info = VENUE.seat(seat).unwrap();
         envelope(
             sequence,
-            ConcertEvent::SeatBooked {
+            ConcertEvent::SeatBooked(SeatBooked {
                 seat: info.id,
                 zone: info.zone,
                 price: info.price,
                 fan_id: FanId::parse(fan).unwrap(),
                 fan_name: fan.to_uppercase(),
                 booking_id: Uuid::new_v4(),
-            },
+            }),
         )
     }
 
     fn cancelled(sequence: usize, seat: &str, fan: &str) -> EventEnvelope<Concert> {
         envelope(
             sequence,
-            ConcertEvent::BookingCancelled {
+            ConcertEvent::BookingCancelled(BookingCancelled {
                 seat: SeatId::parse(seat).unwrap(),
                 fan_id: FanId::parse(fan).unwrap(),
                 booking_id: Uuid::new_v4(),
                 cancellation_id: Uuid::new_v4(),
                 refund: 80,
-            },
+            }),
         )
     }
 

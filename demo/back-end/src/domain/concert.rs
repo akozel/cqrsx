@@ -6,7 +6,7 @@ pub mod commands;
 pub mod error;
 pub mod events;
 #[cfg(test)]
-mod tests;
+mod test_support;
 
 pub use aggregate::{Booking, Concert, ConcertInfo, ConcertServices};
 pub use commands::ConcertCommand;

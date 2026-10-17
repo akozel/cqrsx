@@ -1,7 +1,10 @@
 //! `fan_wallets` read model: one document per fan, built only from the fan's own `Fan` events.
 //! LWW key is `booking_id`; `sequence` is the event number inside the `Fan` stream, so comparisons
 //! are valid within one wallet. Derived counters are recomputed, never incremented.
-use crate::domain::fan::{Fan, FanEvent};
+use crate::domain::fan::{
+    Fan, FanEvent,
+    events::{TicketCancelled, TicketRecorded},
+};
 use cqrsx::cqrs::{event::EventEnvelope, projection::View};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -55,14 +58,14 @@ impl View<Fan> for FanWalletView {
             self.fan_id = envelope.aggregate_id.clone();
         }
         match &envelope.payload {
-            FanEvent::TicketRecorded {
+            FanEvent::TicketRecorded(TicketRecorded {
                 booking_id,
                 concert_id,
                 seat,
                 price,
                 fan_name,
                 ..
-            } => {
+            }) => {
                 if self.fan_name.is_empty() {
                     self.fan_name = fan_name.clone();
                 }
@@ -71,7 +74,7 @@ impl View<Fan> for FanWalletView {
                     self.tickets.insert(
                         key,
                         TicketEntry {
-                            concert_id: concert_id.clone(),
+                            concert_id: concert_id.to_string(),
                             seat: seat.to_string(),
                             price: i64::from(*price),
                             state: TicketEntryState::Active,
@@ -82,13 +85,13 @@ impl View<Fan> for FanWalletView {
                     );
                 }
             }
-            FanEvent::TicketCancelled {
+            FanEvent::TicketCancelled(TicketCancelled {
                 booking_id,
                 concert_id,
                 seat,
                 refund,
                 ..
-            } => {
+            }) => {
                 let key = booking_id.to_string();
                 if self.tickets.get(&key).is_none_or(|t| t.sequence < sequence) {
                     // The cancellation carries everything needed: a wallet that missed the
@@ -97,7 +100,7 @@ impl View<Fan> for FanWalletView {
                     self.tickets.insert(
                         key,
                         TicketEntry {
-                            concert_id: concert_id.clone(),
+                            concert_id: concert_id.to_string(),
                             seat: seat.to_string(),
                             price,
                             state: TicketEntryState::Cancelled,
@@ -117,7 +120,10 @@ impl View<Fan> for FanWalletView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::shared::venue::{SeatId, Zone};
+    use crate::domain::{
+        ConcertId,
+        shared::venue::{SeatId, Zone},
+    };
     use std::collections::HashMap;
     use uuid::Uuid;
 
@@ -133,27 +139,27 @@ mod tests {
     fn recorded(sequence: usize, booking_id: Uuid, price: u32) -> EventEnvelope<Fan> {
         envelope(
             sequence,
-            FanEvent::TicketRecorded {
+            FanEvent::TicketRecorded(TicketRecorded {
                 booking_id,
-                concert_id: "radiohead-2026-11-21".into(),
+                concert_id: ConcertId::parse("radiohead-2026-11-21").unwrap(),
                 seat: SeatId::parse("B4").unwrap(),
                 zone: Zone::Standard,
                 price,
                 fan_name: "Fox".into(),
-            },
+            }),
         )
     }
 
     fn cancelled(sequence: usize, booking_id: Uuid) -> EventEnvelope<Fan> {
         envelope(
             sequence,
-            FanEvent::TicketCancelled {
+            FanEvent::TicketCancelled(TicketCancelled {
                 booking_id,
                 cancellation_id: Uuid::new_v4(),
-                concert_id: "radiohead-2026-11-21".into(),
+                concert_id: ConcertId::parse("radiohead-2026-11-21").unwrap(),
                 seat: SeatId::parse("B4").unwrap(),
                 refund: 80,
-            },
+            }),
         )
     }
 

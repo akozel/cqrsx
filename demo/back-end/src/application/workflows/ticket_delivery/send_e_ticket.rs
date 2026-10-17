@@ -19,10 +19,10 @@ pub fn e_ticket_mail(payload: &SendETicketV1) -> Mail {
     Mail {
         id: format!("e_ticket:{}", payload.booking_id),
         kind: "e_ticket",
-        to_fan_id: payload.fan_id.clone(),
+        to_fan_id: payload.fan_id.to_string(),
         to_name: payload.fan_name.clone(),
         subject: format!("🎫 Your e-ticket: {}, seat {}", payload.concert_id, payload.seat),
-        concert_id: payload.concert_id.clone(),
+        concert_id: payload.concert_id.to_string(),
         seat: payload.seat.to_string(),
         amount: payload.price,
     }

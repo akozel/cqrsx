@@ -3,7 +3,13 @@
 use crate::{
     application::command_service::{CommandMetadata, CommandOutcome},
     bootstrap::AppState,
-    domain::{FanId, concert::ConcertCommand},
+    domain::{
+        FanId,
+        concert::{
+            ConcertCommand,
+            commands::{AnnounceConcert, BookSeat, CancelBooking},
+        },
+    },
     presentation::http::{error::ApiError, parse_concert_id},
 };
 use axum::{
@@ -32,13 +38,13 @@ fn to_command(dto: CommandDto, metadata: &CommandMetadata) -> Result<ConcertComm
             if artist.trim().is_empty() || city.trim().is_empty() {
                 return Err(ApiError::invalid("artist and city must not be empty"));
             }
-            ConcertCommand::AnnounceConcert {
+            ConcertCommand::AnnounceConcert(AnnounceConcert {
                 artist: artist.trim().to_owned(),
                 city: city.trim().to_owned(),
                 date,
-            }
+            })
         }
-        CommandDto::BookSeat { seat, fan_id, fan_name } => ConcertCommand::BookSeat {
+        CommandDto::BookSeat { seat, fan_id, fan_name } => ConcertCommand::BookSeat(BookSeat {
             seat,
             fan_id: fan(&fan_id)?,
             fan_name: if fan_name.trim().is_empty() {
@@ -48,12 +54,12 @@ fn to_command(dto: CommandDto, metadata: &CommandMetadata) -> Result<ConcertComm
             },
             // The booking id is the command id: the one fact the whole chain refers to.
             booking_id: metadata.command_id,
-        },
-        CommandDto::CancelBooking { seat, fan_id } => ConcertCommand::CancelBooking {
+        }),
+        CommandDto::CancelBooking { seat, fan_id } => ConcertCommand::CancelBooking(CancelBooking {
             seat,
             fan_id: fan(&fan_id)?,
             cancellation_id: metadata.command_id,
-        },
+        }),
     })
 }
 
@@ -136,7 +142,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(book, ConcertCommand::BookSeat { booking_id, ref fan_name, .. } if booking_id == metadata.command_id && fan_name == "fox")
+            matches!(book, ConcertCommand::BookSeat(BookSeat { booking_id, ref fan_name, .. }) if booking_id == metadata.command_id && fan_name == "fox")
         );
         let cancel = to_command(
             CommandDto::CancelBooking {
@@ -147,7 +153,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(cancel, ConcertCommand::CancelBooking { cancellation_id, .. } if cancellation_id == metadata.command_id)
+            matches!(cancel, ConcertCommand::CancelBooking(CancelBooking { cancellation_id, .. }) if cancellation_id == metadata.command_id)
         );
         assert!(
             to_command(

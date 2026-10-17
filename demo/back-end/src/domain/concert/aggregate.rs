@@ -2,7 +2,10 @@
 //! machine.
 use crate::domain::{
     FanId,
-    concert::{ConcertCommand, ConcertError, ConcertEvent},
+    concert::{
+        ConcertCommand, ConcertError, ConcertEvent,
+        events::{BookingCancelled, ConcertAnnounced, SeatBooked},
+    },
     shared::venue::{SeatId, VENUE},
 };
 use chrono::NaiveDate;
@@ -80,116 +83,38 @@ impl Aggregate for Concert {
     type Error = ConcertError;
     type Services = ConcertServices;
 
-    // Rules are checked in the documented order R1 → R8, from "does the concert exist" to the
-    // most specific ownership check, so the first failing rule is the most fundamental one.
-    // Every accepted command writes exactly ONE event (decision D-02): the outbox repository
-    // commits one event plus its tasks atomically and rejects multi-event batches.
+    /// Each command decides itself (see `commands/`). Every accepted command writes exactly ONE
+    /// event (decision D-02): the outbox repository commits one event plus its tasks atomically
+    /// and rejects multi-event batches, so `decide` returns one event, not a list.
     async fn handle(
         &mut self,
         command: ConcertCommand,
         services: &ConcertServices,
         sink: &EventSink<Self>,
     ) -> Result<(), ConcertError> {
-        match command {
-            ConcertCommand::AnnounceConcert { artist, city, date } => {
-                if self.info.is_some() {
-                    return Err(ConcertError::AlreadyAnnounced); // R2
-                }
-                sink.write(
-                    ConcertEvent::ConcertAnnounced {
-                        artist,
-                        city,
-                        date,
-                        capacity: VENUE.capacity(),
-                    },
-                    self,
-                )
-                .await;
-            }
-            ConcertCommand::BookSeat {
-                seat,
-                fan_id,
-                fan_name,
-                booking_id,
-            } => {
-                if self.info.is_none() {
-                    return Err(ConcertError::ConcertNotFound); // R1
-                }
-                let seat = VENUE.seat(&seat).ok_or(ConcertError::UnknownSeat { seat })?; // R3
-                if self.is_sold_out() {
-                    return Err(ConcertError::SoldOut); // R4
-                }
-                if let Some(booking) = self.bookings.get(&seat.id) {
-                    return Err(ConcertError::SeatTaken {
-                        seat: seat.id,
-                        by: booking.fan_name.clone(),
-                    }); // R5
-                }
-                if self.tickets_of(&fan_id) >= services.ticket_limit {
-                    return Err(ConcertError::TicketLimit {
-                        limit: services.ticket_limit,
-                    }); // R6
-                }
-                // Sold-out is derived state, not a second event (D-02/D-03).
-                sink.write(
-                    ConcertEvent::SeatBooked {
-                        seat: seat.id,
-                        zone: seat.zone,
-                        price: seat.price,
-                        fan_id,
-                        fan_name,
-                        booking_id,
-                    },
-                    self,
-                )
-                .await;
-            }
-            ConcertCommand::CancelBooking {
-                seat,
-                fan_id,
-                cancellation_id,
-            } => {
-                if self.info.is_none() {
-                    return Err(ConcertError::ConcertNotFound); // R1
-                }
-                let seat = VENUE.seat(&seat).ok_or(ConcertError::UnknownSeat { seat })?; // R3
-                let booking = self
-                    .bookings
-                    .get(&seat.id)
-                    .cloned()
-                    .ok_or_else(|| ConcertError::SeatNotBooked { seat: seat.id.clone() })?; // R7
-                if booking.fan_id != fan_id {
-                    return Err(ConcertError::NotYourTicket); // R8
-                }
-                // The refund is the price that was actually paid (a fact from history), not a
-                // formula over today's price list.
-                sink.write(
-                    ConcertEvent::BookingCancelled {
-                        seat: seat.id,
-                        fan_id,
-                        booking_id: booking.booking_id,
-                        cancellation_id,
-                        refund: booking.price,
-                    },
-                    self,
-                )
-                .await;
-            }
-        }
+        let event = match command {
+            ConcertCommand::AnnounceConcert(command) => command.decide(self, services)?,
+            ConcertCommand::BookSeat(command) => command.decide(self, services)?,
+            ConcertCommand::CancelBooking(command) => command.decide(self, services)?,
+        };
+        sink.write(event, self).await;
         Ok(())
     }
 
+    /// The state machine: how every fact changes the concert. Replay calls only this.
     fn apply(&mut self, event: ConcertEvent) {
         match event {
-            ConcertEvent::ConcertAnnounced { artist, city, date, .. } => self.info = Some(ConcertInfo { artist, city, date }),
-            ConcertEvent::SeatBooked {
+            ConcertEvent::ConcertAnnounced(ConcertAnnounced { artist, city, date, .. }) => {
+                self.info = Some(ConcertInfo { artist, city, date });
+            }
+            ConcertEvent::SeatBooked(SeatBooked {
                 seat,
                 fan_id,
                 fan_name,
                 booking_id,
                 price,
                 ..
-            } => {
+            }) => {
                 self.bookings.insert(
                     seat,
                     Booking {
@@ -200,10 +125,84 @@ impl Aggregate for Concert {
                     },
                 );
             }
-            ConcertEvent::BookingCancelled { seat, .. } => {
+            ConcertEvent::BookingCancelled(BookingCancelled { seat, .. }) => {
                 self.bookings.remove(&seat);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::domain::concert::test_support::{announce, announced, book, booked, cancel, fan, full_house, services};
+    use cqrsx::cqrs::testing::TestFramework;
+
+    #[test]
+    fn after_the_last_booking_the_concert_is_sold_out() {
+        let mut concert = Concert::default();
+        for event in full_house() {
+            concert.apply(event);
+        }
+        assert!(concert.is_sold_out());
+        assert_eq!(concert.free_seats(), 0);
+        assert_eq!(concert.revenue(), 8 * 120 + 16 * 80 + 16 * 50);
+        concert.apply(ConcertEvent::BookingCancelled(BookingCancelled {
+            seat: SeatId::parse("A1").unwrap(),
+            fan_id: fan("crowd-0"),
+            booking_id: Uuid::new_v4(),
+            cancellation_id: Uuid::new_v4(),
+            refund: 120,
+        }));
+        assert!(!concert.is_sold_out());
+    }
+
+    #[test]
+    fn snapshot_round_trip_keeps_seat_keys_as_strings() {
+        let mut concert = Concert::default();
+        concert.apply(announced());
+        concert.apply(booked("B4", "fox", "Fox", Uuid::new_v4()));
+        let json = serde_json::to_value(&concert).unwrap();
+        assert!(json["bookings"]["B4"].is_object());
+        let restored: Concert = serde_json::from_value(json).unwrap();
+        assert_eq!(restored, concert);
+    }
+
+    /// Decision D-02: the outbox repository commits exactly one event per command. `decide`
+    /// returns one event by its signature; this safeguard keeps `handle` honest as well.
+    #[test]
+    fn d02_every_accepted_concert_command_yields_exactly_one_event() {
+        let booking_id = Uuid::new_v4();
+        let states: Vec<Vec<ConcertEvent>> = vec![
+            vec![],
+            vec![announced()],
+            vec![announced(), booked("B4", "fox", "Fox", booking_id)],
+            {
+                let mut almost_full = full_house();
+                almost_full.pop();
+                almost_full
+            },
+        ];
+        let commands = vec![
+            announce(),
+            book("B4", "fox", "Fox", Uuid::new_v4()),
+            book("E8", "panda", "Panda", Uuid::new_v4()),
+            cancel("B4", "fox", Uuid::new_v4()),
+        ];
+        let mut accepted = 0;
+        for state in &states {
+            for command in &commands {
+                let result = TestFramework::<Concert>::with(services())
+                    .given(state.clone())
+                    .when(command.clone())
+                    .inspect_result();
+                if let Ok(events) = result {
+                    accepted += 1;
+                    assert_eq!(events.len(), 1, "{command:?} on {} events produced {events:?}", state.len());
+                }
+            }
+        }
+        assert!(accepted >= 4, "the matrix must contain accepted commands");
     }
 }
 
