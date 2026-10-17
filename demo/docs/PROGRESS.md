@@ -84,6 +84,28 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
   if the seat is not booked by that fan no task is built (the aggregate rejects with R7/R8 anyway).
 - Found: axum 0.8 `with_graceful_shutdown` is `IntoFuture` → `.into_future()` (API_MAPPING §4 D21).
 
+## Phase 4 — outbox and the aggregate chain — ✅ done
+
+- `outbox::{chaos, flaky_mail (MongoInbox, FlakyMailServer), chain, record_ticket, record_cancellation,
+  send_e_ticket, issue_refund, adapter (enum EncoreTaskAdapter), dispatcher (factory)}`; task runtime via
+  `prepare_task_runtime` + `host::lifecycle::run`; activity `task.attempt.*`.
+- Verified against the running databases (`backend4.log` in the scratchpad):
+  - after `BookSeat`: `SeatBooked` + `encore_record_ticket` row with the same `correlation_id`; within a
+    second a `Fan` `TicketRecorded` event with the same `correlation_id`, `causation_id = task_id`,
+    `source = task:encore_record_ticket`, plus an `encore_send_e_ticket` row; the cancellation chain
+    produced `TicketCancelled` + `encore_issue_refund` + a "💸 Refund" mail.
+  - 50 bookings (crowd fans, three concerts): 52 `record_ticket` tasks completed with exactly 1 attempt
+    each; 13 of 52 `send_e_ticket` tasks needed more than one attempt (25 %, max 5 attempts; expected
+    10 ± 5); `mail_service.inbox` holds 52 e-tickets with `deliveries = 1` each, one refund.
+  - hand-made redelivery (`UPDATE … SET status='pending', attempts=0` on a completed `record_ticket`
+    row): the task completed again, `TicketRecorded` count stayed 52, no extra `send_e_ticket` row.
+  - SIGINT with an SSE connection open and two bookings in flight: "encore-backend stopped", no
+    ERROR/WARN lines in the log, every task ended `completed`.
+- Unit tests: chaos (seeded 10 000 rolls → 0.18–0.22, `Never`/`Always`), flaky mail (`Always` → retry
+  1/2/4/8/8/8 s and nothing in the inbox; `Never` → one mail, repeat is `duplicate` with `deliveries = 2`),
+  chain outcome table, task formats. `cargo test -p encore-backend` → 37 passed; clippy/fmt clean.
+- Note: rand 0.10 renamed the extension trait to `RngExt` (`random_bool`, `random_range`).
+
 ## Phase table
 
 | Phase | Status | Verified by | Manual check needed |
@@ -93,7 +115,7 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 | 1 | ✅ done | SQL via psql in container, curl /health, npm scripts | `make up` with real podman compose |
 | 2 | ✅ done | `cargo test -p encore-backend domain` (25) | — |
 | 3 | ✅ done | curl + SQL + SSE + SIGINT | — |
-| 4 | pending | | |
+| 4 | ✅ done | SQL + mongosh + log after 50 bookings, SIGINT drain, unit tests | — |
 | 5 | pending | | |
 | 6 | pending | | |
 | 7 | pending | | |

@@ -8,6 +8,7 @@ mod app;
 mod config;
 mod domain;
 mod http;
+mod outbox;
 
 use app::{
     activity::ActivityHub,
@@ -19,9 +20,16 @@ use cqrsx::{
     cqrs::command::retry::AggregateConflictRetryPolicy,
     host::{lifecycle, signal::shutdown_signal},
     logging::LoggingConfig,
-    postgres::{command::PostgresCommandConfig, pool::connect_pool},
+    postgres::{
+        command::PostgresCommandConfig, pool::connect_pool, task_queue::PostgresTaskQueueConfig,
+        task_runtime::prepare_task_runtime,
+    },
 };
 use domain::concert::ConcertServices;
+use outbox::{
+    dispatcher::{DispatcherDeps, dispatcher_factory},
+    flaky_mail::{MailSettings, MongoInbox},
+};
 use sqlx::postgres::PgConnectOptions;
 use std::{future::IntoFuture, sync::Arc};
 use tokio_util::sync::CancellationToken;
@@ -54,6 +62,13 @@ async fn main() {
         .await
         .unwrap_or_else(|e| fail(format!("cannot connect to PostgreSQL: {e}")));
 
+    // MongoDB: read models (`encore_read`) and the simulated external mail service (`mail_service`).
+    let mongo = mongodb::Client::with_uri_str(&config.mongodb_uri)
+        .await
+        .unwrap_or_else(|e| fail(format!("ENCORE_MONGODB_URI: {e}")));
+    let mail_db = mongo.database(&config.mail_db);
+    let inbox = Arc::new(MongoInbox::new(mail_db.collection("inbox")));
+
     let activity = Arc::new(ActivityHub::new(1024, 100));
     let rebuild = Arc::new(RebuildService::new());
     let command_config = PostgresCommandConfig::new(config.snapshot_every, AggregateConflictRetryPolicy::default())
@@ -82,6 +97,31 @@ async fn main() {
     }
 
     let shutdown = CancellationToken::new();
+    let listener = tokio::net::TcpListener::bind(config.http_addr)
+        .await
+        .unwrap_or_else(|e| fail(format!("cannot bind {}: {e}", config.http_addr)));
+    tracing::info!("encore-backend listening on http://{}", config.http_addr);
+
+    // Outbox task runtime: prepared here (no background work yet), started by `lifecycle::run`.
+    let factory = dispatcher_factory(DispatcherDeps {
+        fan_commands: fan_commands.clone(),
+        inbox,
+        activity: activity.clone(),
+        mail: MailSettings {
+            latency: config.task_latency,
+            retry_base: config.task_retry_base,
+            retry_max: config.task_retry_max,
+        },
+        failure_rate: config.task_failure_rate,
+        chaos_seed: config.chaos_seed,
+        task_max_attempts: config.task_max_attempts,
+    });
+    let queue_config = PostgresTaskQueueConfig::from_lookup(|name| std::env::var(name).ok())
+        .unwrap_or_else(|e| fail(format!("task queue configuration: {e}")));
+    let runtime = prepare_task_runtime(pool.clone(), factory, queue_config, config.task_runtime.clone())
+        .unwrap_or_else(|e| fail(format!("task runtime setup: {e}")));
+    let task_runtime = runtime.run(shutdown.clone());
+
     let state = http::AppState {
         config: config.clone(),
         concert_commands,
@@ -89,19 +129,6 @@ async fn main() {
         activity,
         rebuild,
         shutdown: shutdown.clone(),
-    };
-    let listener = tokio::net::TcpListener::bind(config.http_addr)
-        .await
-        .unwrap_or_else(|e| fail(format!("cannot bind {}: {e}", config.http_addr)));
-    tracing::info!("encore-backend listening on http://{}", config.http_addr);
-
-    // Phase 4 replaces this placeholder with the outbox task runtime.
-    let task_runtime = {
-        let token = shutdown.clone();
-        async move {
-            token.cancelled().await;
-            Ok(())
-        }
     };
     // axum 0.8: `with_graceful_shutdown` returns an `IntoFuture`, not a `Future`.
     let inbound = axum::serve(listener, http::router(state))
