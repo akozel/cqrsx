@@ -29,7 +29,6 @@ use cqrsx::{
     task::{attempt::TaskAttempt, format::TaskPayload, handler::TaskHandlerError},
 };
 use std::time::Duration;
-use uuid::Uuid;
 
 pub const CHAIN_RETRY_AFTER: Duration = Duration::from_secs(1);
 /// While the box office is closed (rebuild) a retry costs one claim attempt, so wait a little
@@ -74,15 +73,6 @@ pub fn map_fan_outcome(outcome: CommandOutcome<FanError>) -> Result<(), TaskHand
     }
 }
 
-/// `correlation_id` from the task metadata, falling back to the task id for hand-made tasks.
-pub fn correlation_of(metadata: &serde_json::Value, task_id: Uuid) -> Uuid {
-    metadata
-        .get("correlation_id")
-        .and_then(|v| v.as_str())
-        .and_then(|s| Uuid::parse_str(s).ok())
-        .unwrap_or(task_id)
-}
-
 /// One link of the aggregate chain: the `Fan` command to run and the task to publish with it.
 pub struct ChainStep<'a, F: TaskPayload> {
     pub concert_id: &'a ConcertId,
@@ -92,19 +82,16 @@ pub struct ChainStep<'a, F: TaskPayload> {
     pub follow_up_max_attempts: i32,
 }
 
-/// Runs one chain step on behalf of a task of type `P`. A malformed payload never reaches this
-/// point: the JSON adapter rejects it permanently, ids included. A closed box office waits a
-/// little and then asks for a later redelivery without spending a command on it.
-pub async fn run_chain_step<P: TaskPayload, F: TaskPayload, E: CommandExecutor<Fan>>(
+/// Runs one chain step on behalf of `attempt`: the command continues the task's causation chain
+/// (cqrsx `Causation::from_task`). A malformed payload never reaches this point: the JSON adapter
+/// rejects it permanently, ids included. A closed box office waits a little and then asks for a
+/// later redelivery without spending a command on it.
+pub async fn run_chain_step<F: TaskPayload, E: CommandExecutor<Fan>>(
     fans: &FanApp<E>,
     attempt: &TaskAttempt,
     step: ChainStep<'_, F>,
 ) -> Result<(), TaskHandlerError> {
-    let metadata = CommandMetadata::from_task(
-        correlation_of(attempt.metadata(), attempt.task_id()),
-        attempt.task_id(),
-        P::TASK_TYPE,
-    );
+    let metadata = CommandMetadata::from_task(attempt);
     let follow_up = new_task(
         step.follow_up,
         &metadata,
@@ -127,6 +114,7 @@ mod tests {
     use super::*;
     use crate::application::command_service::Warning;
     use std::sync::Arc;
+    use uuid::Uuid;
 
     #[test]
     fn outcomes_map_to_task_results_as_in_the_plan_table() {
@@ -161,12 +149,6 @@ mod tests {
                 other => panic!("expected retry for {reason}, got {other:?}"),
             }
         }
-        let task = Uuid::new_v4();
-        assert_eq!(
-            correlation_of(&serde_json::json!({ "correlation_id": id.to_string() }), task),
-            id
-        );
-        assert_eq!(correlation_of(&serde_json::json!({}), task), task);
     }
 
     #[tokio::test]

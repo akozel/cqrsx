@@ -2,6 +2,7 @@
 use crate::{cqrs::aggregate::Aggregate, task::NewTask};
 use std::{collections::HashMap, future::Future};
 use thiserror::Error;
+pub mod causation;
 pub mod executor;
 pub mod retry;
 

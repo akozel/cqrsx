@@ -16,7 +16,7 @@ pub(crate) mod test_support;
 
 use crate::task::format::{TaskFormat, TaskFormatError, TaskPayload};
 use chrono::{DateTime, Utc};
-use serde_json::{Value, json};
+use serde_json::{Map, Value, json};
 use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
@@ -75,6 +75,14 @@ impl NewTask {
         self.metadata = metadata;
         Ok(self)
     }
+    /// Insert `entries` into the metadata object, replacing equal keys. Metadata is always an
+    /// object, so nothing can fail.
+    pub(crate) fn merge_metadata(&mut self, entries: Map<String, Value>) {
+        if let Value::Object(metadata) = &mut self.metadata {
+            metadata.extend(entries);
+        }
+    }
+
     /// Total claims, including the initial claim and skipped invocations.
     pub fn with_max_attempts(mut self, max_attempts: i32) -> Result<Self, TaskValidationError> {
         if max_attempts <= 0 {

@@ -1,34 +1,31 @@
 //! The command pipeline shared by both aggregates, around the cqrsx command port.
 //!
 //! Every use case ends in [`CommandService::run`]: box-office lock → `execute_with_metadata` (the
-//! event and its outbox tasks in one commit) → outcome → activity log. Metadata (`command_id`,
-//! `correlation_id`, `causation_id`, `recorded_at`, `source`) travels through
-//! `execute_with_metadata` (decision D-04) and ends up in the `events.metadata` column of every
-//! committed event.
+//! event and its outbox tasks in one commit) → outcome → activity log. Metadata (the cqrsx
+//! causation keys `command_id`, `correlation_id`, `causation_id`, `source`, plus `recorded_at`)
+//! travels through `execute_with_metadata` (decision D-04) and ends up in the `events.metadata`
+//! column of every committed event.
 use crate::application::{activity::ActivityHub, lock::BoxOfficeLock};
 use chrono::{SecondsFormat, Utc};
 use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
-        command::{CommandExecutor, CommandGatewayError},
+        command::{CommandExecutor, CommandGatewayError, causation::Causation},
     },
-    task::NewTask,
+    task::{NewTask, attempt::TaskAttempt},
 };
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, sync::Arc};
-use uuid::Uuid;
 
-/// Who issued the command and how it relates to earlier work. For UI commands the three ids are
-/// equal; internal commands inherit the task's `correlation_id` and point `causation_id` at the
-/// task. `recorded_at` has a fixed width so the sidecar can sort it as text.
+/// Who issued the command and how it relates to earlier work ([`Causation`]: for UI commands the
+/// three ids are equal; internal commands inherit the task's `correlation_id` and point
+/// `causation_id` at the task), plus when. `recorded_at` has a fixed width so the sidecar can
+/// sort it as text.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandMetadata {
-    pub command_id: Uuid,
-    pub correlation_id: Uuid,
-    pub causation_id: Uuid,
+    pub causation: Causation,
     pub recorded_at: String,
-    pub source: String,
 }
 
 impl CommandMetadata {
@@ -37,13 +34,9 @@ impl CommandMetadata {
     }
 
     pub fn with_source(source: impl Into<String>) -> Self {
-        let command_id = Uuid::now_v7();
         Self {
-            command_id,
-            correlation_id: command_id,
-            causation_id: command_id,
+            causation: Causation::root(source),
             recorded_at: Self::now(),
-            source: source.into(),
         }
     }
 
@@ -52,24 +45,18 @@ impl CommandMetadata {
     }
 
     /// Metadata of an internal command issued by an outbox task handler.
-    pub fn from_task(correlation_id: Uuid, task_id: Uuid, task_type: &str) -> Self {
+    pub fn from_task(attempt: &TaskAttempt) -> Self {
         Self {
-            command_id: Uuid::now_v7(),
-            correlation_id,
-            causation_id: task_id,
+            causation: Causation::from_task(attempt),
             recorded_at: Self::now(),
-            source: format!("task:{task_type}"),
         }
     }
 
+    /// What every committed event stores: the four causation keys and `recorded_at`.
     pub fn to_map(&self) -> HashMap<String, String> {
-        HashMap::from([
-            ("command_id".to_owned(), self.command_id.to_string()),
-            ("correlation_id".to_owned(), self.correlation_id.to_string()),
-            ("causation_id".to_owned(), self.causation_id.to_string()),
-            ("recorded_at".to_owned(), self.recorded_at.clone()),
-            ("source".to_owned(), self.source.clone()),
-        ])
+        let mut map = self.causation.event_metadata();
+        map.insert("recorded_at".to_owned(), self.recorded_at.clone());
+        map
     }
 }
 
@@ -228,9 +215,9 @@ fn publish_outcome<E: Rejection>(
     let base = json!({
         "aggregate_type": aggregate_type,
         "aggregate_id": label.aggregate_id,
-        "command_id": metadata.command_id,
-        "correlation_id": metadata.correlation_id,
-        "source": metadata.source,
+        "command_id": metadata.causation.command_id,
+        "correlation_id": metadata.causation.correlation_id,
+        "source": metadata.causation.source,
         "command_type": label.command_type,
         "fan_id": label.fan_id,
     });
@@ -280,16 +267,25 @@ fn publish_outcome<E: Rejection>(
 mod tests {
     use super::*;
     use crate::domain::concert::ConcertError;
-    use cqrsx::cqrs::command::FailedHandler;
+    use cqrsx::{cqrs::command::FailedHandler, task::format::TaskFormat};
+    use std::collections::BTreeSet;
+    use uuid::Uuid;
 
     #[test]
     fn ui_metadata_uses_one_id_for_all_three_roles_and_fixed_width_time() {
         let metadata = CommandMetadata::ui();
-        assert_eq!(metadata.command_id, metadata.correlation_id);
-        assert_eq!(metadata.command_id, metadata.causation_id);
-        assert_eq!(metadata.source, "ui");
+        let causation = &metadata.causation;
+        assert_eq!(causation.command_id, causation.correlation_id);
+        assert_eq!(causation.command_id, causation.causation_id);
+        assert_eq!(causation.source, "ui");
         assert_eq!(metadata.recorded_at.len(), "2026-10-17T09:12:03.123456Z".len());
         let map = metadata.to_map();
+        assert_eq!(
+            map.keys().map(String::as_str).collect::<BTreeSet<_>>(),
+            BTreeSet::from(["causation_id", "command_id", "correlation_id", "recorded_at", "source"]),
+            "wire contract of events.metadata"
+        );
+        assert_eq!(map["command_id"], causation.command_id.to_string());
         assert_eq!(map["source"], "ui");
         assert_eq!(map["recorded_at"], metadata.recorded_at);
     }
@@ -297,12 +293,20 @@ mod tests {
     #[test]
     fn task_metadata_inherits_correlation_and_points_causation_at_the_task() {
         let correlation = Uuid::now_v7();
-        let task = Uuid::new_v4();
-        let metadata = CommandMetadata::from_task(correlation, task, "encore_record_ticket");
-        assert_eq!(metadata.correlation_id, correlation);
-        assert_eq!(metadata.causation_id, task);
-        assert_ne!(metadata.command_id, correlation);
-        assert_eq!(metadata.source, "task:encore_record_ticket");
+        let task = TaskAttempt::new(
+            Uuid::new_v4(),
+            TaskFormat::new("encore_record_ticket", 1).unwrap(),
+            serde_json::json!({}),
+            serde_json::json!({ "correlation_id": correlation }),
+            1,
+        )
+        .unwrap();
+        let metadata = CommandMetadata::from_task(&task);
+        assert_eq!(metadata.causation.correlation_id, correlation);
+        assert_eq!(metadata.causation.causation_id, task.task_id());
+        assert_ne!(metadata.causation.command_id, correlation);
+        assert_eq!(metadata.causation.source, "task:encore_record_ticket");
+        assert_eq!(metadata.to_map()["source"], "task:encore_record_ticket");
     }
 
     #[test]

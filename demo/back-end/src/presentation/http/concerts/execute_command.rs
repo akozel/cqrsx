@@ -53,12 +53,12 @@ fn to_command(dto: CommandDto, metadata: &CommandMetadata) -> Result<ConcertComm
                 fan_name.trim().to_owned()
             },
             // The booking id is the command id: the one fact the whole chain refers to.
-            booking_id: metadata.command_id,
+            booking_id: metadata.causation.command_id,
         }),
         CommandDto::CancelBooking { seat, fan_id } => ConcertCommand::CancelBooking(CancelBooking {
             seat,
             fan_id: fan(&fan_id)?,
-            cancellation_id: metadata.command_id,
+            cancellation_id: metadata.causation.command_id,
         }),
     })
 }
@@ -77,7 +77,7 @@ pub async fn handle(
     let dto: CommandDto = serde_json::from_value(raw).map_err(|e| ApiError::invalid(format!("invalid command: {e}")))?;
     let metadata = CommandMetadata::ui();
     let command = to_command(dto, &metadata)?;
-    let command_id = metadata.command_id;
+    let command_id = metadata.causation.command_id;
     let executed = match command {
         ConcertCommand::AnnounceConcert(command) => state.concerts.announce_concert(&concert_id, command, metadata).await,
         ConcertCommand::BookSeat(command) => state.concerts.book_seat(&concert_id, command, metadata).await,
@@ -146,7 +146,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(book, ConcertCommand::BookSeat(BookSeat { booking_id, ref fan_name, .. }) if booking_id == metadata.command_id && fan_name == "fox")
+            matches!(book, ConcertCommand::BookSeat(BookSeat { booking_id, ref fan_name, .. }) if booking_id == metadata.causation.command_id && fan_name == "fox")
         );
         let cancel = to_command(
             CommandDto::CancelBooking {
@@ -157,7 +157,7 @@ mod tests {
         )
         .unwrap();
         assert!(
-            matches!(cancel, ConcertCommand::CancelBooking(CancelBooking { cancellation_id, .. }) if cancellation_id == metadata.command_id)
+            matches!(cancel, ConcertCommand::CancelBooking(CancelBooking { cancellation_id, .. }) if cancellation_id == metadata.causation.command_id)
         );
         assert!(
             to_command(

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано: `feat(cqrsx): causation helper; adopt in demo` (вместо `NewTask::caused_by` — `Causation::stamp_task`, см. план, решения Р8–Р9) |
 | Ценность | средняя: это соглашение об именах ключей, а не механизм; но без него цепочки между проектами не склеятся |
 | Цена | низкая |
 | cqrsx | `cqrs/command/causation.rs` (новый), `task.rs` (`NewTask::caused_by`) |
@@ -87,7 +87,7 @@ demo, и второй проект назовёт ключ `correlationId`. То
 
 ## Критерии приёмки
 
-- [ ] `Causation::{root, from_task, event_metadata}`, `NewTask::caused_by` (слияние с уже заданными ключами).
-- [ ] Тесты: `from_task` наследует корреляцию и ставит причину в id задачи; без ключа в метаданных падает на id задачи; `caused_by` не затирает чужие ключи.
-- [ ] Ключи документированы в `components.md` рядом с «Command boundary».
-- [ ] demo: `correlation_of` удалён, `CommandMetadata::from_task` делегирует библиотеке, JSON в `events.metadata` и `transactional_outbox.metadata` не меняется (проверить wire-тестами).
+- [x] `Causation::{root, from_task, event_metadata}`, `NewTask::caused_by` (слияние с уже заданными ключами).
+- [x] Тесты: `from_task` наследует корреляцию и ставит причину в id задачи; без ключа в метаданных падает на id задачи; `caused_by` не затирает чужие ключи.
+- [x] Ключи документированы в `components.md` рядом с «Command boundary».
+- [x] demo: `correlation_of` удалён, `CommandMetadata::from_task` делегирует библиотеке, JSON в `events.metadata` и `transactional_outbox.metadata` не меняется (проверить wire-тестами).

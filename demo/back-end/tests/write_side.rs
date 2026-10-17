@@ -118,7 +118,7 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
         seat: "B4".into(),
         fan_id: FanId::parse("alice").expect("fan"),
         fan_name: "Alice".into(),
-        booking_id: metadata.command_id,
+        booking_id: metadata.causation.command_id,
     };
     let executed = concerts.book_seat(&concert_id, book, metadata.clone()).await;
     assert!(executed.outcome.is_accepted());
@@ -150,10 +150,16 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     let booked = &events[1];
     assert_eq!(booked.get::<String, _>("event_type"), "SeatBooked");
     let stored: Value = booked.get("metadata");
-    assert_eq!(stored["command_id"], metadata.command_id.to_string());
-    assert_eq!(stored["correlation_id"], metadata.correlation_id.to_string());
+    assert_eq!(stored["command_id"], metadata.causation.command_id.to_string());
+    assert_eq!(stored["correlation_id"], metadata.causation.correlation_id.to_string());
     assert_eq!(stored["recorded_at"], metadata.recorded_at);
     assert_eq!(stored["source"], "ui");
+    assert_eq!(stored["causation_id"], metadata.causation.command_id.to_string());
+    assert_eq!(
+        stored.as_object().map(|m| m.len()),
+        Some(5),
+        "the events.metadata keys are unchanged"
+    );
 
     let tasks = sqlx::query("SELECT task_type, aggregate_sequence, metadata, status FROM transactional_outbox")
         .fetch_all(&pool)
@@ -164,7 +170,19 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     assert_eq!(tasks[0].get::<i64, _>("aggregate_sequence"), 2);
     assert_eq!(tasks[0].get::<String, _>("status"), "pending");
     let task_metadata: Value = tasks[0].get("metadata");
-    assert_eq!(task_metadata["correlation_id"], metadata.correlation_id.to_string());
+    assert_eq!(task_metadata["correlation_id"], metadata.causation.correlation_id.to_string());
+    let mut keys: Vec<&str> = task_metadata
+        .as_object()
+        .expect("object")
+        .keys()
+        .map(String::as_str)
+        .collect();
+    keys.sort_unstable();
+    assert_eq!(
+        keys,
+        ["causation_id", "command_id", "concert_id", "correlation_id", "fan_id"],
+        "the transactional_outbox.metadata keys are unchanged"
+    );
 
     pool.close().await;
     container.stop().await.expect("stop");

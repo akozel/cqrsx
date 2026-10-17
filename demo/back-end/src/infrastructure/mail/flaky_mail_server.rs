@@ -12,7 +12,10 @@ use crate::{
     },
     infrastructure::mail::chaos::ChaosPolicy,
 };
-use cqrsx::task::{attempt::TaskAttempt, handler::TaskHandlerError};
+use cqrsx::{
+    cqrs::command::causation::CORRELATION_ID,
+    task::{attempt::TaskAttempt, handler::TaskHandlerError},
+};
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use serde_json::json;
 use std::{future::Future, sync::Arc, time::Duration};
@@ -75,7 +78,7 @@ impl<S: MailStore, C: ChaosPolicy> Mailer for FlakyMailServer<S, C> {
     async fn send(&mut self, attempt: &TaskAttempt, mail: Mail) -> Result<(), TaskHandlerError> {
         let number = attempt.number();
         let format = attempt.format().to_string();
-        let correlation_id = attempt.metadata().get("correlation_id").cloned().unwrap_or_default();
+        let correlation_id = attempt.metadata().get(CORRELATION_ID).cloned().unwrap_or_default();
         self.activity.publish(
             "task.attempt.started",
             json!({ "task_id": attempt.task_id(), "format": format, "attempt": number, "correlation_id": correlation_id,

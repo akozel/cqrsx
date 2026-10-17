@@ -100,7 +100,7 @@ mod tests {
             .await;
         h.executor.take_bound_tasks();
         let metadata = CommandMetadata::ui();
-        let cancellation_id = metadata.command_id;
+        let cancellation_id = metadata.causation.command_id;
         let executed = h
             .app
             .cancel_booking(&concert_id(), cancel("a1", "fox", cancellation_id), metadata)

@@ -57,7 +57,7 @@ mod tests {
         let h = harness(store.clone());
         h.app.announce_concert(&concert_id(), announce(), CommandMetadata::ui()).await;
         let metadata = CommandMetadata::ui();
-        let booking_id = metadata.command_id;
+        let booking_id = metadata.causation.command_id;
         let executed = h
             .app
             .book_seat(&concert_id(), book("a1", "fox", booking_id), metadata.clone())
@@ -71,7 +71,10 @@ mod tests {
             &json!({ "booking_id": booking_id, "concert_id": "radiohead-2026-11-21", "seat": "A1", "zone": "vip",
                      "price": 120, "fan_id": "fox", "fan_name": "FOX" })
         );
-        assert_eq!(tasks[0].metadata()["correlation_id"], json!(metadata.correlation_id));
+        assert_eq!(
+            tasks[0].metadata()["correlation_id"],
+            json!(metadata.causation.correlation_id)
+        );
         let events = store.load_events(concert_id().as_str()).await.unwrap();
         assert_eq!(events.len(), 2);
         assert_eq!(events[1].metadata["command_id"], booking_id.to_string());

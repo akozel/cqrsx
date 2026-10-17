@@ -41,7 +41,7 @@ impl<E: CommandExecutor<Fan>> TaskHandler<RecordTicketV1> for RecordTicketHandle
             price: payload.price,
             fan_name: payload.fan_name,
         });
-        run_chain_step::<RecordTicketV1, _, _>(
+        run_chain_step(
             &self.fans,
             attempt,
             ChainStep {

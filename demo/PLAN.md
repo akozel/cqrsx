@@ -219,6 +219,8 @@ pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, st
   Для UI-команд `correlation_id = command_id`, `causation_id = command_id`, `source = "ui"`. Для внутренних
   команд `correlation_id` наследуется из метаданных задачи, `causation_id = task_id`, `source = "task:<формат>"`.
   Метаданные передаются через `CommandExecutor::execute_with_metadata` (добавляется в `cqrsx` Фазой 0.5, D-04).
+  Ключи и правило наследования задаёт `cqrsx::cqrs::command::causation::Causation` (`root`, `from_task`,
+  `event_metadata`, `stamp_task`; бэклог, тикет 05); `recorded_at` добавляет demo.
 
 ### 2.5 Инварианты (бизнес-правила)
 
@@ -918,7 +920,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `domain::concert::events::{concert_announced, seat_booked, booking_cancelled}` | факты (struct) со ссылкой на процесс, который они запускают; `ConcertEvent` (`impl DomainEvent`) |
 | `domain::concert::error` | `ConcertError` R1–R8 и стабильный `code()` |
 | `domain::fan::…` | то же для `Fan`: `commands::{record_ticket, record_cancellation}` (R9–R11), `events::{ticket_recorded, ticket_cancelled}` |
-| `application::command_service` | `CommandService<A, E>`: lock → `execute_with_metadata` → исход → activity; `CommandMetadata`, `CommandOutcome`, `Executed`, `Rejection` (`code` + `params` для API) |
+| `application::command_service` | `CommandService<A, E>`: lock → `execute_with_metadata` → исход → activity; `CommandMetadata` (`Causation` из `cqrsx` + `recorded_at`), `CommandOutcome`, `Executed`, `Rejection` (`code` + `params` для API) |
 | `application::concert::{announce_concert, book_seat, cancel_booking}` | use case на файл, методы `ConcertApp<E, S>`; каждый публикует первую задачу своего процесса |
 | `application::concert::tasks` | контракты задач, которые публикует касса: `RecordTicketV1`, `RecordCancellationV1` |
 | `application::fan` | `FanApp<E>`: исполнитель команд `Fan` для шагов процессов |
@@ -927,7 +929,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `application::{concert,fan}::views` | `ConcertHallView` (`View<Concert>`, LWW), `FanWalletView` (`View<Fan>`, LWW по `booking_id`) |
 | `application::projections` | `notifying` (activity после live-обновления), `progress` (прогресс и slow-motion replay), `maintenance` (`ProjectionMaintenance`: wipe, rebuild, verify для любой view) |
 | `application::operations::{rebuild, verify, time_travel}` | Encore!, verify, машина времени — поверх `MaintainedReadModel`, `EventLedgerStats` и `EventStore` |
-| `application::{activity, lock, tasks, read_models}` | `ActivityHub`; `BoxOfficeLock`; `new_task` (метаданные задачи); `ReadModels` — query-порты для HTTP |
+| `application::{activity, lock, tasks, read_models}` | `ActivityHub`; `BoxOfficeLock`; `new_task` (ключи `concert_id`/`fan_id` + `Causation::stamp_task`); `ReadModels` — query-порты для HTTP |
 | `presentation::http` | роутер; `{concerts, fans, projections, activity}/<action>.rs` — запрос, ответ и обработчик одного действия; `health`, `config` (+ персонажи), `error` |
 | `infrastructure::postgres` | `HistoryStore` и `history_store`/`event_history`/`history_repositories` (чтение истории), `PostgresLedger`; исполнители команд — библиотечный `PostgresCommandExecutor`, собираются в `bootstrap` |
 | `infrastructure::mongo::{view_repository, read_side, inbox}` | `MongoViewRepository` (`ViewRepository` + `ReadModelStore`), коллекции read side и scratch-копии verify, `MongoInbox` (`MailStore` + `Inbox`) |

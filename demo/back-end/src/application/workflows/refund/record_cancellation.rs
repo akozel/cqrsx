@@ -38,7 +38,7 @@ impl<E: CommandExecutor<Fan>> TaskHandler<RecordCancellationV1> for RecordCancel
             cancellation_id: payload.cancellation_id,
             refund: payload.refund,
         });
-        run_chain_step::<RecordCancellationV1, _, _>(
+        run_chain_step(
             &self.fans,
             attempt,
             ChainStep {
