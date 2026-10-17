@@ -98,30 +98,89 @@ podman compose --profile app down -v --rmi local   # ... and also delete the thr
 `--profile app` is required on `down` too: without it compose only sees `postgres` and `mongo` and leaves the
 three application containers running.
 
-## Quick start (development)
+## Local development (databases in containers, apps on the host)
+
+The `frontend` container serves a static build, so every UI change there means `--build`. For day-to-day
+work run only PostgreSQL and MongoDB in containers and the three apps on the host: Vite reloads the UI on
+save, and a Rust change needs only a restart of its own process.
+
+| Part | Runs as | Address | After a code change |
+|---|---|---|---|
+| PostgreSQL 18 | container `postgres` | `localhost:5434` | — |
+| MongoDB 8 | container `mongo` | `localhost:27018` | — |
+| Back-end | `cargo run -p encore-backend` | <http://localhost:8080> | restart the process |
+| Sidecar | `cargo run -p encore-sidecar` | <http://localhost:8090> | restart the process |
+| UI | Vite dev server | **<http://localhost:5173>** | nothing: hot reload on save |
+
+Vite proxies `/api` to `:8080` and `/inspect` to `:8090`, so the UI on 5173 talks to the host processes.
+
+### 1. One-time setup
 
 ```bash
 cd demo
-cp .env.example .env            # optional: every value has a default
-cd front-end && npm install && cd ..
-make up                         # podman compose up -d postgres mongo + wait for readiness
-make dev                        # back-end :8080, sidecar :8090, Vite :5173 — one Ctrl+C stops all three
+cp .env.example .env                       # optional: every value has a default
+(cd front-end && npm install)
 ```
 
-Open <http://localhost:5173>. Three concerts are announced by the seed on start-up (through ordinary
-`AnnounceConcert` commands; a repeated start is rejected by rule R2 and ignored).
+### 2. Leave the box mode, if it is running
 
-Other targets:
+The `app` containers hold ports 8080, 8090 and 8000; the host processes cannot start next to them.
+Stop and remove only those three containers. The databases and their volumes stay:
 
 ```bash
-make backend | make sidecar | make frontend   # one process at a time
-make check                                    # fmt, clippy -D warnings, cargo test, vue-tsc, eslint, vitest
-make down                                     # stop the databases, keep the volumes
-make reset                                    # ⚠️ podman compose down -v — erases the event ledger
-make full                                     # profile "app": builds and runs all three images (UI on :8000)
+podman compose --profile app rm -sf backend sidecar frontend
 ```
 
-`make full` is the same as `podman compose --profile app up -d --build` from the section above.
+### 3a. Everything in one terminal
+
+```bash
+make dev        # starts postgres + mongo, waits for them, then back-end, sidecar and Vite
+```
+
+The log lines carry a `[backend]`, `[sidecar]` or `[frontend]` prefix. Once `Open http://localhost:5173`
+appears, open <http://localhost:5173>. One Ctrl+C stops the three apps, the databases keep running.
+After a Rust change: Ctrl+C, then `make dev` again (cargo rebuilds only what changed).
+
+### 3b. Or one terminal per app
+
+More convenient when you iterate on one of them: restart just that one.
+
+```bash
+make up          # terminal 1: postgres + mongo in the background, waits until both are ready
+make backend     # terminal 2: back-end on :8080   (Ctrl+C, make backend — after a change)
+make sidecar     # terminal 3: sidecar on :8090
+make frontend    # terminal 4: Vite on :5173, hot reload
+```
+
+On start the back-end announces three concerts through ordinary `AnnounceConcert` commands; on a restart
+rule R2 rejects them and the seed is skipped.
+
+### 4. Reset the data
+
+```bash
+# stop the apps first (Ctrl+C), then:
+make reset       # ⚠️ podman compose down -v — erases the event ledger and the read models
+make up          # fresh databases (init scripts run again), then start the apps as in step 3
+```
+
+Only the read models (MongoDB) can also be dropped from the UI: 🧨 wipe, then ⏪ Encore! rebuilds them.
+
+### 5. Stop
+
+```bash
+# Ctrl+C in the app terminal(s), then:
+make down        # stop and remove the database containers, keep the volumes
+```
+
+### Other targets
+
+```bash
+make check       # fmt, clippy -D warnings, cargo test, vue-tsc, eslint, vitest
+make full        # back to the box: podman compose --profile app up -d --build (UI on :8000)
+```
+
+Do not mix the modes: stop the host apps before `make full`, and remove the `app` containers before
+`make dev` (step 2). Both modes use the same database volumes, so the data carries over.
 
 ## Architecture
 
