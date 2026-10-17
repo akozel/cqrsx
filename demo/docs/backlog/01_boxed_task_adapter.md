@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано: `feat(cqrsx): boxed task adapter; adopt in demo` |
 | Ценность | высокая: каждое приложение с двумя и более типами задач пишет этот enum |
 | Цена | низкая: один новый модуль в `cqrsx`, без новых зависимостей |
 | cqrsx | `task/adapter/boxed.rs` (новый), `task/runtime/dispatcher_factory.rs` (опционально) |
@@ -110,8 +110,8 @@ TaskDispatcher::try_new(vec![
 
 ## Критерии приёмки
 
-- [ ] `BoxedTaskAdapter` реализует `TaskAdapter`; `TaskDispatcher<BoxedTaskAdapter>` принимает адаптеры разных типов.
-- [ ] Тест: два `JsonTaskAdapter` с разными payload в одном диспетчере, маршрутизация по формату, дубликат формата отвергается.
-- [ ] Тест: `Permanent` и `Retry` из обработчика проходят через обёртку без изменений.
-- [ ] `components.md`: строка «Wire adaptation» упоминает `BoxedTaskAdapter`.
-- [ ] demo: `adapter.rs` удалён, `EncoreAdapter` заменён на `BoxedTaskAdapter`, `cargo test` зелёный.
+- [x] `BoxedTaskAdapter` реализует `TaskAdapter`; `TaskDispatcher<BoxedTaskAdapter>` принимает адаптеры разных типов.
+- [x] Тест: два `JsonTaskAdapter` с разными payload в одном диспетчере, маршрутизация по формату, дубликат формата отвергается.
+- [x] Тест: `Permanent` и `Retry` из обработчика проходят через обёртку без изменений.
+- [x] `components.md`: строка «Wire adaptation» упоминает `BoxedTaskAdapter`.
+- [x] demo: `adapter.rs` удалён, `EncoreAdapter` заменён на `BoxedTaskAdapter`, `cargo test` зелёный.

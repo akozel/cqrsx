@@ -80,7 +80,8 @@
    инфраструктуру в application можно только generics'ами или алиасами на конкретные типы.
    `EventHandler` — `#[async_trait]`, `Box<dyn EventHandler<A>>` работает (и используется).
 4. `TaskDispatcher<A>` принимает один тип адаптера, поэтому enum `EncoreTaskAdapter` неизбежен —
-   это чистый wiring, ему место в infrastructure.
+   это чистый wiring, ему место в infrastructure. *(Позже снято: `cqrsx` получил `BoxedTaskAdapter`,
+   enum удалён, см. §11.3.)*
 5. `TaskHandler<P>` — одна операция на формат задачи. Обработчики задач — use cases
    application-слоя, которые запускает рантайм, а не HTTP.
 6. `TestFramework<A>` (given/when/then) работает на уровне агрегата, поэтому тесты правил можно
@@ -466,6 +467,7 @@ src/
    в одном месте и убрать повторное чтение.
 2. **Гетерогенный диспетчер.** Object-safe обёртка над `TaskAdapter` (или `TaskDispatcher` над
    `Vec<Box<dyn …>>`) убрала бы enum `EncoreTaskAdapter`, который каждый проект пишет руками.
+   *Сделано: `cqrsx::task::adapter::boxed::BoxedTaskAdapter` (бэклог, тикет 01).*
 3. **Имена обработчиков в `CommittedWithEventHandlerFailure`** вместо индексов — `NamedHandler`
    перестал бы быть нужен.
 4. **Трейт `Decide`** (`fn decide(self, &A, &A::Services) -> Result<A::Event, A::Error>`) и
@@ -591,18 +593,19 @@ application/
 
 ### 11.3 Зачем в infrastructure есть каталог про задачи
 
-В `infrastructure/tasks/` лежат два файла, вместе около 110 строк:
+Здесь изначально лежали два файла, вместе около 110 строк. Первый, `adapter.rs` с enum
+`EncoreTaskAdapter` из четырёх `JsonTaskAdapter`, существовал только потому, что `TaskDispatcher<A>`
+принимает **один** тип адаптера, а трейт `TaskAdapter` native-async и не object-safe (§3, п. 3–4). Его
+заменил библиотечный `BoxedTaskAdapter` (бэклог, тикет 01), файл удалён. Остался один:
 
-- `adapter.rs` — enum `EncoreTaskAdapter` из четырёх `JsonTaskAdapter`. Существует только потому,
-  что `TaskDispatcher<A>` принимает **один** тип адаптера, а трейт `TaskAdapter` native-async и не
-  object-safe (§3, п. 3–4). Это обёртка под требование типов фреймворка, без собственной логики.
 - `dispatcher.rs` — `dispatcher_factory`: на каждого воркера создаёт свежие обработчики с их
   зависимостями (`FanApp`, `MongoInbox`, `FlakyMailServer` с seed'ом хаоса, `MailSettings`) и
   регистрирует форматы в `TaskDispatcher`. Это связывание рантайма очереди с обработчиками,
   аналог `router()` для HTTP.
 
 Остальное про задачи (`PostgresTaskQueue`, воркеры, lease, retry) делает `cqrsx`. Приложение обязано
-дать только эти две вещи. Три возможных дома для них:
+дать только фабрику (до тикета 01 ещё и enum-адаптер). Три возможных дома для них, как их сравнивали
+до тикета 01:
 
 | Дом | За | Против |
 | --- | --- | --- |
@@ -619,10 +622,10 @@ application/
 1. payload `XxxV1: TaskPayload` в `tasks.rs` публикующей стороны;
 2. публикация в use case или шаге процесса, который её порождает;
 3. шаг `TaskHandler<XxxV1>` в `application/workflows/{process}/`;
-4. вариант в `EncoreTaskAdapter` и регистрация в `dispatcher_factory` (`infrastructure/task_runtime/`).
+4. строка `BoxedTaskAdapter::json(XxxHandler { … })?` в `dispatcher_factory`
+   (`infrastructure/task_runtime/dispatcher.rs`).
 
-Пункт 4 — единственное касание инфраструктуры; гетерогенный диспетчер в `cqrsx` (§9, п. 2) свёл бы
-его к одной строке.
+Пункт 4 — единственное касание инфраструктуры, и это одна строка.
 
 ## 12. Отличия реализации от плана миграции
 

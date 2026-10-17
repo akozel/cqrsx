@@ -1,4 +1,5 @@
 //! Task adaptation before invoking a business handler.
+pub mod boxed;
 pub mod json;
 
 use crate::task::{attempt::TaskAttempt, format::TaskFormat, handler::TaskHandlerError};
@@ -10,6 +11,8 @@ use std::future::Future;
 /// add no retry, settlement or workflow sequencing.
 /// Implement with a native Send future. The original attempt stays borrowed;
 /// adapters may borrow non-'static state and need neither Sync nor Clone.
+/// [`BoxedTaskAdapter`](boxed::BoxedTaskAdapter) erases the adapter type, so one dispatcher can
+/// hold adapters of different types at the cost of one allocation per invocation.
 /// Non-Send state across await is rejected independently of runtime spawning:
 /// ```compile_fail
 /// use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat, adapter::TaskAdapter, handler::TaskHandlerError};

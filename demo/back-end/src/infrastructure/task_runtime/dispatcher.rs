@@ -18,21 +18,15 @@ use crate::{
         },
         mongo::inbox::MongoInbox,
         postgres::PostgresExecutor,
-        task_runtime::adapter::EncoreTaskAdapter,
     },
 };
 use cqrsx::task::{
-    adapter::json::JsonTaskAdapter,
-    dispatcher::{TaskDispatcher, TaskDispatcherError},
-    runtime::dispatcher_factory::TaskDispatcherFactory,
+    adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, runtime::dispatcher_factory::TaskDispatcherFactory,
 };
 use std::sync::{
     Arc,
     atomic::{AtomicU64, Ordering},
 };
-
-/// The adapter the runtime dispatches to in production.
-pub type EncoreAdapter = EncoreTaskAdapter<PostgresExecutor<Fan>, FlakyMailServer<MongoInbox, Random>>;
 
 pub struct DispatcherDeps {
     pub fans: Arc<FanApp<PostgresExecutor<Fan>>>,
@@ -45,7 +39,8 @@ pub struct DispatcherDeps {
     pub task_max_attempts: i32,
 }
 
-pub fn dispatcher_factory(deps: DispatcherDeps) -> TaskDispatcherFactory<EncoreAdapter> {
+/// Adding a task type means adding one registration line here.
+pub fn dispatcher_factory(deps: DispatcherDeps) -> TaskDispatcherFactory<BoxedTaskAdapter> {
     let counter = AtomicU64::new(0);
     Arc::new(move || {
         let instance = counter.fetch_add(1, Ordering::SeqCst);
@@ -59,25 +54,17 @@ pub fn dispatcher_factory(deps: DispatcherDeps) -> TaskDispatcherFactory<EncoreA
                 seed.unwrap_or(instance).wrapping_mul(7919),
             )
         };
-        let invalid = TaskDispatcherError::InvalidFormat;
-        let adapters = vec![
-            EncoreTaskAdapter::RecordTicket(
-                JsonTaskAdapter::new(RecordTicketHandler {
-                    fans: deps.fans.clone(),
-                    follow_up_max_attempts: deps.task_max_attempts,
-                })
-                .map_err(invalid)?,
-            ),
-            EncoreTaskAdapter::RecordCancellation(
-                JsonTaskAdapter::new(RecordCancellationHandler {
-                    fans: deps.fans.clone(),
-                    follow_up_max_attempts: deps.task_max_attempts,
-                })
-                .map_err(invalid)?,
-            ),
-            EncoreTaskAdapter::SendETicket(JsonTaskAdapter::new(SendETicketHandler { mailer: mail_server() }).map_err(invalid)?),
-            EncoreTaskAdapter::IssueRefund(JsonTaskAdapter::new(IssueRefundHandler { mailer: mail_server() }).map_err(invalid)?),
-        ];
-        TaskDispatcher::try_new(adapters)
+        TaskDispatcher::try_new(vec![
+            BoxedTaskAdapter::json(RecordTicketHandler {
+                fans: deps.fans.clone(),
+                follow_up_max_attempts: deps.task_max_attempts,
+            })?,
+            BoxedTaskAdapter::json(RecordCancellationHandler {
+                fans: deps.fans.clone(),
+                follow_up_max_attempts: deps.task_max_attempts,
+            })?,
+            BoxedTaskAdapter::json(SendETicketHandler { mailer: mail_server() })?,
+            BoxedTaskAdapter::json(IssueRefundHandler { mailer: mail_server() })?,
+        ])
     })
 }

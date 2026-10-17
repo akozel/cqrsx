@@ -271,6 +271,31 @@ Branch `refactor/clean-architecture`, one commit per step; plan and rationale in
 - `make check` ✓ end to end (Rust checks above plus `vue-tsc`, `eslint`, vitest 49/49 of the unchanged front-end).
 - Not run here: the browser demo script and `make full` (image builds).
 
+## cqrsx extractions — backlog 01–06 (2026-10-17)
+
+Branch `feat/cqrsx-extractions` from `refactor/clean-architecture`; plan in
+`docs/backlog/IMPLEMENTATION_PLAN_01-06.md`, one commit per ticket (cqrsx change, tests, `components.md`, demo
+adoption). Wire formats of the demo are unchanged in every step.
+
+Baseline before step 01 (commit `f0e7d32`, all green):
+
+| Build | Check | Result |
+|---|---|---|
+| root | build, fmt, clippy `-D warnings` | ✓ |
+| root | `cargo test --workspace --all-features` | lib 186, `cqrs` 17, `postgres` 85 (testcontainers), `task` 28, `logging` 1, `log_fallback` 1, doctests 33 + 7 |
+| root | `--no-default-features`; `postgres`, `worker`, `host`, `logging` alone | 167; 278, 216, 240, 169 tests |
+| root | `llvm-cov --workspace` / `-p cqrsx`, threshold 97 % | 97.56 % / 97.56 % lines |
+| demo | fmt, clippy `-D warnings` | ✓ |
+| demo | `cargo test --workspace` | back-end unit 88, architecture 2, `write_side` 1 (testcontainers), sidecar 6 |
+
+Known flake (pre-existing, not caused by this series): under `llvm-cov -p cqrsx` with default test threads,
+`task_queue::timeouts::delayed_batch_keeps_the_original_task_deadline_and_skips_expired_execution` once hit its
+300 ms storage timeout (`Elapsed`); an immediate rerun on the same commit passed.
+
+| Step | Ticket | Commit | Result |
+|---|---|---|---|
+| 01 | `BoxedTaskAdapter`; demo enum adapter deleted | see `git log` | root tests 358 → 363, coverage 97.57 % / 97.57 %; demo 97 tests unchanged; all checks ✓ |
+
 ## Phase table
 
 | Phase | Status | Verified by | Manual check needed |

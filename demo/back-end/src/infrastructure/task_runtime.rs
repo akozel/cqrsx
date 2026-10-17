@@ -1,4 +1,3 @@
-//! Wiring of the cqrsx task runtime: one adapter type over every task handler and a dispatcher
-//! factory that builds fresh handlers for each worker.
-pub mod adapter;
+//! Wiring of the cqrsx task runtime: a dispatcher factory that builds fresh handlers for each
+//! worker, every handler behind the library's `BoxedTaskAdapter`.
 pub mod dispatcher;

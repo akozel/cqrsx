@@ -395,9 +395,10 @@ settlement). Повтор не создаёт второе письмо; `delive
 поэтому у каждого воркера свой RNG; индекс воркера фабрике не передаётся, поэтому seed = `ENCORE_CHAOS_SEED +
 AtomicU64`-счётчик внутри замыкания. Задачи цепочки (`record_*`) хаосу не подвержены.
 
-Все четыре `JsonTaskAdapter` оборачиваются в один `enum EncoreTaskAdapter` с `impl TaskAdapter` (делегирование
-`formats()` / `invoke()`): `TaskDispatcher<A>` принимает один тип адаптера. Порядок форматов у всех воркеров
-одинаков (`prepare` сверяет).
+Все четыре обработчика регистрируются через `cqrsx::task::adapter::boxed::BoxedTaskAdapter::json(handler)`:
+`TaskDispatcher<A>` принимает один тип адаптера, и библиотечная обёртка стирает типы `JsonTaskAdapter`-ов
+(раньше для этого был `enum EncoreTaskAdapter` в demo). Порядок форматов у всех воркеров одинаков (`prepare`
+сверяет).
 
 Параметры очереди для демо (U6, U10 закрыты): `ENCORE_TASK_MAX_ATTEMPTS = 6` через `NewTask::with_max_attempts`
 (окончательный провал ≈ 0.2⁶ ≈ 0.006 %); короткий backoff задаёт сам обработчик через
@@ -931,7 +932,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `infrastructure::postgres` | алиасы `OutboxStore`/`HistoryStore`/`PostgresExecutor`, `Executors` (сборка исполнителей), `PostgresLedger` |
 | `infrastructure::mongo::{view_repository, read_side, inbox}` | `MongoViewRepository` (`ViewRepository` + `ReadModelStore`), коллекции read side и scratch-копии verify, `MongoInbox` (`MailStore` + `Inbox`) |
 | `infrastructure::mail::{flaky_mail_server, chaos}` | DEMO ONLY: `FlakyMailServer` (`impl Mailer`) поверх `MailStore`, `ChaosPolicy` |
-| `infrastructure::task_runtime::{adapter, dispatcher}` | `enum EncoreTaskAdapter` над `JsonTaskAdapter`-ами; `TaskDispatcherFactory` со своим RNG на воркера |
+| `infrastructure::task_runtime::dispatcher` | `TaskDispatcherFactory<BoxedTaskAdapter>`: по строке регистрации на тип задачи, свой RNG на воркера |
 | `bootstrap` | composition root: `wire()` собирает `AppState` и фабрику диспетчера; общий для `main.rs` и тестов |
 
 ### 6.3 Сборка компонентов (`main.rs`)

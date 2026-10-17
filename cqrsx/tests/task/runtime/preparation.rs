@@ -171,3 +171,49 @@ async fn standard_assembly_polls_and_settles_through_the_original_queue_instance
         vec![(id, cqrsx::task::queue::settlement::SettlementRequest::Completed)]
     );
 }
+
+#[tokio::test]
+async fn a_boxed_adapter_dispatcher_runs_through_the_standard_runtime() {
+    use cqrsx::task::{
+        adapter::boxed::BoxedTaskAdapter,
+        runtime::{config::TaskRuntimeConfig, prepare},
+    };
+    let queue = Arc::new(Queue::default());
+    let task = claimed();
+    let id = task.attempt().task_id();
+    queue.incoming.lock().unwrap().push_back(task);
+    let builds = Arc::new(AtomicUsize::new(0));
+    let factory: TaskDispatcherFactory<BoxedTaskAdapter> = Arc::new({
+        let builds = builds.clone();
+        move || {
+            builds.fetch_add(1, Ordering::SeqCst);
+            TaskDispatcher::try_new(vec![BoxedTaskAdapter::new(adapter())])
+        }
+    });
+    let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), worker_config(2, 1, Duration::from_millis(5))).unwrap();
+    let prepared = prepare(queue.clone(), factory, config).unwrap();
+    assert_eq!(
+        builds.load(Ordering::SeqCst),
+        2,
+        "preparation builds one dispatcher per worker"
+    );
+    let shutdown = CancellationToken::new();
+    let running = tokio::spawn(prepared.run(shutdown.clone()));
+    let settled = tokio::time::timeout(Duration::from_secs(2), async {
+        while queue.outcomes.lock().unwrap().is_empty() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await;
+    shutdown.cancel();
+    tokio::time::timeout(Duration::from_secs(2), running)
+        .await
+        .unwrap()
+        .unwrap()
+        .unwrap();
+    settled.unwrap();
+    assert_eq!(
+        *queue.outcomes.lock().unwrap(),
+        vec![(id, cqrsx::task::queue::settlement::SettlementRequest::Completed)]
+    );
+}

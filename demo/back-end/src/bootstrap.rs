@@ -26,13 +26,13 @@ use crate::{
             read_side::{CONCERT_HALLS, FAN_WALLETS, MAIL_INBOX, ReadSide, scratch},
         },
         postgres::{Executors, HistoryStore, PostgresExecutor, PostgresLedger, event_history, history_repositories},
-        task_runtime::dispatcher::{DispatcherDeps, EncoreAdapter, dispatcher_factory},
+        task_runtime::dispatcher::{DispatcherDeps, dispatcher_factory},
     },
 };
 use cqrsx::{
     cqrs::command::retry::AggregateConflictRetryPolicy,
     postgres::command::{PostgresCommandConfig, PostgresCommandConfigError},
-    task::runtime::dispatcher_factory::TaskDispatcherFactory,
+    task::{adapter::boxed::BoxedTaskAdapter, runtime::dispatcher_factory::TaskDispatcherFactory},
 };
 use sqlx::PgPool;
 use std::sync::Arc;
@@ -69,7 +69,7 @@ pub struct AppState {
 /// The wired application: the HTTP state and the task handlers for the outbox runtime.
 pub struct Wiring {
     pub state: AppState,
-    pub dispatcher: TaskDispatcherFactory<EncoreAdapter>,
+    pub dispatcher: TaskDispatcherFactory<BoxedTaskAdapter>,
 }
 
 #[derive(Debug, thiserror::Error)]

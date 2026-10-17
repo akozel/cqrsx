@@ -59,7 +59,7 @@ Related configuration and validation errors stay with their owning boundary.
 | Handler input | `TaskAttempt` | Stable `task_id`, payload, metadata, format and positive claim `number`; no lease credentials. |
 | Lease ownership | `TaskLease`, `LeasedTask`, `LEASE_SAFETY_MARGIN` | Platform lock token and original monotonic deadline; attempt plus ownership. |
 | Business operation | `TaskHandler<P>`, `TaskHandlerError` | One repeat-safe operation, classified as success, retry or permanent rejection. |
-| Wire adaptation | `TaskAdapter`, `JsonTaskAdapter<P,H>`, private `safe_format` | Validate/decode representations and invoke business work. Mutable handler state remains worker-owned. |
+| Wire adaptation | `TaskAdapter`, `JsonTaskAdapter<P,H>`, `BoxedTaskAdapter`, private `DynTaskAdapter`, `safe_format` | Validate/decode representations and invoke business work. `BoxedTaskAdapter` erases adapter types so one dispatcher holds different handlers (one allocation per invocation). Mutable handler state remains worker-owned. |
 | Task routing | `TaskDispatcher<A>`, `TaskDispatcherError` | Checked nonempty, nonduplicate format registration and routing to one adapter. |
 | Durable queue | `TaskQueue`, `QueueRequestError`, `TaskProcessingError`, `redelivery_backoff` | Atomic claim, ownership fencing, settlement and expired-lease recovery. |
 | Attempt executor | `TaskExecutor`, `DefaultTaskExecutor<Q>` | Bound one leased invocation and settle its result in a separate storage operation. |
@@ -110,7 +110,7 @@ src/
 │   └── testing.rs, testing/         Public downstream testing toolkit
 ├── task.rs                         NewTask, schedule and structural validation
 ├── task/
-│   ├── format.rs, attempt.rs, handler.rs, adapter.rs, adapter/json.rs, dispatcher.rs
+│   ├── format.rs, attempt.rs, handler.rs, adapter.rs, adapter/{json,boxed}.rs, dispatcher.rs
 │   ├── queue.rs, queue/{lease,settlement,storage_config,retry}.rs
 │   ├── executor.rs, executor/{default_executor,lease_budget}.rs
 │   ├── runtime.rs                  Prepared runtime, context, errors and prepare
