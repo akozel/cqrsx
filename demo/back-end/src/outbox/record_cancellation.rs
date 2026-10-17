@@ -5,7 +5,7 @@ use crate::{
         tasks::{IssueRefundV1, RecordCancellationV1, new_task},
     },
     domain::fan::FanCommand,
-    outbox::chain::{correlation_of, map_fan_outcome},
+    outbox::chain::{correlation_of, map_fan_outcome, wait_for_unlock},
 };
 use cqrsx::task::{
     attempt::TaskAttempt,
@@ -48,6 +48,8 @@ impl TaskHandler<RecordCancellationV1> for RecordCancellationHandler {
             cancellation_id: payload.cancellation_id,
             refund: payload.refund,
         };
+        // Box office closed for a rebuild? Wait a little before spending a claim attempt.
+        wait_for_unlock(self.fan_commands.rebuild()).await;
         let executed = self
             .fan_commands
             .execute(&payload.fan_id, command, metadata, vec![follow_up])

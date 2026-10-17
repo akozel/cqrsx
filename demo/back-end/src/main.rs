@@ -16,6 +16,7 @@ use app::{
     command_service::{ConcertCommands, Executors, FanCommands, HandlerFactory},
     read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide},
     rebuild::RebuildService,
+    time_travel::TimeTravel,
 };
 use config::Config;
 use cqrsx::cqrs::{event_handler::EventHandler, projection::ViewProjection};
@@ -82,7 +83,13 @@ async fn main() {
     let read = Arc::new(ReadSide::new(&mongo.database(&config.read_db), &mail_db));
 
     let activity = Arc::new(ActivityHub::new(1024, 100));
-    let rebuild = Arc::new(RebuildService::new());
+    let rebuild = Arc::new(RebuildService::new(
+        pool.clone(),
+        read.clone(),
+        activity.clone(),
+        config.replay_slow_delay,
+    ));
+    let time_travel = Arc::new(TimeTravel::new(pool.clone()));
     let command_config = PostgresCommandConfig::new(config.snapshot_every, AggregateConflictRetryPolicy::default())
         .unwrap_or_else(|e| fail(format!("snapshot configuration: {e}")));
     let executors = Executors {
@@ -125,13 +132,14 @@ async fn main() {
         },
         activity.clone(),
         rebuild.clone(),
-        config.task_max_attempts,
+        config.chain_max_attempts,
     ));
     let fan_commands = Arc::new(FanCommands::new(
         &executors,
         fan_handlers,
         vec![FAN_WALLETS],
         activity.clone(),
+        rebuild.clone(),
     ));
 
     if config.seed {
@@ -171,6 +179,7 @@ async fn main() {
         activity,
         rebuild,
         read,
+        time_travel,
         shutdown: shutdown.clone(),
     };
     // axum 0.8: `with_graceful_shutdown` returns an `IntoFuture`, not a `Future`.

@@ -26,6 +26,9 @@ pub struct Config {
     pub task_failure_rate: f64,
     pub task_latency: (Duration, Duration),
     pub task_max_attempts: i32,
+    /// Chain tasks (`encore_record_*`) have no chaos; their budget only matters while a rebuild
+    /// holds the box-office lock, so it is deliberately generous.
+    pub chain_max_attempts: i32,
     pub task_retry_base: Duration,
     pub task_retry_max: Duration,
     pub chaos_seed: Option<u64>,
@@ -98,6 +101,10 @@ impl Config {
         if task_max_attempts <= 0 {
             return Err(invalid("ENCORE_TASK_MAX_ATTEMPTS", "must be positive"));
         }
+        let chain_max_attempts: i32 = parse("ENCORE_CHAIN_MAX_ATTEMPTS", "60")?;
+        if chain_max_attempts <= 0 {
+            return Err(invalid("ENCORE_CHAIN_MAX_ATTEMPTS", "must be positive"));
+        }
         let task_retry_base = Duration::from_millis(parse("ENCORE_TASK_RETRY_BASE_MS", "1000")?);
         let task_retry_max = Duration::from_millis(parse("ENCORE_TASK_RETRY_MAX_MS", "8000")?);
         if task_retry_base > task_retry_max {
@@ -127,6 +134,7 @@ impl Config {
             task_failure_rate,
             task_latency: (latency_min, latency_max),
             task_max_attempts,
+            chain_max_attempts,
             task_retry_base,
             task_retry_max,
             chaos_seed,

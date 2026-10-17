@@ -2,6 +2,7 @@
 pub mod activity;
 pub mod commands;
 pub mod error;
+pub mod projections;
 pub mod queries;
 
 use crate::{
@@ -10,6 +11,7 @@ use crate::{
         command_service::{ConcertCommands, FanCommands},
         read_side::ReadSide,
         rebuild::RebuildService,
+        time_travel::TimeTravel,
     },
     config::Config,
 };
@@ -29,6 +31,7 @@ pub struct AppState {
     pub activity: Arc<ActivityHub>,
     pub rebuild: Arc<RebuildService>,
     pub read: Arc<ReadSide>,
+    pub time_travel: Arc<TimeTravel>,
     /// SSE streams end when this token is cancelled; otherwise graceful shutdown would wait for
     /// every open browser tab.
     pub shutdown: CancellationToken,
@@ -43,6 +46,11 @@ pub fn router(state: AppState) -> Router {
         .route("/api/concerts/{concert_id}/commands", post(commands::execute))
         .route("/api/fans/{fan_id}/wallet", get(queries::wallet))
         .route("/api/fans/{fan_id}/inbox", get(queries::inbox))
+        .route("/api/concerts/{concert_id}/timeline", get(projections::timeline))
+        .route("/api/concerts/{concert_id}/state-at/{sequence}", get(projections::state_at))
+        .route("/api/projections/wipe", post(projections::wipe))
+        .route("/api/projections/rebuild", post(projections::rebuild))
+        .route("/api/projections/status", get(projections::status))
         .route("/api/activity", get(activity::stream))
         .layer(TraceLayer::new_for_http())
         .with_state(state)

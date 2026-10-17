@@ -5,7 +5,7 @@ use crate::{
         tasks::{RecordTicketV1, SendETicketV1, new_task},
     },
     domain::fan::FanCommand,
-    outbox::chain::{correlation_of, map_fan_outcome},
+    outbox::chain::{correlation_of, map_fan_outcome, wait_for_unlock},
 };
 use cqrsx::task::{
     attempt::TaskAttempt,
@@ -50,6 +50,8 @@ impl TaskHandler<RecordTicketV1> for RecordTicketHandler {
             price: payload.price,
             fan_name: payload.fan_name,
         };
+        // Box office closed for a rebuild? Wait a little before spending a claim attempt.
+        wait_for_unlock(self.fan_commands.rebuild()).await;
         let executed = self
             .fan_commands
             .execute(&payload.fan_id, command, metadata, vec![follow_up])

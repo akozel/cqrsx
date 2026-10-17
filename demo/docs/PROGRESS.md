@@ -123,6 +123,56 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 - Note: history written before Phase 5 is not projected until the first rebuild (expected: the
   projections are in-process handlers without replay of the past).
 
+## Phase 6 — replay (Encore!) and the time machine — ✅ done
+
+- `app::rebuild::RebuildService` (lock + RAII guard, wipe, two `EventReplay::replay_all` passes —
+  `Concert` then `Fan` — through `ProgressHandler`, slow-motion, status), `app::time_travel`,
+  endpoints `POST /api/projections/{wipe,rebuild}`, `GET /api/projections/status`,
+  `GET /api/concerts/{id}/timeline`, `GET /api/concerts/{id}/state-at/{n}`; `scripts/compare-projections.sh`.
+- Verified against the running databases:
+  - fast rebuild of the whole history: 117 events / 56 aggregates in 114 ms; afterwards `GET /api/concerts`
+    shows all three concerts with artists (history from before Phase 5 is now projected).
+  - 🧨 wipe → `GET /api/concerts` = `[]`, `GET /api/concerts/tbilisi-2026` = 404; booking a taken seat
+    after the wipe → 422 `seat_taken` (rules work from the ledger); booking a free seat → new document
+    with `incomplete: true` and only that seat.
+  - slow rebuild (80 ms/event): 119 events in 9.9 s with `rebuild.progress` per event; a second
+    rebuild → 409; a command → 423 `rebuild_in_progress`; wipe → 423; after it the document is complete
+    again (`incomplete: false`, the post-wipe booking kept).
+  - two consecutive fast rebuilds give identical documents (`compare-projections.sh` ignoring
+    `version`); pre-wipe vs post-rebuild: berlin and lisbon identical, tbilisi differs only by the seat
+    booked after the wipe. Inbox count +1 and outbox +2 rows — exactly the post-wipe booking; replay
+    itself sent no e-mail and created no task.
+  - a chain task re-queued by hand during a slow rebuild: `pending/1/rebuild_in_progress` … 3 attempts
+    about 5 s apart, `completed` after the rebuild, no duplicate `TicketRecorded` (58 = `SeatBooked`).
+  - time machine: `/timeline` lists `ConcertAnnounced`, `B4 → Alice`, `B4 ✕ (refund 80 €)` …;
+    `/state-at/2` shows `B4: Alice`, `/state-at/3` no bookings, `/state-at/999` → 404.
+- Decision (deviation from §2.7): with a 1 s retry and `max_attempts = 6` a chain task that hits the
+  rebuild lock would have **failed permanently** after ~5 s (observed once during testing). Now the
+  chain handlers wait in-process for the lock for up to 3 s (inside the 5 s handler timeout), the locked
+  outcome retries after 2 s, and chain tasks get their own budget `ENCORE_CHAIN_MAX_ATTEMPTS = 60`
+  (no chaos touches them, so the budget is only spent while the box office is closed).
+  The mail tasks keep `ENCORE_TASK_MAX_ATTEMPTS = 6` as in the plan.
+- `Fan` commands honour the rebuild lock (plan §6.2/§10) — `FanCommands::execute` returns `Locked`.
+
+## Phase 7 — sidecar — ✅ done
+
+- `sidecar/src/{postgres,mongo,state,http,main}.rs`: every poll reads PostgreSQL inside one
+  `REPEATABLE READ READ ONLY` transaction (`row_to_json` queries from API_MAPPING §6, bind parameters
+  only), whitelisted MongoDB collections, stats, one shared poller (`tokio::sync::watch`) broadcasting
+  only when the SHA-256 of the state (without `db_time`/`polled_at`) changes, SSE `/inspect/stream`
+  with a 15 s heartbeat and shutdown on signal; no `cqrsx` dependency.
+- Verified: `curl localhost:8090/inspect/postgres/events?limit=3` → rows with `metadata` keys
+  `{causation_id, command_id, correlation_id, recorded_at, source}` and the `query` text;
+  `?aggregate_id=alice` filter; snapshots (`berlin-2026 last_sequence 20 current_snapshot 2` …);
+  outbox rows with `attempts/max_attempts/available_at`; `/inspect/postgres/tables` (P1);
+  `/inspect/mongo/encore_read/concert_halls` 200, `admin/system.users` and `encore_read/inbox` → 404
+  (whitelist); `/inspect/stats`; SSE: 20 s without commands → 1 `state` message + 1 heartbeat, with
+  a booking → 4 state messages. PostgreSQL stopped: health `degraded`, `stats.errors` =
+  `[{source: postgres, message: pool timed out…}]`, Mongo endpoints still 200, process alive; after
+  the restart health `ok` and `errors: []`. Unit tests: hash stability, whitelist, shown queries.
+- Note: `encore_inspector`'s role-level `default_transaction_read_only` and the explicit
+  `READ ONLY` transaction are both in place; the Phase 1 check proved the role cannot `INSERT`.
+
 ## Phase table
 
 | Phase | Status | Verified by | Manual check needed |
@@ -134,8 +184,8 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 | 3 | ✅ done | curl + SQL + SSE + SIGINT | — |
 | 4 | ✅ done | SQL + mongosh + log after 50 bookings, SIGINT drain, unit tests | — |
 | 5 | ✅ done | curl read API, MongoDB stop/start, LWW unit tests | — |
-| 6 | pending | | |
-| 7 | pending | | |
+| 6 | ✅ done | curl wipe/rebuild/status/time machine, compare script, SQL traces | — |
+| 7 | ✅ done | curl all /inspect endpoints, SSE counts, PostgreSQL stop/start | — |
 | 8 | pending | | |
 | 10 | pending | | |
 | 9 | pending (P1) | | |

@@ -178,6 +178,7 @@ pub struct ConcertCommands {
     projections: Vec<&'static str>,
     activity: Arc<ActivityHub>,
     rebuild: Arc<RebuildService>,
+    /// Attempt budget of the chain tasks this service publishes (`encore_record_*`).
     task_max_attempts: i32,
 }
 
@@ -320,6 +321,7 @@ pub struct FanCommands {
     executor: CqrsCommandExecutor<Fan, BuildFramework<Fan>>,
     projections: Vec<&'static str>,
     activity: Arc<ActivityHub>,
+    rebuild: Arc<RebuildService>,
 }
 
 impl FanCommands {
@@ -328,17 +330,24 @@ impl FanCommands {
         handlers: HandlerFactory<Fan>,
         projections: Vec<&'static str>,
         activity: Arc<ActivityHub>,
+        rebuild: Arc<RebuildService>,
     ) -> Self {
         Self {
             executor: executors.build(handlers, ()),
             projections,
             activity,
+            rebuild,
         }
     }
 
+    pub fn rebuild(&self) -> &RebuildService {
+        &self.rebuild
+    }
+
     /// Internal commands come from task handlers, which also build the follow-up tasks (from the
-    /// parent task's payload). The rebuild lock is not checked here: the worker keeps going during
-    /// a rebuild because the write side never depends on the read side.
+    /// parent task's payload). During a rebuild the outcome is `Locked`, which the task handler
+    /// turns into a one-second retry: the task is durable, so waiting costs nothing, and the
+    /// wallet projection is not written while its collection is being rebuilt.
     pub async fn execute(
         &self,
         fan_id: &str,
@@ -346,6 +355,12 @@ impl FanCommands {
         metadata: CommandMetadata,
         tasks: Vec<NewTask>,
     ) -> Executed<FanError> {
+        if self.rebuild.is_locked() {
+            return Executed {
+                outcome: CommandOutcome::Locked,
+                tasks: vec![],
+            };
+        }
         let task_formats: Vec<String> = tasks.iter().map(|t| t.format().to_string()).collect();
         let command_type = command.name();
         let result = self

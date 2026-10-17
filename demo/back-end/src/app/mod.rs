@@ -7,3 +7,4 @@ pub mod read_side;
 pub mod rebuild;
 pub mod seed;
 pub mod tasks;
+pub mod time_travel;
