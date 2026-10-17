@@ -83,3 +83,11 @@ pub async fn state_at(
         None => Err(ApiError::not_found("sequence_out_of_range", "this concert has no such event")),
     }
 }
+
+/// `GET /api/projections/verify` [P1]: rebuild into temporary collections and compare. Refused during a rebuild.
+pub async fn verify(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
+    if state.rebuild.is_locked() {
+        return Err(ApiError::locked());
+    }
+    state.verify.run().await.map(Json).map_err(ApiError::unavailable)
+}

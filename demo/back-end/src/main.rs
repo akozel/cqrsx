@@ -17,6 +17,7 @@ use app::{
     read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide},
     rebuild::RebuildService,
     time_travel::TimeTravel,
+    verify::VerifyService,
 };
 use config::Config;
 use cqrsx::cqrs::{event_handler::EventHandler, projection::ViewProjection};
@@ -80,7 +81,8 @@ async fn main() {
     let mongo = mongodb::Client::with_options(mongo_options).unwrap_or_else(|e| fail(format!("MongoDB client: {e}")));
     let mail_db = mongo.database(&config.mail_db);
     let inbox = Arc::new(MongoInbox::new(mail_db.collection("inbox")));
-    let read = Arc::new(ReadSide::new(&mongo.database(&config.read_db), &mail_db));
+    let read_db = mongo.database(&config.read_db);
+    let read = Arc::new(ReadSide::new(&read_db, &mail_db));
 
     let activity = Arc::new(ActivityHub::new(1024, 100));
     let rebuild = Arc::new(RebuildService::new(
@@ -90,6 +92,7 @@ async fn main() {
         config.replay_slow_delay,
     ));
     let time_travel = Arc::new(TimeTravel::new(pool.clone()));
+    let verify = Arc::new(VerifyService::new(pool.clone(), read_db, read.clone()));
     let command_config = PostgresCommandConfig::new(config.snapshot_every, AggregateConflictRetryPolicy::default())
         .unwrap_or_else(|e| fail(format!("snapshot configuration: {e}")));
     let executors = Executors {
@@ -180,6 +183,7 @@ async fn main() {
         rebuild,
         read,
         time_travel,
+        verify,
         shutdown: shutdown.clone(),
     };
     // axum 0.8: `with_graceful_shutdown` returns an `IntoFuture`, not a `Future`.

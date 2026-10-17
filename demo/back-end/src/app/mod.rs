@@ -8,3 +8,4 @@ pub mod rebuild;
 pub mod seed;
 pub mod tasks;
 pub mod time_travel;
+pub mod verify;

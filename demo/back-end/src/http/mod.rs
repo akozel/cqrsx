@@ -12,6 +12,7 @@ use crate::{
         read_side::ReadSide,
         rebuild::RebuildService,
         time_travel::TimeTravel,
+        verify::VerifyService,
     },
     config::Config,
 };
@@ -32,6 +33,7 @@ pub struct AppState {
     pub rebuild: Arc<RebuildService>,
     pub read: Arc<ReadSide>,
     pub time_travel: Arc<TimeTravel>,
+    pub verify: Arc<VerifyService>,
     /// SSE streams end when this token is cancelled; otherwise graceful shutdown would wait for
     /// every open browser tab.
     pub shutdown: CancellationToken,
@@ -51,6 +53,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/projections/wipe", post(projections::wipe))
         .route("/api/projections/rebuild", post(projections::rebuild))
         .route("/api/projections/status", get(projections::status))
+        .route("/api/projections/verify", get(projections::verify))
         .route("/api/activity", get(activity::stream))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
