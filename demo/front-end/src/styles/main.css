@@ -26,3 +26,201 @@ body {
   color: #e5e7eb;
   font-family: var(--font-sans);
 }
+
+/* --- shared pieces --- */
+.action-btn {
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  background: color-mix(in srgb, var(--color-panel) 80%, black);
+}
+.action-btn:hover:not(:disabled) {
+  border-color: var(--color-neon-cyan);
+}
+.action-btn:disabled {
+  opacity: 0.5;
+}
+.pipe-node {
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.2rem 0.5rem;
+  background: var(--color-panel);
+  transition: box-shadow 0.2s;
+}
+.pipe-arrow {
+  opacity: 0.5;
+  font-family: var(--font-mono);
+}
+.stage-glow {
+  box-shadow: 0 0 24px color-mix(in srgb, var(--color-neon-pink) 50%, transparent);
+}
+
+/* --- seats --- */
+.seat {
+  border-color: var(--zone);
+  background: color-mix(in srgb, var(--zone) 12%, transparent);
+}
+.seat-free:hover {
+  background: color-mix(in srgb, var(--zone) 35%, transparent);
+}
+.seat-booked {
+  background: color-mix(in srgb, var(--zone) 55%, #000);
+  border-color: color-mix(in srgb, var(--zone) 70%, #fff);
+}
+.seat-mine {
+  background: var(--zone);
+  color: #000;
+  box-shadow: 0 0 12px var(--zone);
+}
+.seat-unknown {
+  border-style: dashed;
+  opacity: 0.5;
+}
+.seat-pending {
+  animation: seat-pulse 0.8s ease-in-out infinite;
+}
+.seat-pop {
+  animation: seat-pop 0.6s ease-out;
+}
+.seat-shake {
+  animation: seat-shake 0.4s ease-in-out;
+  box-shadow: 0 0 10px var(--color-neon-red);
+}
+.history-mode .seat {
+  filter: sepia(0.8) saturate(0.6);
+}
+.history-mode {
+  filter: sepia(0.25);
+}
+.sold-out-sign {
+  text-shadow: 0 0 18px var(--color-neon-pink);
+  animation: seat-pop 0.8s ease-out;
+}
+
+/* --- x-ray rows --- */
+.row-fresh {
+  box-shadow: 0 0 0 1px var(--color-neon-lime), 0 0 14px color-mix(in srgb, var(--color-neon-lime) 50%, transparent);
+  transition: box-shadow 2s ease-out;
+}
+.row-enter-active {
+  transition: all 0.4s ease-out;
+}
+.row-enter-from {
+  opacity: 0;
+  transform: translateX(-12px);
+}
+.row-leave-active {
+  transition: opacity 0.2s;
+}
+.row-leave-to {
+  opacity: 0;
+}
+.json-hot {
+  background: color-mix(in srgb, var(--color-neon-amber) 25%, transparent);
+  animation: fade-bg 2s ease-out forwards;
+}
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.15s;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+.dice-roll {
+  animation: dice 0.7s ease-in-out;
+  display: inline-block;
+}
+.transaction-flash {
+  animation: flash 1.2s ease-out;
+}
+.arrow-flow {
+  background: linear-gradient(90deg, var(--color-neon-pink), var(--color-neon-cyan), var(--color-neon-pink));
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  opacity: 1;
+  animation: flow 1s linear infinite;
+}
+.animate-shake {
+  animation: seat-shake 0.4s ease-in-out;
+}
+
+@keyframes seat-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+}
+@keyframes seat-pop {
+  0% {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes seat-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+@keyframes fade-bg {
+  to {
+    background: transparent;
+  }
+}
+@keyframes dice {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(360deg) scale(1.4);
+  }
+  100% {
+    transform: rotate(720deg) scale(1);
+  }
+}
+@keyframes flash {
+  0% {
+    box-shadow: 0 0 0 0 var(--color-neon-pink);
+  }
+  30% {
+    box-shadow: 0 0 20px 4px var(--color-neon-pink);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@keyframes flow {
+  to {
+    background-position: 200% 0;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seat-shake,
+  .animate-shake,
+  .dice-roll,
+  .arrow-flow,
+  .seat-pending,
+  .seat-pop,
+  .sold-out-sign {
+    animation: none;
+  }
+}

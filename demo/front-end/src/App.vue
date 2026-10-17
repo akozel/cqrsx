@@ -1,37 +1,128 @@
 <script setup lang="ts">
+import { onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { setLocale } from './i18n'
+import confetti from 'canvas-confetti'
+import AppHeader from '@/components/layout/AppHeader.vue'
+import PipelineStrip from '@/components/pipeline/PipelineStrip.vue'
+import ConcertTabs from '@/components/app/ConcertTabs.vue'
+import PersonaPicker from '@/components/app/PersonaPicker.vue'
+import SeatMap from '@/components/app/SeatMap.vue'
+import TimeMachine from '@/components/app/TimeMachine.vue'
+import ActionBar from '@/components/app/ActionBar.vue'
+import RuleBreaker from '@/components/app/RuleBreaker.vue'
+import WalletPanel from '@/components/app/WalletPanel.vue'
+import EncorePanel from '@/components/app/EncorePanel.vue'
+import EventStorePanel from '@/components/xray/EventStorePanel.vue'
+import SnapshotsPanel from '@/components/xray/SnapshotsPanel.vue'
+import OutboxPanel from '@/components/xray/OutboxPanel.vue'
+import MongoPanel from '@/components/xray/MongoPanel.vue'
+import MailboxPanel from '@/components/xray/MailboxPanel.vue'
+import ActivityFeed from '@/components/xray/ActivityFeed.vue'
+import Toasts from '@/components/ui/Toasts.vue'
+import { useSessionStore } from '@/stores/session'
+import { useConcertsStore } from '@/stores/concerts'
+import { useWalletStore } from '@/stores/wallet'
+import { useActivityStore } from '@/stores/activity'
+import { useXrayStore } from '@/stores/xray'
+import { useRebuildStore } from '@/stores/rebuild'
+import { useTimeMachineStore } from '@/stores/timemachine'
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
+const session = useSessionStore()
+const concerts = useConcertsStore()
+const wallet = useWalletStore()
+const activity = useActivityStore()
+const xray = useXrayStore()
+const rebuild = useRebuildStore()
+const timeMachine = useTimeMachineStore()
+
+type XrayTab = 'events' | 'outbox' | 'mongo' | 'mail' | 'snapshots' | 'activity'
+const xrayTab = ref<XrayTab>('events')
+let poll: ReturnType<typeof setInterval> | null = null
+
+onMounted(async () => {
+  await session.loadConfig()
+  activity.connect()
+  xray.connect()
+  await Promise.all([concerts.refreshAll(), wallet.refresh(), rebuild.refreshStatus(), timeMachine.refreshTimeline()])
+  // Safety net: a refresh every 5 s even if every push channel is silent.
+  poll = setInterval(() => {
+    void concerts.refreshAll()
+    void wallet.refresh()
+    void timeMachine.refreshTimeline()
+  }, 5000)
+})
+onUnmounted(() => {
+  activity.disconnect()
+  xray.disconnect()
+  if (poll) clearInterval(poll)
+})
+
+watch(() => session.concertId, () => void Promise.all([concerts.refreshConcert(), timeMachine.refreshTimeline()]))
+watch(() => session.persona, () => void wallet.refresh())
+// The timeline follows the ledger: refresh it whenever the X-ray reports new events.
+watch(() => xray.eventsTotal, () => void timeMachine.refreshTimeline())
+watch(
+  () => concerts.soldOutJustHappened,
+  (id) => {
+    if (!id) return
+    if (!session.reducedMotion) confetti({ particleCount: 160, spread: 80, origin: { y: 0.4 }, colors: ['#ff3ea5', '#22d3ee', '#a3e635', '#fbbf24'] })
+    concerts.ackSoldOut()
+  },
+)
 </script>
 
 <template>
   <div class="min-h-screen flex flex-col">
-    <header class="flex items-center gap-4 px-4 py-2 border-b border-border bg-panel">
-      <span class="text-xl font-extrabold text-neon-pink">🎸 {{ t('app.title') }}</span>
-      <span class="text-sm opacity-70">{{ t('app.subtitle') }}</span>
-      <span class="ml-auto flex gap-1 text-sm">
-        <button
-          v-for="code in ['ru', 'en'] as const"
-          :key="code"
-          class="px-2 py-0.5 rounded border border-border"
-          :class="{ 'bg-neon-pink text-black': locale === code }"
-          @click="setLocale(code)"
-        >
-          {{ code.toUpperCase() }}
-        </button>
-      </span>
-    </header>
-    <section class="px-4 py-2 border-b border-border text-sm opacity-80">{{ t('layout.pipeline') }} · {{ t('common.placeholder') }}</section>
-    <main class="flex-1 grid grid-cols-1 xl:grid-cols-2 gap-4 p-4">
-      <section class="rounded-lg border border-border bg-panel p-4">
-        <h2 class="font-semibold text-neon-cyan">{{ t('layout.app') }}</h2>
-        <p class="opacity-70">{{ t('common.placeholder') }}</p>
+    <AppHeader />
+    <PipelineStrip />
+    <div v-if="!session.bannerDismissed" class="mx-4 mt-3 rounded-lg border border-neon-cyan/50 bg-neon-cyan/5 px-4 py-3 text-sm flex gap-3">
+      <div>
+        <div class="font-semibold text-neon-cyan">{{ t('banner.title') }}</div>
+        <div class="opacity-90">{{ t('banner.body') }}</div>
+      </div>
+      <button type="button" class="ml-auto self-start rounded border border-border px-2 py-0.5 text-xs" @click="session.bannerDismissed = true">✕ {{ t('banner.close') }}</button>
+    </div>
+    <div v-if="concerts.backendDown" class="mx-4 mt-2 rounded border border-neon-red/60 px-3 py-1 text-xs text-neon-red">{{ t('xray.backend_down') }}</div>
+    <main class="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-4 p-4 min-h-0">
+      <!-- APP: the box office -->
+      <section class="flex flex-col gap-3 rounded-lg border border-border bg-panel p-4 min-w-0">
+        <ConcertTabs />
+        <PersonaPicker />
+        <SeatMap />
+        <TimeMachine />
+        <ActionBar />
+        <RuleBreaker />
+        <WalletPanel />
+        <EncorePanel />
       </section>
-      <section class="rounded-lg border border-border bg-panel p-4 font-mono text-sm">
-        <h2 class="font-semibold text-neon-lime">{{ t('layout.xray') }}</h2>
-        <p class="opacity-70">{{ t('common.placeholder') }}</p>
+      <!-- X-RAY: what the databases hold -->
+      <section class="min-w-0 flex flex-col gap-3">
+        <div class="hidden 2xl:grid grid-cols-2 grid-rows-2 gap-3 h-[calc(100vh-11rem)] min-h-[40rem]">
+          <EventStorePanel />
+          <OutboxPanel />
+          <MongoPanel />
+          <div class="grid grid-rows-2 gap-3 min-h-0">
+            <MailboxPanel />
+            <ActivityFeed />
+          </div>
+        </div>
+        <div class="2xl:hidden flex flex-col gap-2 h-[70vh] min-h-[32rem]">
+          <div class="flex flex-wrap gap-1 text-xs">
+            <button v-for="tab in ['events', 'outbox', 'mongo', 'mail', 'snapshots', 'activity'] as const" :key="tab" type="button" class="px-2 py-0.5 rounded border border-border font-mono" :class="{ 'bg-neon-cyan text-black': xrayTab === tab }" @click="xrayTab = tab">{{ tab }}</button>
+          </div>
+          <div class="flex-1 min-h-0">
+            <EventStorePanel v-if="xrayTab === 'events'" />
+            <OutboxPanel v-else-if="xrayTab === 'outbox'" />
+            <MongoPanel v-else-if="xrayTab === 'mongo'" />
+            <MailboxPanel v-else-if="xrayTab === 'mail'" />
+            <SnapshotsPanel v-else-if="xrayTab === 'snapshots'" />
+            <ActivityFeed v-else />
+          </div>
+        </div>
+        <div class="hidden 2xl:block h-56"><SnapshotsPanel /></div>
       </section>
     </main>
+    <Toasts />
   </div>
 </template>

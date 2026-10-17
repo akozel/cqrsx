@@ -173,20 +173,47 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 - Note: `encore_inspector`'s role-level `default_transaction_read_only` and the explicit
   `READ ONLY` transaction are both in place; the Phase 1 check proved the role cannot `INSERT`.
 
-## Phase 8 — front-end core — ⏸ IN PROGRESS (run stopped by the usage limit)
+## Phase 8 — front-end core — ✅ done (browser steps need a human)
 
-Done and green (`npm run typecheck && npm run lint && npm test`, 9 vitest tests):
-`src/types/{domain,activity,xray}.ts`, `src/lib/{venue,personas,seatState,outboxStatus,diff,format}.ts`,
-`src/api/{http,backend,sidecar,sse}.ts`, `src/stores/{session,concerts,wallet,commands,activity,xray,rebuild}.ts`,
-full EN/RU dictionaries in `src/i18n/{en,ru}.ts` (Appendix A texts), specs `seatState`, `outboxStatus`,
-`diff`, `i18nParity`. `App.vue` is still the Phase 1 layout stub.
+- All P0 components of §8.3: `layout/AppHeader`, `pipeline/PipelineStrip`, `app/{ConcertTabs, PersonaPicker,
+  SeatMap, SeatButton, ActionBar (🤖 🌊 and P1 ⚡), RuleBreaker, WalletPanel, EncorePanel, TimeMachine}`,
+  `xray/{XrayPanel, EventStorePanel, SnapshotsPanel, OutboxPanel, MongoPanel, MailboxPanel, ActivityFeed,
+  QueryBadge, JsonView}`, `ui/{Toasts, StatusChip, Dice, Countdown, ProgressBar, Tooltip}`; stores
+  `session, concerts, wallet, commands, activity, xray, rebuild, timemachine`; full RU/EN i18n (Appendix A);
+  confetti on `sold_out: false → true`; `prefers-reduced-motion`; X-ray 2×2 grid ≥ 1536 px, tabs below.
+- Verified without a browser: `npm run typecheck && npm run lint && npm test && npm run build` green
+  (14 vitest tests: pure functions, i18n parity incl. rule codes and chaos reasons, component smoke
+  tests with jsdom — every X-ray panel renders sidecar rows, `App.vue` mounts in EN and RU with
+  offline services and shows 40 seat buttons, toasts translate `seat_taken` with parameters);
+  Vite dev server: every module transforms (200), `/api` and `/inspect` (including both SSE streams)
+  are proxied; production build 227 kB JS / 79 kB gzip.
+- Decisions: `@` alias added to `vite.config.ts`; `vue/multi-word-component-names` disabled for the
+  four single-word UI primitives named in PLAN.md §4; `jsdom` + `@vue/test-utils` added as dev deps for
+  the smoke tests; X-ray grid breakpoint `2xl` (1536 px) instead of 1440 px (Tailwind default scale).
+- **Manual check (no browser in the sandbox):** walk through demo script steps 1–7 (README) in
+  Chrome/Firefox at 1920×1080; watch the PipelineStrip animations, the 2 s row glow, the 🎲 roll, the
+  countdown ring, confetti on SOLD OUT, sepia in time-machine mode, RU/EN switch.
 
-**Resume here:** write the components of PLAN.md §8.3 (layout/AppHeader, pipeline/PipelineStrip,
-app/{ConcertTabs,PersonaPicker,SeatMap,SeatButton,ActionBar,RuleBreaker,WalletPanel,EncorePanel,TimeMachine},
-xray/{XrayPanel,EventStorePanel,SnapshotsPanel,OutboxPanel,MongoPanel,MailboxPanel,ActivityFeed,QueryBadge,JsonView},
-ui/{Toasts,StatusChip,Dice,Countdown,ProgressBar,Tooltip}) and wire them in `App.vue` using the stores
-(`session.loadConfig()`, `activity.connect()`, `xray.connect()`, `rebuild.refreshStatus()`, 5 s safety
-poll of `concerts.refreshAll()`); then Phase 10 (Dockerfiles, nginx, README) and Phase 9 (P1).
+## Phase 10 — packaging and docs — ✅ written, images NOT built here
+
+- `back-end/Dockerfile`, `sidecar/Dockerfile` (multi-stage, context = repository root),
+  `front-end/Dockerfile` + `nginx.conf` (`/api` → backend, `/inspect` → sidecar, SSE-safe:
+  HTTP/1.1, `Connection ''`, `proxy_buffering off`), root `.dockerignore` (`**/target`, `**/node_modules`),
+  `compose.yaml` profile `app`, complete `README.md` (quick start, architecture, demo script,
+  configuration, troubleshooting).
+- Environment limitation: no `podman build` / compose in the sandbox → `make full` and the image
+  builds are **untested**; README says so.
+
+## Phase 9 — polish [P1] — partially done
+
+- Done: ⚡ Race (`ActionBar`, `Promise.all` of two `BookSeat`, result card with the optimistic-locking
+  text), 🔍 Verify (`app::verify` rebuilds into `concert_halls_verify` / `fan_wallets_verify` with the
+  same `ViewProjection`s, compares canonical JSON without `version`, drops the temp collections;
+  `GET /api/projections/verify` → `{"ok":true,"checked":{"concert_halls":3,"fan_wallets":53}}` live,
+  56 `missing` after a wipe, `ok` again after Encore!), 📸 markers (`sequence % snapshot_every == 0`),
+  X-ray tabs on medium screens, `/inspect/postgres/tables`.
+- Not done: chapters ①–⑤ (`ChapterBar`/`ChapterCallout`), `AnnounceDialog`, correlation-id hover
+  trace, keyboard navigation of the seat map, back-end integration tests with testcontainers.
 
 ## Phase table
 
@@ -201,9 +228,9 @@ poll of `concerts.refreshAll()`); then Phase 10 (Dockerfiles, nginx, README) and
 | 5 | ✅ done | curl read API, MongoDB stop/start, LWW unit tests | — |
 | 6 | ✅ done | curl wipe/rebuild/status/time machine, compare script, SQL traces | — |
 | 7 | ✅ done | curl all /inspect endpoints, SSE counts, PostgreSQL stop/start | — |
-| 8 | ⏸ in progress | typecheck/lint/vitest green for the foundations | steps 1–7 of §9 in a browser (after the components exist) |
-| 10 | pending | | |
-| 9 | pending (P1) | | |
+| 8 | ✅ done | typecheck, eslint, 14 vitest (incl. jsdom smoke), build, Vite proxy curls | demo script steps 1–7 in a browser |
+| 10 | ✅ written | files reviewed; README | `make full` (image builds) on a machine with podman |
+| 9 | ◐ partial | verify curls, race via vitest-typed code | step 8 (⚡ Race) in a browser; verify button |
 
 ## Blockers
 
