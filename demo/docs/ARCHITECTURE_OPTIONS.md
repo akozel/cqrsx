@@ -1,6 +1,7 @@
 # Структура `encore-backend`: анализ и варианты (Clean Architecture на `cqrsx`)
 
-Статус: черновик для обсуждения, 2026-10-17. Код не менялся. Цель документа — выбрать
+Статус: **реализовано** 2026-10-17 в ветке `refactor/clean-architecture` (вариант B с уточнениями §11);
+итоговая таблица модулей — `PLAN.md` §6.2, журнал — `docs/PROGRESS.md`. Ниже — исходный анализ. Цель документа — выбрать
 универсальную структуру каталогов, которую потом переиспользуем на реальных проектах на `cqrsx`.
 
 ## 0. Коротко
@@ -622,3 +623,29 @@ application/
 
 Пункт 4 — единственное касание инфраструктуры; гетерогенный диспетчер в `cqrsx` (§9, п. 2) свёл бы
 его к одной строке.
+
+## 12. Отличия реализации от плана миграции
+
+Решения пользователя (вариант B, §11.1–11.3) реализованы полностью. Детали, которые исполнитель
+решил иначе, чем в плане, и почему:
+
+1. **`Rejection` — трейт, а не функция.** `code()` + `params()` для `ConcertError` и `FanError`
+   реализованы в `application::{concert, fan}`; `CommandService` и HTTP вызывают одно и то же.
+   `code()` остался и в домене: это словарь домена, а не форма API.
+2. **Порт `Inbox` только читает.** Приложению нужен лишь `of_fan`; запись письма — внутреннее дело
+   имитации почтового сервиса, поэтому контракт `MailStore::deliver` живёт в
+   `infrastructure::mail::flaky_mail_server`. `MongoInbox` реализует оба.
+3. **`MaintainedReadModel` и `ProjectionMaintenance` — в `application::projections::maintenance`,
+   а не в `ports`.** Это абстракция приложения над любым read model, её не реализует инфраструктура.
+4. **Типизированные id в payload'ах задач** сделаны на шаге 4 вместе с доменом, чтобы промежуточный
+   код не парсил строки.
+5. **`infrastructure::postgres::Executors`** сохранил имя и стал фабрикой (`executor()`, `history()`);
+   рядом `event_history()`, `history_repositories()` и `PostgresLedger`.
+6. **Тестовые фикстуры** — модули `test_support` (в `domain::{concert, fan}`, `application`,
+   `application::{concert, workflows}`), сборка `Config` для тестов — `testing::config()`.
+7. **Архитектурный тест раскрывает деревья `use`.** Поиск подстрок не видит
+   `use crate::{infrastructure::…}`. Тест сразу нашёл BSON-тест view в application; он переехал в
+   `infrastructure::mongo::view_repository`. Дополнительно запрещён `crate::config` в domain и
+   application, `serde_json` в домене разрешён только тестам, `cqrsx` в домене — по allowlist.
+8. **`AppState` потерял неиспользуемое поле `fan_commands`**; `ConcertApp`/`FanApp`/`TimeTravel` в
+   `bootstrap` — алиасы конкретных типов над PostgreSQL.

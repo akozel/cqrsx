@@ -246,6 +246,31 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 - Front-end checks after the polish: typecheck, eslint, 14 vitest, build green.
 - **Manual:** demo step 8 (⚡ Race) and the chapter walkthrough in a browser.
 
+## Refactoring — clean architecture (2026-10-17) — ✅ done
+
+Branch `refactor/clean-architecture`, one commit per step; plan and rationale in
+`docs/ARCHITECTURE_OPTIONS.md` (variant B with the §11 refinements; deviations in §12).
+
+- Layout: `domain/` (shared kernel, `concert/` and `fan/` with `aggregate.rs`, `commands/` with `decide()`
+  and the rule tests, `events/`, `error.rs`), `application/` (`CommandService`, use cases per file in
+  `concert/`, `workflows/{ticket_delivery, refund}` with one file per step and the task contracts at the
+  publisher, ports, views, projections maintenance, operations), `presentation/http/<resource>/<action>.rs`,
+  `infrastructure/{postgres, mongo, mail, task_runtime}`, `bootstrap.rs` as the composition root.
+- Wire contracts unchanged: event and snapshot JSON, task formats and payloads, MongoDB documents, HTTP
+  routes and bodies, activity entries. Pinned by tests written before the domain split (step 3).
+- `tests/architecture.rs` checks the layer rules on expanded `use` trees; mutation-checked with two
+  temporary violations (a grouped `crate::infrastructure` import and `serde_json` in domain code).
+- Checks after the last step: `cargo fmt --check` ✓, `cargo clippy --workspace --all-targets -D warnings` ✓,
+  `cargo test --workspace` ✓ (back-end unit 56 → 88, architecture 2, integration `write_side` 1 against a
+  testcontainers PostgreSQL, sidecar 6), `cargo doc -p encore-backend` without warnings.
+- Equivalence: the same HTTP scenario (32 calls: announce, bookings, all rejections, chain to both
+  mails, cancellation, timeline, state-at, verify, wipe, rebuild, verify, SSE backlog) ran against the
+  `main` build and the refactored build, each on fresh isolated containers (PostgreSQL :25434, MongoDB
+  :27118, seeded chaos). Normalized responses and the deterministic activity entries are identical;
+  both builds stop on SIGTERM with "encore-backend stopped" and no ERROR lines.
+- `make check` ✓ end to end (Rust checks above plus `vue-tsc`, `eslint`, vitest 49/49 of the unchanged front-end).
+- Not run here: the browser demo script and `make full` (image builds).
+
 ## Phase table
 
 | Phase | Status | Verified by | Manual check needed |
@@ -262,6 +287,7 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 | 8 | ✅ done | typecheck, eslint, 14 vitest (incl. jsdom smoke), build, Vite proxy curls | demo script steps 1–7 in a browser |
 | 10 | ✅ written | files reviewed; README | `make full` (image builds) on a machine with podman |
 | 9 | ✅ done | verify curls, integration test, front-end checks | step 8 and the chapters in a browser |
+| refactor | ✅ done | fmt, clippy, 97 Rust tests, architecture test, A/B HTTP scenario vs `main` | the demo script in a browser |
 
 ## Blockers
 

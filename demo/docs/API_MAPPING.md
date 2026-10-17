@@ -651,7 +651,7 @@ Rebuild (§6.8): `EventReplay::new(PostgresEventRepository::new(pool.clone()), P
 4. **§5.4** — `RUST_LOG=info` (один уровень); таблица `OUTBOX_*` с демо-дефолтами (U10); `ENCORE_TASK_RETRY_BASE_MS=1000`, `ENCORE_TASK_RETRY_MAX_MS=8000`.
 5. **§6.1** — `cqrsx` с `features = ["host", "logging"]`; добавить `async-trait`; `sqlx 0.8`; `rand 0.10`.
 6. **§6.3 п.3** — `connect_pool(PgConnectOptions)`; **п.7** — `CqrsCommandExecutor::new` вместо `command_executor` (D2); **п.11** — SSE завершаются по токену; после `run` закрыть пул.
-7. **§6.2** — `outbox::dispatcher`: enum-адаптер над двумя `JsonTaskAdapter`; seed RNG через счётчик.
+7. **§6.2** — `outbox::dispatcher` (сейчас `infrastructure::task_runtime::dispatcher`): enum-адаптер над двумя `JsonTaskAdapter`; seed RNG через счётчик.
 8. **§3.4, §6.8** — порядок `replay_all`: по `sequence` поперёк концертов; `rebuild.started` несёт `total`.
 9. **§7.3** — убрать замечание про sqlx 0.9; запросы из §6 этого документа; сортировка событий по `metadata->>'recorded_at'` (фиксированная ширина).
 10. **§8.5** — упрощённый `deriveTaskStatus` по колонке `status`; «призрачные» строки не нужны; причина 🎲 — из `last_error`.

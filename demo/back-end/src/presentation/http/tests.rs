@@ -9,7 +9,6 @@ use crate::{
         read_models::ReadModels,
     },
     bootstrap,
-    config::Config,
     presentation::http::router,
     testing::{self, MemoryInbox, MemoryReadModelStore},
 };
@@ -18,49 +17,11 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
-use cqrsx::{postgres::task_queue::PostgresTaskQueueConfig, task::runtime::config::TaskRuntimeConfig};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use std::{sync::Arc, time::Duration};
+use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
-
-fn config() -> Config {
-    let outbox = |name: &str| {
-        Some(
-            match name {
-                "OUTBOX_WORKER_CONCURRENCY" => "2",
-                "OUTBOX_QUEUE_CAPACITY" => "2",
-                "OUTBOX_POLL_INTERVAL_MS" => "300",
-                "OUTBOX_HANDLER_TIMEOUT_SECS" => "5",
-                "OUTBOX_LEASE_SECS" => "30",
-                "OUTBOX_STORAGE_TIMEOUT_MS" => "3000",
-                "OUTBOX_POSTGRES_STATEMENT_TIMEOUT_MS" => "4000",
-                _ => return None,
-            }
-            .to_owned(),
-        )
-    };
-    Config {
-        database_url: String::new(),
-        mongodb_uri: String::new(),
-        read_db: "encore_read_test".into(),
-        mail_db: "mail_service_test".into(),
-        http_addr: "127.0.0.1:0".parse().unwrap(),
-        task_failure_rate: 0.2,
-        task_latency: (Duration::ZERO, Duration::ZERO),
-        task_max_attempts: 6,
-        chain_max_attempts: 60,
-        task_retry_base: Duration::from_secs(1),
-        task_retry_max: Duration::from_secs(8),
-        chaos_seed: None,
-        ticket_limit: 4,
-        snapshot_every: 10,
-        replay_slow_delay: Duration::ZERO,
-        task_runtime: TaskRuntimeConfig::from_lookup(outbox).unwrap(),
-        task_queue: PostgresTaskQueueConfig::from_lookup(outbox).unwrap(),
-    }
-}
 
 struct App {
     router: Router,
@@ -69,7 +30,13 @@ struct App {
 
 async fn app() -> App {
     let mongo = testing::lazy_mongo().await;
-    let wiring = bootstrap::wire(Arc::new(config()), testing::lazy_pool(), &mongo, CancellationToken::new()).unwrap();
+    let wiring = bootstrap::wire(
+        Arc::new(testing::config()),
+        testing::lazy_pool(),
+        &mongo,
+        CancellationToken::new(),
+    )
+    .unwrap();
     let lock = wiring.state.rebuild.lock().clone();
     App {
         router: router(wiring.state),
@@ -80,7 +47,13 @@ async fn app() -> App {
 /// The real graph, with the read side served from memory.
 async fn app_reading(read: ReadModels) -> Router {
     let mongo = testing::lazy_mongo().await;
-    let mut wiring = bootstrap::wire(Arc::new(config()), testing::lazy_pool(), &mongo, CancellationToken::new()).unwrap();
+    let mut wiring = bootstrap::wire(
+        Arc::new(testing::config()),
+        testing::lazy_pool(),
+        &mongo,
+        CancellationToken::new(),
+    )
+    .unwrap();
     wiring.state.read = Arc::new(read);
     router(wiring.state)
 }

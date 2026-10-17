@@ -284,12 +284,10 @@ mod tests {
     }
 
     #[test]
-    fn bson_round_trip_keeps_the_document_shape() {
+    fn the_document_keeps_its_shape() {
         let view = apply(&[announced(1), booked(2, "B4", "fox")]);
-        let bson = mongodb::bson::to_bson(&view).unwrap();
-        let back: ConcertHallView = mongodb::bson::from_bson(bson).unwrap();
-        assert_eq!(back, view);
         let json = serde_json::to_value(&view).unwrap();
+        assert_eq!(serde_json::from_value::<ConcertHallView>(json.clone()).unwrap(), view);
         assert_eq!(json["seats"]["B4"]["state"], "booked");
         assert!(json["seats"]["B4"].get("zone").is_some());
     }

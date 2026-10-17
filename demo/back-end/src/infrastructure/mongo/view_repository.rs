@@ -160,3 +160,62 @@ where
         self.collection.drop().await.map_err(StorageError::new)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::application::{
+        concert::views::concert_hall::{ConcertHallView, ConcertSummary, SeatEntry, SeatState},
+        fan::views::fan_wallet::{FanWalletView, TicketEntry, TicketEntryState},
+    };
+    use crate::domain::shared::venue::Zone;
+    use mongodb::bson::{from_bson, to_bson};
+    use std::collections::BTreeMap;
+
+    /// The views are stored as BSON: seat and ticket keys stay strings, options stay optional.
+    #[test]
+    fn both_views_survive_the_bson_round_trip() {
+        let hall = ConcertHallView {
+            concert: Some(ConcertSummary {
+                artist: "A".into(),
+                city: "C".into(),
+                date: "2026-11-21".into(),
+            }),
+            capacity: 40,
+            seats: BTreeMap::from([(
+                "B4".to_owned(),
+                SeatEntry {
+                    state: SeatState::Booked,
+                    fan_id: Some("fox".into()),
+                    fan_name: Some("Fox".into()),
+                    zone: Some(Zone::Standard),
+                    price: Some(80),
+                    booking_id: Some("b-1".into()),
+                    sequence: 2,
+                    changed_at: "2026-10-17T09:00:02.000000Z".into(),
+                },
+            )]),
+            sold: 1,
+            revenue: 80,
+            ..ConcertHallView::default()
+        };
+        assert_eq!(from_bson::<ConcertHallView>(to_bson(&hall).unwrap()).unwrap(), hall);
+        let wallet = FanWalletView {
+            fan_id: "fox".into(),
+            fan_name: "Fox".into(),
+            tickets: BTreeMap::from([(
+                "b-1".to_owned(),
+                TicketEntry {
+                    concert_id: "c-1".into(),
+                    seat: "B4".into(),
+                    price: 80,
+                    state: TicketEntryState::Cancelled,
+                    refund: Some(80),
+                    sequence: 2,
+                    changed_at: "2026-10-17T09:00:02.000000Z".into(),
+                },
+            )]),
+            ..FanWalletView::default()
+        };
+        assert_eq!(from_bson::<FanWalletView>(to_bson(&wallet).unwrap()).unwrap(), wallet);
+    }
+}

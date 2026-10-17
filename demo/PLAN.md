@@ -905,31 +905,34 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 
 ### 6.2 Модули
 
+Четыре слоя clean architecture; внутри `domain/` и `application/` — срезы по агрегату и по бизнес-процессу.
+Правила импортов между слоями проверяет `tests/architecture.rs`. Обоснование структуры —
+`docs/ARCHITECTURE_OPTIONS.md` (вариант B, уточнения §11).
+
 | Модуль | Ответственность |
 |---|---|
-| `domain::venue` | зал: ряды, зоны, цены; `VENUE.seat("B4") -> Option<SeatInfo>`; парсинг/валидация `SeatId` |
-| `domain::concert` | `Concert` + `impl Aggregate` (§2.6); `ConcertCommand` (HTTP-DTO с `#[serde(tag = "type")]` — отдельный тип в `http`), `ConcertEvent` (`impl DomainEvent`), `ConcertError` (`code()`, `params()`, `PartialEq`) |
-| `domain::fan` | `Fan` + `impl Aggregate` (§2.6); `FanCommand` (только внутренние), `FanEvent`, `FanError` (R9–R11) |
-| `app::command_service` | `ConcertCommands` и `FanCommands`: обогащение (`command_id`, `booking_id`/`cancellation_id`, metadata) → `NewTask`-и → `CqrsCommandExecutor::execute_with_metadata` → маппинг исхода + activity; rebuild-lock проверяется для UI-команд, внутренние команды при lock получают `locked` и уходят в `Retry` задачи |
-| `app::tasks` | `RecordTicketV1`, `SendETicketV1`, `RecordCancellationV1`, `IssueRefundV1` (`TaskPayload`), конструкторы `NewTask::new(payload)?.with_metadata(..)?.with_max_attempts(..)?` |
-| (seed) | переехал в sidecar (`demo.rs`): back-end без демо-кода |
-| `app::rebuild` | `RebuildService`: lock + guard, wipe, два `EventReplay::replay_all` (Concert, затем Fan), прогресс, slow-motion, статус |
-| `app::verify` `[P1]` | пересборка во временные коллекции теми же `ViewProjection` + сравнение с рабочими |
-| `app::time_travel` | `timeline` и `state-at` через `PersistedEventStore::new_event_store(..).load_events(id)` + `Concert::apply` |
-| `app::activity` | `ActivityHub`: `tokio::broadcast` + кольцевой буфер последних 100 записей |
-| `app::personas` | справочник персонажей (тот же, что в `GET /api/config`) |
-| `projections::mongo_view_repository` | `MongoViewRepository<V>`: `impl ViewRepository` (§6.7) |
-| `projections::concert_hall` | `ConcertHallView` (`impl View<Concert>`, LWW) |
-| `projections::fan_wallet` | `FanWalletView` (`impl View<Fan>`, LWW по `booking_id`) |
-| `projections::notifying` | декоратор `EventHandler`: после успеха публикует `projection.updated`, при ошибке `projection.failed` |
-| `projections::progress` | `ProgressHandler<H: EventHandler<A>>`: декоратор для replay (прогресс + slow-motion) |
-| `outbox::chaos` | `ChaosPolicy` |
-| `outbox::flaky_mail` | `FlakyMailServer` (§2.7) + трейт `Inbox` (Mongo и in-memory реализации, последняя только в тестах) |
-| `outbox::{record_ticket, record_cancellation}` | `impl TaskHandler<…>`: команда агрегату `Fan` + маппинг исхода из §2.7 |
-| `outbox::{send_e_ticket, issue_refund}` | `impl TaskHandler<…>` поверх `FlakyMailServer` |
-| `outbox::adapter` | `enum EncoreTaskAdapter` из четырёх `JsonTaskAdapter` с `impl TaskAdapter` |
-| `outbox::dispatcher` | `TaskDispatcherFactory`: на каждого воркера свежий `TaskDispatcher<EncoreTaskAdapter>` со своим RNG |
-| `http::*` | роутер, хендлеры, SSE, маппинг ошибок |
+| `domain::shared::{ids, venue}` | shared kernel: `ConcertId`, `FanId`; зал — ряды, зоны, цены, `VENUE.seat("B4") -> Option<SeatInfo>`, `SeatId` |
+| `domain::concert::aggregate` | `Concert` + `impl Aggregate`: `handle` — диспетчер команд, `apply` — автомат состояний |
+| `domain::concert::commands::{announce_concert, book_seat, cancel_booking}` | команда (struct) + `decide()` с правилами R1–R8 + тесты правил; `ConcertCommand` — enum над ними |
+| `domain::concert::events::{concert_announced, seat_booked, booking_cancelled}` | факты (struct) со ссылкой на процесс, который они запускают; `ConcertEvent` (`impl DomainEvent`) |
+| `domain::concert::error` | `ConcertError` R1–R8 и стабильный `code()` |
+| `domain::fan::…` | то же для `Fan`: `commands::{record_ticket, record_cancellation}` (R9–R11), `events::{ticket_recorded, ticket_cancelled}` |
+| `application::command_service` | `CommandService<A, E>`: lock → `execute_with_metadata` → исход → activity; `CommandMetadata`, `CommandOutcome`, `Executed`, `NamedHandler`, `Rejection` (`code` + `params` для API) |
+| `application::concert::{announce_concert, book_seat, cancel_booking}` | use case на файл, методы `ConcertApp<E, S>`; каждый публикует первую задачу своего процесса |
+| `application::concert::tasks` | контракты задач, которые публикует касса: `RecordTicketV1`, `RecordCancellationV1` |
+| `application::fan` | `FanApp<E>`: исполнитель команд `Fan` для шагов процессов |
+| `application::workflows::{ticket_delivery, refund}` | бизнес-процессы на outbox-задачах, файл на шаг: `record_ticket` → `send_e_ticket`, `record_cancellation` → `issue_refund`; `tasks` — контракты следующих задач; корень `workflows` — общий шаг цепочки и маппинг исходов |
+| `application::ports` | `Mailer` (+ `Mail`), `Inbox`, `ReadModelStore<V>` (+ `Stored<V>`), `EventLedgerStats` |
+| `application::{concert,fan}::views` | `ConcertHallView` (`View<Concert>`, LWW), `FanWalletView` (`View<Fan>`, LWW по `booking_id`) |
+| `application::projections` | `notifying` (activity после live-обновления), `progress` (прогресс и slow-motion replay), `maintenance` (`ProjectionMaintenance`: wipe, rebuild, verify для любой view) |
+| `application::operations::{rebuild, verify, time_travel}` | Encore!, verify, машина времени — поверх `MaintainedReadModel`, `EventLedgerStats` и `EventStore` |
+| `application::{activity, lock, tasks, read_models}` | `ActivityHub`; `BoxOfficeLock`; `new_task` (метаданные задачи); `ReadModels` — query-порты для HTTP |
+| `presentation::http` | роутер; `{concerts, fans, projections, activity}/<action>.rs` — запрос, ответ и обработчик одного действия; `health`, `config` (+ персонажи), `error` |
+| `infrastructure::postgres` | алиасы `OutboxStore`/`HistoryStore`/`PostgresExecutor`, `Executors` (сборка исполнителей), `PostgresLedger` |
+| `infrastructure::mongo::{view_repository, read_side, inbox}` | `MongoViewRepository` (`ViewRepository` + `ReadModelStore`), коллекции read side и scratch-копии verify, `MongoInbox` (`MailStore` + `Inbox`) |
+| `infrastructure::mail::{flaky_mail_server, chaos}` | DEMO ONLY: `FlakyMailServer` (`impl Mailer`) поверх `MailStore`, `ChaosPolicy` |
+| `infrastructure::task_runtime::{adapter, dispatcher}` | `enum EncoreTaskAdapter` над `JsonTaskAdapter`-ами; `TaskDispatcherFactory` со своим RNG на воркера |
+| `bootstrap` | composition root: `wire()` собирает `AppState` и фабрику диспетчера; общий для `main.rs` и тестов |
 
 ### 6.3 Сборка компонентов (`main.rs`)
 
@@ -954,9 +957,10 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
    настроек; `postgres::command::command_executor` не подходит (требует `Services = ()` и не регистрирует
    обработчики). Вызов: `executor.execute_with_metadata(id, command, metadata, tasks)` (Фаза 0.5).
 8. Task runtime: `prepare_task_runtime(pool.clone(), dispatcher_factory, PostgresTaskQueueConfig::default(),
-   runtime_config)?` с `TaskDispatcherFactory` из `outbox::dispatcher`; фабрика захватывает `Arc<FanCommands>`
-   для задач цепочки и Mongo-клиент для почты. Подготовка не запускает фоновой работы — это делает `run`.
-9. `AppState { concert_commands, fan_commands, read_db, mail_db, pool, activity, rebuild, config }` (всё в `Arc`/`Clone`).
+   runtime_config)?` с `TaskDispatcherFactory` из `infrastructure::task_runtime::dispatcher`; фабрика захватывает
+   `Arc<FanApp>` для шагов процессов и `MongoInbox` для почты. Подготовка не запускает фоновой работы — это делает `run`.
+9. `AppState { config, concerts, activity, rebuild, read, time_travel, verify, shutdown }` (всё в `Arc`/`Clone`).
+   Пункты 4–9 собирает `bootstrap::wire` (без I/O); `main.rs` владеет только жизненным циклом процесса.
 10. ~~seed~~ — концерты по умолчанию анонсирует sidecar через публичный API.
 11. `let shutdown = CancellationToken::new(); host::lifecycle::run(axum::serve(listener, router)
     .with_graceful_shutdown(shutdown.clone().cancelled_owned()), runtime.run(shutdown.clone()), shutdown.clone(),
@@ -994,7 +998,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 { "type": "CancelBooking", "seat": "B4", "fan_id": "fox" }
 ```
 
-Алгоритм `app::command_service`:
+Алгоритм команды (`presentation::http::concerts::execute_command` → use case → `application::command_service`):
 1. rebuild-lock взят → `423 { outcome: "locked", error: { code: "rebuild_in_progress" } }`.
 2. Десериализация (ошибка → `400 { outcome: "invalid" }`).
 3. `command_id = Uuid::now_v7()`; `BookSeat` получает `booking_id = command_id`, `CancelBooking` —
@@ -1103,9 +1107,9 @@ Activity хранится только в памяти — это лог, а н�
 ### 6.8 `RebuildService`
 
 - Состояние: `idle` или `running { rebuild_id, speed, replayed, started_at }`, плюс `last_result`.
-- Lock — `app::lock::BoxOfficeLock` (`AtomicBool` + RAII-guard, который освобождает lock при любом выходе:
-  успех, ошибка, паника задачи). Один `Arc<BoxOfficeLock>` делят `RebuildService`, `ConcertCommands`,
-  `FanCommands` и chain-обработчики (`wait_for_unlock`); сервис rebuild всегда полностью сконфигурирован.
+- Lock — `application::lock::BoxOfficeLock` (`AtomicBool` + RAII-guard, который освобождает lock при любом выходе:
+  успех, ошибка, паника задачи). Один `Arc<BoxOfficeLock>` делят `RebuildService`, `ConcertApp`, `FanApp`
+  и шаги процессов (`wait_for_unlock`); сервис rebuild всегда полностью сконфигурирован.
 - Запуск — `tokio::spawn`; HTTP сразу возвращает `202 { rebuild_id }`, повторный запуск во время работы → `409`.
 - Wipe тоже запрещён во время rebuild (`423`).
 - Два прохода: `EventReplay::new(PostgresEventRepository::new(pool.clone()), ProgressHandler::new(ViewProjection::new(halls_repo.clone()), …)).replay_all()`
@@ -1616,7 +1620,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 - [ ] `make check` зелёный: `cargo fmt --check`, `clippy -D warnings`, `cargo test`, `vue-tsc`, `eslint`, `vitest`.
 - [ ] Корень репозитория не затронут, кроме `exclude = ["demo"]` (и, при необходимости, `.dockerignore`); корневые
       команды из README (`cargo build --locked …`, тесты, coverage) работают как раньше.
-- [ ] Хаос 20 % изолирован в `outbox::chaos` / `outbox::flaky_mail`, помечен `// DEMO ONLY`, настраивается
+- [ ] Хаос 20 % изолирован в `infrastructure::mail::{chaos, flaky_mail_server}`, помечен `// DEMO ONLY`, настраивается
       переменной, по умолчанию `0.2`.
 - [ ] Нет `unwrap()` / `expect()` в рабочих путях (кроме разбора конфигурации при старте — с понятными сообщениями).
 - [ ] Все тексты UI — через i18n; тест паритета EN/RU зелёный.

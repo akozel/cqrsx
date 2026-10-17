@@ -6,9 +6,11 @@ use crate::{
         StorageError,
         ports::{DeliveredMail, Inbox, ReadModelStore, Stored},
     },
+    config::{Config, outbox_default},
     domain::FanId,
 };
 use async_trait::async_trait;
+use cqrsx::{postgres::task_queue::PostgresTaskQueueConfig, task::runtime::config::TaskRuntimeConfig};
 use mongodb::{Client, options::ClientOptions};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{
@@ -16,6 +18,29 @@ use std::{
     sync::{Arc, Mutex},
     time::Duration,
 };
+
+/// A valid configuration with the demo defaults, no latency and databases nobody listens on.
+pub fn config() -> Config {
+    Config {
+        database_url: String::new(),
+        mongodb_uri: String::new(),
+        read_db: "encore_read_test".into(),
+        mail_db: "mail_service_test".into(),
+        http_addr: "127.0.0.1:0".parse().unwrap(),
+        task_failure_rate: 0.2,
+        task_latency: (Duration::ZERO, Duration::ZERO),
+        task_max_attempts: 6,
+        chain_max_attempts: 60,
+        task_retry_base: Duration::from_secs(1),
+        task_retry_max: Duration::from_secs(8),
+        chaos_seed: None,
+        ticket_limit: 4,
+        snapshot_every: 10,
+        replay_slow_delay: Duration::ZERO,
+        task_runtime: TaskRuntimeConfig::from_lookup(outbox_default).unwrap(),
+        task_queue: PostgresTaskQueueConfig::from_lookup(outbox_default).unwrap(),
+    }
+}
 
 /// Nothing listens on port 1: the first acquire fails fast instead of retrying for the default 30 s.
 pub fn lazy_pool() -> PgPool {

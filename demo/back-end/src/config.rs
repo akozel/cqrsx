@@ -46,7 +46,7 @@ pub struct Config {
 }
 
 /// Demo defaults for the library's own `OUTBOX_*` keys, used when the variable is absent.
-fn outbox_default(name: &str) -> Option<String> {
+pub(crate) fn outbox_default(name: &str) -> Option<String> {
     let value = match name {
         "OUTBOX_WORKER_CONCURRENCY" => "2",
         "OUTBOX_QUEUE_CAPACITY" => "2",

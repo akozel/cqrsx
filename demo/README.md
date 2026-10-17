@@ -24,7 +24,7 @@ The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the libra
 
 | Directory | What |
 |---|---|
-| `back-end/` | Rust, axum + `cqrsx`: write side (two `CqrsCommandExecutor`s), outbox workers, read API, Encore! replay, time machine, activity SSE |
+| `back-end/` | Rust, axum + `cqrsx`, in four layers: `domain` (aggregates, one file per command and per event), `application` (use cases, task-driven workflows, read models, Encore!), `presentation` (one file per HTTP action), `infrastructure` (PostgreSQL, MongoDB, the flaky mail server, the task runtime wiring) |
 | `sidecar/` | Rust, axum, **no `cqrsx` dependency**: read-only X-ray of PostgreSQL (`events`, `snapshots`, `transactional_outbox`) and MongoDB, SSE stream |
 | `front-end/` | Vue 3.5 + Vite 8 + Tailwind 4 + Pinia + vue-i18n (RU/EN) |
 | `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx/sql`) and MongoDB; profile `app` builds the three images |
@@ -223,9 +223,10 @@ Key points, each visible on screen:
   `recorded_at`, `source`) travels through `CommandExecutor::execute_with_metadata`.
 - **Outbox chain.** `SeatBooked` → `encore_record_ticket` → `Fan.RecordTicket` → `TicketRecorded` →
   `encore_send_e_ticket` → 🎫 e-mail. Cancellation mirrors it and ends with a 💸 refund e-mail. The
-  mail handler fails 20 % of the time (`ENCORE_TASK_FAILURE_RATE`, DEMO ONLY, `outbox::chaos` /
-  `outbox::flaky_mail`) and retries after 1, 2, 4, 8 s; delivery is an idempotent upsert, so a repeat
-  only bumps `deliveries`.
+  mail handler fails 20 % of the time (`ENCORE_TASK_FAILURE_RATE`, DEMO ONLY,
+  `infrastructure::mail::{chaos, flaky_mail_server}`) and retries after 1, 2, 4, 8 s; delivery is an
+  idempotent upsert, so a repeat only bumps `deliveries`. The steps of both chains live in
+  `application::workflows::{ticket_delivery, refund}`, one file per step.
 - **Projections** are last-writer-wins registers keyed by event `sequence` with recomputed derived
   fields, so they are idempotent and order-independent. They are updated in-process after commit —
   without delivery guarantees. That is why Encore! exists.
@@ -299,7 +300,8 @@ abnormal paths (expired lease, handler timeout); the mail handler asks for 1–8
 
 ```bash
 cd demo
-cargo test --workspace                 # domain rules R1–R11, D-02 invariant, projections (LWW), chaos, chain mapping, sidecar
+cargo test --workspace                 # domain rules R1–R11, D-02 invariant, use cases and workflow steps on MemStore,
+                                       # projections (LWW), read API, chaos, chain mapping, layer rules, sidecar
 cd front-end && npm test               # seatState, outboxStatus, diff, i18n parity (EN/RU)
 ```
 
