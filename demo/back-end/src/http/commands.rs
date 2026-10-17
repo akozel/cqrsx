@@ -125,17 +125,15 @@ mod tests {
         assert!(serde_json::from_value::<CommandDto>(json!({ "type": "RecordTicket" })).is_err());
         assert!(
             serde_json::from_value::<CommandDto>(
-                json!({ "type": "BookSeat", "seat": "B4", "fan_id": "alice", "fan_name": "Alice", "booking_id": "x" })
+                json!({ "type": "BookSeat", "seat": "B4", "fan_id": "fox", "fan_name": "Fox", "booking_id": "x" })
             )
             .is_err()
         );
         assert!(
-            serde_json::from_value::<CommandDto>(
-                json!({ "type": "BookSeat", "seat": "B4", "fan_id": "alice", "fan_name": "Alice" })
-            )
-            .is_ok()
+            serde_json::from_value::<CommandDto>(json!({ "type": "BookSeat", "seat": "B4", "fan_id": "fox", "fan_name": "Fox" }))
+                .is_ok()
         );
-        assert!(valid_concert_id("tbilisi-2026"));
+        assert!(valid_concert_id("radiohead-2026-11-21"));
         assert!(!valid_concert_id("Tbilisi 2026"));
     }
 
@@ -145,19 +143,19 @@ mod tests {
         let book = to_command(
             CommandDto::BookSeat {
                 seat: "B4".into(),
-                fan_id: "alice".into(),
+                fan_id: "fox".into(),
                 fan_name: "  ".into(),
             },
             &metadata,
         )
         .unwrap();
         assert!(
-            matches!(book, ConcertCommand::BookSeat { booking_id, ref fan_name, .. } if booking_id == metadata.command_id && fan_name == "alice")
+            matches!(book, ConcertCommand::BookSeat { booking_id, ref fan_name, .. } if booking_id == metadata.command_id && fan_name == "fox")
         );
         let cancel = to_command(
             CommandDto::CancelBooking {
                 seat: "B4".into(),
-                fan_id: "alice".into(),
+                fan_id: "fox".into(),
             },
             &metadata,
         )
@@ -169,7 +167,7 @@ mod tests {
             to_command(
                 CommandDto::CancelBooking {
                     seat: "B4".into(),
-                    fan_id: "Alice!".into()
+                    fan_id: "Fox!".into()
                 },
                 &metadata
             )

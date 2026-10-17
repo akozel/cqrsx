@@ -164,7 +164,7 @@ mod tests {
 
     fn envelope(sequence: usize, payload: ConcertEvent) -> EventEnvelope<Concert> {
         EventEnvelope {
-            aggregate_id: "tbilisi-2026".into(),
+            aggregate_id: "radiohead-2026-11-21".into(),
             sequence,
             payload,
             metadata: HashMap::from([("recorded_at".to_owned(), format!("2026-10-17T09:00:{sequence:02}.000000Z"))]),
@@ -223,14 +223,14 @@ mod tests {
     fn sequence_of_events_builds_the_expected_document() {
         let view = apply(&[
             announced(1),
-            booked(2, "B4", "alice"),
-            booked(3, "A1", "bob"),
-            cancelled(4, "A1", "bob"),
+            booked(2, "B4", "fox"),
+            booked(3, "A1", "panda"),
+            cancelled(4, "A1", "panda"),
         ]);
         assert_eq!(view.concert.as_ref().unwrap().date, "2026-11-21");
         assert_eq!((view.capacity, view.sold, view.revenue, view.sold_out), (40, 1, 80, false));
         assert_eq!(view.seats["B4"].state, SeatState::Booked);
-        assert_eq!(view.seats["B4"].fan_id.as_deref(), Some("alice"));
+        assert_eq!(view.seats["B4"].fan_id.as_deref(), Some("fox"));
         assert_eq!(view.seats["B4"].changed_at, "2026-10-17T09:00:02.000000Z");
         let a1 = &view.seats["A1"];
         assert_eq!(
@@ -243,18 +243,18 @@ mod tests {
 
     #[test]
     fn lww_makes_order_irrelevant_and_repeats_harmless() {
-        let forward = apply(&[announced(1), booked(6, "B4", "alice"), cancelled(7, "B4", "alice")]);
-        let backward = apply(&[announced(1), cancelled(7, "B4", "alice"), booked(6, "B4", "alice")]);
+        let forward = apply(&[announced(1), booked(6, "B4", "fox"), cancelled(7, "B4", "fox")]);
+        let backward = apply(&[announced(1), cancelled(7, "B4", "fox"), booked(6, "B4", "fox")]);
         assert_eq!(forward, backward);
         assert_eq!(forward.seats["B4"].state, SeatState::Free);
         let repeated = apply(&[
             announced(1),
-            booked(6, "B4", "alice"),
-            cancelled(7, "B4", "alice"),
-            booked(6, "B4", "alice"),
+            booked(6, "B4", "fox"),
+            cancelled(7, "B4", "fox"),
+            booked(6, "B4", "fox"),
         ]);
         assert_eq!(repeated, forward);
-        let twice = apply(&[announced(1), booked(2, "B4", "alice"), booked(2, "B4", "alice")]);
+        let twice = apply(&[announced(1), booked(2, "B4", "fox"), booked(2, "B4", "fox")]);
         assert_eq!(twice.sold, 1);
     }
 
@@ -276,16 +276,16 @@ mod tests {
 
     #[test]
     fn a_booking_without_announcement_marks_the_document_incomplete() {
-        let view = apply(&[booked(5, "B4", "alice")]);
+        let view = apply(&[booked(5, "B4", "fox")]);
         assert!(view.incomplete);
         assert_eq!((view.capacity, view.sold), (40, 1));
-        let repaired = apply(&[booked(5, "B4", "alice"), announced(1)]);
+        let repaired = apply(&[booked(5, "B4", "fox"), announced(1)]);
         assert!(!repaired.incomplete, "the announcement completes the history");
     }
 
     #[test]
     fn bson_round_trip_keeps_the_document_shape() {
-        let view = apply(&[announced(1), booked(2, "B4", "alice")]);
+        let view = apply(&[announced(1), booked(2, "B4", "fox")]);
         let bson = mongodb::bson::to_bson(&view).unwrap();
         let back: ConcertHallView = mongodb::bson::from_bson(bson).unwrap();
         assert_eq!(back, view);

@@ -20,20 +20,28 @@ function writeLocal(key: string, value: string) {
   }
 }
 
+/** The animation speeds the diagram offers, as multiples of the base pace. */
+export const PACES = [0.5, 1, 2] as const
+/** The base pace: 1× plays 1.33 times slower than the choreography's own timings. */
+export const PACE_BASE = 1 / 1.33
+
 export const useSessionStore = defineStore('session', () => {
   const config = ref<AppConfig>({
     venue: DEFAULT_VENUE,
     personas: DEFAULT_PERSONAS,
-    seed_concerts: ['tbilisi-2026', 'berlin-2026', 'lisbon-2027'],
+    seed_concerts: ['radiohead-2026-11-21', 'rammstein-2026-12-05', 'muse-2027-01-16'],
     ticket_limit: 4,
     task_failure_rate: 0.2,
     task_max_attempts: 6,
     snapshot_every: 10,
   })
   const configLoaded = ref(false)
-  const persona = ref<string>(readLocal('encore.persona') ?? 'alice')
-  const concertId = ref<string>(readLocal('encore.concert') ?? 'tbilisi-2026')
+  const persona = ref<string>(readLocal('encore.persona') ?? 'fox')
+  const concertId = ref<string>(readLocal('encore.concert') ?? 'radiohead-2026-11-21')
   const bannerDismissed = ref<boolean>(readLocal('encore.banner') === 'dismissed')
+  /** Diagram animation speed: 0.5 (slow), 1, 2 (fast). */
+  const stored = Number(readLocal('encore.pace'))
+  const pace = ref<number>((PACES as readonly number[]).includes(stored) ? stored : 1)
   const reducedMotion = ref<boolean>(
     typeof matchMedia === 'function' && matchMedia('(prefers-reduced-motion: reduce)').matches,
   )
@@ -41,9 +49,14 @@ export const useSessionStore = defineStore('session', () => {
   watch(persona, (v) => writeLocal('encore.persona', v))
   watch(concertId, (v) => writeLocal('encore.concert', v))
   watch(bannerDismissed, (v) => writeLocal('encore.banner', v ? 'dismissed' : ''))
+  watch(pace, (v) => writeLocal('encore.pace', String(v)))
 
   const currentPersona = (): Persona =>
-    config.value.personas.find((p) => p.fan_id === persona.value) ?? { fan_id: persona.value, name: persona.value, avatar: '🙂' }
+    config.value.personas.find((p) => p.fan_id === persona.value) ?? {
+      fan_id: persona.value,
+      name: persona.value,
+      avatar: '🙂',
+    }
 
   async function loadConfig() {
     try {
@@ -54,5 +67,15 @@ export const useSessionStore = defineStore('session', () => {
     }
   }
 
-  return { config, configLoaded, persona, concertId, bannerDismissed, reducedMotion, currentPersona, loadConfig }
+  return {
+    config,
+    configLoaded,
+    persona,
+    concertId,
+    bannerDismissed,
+    reducedMotion,
+    pace,
+    currentPersona,
+    loadConfig,
+  }
 })

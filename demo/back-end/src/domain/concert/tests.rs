@@ -18,7 +18,7 @@ fn date() -> NaiveDate {
 
 fn announced() -> ConcertEvent {
     ConcertEvent::ConcertAnnounced {
-        artist: "The Event Sourcerers".into(),
+        artist: "Radiohead".into(),
         city: "Tbilisi".into(),
         date: date(),
         capacity: 40,
@@ -56,7 +56,7 @@ fn cancel(seat: &str, fan_id: &str, cancellation_id: Uuid) -> ConcertCommand {
 
 fn announce() -> ConcertCommand {
     ConcertCommand::AnnounceConcert {
-        artist: "The Event Sourcerers".into(),
+        artist: "Radiohead".into(),
         city: "Tbilisi".into(),
         date: date(),
     }
@@ -84,13 +84,13 @@ fn book_seat_happy_path_records_zone_and_price() {
     let id = Uuid::new_v4();
     TestFramework::<Concert>::with(services())
         .given(vec![announced()])
-        .when(book("b4", "alice", "Alice", id))
+        .when(book("b4", "fox", "Fox", id))
         .then_expect_events(vec![ConcertEvent::SeatBooked {
             seat: SeatId::parse("B4").unwrap(),
             zone: Zone::Standard,
             price: 80,
-            fan_id: fan("alice"),
-            fan_name: "Alice".into(),
+            fan_id: fan("fox"),
+            fan_name: "Fox".into(),
             booking_id: id,
         }]);
 }
@@ -101,11 +101,11 @@ fn cancel_booking_happy_path_refunds_the_price_paid_in_history() {
     let cancellation_id = Uuid::new_v4();
     // A VIP seat booked at 120: the refund comes from the SeatBooked fact.
     TestFramework::<Concert>::with(services())
-        .given(vec![announced(), booked("A1", "alice", "Alice", booking_id)])
-        .when(cancel("A1", "alice", cancellation_id))
+        .given(vec![announced(), booked("A1", "fox", "Fox", booking_id)])
+        .when(cancel("A1", "fox", cancellation_id))
         .then_expect_events(vec![ConcertEvent::BookingCancelled {
             seat: SeatId::parse("A1").unwrap(),
-            fan_id: fan("alice"),
+            fan_id: fan("fox"),
             booking_id,
             cancellation_id,
             refund: 120,
@@ -116,11 +116,11 @@ fn cancel_booking_happy_path_refunds_the_price_paid_in_history() {
 fn r1_rejects_booking_in_an_unannounced_concert() {
     TestFramework::<Concert>::with(services())
         .given_no_previous_events()
-        .when(book("B4", "alice", "Alice", Uuid::new_v4()))
+        .when(book("B4", "fox", "Fox", Uuid::new_v4()))
         .then_expect_error(ConcertError::ConcertNotFound);
     TestFramework::<Concert>::with(services())
         .given_no_previous_events()
-        .when(cancel("B4", "alice", Uuid::new_v4()))
+        .when(cancel("B4", "fox", Uuid::new_v4()))
         .then_expect_error(ConcertError::ConcertNotFound);
 }
 
@@ -136,11 +136,11 @@ fn r2_rejects_a_second_announcement() {
 fn r3_rejects_unknown_seat() {
     TestFramework::<Concert>::with(services())
         .given(vec![announced()])
-        .when(book("Z9", "alice", "Alice", Uuid::new_v4()))
+        .when(book("Z9", "fox", "Fox", Uuid::new_v4()))
         .then_expect_error(ConcertError::UnknownSeat { seat: "Z9".into() });
     TestFramework::<Concert>::with(services())
         .given(vec![announced()])
-        .when(cancel("Z9", "alice", Uuid::new_v4()))
+        .when(cancel("Z9", "fox", Uuid::new_v4()))
         .then_expect_error(ConcertError::UnknownSeat { seat: "Z9".into() });
 }
 
@@ -152,7 +152,7 @@ fn r4_rejects_booking_when_sold_out() {
     history.truncate(history.len());
     TestFramework::<Concert>::with(services())
         .given(history)
-        .when(book("B4", "alice", "Alice", Uuid::new_v4()))
+        .when(book("B4", "fox", "Fox", Uuid::new_v4()))
         .then_expect_error(ConcertError::SoldOut);
 }
 
@@ -178,11 +178,11 @@ fn after_the_last_booking_the_concert_is_sold_out() {
 #[test]
 fn r5_rejects_taken_seat() {
     TestFramework::<Concert>::with(services())
-        .given(vec![announced(), booked("B4", "alice", "Alice", Uuid::new_v4())])
-        .when(book("B4", "bob", "Bob", Uuid::new_v4()))
+        .given(vec![announced(), booked("B4", "fox", "Fox", Uuid::new_v4())])
+        .when(book("B4", "panda", "Panda", Uuid::new_v4()))
         .then_expect_error(ConcertError::SeatTaken {
             seat: SeatId::parse("B4").unwrap(),
-            by: "Alice".into(),
+            by: "Fox".into(),
         });
 }
 
@@ -190,20 +190,20 @@ fn r5_rejects_taken_seat() {
 fn r6_rejects_the_fifth_ticket_and_the_limit_comes_from_services() {
     let history = vec![
         announced(),
-        booked("A1", "scalper-bot", "Scalper Bot", Uuid::new_v4()),
-        booked("A2", "scalper-bot", "Scalper Bot", Uuid::new_v4()),
-        booked("A3", "scalper-bot", "Scalper Bot", Uuid::new_v4()),
-        booked("A4", "scalper-bot", "Scalper Bot", Uuid::new_v4()),
+        booked("A1", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()),
+        booked("A2", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()),
+        booked("A3", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()),
+        booked("A4", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()),
     ];
     TestFramework::<Concert>::with(services())
         .given(history.clone())
-        .when(book("A5", "scalper-bot", "Scalper Bot", Uuid::new_v4()))
+        .when(book("A5", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()))
         .then_expect_error(ConcertError::TicketLimit { limit: 4 });
     // Another fan is unaffected.
     assert!(
         TestFramework::<Concert>::with(services())
             .given(history.clone())
-            .when(book("A5", "alice", "Alice", Uuid::new_v4()))
+            .when(book("A5", "fox", "Fox", Uuid::new_v4()))
             .inspect_result()
             .is_ok()
     );
@@ -211,7 +211,7 @@ fn r6_rejects_the_fifth_ticket_and_the_limit_comes_from_services() {
     assert!(
         TestFramework::<Concert>::with(ConcertServices { ticket_limit: 5 })
             .given(history)
-            .when(book("A5", "scalper-bot", "Scalper Bot", Uuid::new_v4()))
+            .when(book("A5", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()))
             .inspect_result()
             .is_ok()
     );
@@ -221,7 +221,7 @@ fn r6_rejects_the_fifth_ticket_and_the_limit_comes_from_services() {
 fn r7_rejects_cancelling_a_free_seat() {
     TestFramework::<Concert>::with(services())
         .given(vec![announced()])
-        .when(cancel("B4", "alice", Uuid::new_v4()))
+        .when(cancel("B4", "fox", Uuid::new_v4()))
         .then_expect_error(ConcertError::SeatNotBooked {
             seat: SeatId::parse("B4").unwrap(),
         });
@@ -230,8 +230,8 @@ fn r7_rejects_cancelling_a_free_seat() {
 #[test]
 fn r8_rejects_cancelling_somebody_elses_ticket() {
     TestFramework::<Concert>::with(services())
-        .given(vec![announced(), booked("B4", "alice", "Alice", Uuid::new_v4())])
-        .when(cancel("B4", "bob", Uuid::new_v4()))
+        .given(vec![announced(), booked("B4", "fox", "Fox", Uuid::new_v4())])
+        .when(cancel("B4", "panda", Uuid::new_v4()))
         .then_expect_error(ConcertError::NotYourTicket);
 }
 
@@ -240,10 +240,10 @@ fn cancelled_seat_can_be_booked_again() {
     let booking_id = Uuid::new_v4();
     let history = vec![
         announced(),
-        booked("B4", "alice", "Alice", booking_id),
+        booked("B4", "fox", "Fox", booking_id),
         ConcertEvent::BookingCancelled {
             seat: SeatId::parse("B4").unwrap(),
-            fan_id: fan("alice"),
+            fan_id: fan("fox"),
             booking_id,
             cancellation_id: Uuid::new_v4(),
             refund: 80,
@@ -252,7 +252,7 @@ fn cancelled_seat_can_be_booked_again() {
     assert!(
         TestFramework::<Concert>::with(services())
             .given(history)
-            .when(book("B4", "bob", "Bob", Uuid::new_v4()))
+            .when(book("B4", "panda", "Panda", Uuid::new_v4()))
             .inspect_result()
             .is_ok()
     );
@@ -262,7 +262,7 @@ fn cancelled_seat_can_be_booked_again() {
 fn snapshot_round_trip_keeps_seat_keys_as_strings() {
     let mut concert = Concert::default();
     concert.apply(announced());
-    concert.apply(booked("B4", "alice", "Alice", Uuid::new_v4()));
+    concert.apply(booked("B4", "fox", "Fox", Uuid::new_v4()));
     let json = serde_json::to_value(&concert).unwrap();
     assert!(json["bookings"]["B4"].is_object());
     let restored: Concert = serde_json::from_value(json).unwrap();
@@ -275,10 +275,10 @@ fn error_codes_and_params_match_the_api_contract() {
     assert_eq!(
         ConcertError::SeatTaken {
             seat: SeatId::parse("B4").unwrap(),
-            by: "Alice".into()
+            by: "Fox".into()
         }
         .params(),
-        serde_json::json!({ "seat": "B4", "by": "Alice" })
+        serde_json::json!({ "seat": "B4", "by": "Fox" })
     );
     assert_eq!(
         ConcertError::TicketLimit { limit: 4 }.params(),
@@ -296,7 +296,7 @@ fn d02_every_accepted_concert_command_yields_exactly_one_event() {
     let states: Vec<Vec<ConcertEvent>> = vec![
         vec![],
         vec![announced()],
-        vec![announced(), booked("B4", "alice", "Alice", booking_id)],
+        vec![announced(), booked("B4", "fox", "Fox", booking_id)],
         {
             let mut almost_full = full_house();
             almost_full.pop();
@@ -305,9 +305,9 @@ fn d02_every_accepted_concert_command_yields_exactly_one_event() {
     ];
     let commands = vec![
         announce(),
-        book("B4", "alice", "Alice", Uuid::new_v4()),
-        book("E8", "bob", "Bob", Uuid::new_v4()),
-        cancel("B4", "alice", Uuid::new_v4()),
+        book("B4", "fox", "Fox", Uuid::new_v4()),
+        book("E8", "panda", "Panda", Uuid::new_v4()),
+        cancel("B4", "fox", Uuid::new_v4()),
     ];
     let mut accepted = 0;
     for state in &states {

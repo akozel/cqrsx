@@ -1,7 +1,7 @@
 # Encore 🎸 — a box-office demo for `cqrsx`
 
-Encore is an online box office for a concert hall. You pick a persona (🦊 Alice, 🐼 Bob, 🦄 Chloe,
-🤖 Scalper Bot), click seats on a neon seat map, and watch every click travel through the architecture:
+Encore is an online box office for a concert hall. You pick a persona (🦊 Fox, 🐼 Panda, 🦄 Unicorn,
+🤖 Arbitrage Bot), click seats on a neon seat map, and watch every click travel through the architecture:
 
 ```
 click → command → Concert aggregate rules → event + outbox task   (one PostgreSQL transaction)
@@ -226,15 +226,21 @@ Key points, each visible on screen:
 - **Replay** drops both collections and replays the ledger through the very same `ViewProjection`s.
   The mail inbox lives in a separate database and is never touched: rebuilding read models does not
   resend e-mails.
+- **The strip at the top of the page** draws all of this as a live diagram (Vue Flow, sketch in
+  `docs/img.png`): the `Concert service` and `Fan service` boundaries with command → aggregate →
+  events + outbox → outbox worker inside each, the `projection` boundary with the read database and
+  the UI, the user and the e-mail as diamonds, the flaky mail server with its retry edge back to the
+  outbox, and the signals as circles running along the edges. Click any block for its explanation;
+  the aggregates show their rules as a table.
 
 ## Demo script (≈ 7 minutes)
 
-1. **Welcome (30 s).** Read the banner. Left: box office. Right: X-ray. Top: the command path.
+1. **Welcome (30 s).** Read the banner. Left: the command path with the live events and outbox under it. Right: the box office. Bottom row: the rest of the X-ray (MongoDB, mail, activity, snapshots).
    `events` already holds three `ConcertAnnounced` rows — even concerts were created by commands.
-2. **Event sourcing (1 min).** As 🦊 Alice click B4. A new `SeatBooked` row appears (`sequence 2`), the
+2. **Event sourcing (1 min).** As 🦊 Fox click B4. A new `SeatBooked` row appears (`sequence 2`), the
    `concert_halls` document changes. Drag the ⏳ slider: the hall is shown in the past — the state is
    computed from events 1…n and stored nowhere.
-3. **Invariants (1 min).** Switch to 🐼 Bob and click B4: "seat taken", `Δ events = 0`. Run 🤖 Scalper:
+3. **Invariants (1 min).** Switch to 🐼 Panda and click B4: "seat taken", `Δ events = 0`. Run 🤖 Scalper:
    4 ✅ and 2 ❌ by rule R6. Press a couple of 🧪 buttons.
 4. **Outbox (1.5 min).** Book another seat: the "1 transaction" bracket flashes — the `SeatBooked` row and
    the 🔁 task row appear together. The 🔁 task is delivered in a blink and a `TicketRecorded` event of
@@ -243,11 +249,11 @@ Key points, each visible on screen:
    "📬 delivered (attempt 2)".
 5. **Projections (1 min).** 🌊 Crowd × 3–4 until SOLD OUT 🎉 (derived from `sold == capacity`). Two event
    streams (`Concert`, `Fan`) → two documents (hall and wallet); the wallet catches up one chain step later.
-6. **Cancellation (30 s).** Alice cancels a ticket: `BookingCancelled` + 🔁 → `TicketCancelled` + 💸 → "Refund" e-mail.
+6. **Cancellation (30 s).** Fox cancels a ticket: `BookingCancelled` + 🔁 → `TicketCancelled` + 💸 → "Refund" e-mail.
 7. **Encore! (1.5 min).** 🧨 Wipe → click a seat that was taken (still rejected: rules read the ledger) →
    book a free seat (⚠️ incomplete read model) → ⏪ Encore! in slow motion: seats light up one by one,
    the 📬 inbox does not change.
-8. **Race (30 s).** ⚡ Race: "Alice won · Bob: seat_taken" with the optimistic-locking explanation.
+8. **Race (30 s).** ⚡ Race: "Fox won · Panda: seat_taken" with the optimistic-locking explanation.
 9. **MongoDB outage (optional).** `podman compose stop mongo` → book a seat → the command is accepted with
    the warning "event recorded, read model not updated" → `podman compose start mongo` → Encore! catches up.
 

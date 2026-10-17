@@ -111,7 +111,7 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 - `projections::{mongo_view_repository, concert_hall (View<Concert>), fan_wallet (View<Fan>), notifying, progress}`,
   `app::read_side`, read endpoints `GET /api/concerts`, `/api/concerts/{id}`, `/api/fans/{id}/wallet`,
   `/api/fans/{id}/inbox`; both projections registered as `NotifyingHandler(ViewProjection)` (D-06).
-- Verified: after `BookSeat C6 alice` the `concert_halls/tbilisi-2026` document shows `C6` booked with
+- Verified: after `BookSeat C6 alice` the `concert_halls/radiohead-2026-11-21` document shows `C6` booked with
   `sequence`, `changed_at` from the event metadata, `sold`/`revenue` recomputed; `fan_wallets/alice`
   appears one chain step later with `active_count: 1`; inbox lists alice's e-mails; unknown fan/concert
   → 404 `projection_missing`. LWW unit tests (order 7→6 = 6→7, repeats harmless, tombstones, derived
@@ -132,7 +132,7 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 - Verified against the running databases:
   - fast rebuild of the whole history: 117 events / 56 aggregates in 114 ms; afterwards `GET /api/concerts`
     shows all three concerts with artists (history from before Phase 5 is now projected).
-  - 🧨 wipe → `GET /api/concerts` = `[]`, `GET /api/concerts/tbilisi-2026` = 404; booking a taken seat
+  - 🧨 wipe → `GET /api/concerts` = `[]`, `GET /api/concerts/radiohead-2026-11-21` = 404; booking a taken seat
     after the wipe → 422 `seat_taken` (rules work from the ledger); booking a free seat → new document
     with `incomplete: true` and only that seat.
   - slow rebuild (80 ms/event): 119 events in 9.9 s with `rebuild.progress` per event; a second
@@ -163,7 +163,7 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
   with a 15 s heartbeat and shutdown on signal; no `cqrsx` dependency.
 - Verified: `curl localhost:8090/inspect/postgres/events?limit=3` → rows with `metadata` keys
   `{causation_id, command_id, correlation_id, recorded_at, source}` and the `query` text;
-  `?aggregate_id=alice` filter; snapshots (`berlin-2026 last_sequence 20 current_snapshot 2` …);
+  `?aggregate_id=alice` filter; snapshots (`rammstein-2026-12-05 last_sequence 20 current_snapshot 2` …);
   outbox rows with `attempts/max_attempts/available_at`; `/inspect/postgres/tables` (P1);
   `/inspect/mongo/encore_read/concert_halls` 200, `admin/system.users` and `encore_read/inbox` → 404
   (whitelist); `/inspect/stats`; SSE: 20 s without commands → 1 `state` message + 1 heartbeat, with
@@ -193,6 +193,29 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 - **Manual check (no browser in the sandbox):** walk through demo script steps 1–7 (README) in
   Chrome/Firefox at 1920×1080; watch the PipelineStrip animations, the 2 s row glow, the 🎲 roll, the
   countdown ring, confetti on SOLD OUT, sepia in time-machine mode, RU/EN switch.
+- **2026-10-17, PipelineStrip redone** after the sketch `docs/img.png`: the hand-measured HTML/SVG
+  lanes were replaced by a static Vue Flow canvas (`@vue-flow/core` 1.48) — service boundaries as group
+  nodes, components as boxes, actors as diamonds, signals as circles riding the edge paths (CSS
+  motion path). Layout data in `pipeline/graph.ts`, signal choreography in `pipeline/choreography.ts`
+  (unit-tested with fake timers), nodes/edges as Vue components. Added to the sketch: the flaky mail
+  server with its retry edge back to the outbox; read database labelled `concert_halls · fan_wallets`.
+  Second pass after the first screenshot (crooked diagonals, overflowing captions, visual noise):
+  nodes on a grid with orthogonal (smoothstep) edges, no captions on the canvas, every block and
+  frame clickable → `PipelineExplain` modal with the full story (`i18n/explain.{en,ru}.ts`), rules
+  R1–R8 / R9–R11 as a table. Third pass: page-sized fonts (13 px names, 14 px coloured frame
+  titles, zoom capped at 1), padding around the canvas, the user diamond wears the selected persona
+  (avatar + name) and its modal switches personas. Fourth pass: the diagram is a panel block in a
+  new top row (50 % width) next to the events and outbox panels; the canvas was recomposed for the
+  narrower block (mail server and mailbox in a column above the Fan service), the handlers are named
+  `Outbox worker → Fan / email`, element and frame names stay English in RU. The events and outbox
+  cards show a one-line summary of the payload (`lib/summary.ts`) and hide the raw JSON (payload +
+  metadata) behind a «▸ JSON» spoiler. Later: the JSON opens on a click on the card, outbox rows on a
+  rigid grid with business task names, a status icon whose tooltip is a table of the DB row, hover
+  tracing from tasks too. Layout: diagram (2/3, 27 rem) with events + outbox under it, the compact box
+  office on the right (1/3), the four other X-ray panels in a bottom row. Verified: typecheck, lint,
+  38 vitest tests, production build.
+  **Manual:** the geometry was authored blind — check the fit at 1280–1920 px wide, the token
+  animations and the modal in a real browser.
 
 ## Phase 10 — packaging and docs — ✅ written, images NOT built here
 
@@ -271,3 +294,16 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
 ## Requires manual verification
 
 - `make up` / `make down` / `make dev` with a real `podman compose` (not available in the sandbox).
+- **2026-10-17, cast and bands renamed** (no backward compatibility): personas are now 🦊 Fox (`fox`),
+  🐼 Panda (`panda`), 🦄 Unicorn (`unicorn`) and 🤖 Arbitrage Bot (`arbitrage-bot`); the seed concerts are
+  Radiohead in Minsk (`radiohead-2026-11-21`), Rammstein in Tokyo (`rammstein-2026-12-05`) and Muse in
+  Tbilisi (`muse-2027-01-16`); concert ids are now `<artist-slug>-<yyyy-mm-dd>` (seed and announce dialog). Existing databases keep the
+  old artists (R2 ignores a repeated announce) and old fan ids, so `make reset` before `make up`.
+- **2026-10-17, diagram scenes queued**: signals no longer overlap on the canvas; scenes play one
+  after another (declared duration + 200 ms gap), and a scene that would start more than 4 s behind
+  reality is skipped. Front-end only, no back-end delay. 43 vitest tests.
+- **2026-10-17, animation speed**: the diagram header offers 0.5× · 1× · 2× (persisted as `encore.pace`);
+  the choreography scales every timer by it. 45 vitest tests.
+- **2026-10-17, forks on the diagram**: accepted scenes hold the queue only until the token reaches
+  events + outbox; the next scene (task chain, mail attempt) starts at that moment while the projection
+  branch finishes, mirroring the single transaction. 46 vitest tests.

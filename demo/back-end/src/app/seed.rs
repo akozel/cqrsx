@@ -6,6 +6,8 @@ use crate::{
 };
 use chrono::NaiveDate;
 
+/// `concert_id` = `<artist-slug>-<yyyy-mm-dd>`: an artist rarely plays twice on one day, unlike a
+/// city in a year. The same rule builds the id in the announce dialog of the UI.
 pub struct SeedConcert {
     pub concert_id: &'static str,
     pub artist: &'static str,
@@ -15,21 +17,21 @@ pub struct SeedConcert {
 
 pub const SEED_CONCERTS: [SeedConcert; 3] = [
     SeedConcert {
-        concert_id: "tbilisi-2026",
-        artist: "The Event Sourcerers",
-        city: "Tbilisi",
+        concert_id: "radiohead-2026-11-21",
+        artist: "Radiohead",
+        city: "Minsk",
         date: (2026, 11, 21),
     },
     SeedConcert {
-        concert_id: "berlin-2026",
-        artist: "Eventually Consistent",
-        city: "Berlin",
+        concert_id: "rammstein-2026-12-05",
+        artist: "Rammstein",
+        city: "Tokyo",
         date: (2026, 12, 5),
     },
     SeedConcert {
-        concert_id: "lisbon-2027",
-        artist: "The Idempotents",
-        city: "Lisbon",
+        concert_id: "muse-2027-01-16",
+        artist: "Muse",
+        city: "Tbilisi",
         date: (2027, 1, 16),
     },
 ];

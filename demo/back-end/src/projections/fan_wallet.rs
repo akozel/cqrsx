@@ -123,7 +123,7 @@ mod tests {
 
     fn envelope(sequence: usize, payload: FanEvent) -> EventEnvelope<Fan> {
         EventEnvelope {
-            aggregate_id: "alice".into(),
+            aggregate_id: "fox".into(),
             sequence,
             payload,
             metadata: HashMap::from([("recorded_at".to_owned(), format!("2026-10-17T09:00:{sequence:02}.000000Z"))]),
@@ -135,11 +135,11 @@ mod tests {
             sequence,
             FanEvent::TicketRecorded {
                 booking_id,
-                concert_id: "tbilisi-2026".into(),
+                concert_id: "radiohead-2026-11-21".into(),
                 seat: SeatId::parse("B4").unwrap(),
                 zone: Zone::Standard,
                 price,
-                fan_name: "Alice".into(),
+                fan_name: "Fox".into(),
             },
         )
     }
@@ -150,7 +150,7 @@ mod tests {
             FanEvent::TicketCancelled {
                 booking_id,
                 cancellation_id: Uuid::new_v4(),
-                concert_id: "tbilisi-2026".into(),
+                concert_id: "radiohead-2026-11-21".into(),
                 seat: SeatId::parse("B4").unwrap(),
                 refund: 80,
             },
@@ -170,7 +170,7 @@ mod tests {
         let a = Uuid::new_v4();
         let b = Uuid::new_v4();
         let view = apply(&[recorded(1, a, 80), recorded(2, b, 120), cancelled(3, a)]);
-        assert_eq!((view.fan_id.as_str(), view.fan_name.as_str()), ("alice", "Alice"));
+        assert_eq!((view.fan_id.as_str(), view.fan_name.as_str()), ("fox", "Fox"));
         assert_eq!((view.active_count, view.total_spent, view.last_sequence), (1, 120, 3));
         assert_eq!(view.tickets[&a.to_string()].state, TicketEntryState::Cancelled);
         assert_eq!(view.tickets[&a.to_string()].refund, Some(80));

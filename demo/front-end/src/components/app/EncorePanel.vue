@@ -34,7 +34,7 @@ async function verify() {
 </script>
 
 <template>
-  <div class="text-sm">
+  <div class="text-xs">
     <div class="flex flex-wrap items-center gap-2">
       <span class="font-semibold">{{ t('encore.title') }}</span>
       <button type="button" class="action-btn" :disabled="running || rebuild.busy" @click="rebuild.wipe()">{{ t('encore.wipe') }}</button>

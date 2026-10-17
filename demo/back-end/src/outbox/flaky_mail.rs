@@ -236,10 +236,10 @@ pub(crate) mod tests {
         Mail {
             id: "e_ticket:b-1".into(),
             kind: "e_ticket",
-            to_fan_id: "alice".into(),
-            to_name: "Alice".into(),
+            to_fan_id: "fox".into(),
+            to_name: "Fox".into(),
             subject: "🎫".into(),
-            concert_id: "tbilisi-2026".into(),
+            concert_id: "radiohead-2026-11-21".into(),
             seat: "B4".into(),
             amount: 80,
         }

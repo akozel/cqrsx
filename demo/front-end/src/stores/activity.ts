@@ -16,6 +16,8 @@ export const useActivityStore = defineStore('activity', () => {
   const connected = ref(false)
   /** Last task-level signal for the PipelineStrip (worker animations). */
   const taskSignal = ref<{ type: string; entry: ActivityEntry; seq: number } | null>(null)
+  /** Last `command.*` signal from the back-end: the Fan aggregate only ever gets commands this way (from tasks). */
+  const commandSignal = ref<{ type: string; entry: ActivityEntry; seq: number } | null>(null)
   let handle: SseHandle | null = null
   let seq = 0
 
@@ -25,7 +27,8 @@ export const useActivityStore = defineStore('activity', () => {
 
   function route(entry: ActivityEntry) {
     const type = entry.type
-    if (type.startsWith('task.') ) taskSignal.value = { type, entry, seq: ++seq }
+    if (type.startsWith('task.')) taskSignal.value = { type, entry, seq: ++seq }
+    if (type.startsWith('command.')) commandSignal.value = { type, entry, seq: ++seq }
     if (type.startsWith('rebuild.') || type === 'projections.wiped') rebuild.onActivity(type, entry)
     if (type === 'projection.updated' || type === 'projection.failed') {
       // Possibly from another tab or from the task chain: refresh with a small debounce.
@@ -52,7 +55,8 @@ export const useActivityStore = defineStore('activity', () => {
           try {
             const entry = JSON.parse(data) as ActivityEntry
             if (entry.type !== 'rebuild.progress') push(entry)
-            else if (entries.value[0]?.type === 'rebuild.progress') entries.value = [entry, ...entries.value.slice(1)]
+            else if (entries.value[0]?.type === 'rebuild.progress')
+              entries.value = [entry, ...entries.value.slice(1)]
             else push(entry)
             route(entry)
           } catch {
@@ -71,5 +75,5 @@ export const useActivityStore = defineStore('activity', () => {
     handle = null
   }
 
-  return { entries, connected, taskSignal, connect, disconnect }
+  return { entries, connected, taskSignal, commandSignal, connect, disconnect }
 })

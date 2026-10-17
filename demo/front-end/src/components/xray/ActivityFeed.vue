@@ -48,9 +48,22 @@ function label(entry: ActivityEntry) {
 </script>
 
 <template>
-  <XrayPanel db="log" :title="t('panels.activity.title')" :count="activity.connected ? t('common.connected') : t('common.disconnected')" :explain="t('panels.activity.explain')">
+  <XrayPanel
+    db="log"
+    :title="t('panels.activity.title')"
+    :count="activity.connected ? t('common.connected') : t('common.disconnected')"
+    :explain="t('panels.activity.explain')"
+  >
     <ul class="space-y-0.5 text-xs font-mono">
-      <li v-for="entry in activity.entries" :key="entry.id" class="flex gap-2" :class="{ 'opacity-60': String(entry.source ?? '').startsWith('task:'), 'text-neon-red': entry.type.endsWith('.failed') || entry.type === 'command.rejected' }">
+      <li
+        v-for="entry in activity.entries"
+        :key="entry.id"
+        class="flex gap-2"
+        :class="{
+          'opacity-60': String(entry.source ?? '').startsWith('task:'),
+          'text-neon-red': entry.type.endsWith('.failed') || entry.type === 'command.rejected',
+        }"
+      >
         <span class="opacity-50">{{ entry.at.slice(11, 23) }}</span>
         <span>{{ ICONS[entry.type] ?? '•' }}</span>
         <span class="break-all">{{ label(entry) }}</span>

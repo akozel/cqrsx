@@ -19,7 +19,7 @@ watch(() => session.concertId, () => timeMachine.reset(), { immediate: false })
 </script>
 
 <template>
-  <div class="text-sm">
+  <div class="text-xs">
     <div class="flex items-center gap-2">
       <span class="font-semibold">{{ t('timemachine.title') }}</span>
       <span class="text-xs font-mono opacity-70">{{ t('timemachine.event_of', { n: position, last: timeMachine.lastSequence }) }}</span>

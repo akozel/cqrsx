@@ -36,7 +36,7 @@ async function cancel(concertId: string, seat: string) {
 </script>
 
 <template>
-  <div class="text-sm">
+  <div class="text-xs">
     <div class="flex items-center gap-2 font-semibold">
       {{ t('wallet.title') }}
       <span class="text-xs opacity-60 font-normal">{{ session.currentPersona().avatar }} {{ session.currentPersona().name }}</span>

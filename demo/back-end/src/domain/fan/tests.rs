@@ -8,22 +8,22 @@ fn seat(raw: &str) -> SeatId {
 fn record(booking_id: Uuid) -> FanCommand {
     FanCommand::RecordTicket {
         booking_id,
-        concert_id: "tbilisi-2026".into(),
+        concert_id: "radiohead-2026-11-21".into(),
         seat: seat("B4"),
         zone: Zone::Standard,
         price: 80,
-        fan_name: "Alice".into(),
+        fan_name: "Fox".into(),
     }
 }
 
 fn recorded(booking_id: Uuid) -> FanEvent {
     FanEvent::TicketRecorded {
         booking_id,
-        concert_id: "tbilisi-2026".into(),
+        concert_id: "radiohead-2026-11-21".into(),
         seat: seat("B4"),
         zone: Zone::Standard,
         price: 80,
-        fan_name: "Alice".into(),
+        fan_name: "Fox".into(),
     }
 }
 
@@ -39,7 +39,7 @@ fn cancelled(booking_id: Uuid, cancellation_id: Uuid) -> FanEvent {
     FanEvent::TicketCancelled {
         booking_id,
         cancellation_id,
-        concert_id: "tbilisi-2026".into(),
+        concert_id: "radiohead-2026-11-21".into(),
         seat: seat("B4"),
         refund: 80,
     }
@@ -100,13 +100,13 @@ fn derived_counters_ignore_cancelled_tickets_and_name_comes_from_the_first_ticke
     fan.apply(recorded(first));
     fan.apply(FanEvent::TicketRecorded {
         booking_id: second,
-        concert_id: "berlin-2026".into(),
+        concert_id: "rammstein-2026-12-05".into(),
         seat: seat("A1"),
         zone: Zone::Vip,
         price: 120,
-        fan_name: "Alice (renamed)".into(),
+        fan_name: "Fox (renamed)".into(),
     });
-    assert_eq!(fan.name(), Some("Alice"));
+    assert_eq!(fan.name(), Some("Fox"));
     assert_eq!((fan.active_count(), fan.total_spent()), (2, 200));
     fan.apply(cancelled(first, Uuid::new_v4()));
     assert_eq!((fan.active_count(), fan.total_spent()), (1, 120));

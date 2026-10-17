@@ -83,27 +83,36 @@ async function confirmCancel() {
     </div>
     <div v-else-if="concerts.stale" class="mb-2 rounded border border-border px-3 py-1 text-xs opacity-80">{{ t('states.wiped') }}</div>
     <div v-else-if="concerts.currentView?.incomplete" class="mb-2 rounded border border-neon-amber/60 px-3 py-1 text-xs text-neon-amber">{{ t('states.incomplete') }}</div>
-    <div class="relative mx-auto w-fit">
-      <div class="mx-auto mb-3 w-64 rounded-b-3xl border border-neon-pink/60 stage-glow py-1 text-center text-xs tracking-widest">
-        🎤 {{ t('seatmap.stage') }} <span class="opacity-70">· {{ artist }}</span>
+    <!-- Three columns: row letters · stage + seats (the stage is centred on the seats alone) · zones -->
+    <div class="mx-auto flex w-fit gap-1">
+      <div class="flex w-5 flex-col gap-1.5">
+        <div class="h-6 mb-2"></div>
+        <span v-for="r in rows" :key="r.row" class="flex h-9 items-center text-xs font-mono opacity-60">{{ r.row }}</span>
       </div>
-      <div v-if="soldOut" class="absolute left-1/2 top-10 -translate-x-1/2 text-3xl font-extrabold text-neon-pink sold-out-sign pointer-events-none">SOLD OUT</div>
-      <div class="seat-grid flex flex-col gap-1.5" @keydown="onKey">
-        <div v-for="r in rows" :key="r.row" class="flex items-center gap-1.5">
-          <span class="w-5 text-xs font-mono opacity-60">{{ r.row }}</span>
-          <SeatButton
-            v-for="s in r.seats"
-            :key="s.id"
-            :seat="s"
-            :state="seatState(s.id, context)"
-            v-bind="occupant(s.id)"
-            :pending="commands.isPending(session.concertId, s.id)"
-            :outcome="commands.lastOutcome[`${session.concertId}:${s.id}`] ?? null"
-            :history="timeMachine.active"
-            @click="onSeat(s.id)"
-          />
-          <span class="ml-2 text-[10px] font-mono opacity-60 w-24" :style="{ color: ZONE_COLORS[r.seats[0]?.zone ?? 'balcony'] }">{{ t(`zones.${r.seats[0]?.zone ?? 'balcony'}`) }} {{ r.seats[0]?.price }} €</span>
+      <div class="relative flex flex-col gap-1.5">
+        <div class="mx-auto mb-2 h-6 w-64 rounded-b-3xl border border-neon-pink/60 stage-glow text-center text-xs leading-6 tracking-widest">
+          🎤 {{ t('seatmap.stage') }} <span class="opacity-70">· {{ artist }}</span>
         </div>
+        <div v-if="soldOut" class="absolute left-1/2 top-12 -translate-x-1/2 text-3xl font-extrabold text-neon-pink sold-out-sign pointer-events-none">SOLD OUT</div>
+        <div class="seat-grid flex flex-col gap-1.5" @keydown="onKey">
+          <div v-for="r in rows" :key="r.row" class="flex h-9 items-center gap-1.5">
+            <SeatButton
+              v-for="s in r.seats"
+              :key="s.id"
+              :seat="s"
+              :state="seatState(s.id, context)"
+              v-bind="occupant(s.id)"
+              :pending="commands.isPending(session.concertId, s.id)"
+              :outcome="commands.lastOutcome[`${session.concertId}:${s.id}`] ?? null"
+              :history="timeMachine.active"
+              @click="onSeat(s.id)"
+            />
+          </div>
+        </div>
+      </div>
+      <div class="ml-2 flex w-20 flex-col gap-1.5">
+        <div class="h-6 mb-2"></div>
+        <span v-for="r in rows" :key="r.row" class="flex h-9 items-center text-[10px] font-mono opacity-60" :style="{ color: ZONE_COLORS[r.seats[0]?.zone ?? 'balcony'] }">{{ t(`zones.${r.seats[0]?.zone ?? 'balcony'}`) }} {{ r.seats[0]?.price }} €</span>
       </div>
     </div>
     <div v-if="cancelPrompt" class="absolute inset-0 flex items-center justify-center bg-bg/70 rounded-lg">

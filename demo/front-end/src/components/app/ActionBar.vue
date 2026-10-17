@@ -33,7 +33,7 @@ async function scalper() {
     for (let i = 0; i < 6; i++) {
       const seat = pickRandom(freeSeats())
       if (!seat) break
-      const r = await commands.send(session.concertId, { type: 'BookSeat', seat, fan_id: 'scalper-bot', fan_name: 'Scalper Bot' }, { quiet: true })
+      const r = await commands.send(session.concertId, { type: 'BookSeat', seat, fan_id: 'arbitrage-bot', fan_name: 'Arbitrage Bot' }, { quiet: true })
       if (r.outcome === 'accepted') bought++
       else rejected++
       await sleep(250)
@@ -67,7 +67,7 @@ async function crowd() {
   }
 }
 
-/** [P1] Race: Alice and Bob hit the same free seat at the same moment. */
+/** [P1] Race: Fox and Panda hit the same free seat at the same moment. */
 async function race() {
   running.value = 'race'
   raceNote.value = null
@@ -75,11 +75,11 @@ async function race() {
     const seat = pickRandom(freeSeats())
     if (!seat) return
     const [a, b] = await Promise.all([
-      commands.send(session.concertId, { type: 'BookSeat', seat, fan_id: 'alice', fan_name: 'Alice' }, { quiet: true }),
-      commands.send(session.concertId, { type: 'BookSeat', seat, fan_id: 'bob', fan_name: 'Bob' }, { quiet: true }),
+      commands.send(session.concertId, { type: 'BookSeat', seat, fan_id: 'fox', fan_name: 'Fox' }, { quiet: true }),
+      commands.send(session.concertId, { type: 'BookSeat', seat, fan_id: 'panda', fan_name: 'Panda' }, { quiet: true }),
     ])
-    const winner = a.outcome === 'accepted' ? '🦊 Alice' : b.outcome === 'accepted' ? '🐼 Bob' : '—'
-    const loser = a.outcome === 'accepted' ? `🐼 Bob` : `🦊 Alice`
+    const winner = a.outcome === 'accepted' ? '🦊 Fox' : b.outcome === 'accepted' ? '🐼 Panda' : '—'
+    const loser = a.outcome === 'accepted' ? `🐼 Panda` : `🦊 Fox`
     const code = (a.outcome === 'accepted' ? b : a).error?.code ?? '?'
     raceNote.value = t('actions.race_result', { winner, loser, code })
     commands.pushToast({ kind: 'info', text: raceNote.value })
@@ -90,7 +90,7 @@ async function race() {
 </script>
 
 <template>
-  <div class="flex flex-wrap items-center gap-2 text-sm">
+  <div class="flex flex-wrap items-center gap-2 text-xs">
     <button type="button" class="action-btn" :disabled="running !== null" :title="t('actions.scalper_hint')" @click="scalper">{{ t('actions.scalper') }}</button>
     <button type="button" class="action-btn" :disabled="running !== null" :title="t('actions.crowd_hint')" @click="crowd">{{ t('actions.crowd') }}</button>
     <button type="button" class="action-btn" :disabled="running !== null" :title="t('actions.race_hint')" @click="race">{{ t('actions.race') }}</button>

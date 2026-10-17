@@ -2,12 +2,10 @@
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import XrayPanel from './XrayPanel.vue'
-import JsonView from './JsonView.vue'
-import StatusChip from '@/components/ui/StatusChip.vue'
+import TaskStatusIcon from './TaskStatusIcon.vue'
 import Countdown from '@/components/ui/Countdown.vue'
 import { useXrayStore } from '@/stores/xray'
-import { deriveTaskStatus, retryCountdownMs, taskKind } from '@/lib/outboxStatus'
-import { shortId } from '@/lib/format'
+import { deriveTaskStatus, retryCountdownMs } from '@/lib/outboxStatus'
 import { useTraceStore } from '@/stores/trace'
 
 const xray = useXrayStore()
@@ -19,9 +17,30 @@ onMounted(() => (timer = setInterval(() => (now.value = Date.now()), 250)))
 onUnmounted(() => timer && clearInterval(timer))
 
 const rows = computed(() => xray.state.outbox?.rows ?? [])
-const counters = computed(() => xray.state.stats.tasks_by_status ?? {})
-const icon = (taskType: string) => ({ chain: '🔁', e_ticket: '🎫', refund: '💸', other: '📦' })[taskKind(taskType)]
+/** Cards opened by a click: the raw payload + metadata. */
+const opened = ref(new Set<string>())
+function toggle(id: string) {
+  const next = new Set(opened.value)
+  if (!next.delete(id)) next.add(id)
+  opened.value = next
+}
+/** Status counters in a fixed order; pending and processing are always shown, even at zero. */
+const ALWAYS = ['pending', 'processing'] as const
+const counters = computed(() => {
+  const by = xray.state.stats.tasks_by_status ?? {}
+  const order = [
+    ...ALWAYS,
+    ...Object.keys(by)
+      .filter((k) => !(ALWAYS as readonly string[]).includes(k))
+      .sort(),
+  ]
+  return order.map((status) => [status, by[status] ?? 0] as const)
+})
 const dbNow = () => now.value + xray.dbTimeOffset
+/** The business meaning of a task format, falling back to the format itself. */
+function taskLabel(taskType: string) {
+  return te(`tasks.${taskType}`) ? t(`tasks.${taskType}`) : taskType
+}
 function reason(code: string | null) {
   if (!code) return ''
   return te(`chaos.${code}`) ? t(`chaos.${code}`) : code
@@ -29,26 +48,69 @@ function reason(code: string | null) {
 </script>
 
 <template>
-  <XrayPanel db="pg" :title="t('panels.outbox.title')" :count="xray.state.outbox?.total" :explain="t('panels.outbox.explain')" :query="xray.state.outbox?.query" :warning="xray.pgDown ? t('xray.pg_down') : undefined">
-    <div class="flex flex-wrap gap-2 text-[10px] font-mono mb-2 opacity-80">
-      <span v-for="(n, status) in counters" :key="status" class="rounded border border-border px-1">{{ status }}: {{ n }}</span>
+  <XrayPanel
+    db="pg"
+    :title="t('panels.outbox.title')"
+    :count="xray.state.outbox?.total"
+    :explain="t('panels.outbox.explain')"
+    :query="xray.state.outbox?.query"
+    :warning="xray.pgDown ? t('xray.pg_down') : undefined"
+  >
+    <div class="xray-counters flex flex-wrap gap-2 text-[10px] font-mono mb-2 opacity-80">
+      <span
+        v-for="[status, n] in counters"
+        :key="status"
+        class="rounded border border-border px-1"
+        :class="{ 'opacity-50': n === 0 }"
+        >{{ status }}: {{ n }}</span
+      >
     </div>
     <p v-if="rows.length === 0" class="text-xs opacity-60">{{ t('xray.no_rows') }}</p>
     <TransitionGroup name="row" tag="ul" class="space-y-1">
-      <li v-for="row in rows" :key="row.id" class="rounded border border-border/60 px-2 py-1 text-xs" :class="{ 'row-fresh': xray.freshTasks.has(row.id), 'ring-1 ring-neon-violet': trace.correlationId !== null && row.metadata.correlation_id === trace.correlationId }">
-        <div class="flex flex-wrap items-center gap-2 font-mono">
-          <span>{{ icon(row.task_type) }}</span>
-          <span class="opacity-60">{{ shortId(row.id) }}</span>
-          <span class="font-semibold">{{ row.task_type }} v{{ row.task_version }}</span>
-          <StatusChip :status="deriveTaskStatus(row)" :attempt="row.attempts" :retry-seconds="Math.ceil(retryCountdownMs(row, dbNow()) / 1000)" />
-          <span class="opacity-70">{{ t('xray.attempt', { n: row.attempts, max: row.max_attempts }) }}</span>
-          <span v-if="row.attempts > 1" class="text-neon-amber">{{ '🎲'.repeat(Math.min(row.attempts - 1, 6)) }}</span>
-          <Countdown v-if="deriveTaskStatus(row) === 'retry_scheduled' && retryCountdownMs(row, dbNow()) > 0" :remaining-ms="retryCountdownMs(row, dbNow())" :total-ms="8000" />
-          <span class="ml-auto opacity-50">{{ row.aggregate_type }}/{{ row.aggregate_id }} #{{ row.aggregate_sequence }}</span>
-        </div>
-        <div v-if="taskKind(row.task_type) === 'chain'" class="text-[10px] opacity-60">{{ t('xray.chain_task') }}</div>
-        <div v-if="row.last_error" class="text-[11px] text-neon-amber">{{ t('xray.last_error') }}: {{ reason(row.last_error) }}</div>
-        <JsonView :value="row.payload" />
+      <li
+        v-for="row in rows"
+        :key="row.id"
+        class="xray-task grid cursor-pointer items-center gap-x-2 rounded border border-border/60 px-2 py-0.5 text-xs"
+        :aria-expanded="opened.has(row.id)"
+        :class="{
+          'row-fresh': xray.freshTasks.has(row.id),
+          'ring-1 ring-neon-violet':
+            trace.correlationId !== null && row.metadata.correlation_id === trace.correlationId,
+        }"
+        @mouseenter="trace.set(String(row.metadata.correlation_id ?? ''), row.aggregate_id)"
+        @mouseleave="trace.clear()"
+        @click="toggle(row.id)"
+      >
+        <span class="min-w-0 truncate">
+          <span
+            class="mr-1 rounded px-1 font-mono text-[10px]"
+            :class="
+              row.aggregate_type === 'Concert'
+                ? 'bg-cyan-500/20 text-neon-cyan'
+                : 'bg-violet-500/20 text-neon-violet'
+            "
+            >{{ row.aggregate_type }}</span
+          >
+          <span class="font-semibold">{{ taskLabel(row.task_type) }}</span>
+        </span>
+        <span class="flex items-center gap-1 font-mono opacity-70">
+          {{ row.attempts }}/{{ row.max_attempts }}
+          <Countdown
+            v-if="deriveTaskStatus(row) === 'retry_scheduled' && retryCountdownMs(row, dbNow()) > 0"
+            :remaining-ms="retryCountdownMs(row, dbNow())"
+            :total-ms="8000"
+          />
+        </span>
+        <TaskStatusIcon
+          class="justify-self-end"
+          :row="row"
+          :retry-seconds="Math.ceil(retryCountdownMs(row, dbNow()) / 1000)"
+          :reason="row.last_error ? reason(row.last_error) : undefined"
+          @click.stop
+        />
+        <pre v-if="opened.has(row.id)" class="xray-json col-span-3">{{
+          JSON.stringify({ payload: row.payload, metadata: row.metadata }, null, 2)
+        }}</pre>
       </li>
     </TransitionGroup>
   </XrayPanel>

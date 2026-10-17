@@ -20,7 +20,7 @@ pub use event::ConcertEvent;
 
 use crate::domain::venue::SeatId;
 
-/// A validated fan identifier (`alice`, `crowd-12`, `scalper-bot`): `[a-z0-9_-]{1,64}`.
+/// A validated fan identifier (`fox`, `crowd-12`, `arbitrage-bot`): `[a-z0-9_-]{1,64}`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct FanId(String);

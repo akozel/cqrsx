@@ -1,6 +1,14 @@
+import explain from './explain.en'
+
 export default {
   app: { title: 'Encore', subtitle: 'cqrsx demo' },
-  layout: { app: 'Box office', xray: 'X-ray', pipeline: 'Command path', language: 'Language', help: 'Tutorial' },
+  layout: {
+    app: 'Box office',
+    xray: 'X-ray',
+    pipeline: 'Command path',
+    language: 'Language',
+    help: 'Tutorial',
+  },
   banner: {
     title: 'Tutorial',
     body: 'On the left is the box office — what a fan sees. On the right is an X-ray of what the databases hold right now. At the top is the path every command takes. Click any seat and watch what changes.',
@@ -8,31 +16,52 @@ export default {
     close: 'Got it',
   },
   pipeline: {
+    concert_service: 'Concert service',
+    fan_service: 'Fan service',
+    projection: 'projection',
+    user: 'user',
     command: 'Command',
     aggregate: 'Aggregate (rules)',
-    events: 'events',
-    outbox: 'outbox',
+    store: 'events + outbox',
     transaction: '1 transaction',
-    projections: 'Read models',
-    screen: 'Screen',
-    worker: 'Worker',
-    mail: 'Mail',
-    fan_command: 'Command (Fan)',
+    task_handler_a: 'Outbox worker → Fan',
+    task_handler_b: 'Outbox worker → email',
+    mail_server: 'mail server',
+    email: 'email',
+    read_database: 'read database',
+    ui: 'UI',
+    speed: 'speed',
+    hint: 'click a block for details',
     nothing_written: 'nothing written',
     replaying: '⏪ replay',
     empty: 'empty',
   },
-  concerts: { title: 'Concerts', sold: '{sold}/{capacity}', sold_out: 'SOLD OUT', incomplete: 'incomplete', unknown: '?', revenue: 'revenue' },
-  personas: { title: 'Who are you?', tickets: '{n}/{limit} tickets' },
-  seatmap: { stage: 'STAGE', legend: 'Zones', free: 'free', booked: 'taken', mine: 'yours', unknown: 'unknown (read model wiped)', seat_label: '{seat}, {zone}, {price} €, {state}' },
+  concerts: {
+    title: 'Concerts',
+    sold: '{sold}/{capacity}',
+    sold_out: 'SOLD OUT',
+    incomplete: 'incomplete',
+    unknown: '?',
+    revenue: 'revenue',
+  },
+  personas: { tickets: '{n}/{limit} tickets' },
+  seatmap: {
+    stage: 'STAGE',
+    legend: 'Zones',
+    free: 'free',
+    booked: 'taken',
+    mine: 'yours',
+    unknown: 'unknown (read model wiped)',
+    seat_label: '{seat}, {zone}, {price} €, {state}',
+  },
   zones: { vip: 'VIP', standard: 'Standard', balcony: 'Balcony' },
   actions: {
-    scalper: '🤖 Scalper',
-    scalper_hint: 'Scalper Bot books 6 random seats one by one and runs into the 4-tickets rule',
+    scalper: '🤖 Arbitrage bot',
+    scalper_hint: 'The Arbitrage Bot books 6 random seats one by one and runs into the 4-tickets rule',
     crowd: '🌊 Crowd',
     crowd_hint: '10 random fans book 10 random free seats — the fastest way to SOLD OUT',
     race: '⚡ Race',
-    race_hint: 'Alice and Bob click the same seat at the same moment',
+    race_hint: 'Fox and Panda click the same seat at the same moment',
     cancel_prompt: 'Cancel this ticket? Refund {refund} €',
     cancel_yes: 'Cancel ticket',
     cancel_no: 'Keep it',
@@ -99,6 +128,19 @@ export default {
     snapshots_hint: 'bookmark: load the snapshot + the tail of events',
     attempt: 'attempt {n}/{max}',
     chain_task: 'command to the Fan aggregate',
+    queued: 'queued, waiting for a worker',
+    attempt_limit: 'attempt limit reached',
+    tip: {
+      status: 'status',
+      attempt: 'attempts',
+      next: 'next',
+      task: 'task',
+      id: 'id',
+      correlation: 'correlation',
+      aggregate: 'aggregate',
+      reason: 'reason',
+    },
+    db_status: 'status column of transactional_outbox',
     waiting_worker: 'waiting for a worker',
     retry_in: 'retry in {s} s',
     last_error: 'reason',
@@ -123,7 +165,8 @@ export default {
     },
     snapshots: {
       title: '🐘 snapshots',
-      explain: "Bookmarks: the aggregate's saved state at event N. Loading a concert = snapshot + the events after it.",
+      explain:
+        "Bookmarks: the aggregate's saved state at event N. Loading a concert = snapshot + the events after it.",
     },
     outbox: {
       title: '🐘 outbox',
@@ -132,18 +175,23 @@ export default {
     },
     concert_halls: {
       title: '🍃 concert_halls',
-      explain: 'Read model "seat map": one document per concert. Built only from events; safe to delete and rebuild.',
+      explain:
+        'Read model "seat map": one document per concert. Built only from events; safe to delete and rebuild.',
     },
     fan_wallets: {
       title: '🍃 fan_wallets',
       explain:
-        "Read model \"fan wallet\": one document per fan, built from the fan's own ledger (the Fan aggregate), which outbox tasks fill in after every booking.",
+        'Read model "fan wallet": one document per fan, built from the fan\'s own ledger (the Fan aggregate), which outbox tasks fill in after every booking.',
     },
     inbox: {
       title: '📬 inbox',
-      explain: 'Not a read model! This is the "external mail service" (simulated). Replay never touches it — no email is sent twice.',
+      explain:
+        'Not a read model! This is the "external mail service" (simulated). Replay never touches it — no email is sent twice.',
     },
-    activity: { title: '📜 activity', explain: 'Live back-end log: what is happening right now. Kept in memory only.' },
+    activity: {
+      title: '📜 activity',
+      explain: 'Live back-end log: what is happening right now. Kept in memory only.',
+    },
   },
   states: {
     race: 'Both requests read version N and tried to write N+1. The database accepted only the first; the second was retried on fresh state — and the "seat must be free" rule rejected it.',
@@ -151,7 +199,8 @@ export default {
     incomplete: '⚠️ This read model is incomplete: it is missing the start of the history. Press Encore!',
     wiped: 'Read models are empty. The ledger is intact — press Encore! to restore everything.',
     locked: 'Box office closed for a moment: rebuilding read models.',
-    projection_failed: "⚠️ The event was recorded, but the read model wasn't updated. Encore! will catch it up.",
+    projection_failed:
+      "⚠️ The event was recorded, but the read model wasn't updated. Encore! will catch it up.",
   },
   rules: {
     concert_not_found: "This concert hasn't been announced",
@@ -214,7 +263,7 @@ export default {
     done: 'Close',
     events: {
       title: '① Event store',
-      body: 'Nothing is ever edited or deleted. Every accepted decision — "seat B4 sold to Alice" — is appended to the events table, like a ledger. The current state of the hall is simply all of the concert\'s records read in order. Every 10 events the engine stores a bookmark (snapshot) so it doesn\'t have to reread the whole book.',
+      body: 'Nothing is ever edited or deleted. Every accepted decision — "seat B4 sold to Fox" — is appended to the events table, like a ledger. The current state of the hall is simply all of the concert\'s records read in order. Every 10 events the engine stores a bookmark (snapshot) so it doesn\'t have to reread the whole book.',
       try: 'Book a random seat and find the new row in 🐘 events; drag the ⏳ time machine.',
     },
     rules: {
@@ -229,7 +278,7 @@ export default {
     },
     projections: {
       title: '④ Projections',
-      body: 'A screen needs data shaped for it, not a ledger. Event handlers turn events into MongoDB documents: a seat map from the concert\'s ledger and a wallet from the fan\'s ledger. One click, two event streams, two different read models, and the wallet catches up one step later. MongoDB is a shop window that is safe to break: the truth lives only in the PostgreSQL ledger.',
+      body: "A screen needs data shaped for it, not a ledger. Event handlers turn events into MongoDB documents: a seat map from the concert's ledger and a wallet from the fan's ledger. One click, two event streams, two different read models, and the wallet catches up one step later. MongoDB is a shop window that is safe to break: the truth lives only in the PostgreSQL ledger.",
       try: 'Book a seat and compare the concert_halls and fan_wallets documents.',
     },
     encore: {
@@ -247,8 +296,17 @@ export default {
     submit: 'Announce',
     id_hint: 'concert_id will be {id}',
   },
-  trace: { hint: 'hover an event to highlight its task and document (same correlation_id)' },
-  verify: { ok: '✅ read models match the ledger ({halls} halls, {wallets} wallets)', diff: '❌ {n} differences', running: 'verifying…' },
+  tasks: {
+    encore_record_ticket: 'Add the ticket to the wallet',
+    encore_record_cancellation: 'Cancel the ticket in the wallet',
+    encore_send_e_ticket: 'E-mail the ticket to the fan',
+    encore_issue_refund: 'E-mail the refund to the fan',
+  },
+  verify: {
+    ok: '✅ read models match the ledger ({halls} halls, {wallets} wallets)',
+    diff: '❌ {n} differences',
+    running: 'verifying…',
+  },
   toasts: { accepted: 'Accepted: {what}', warning: 'Warning' },
   common: {
     loading: 'Loading…',
@@ -266,4 +324,5 @@ export default {
     tab_halls: 'concert_halls',
     tab_wallets: 'fan_wallets',
   },
+  explain,
 }

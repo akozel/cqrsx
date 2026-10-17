@@ -17,8 +17,8 @@
 
 ## 0. TL;DR
 
-**Encore** — онлайн-касса концертного зала. Пользователь выбирает персонажа (🦊 Alice, 🐼 Bob, 🦄 Chloe,
-🤖 Scalper Bot), кликает по местам неоновой схемы зала и видит, как каждое действие проходит через архитектуру:
+**Encore** — онлайн-касса концертного зала. Пользователь выбирает персонажа (🦊 Fox, 🐼 Panda, 🦄 Unicorn,
+🤖 Arbitrage Bot), кликает по местам неоновой схемы зала и видит, как каждое действие проходит через архитектуру:
 
 ```
 клик → команда → правила агрегата Concert → событие + outbox-задача (одна транзакция PostgreSQL)
@@ -95,7 +95,7 @@ Vue 3 + Vite 8 + Tailwind 4 (UI) · sidecar на Rust (read-only инспект�
 |---|---|---|
 | Aggregate | `Concert` — один концерт = один поток событий (места); `Fan` — один зритель = один поток (его билеты) | правила при бронировании; кошелёк |
 | Межагрегатная цепочка | `SeatBooked` → задача → `Fan.RecordTicket` → `TicketRecorded` → задача → письмо | ⚙ outbox → второй агрегат на PipelineStrip, общий `correlation_id` |
-| Command | «Забронировать B4 для Alice» (`BookSeat`) | клик по месту |
+| Command | «Забронировать B4 для Fox» (`BookSeat`) | клик по месту |
 | Invariant | место существует, свободно, ≤ 4 билетов в одни руки… | тост с ошибкой, `Δ events = 0` |
 | Domain event | `SeatBooked`, `BookingCancelled`, … | строка в 🐘 `events` |
 | Event store | «кассовая книга»: записи только дописываются | 🐘 `events` |
@@ -123,10 +123,10 @@ Vue 3 + Vite 8 + Tailwind 4 (UI) · sidecar на Rust (read-only инспект�
 
 | `fan_id` | Имя | Аватар | Роль в демо |
 |---|---|---|---|
-| `alice` | Alice | 🦊 | основной персонаж |
-| `bob` | Bob | 🐼 | соперник в «гонке» |
-| `chloe` | Chloe | 🦄 | ещё один фанат |
-| `scalper-bot` | Scalper Bot | 🤖 | пытается скупить всё и упирается в лимит |
+| `fox` | Fox | 🦊 | основной персонаж |
+| `panda` | Panda | 🐼 | соперник в «гонке» |
+| `unicorn` | Unicorn | 🦄 | ещё один фанат |
+| `arbitrage-bot` | Arbitrage Bot | 🤖 | пытается скупить всё и упирается в лимит |
 | `crowd-<n>` | случайное имя из списка | эмодзи по хэшу `fan_id` | «🌊 Толпа» |
 
 Аватар для `crowd-*` фронт вычисляет детерминированно (хэш `fan_id` → индекс в списке эмодзи).
@@ -135,9 +135,9 @@ Vue 3 + Vite 8 + Tailwind 4 (UI) · sidecar на Rust (read-only инспект�
 
 | `concert_id` | Артист | Город | Дата |
 |---|---|---|---|
-| `tbilisi-2026` | The Event Sourcerers | Tbilisi | 2026-11-21 |
-| `berlin-2026` | Eventually Consistent | Berlin | 2026-12-05 |
-| `lisbon-2027` | The Idempotents | Lisbon | 2027-01-16 |
+| `radiohead-2026-11-21` | Radiohead | Minsk | 2026-11-21 |
+| `rammstein-2026-12-05` | Rammstein | Tokyo | 2026-12-05 |
+| `muse-2027-01-16` | Muse | Tbilisi | 2027-01-16 |
 
 Seed идемпотентен «по-бизнесовому»: повторный `AnnounceConcert` отклоняется правилом R2 (`already_announced`),
 и seed просто игнорирует этот отказ — не нужен ни флаг, ни отдельный SQL.
@@ -226,7 +226,7 @@ pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, st
 | R2 | `already_announced` | AnnounceConcert | анонсировать можно один раз | «Этот концерт уже анонсирован» |
 | R3 | `unknown_seat` | BookSeat, CancelBooking | место существует в зале | «Места Z9 нет: ряды A–E, места 1–8» |
 | R4 | `sold_out` | BookSeat | есть свободные места | «Sold out! Билеты закончились» |
-| R5 | `seat_taken` | BookSeat | место свободно | «Место B4 уже занято (🦊 Alice)» |
+| R5 | `seat_taken` | BookSeat | место свободно | «Место B4 уже занято (🦊 Fox)» |
 | R6 | `ticket_limit` | BookSeat | у фаната меньше 4 билетов на этот концерт | «Правило против перекупщиков: не больше 4 билетов в одни руки» |
 | R7 | `seat_not_booked` | CancelBooking | место забронировано | «Это место никто не бронировал» |
 | R8 | `not_your_ticket` | CancelBooking | отменяет только владелец | «Это не ваш билет — отменить может только владелец» |
@@ -422,13 +422,13 @@ storage timeout 3 с. Lease валидируется формулой `lease > 2
 
 ```json
 {
-  "_id": "tbilisi-2026",
+  "_id": "radiohead-2026-11-21",
   "version": 14,
   "view": {
-    "concert": { "artist": "The Event Sourcerers", "city": "Tbilisi", "date": "2026-11-21" },
+    "concert": { "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21" },
     "capacity": 40,
     "seats": {
-      "B4": { "state": "booked", "fan_id": "alice", "fan_name": "Alice", "zone": "standard", "price": 80,
+      "B4": { "state": "booked", "fan_id": "fox", "fan_name": "Fox", "zone": "standard", "price": 80,
               "booking_id": "0192f0c4-…", "sequence": 7, "changed_at": "2026-10-17T09:12:03Z" },
       "A1": { "state": "free", "sequence": 9, "changed_at": "2026-10-17T09:13:40Z" }
     },
@@ -450,12 +450,12 @@ storage timeout 3 с. Lease валидируется формулой `lease > 2
 
 ```json
 {
-  "_id": "alice",
+  "_id": "fox",
   "version": 5,
   "view": {
-    "fan_id": "alice", "fan_name": "Alice",
+    "fan_id": "fox", "fan_name": "Fox",
     "tickets": {
-      "0192f0c4-…": { "concert_id": "tbilisi-2026", "seat": "B4", "price": 80,
+      "0192f0c4-…": { "concert_id": "radiohead-2026-11-21", "seat": "B4", "price": 80,
                       "state": "active", "sequence": 7, "changed_at": "2026-10-17T09:12:03Z" }
     },
     "active_count": 1, "total_spent": 80
@@ -470,8 +470,8 @@ LWW-ключ — `booking_id`; `sequence` — номер события в по�
 outbox-обработчиками; wipe и replay его **не трогают**. Ключевой урок: «пересборка витрин не рассылает письма заново».
 
 ```json
-{ "_id": "e_ticket:0192f0c4-…", "kind": "e_ticket", "to_fan_id": "alice", "to_name": "Alice",
-  "subject": "🎫 Your e-ticket: tbilisi-2026, seat B4", "concert_id": "tbilisi-2026", "seat": "B4",
+{ "_id": "e_ticket:0192f0c4-…", "kind": "e_ticket", "to_fan_id": "fox", "to_name": "Fox",
+  "subject": "🎫 Your e-ticket: radiohead-2026-11-21, seat B4", "concert_id": "radiohead-2026-11-21", "seat": "B4",
   "task_id": "…", "delivered_on_attempt": 2, "deliveries": 1, "first_delivered_at": "2026-10-17T09:12:07Z" }
 ```
 
@@ -552,7 +552,7 @@ sequenceDiagram
   participant PG as PostgreSQL
   participant EH as EventHandlers (проекции)
   participant M as MongoDB
-  UI->>API: POST /api/concerts/tbilisi-2026/commands {type: BookSeat, seat: B4, fan_id: alice}
+  UI->>API: POST /api/concerts/radiohead-2026-11-21/commands {type: BookSeat, seat: B4, fan_id: fox}
   API->>API: command_id, booking_id, metadata, NewTask(encore_record_ticket)
   API->>EX: execute_with_metadata(concert_id, command, metadata, tasks)
   EX->>PG: загрузить snapshot + хвост событий
@@ -565,7 +565,7 @@ sequenceDiagram
     AGG-->>EX: SeatBooked
     EX->>PG: ОДНА транзакция: INSERT события + INSERT задачи encore_record_ticket (+ snapshot)
     EX->>EH: committed events
-    EH->>M: upsert concert_halls/tbilisi-2026
+    EH->>M: upsert concert_halls/radiohead-2026-11-21
     EX-->>API: Ok
     API-->>UI: 200 {outcome: accepted}
   end
@@ -574,7 +574,7 @@ sequenceDiagram
   W->>PG: claim encore_record_ticket
   W->>FAN: execute_with_metadata(fan_id, RecordTicket, metadata{correlation_id, causation_id=task_id}, [NewTask(encore_send_e_ticket)])
   FAN->>PG: ОДНА транзакция: INSERT TicketRecorded + INSERT задачи encore_send_e_ticket
-  FAN->>M: upsert fan_wallets/alice
+  FAN->>M: upsert fan_wallets/fox
   W->>PG: settle completed
   W->>PG: claim encore_send_e_ticket → FlakyMailServer 🎲 → inbox
 ```
@@ -976,9 +976,9 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 **Команда.** Тело — JSON с полем `type`:
 
 ```json
-{ "type": "AnnounceConcert", "artist": "The Event Sourcerers", "city": "Tbilisi", "date": "2026-11-21" }
-{ "type": "BookSeat", "seat": "B4", "fan_id": "alice", "fan_name": "Alice" }
-{ "type": "CancelBooking", "seat": "B4", "fan_id": "alice" }
+{ "type": "AnnounceConcert", "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21" }
+{ "type": "BookSeat", "seat": "B4", "fan_id": "fox", "fan_name": "Fox" }
+{ "type": "CancelBooking", "seat": "B4", "fan_id": "fox" }
 ```
 
 Алгоритм `app::command_service`:
@@ -1002,12 +1002,12 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 
 ```json
 // 200
-{ "outcome": "accepted", "command_id": "0192f0c4-…", "concert_id": "tbilisi-2026",
+{ "outcome": "accepted", "command_id": "0192f0c4-…", "concert_id": "radiohead-2026-11-21",
   "tasks": ["encore_record_ticket v1"], "warnings": [] }
 // 422
-{ "outcome": "rejected", "command_id": "0192f0c5-…", "concert_id": "tbilisi-2026",
-  "error": { "code": "seat_taken", "params": { "seat": "B4", "by": "Alice" },
-             "message": "Seat B4 is already taken by Alice" } }
+{ "outcome": "rejected", "command_id": "0192f0c5-…", "concert_id": "radiohead-2026-11-21",
+  "error": { "code": "seat_taken", "params": { "seat": "B4", "by": "Fox" },
+             "message": "Seat B4 is already taken by Fox" } }
 ```
 
 `committed_sequence` в ответе **нет**: `CommandExecutor` при успехе возвращает `()`, а `sequence` UI видит в X-ray
@@ -1022,8 +1022,8 @@ fallback, UI берёт текст из i18n по `code` и `params`.
              "zones": [ { "id": "vip", "rows": ["A"], "price": 120 },
                         { "id": "standard", "rows": ["B","C"], "price": 80 },
                         { "id": "balcony", "rows": ["D","E"], "price": 50 } ] },
-  "personas": [ { "fan_id": "alice", "name": "Alice", "avatar": "🦊" } ],
-  "seed_concerts": ["tbilisi-2026", "berlin-2026", "lisbon-2027"],
+  "personas": [ { "fan_id": "fox", "name": "Fox", "avatar": "🦊" } ],
+  "seed_concerts": ["radiohead-2026-11-21", "rammstein-2026-12-05", "muse-2027-01-16"],
   "ticket_limit": 4, "task_failure_rate": 0.2, "task_max_attempts": 6, "snapshot_every": 10
 }
 ```
@@ -1031,7 +1031,7 @@ fallback, UI берёт текст из i18n по `code` и `params`.
 **`GET /api/concerts`** — `[{ concert_id, artist, city, date, sold, capacity, revenue, sold_out, incomplete }]`.
 **`GET /api/concerts/{id}`** — `{ concert_id, version, view }` (как в §2.8).
 **`GET /api/concerts/{id}/timeline`** — `[{ sequence, event_type, recorded_at, summary }]`, где `summary` — короткая
-строка вида `"B4 → Alice"`.
+строка вида `"B4 → Fox"`.
 **`GET /api/concerts/{id}/state-at/{n}`** — `{ sequence: n, last_sequence, state: { info, bookings }, event }`.
 
 ### 6.5 Activity (SSE `GET /api/activity`)
@@ -1154,7 +1154,7 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 { "source": "postgres", "table": "events",
   "query": "SELECT row_to_json(t) FROM (SELECT * FROM events ORDER BY … DESC LIMIT 200) t",
   "total": 57,
-  "rows": [ { "aggregate_type": "Concert", "aggregate_id": "tbilisi-2026", "sequence": 7,
+  "rows": [ { "aggregate_type": "Concert", "aggregate_id": "radiohead-2026-11-21", "sequence": 7,
               "event_type": "SeatBooked", "event_version": "1.0", "payload": { }, "metadata": { } } ],
   "db_time": "2026-10-17T09:12:05.123Z" }
 ```
@@ -1228,12 +1228,12 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 │                            ┗ 1 транзакция ┛                                                 │
 ├───────────────────────────────────────────┬─────────────────────────────────────────────────┤
 │ [Tbilisi 12/40] [Berlin 3/40] [Lisbon]    │ 🐘 events · 57    ⓘ </> │ 🐘 outbox · 14    ⓘ </> │
-│ Кто вы: [🦊 Alice 2/4] 🐼 Bob 🦄 Chloe 🤖   │ #12 SeatBooked B4  ✨   │ 🎫 🎲 retry 2.4 s  2/6  │
+│ Кто вы: [🦊 Fox 2/4] 🐼 Panda 🦄 Unicorn 🤖   │ #12 SeatBooked B4  ✨   │ 🎫 🎲 retry 2.4 s  2/6  │
 │                                           │ #11 SeatBooked A3       │ 🎫 ✅ delivered    1/6  │
 │          ╭──── 🎤 STAGE ────╮             │ #10 📸 SeatBooked C1    │ 💸 📨 sending…     1/6  │
 │    A  ▢ ▢ 🦊 ▢ ▢ ▢ ▢ ▢   VIP 120 €         ├─────────────────────────┼─────────────────────────┤
 │    B  ▢ ▢ ▢ 🐼 ▢ ▢ ▢ ▢   Standard 80 €     │ 🍃 concert_halls │ wallets│ 📬 inbox │ 📜 activity  │
-│    C  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢                     │ { "_id": "tbilisi-2026",│ 🎫 B4 → Alice (поп. 2)  │
+│    C  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢                     │ { "_id": "radiohead-2026-11-21",│ 🎫 B4 → Fox (поп. 2)  │
 │    D  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢   Balcony 50 €      │   "version": 13,        │ 🎲 B5: попытка 1 ✖      │
 │    E  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢                     │   "view": { "sold": 12, │ ✅ B4 доставлен         │
 │ ⏳ ●━━━━━━━━━━━━━━━━━━○  событие 12 из 12   │     … } }               │                         │
@@ -1244,7 +1244,9 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 └───────────────────────────────────────────┴─────────────────────────────────────────────────┘
 ```
 
-- Сверху — **живая архитектура** (PipelineStrip): путь каждой команды подсвечивается в реальном времени.
+- Слева (2/3 ширины): блок «Путь команды» — **живая архитектура** (PipelineStrip), путь каждой команды
+  подсвечивается в реальном времени, под ним панели `events` и `outbox`; справа (1/3) — касса с компактными
+  элементами управления; нижний ряд — остальной рентген (`mongo`, почта, activity, снапшоты).
 - Слева — **APP**: то, что видит фанат.
 - Справа — **X-RAY**: что лежит в базах (данные sidecar), сетка 2×2 на ширине ≥ 1440 px, вкладки на 1024–1439 px,
   вертикальный стек ниже (на телефонах ничего не должно ломаться, но оптимизация не требуется).
@@ -1256,7 +1258,7 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 | Компонент | Приоритет | Поведение |
 |---|---|---|
 | `AppHeader` | P0 | логотип, переключатель языка, ⓘ — открыть баннер «Как читать экран» |
-| `PipelineStrip` | P0 | узлы и стрелки (HTML/SVG); подсветка по таблице ниже; скобка «1 транзакция» вокруг events и outbox; второй ряд — обратная стрелка «⚙ Воркер → 📨 Команда (Fan)» и вторая скобка «1 транзакция» для `TicketRecorded` + задача письма |
+| `PipelineStrip` | P0 | диаграмма архитектуры по `docs/img.png` на холсте **Vue Flow** (`@vue-flow/core`, статичный: без drag/pan/zoom, вписан в блок, zoom ≤ 1) в блоке верхнего ряда (50 % ширины, рядом с панелями events и outbox): три рамки сервисов — `Concert service` (Command → Aggregate → events + outbox → `Outbox worker → Fan`), `Fan service` (Command → Aggregate → events + outbox → `Outbox worker → email`), `projection` (read database → ◇ UI); ромбы-актёры ◇ user, ◇ email; снаружи — «почтовый сервер 🎲» с обратным ребром retry к events + outbox; сигналы — кружки, бегущие по рёбрам (рёбра ортогональные, узлы на сетке: Command над Aggregate, Outbox worker над events + outbox); подсветка по таблице ниже; на холсте только названия блоков — без подписей и пояснений; **клик по любому блоку или рамке** открывает модальное окно `PipelineExplain` с развёрнутым пояснением (`explain.<id>` в i18n), для агрегатов — таблица правил R1–R8 / R9–R11. Данные графа — `pipeline/graph.ts`, хореография сигналов — `pipeline/choreography.ts` |
 | `ConcertTabs` | P0 | концерты из `/api/concerts`; прогресс sold/capacity; бейджи SOLD OUT и ⚠️ incomplete; если витрина пуста — вкладки из `config.seed_concerts` с «?» |
 | `PersonaPicker` | P0 | четыре больших аватара; у каждого «билетов n/4» на текущем концерте |
 | `SeatMap`, `SeatButton` | P0 | сцена со свечением и именем артиста, ряды A–E, легенда зон; состояния — §8.6; клики — ниже |
@@ -1275,20 +1277,20 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 | `Toasts` | P0 | успех / отказ (с кодом правила) / предупреждение |
 | `ChapterBar`, `ChapterCallout` | P1 | главы ①–⑤ (§8.10) |
 | `RaceResult` | P1 | карточка «победитель / проигравший» |
-| `AnnounceDialog` | P1 | «+ Анонсировать концерт»: артист/город из подсказок, `concert_id = <city-slug>-<4 hex>` |
+| `AnnounceDialog` | P1 | «+ Анонсировать концерт»: артист/город из подсказок, `concert_id = <artist-slug>-<yyyy-mm-dd>` |
 
 **Клики по месту.** Свободное или «?» → `BookSeat` от текущего персонажа. Чужое → **всё равно** `BookSeat` (чтобы
 увидеть R5). Своё → поповер «Отменить билет? Возврат 80 €» → `CancelBooking`. Пока команда в полёте — место
 пульсирует (`pending`); отказ — «тряска» 400 мс и красная вспышка; успех — «поп» 0.6 → 1.15 → 1.
 
 **ActionBar.**
-- 🤖 **Перекупщик**: от `scalper-bot` последовательно 6 × `BookSeat` случайных свободных мест (из последней витрины;
+- 🤖 **Перекупщик**: от `arbitrage-bot` последовательно 6 × `BookSeat` случайных свободных мест (из последней витрины;
   если витрины нет — из схемы зала), пауза 250 мс, каждая следующая команда — после ответа на предыдущую. Итоговый
   тост считается по фактическим ответам, например «🤖 куплено 4 · отклонено 2 правилом R6».
 - 🌊 **Толпа**: 10 × `BookSeat` случайными `crowd-<1..60>` на случайные свободные места, пауза 150 мс, тоже
   последовательно; нет свободных мест — остановиться. Именно так достигается SOLD OUT.
-- ⚡ **Гонка** `[P1]`: случайное свободное место; `Promise.all` двух `BookSeat` (Alice и Bob) одновременно;
-  `RaceResult`: «🦊 Alice выиграла · 🐼 Bob: seat_taken» + пояснение оптимистической блокировки (A.3).
+- ⚡ **Гонка** `[P1]`: случайное свободное место; `Promise.all` двух `BookSeat` (Fox и Panda) одновременно;
+  `RaceResult`: «🦊 Fox выиграла · 🐼 Panda: seat_taken» + пояснение оптимистической блокировки (A.3).
 
 **RuleBreaker.** Каждая кнопка отправляет заведомо неверную команду и показывает: отправленный JSON, ответ
 (код правила + локализованный текст) и `events: 57 → 57 (Δ 0)` (по `stats` из следующего сообщения sidecar).
@@ -1296,7 +1298,7 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 | Кнопка | Команда | Правило |
 |---|---|---|
 | «Место Z9» | `BookSeat` `Z9` | R3 |
-| «Занятое место» | `BookSeat` на занятое (если занятых нет — сначала обычная бронь от Chloe) | R5 |
+| «Занятое место» | `BookSeat` на занятое (если занятых нет — сначала обычная бронь от Unicorn) | R5 |
 | «Пятый билет» | от 🤖: добрать до 4, затем пятый | R6 |
 | «Чужой билет» | `CancelBooking` чужого места | R8 |
 | «Отменить свободное» | `CancelBooking` свободного места | R7 |
@@ -1317,14 +1319,25 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 
 | Триггер | Анимация |
 |---|---|
-| UI отправил команду (локально) | импульс Команда → Агрегат |
-| ответ `accepted` | Агрегат → events **и** outbox одновременно (скобка «1 транзакция» вспыхивает) → Витрины → Экран |
-| ответ `rejected` | Агрегат мигает красным, пузырь с кодом правила; events/outbox остаются тёмными с подписью «ничего не записано» |
-| `task.attempt.started` | импульс outbox → Воркер, на воркере крутится индикатор |
-| `task.attempt.failed` | 🎲 «бросок» и янтарное кольцо «retry» на Воркере |
-| `task.attempt.succeeded` | зелёный импульс Воркер → Почта |
-| `projections.wiped` | Витрины гаснут, подпись «пусто» |
-| `rebuild.progress` | по стрелке events → Витрины непрерывно бежит градиент, подпись «⏪ replay» |
+| UI отправил команду (локально) | кружок ◇ user → Команда → Агрегат; на Агрегате янтарное кольцо «busy» |
+| ответ `accepted` | Агрегат зелёный; кружок Агрегат → events + outbox (бокс вспыхивает розовым: «1 транзакция») → read database → ◇ UI |
+| ответ `rejected` | Агрегат мигает красным, пузырь с кодом правила; стрелка Агрегат → events + outbox перечёркнута, подпись «ничего не записано» |
+| `command.*` с `aggregate_type: Fan` (из activity) | кружок events + outbox (Concert) → `Outbox worker → Fan` → Command (Fan) → Агрегат (Fan); `accepted` — дальше events + outbox (Fan) → read database → ◇ UI; `rejected` — как выше, на агрегате Fan |
+| `task.attempt.started` | кружок events + outbox (Fan) → `Outbox worker → email` → mail server; на сервере янтарное кольцо «busy» |
+| `task.attempt.failed` | 🎲 «бросок», красное кольцо и пузырь с `reason_code` на почтовом сервере; красный кружок бежит по пунктирному ребру «retry» обратно в events + outbox |
+| `task.attempt.succeeded` | 🎲 «бросок», зелёное кольцо на сервере; кружок почтовый сервер → ◇ email |
+| `projections.wiped` | рамка `projection` и read database гаснут, подпись «пусто» |
+| `rebuild.progress` | по обеим стрелкам events + outbox → read database бежит розовый пунктир, подпись «⏪ replay» |
+
+Сцены проигрываются **по очереди** (`choreography.ts`, очередь сцен): каждая сцена идёт заявленное время плюс
+пауза 200 мс, следующий сигнал ждёт своей очереди. Сервер отвечает за миллисекунды, поэтому без очереди клик, команда
+Fan и письмо накладывались бы друг на друга. Если сцена стартовала бы позже чем через 4 с после реального события
+(толпа, перекупщик), диаграмма её пропускает — панели events и outbox показывают всё. Скорость анимации
+выбирается кнопками в шапке блока (0.5× · 1× · 2×, `session.pace`, хранится в `localStorage`): множитель
+применяется ко всем таймерам сцен, длительности кружков и паузе между сценами.
+Сцены «принято» **ветвятся** в events + outbox: очередь держит сцену только до момента, когда кружок доходит
+до events + outbox, и следующая сцена (цепочка задач или письмо) стартует ровно в этот момент, пока первая
+дорисовывает свою ветку к read database → UI. Так видно, что проекция и outbox-задача рождаются в одной транзакции.
 
 ### 8.4 Данные и сторы (Pinia)
 
@@ -1441,13 +1454,13 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | Шаг | Время | Действие ведущего | Что показать |
 |---|---|---|---|
 | 1. Знакомство | 30 с | открыть UI, прочитать баннер | слева касса, справа рентген, сверху путь команды; в `events` уже 3 строки `ConcertAnnounced` — «даже концерты появились через команды» |
-| 2. Event Sourcing | 1 мин | как 🦊 Alice кликнуть B4; подвигать ⏳ | новая строка `SeatBooked` (sequence 2); изменился документ `concert_halls`; ползунок показывает зал в прошлом — «состояние вычисляется из событий» |
-| 3. Инварианты | 1 мин | переключиться на 🐼 Bob, кликнуть B4; запустить 🤖; пара кнопок 🧪 | «Место занято», `Δ events = 0`; 🤖: 4 ✅ и 2 ❌ по R6 |
+| 2. Event Sourcing | 1 мин | как 🦊 Fox кликнуть B4; подвигать ⏳ | новая строка `SeatBooked` (sequence 2); изменился документ `concert_halls`; ползунок показывает зал в прошлом — «состояние вычисляется из событий» |
+| 3. Инварианты | 1 мин | переключиться на 🐼 Panda, кликнуть B4; запустить 🤖; пара кнопок 🧪 | «Место занято», `Δ events = 0`; 🤖: 4 ✅ и 2 ❌ по R6 |
 | 4. Outbox | 1,5 мин | забронировать ещё место | вспышка «1 транзакция»: строка `SeatBooked` и строка задачи 🔁 одновременно; задача 🔁 `delivered` за полсекунды, и в `events` появляется `TicketRecorded` агрегата `Fan` вместе с задачей 🎫 (вторая вспышка); задача 🎫 `in progress` → (возможно) `🎲 retry через 2 с` → `delivered`; письмо в 📬; в кошельке «📬 доставлен (попытка 2)» |
 | 5. Витрины | 1 мин | 🌊 Толпа × 3–4 (до SOLD OUT) | много задач, часть с 🎲; SOLD OUT 🎉 по витрине (`sold == capacity`); два потока событий (`Concert`, `Fan`) → два документа — зал и кошелёк; кошелёк «догоняет» зал через задачу `encore_record_ticket` |
-| 6. Отмена | 30 с | Alice отменяет билет | `BookingCancelled` + задача 🔁 → `TicketCancelled` + задача 💸 → письмо «💸 Refund» |
+| 6. Отмена | 30 с | Fox отменяет билет | `BookingCancelled` + задача 🔁 → `TicketCancelled` + задача 💸 → письмо «💸 Refund» |
 | 7. Encore! | 1,5 мин | 🧨 Стереть → кликнуть место, которое было занято → забронировать свободное → ⏪ Encore! (slow) | зал серый, коллекции пусты; занятое место всё равно «занято» — правила работают по журналу; новая бронь даёт «⚠️ неполная витрина»; места загораются по одному; 📬 inbox не изменился — письма повторно не ушли; P1: 🔍 Проверить → ✅ |
-| 8. Гонка `[P1]` | 30 с | ⚡ Гонка | «Alice выиграла, Bob — seat_taken» + пояснение оптимистической блокировки |
+| 8. Гонка `[P1]` | 30 с | ⚡ Гонка | «Fox выиграла, Panda — seat_taken» + пояснение оптимистической блокировки |
 | 9. Отказ MongoDB (по желанию) | 1 мин | `podman compose stop mongo` → забронировать место → `podman compose start mongo` → Encore! | тост «⚠️ событие записано, витрина не обновилась»; после Encore! всё сходится — «событие не потеряно, витрина догнала журнал» |
 
 ---
@@ -1515,10 +1528,10 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 - **Приёмка:**
 
   ```bash
-  curl -s localhost:8080/api/concerts/tbilisi-2026/commands -H 'content-type: application/json' \
-       -d '{"type":"BookSeat","seat":"B4","fan_id":"alice","fan_name":"Alice"}'   # 200 accepted
-  curl -s localhost:8080/api/concerts/tbilisi-2026/commands -H 'content-type: application/json' \
-       -d '{"type":"BookSeat","seat":"B4","fan_id":"bob","fan_name":"Bob"}'       # 422 seat_taken
+  curl -s localhost:8080/api/concerts/radiohead-2026-11-21/commands -H 'content-type: application/json' \
+       -d '{"type":"BookSeat","seat":"B4","fan_id":"fox","fan_name":"Fox"}'   # 200 accepted
+  curl -s localhost:8080/api/concerts/radiohead-2026-11-21/commands -H 'content-type: application/json' \
+       -d '{"type":"BookSeat","seat":"B4","fan_id":"panda","fan_name":"Panda"}'       # 422 seat_taken
   ```
 
   В `events` ровно одна новая строка, её `metadata` содержит `command_id`, `correlation_id`, `recorded_at`,
@@ -1700,11 +1713,11 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 ### A.2 Главы
 
 **① Журнал событий / Event store**
-- **RU:** Мы ничего не исправляем и не удаляем. Каждое принятое решение — «место B4 продано Alice» — дописывается
+- **RU:** Мы ничего не исправляем и не удаляем. Каждое принятое решение — «место B4 продано Fox» — дописывается
   новой строкой в таблицу `events`, как в кассовой книге. Текущее состояние зала — это все записи концерта,
   прочитанные по порядку. Каждые 10 событий движок кладёт закладку (snapshot), чтобы не перечитывать книгу с начала.
   *Попробуйте:* забронируйте место и найдите новую строку в 🐘 events; подвигайте ⏳ машину времени.
-- **EN:** Nothing is ever edited or deleted. Every accepted decision — "seat B4 sold to Alice" — is appended to the
+- **EN:** Nothing is ever edited or deleted. Every accepted decision — "seat B4 sold to Fox" — is appended to the
   `events` table, like a ledger. The current state of the hall is simply all of the concert's records read in order.
   Every 10 events the engine stores a bookmark (snapshot) so it doesn't have to reread the whole book.
   *Try it:* book a seat and find the new row in 🐘 events; drag the ⏳ time machine.
@@ -1797,8 +1810,15 @@ retry scheduled".
 
 ### A.6 Подписи `PipelineStrip`
 
-RU: Команда · Агрегат (правила) · events · outbox · 1 транзакция · Витрины · Экран · Воркер · Почта
-EN: Command · Aggregate (rules) · events · outbox · 1 transaction · Read models · Screen · Worker · Mail
+RU: Сервис Concert · Сервис Fan · проекция · имена элементов как в EN (user, Command, Aggregate (rules),
+events + outbox, Outbox worker → Fan, Outbox worker → email, mail server, email, read database, UI) ·
+ничего не записано · ⏪ replay · пусто · «клик по блоку — подробности»
+EN: Concert service · Fan service · projection · user · Command · Aggregate (rules) · events + outbox ·
+Outbox worker → Fan · Outbox worker → email · mail server · email · read database · UI · nothing written ·
+⏪ replay · empty · "click a block for details"
+
+Пояснения блоков (`explain.<id>`: заголовок, вводная фраза, пункты; у агрегатов — таблица правил) — в
+`front-end/src/i18n/explain.{en,ru}.ts`.
 
 ---
 

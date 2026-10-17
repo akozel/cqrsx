@@ -11,23 +11,23 @@ pub struct Persona {
 
 pub const PERSONAS: [Persona; 4] = [
     Persona {
-        fan_id: "alice",
-        name: "Alice",
+        fan_id: "fox",
+        name: "Fox",
         avatar: "🦊",
     },
     Persona {
-        fan_id: "bob",
-        name: "Bob",
+        fan_id: "panda",
+        name: "Panda",
         avatar: "🐼",
     },
     Persona {
-        fan_id: "chloe",
-        name: "Chloe",
+        fan_id: "unicorn",
+        name: "Unicorn",
         avatar: "🦄",
     },
     Persona {
-        fan_id: "scalper-bot",
-        name: "Scalper Bot",
+        fan_id: "arbitrage-bot",
+        name: "Arbitrage Bot",
         avatar: "🤖",
     },
 ];

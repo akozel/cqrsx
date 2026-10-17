@@ -1,3 +1,5 @@
+import explain from './explain.ru'
+
 export default {
   app: { title: 'Encore', subtitle: 'демо cqrsx' },
   layout: { app: 'Касса', xray: 'Рентген', pipeline: 'Путь команды', language: 'Язык', help: 'Туториал' },
@@ -8,31 +10,53 @@ export default {
     close: 'Понятно',
   },
   pipeline: {
-    command: 'Команда',
-    aggregate: 'Агрегат (правила)',
-    events: 'events',
-    outbox: 'outbox',
+    concert_service: 'Concert service',
+    fan_service: 'Fan service',
+    projection: 'projection',
+    user: 'user',
+    command: 'Command',
+    aggregate: 'Aggregate (rules)',
+    store: 'events + outbox',
     transaction: '1 транзакция',
-    projections: 'Витрины',
-    screen: 'Экран',
-    worker: 'Воркер',
-    mail: 'Почта',
-    fan_command: 'Команда (Fan)',
+    task_handler_a: 'Outbox worker → Fan',
+    task_handler_b: 'Outbox worker → email',
+    mail_server: 'mail server',
+    email: 'email',
+    read_database: 'read database',
+    ui: 'UI',
+    speed: 'скорость',
+    hint: 'клик по блоку — подробности',
     nothing_written: 'ничего не записано',
     replaying: '⏪ replay',
     empty: 'пусто',
   },
-  concerts: { title: 'Концерты', sold: '{sold}/{capacity}', sold_out: 'SOLD OUT', incomplete: 'неполная', unknown: '?', revenue: 'выручка' },
-  personas: { title: 'Кто вы?', tickets: 'билетов {n}/{limit}' },
-  seatmap: { stage: 'СЦЕНА', legend: 'Зоны', free: 'свободно', booked: 'занято', mine: 'ваше', unknown: 'неизвестно (витрина стёрта)', seat_label: '{seat}, {zone}, {price} €, {state}' },
+  concerts: {
+    title: 'Концерты',
+    sold: '{sold}/{capacity}',
+    sold_out: 'SOLD OUT',
+    incomplete: 'неполная',
+    unknown: '?',
+    revenue: 'выручка',
+  },
+  personas: { tickets: 'билетов {n}/{limit}' },
+  seatmap: {
+    stage: 'СЦЕНА',
+    legend: 'Зоны',
+    free: 'свободно',
+    booked: 'занято',
+    mine: 'ваше',
+    unknown: 'неизвестно (витрина стёрта)',
+    seat_label: '{seat}, {zone}, {price} €, {state}',
+  },
   zones: { vip: 'VIP', standard: 'Standard', balcony: 'Balcony' },
   actions: {
-    scalper: '🤖 Перекупщик',
-    scalper_hint: 'Scalper Bot бронирует 6 случайных мест по очереди и упирается в правило «не больше 4»',
+    scalper: '🤖 Арбитражный бот',
+    scalper_hint: 'Арбитражный бот бронирует 6 случайных мест по очереди и упирается в правило «не больше 4»',
     crowd: '🌊 Толпа',
-    crowd_hint: '10 случайных фанатов бронируют 10 случайных свободных мест — так быстрее всего наступает SOLD OUT',
+    crowd_hint:
+      '10 случайных фанатов бронируют 10 случайных свободных мест — так быстрее всего наступает SOLD OUT',
     race: '⚡ Гонка',
-    race_hint: 'Alice и Bob жмут одно место одновременно',
+    race_hint: 'Fox и Panda жмут одно место одновременно',
     cancel_prompt: 'Отменить билет? Возврат {refund} €',
     cancel_yes: 'Отменить билет',
     cancel_no: 'Оставить',
@@ -99,6 +123,19 @@ export default {
     snapshots_hint: 'закладка: грузим снапшот + хвост событий',
     attempt: 'попытка {n}/{max}',
     chain_task: 'команда агрегату Fan',
+    queued: 'в очереди, ждёт воркера',
+    attempt_limit: 'лимит попыток исчерпан',
+    tip: {
+      status: 'статус',
+      attempt: 'попытки',
+      next: 'дальше',
+      task: 'задача',
+      id: 'id',
+      correlation: 'correlation',
+      aggregate: 'агрегат',
+      reason: 'причина',
+    },
+    db_status: 'колонка status в transactional_outbox',
     waiting_worker: 'ждёт воркера',
     retry_in: 'повтор через {s} с',
     last_error: 'причина',
@@ -123,7 +160,8 @@ export default {
     },
     snapshots: {
       title: '🐘 snapshots',
-      explain: 'Закладки: сохранённое состояние агрегата на событии N. Загрузка концерта = снапшот + события после него.',
+      explain:
+        'Закладки: сохранённое состояние агрегата на событии N. Загрузка концерта = снапшот + события после него.',
     },
     outbox: {
       title: '🐘 outbox',
@@ -132,7 +170,8 @@ export default {
     },
     concert_halls: {
       title: '🍃 concert_halls',
-      explain: 'Витрина «схема зала»: один документ на концерт. Строится только из событий; её можно удалить и пересобрать.',
+      explain:
+        'Витрина «схема зала»: один документ на концерт. Строится только из событий; её можно удалить и пересобрать.',
     },
     fan_wallets: {
       title: '🍃 fan_wallets',
@@ -141,9 +180,13 @@ export default {
     },
     inbox: {
       title: '📬 inbox',
-      explain: 'Не витрина! Это «внешний почтовый сервис» (имитация). Replay его не трогает — письма не уходят повторно.',
+      explain:
+        'Не витрина! Это «внешний почтовый сервис» (имитация). Replay его не трогает — письма не уходят повторно.',
     },
-    activity: { title: '📜 activity', explain: 'Живой лог back-end: что происходит прямо сейчас. Хранится только в памяти.' },
+    activity: {
+      title: '📜 activity',
+      explain: 'Живой лог back-end: что происходит прямо сейчас. Хранится только в памяти.',
+    },
   },
   states: {
     race: 'Оба запроса прочитали версию N и попытались записать N+1. База приняла только первый; второй повторился на свежем состоянии — и правило «место свободно» его отклонило.',
@@ -214,7 +257,7 @@ export default {
     done: 'Закрыть',
     events: {
       title: '① Журнал событий',
-      body: 'Мы ничего не исправляем и не удаляем. Каждое принятое решение — «место B4 продано Alice» — дописывается новой строкой в таблицу events, как в кассовой книге. Текущее состояние зала — это все записи концерта, прочитанные по порядку. Каждые 10 событий движок кладёт закладку (snapshot), чтобы не перечитывать книгу с начала.',
+      body: 'Мы ничего не исправляем и не удаляем. Каждое принятое решение — «место B4 продано Fox» — дописывается новой строкой в таблицу events, как в кассовой книге. Текущее состояние зала — это все записи концерта, прочитанные по порядку. Каждые 10 событий движок кладёт закладку (snapshot), чтобы не перечитывать книгу с начала.',
       try: 'Забронируйте случайное место и найдите новую строку в 🐘 events; подвигайте ⏳ машину времени.',
     },
     rules: {
@@ -247,8 +290,17 @@ export default {
     submit: 'Анонсировать',
     id_hint: 'concert_id будет {id}',
   },
-  trace: { hint: 'наведите на событие — подсветятся его задача и документ (общий correlation_id)' },
-  verify: { ok: '✅ витрины совпадают с журналом ({halls} залов, {wallets} кошельков)', diff: '❌ расхождений: {n}', running: 'проверяем…' },
+  tasks: {
+    encore_record_ticket: 'Положить билет в кошелёк',
+    encore_record_cancellation: 'Отменить билет в кошельке',
+    encore_send_e_ticket: 'Отправить билет на почту',
+    encore_issue_refund: 'Отправить письмо о возврате',
+  },
+  verify: {
+    ok: '✅ витрины совпадают с журналом ({halls} залов, {wallets} кошельков)',
+    diff: '❌ расхождений: {n}',
+    running: 'проверяем…',
+  },
   toasts: { accepted: 'Принято: {what}', warning: 'Предупреждение' },
   common: {
     loading: 'Загрузка…',
@@ -266,4 +318,5 @@ export default {
     tab_halls: 'concert_halls',
     tab_wallets: 'fan_wallets',
   },
+  explain,
 }

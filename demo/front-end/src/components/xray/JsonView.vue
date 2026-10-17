@@ -1,7 +1,14 @@
 <script setup lang="ts">
 import { computed, ref } from 'vue'
 
-const props = defineProps<{ value: unknown; changed?: string[]; expanded?: boolean; preview?: boolean }>()
+/** `label`: show only "▸ label" while closed (a spoiler) instead of the one-line preview. */
+const props = defineProps<{
+  value: unknown
+  changed?: string[]
+  expanded?: boolean
+  preview?: boolean
+  label?: string
+}>()
 const open = ref(props.expanded ?? false)
 
 const text = computed(() => JSON.stringify(props.value, null, 2))
@@ -23,7 +30,9 @@ const lines = computed(() =>
 <template>
   <div class="font-mono text-xs">
     <button type="button" class="opacity-70 hover:opacity-100 text-left" @click="open = !open">
-      <span class="mr-1">{{ open ? '▾' : '▸' }}</span><span v-if="!open" class="break-all">{{ line }}</span>
+      <span class="mr-1">{{ open ? '▾' : '▸' }}</span
+      ><span v-if="label">{{ label }}</span
+      ><span v-else-if="!open" class="break-all">{{ line }}</span>
     </button>
     <pre v-if="open" class="mt-1 whitespace-pre-wrap break-all leading-snug"><span
         v-for="(row, i) in lines"

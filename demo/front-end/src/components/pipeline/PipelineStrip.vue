@@ -1,117 +1,200 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+// The architecture diagram block (docs/img.png), half of the top row next to the events and outbox panels: service boundaries, the
+// components inside them, the actors outside, and the signals travelling between them, drawn on a
+// Vue Flow canvas. The canvas is static (no drag, pan or zoom) and scales to the strip's width.
+// The layout is data (`graph.ts`); what glows and moves is the choreography (`choreography.ts`),
+// fed from the stores here.
+import { computed, onBeforeUnmount, onMounted, provide, ref, watch } from 'vue'
+import { VueFlow, useVueFlow, type Edge, type Node, type NodeMouseEvent } from '@vue-flow/core'
+import '@vue-flow/core/dist/style.css'
 import { useI18n } from 'vue-i18n'
 import { useCommandsStore } from '@/stores/commands'
 import { useActivityStore } from '@/stores/activity'
 import { useRebuildStore } from '@/stores/rebuild'
 import { useConcertsStore } from '@/stores/concerts'
-import Dice from '@/components/ui/Dice.vue'
+import { PACES, PACE_BASE, useSessionStore } from '@/stores/session'
+import { createChoreography } from './choreography'
+import { PIPELINE } from './context'
+import { CANVAS, EDGES, GROUPS, GROUP_BY_ID, NODES, type PipeGroupId, type PipeNodeId } from './graph'
+import PipelineExplain from './PipelineExplain.vue'
+import ServiceNode from './nodes/ServiceNode.vue'
+import BoxNode from './nodes/BoxNode.vue'
+import ActorNode from './nodes/ActorNode.vue'
+import SignalEdge from './edges/SignalEdge.vue'
 
 const { t } = useI18n()
 const commands = useCommandsStore()
 const activity = useActivityStore()
 const rebuild = useRebuildStore()
 const concerts = useConcertsStore()
+const session = useSessionStore()
 
-type Node = 'command' | 'aggregate' | 'store' | 'projections' | 'screen' | 'worker' | 'mail' | 'fan_command'
-const lit = ref<Record<Node, 'idle' | 'pulse' | 'ok' | 'error' | 'busy'>>({
-  command: 'idle', aggregate: 'idle', store: 'idle', projections: 'idle', screen: 'idle', worker: 'idle', mail: 'idle', fan_command: 'idle',
+const choreo = createChoreography({ speed: () => session.pace * PACE_BASE })
+provide(PIPELINE, {
+  choreo,
+  wiped: computed(() => concerts.stale),
+  replaying: computed(() => rebuild.status.state === 'running'),
+  reducedMotion: computed(() => session.reducedMotion),
+  persona: computed(() => session.currentPersona()),
 })
-const bubble = ref<string | null>(null)
-const diceRoll = ref(0)
-const transactionFlash = ref(0)
-const timers: ReturnType<typeof setTimeout>[] = []
 
-function flash(node: Node, state: 'pulse' | 'ok' | 'error' | 'busy', ms = 900) {
-  lit.value = { ...lit.value, [node]: state }
-  timers.push(setTimeout(() => (lit.value = { ...lit.value, [node]: 'idle' }), ms))
-}
+const still = { draggable: false, selectable: false, focusable: false, connectable: false } as const
+const nodes: Node[] = [
+  ...GROUPS.map<Node>((g) => ({
+    id: g.id,
+    type: 'service',
+    position: { x: g.x, y: g.y },
+    width: g.w,
+    height: g.h,
+    data: g,
+    ...still,
+  })),
+  ...NODES.map<Node>((n) => {
+    const parent = n.parent ? GROUP_BY_ID[n.parent] : null
+    return {
+      id: n.id,
+      type: n.kind,
+      parentNode: n.parent,
+      position: { x: n.x - (parent?.x ?? 0), y: n.y - (parent?.y ?? 0) },
+      width: n.w,
+      height: n.h,
+      data: n,
+      ...still,
+    }
+  }),
+]
+const edges: Edge[] = EDGES.map<Edge>((e) => ({
+  id: e.id,
+  type: 'signal',
+  source: e.from,
+  target: e.to,
+  sourceHandle: e.fromSide,
+  targetHandle: e.toSide,
+  data: e,
+  selectable: false,
+  focusable: false,
+  updatable: false,
+}))
 
+const MARKERS: [string, string][] = [
+  ['idle', 'var(--pipe-edge)'],
+  ['retry', 'var(--pipe-edge-retry)'],
+  ['lit', 'var(--color-neon-lime)'],
+  ['flow', 'var(--color-neon-pink)'],
+  ['cut', 'var(--color-neon-red)'],
+]
+
+// --- Signals from the stores -------------------------------------------------------------------
 watch(
   () => commands.signal,
-  (s) => {
-    bubble.value = null
-    if (s.phase === 'sent') {
-      flash('command', 'pulse', 600)
-      flash('aggregate', 'busy', 1200)
-    } else if (s.phase === 'accepted') {
-      flash('aggregate', 'ok')
-      flash('store', 'ok', 1200)
-      transactionFlash.value++
-      timers.push(setTimeout(() => flash('projections', 'ok'), 300))
-      timers.push(setTimeout(() => flash('screen', 'ok'), 600))
-    } else if (s.phase === 'rejected') {
-      flash('aggregate', 'error', 1500)
-      bubble.value = s.code ?? 'rejected'
-      timers.push(setTimeout(() => (bubble.value = null), 2500))
-    } else {
-      flash('aggregate', 'error', 1500)
-      bubble.value = s.code ?? 'failed'
-      timers.push(setTimeout(() => (bubble.value = null), 2500))
-    }
-  },
+  (s) => choreo.onCommand(s),
 )
-
+watch(
+  () => activity.commandSignal,
+  (s) => s && choreo.onFanCommand(s),
+)
 watch(
   () => activity.taskSignal,
-  (s) => {
-    if (!s) return
-    const chain = String(s.entry.format ?? '').startsWith('encore_record_')
-    if (s.type === 'task.attempt.started') {
-      flash('store', 'pulse', 500)
-      flash('worker', 'busy', 1500)
-      if (chain) flash('fan_command', 'pulse', 1200)
-    } else if (s.type === 'task.attempt.failed') {
-      diceRoll.value++
-      flash('worker', 'error', 1500)
-    } else if (s.type === 'task.attempt.succeeded') {
-      flash('worker', 'ok')
-      flash('mail', 'ok', 1500)
-    }
-  },
+  (s) => s && choreo.onTask(s),
 )
 
-const replaying = computed(() => rebuild.status.state === 'running')
-const wiped = computed(() => concerts.stale)
+// --- Click a block → its explanation ------------------------------------------------------------
+const explain = ref<PipeNodeId | PipeGroupId | null>(null)
+const onNodeClick = (e: NodeMouseEvent) => (explain.value = e.node.id as PipeNodeId | PipeGroupId)
 
-const nodeClass = (node: Node) => ({
-  'ring-2 ring-neon-cyan': lit.value[node] === 'pulse',
-  'ring-2 ring-neon-lime': lit.value[node] === 'ok',
-  'ring-2 ring-neon-red animate-shake': lit.value[node] === 'error',
-  'ring-2 ring-neon-amber animate-pulse': lit.value[node] === 'busy',
-  'opacity-40': node === 'projections' && wiped.value,
+// --- Fit the canvas to the strip ---------------------------------------------------------------
+// Fit the drawing's own bounds (not the nodes' bounding box) so the margins are symmetric; the
+// canvas is authored at the page's font size, so never zoom past 1 (`max-zoom` on the component).
+const FIT = { padding: 0.045 }
+const { fitBounds, onNodesInitialized } = useVueFlow()
+const fit = () => void fitBounds({ x: 0, y: 0, width: CANVAS.w, height: CANVAS.h }, FIT)
+onNodesInitialized(fit)
+const rootEl = ref<HTMLElement | null>(null)
+let observer: ResizeObserver | null = null
+onMounted(() => {
+  if (typeof ResizeObserver !== 'undefined' && rootEl.value) {
+    observer = new ResizeObserver(fit)
+    observer.observe(rootEl.value)
+  }
+})
+onBeforeUnmount(() => {
+  observer?.disconnect()
+  choreo.dispose()
 })
 </script>
 
 <template>
-  <section class="px-4 py-2 border-b border-border bg-panel/60 text-xs select-none">
-    <div class="flex flex-wrap items-center gap-2">
-      <span class="pipe-node" :class="nodeClass('command')">📨 {{ t('pipeline.command') }}</span>
-      <span class="pipe-arrow">─▶</span>
-      <span class="relative pipe-node" :class="nodeClass('aggregate')">
-        🛡 {{ t('pipeline.aggregate') }}
-        <span v-if="bubble" class="absolute -top-6 left-0 whitespace-nowrap rounded bg-neon-red text-black px-2 py-0.5 font-mono text-[10px]">{{ bubble }}</span>
+  <section
+    class="pipe-strip flex h-full min-h-0 flex-col rounded-lg border border-border bg-panel select-none"
+  >
+    <header class="flex items-center gap-2 border-b border-border px-3 py-2 text-sm">
+      <span class="font-semibold text-neon-pink">{{ t('layout.pipeline') }}</span>
+      <span class="ml-auto flex items-center gap-1 text-xs" role="group" :aria-label="t('pipeline.speed')">
+        <span class="opacity-60" :title="t('pipeline.hint')">{{ t('pipeline.speed') }}</span>
+        <button
+          v-for="p in PACES"
+          :key="p"
+          type="button"
+          class="pipe-pace rounded border px-1.5 py-0.5 font-mono"
+          :class="
+            session.pace === p
+              ? 'border-neon-pink bg-neon-pink/10 text-neon-pink'
+              : 'border-border opacity-70 hover:opacity-100'
+          "
+          :aria-pressed="session.pace === p"
+          @click="session.pace = p"
+        >
+          {{ p }}×
+        </button>
       </span>
-      <span class="pipe-arrow">─▶</span>
-      <span class="pipe-node flex flex-col gap-0.5 border-dashed" :class="[nodeClass('store'), { 'transaction-flash': transactionFlash > 0 }]" :key="transactionFlash">
-        <span>🐘 {{ t('pipeline.events') }}</span>
-        <span>🐘 {{ t('pipeline.outbox') }}</span>
-        <span class="text-[10px] text-neon-pink">┗ {{ t('pipeline.transaction') }} ┛</span>
-        <span v-if="commands.signal.phase === 'rejected'" class="text-[10px] opacity-60">{{ t('pipeline.nothing_written') }}</span>
-      </span>
-      <span class="pipe-arrow" :class="{ 'arrow-flow': replaying }">─▶<span v-if="replaying" class="ml-1 text-neon-pink">{{ t('pipeline.replaying') }}</span></span>
-      <span class="pipe-node" :class="nodeClass('projections')">🍃 {{ t('pipeline.projections') }}<span v-if="wiped" class="ml-1 opacity-70">({{ t('pipeline.empty') }})</span></span>
-      <span class="pipe-arrow">─▶</span>
-      <span class="pipe-node" :class="nodeClass('screen')">🖥 {{ t('pipeline.screen') }}</span>
+    </header>
+    <div ref="rootEl" class="pipe-canvas relative min-h-0 flex-1">
+      <svg width="0" height="0" class="absolute" aria-hidden="true">
+        <defs>
+          <marker
+            v-for="[id, color] in MARKERS"
+            :id="`pipe-arrow-${id}`"
+            :key="id"
+            viewBox="0 0 8 8"
+            refX="7"
+            refY="4"
+            markerWidth="7"
+            markerHeight="7"
+            orient="auto"
+          >
+            <path d="M0 0 L8 4 L0 8 z" :fill="color" />
+          </marker>
+        </defs>
+      </svg>
+      <VueFlow
+        :nodes="nodes"
+        :edges="edges"
+        :nodes-draggable="false"
+        :nodes-connectable="false"
+        :nodes-focusable="false"
+        :edges-focusable="false"
+        :edges-updatable="false"
+        :elements-selectable="false"
+        :pan-on-drag="false"
+        :pan-on-scroll="false"
+        :zoom-on-scroll="false"
+        :zoom-on-pinch="false"
+        :zoom-on-double-click="false"
+        :prevent-scrolling="false"
+        :min-zoom="0.1"
+        :max-zoom="1"
+        :delete-key-code="null"
+        :selection-key-code="null"
+        :multi-selection-key-code="null"
+        :zoom-activation-key-code="null"
+        @node-click="onNodeClick"
+      >
+        <template #node-service="p"><ServiceNode v-bind="p" /></template>
+        <template #node-box="p"><BoxNode v-bind="p" /></template>
+        <template #node-actor="p"><ActorNode v-bind="p" /></template>
+        <template #edge-signal="p"><SignalEdge v-bind="p" /></template>
+      </VueFlow>
     </div>
-    <div class="flex flex-wrap items-center gap-2 mt-1 pl-[14.5rem]">
-      <span class="pipe-arrow">└─▶</span>
-      <span class="pipe-node" :class="nodeClass('worker')">⚙ {{ t('pipeline.worker') }} <Dice :roll="diceRoll" /></span>
-      <span class="pipe-arrow">─▶</span>
-      <span class="pipe-node" :class="nodeClass('mail')">📬 {{ t('pipeline.mail') }}</span>
-      <span class="pipe-arrow">·</span>
-      <span class="pipe-arrow">⚙ ─▶</span>
-      <span class="pipe-node" :class="nodeClass('fan_command')">📨 {{ t('pipeline.fan_command') }} ─▶ 🛡 Fan ─▶ ┃🐘 {{ t('pipeline.transaction') }}┃</span>
-    </div>
+    <PipelineExplain :id="explain" @close="explain = null" />
   </section>
 </template>

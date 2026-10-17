@@ -19,7 +19,7 @@ const color = computed(() => ZONE_COLORS[props.seat.zone])
 <template>
   <button
     type="button"
-    class="seat relative w-9 h-9 rounded-md border text-base flex items-center justify-center transition-transform"
+    class="seat relative w-9 h-9 rounded-md border text-sm flex items-center justify-center transition-transform"
     :class="{
       'seat-free': state === 'free',
       'seat-booked': state === 'booked',

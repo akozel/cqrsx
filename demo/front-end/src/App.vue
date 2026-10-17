@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { onMounted, onUnmounted, ref, watch } from 'vue'
+import { onMounted, onUnmounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import confetti from 'canvas-confetti'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import ChapterCallout from '@/components/layout/ChapterCallout.vue'
 import TutorialDialog from '@/components/layout/TutorialDialog.vue'
-import AnnounceDialog from '@/components/app/AnnounceDialog.vue'
 import PipelineStrip from '@/components/pipeline/PipelineStrip.vue'
 import ConcertTabs from '@/components/app/ConcertTabs.vue'
 import PersonaPicker from '@/components/app/PersonaPicker.vue'
@@ -42,8 +41,6 @@ const timeMachine = useTimeMachineStore()
 const tour = useTourStore()
 const dim = (panel: string) => (tour.current && !CHAPTER_PANELS[tour.current].includes(panel) ? 'opacity-40 transition-opacity' : 'transition-opacity')
 
-type XrayTab = 'events' | 'outbox' | 'mongo' | 'mail' | 'snapshots' | 'activity'
-const xrayTab = ref<XrayTab>('events')
 let poll: ReturnType<typeof setInterval> | null = null
 
 onMounted(async () => {
@@ -81,46 +78,39 @@ watch(
 <template>
   <div class="min-h-screen flex flex-col">
     <AppHeader />
-    <PipelineStrip />
     <div v-if="concerts.backendDown" class="mx-4 mt-2 rounded border border-neon-red/60 px-3 py-1 text-xs text-neon-red">{{ t('xray.backend_down') }}</div>
-    <main class="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-4 p-4 min-h-0">
-      <!-- APP: the box office -->
-      <section class="flex flex-col gap-3 rounded-lg border border-border bg-panel p-4 min-w-0">
-        <div class="flex flex-wrap items-start gap-2"><ConcertTabs /><AnnounceDialog /></div>
-        <PersonaPicker />
-        <div :class="dim('seatmap')"><SeatMap /></div>
-        <div :class="dim('timemachine')"><TimeMachine /></div>
-        <div :class="dim('actions')"><ActionBar /></div>
-        <div :class="dim('rulebreaker')"><RuleBreaker /></div>
-        <div :class="dim('wallet')"><WalletPanel /></div>
-        <div :class="dim('encore')"><EncorePanel /></div>
-      </section>
-      <!-- X-RAY: what the databases hold -->
-      <section class="min-w-0 flex flex-col gap-3">
-        <div class="hidden 2xl:grid grid-cols-2 grid-rows-2 gap-3 h-[calc(100vh-11rem)] min-h-[40rem]">
-          <div :class="dim('events')"><EventStorePanel /></div>
-          <div :class="dim('outbox')"><OutboxPanel /></div>
-          <div :class="dim('mongo')"><MongoPanel /></div>
-          <div class="grid grid-rows-2 gap-3 min-h-0">
-            <div :class="dim('inbox')"><MailboxPanel /></div>
-            <div :class="dim('activity')"><ActivityFeed /></div>
+    <main class="flex-1 flex flex-col gap-4 p-4 min-h-0">
+      <!-- Top: the architecture diagram with the live events and outbox under it; the box office on the right -->
+      <div class="grid grid-cols-1 xl:grid-cols-[minmax(0,2fr)_minmax(0,1fr)] gap-4">
+        <div class="flex flex-col gap-4 min-w-0">
+          <div class="h-[27rem] shrink-0"><PipelineStrip /></div>
+          <!-- About twelve rows each; the rest scrolls inside the panel -->
+          <div class="grid grid-cols-1 md:grid-cols-[minmax(0,1.15fr)_minmax(0,0.85fr)] gap-4 h-[25rem] shrink-0">
+            <div class="h-full min-h-0" :class="dim('events')"><EventStorePanel /></div>
+            <div class="h-full min-h-0" :class="dim('outbox')"><OutboxPanel /></div>
           </div>
+          <div class="panel" :class="dim('wallet')"><WalletPanel /></div>
         </div>
-        <div class="2xl:hidden flex flex-col gap-2 h-[70vh] min-h-[32rem]">
-          <div class="flex flex-wrap gap-1 text-xs">
-            <button v-for="tab in ['events', 'outbox', 'mongo', 'mail', 'snapshots', 'activity'] as const" :key="tab" type="button" class="px-2 py-0.5 rounded border border-border font-mono" :class="{ 'bg-neon-cyan text-black': xrayTab === tab }" @click="xrayTab = tab">{{ tab }}</button>
+        <!-- APP: the box office, one block per function -->
+        <div class="flex flex-col gap-4 min-w-0">
+          <div class="panel"><PersonaPicker /></div>
+          <div class="panel"><ConcertTabs /></div>
+          <div class="panel flex flex-col gap-4">
+            <div :class="dim('seatmap')"><SeatMap /></div>
+            <div :class="dim('timemachine')"><TimeMachine /></div>
+            <div :class="dim('actions')"><ActionBar /></div>
           </div>
-          <div class="flex-1 min-h-0">
-            <EventStorePanel v-if="xrayTab === 'events'" />
-            <OutboxPanel v-else-if="xrayTab === 'outbox'" />
-            <MongoPanel v-else-if="xrayTab === 'mongo'" />
-            <MailboxPanel v-else-if="xrayTab === 'mail'" />
-            <SnapshotsPanel v-else-if="xrayTab === 'snapshots'" />
-            <ActivityFeed v-else />
-          </div>
+          <div class="panel" :class="dim('rulebreaker')"><RuleBreaker /></div>
+          <div class="panel" :class="dim('encore')"><EncorePanel /></div>
         </div>
-        <div class="hidden 2xl:block h-56"><SnapshotsPanel /></div>
-      </section>
+      </div>
+      <!-- X-RAY: what the other databases hold -->
+      <div class="grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-4 gap-4 h-auto 2xl:h-[26rem]">
+        <div class="h-[26rem] 2xl:h-full min-h-0" :class="dim('mongo')"><MongoPanel /></div>
+        <div class="h-[26rem] 2xl:h-full min-h-0" :class="dim('inbox')"><MailboxPanel /></div>
+        <div class="h-[26rem] 2xl:h-full min-h-0" :class="dim('activity')"><ActivityFeed /></div>
+        <div class="h-[26rem] 2xl:h-full min-h-0"><SnapshotsPanel /></div>
+      </div>
     </main>
     <ChapterCallout />
     <TutorialDialog />
