@@ -3,7 +3,7 @@
 Resume point for an agent: read this file first, continue with the first phase that is not
 marked done, never redo committed work. Plan: `demo/PLAN.md` v1.1; facts: `demo/docs/API_MAPPING.md`.
 
-Run started 2026-10-17 (sandbox time ≈ 02:35 UTC).
+Run started 2026-10-17 ≈ 02:35 UTC, finished ≈ 06:10 UTC. **Status: P0 (Phases 0.5, 1–8, 10) and P1 (Phase 9) closed**; the remaining items are browser walk-throughs and image builds that need a machine with a browser and `podman compose`.
 
 ## Step 0 — pre-flight (2026-10-17)
 
@@ -247,6 +247,17 @@ None so far.
 ## Known problems
 
 None so far.
+
+## Final state
+
+- Commits (newest first): `demo: lock testcontainers…`, `phase 9`, `phase 9 (part)`, `phase 10`, `phase 8`,
+  `phase 8 (wip)`, `phase 7`, `phase 6`, `phase 5`, `phase 4`, `phase 3`, `phase 2`, `phase 1`,
+  `Add execute_with_metadata…` (cqrsx, `5407f78`), `demo: add plan…`.
+- Last full check set (06:05 UTC): `cargo fmt --check` ✓, `cargo clippy --workspace --all-targets -D warnings` ✓,
+  `cargo test --workspace` ✓ (47 back-end unit, 3 sidecar, 1 integration through the shim),
+  `vue-tsc` ✓, `eslint` ✓, `vitest` 14/14 ✓, `vite build` ✓; root `cargo build --locked --workspace --all-features` ✓,
+  root `Cargo.lock` untouched.
+- Containers `encore-sandbox-postgres` / `encore-sandbox-mongo` stopped (volumes kept); shim stopped.
 
 ## How to run tomorrow
 
