@@ -1,5 +1,7 @@
-use super::FanId;
-use crate::domain::venue::{SeatId, Zone};
+use crate::domain::{
+    FanId,
+    venue::{SeatId, Zone},
+};
 use chrono::NaiveDate;
 use cqrsx::cqrs::event::DomainEvent;
 use serde::{Deserialize, Serialize};

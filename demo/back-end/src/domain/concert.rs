@@ -7,66 +7,19 @@ pub mod event;
 #[cfg(test)]
 mod tests;
 
-use crate::domain::venue::VENUE;
+use crate::domain::{
+    FanId,
+    venue::{SeatId, VENUE},
+};
 use chrono::NaiveDate;
 use cqrsx::cqrs::{aggregate::Aggregate, event_sink::EventSink};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fmt};
+use std::collections::BTreeMap;
 use uuid::Uuid;
 
 pub use command::ConcertCommand;
 pub use error::ConcertError;
 pub use event::ConcertEvent;
-
-use crate::domain::venue::SeatId;
-
-/// A validated fan identifier (`fox`, `crowd-12`, `arbitrage-bot`): `[a-z0-9_-]{1,64}`.
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(try_from = "String", into = "String")]
-pub struct FanId(String);
-
-impl FanId {
-    pub fn parse(raw: &str) -> Result<FanId, InvalidFanId> {
-        let raw = raw.trim();
-        let valid = !raw.is_empty()
-            && raw.len() <= 64
-            && raw
-                .chars()
-                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-' || c == '_');
-        if valid {
-            Ok(FanId(raw.to_owned()))
-        } else {
-            Err(InvalidFanId(raw.to_owned()))
-        }
-    }
-
-    pub fn as_str(&self) -> &str {
-        &self.0
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-#[error("invalid fan id {0:?}: expected [a-z0-9_-]{{1,64}}")]
-pub struct InvalidFanId(String);
-
-impl TryFrom<String> for FanId {
-    type Error = InvalidFanId;
-    fn try_from(value: String) -> Result<Self, Self::Error> {
-        FanId::parse(&value)
-    }
-}
-
-impl From<FanId> for String {
-    fn from(id: FanId) -> String {
-        id.0
-    }
-}
-
-impl fmt::Display for FanId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(&self.0)
-    }
-}
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ConcertInfo {

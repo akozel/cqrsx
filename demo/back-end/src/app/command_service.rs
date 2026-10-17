@@ -6,22 +6,24 @@
 //! `causation_id`, `recorded_at`, `source`) travels through `execute_with_metadata` (decision
 //! D-04) and ends up in the `events.metadata` column of every committed event.
 use crate::{
-    app::{activity::ActivityHub, rebuild::RebuildService, tasks},
+    app::{activity::ActivityHub, lock::BoxOfficeLock, tasks},
     domain::{
+        ConcertId, FanId,
         concert::{Concert, ConcertCommand, ConcertError, ConcertServices},
         fan::{Fan, FanCommand, FanError},
         venue::VENUE,
     },
+    projections::notifying::NotifyingHandler,
 };
 use chrono::{SecondsFormat, Utc};
-use cqrsx::cqrs::store::EventStore;
 use cqrsx::{
     cqrs::{
         CqrsFramework,
         aggregate::Aggregate,
         command::{CommandGatewayError, executor::CqrsCommandExecutor, retry::AggregateConflictRetryPolicy},
         event_handler::EventHandler,
-        store::persisted::PersistedEventStore,
+        projection::{View, ViewProjection, repository::ViewRepository},
+        store::{EventStore, persisted::PersistedEventStore},
     },
     postgres::{event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox},
     task::NewTask,
@@ -101,7 +103,7 @@ pub enum CommandOutcome<E> {
     Rejected(E),
     Conflict,
     Unavailable,
-    /// The rebuild lock is held: the box office is closed for a moment.
+    /// The box-office lock is held: closed for a moment while the read models are rebuilt.
     Locked,
 }
 
@@ -133,7 +135,37 @@ pub fn map_gateway_result<E>(result: Result<(), CommandGatewayError<E>>, project
 
 type Store<A> = PersistedEventStore<PostgresEventRepositoryWithOutbox, A>;
 type BuildFramework<A> = Box<dyn Fn(Vec<NewTask>) -> CqrsFramework<A, Store<A>> + Send + Sync>;
-pub type HandlerFactory<A> = Arc<dyn Fn() -> Vec<Box<dyn EventHandler<A>>> + Send + Sync>;
+pub type HandlerFactory<A> = Arc<dyn Fn() -> Box<dyn EventHandler<A>> + Send + Sync>;
+
+/// An event handler under the name the activity log and the API report it by. Handlers are built
+/// per framework (one per command); they are cheap — an `Arc` to the view repository. The
+/// registration order is the handler index in `CommittedWithEventHandlerFailure`, and the name
+/// list the services use is derived from this vector, so the two cannot drift apart.
+pub struct NamedHandler<A> {
+    pub name: &'static str,
+    pub build: HandlerFactory<A>,
+}
+
+impl<A: Aggregate + 'static> NamedHandler<A> {
+    /// A `ViewProjection` over `repository`, wrapped so the activity log sees
+    /// `projection.updated` / `projection.failed`.
+    pub fn projection<R, V>(name: &'static str, repository: Arc<R>, activity: Arc<ActivityHub>) -> Self
+    where
+        R: ViewRepository<V, A> + 'static,
+        V: View<A> + 'static,
+    {
+        Self {
+            name,
+            build: Arc::new(move || {
+                Box::new(NotifyingHandler::new(
+                    ViewProjection::new(repository.clone()),
+                    name,
+                    activity.clone(),
+                ))
+            }),
+        }
+    }
+}
 
 /// Shared wiring for both aggregates.
 pub struct Executors {
@@ -143,22 +175,28 @@ pub struct Executors {
 }
 
 impl Executors {
-    fn build<A>(&self, handlers: HandlerFactory<A>, services: A::Services) -> CqrsCommandExecutor<A, BuildFramework<A>>
+    /// The executor plus the projection names in registration order.
+    fn build<A>(
+        &self,
+        handlers: Vec<NamedHandler<A>>,
+        services: A::Services,
+    ) -> (CqrsCommandExecutor<A, BuildFramework<A>>, Vec<&'static str>)
     where
         A: Aggregate + Clone + 'static,
         A::Services: Clone,
     {
+        let (names, factories): (Vec<_>, Vec<_>) = handlers.into_iter().map(|h| (h.name, h.build)).unzip();
         let pool = self.pool.clone();
         let snapshot_every = self.snapshot_every;
         let build: BuildFramework<A> = Box::new(move |tasks| {
             let repository = PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks);
             CqrsFramework::new(
                 PersistedEventStore::new_snapshot_store(repository, snapshot_every),
-                handlers(),
+                factories.iter().map(|build| build()).collect(),
                 services.clone(),
             )
         });
-        CqrsCommandExecutor::new(build, self.retry)
+        (CqrsCommandExecutor::new(build, self.retry), names)
     }
 }
 
@@ -170,6 +208,15 @@ pub struct Executed<E> {
     pub tasks: Vec<String>,
 }
 
+impl<E> Executed<E> {
+    fn locked() -> Self {
+        Self {
+            outcome: CommandOutcome::Locked,
+            tasks: vec![],
+        }
+    }
+}
+
 pub struct ConcertCommands {
     executor: CqrsCommandExecutor<Concert, BuildFramework<Concert>>,
     /// Read-only access to committed concert state, used to resolve the booking a cancellation
@@ -177,7 +224,7 @@ pub struct ConcertCommands {
     reader: PersistedEventStore<PostgresEventRepository, Concert>,
     projections: Vec<&'static str>,
     activity: Arc<ActivityHub>,
-    rebuild: Arc<RebuildService>,
+    lock: Arc<BoxOfficeLock>,
     /// Attempt budget of the chain tasks this service publishes (`encore_record_*`).
     task_max_attempts: i32,
 }
@@ -185,22 +232,22 @@ pub struct ConcertCommands {
 impl ConcertCommands {
     pub fn new(
         executors: &Executors,
-        handlers: HandlerFactory<Concert>,
-        projections: Vec<&'static str>,
+        handlers: Vec<NamedHandler<Concert>>,
         services: ConcertServices,
         activity: Arc<ActivityHub>,
-        rebuild: Arc<RebuildService>,
+        lock: Arc<BoxOfficeLock>,
         task_max_attempts: i32,
     ) -> Self {
+        let (executor, projections) = executors.build(handlers, services);
         Self {
-            executor: executors.build(handlers, services),
+            executor,
             reader: PersistedEventStore::new_snapshot_store(
                 PostgresEventRepository::new(executors.pool.clone()),
                 executors.snapshot_every,
             ),
             projections,
             activity,
-            rebuild,
+            lock,
             task_max_attempts,
         }
     }
@@ -211,7 +258,7 @@ impl ConcertCommands {
     /// anything is written, so no task can ever be published without its event.
     async fn tasks_for(
         &self,
-        concert_id: &str,
+        concert_id: &ConcertId,
         command: &ConcertCommand,
         metadata: &CommandMetadata,
     ) -> Result<Vec<NewTask>, String> {
@@ -227,7 +274,7 @@ impl ConcertCommands {
                 tasks::new_task(
                     tasks::RecordTicketV1 {
                         booking_id: *booking_id,
-                        concert_id: concert_id.to_owned(),
+                        concert_id: concert_id.to_string(),
                         seat: info.id,
                         zone: info.zone,
                         price: info.price,
@@ -235,7 +282,7 @@ impl ConcertCommands {
                         fan_name: fan_name.clone(),
                     },
                     metadata,
-                    concert_id,
+                    concert_id.as_str(),
                     fan_id.as_str(),
                     self.task_max_attempts,
                 )
@@ -251,7 +298,11 @@ impl ConcertCommands {
                 // between this read and the commit, the command is retried on fresh state by the
                 // conflict policy and the aggregate still decides; the task only carries what the
                 // Fan aggregate needs to find the ticket.
-                let context = self.reader.load_aggregate(concert_id).await.map_err(|e| e.to_string())?;
+                let context = self
+                    .reader
+                    .load_aggregate(concert_id.as_str())
+                    .await
+                    .map_err(|e| e.to_string())?;
                 let Some(booking) = context.aggregate.bookings().get(&info.id).filter(|b| &b.fan_id == fan_id) else {
                     return Ok(vec![]);
                 };
@@ -259,13 +310,13 @@ impl ConcertCommands {
                     tasks::RecordCancellationV1 {
                         booking_id: booking.booking_id,
                         cancellation_id: *cancellation_id,
-                        concert_id: concert_id.to_owned(),
+                        concert_id: concert_id.to_string(),
                         seat: info.id,
                         fan_id: fan_id.to_string(),
                         refund: booking.price,
                     },
                     metadata,
-                    concert_id,
+                    concert_id.as_str(),
                     fan_id.as_str(),
                     self.task_max_attempts,
                 )
@@ -274,12 +325,14 @@ impl ConcertCommands {
         task.map(|t| vec![t]).map_err(|e| e.to_string())
     }
 
-    pub async fn execute(&self, concert_id: &str, command: ConcertCommand, metadata: CommandMetadata) -> Executed<ConcertError> {
-        if self.rebuild.is_locked() {
-            return Executed {
-                outcome: CommandOutcome::Locked,
-                tasks: vec![],
-            };
+    pub async fn execute(
+        &self,
+        concert_id: &ConcertId,
+        command: ConcertCommand,
+        metadata: CommandMetadata,
+    ) -> Executed<ConcertError> {
+        if self.lock.is_locked() {
+            return Executed::locked();
         }
         let tasks = match self.tasks_for(concert_id, &command, &metadata).await {
             Ok(tasks) => tasks,
@@ -293,20 +346,22 @@ impl ConcertCommands {
         };
         let task_formats: Vec<String> = tasks.iter().map(|t| t.format().to_string()).collect();
         let command_type = command.name();
-        let fan_id = command.fan_id().map(|f| f.to_string());
+        let fan_id = command.fan_id().cloned();
         let result = self
             .executor
-            .execute_with_metadata(concert_id, command, metadata.to_map(), tasks)
+            .execute_with_metadata(concert_id.as_str(), command, metadata.to_map(), tasks)
             .await;
         let outcome = map_gateway_result(result, &self.projections);
         publish_outcome(
             &self.activity,
-            Concert::TYPE,
-            concert_id,
-            command_type,
-            fan_id,
-            &metadata,
-            &task_formats,
+            &OutcomeContext {
+                aggregate_type: Concert::TYPE,
+                aggregate_id: concert_id.as_str(),
+                command_type,
+                fan_id: fan_id.as_ref().map(FanId::as_str),
+                metadata: &metadata,
+                task_formats: &task_formats,
+            },
             &outcome,
             |e| (e.code(), e.params()),
         );
@@ -321,61 +376,60 @@ pub struct FanCommands {
     executor: CqrsCommandExecutor<Fan, BuildFramework<Fan>>,
     projections: Vec<&'static str>,
     activity: Arc<ActivityHub>,
-    rebuild: Arc<RebuildService>,
+    lock: Arc<BoxOfficeLock>,
 }
 
 impl FanCommands {
     pub fn new(
         executors: &Executors,
-        handlers: HandlerFactory<Fan>,
-        projections: Vec<&'static str>,
+        handlers: Vec<NamedHandler<Fan>>,
         activity: Arc<ActivityHub>,
-        rebuild: Arc<RebuildService>,
+        lock: Arc<BoxOfficeLock>,
     ) -> Self {
+        let (executor, projections) = executors.build(handlers, ());
         Self {
-            executor: executors.build(handlers, ()),
+            executor,
             projections,
             activity,
-            rebuild,
+            lock,
         }
     }
 
-    pub fn rebuild(&self) -> &RebuildService {
-        &self.rebuild
+    pub fn lock(&self) -> &Arc<BoxOfficeLock> {
+        &self.lock
     }
 
     /// Internal commands come from task handlers, which also build the follow-up tasks (from the
     /// parent task's payload). During a rebuild the outcome is `Locked`, which the task handler
-    /// turns into a one-second retry: the task is durable, so waiting costs nothing, and the
-    /// wallet projection is not written while its collection is being rebuilt.
+    /// turns into a short retry: the task is durable, so waiting costs nothing, and the wallet
+    /// projection is not written while its collection is being rebuilt.
     pub async fn execute(
         &self,
-        fan_id: &str,
+        fan_id: &FanId,
         command: FanCommand,
         metadata: CommandMetadata,
         tasks: Vec<NewTask>,
     ) -> Executed<FanError> {
-        if self.rebuild.is_locked() {
-            return Executed {
-                outcome: CommandOutcome::Locked,
-                tasks: vec![],
-            };
+        if self.lock.is_locked() {
+            return Executed::locked();
         }
         let task_formats: Vec<String> = tasks.iter().map(|t| t.format().to_string()).collect();
         let command_type = command.name();
         let result = self
             .executor
-            .execute_with_metadata(fan_id, command, metadata.to_map(), tasks)
+            .execute_with_metadata(fan_id.as_str(), command, metadata.to_map(), tasks)
             .await;
         let outcome = map_gateway_result(result, &self.projections);
         publish_outcome(
             &self.activity,
-            Fan::TYPE,
-            fan_id,
-            command_type,
-            Some(fan_id.to_owned()),
-            &metadata,
-            &task_formats,
+            &OutcomeContext {
+                aggregate_type: Fan::TYPE,
+                aggregate_id: fan_id.as_str(),
+                command_type,
+                fan_id: Some(fan_id.as_str()),
+                metadata: &metadata,
+                task_formats: &task_formats,
+            },
             &outcome,
             |e| (e.code(), e.params()),
         );
@@ -386,26 +440,30 @@ impl FanCommands {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
+/// What every `command.*` activity entry says about the command, whatever its outcome.
+struct OutcomeContext<'a> {
+    aggregate_type: &'a str,
+    aggregate_id: &'a str,
+    command_type: &'a str,
+    fan_id: Option<&'a str>,
+    metadata: &'a CommandMetadata,
+    task_formats: &'a [String],
+}
+
 fn publish_outcome<E>(
     activity: &ActivityHub,
-    aggregate_type: &str,
-    aggregate_id: &str,
-    command_type: &str,
-    fan_id: Option<String>,
-    metadata: &CommandMetadata,
-    task_formats: &[String],
+    context: &OutcomeContext<'_>,
     outcome: &CommandOutcome<E>,
     describe: impl Fn(&E) -> (&'static str, Value),
 ) {
     let base = json!({
-        "aggregate_type": aggregate_type,
-        "aggregate_id": aggregate_id,
-        "command_id": metadata.command_id,
-        "correlation_id": metadata.correlation_id,
-        "source": metadata.source,
-        "command_type": command_type,
-        "fan_id": fan_id,
+        "aggregate_type": context.aggregate_type,
+        "aggregate_id": context.aggregate_id,
+        "command_id": context.metadata.command_id,
+        "correlation_id": context.metadata.correlation_id,
+        "source": context.metadata.source,
+        "command_type": context.command_type,
+        "fan_id": context.fan_id,
     });
     let merge = |extra: Value| {
         let mut map = base.as_object().cloned().unwrap_or_default();
@@ -418,12 +476,12 @@ fn publish_outcome<E>(
         CommandOutcome::Accepted { warnings } => {
             activity.publish(
                 "command.accepted",
-                merge(json!({ "tasks": task_formats, "warnings": warnings })),
+                merge(json!({ "tasks": context.task_formats, "warnings": warnings })),
             );
             for warning in warnings {
                 activity.publish(
                     "projection.failed",
-                    json!({ "projection": warning.projection, "view_id": aggregate_id, "message": "event handler failed after commit" }),
+                    json!({ "projection": warning.projection, "view_id": context.aggregate_id, "message": "event handler failed after commit" }),
                 );
             }
         }
@@ -514,5 +572,54 @@ mod tests {
                 ]
             }
         );
+    }
+
+    #[tokio::test]
+    async fn a_locked_box_office_refuses_commands_before_touching_storage() {
+        let lock = Arc::new(BoxOfficeLock::new());
+        let executors = Executors {
+            pool: crate::testing::lazy_pool(),
+            snapshot_every: 10,
+            retry: AggregateConflictRetryPolicy::default(),
+        };
+        let activity = Arc::new(ActivityHub::new(8, 8));
+        let concerts = ConcertCommands::new(
+            &executors,
+            vec![],
+            ConcertServices::default(),
+            activity.clone(),
+            lock.clone(),
+            6,
+        );
+        let fans = FanCommands::new(&executors, vec![], activity.clone(), lock.clone());
+        let _guard = lock.try_acquire().unwrap();
+        let concert_id = ConcertId::parse("c-1").unwrap();
+        let fan_id = FanId::parse("fox").unwrap();
+        let executed = concerts
+            .execute(
+                &concert_id,
+                ConcertCommand::CancelBooking {
+                    seat: "B4".into(),
+                    fan_id: fan_id.clone(),
+                    cancellation_id: Uuid::now_v7(),
+                },
+                CommandMetadata::ui(),
+            )
+            .await;
+        assert_eq!(executed, Executed::locked());
+        let executed = fans
+            .execute(
+                &fan_id,
+                FanCommand::RecordCancellation {
+                    booking_id: Uuid::now_v7(),
+                    cancellation_id: Uuid::now_v7(),
+                    refund: 80,
+                },
+                CommandMetadata::ui(),
+                vec![],
+            )
+            .await;
+        assert_eq!(executed, Executed::locked());
+        assert!(activity.subscribe().0.is_empty(), "a locked outcome is not logged");
     }
 }

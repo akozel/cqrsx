@@ -677,11 +677,12 @@ demo/
 │   └── src/
 │       ├── main.rs             сборка компонентов, host::lifecycle::run
 │       ├── config.rs
-│       ├── domain.rs, domain/  venue.rs, concert.rs + concert/{command.rs, event.rs, error.rs, tests.rs},
+│       ├── domain.rs, domain/  ids.rs (ConcertId, FanId), venue.rs,
+│       │                       concert.rs + concert/{command.rs, event.rs, error.rs, tests.rs},
 │       │                       fan.rs + fan/{command.rs, event.rs, error.rs, tests.rs}
-│       ├── app/                command_service.rs (два CqrsCommandExecutor: Concert и Fan, метаданные),
-│       │                       tasks.rs (4 TaskPayload + конструкторы NewTask), seed.rs, rebuild.rs,
-│       │                       verify.rs [P1], time_travel.rs, activity.rs, personas.rs
+│       ├── app/                command_service.rs (два CqrsCommandExecutor: Concert и Fan, метаданные,
+│       │                       NamedHandler), tasks.rs (4 TaskPayload + конструкторы NewTask), lock.rs
+│       │                       (BoxOfficeLock), rebuild.rs, verify.rs [P1], time_travel.rs, activity.rs, personas.rs
 │       ├── projections/        mongo_view_repository.rs, concert_hall.rs (View<Concert>),
 │       │                       fan_wallet.rs (View<Fan>), notifying.rs, progress.rs (декоратор replay)
 │       ├── outbox/             flaky_mail.rs, chaos.rs, record_ticket.rs, record_cancellation.rs,
@@ -942,8 +943,10 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 4. MongoDB-клиент; `read_db = encore_read`, `mail_db = mail_service`.
 5. `ActivityHub::new(capacity = 1024, backlog = 100)`.
 6. Фабрики обработчиков событий (вызываются на каждый `CqrsFramework`, обработчики дешёвые — держат
-   `Arc<MongoViewRepository>`): для `Concert` — `[NotifyingHandler(ViewProjection::new(halls_repo.clone()))]`,
-   для `Fan` — `[NotifyingHandler(ViewProjection::new(wallets_repo.clone()))]`.
+   `Arc<MongoViewRepository>`): для `Concert` — `[NamedHandler::projection("concert_halls", halls_repo, activity)]`,
+   для `Fan` — `[NamedHandler::projection("fan_wallets", wallets_repo, activity)]`. `NamedHandler` строит
+   `NotifyingHandler(ViewProjection::new(repo.clone()))`, а имя проекции (для `projection_failed`) выводится из
+   того же списка — порядок регистрации = индекс в `CommittedWithEventHandlerFailure`.
 7. Два долгоживущих `CqrsCommandExecutor::new(build_framework, PostgresCommandConfig::conflict_retry())`, по одному
    на агрегат. `build_framework = move |tasks| CqrsFramework::new(PersistedEventStore::new_snapshot_store(
    PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks), snapshot_every), handlers(), services.clone())`.
@@ -1100,8 +1103,9 @@ Activity хранится только в памяти — это лог, а н�
 ### 6.8 `RebuildService`
 
 - Состояние: `idle` или `running { rebuild_id, speed, replayed, started_at }`, плюс `last_result`.
-- Lock — `tokio::sync::Mutex` / `AtomicBool` + RAII-guard, который освобождает lock при любом выходе
-  (успех, ошибка, паника задачи).
+- Lock — `app::lock::BoxOfficeLock` (`AtomicBool` + RAII-guard, который освобождает lock при любом выходе:
+  успех, ошибка, паника задачи). Один `Arc<BoxOfficeLock>` делят `RebuildService`, `ConcertCommands`,
+  `FanCommands` и chain-обработчики (`wait_for_unlock`); сервис rebuild всегда полностью сконфигурирован.
 - Запуск — `tokio::spawn`; HTTP сразу возвращает `202 { rebuild_id }`, повторный запуск во время работы → `409`.
 - Wipe тоже запрещён во время rebuild (`423`).
 - Два прохода: `EventReplay::new(PostgresEventRepository::new(pool.clone()), ProgressHandler::new(ViewProjection::new(halls_repo.clone()), …)).replay_all()`

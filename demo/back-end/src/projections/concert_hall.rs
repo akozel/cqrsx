@@ -7,7 +7,7 @@
 //! order-independent updates — handlers of parallel commands and replays all converge.
 use crate::domain::{
     concert::{Concert, ConcertEvent},
-    venue::Zone,
+    venue::{VENUE, Zone},
 };
 use cqrsx::cqrs::{event::EventEnvelope, projection::View};
 use serde::{Deserialize, Serialize};
@@ -143,7 +143,7 @@ impl View<Concert> for ConcertHallView {
             // Something happened before we saw the announcement: the document lacks its history.
             self.incomplete = true;
             if self.capacity == 0 {
-                self.capacity = i64::from(crate::domain::venue::VENUE.capacity());
+                self.capacity = i64::from(VENUE.capacity());
             }
         }
         self.last_sequence = self.last_sequence.max(sequence);
@@ -154,10 +154,7 @@ impl View<Concert> for ConcertHallView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{
-        concert::FanId,
-        venue::{SeatId, VENUE},
-    };
+    use crate::domain::{FanId, venue::SeatId};
     use chrono::NaiveDate;
     use std::collections::HashMap;
     use uuid::Uuid;

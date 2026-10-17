@@ -1,6 +1,6 @@
 //! Shared read-side handles: the two view repositories (MongoDB) and the mail inbox collection.
 use crate::{
-    domain::{concert::Concert, fan::Fan},
+    domain::{FanId, concert::Concert, fan::Fan},
     projections::{concert_hall::ConcertHallView, fan_wallet::FanWalletView, mongo_view_repository::MongoViewRepository},
 };
 use mongodb::{
@@ -11,6 +11,9 @@ use std::sync::Arc;
 
 pub const CONCERT_HALLS: &str = "concert_halls";
 pub const FAN_WALLETS: &str = "fan_wallets";
+/// The simulated external mail service's one collection (in the `mail_db` database, not in the
+/// read-model database: wipe and replay never touch it).
+pub const MAIL_INBOX: &str = "inbox";
 
 pub struct ReadSide {
     pub halls: Arc<MongoViewRepository<ConcertHallView, Concert>>,
@@ -23,15 +26,15 @@ impl ReadSide {
         Self {
             halls: Arc::new(MongoViewRepository::new(read_db, CONCERT_HALLS)),
             wallets: Arc::new(MongoViewRepository::new(read_db, FAN_WALLETS)),
-            inbox: mail_db.collection("inbox"),
+            inbox: mail_db.collection(MAIL_INBOX),
         }
     }
 
     /// E-mails of one fan, oldest first.
-    pub async fn inbox_of(&self, fan_id: &str) -> Result<Vec<Document>, mongodb::error::Error> {
+    pub async fn inbox_of(&self, fan_id: &FanId) -> Result<Vec<Document>, mongodb::error::Error> {
         use futures::TryStreamExt;
         self.inbox
-            .find(doc! { "to_fan_id": fan_id })
+            .find(doc! { "to_fan_id": fan_id.as_str() })
             .sort(doc! { "first_delivered_at": 1 })
             .await?
             .try_collect()

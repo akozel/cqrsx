@@ -2,34 +2,35 @@
 #![allow(clippy::result_large_err)]
 use app::{
     activity::ActivityHub,
-    command_service::{ConcertCommands, Executors, FanCommands, HandlerFactory},
-    read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide},
+    command_service::{ConcertCommands, Executors, FanCommands, NamedHandler},
+    lock::BoxOfficeLock,
+    read_side::{CONCERT_HALLS, FAN_WALLETS, MAIL_INBOX, ReadSide},
     rebuild::RebuildService,
     time_travel::TimeTravel,
     verify::VerifyService,
 };
 use config::Config;
-use cqrsx::cqrs::{event_handler::EventHandler, projection::ViewProjection};
 use cqrsx::{
     cqrs::command::retry::AggregateConflictRetryPolicy,
     host::{lifecycle, signal::shutdown_signal},
     logging::LoggingConfig,
-    postgres::{
-        command::PostgresCommandConfig, pool::connect_pool, task_queue::PostgresTaskQueueConfig,
-        task_runtime::prepare_task_runtime,
-    },
+    postgres::{command::PostgresCommandConfig, pool::connect_pool, task_runtime::prepare_task_runtime},
 };
 use domain::concert::ConcertServices;
-use domain::{concert::Concert, fan::Fan};
-use encore_backend::{app, config, domain, http, outbox, projections};
+use encore_backend::{app, config, domain, http, outbox};
 use outbox::{
     dispatcher::{DispatcherDeps, dispatcher_factory},
     flaky_mail::{MailSettings, MongoInbox},
 };
-use projections::notifying::NotifyingHandler;
 use sqlx::postgres::PgConnectOptions;
 use std::{future::IntoFuture, sync::Arc};
 use tokio_util::sync::CancellationToken;
+
+/// Broadcast capacity of the activity log: a slow SSE client lags (and skips) past this many
+/// entries, it never blocks a publisher.
+const ACTIVITY_CHANNEL_CAPACITY: usize = 1024;
+/// How many recent entries a new SSE subscriber receives in its `hello`.
+const ACTIVITY_BACKLOG: usize = 100;
 
 fn fail(message: impl std::fmt::Display) -> ! {
     tracing::error!("{message}");
@@ -70,12 +71,14 @@ async fn main() {
     mongo_options.app_name = Some("encore-backend".into());
     let mongo = mongodb::Client::with_options(mongo_options).unwrap_or_else(|e| fail(format!("MongoDB client: {e}")));
     let mail_db = mongo.database(&config.mail_db);
-    let inbox = Arc::new(MongoInbox::new(mail_db.collection("inbox")));
+    let inbox = Arc::new(MongoInbox::new(mail_db.collection(MAIL_INBOX)));
     let read_db = mongo.database(&config.read_db);
     let read = Arc::new(ReadSide::new(&read_db, &mail_db));
 
-    let activity = Arc::new(ActivityHub::new(1024, 100));
+    let activity = Arc::new(ActivityHub::new(ACTIVITY_CHANNEL_CAPACITY, ACTIVITY_BACKLOG));
+    let lock = Arc::new(BoxOfficeLock::new());
     let rebuild = Arc::new(RebuildService::new(
+        lock.clone(),
         pool.clone(),
         read.clone(),
         activity.clone(),
@@ -90,49 +93,21 @@ async fn main() {
         snapshot_every: command_config.snapshot_interval(),
         retry: command_config.conflict_retry(),
     };
-    // Event-handler factories: called for every framework (one per command). Handlers are cheap —
-    // they hold an Arc to the view repository — and are wrapped so the activity log sees
-    // `projection.updated` / `projection.failed`. Registration order = index in
-    // `CommittedWithEventHandlerFailure`, hence the parallel name lists.
-    let concert_handlers: HandlerFactory<Concert> = {
-        let halls = read.halls.clone();
-        let activity = activity.clone();
-        Arc::new(move || {
-            vec![Box::new(NotifyingHandler::new(
-                ViewProjection::new(halls.clone()),
-                CONCERT_HALLS,
-                activity.clone(),
-            )) as Box<dyn EventHandler<Concert>>]
-        })
-    };
-    let fan_handlers: HandlerFactory<Fan> = {
-        let wallets = read.wallets.clone();
-        let activity = activity.clone();
-        Arc::new(move || {
-            vec![Box::new(NotifyingHandler::new(
-                ViewProjection::new(wallets.clone()),
-                FAN_WALLETS,
-                activity.clone(),
-            )) as Box<dyn EventHandler<Fan>>]
-        })
-    };
     let concert_commands = Arc::new(ConcertCommands::new(
         &executors,
-        concert_handlers,
-        vec![CONCERT_HALLS],
+        vec![NamedHandler::projection(CONCERT_HALLS, read.halls.clone(), activity.clone())],
         ConcertServices {
             ticket_limit: config.ticket_limit,
         },
         activity.clone(),
-        rebuild.clone(),
+        lock.clone(),
         config.chain_max_attempts,
     ));
     let fan_commands = Arc::new(FanCommands::new(
         &executors,
-        fan_handlers,
-        vec![FAN_WALLETS],
+        vec![NamedHandler::projection(FAN_WALLETS, read.wallets.clone(), activity.clone())],
         activity.clone(),
-        rebuild.clone(),
+        lock,
     ));
 
     let shutdown = CancellationToken::new();
@@ -155,9 +130,7 @@ async fn main() {
         chaos_seed: config.chaos_seed,
         task_max_attempts: config.task_max_attempts,
     });
-    let queue_config = PostgresTaskQueueConfig::from_lookup(|name| std::env::var(name).ok())
-        .unwrap_or_else(|e| fail(format!("task queue configuration: {e}")));
-    let runtime = prepare_task_runtime(pool.clone(), factory, queue_config, config.task_runtime.clone())
+    let runtime = prepare_task_runtime(pool.clone(), factory, config.task_queue.clone(), config.task_runtime.clone())
         .unwrap_or_else(|e| fail(format!("task runtime setup: {e}")));
     let task_runtime = runtime.run(shutdown.clone());
 

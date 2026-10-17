@@ -11,9 +11,12 @@ use encore_backend::{
     app::{
         activity::ActivityHub,
         command_service::{CommandMetadata, CommandOutcome, ConcertCommands, Executors},
-        rebuild::RebuildService,
+        lock::BoxOfficeLock,
     },
-    domain::concert::{ConcertCommand, ConcertError, ConcertServices, FanId},
+    domain::{
+        ConcertId, FanId,
+        concert::{ConcertCommand, ConcertError, ConcertServices},
+    },
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -80,21 +83,14 @@ async fn database() -> (PgPool, testcontainers::ContainerAsync<GenericImage>) {
 async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_nothing() {
     let (pool, container) = database().await;
     let activity = Arc::new(ActivityHub::new(64, 64));
-    let rebuild = Arc::new(RebuildService::lock_only());
+    let lock = Arc::new(BoxOfficeLock::new());
     let executors = Executors {
         pool: pool.clone(),
         snapshot_every: 10,
         retry: AggregateConflictRetryPolicy::default(),
     };
-    let commands = ConcertCommands::new(
-        &executors,
-        Arc::new(Vec::new),
-        vec![],
-        ConcertServices { ticket_limit: 4 },
-        activity,
-        rebuild,
-        6,
-    );
+    let commands = ConcertCommands::new(&executors, vec![], ConcertServices { ticket_limit: 4 }, activity, lock, 6);
+    let concert_id = ConcertId::parse("test-2026").expect("concert id");
     let announce = ConcertCommand::AnnounceConcert {
         artist: "A".into(),
         city: "C".into(),
@@ -102,7 +98,7 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     };
     assert!(
         commands
-            .execute("test-2026", announce, CommandMetadata::with_source("seed"))
+            .execute(&concert_id, announce, CommandMetadata::with_source("seed"))
             .await
             .outcome
             .is_accepted()
@@ -115,13 +111,13 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
         fan_name: "Alice".into(),
         booking_id: metadata.command_id,
     };
-    let executed = commands.execute("test-2026", book, metadata.clone()).await;
+    let executed = commands.execute(&concert_id, book, metadata.clone()).await;
     assert!(executed.outcome.is_accepted());
     assert_eq!(executed.tasks, vec!["encore_record_ticket v1".to_owned()]);
 
     let rejected = commands
         .execute(
-            "test-2026",
+            &concert_id,
             ConcertCommand::BookSeat {
                 seat: "B4".into(),
                 fan_id: FanId::parse("bob").expect("fan"),

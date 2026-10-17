@@ -4,6 +4,8 @@ pub mod commands;
 pub mod error;
 pub mod projections;
 pub mod queries;
+#[cfg(test)]
+mod tests;
 
 use crate::{
     app::{
@@ -15,6 +17,8 @@ use crate::{
         verify::VerifyService,
     },
     config::Config,
+    domain::{ConcertId, FanId},
+    http::error::ApiError,
 };
 use axum::{
     Router,
@@ -37,6 +41,15 @@ pub struct AppState {
     /// SSE streams end when this token is cancelled; otherwise graceful shutdown would wait for
     /// every open browser tab.
     pub shutdown: CancellationToken,
+}
+
+/// Path segment → validated id, or `400 invalid_request`.
+pub fn parse_concert_id(raw: &str) -> Result<ConcertId, ApiError> {
+    ConcertId::parse(raw).map_err(|e| ApiError::invalid(e.to_string()))
+}
+
+pub fn parse_fan_id(raw: &str) -> Result<FanId, ApiError> {
+    FanId::parse(raw).map_err(|e| ApiError::invalid(e.to_string()))
 }
 
 pub fn router(state: AppState) -> Router {

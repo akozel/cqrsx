@@ -1,6 +1,12 @@
 //! ⏳ Time machine: the state of one concert after event `n`, computed from its events alone.
 //! Snapshots are deliberately not used — the point is "this state is stored nowhere".
-use crate::domain::concert::{Concert, ConcertEvent};
+use crate::{
+    app::StorageError,
+    domain::{
+        ConcertId,
+        concert::{Concert, ConcertEvent},
+    },
+};
 use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
@@ -32,11 +38,11 @@ impl TimeTravel {
         }
     }
 
-    async fn events(&self, concert_id: &str) -> Result<Vec<EventEnvelope<Concert>>, String> {
-        self.store.load_events(concert_id).await.map_err(|e| e.to_string())
+    async fn events(&self, concert_id: &ConcertId) -> Result<Vec<EventEnvelope<Concert>>, StorageError> {
+        self.store.load_events(concert_id.as_str()).await.map_err(StorageError::new)
     }
 
-    pub async fn timeline(&self, concert_id: &str) -> Result<Vec<Value>, String> {
+    pub async fn timeline(&self, concert_id: &ConcertId) -> Result<Vec<Value>, StorageError> {
         Ok(self
             .events(concert_id)
             .await?
@@ -53,7 +59,7 @@ impl TimeTravel {
     }
 
     /// `None` when the concert has fewer than `sequence` events (or none at all).
-    pub async fn state_at(&self, concert_id: &str, sequence: usize) -> Result<Option<Value>, String> {
+    pub async fn state_at(&self, concert_id: &ConcertId, sequence: usize) -> Result<Option<Value>, StorageError> {
         let events = self.events(concert_id).await?;
         let last_sequence = events.last().map(|e| e.sequence).unwrap_or(0);
         if sequence == 0 || sequence > last_sequence {

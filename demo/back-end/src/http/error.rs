@@ -1,4 +1,5 @@
 //! Error responses share one shape: `{ outcome, error: { code, params?, message } }`.
+use crate::app::StorageError;
 use axum::{
     Json,
     http::StatusCode,
@@ -57,6 +58,12 @@ impl ApiError {
     pub fn with_extra(mut self, extra: Value) -> Self {
         self.extra = extra;
         self
+    }
+}
+
+impl From<StorageError> for ApiError {
+    fn from(error: StorageError) -> Self {
+        ApiError::unavailable(error.0)
     }
 }
 

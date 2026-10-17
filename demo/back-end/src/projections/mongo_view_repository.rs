@@ -20,7 +20,6 @@ use std::marker::PhantomData;
 
 pub struct MongoViewRepository<V, A> {
     collection: Collection<Document>,
-    name: &'static str,
     phantom: PhantomData<fn() -> (V, A)>,
 }
 
@@ -39,25 +38,16 @@ fn is_duplicate_key(error: &mongodb::error::Error) -> bool {
 }
 
 impl<V, A> MongoViewRepository<V, A> {
-    pub fn new(database: &Database, name: &'static str) -> Self {
+    pub fn new(database: &Database, name: &str) -> Self {
         Self {
             collection: database.collection(name),
-            name,
             phantom: PhantomData,
         }
-    }
-
-    pub fn name(&self) -> &'static str {
-        self.name
     }
 
     /// Wipe = drop the collection. The ledger is untouched; Encore! rebuilds it.
     pub async fn wipe(&self) -> Result<(), PersistenceError> {
         self.collection.drop().await.map_err(connection_error)
-    }
-
-    pub async fn count(&self) -> Result<u64, PersistenceError> {
-        self.collection.count_documents(doc! {}).await.map_err(connection_error)
     }
 
     /// Raw documents as stored (`_id`, `version`, `view`), for the read API.
@@ -80,11 +70,7 @@ impl<V, A> MongoViewRepository<V, A> {
             .map_err(connection_error)
     }
 
-    async fn load_stored(&self, view_id: &str) -> Result<Option<Stored>, PersistenceError>
-    where
-        V: View<A>,
-        A: Aggregate,
-    {
+    async fn load_stored(&self, view_id: &str) -> Result<Option<Stored>, PersistenceError> {
         let Some(document) = self.document(view_id).await? else {
             return Ok(None);
         };

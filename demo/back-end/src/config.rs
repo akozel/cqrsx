@@ -2,7 +2,10 @@
 //!
 //! Parsing happens once at start-up, so this is the one place where a hard failure with a clear
 //! message is acceptable; everything after `Config::from_env` is free of `unwrap`/`expect`.
-use cqrsx::task::runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError};
+use cqrsx::{
+    postgres::task_queue::{PostgresTaskQueueConfig, PostgresTaskQueueConfigError},
+    task::runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
+};
 use std::{env, net::SocketAddr, time::Duration};
 use thiserror::Error;
 
@@ -12,10 +15,11 @@ pub enum ConfigError {
     Invalid { name: &'static str, message: String },
     #[error("task runtime configuration: {0}")]
     TaskRuntime(#[from] TaskRuntimeConfigError),
+    #[error("task queue configuration: {0}")]
+    TaskQueue(#[from] PostgresTaskQueueConfigError),
 }
 
 #[derive(Clone, Debug)]
-#[allow(dead_code)] // fields are consumed from Phase 3 (back-end) / Phase 7 (sidecar) on
 pub struct Config {
     pub database_url: String,
     pub mongodb_uri: String,
@@ -35,7 +39,10 @@ pub struct Config {
     pub ticket_limit: usize,
     pub snapshot_every: usize,
     pub replay_slow_delay: Duration,
+    /// The library's own `OUTBOX_*` keys: worker pool and storage timeouts …
     pub task_runtime: TaskRuntimeConfig,
+    /// … and the PostgreSQL statement timeout of the task queue.
+    pub task_queue: PostgresTaskQueueConfig,
 }
 
 /// Demo defaults for the library's own `OUTBOX_*` keys, used when the variable is absent.
@@ -47,9 +54,14 @@ fn outbox_default(name: &str) -> Option<String> {
         "OUTBOX_HANDLER_TIMEOUT_SECS" => "5",
         "OUTBOX_LEASE_SECS" => "30",
         "OUTBOX_STORAGE_TIMEOUT_MS" => "3000",
+        "OUTBOX_POSTGRES_STATEMENT_TIMEOUT_MS" => "4000",
         _ => return None,
     };
     Some(value.to_owned())
+}
+
+fn outbox_lookup(name: &str) -> Option<String> {
+    env::var(name).ok().or_else(|| outbox_default(name))
 }
 
 fn var(name: &'static str) -> Option<String> {
@@ -76,7 +88,8 @@ fn invalid(name: &'static str, message: impl Into<String>) -> ConfigError {
 
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
-        let task_runtime = TaskRuntimeConfig::from_lookup(|name| env::var(name).ok().or_else(|| outbox_default(name)))?;
+        let task_runtime = TaskRuntimeConfig::from_lookup(outbox_lookup)?;
+        let task_queue = PostgresTaskQueueConfig::from_lookup(outbox_lookup)?;
         let task_failure_rate: f64 = parse("ENCORE_TASK_FAILURE_RATE", "0.2")?;
         if !(0.0..=1.0).contains(&task_failure_rate) {
             return Err(invalid("ENCORE_TASK_FAILURE_RATE", "must be between 0.0 and 1.0"));
@@ -112,10 +125,10 @@ impl Config {
                 "must not exceed ENCORE_TASK_RETRY_MAX_MS",
             ));
         }
-        let chaos_seed = match var("ENCORE_CHAOS_SEED") {
-            Some(_) => Some(parse("ENCORE_CHAOS_SEED", "0")?),
-            None => None,
-        };
+        // Empty or absent = random chaos; any value must be a seed.
+        let chaos_seed = var("ENCORE_CHAOS_SEED")
+            .map(|_| parse("ENCORE_CHAOS_SEED", "0"))
+            .transpose()?;
         let ticket_limit: usize = parse("ENCORE_TICKET_LIMIT", "4")?;
         if ticket_limit == 0 {
             return Err(invalid("ENCORE_TICKET_LIMIT", "must be positive"));
@@ -141,6 +154,7 @@ impl Config {
             snapshot_every,
             replay_slow_delay: Duration::from_millis(parse("ENCORE_REPLAY_SLOW_DELAY_MS", "80")?),
             task_runtime,
+            task_queue,
         })
     }
 }
@@ -156,5 +170,6 @@ mod tests {
         assert_eq!(runtime.worker_pool().lease_duration(), Duration::from_secs(30));
         assert_eq!(runtime.worker_pool().handler_timeout(), Duration::from_secs(5));
         assert!(Duration::from_millis(1800) < runtime.worker_pool().handler_timeout());
+        PostgresTaskQueueConfig::from_lookup(outbox_default).expect("demo statement timeout must validate");
     }
 }

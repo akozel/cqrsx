@@ -1,13 +1,24 @@
 //! 🔍 Verify [P1]: rebuild both read models into temporary collections with the very same
 //! `ViewProjection`s and compare the canonical documents (without `version`) with the live ones.
 //! No in-memory fakes at runtime (rule §12.4): the temporary collections live in MongoDB.
+//!
+//! Known limitation: verify does not take the box-office lock, so a command committed while the
+//! temporary copy is being built shows up as an honest `differs` (the copy is a moment behind).
+//! Every run uses its own temporary collections, so concurrent runs never disturb each other.
 use crate::{
-    app::read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide},
+    app::{
+        StorageError,
+        read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide},
+    },
     domain::{concert::Concert, fan::Fan},
     projections::{concert_hall::ConcertHallView, fan_wallet::FanWalletView, mongo_view_repository::MongoViewRepository},
 };
 use cqrsx::{
-    cqrs::{aggregate::Aggregate, event_handler::replay::EventReplay, projection::ViewProjection},
+    cqrs::{
+        aggregate::Aggregate,
+        event_handler::replay::EventReplay,
+        projection::{View, ViewProjection},
+    },
     postgres::event_repository::PostgresEventRepository,
 };
 use mongodb::{
@@ -16,7 +27,11 @@ use mongodb::{
 };
 use serde_json::{Value, json};
 use sqlx::PgPool;
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
+use uuid::Uuid;
 
 pub struct VerifyService {
     pool: PgPool,
@@ -44,13 +59,14 @@ impl VerifyService {
         Self { pool, read_db, read }
     }
 
-    async fn rebuild_into<A, V>(&self, name: &'static str) -> Result<Vec<Document>, String>
+    async fn rebuild_into<A, V>(&self, live_name: &str, run_id: Uuid) -> Result<Vec<Document>, StorageError>
     where
         A: Aggregate + 'static,
-        V: cqrsx::cqrs::projection::View<A> + 'static,
+        V: View<A> + 'static,
     {
-        let temp = Arc::new(MongoViewRepository::<V, A>::new(&self.read_db, name));
-        temp.wipe().await.map_err(|e| e.to_string())?;
+        let name = format!("{live_name}_verify_{}", run_id.simple());
+        let temp = Arc::new(MongoViewRepository::<V, A>::new(&self.read_db, &name));
+        temp.wipe().await.map_err(StorageError::new)?;
         let replay = EventReplay::new(
             PostgresEventRepository::new(self.pool.clone()),
             ViewProjection::new(temp.clone()),
@@ -58,25 +74,26 @@ impl VerifyService {
         let replayed = replay
             .replay_all()
             .await
-            .map_err(|e| format!("{} replay failed: {e}", A::TYPE));
-        let documents = temp.documents().await.map_err(|e| e.to_string());
+            .map_err(|e| StorageError(format!("{} replay failed: {e}", A::TYPE)));
+        let documents = temp.documents().await.map_err(StorageError::new);
         // Always clean up, even after a failure.
         let _ = temp.wipe().await;
         replayed?;
         documents
     }
 
-    pub async fn run(&self) -> Result<Value, String> {
-        let halls_expected = index(self.rebuild_into::<Concert, ConcertHallView>("concert_halls_verify").await?);
-        let wallets_expected = index(self.rebuild_into::<Fan, FanWalletView>("fan_wallets_verify").await?);
-        let halls_actual = index(self.read.halls.documents().await.map_err(|e| e.to_string())?);
-        let wallets_actual = index(self.read.wallets.documents().await.map_err(|e| e.to_string())?);
+    pub async fn run(&self) -> Result<Value, StorageError> {
+        let run_id = Uuid::now_v7();
+        let halls_expected = index(self.rebuild_into::<Concert, ConcertHallView>(CONCERT_HALLS, run_id).await?);
+        let wallets_expected = index(self.rebuild_into::<Fan, FanWalletView>(FAN_WALLETS, run_id).await?);
+        let halls_actual = index(self.read.halls.documents().await.map_err(StorageError::new)?);
+        let wallets_actual = index(self.read.wallets.documents().await.map_err(StorageError::new)?);
         let mut differences = Vec::new();
         for (collection, expected, actual) in [
             (CONCERT_HALLS, &halls_expected, &halls_actual),
             (FAN_WALLETS, &wallets_expected, &wallets_actual),
         ] {
-            let ids: std::collections::BTreeSet<&String> = expected.keys().chain(actual.keys()).collect();
+            let ids: BTreeSet<&String> = expected.keys().chain(actual.keys()).collect();
             for id in ids {
                 match (expected.get(id), actual.get(id)) {
                     (Some(e), Some(a)) if e == a => {}

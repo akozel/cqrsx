@@ -1,4 +1,4 @@
-use super::FanId;
+use crate::domain::FanId;
 use chrono::NaiveDate;
 use uuid::Uuid;
 

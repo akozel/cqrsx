@@ -9,3 +9,5 @@ pub mod domain;
 pub mod http;
 pub mod outbox;
 pub mod projections;
+#[cfg(test)]
+pub mod testing;

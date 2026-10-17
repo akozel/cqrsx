@@ -2,11 +2,12 @@
 //!
 //! Why a lock instead of a live rebuild: simpler and deterministic for a demo. UI commands get 423
 //! while a rebuild runs; the outbox workers keep running (the write side never depends on the
-//! read side) and chain tasks that hit the lock simply retry a second later.
+//! read side) and chain tasks that hit the lock simply retry a moment later.
 //! Replay is safe because it only calls `View::update`: no commands, no tasks, no e-mails.
 use crate::{
     app::{
         activity::ActivityHub,
+        lock::{BoxOfficeLock, LockGuard},
         read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide},
     },
     domain::{concert::Concert, fan::Fan},
@@ -27,7 +28,7 @@ use sqlx::PgPool;
 use std::{
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicU64, Ordering},
     },
     time::{Duration, Instant},
 };
@@ -67,63 +68,68 @@ struct Status {
     last_result: Option<RebuildResult>,
 }
 
-struct Deps {
+#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
+#[error("a rebuild is already running")]
+pub struct AlreadyRunning;
+
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum WipeError {
+    #[error("a rebuild is in progress")]
+    Locked,
+    #[error("read model storage unavailable: {0}")]
+    Storage(String),
+}
+
+pub struct RebuildService {
+    lock: Arc<BoxOfficeLock>,
+    replayed: Arc<AtomicU64>,
+    status: Mutex<Status>,
     pool: PgPool,
     read: Arc<ReadSide>,
     activity: Arc<ActivityHub>,
     slow_delay: Duration,
 }
 
-pub struct RebuildService {
-    locked: AtomicBool,
-    replayed: Arc<AtomicU64>,
-    status: Mutex<Status>,
-    deps: Option<Deps>,
+/// Lives inside the spawned rebuild task: clears `status.running` and then (field drop order)
+/// releases the box-office lock — on every exit path, including a panic inside `run`.
+struct RunningGuard {
+    service: Arc<RebuildService>,
+    _lock: LockGuard,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum StartError {
-    AlreadyRunning,
-    NotConfigured,
-}
-
-/// RAII guard: the lock is released on every exit path, including a panic in the spawned task.
-struct LockGuard(Arc<RebuildService>);
-
-impl Drop for LockGuard {
+impl Drop for RunningGuard {
     fn drop(&mut self) {
-        self.0.locked.store(false, Ordering::SeqCst);
-        if let Ok(mut status) = self.0.status.lock() {
+        if let Ok(mut status) = self.service.status.lock() {
             status.running = None;
         }
     }
 }
 
 impl RebuildService {
-    /// Only the lock, no storage (unit tests).
-    pub fn lock_only() -> Self {
+    pub fn new(
+        lock: Arc<BoxOfficeLock>,
+        pool: PgPool,
+        read: Arc<ReadSide>,
+        activity: Arc<ActivityHub>,
+        slow_delay: Duration,
+    ) -> Self {
         Self {
-            locked: AtomicBool::new(false),
+            lock,
             replayed: Arc::new(AtomicU64::new(0)),
             status: Mutex::new(Status::default()),
-            deps: None,
+            pool,
+            read,
+            activity,
+            slow_delay,
         }
     }
 
-    pub fn new(pool: PgPool, read: Arc<ReadSide>, activity: Arc<ActivityHub>, slow_delay: Duration) -> Self {
-        Self {
-            deps: Some(Deps {
-                pool,
-                read,
-                activity,
-                slow_delay,
-            }),
-            ..Self::lock_only()
-        }
+    pub fn lock(&self) -> &Arc<BoxOfficeLock> {
+        &self.lock
     }
 
     pub fn is_locked(&self) -> bool {
-        self.locked.load(Ordering::SeqCst)
+        self.lock.is_locked()
     }
 
     pub fn status_json(&self) -> serde_json::Value {
@@ -143,28 +149,22 @@ impl RebuildService {
     }
 
     /// 🧨 Drop both read-model collections (the inbox is not a read model and stays).
-    pub async fn wipe(&self) -> Result<Vec<&'static str>, String> {
+    pub async fn wipe(&self) -> Result<Vec<&'static str>, WipeError> {
         if self.is_locked() {
-            return Err("rebuild_in_progress".into());
+            return Err(WipeError::Locked);
         }
-        let deps = self.deps.as_ref().ok_or("read side not configured")?;
-        deps.read.halls.wipe().await.map_err(|e| e.to_string())?;
-        deps.read.wallets.wipe().await.map_err(|e| e.to_string())?;
+        let storage = |e: cqrsx::cqrs::store::PersistenceError| WipeError::Storage(e.to_string());
+        self.read.halls.wipe().await.map_err(storage)?;
+        self.read.wallets.wipe().await.map_err(storage)?;
         let collections = vec![CONCERT_HALLS, FAN_WALLETS];
-        deps.activity
+        self.activity
             .publish("projections.wiped", json!({ "collections": collections }));
         Ok(collections)
     }
 
     /// ⏪ Start a rebuild in the background; returns at once with its id.
-    pub fn start(self: &Arc<Self>, speed: Speed) -> Result<Uuid, StartError> {
-        if self.deps.is_none() {
-            return Err(StartError::NotConfigured);
-        }
-        if self.locked.swap(true, Ordering::SeqCst) {
-            return Err(StartError::AlreadyRunning);
-        }
-        let guard = LockGuard(self.clone());
+    pub fn start(self: &Arc<Self>, speed: Speed) -> Result<Uuid, AlreadyRunning> {
+        let lock = self.lock.try_acquire().ok_or(AlreadyRunning)?;
         let rebuild_id = Uuid::now_v7();
         self.replayed.store(0, Ordering::SeqCst);
         if let Ok(mut status) = self.status.lock() {
@@ -177,7 +177,10 @@ impl RebuildService {
         }
         let service = self.clone();
         tokio::spawn(async move {
-            let _guard = guard;
+            let _running = RunningGuard {
+                service: service.clone(),
+                _lock: lock,
+            };
             let result = service.run(rebuild_id, speed).await;
             if let Ok(mut status) = service.status.lock() {
                 status.last_result = Some(result);
@@ -198,15 +201,13 @@ impl RebuildService {
             finished_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             error,
         };
-        let Some(deps) = self.deps.as_ref() else {
-            return finish(false, 0, 0, Some("read side not configured".into()));
-        };
+        // Progress figures only: a failed count is reported as 0, the replay itself still decides.
         let total: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
-            .fetch_one(&deps.pool)
+            .fetch_one(&self.pool)
             .await
             .unwrap_or(0);
         let aggregates: i64 = sqlx::query_scalar("SELECT count(DISTINCT (aggregate_type, aggregate_id)) FROM events")
-            .fetch_one(&deps.pool)
+            .fetch_one(&self.pool)
             .await
             .unwrap_or(0);
         let aggregates = aggregates.max(0) as u64;
@@ -215,27 +216,27 @@ impl RebuildService {
         {
             running.total = total.max(0) as u64;
         }
-        deps.activity.publish(
+        self.activity.publish(
             "rebuild.started",
             json!({ "rebuild_id": rebuild_id, "speed": speed, "total": total, "aggregates": aggregates }),
         );
         // Always from scratch: never trust what a previous (maybe failed) run left behind.
-        if let Err(error) = deps.read.halls.wipe().await.and(deps.read.wallets.wipe().await) {
+        if let Err(error) = self.read.halls.wipe().await.and(self.read.wallets.wipe().await) {
             let message = format!("wipe failed: {error}");
-            deps.activity
+            self.activity
                 .publish("rebuild.failed", json!({ "rebuild_id": rebuild_id, "message": message }));
             return finish(false, 0, 0, Some(message));
         }
-        let delay = (speed == Speed::Slow).then_some(deps.slow_delay);
+        let delay = (speed == Speed::Slow).then_some(self.slow_delay);
         // Two passes, one per aggregate type: `stream_all_events::<A>` filters by aggregate_type.
         // Within a pass events arrive ordered by `sequence` across aggregates ("seats light up in
         // every hall at once"); per aggregate the order is preserved, which is all LWW needs.
         let result = match self
-            .pass::<Concert, _>(deps, rebuild_id, speed, ViewProjection::new(deps.read.halls.clone()), delay)
+            .pass::<Concert, _>(rebuild_id, speed, ViewProjection::new(self.read.halls.clone()), delay)
             .await
         {
             Ok(()) => {
-                self.pass::<Fan, _>(deps, rebuild_id, speed, ViewProjection::new(deps.read.wallets.clone()), delay)
+                self.pass::<Fan, _>(rebuild_id, speed, ViewProjection::new(self.read.wallets.clone()), delay)
                     .await
             }
             Err(error) => Err(error),
@@ -244,7 +245,7 @@ impl RebuildService {
         match result {
             Ok(()) => {
                 let result = finish(true, replayed, aggregates, None);
-                deps.activity.publish(
+                self.activity.publish(
                     "rebuild.finished",
                     json!({ "rebuild_id": rebuild_id, "speed": speed, "replayed": replayed, "aggregates": aggregates,
                             "duration_ms": result.duration_ms }),
@@ -252,7 +253,7 @@ impl RebuildService {
                 result
             }
             Err(message) => {
-                deps.activity.publish(
+                self.activity.publish(
                     "rebuild.failed",
                     json!({ "rebuild_id": rebuild_id, "speed": speed, "replayed": replayed, "message": message }),
                 );
@@ -261,19 +262,12 @@ impl RebuildService {
         }
     }
 
-    async fn pass<A, H>(
-        &self,
-        deps: &Deps,
-        rebuild_id: Uuid,
-        speed: Speed,
-        handler: H,
-        delay: Option<Duration>,
-    ) -> Result<(), String>
+    async fn pass<A, H>(&self, rebuild_id: Uuid, speed: Speed, handler: H, delay: Option<Duration>) -> Result<(), String>
     where
         A: Aggregate + 'static,
         H: EventHandler<A> + 'static,
     {
-        let activity = deps.activity.clone();
+        let activity = self.activity.clone();
         let counter = self.replayed.clone();
         let last_progress = Mutex::new(Instant::now() - Duration::from_secs(1));
         let on_event = Box::new(move |aggregate_id: &str, sequence: usize, event_type: &str| {
@@ -302,7 +296,7 @@ impl RebuildService {
         });
         // Repository and handler are created per rebuild: `EventReplay::new` takes them by value.
         let replay = EventReplay::new(
-            PostgresEventRepository::new(deps.pool.clone()),
+            PostgresEventRepository::new(self.pool.clone()),
             ProgressHandler::new(handler, delay, on_event),
         );
         replay
@@ -315,22 +309,24 @@ impl RebuildService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::testing;
 
     #[tokio::test]
-    async fn lock_only_service_reports_idle_and_refuses_to_start() {
-        let service = Arc::new(RebuildService::lock_only());
-        assert!(!service.is_locked());
+    async fn status_is_idle_and_wipe_is_refused_while_the_box_office_is_locked() {
+        let lock = Arc::new(BoxOfficeLock::new());
+        let service = Arc::new(RebuildService::new(
+            lock.clone(),
+            testing::lazy_pool(),
+            Arc::new(testing::lazy_read_side().await),
+            Arc::new(ActivityHub::new(8, 8)),
+            Duration::ZERO,
+        ));
         assert_eq!(service.status_json()["state"], "idle");
-        assert_eq!(service.start(Speed::Fast), Err(StartError::NotConfigured));
-        assert_eq!(service.wipe().await, Err("read side not configured".to_owned()));
         assert!(!service.is_locked());
-    }
-
-    #[test]
-    fn guard_releases_the_lock() {
-        let service = Arc::new(RebuildService::lock_only());
-        service.locked.store(true, Ordering::SeqCst);
-        drop(LockGuard(service.clone()));
+        let guard = lock.try_acquire().unwrap();
+        assert_eq!(service.wipe().await, Err(WipeError::Locked));
+        assert_eq!(service.start(Speed::Fast), Err(AlreadyRunning));
+        drop(guard);
         assert!(!service.is_locked());
     }
 }

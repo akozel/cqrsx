@@ -2,8 +2,8 @@
 //! business rules: every click becomes a command and the aggregate is the judge.
 use crate::{
     app::command_service::{CommandMetadata, CommandOutcome},
-    domain::concert::{ConcertCommand, FanId},
-    http::{AppState, error::ApiError},
+    domain::{FanId, concert::ConcertCommand},
+    http::{AppState, error::ApiError, parse_concert_id},
 };
 use axum::{
     Json,
@@ -22,10 +22,6 @@ pub enum CommandDto {
     AnnounceConcert { artist: String, city: String, date: NaiveDate },
     BookSeat { seat: String, fan_id: String, fan_name: String },
     CancelBooking { seat: String, fan_id: String },
-}
-
-pub fn valid_concert_id(id: &str) -> bool {
-    !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '-')
 }
 
 fn to_command(dto: CommandDto, metadata: &CommandMetadata) -> Result<ConcertCommand, ApiError> {
@@ -64,17 +60,8 @@ pub async fn execute(
     State(state): State<AppState>,
     Path(concert_id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
-) -> Response {
-    match run(state, concert_id, body).await {
-        Ok(response) => response,
-        Err(error) => error.into_response(),
-    }
-}
-
-async fn run(state: AppState, concert_id: String, body: Result<Json<Value>, JsonRejection>) -> Result<Response, ApiError> {
-    if !valid_concert_id(&concert_id) {
-        return Err(ApiError::invalid("concert_id must match [a-z0-9-]{1,64}"));
-    }
+) -> Result<Response, ApiError> {
+    let concert_id = parse_concert_id(&concert_id)?;
     // Lock check first (§6.4 step 1): even an invalid command is told the box office is closed.
     if state.rebuild.is_locked() {
         return Err(ApiError::locked().with_extra(json!({ "concert_id": concert_id })));
@@ -133,8 +120,6 @@ mod tests {
             serde_json::from_value::<CommandDto>(json!({ "type": "BookSeat", "seat": "B4", "fan_id": "fox", "fan_name": "Fox" }))
                 .is_ok()
         );
-        assert!(valid_concert_id("radiohead-2026-11-21"));
-        assert!(!valid_concert_id("Tbilisi 2026"));
     }
 
     #[test]
