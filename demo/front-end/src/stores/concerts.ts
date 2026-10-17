@@ -15,17 +15,17 @@ export const useConcertsStore = defineStore('concerts', () => {
   let debounce: ReturnType<typeof setTimeout> | null = null
   let lastRebuildRefresh = 0
 
-  /** Tabs come from the read model; when it is empty, from config.seed_concerts with a "?" mark. */
+  /** Tabs come from the read model; when it is empty, from the demo's default concerts with a "?" mark. */
   const tabs = computed(() => {
     const fromView = list.value.map((c) => ({ ...c, known: true }))
     const seen = new Set(fromView.map((c) => c.concert_id))
-    const fallback = session.config.seed_concerts
-      .filter((id) => !seen.has(id))
-      .map((id) => ({
-        concert_id: id,
-        artist: null,
-        city: null,
-        date: null,
+    const fallback = session.demo.default_concerts
+      .filter((c) => !seen.has(c.concert_id))
+      .map((c) => ({
+        concert_id: c.concert_id,
+        artist: c.artist,
+        city: c.city,
+        date: c.date,
         sold: 0,
         capacity: session.config.venue.rows.length * session.config.venue.seats_per_row,
         revenue: 0,

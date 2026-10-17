@@ -57,6 +57,8 @@ services:
     environment:
       SIDECAR_HTTP_ADDR: 0.0.0.0:8090
       SIDECAR_DATABASE_URL: postgresql://encore_inspector:inspector@postgres:5432/encore
+      SIDECAR_ADMIN_DATABASE_URL: postgresql://encore_demo_admin:demo-admin@postgres:5432/encore   # DEMO ONLY: reset
+      SIDECAR_BACKEND_URL: http://backend:8080                                                     # seed + reset announce through the public API
       SIDECAR_MONGODB_URI: mongodb://mongo:27017
       RUST_LOG: info
     ports:
@@ -64,6 +66,7 @@ services:
     depends_on:
       postgres: { condition: service_healthy }
       mongo: { condition: service_healthy }
+      backend: { condition: service_started }
   frontend:
     profiles: ["app"]
     build:

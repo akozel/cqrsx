@@ -1,6 +1,6 @@
 //! Read endpoints. Phase 3: health and config; Phase 5 adds the read-model queries.
 use crate::{
-    app::{personas::PERSONAS, seed::SEED_CONCERTS},
+    app::personas::PERSONAS,
     config::Config,
     domain::venue::{ROWS, SEATS_PER_ROW, Zone},
     http::{AppState, commands::valid_concert_id, error::ApiError},
@@ -28,7 +28,6 @@ pub fn config_json(config: &Config) -> Value {
             })).collect::<Vec<_>>(),
         },
         "personas": PERSONAS,
-        "seed_concerts": SEED_CONCERTS.iter().map(|c| c.concert_id).collect::<Vec<_>>(),
         "ticket_limit": config.ticket_limit,
         "task_failure_rate": config.task_failure_rate,
         "task_max_attempts": config.task_max_attempts,

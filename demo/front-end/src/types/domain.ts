@@ -17,7 +17,6 @@ export interface Persona {
 export interface AppConfig {
   venue: { rows: string[]; seats_per_row: number; zones: ZoneConfig[] }
   personas: Persona[]
-  seed_concerts: string[]
   ticket_limit: number
   task_failure_rate: number
   task_max_attempts: number
@@ -166,4 +165,10 @@ export interface RebuildStatus {
     finished_at: string
     error?: string
   } | null
+}
+
+/** What the demo starts from (sidecar `GET /inspect/demo`). */
+export interface DemoInfo {
+  default_concerts: { concert_id: string; artist: string; city: string; date: string }[]
+  reset_enabled: boolean
 }

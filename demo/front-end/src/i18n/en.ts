@@ -105,6 +105,11 @@ export default {
     running: 'replaying {replayed} / {total}',
     result: '✅ {replayed} events → {aggregates} aggregates in {ms} ms',
     failed: '❌ rebuild failed: {message}',
+    reset: '⟲ Reset the demo',
+    resetting: '⟲ resetting…',
+    reset_hint: 'DEMO ONLY: the sidecar empties the ledger, the outbox, the read models and the mailbox, then announces the three default concerts again',
+    reset_confirm: 'Reset the demo? Every event, task, read model and e-mail is deleted; only the three default concerts remain.',
+    reset_done: '⟲ Demo reset: the ledger holds the three default concerts again',
     wiped: 'Read models wiped. The ledger is intact — press Encore!',
   },
   timemachine: {

@@ -1,5 +1,7 @@
-//! HTTP API of the sidecar: tables, collections, stats and the SSE stream of the shared poller.
+//! HTTP API of the sidecar: tables, collections, stats, the SSE stream of the shared poller, and the
+//! demo lifecycle (`GET /inspect/demo`, `POST /inspect/reset`).
 use crate::{
+    demo::{DEFAULT_CONCERTS, DemoAdmin},
     mongo::{MongoInspector, allowed},
     postgres::{Limits, PgInspector},
     state::State,
@@ -12,7 +14,7 @@ use axum::{
         IntoResponse, Response,
         sse::{Event, KeepAlive, Sse},
     },
-    routing::get,
+    routing::{get, post},
 };
 use futures::{StreamExt, stream};
 use serde::Deserialize;
@@ -28,6 +30,8 @@ pub struct AppState {
     pub mongo: MongoInspector,
     pub state: watch::Receiver<Arc<State>>,
     pub shutdown: CancellationToken,
+    /// DEMO ONLY: `None` when `SIDECAR_RESET_ENABLED=false`.
+    pub demo: Option<DemoAdmin>,
 }
 
 fn error(status: StatusCode, source: &str, message: impl std::fmt::Display) -> Response {
@@ -136,6 +140,35 @@ async fn stream(AxumState(state): AxumState<AppState>) -> Sse<impl futures::Stre
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("heartbeat"))
 }
 
+/// `GET /inspect/demo`: what the demo starts from, for the UI's fallback tabs and the reset button.
+async fn demo(AxumState(state): AxumState<AppState>) -> Json<Value> {
+    Json(json!({
+        "default_concerts": DEFAULT_CONCERTS,
+        "reset_enabled": state.demo.is_some(),
+    }))
+}
+
+/// `POST /inspect/reset`: DEMO ONLY — empty everything and announce the default concerts again.
+async fn reset(AxumState(state): AxumState<AppState>) -> Response {
+    let Some(demo) = state.demo.as_ref() else {
+        return error(
+            StatusCode::NOT_FOUND,
+            "demo",
+            "reset is disabled (SIDECAR_RESET_ENABLED=false)",
+        );
+    };
+    match demo.reset().await {
+        Ok(report) => {
+            tracing::info!("demo reset: {} announced", report.announced.len());
+            Json(json!({ "outcome": "reset", "report": report })).into_response()
+        }
+        Err(e) => {
+            tracing::warn!("demo reset failed: {e}");
+            error(StatusCode::SERVICE_UNAVAILABLE, "demo", e)
+        }
+    }
+}
+
 pub fn router(state: AppState) -> Router {
     Router::new()
         .route("/inspect/health", get(health))
@@ -146,6 +179,8 @@ pub fn router(state: AppState) -> Router {
         .route("/inspect/mongo/{database}/{collection}", get(collection))
         .route("/inspect/stats", get(stats))
         .route("/inspect/stream", get(stream))
+        .route("/inspect/demo", get(demo))
+        .route("/inspect/reset", post(reset))
         .layer(TraceLayer::new_for_http())
         .with_state(state)
 }

@@ -311,3 +311,12 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   the bottom-left diamond is now the command side of the UI, the persona is a circle at the bottom
   connected to both UI diamonds and to email; scenes start at and return to the person. Canvas
   1206×472, diagram block 32 rem. 46 vitest tests.
+- **2026-10-17, demo lifecycle moved to the sidecar** (no commit yet, by request): the back-end lost
+  `app::seed`, `ENCORE_SEED` and `seed_concerts` in `/api/config` — it carries no demo-only code. The
+  sidecar (`demo.rs`) announces the default concerts at start-up through the back-end's public API
+  (retries for 3 min) and serves `GET /inspect/demo` + `POST /inspect/reset` (TRUNCATE of the three
+  tables under the new `encore_demo_admin` role from `infra/postgres`, drop of the three collections,
+  seed again). UI: «⟲ Reset the demo» in the Encore panel (confirm → toast). New dependency: `reqwest`
+  in the sidecar. Requires `make reset` + `make up` (new role) and a rebuild of both binaries.
+  Verified: cargo fmt/clippy/test (demo workspace), front-end typecheck/lint/48 tests/build.
+  **Manual:** run `make dev`, press ⟲, check `events` holds exactly three `ConcertAnnounced`.

@@ -81,6 +81,11 @@ impl MongoInspector {
         })
     }
 
+    /// The shared client (for the demo lifecycle, which drops the whitelisted collections).
+    pub fn client(&self) -> Client {
+        self.client.clone()
+    }
+
     pub async fn ping(&self) -> Result<(), mongodb::error::Error> {
         self.client
             .database("admin")

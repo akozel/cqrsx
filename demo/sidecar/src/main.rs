@@ -1,7 +1,10 @@
 //! Encore sidecar: a read-only window into PostgreSQL (events, snapshots, outbox) and MongoDB
-//! (read models, mail inbox). Independent of `cqrsx`: it shows the databases "from the outside".
+//! (read models, mail inbox), plus the demo lifecycle (seed at start-up, reset on request) so the
+//! back-end carries no demo-only code. Independent of `cqrsx`: it shows the databases "from the
+//! outside".
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 mod config;
+mod demo;
 mod http;
 mod mongo;
 mod postgres;
@@ -9,6 +12,7 @@ mod state;
 
 use chrono::{SecondsFormat, Utc};
 use config::Config;
+use demo::DemoAdmin;
 use mongo::{MongoInspector, WHITELIST};
 use postgres::PgInspector;
 use sqlx::postgres::PgConnectOptions;
@@ -110,6 +114,24 @@ async fn main() {
         config.mail_db.clone(),
     );
 
+    // DEMO ONLY: the lifecycle of the demo data (seed, reset) — see demo.rs.
+    let admin_options = config
+        .admin_database_url
+        .parse::<PgConnectOptions>()
+        .unwrap_or_else(|e| fail(format!("SIDECAR_ADMIN_DATABASE_URL: {e}")))
+        .application_name("encore-sidecar-demo");
+    let demo = DemoAdmin::new(
+        admin_options,
+        mongo.client(),
+        config.read_db.clone(),
+        config.mail_db.clone(),
+        config.backend_url.clone(),
+    );
+    let seeder = config.seed.then(|| {
+        let demo = demo.clone();
+        tokio::spawn(async move { demo.seed_with_retries(90, std::time::Duration::from_secs(2)).await })
+    });
+
     let shutdown = CancellationToken::new();
     let (sender, receiver) = watch::channel(Arc::new(State::default()));
 
@@ -142,6 +164,7 @@ async fn main() {
         mongo,
         state: receiver,
         shutdown: shutdown.clone(),
+        demo: config.reset_enabled.then_some(demo),
     });
     let listener = tokio::net::TcpListener::bind(config.http_addr)
         .await
@@ -167,5 +190,8 @@ async fn main() {
     shutdown.cancel();
     let _ = server.await;
     let _ = poller.await;
+    if let Some(seeder) = seeder {
+        seeder.abort();
+    }
     tracing::info!("encore-sidecar stopped");
 }

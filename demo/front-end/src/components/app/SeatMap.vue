@@ -93,7 +93,12 @@ async function confirmCancel() {
         <div class="mx-auto mb-2 h-6 w-64 rounded-b-3xl border border-neon-pink/60 stage-glow text-center text-xs leading-6 tracking-widest">
           🎤 {{ t('seatmap.stage') }} <span class="opacity-70">· {{ artist }}</span>
         </div>
-        <div v-if="soldOut" class="absolute left-1/2 top-12 -translate-x-1/2 text-3xl font-extrabold text-neon-pink sold-out-sign pointer-events-none">SOLD OUT</div>
+        <div
+          v-if="soldOut"
+          class="sold-out-sign pointer-events-none absolute inset-0 z-10 flex items-center justify-center text-5xl font-extrabold tracking-wider text-neon-pink/70"
+        >
+          SOLD OUT
+        </div>
         <div class="seat-grid flex flex-col gap-1.5" @keydown="onKey">
           <div v-for="r in rows" :key="r.row" class="flex h-9 items-center gap-1.5">
             <SeatButton
@@ -115,7 +120,7 @@ async function confirmCancel() {
         <span v-for="r in rows" :key="r.row" class="flex h-9 items-center text-[10px] font-mono opacity-60" :style="{ color: ZONE_COLORS[r.seats[0]?.zone ?? 'balcony'] }">{{ t(`zones.${r.seats[0]?.zone ?? 'balcony'}`) }} {{ r.seats[0]?.price }} €</span>
       </div>
     </div>
-    <div v-if="cancelPrompt" class="absolute inset-0 flex items-center justify-center bg-bg/70 rounded-lg">
+    <div v-if="cancelPrompt" class="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-bg/70">
       <div class="rounded-lg border border-border bg-panel p-4 text-sm shadow-xl">
         <div class="mb-3">{{ t('actions.cancel_prompt', { refund: cancelPrompt.refund }) }} <span class="opacity-60 font-mono">({{ cancelPrompt.seat }})</span></div>
         <div class="flex gap-2 justify-end">

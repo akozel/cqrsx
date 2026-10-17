@@ -35,7 +35,6 @@ pub struct Config {
     pub ticket_limit: usize,
     pub snapshot_every: usize,
     pub replay_slow_delay: Duration,
-    pub seed: bool,
     pub task_runtime: TaskRuntimeConfig,
 }
 
@@ -141,7 +140,6 @@ impl Config {
             ticket_limit,
             snapshot_every,
             replay_slow_delay: Duration::from_millis(parse("ENCORE_REPLAY_SLOW_DELAY_MS", "80")?),
-            seed: parse("ENCORE_SEED", "true")?,
             task_runtime,
         })
     }

@@ -13,6 +13,14 @@ pub struct ConfigError {
 
 pub struct Config {
     pub database_url: String,
+    /// DEMO ONLY: the connection that may TRUNCATE the three tables (role `encore_demo_admin`).
+    pub admin_database_url: String,
+    /// The back-end whose public API announces the default concerts (seed and reset).
+    pub backend_url: String,
+    /// Announce the default concerts at start-up (through the back-end API, with retries).
+    pub seed: bool,
+    /// Expose `POST /inspect/reset`.
+    pub reset_enabled: bool,
     pub mongodb_uri: String,
     pub read_db: String,
     pub mail_db: String,
@@ -47,6 +55,11 @@ impl Config {
         Ok(Self {
             database_url: var("SIDECAR_DATABASE_URL")
                 .unwrap_or_else(|| "postgresql://encore_inspector:inspector@localhost:5434/encore".into()),
+            admin_database_url: var("SIDECAR_ADMIN_DATABASE_URL")
+                .unwrap_or_else(|| "postgresql://encore_demo_admin:demo-admin@localhost:5434/encore".into()),
+            backend_url: var("SIDECAR_BACKEND_URL").unwrap_or_else(|| "http://127.0.0.1:8080".into()),
+            seed: parse("SIDECAR_SEED", "true")?,
+            reset_enabled: parse("SIDECAR_RESET_ENABLED", "true")?,
             mongodb_uri: var("SIDECAR_MONGODB_URI").unwrap_or_else(|| "mongodb://localhost:27018".into()),
             read_db: var("ENCORE_READ_DB").unwrap_or_else(|| "encore_read".into()),
             mail_db: var("ENCORE_MAIL_DB").unwrap_or_else(|| "mail_service".into()),

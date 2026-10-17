@@ -4,9 +4,11 @@ version = "0.1.0"
 edition.workspace = true
 publish.workspace = true
 license.workspace = true
-description = "Encore: read-only inspector of the PostgreSQL event store, outbox and MongoDB read models"
+description = "Encore: read-only inspector of the PostgreSQL event store, outbox and MongoDB read models, plus the demo lifecycle (seed, reset)"
 
 # Deliberately independent of cqrsx: it shows the databases "from the outside", as they are.
+# Demo-only concerns (seeding the default concerts, resetting everything) live here on purpose,
+# so the back-end stays a plain production-style service.
 [dependencies]
 axum.workspace = true
 tower-http.workspace = true
@@ -25,6 +27,7 @@ tracing-subscriber = "0.3"
 dotenvy.workspace = true
 sha2.workspace = true
 hex.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 [lints.clippy]
 unwrap_used = "warn"

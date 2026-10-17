@@ -2,12 +2,18 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import type { RebuildStatus } from '@/types/domain'
 import { backend } from '@/api/backend'
+import { sidecar } from '@/api/sidecar'
 import { useConcertsStore } from './concerts'
 import { useWalletStore } from './wallet'
+import { useSessionStore } from './session'
+import { useTimeMachineStore } from './timemachine'
 
 export const useRebuildStore = defineStore('rebuild', () => {
   const concerts = useConcertsStore()
   const wallet = useWalletStore()
+  const session = useSessionStore()
+  const timeMachine = useTimeMachineStore()
+  const resetting = ref(false)
   const status = ref<RebuildStatus>({ state: 'idle', last_result: null })
   const replayed = ref(0)
   const total = ref(0)
@@ -24,6 +30,35 @@ export const useRebuildStore = defineStore('rebuild', () => {
       }
     } catch {
       // ignore: the status is best-effort
+    }
+  }
+
+  /** DEMO ONLY: the sidecar empties both databases and announces the default concerts again. */
+  async function resetDemo(): Promise<boolean> {
+    resetting.value = true
+    lastError.value = null
+    try {
+      const { status: code, body } = await sidecar.reset()
+      if (code !== 200) {
+        lastError.value = body?.error?.message ?? `HTTP ${code}`
+        return false
+      }
+      const first = session.demo.default_concerts[0]
+      if (first) session.concertId = first.concert_id
+      concerts.stale = false
+      wallet.clear()
+      await Promise.all([
+        concerts.refreshAll(),
+        wallet.refresh(),
+        timeMachine.refreshTimeline(),
+        refreshStatus(),
+      ])
+      return true
+    } catch (e) {
+      lastError.value = String(e)
+      return false
+    } finally {
+      resetting.value = false
     }
   }
 
@@ -76,5 +111,18 @@ export const useRebuildStore = defineStore('rebuild', () => {
     }
   }
 
-  return { status, replayed, total, slow, lastError, busy, refreshStatus, wipe, start, onActivity }
+  return {
+    status,
+    replayed,
+    total,
+    slow,
+    lastError,
+    busy,
+    resetting,
+    refreshStatus,
+    wipe,
+    start,
+    resetDemo,
+    onActivity,
+  }
 })

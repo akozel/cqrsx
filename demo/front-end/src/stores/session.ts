@@ -4,6 +4,8 @@ import type { AppConfig, Persona } from '@/types/domain'
 import { DEFAULT_PERSONAS } from '@/lib/personas'
 import { DEFAULT_VENUE } from '@/lib/venue'
 import { backend } from '@/api/backend'
+import { sidecar } from '@/api/sidecar'
+import type { DemoInfo } from '@/types/domain'
 
 function readLocal(key: string): string | null {
   try {
@@ -29,13 +31,21 @@ export const useSessionStore = defineStore('session', () => {
   const config = ref<AppConfig>({
     venue: DEFAULT_VENUE,
     personas: DEFAULT_PERSONAS,
-    seed_concerts: ['radiohead-2026-11-21', 'rammstein-2026-12-05', 'muse-2027-01-16'],
     ticket_limit: 4,
     task_failure_rate: 0.2,
     task_max_attempts: 6,
     snapshot_every: 10,
   })
   const configLoaded = ref(false)
+  /** From the sidecar: the concerts the demo starts from (fallback tabs) and the reset switch. */
+  const demo = ref<DemoInfo>({
+    default_concerts: [
+      { concert_id: 'radiohead-2026-11-21', artist: 'Radiohead', city: 'Minsk', date: '2026-11-21' },
+      { concert_id: 'rammstein-2026-12-05', artist: 'Rammstein', city: 'Tokyo', date: '2026-12-05' },
+      { concert_id: 'muse-2027-01-16', artist: 'Muse', city: 'Tbilisi', date: '2027-01-16' },
+    ],
+    reset_enabled: false,
+  })
   const persona = ref<string>(readLocal('encore.persona') ?? 'fox')
   const concertId = ref<string>(readLocal('encore.concert') ?? 'radiohead-2026-11-21')
   const bannerDismissed = ref<boolean>(readLocal('encore.banner') === 'dismissed')
@@ -65,11 +75,17 @@ export const useSessionStore = defineStore('session', () => {
     } catch {
       configLoaded.value = false
     }
+    try {
+      demo.value = await sidecar.demo()
+    } catch {
+      // keep the built-in defaults; the reset button stays hidden
+    }
   }
 
   return {
     config,
     configLoaded,
+    demo,
     persona,
     concertId,
     bannerDismissed,

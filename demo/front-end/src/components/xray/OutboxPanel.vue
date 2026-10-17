@@ -81,9 +81,9 @@ function reason(code: string | null) {
         @mouseleave="trace.clear()"
         @click="toggle(row.id)"
       >
-        <span class="min-w-0 truncate">
+        <span class="flex min-w-0 items-center">
           <span
-            class="mr-1 rounded px-1 font-mono text-[10px]"
+            class="mr-1 shrink-0 rounded px-1 font-mono text-[10px]"
             :class="
               row.aggregate_type === 'Concert'
                 ? 'bg-cyan-500/20 text-neon-cyan'
@@ -91,7 +91,8 @@ function reason(code: string | null) {
             "
             >{{ row.aggregate_type }}</span
           >
-          <span class="font-semibold">{{ taskLabel(row.task_type) }}</span>
+          <span class="mr-1.5 max-w-28 shrink truncate font-mono opacity-70">{{ row.aggregate_id }}</span>
+          <span class="min-w-0 truncate font-semibold">{{ taskLabel(row.task_type) }}</span>
         </span>
         <span class="flex items-center gap-1 font-mono opacity-70">
           {{ row.attempts }}/{{ row.max_attempts }}

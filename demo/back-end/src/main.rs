@@ -135,10 +135,6 @@ async fn main() {
         rebuild.clone(),
     ));
 
-    if config.seed {
-        app::seed::run(&concert_commands).await;
-    }
-
     let shutdown = CancellationToken::new();
     let listener = tokio::net::TcpListener::bind(config.http_addr)
         .await

@@ -405,7 +405,7 @@ body {
   filter: sepia(0.25);
 }
 .sold-out-sign {
-  text-shadow: 0 0 18px var(--color-neon-pink);
+  text-shadow: 0 0 24px color-mix(in srgb, var(--color-neon-pink) 60%, transparent);
   animation: seat-pop 0.8s ease-out;
 }
 

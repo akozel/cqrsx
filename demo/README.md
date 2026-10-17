@@ -55,8 +55,9 @@ podman compose --profile app ps               # all five containers Up, postgres
 ```
 
 `down -v` wipes the event ledger, the snapshots, the outbox, both read models and the mail inbox: the next
-start initialises the schemas from `../cqrsx/sql` again and the seed announces the three concerts anew
-(exactly three `ConcertAnnounced` rows in `events`). Without a code change `--build` can be dropped.
+start initialises the schemas from `../cqrsx/sql` again and the sidecar announces the three default
+concerts anew through the back-end's public API (exactly three `ConcertAnnounced` rows in `events`).
+Without a code change `--build` can be dropped.
 
 | What | Where |
 |---|---|
@@ -152,8 +153,9 @@ make sidecar     # terminal 3: sidecar on :8090
 make frontend    # terminal 4: Vite on :5173, hot reload
 ```
 
-On start the back-end announces three concerts through ordinary `AnnounceConcert` commands; on a restart
-rule R2 rejects them and the seed is skipped.
+On start the **sidecar** announces the three default concerts through the back-end's public API with
+ordinary `AnnounceConcert` commands (it retries until the back-end is up); on a restart rule R2 rejects
+them and nothing is written. The back-end itself carries no demo data and no demo switches.
 
 ### 4. Reset the data
 
@@ -163,7 +165,10 @@ make reset       # ⚠️ podman compose down -v — erases the event ledger and
 make up          # fresh databases (init scripts run again), then start the apps as in step 3
 ```
 
-Only the read models (MongoDB) can also be dropped from the UI: 🧨 wipe, then ⏪ Encore! rebuilds them.
+From the UI, DEMO ONLY: **⟲ Reset the demo** (Encore panel) asks the sidecar to `TRUNCATE` the ledger, the
+snapshots and the outbox (role `encore_demo_admin`, which may do nothing else), drop the read models and
+the mail inbox, and announce the three default concerts again — the schemas and the containers stay.
+Only the read models can also be dropped on their own: 🧨 wipe, then ⏪ Encore! rebuilds them.
 
 ### 5. Stop
 
@@ -195,6 +200,7 @@ Do not mix the modes: stop the host apps before `make full`, and remove the `app
 │ • task runtime (outbox workers)      │           │ • SELECT / find only              │
 │ • read API over the projections      │           │ • read-only PostgreSQL role       │
 │ • replay, time machine, activity     │           │ • polling 400 ms → SSE            │
+│ • NO demo-only code                  │           │ • DEMO lifecycle: seed, reset     │
 └───┬────────────────────────┬─────────┘           └─────┬────────────────────┬────────┘
     │ events + snapshots     │ projections + inbox       │                    │
     │ + outbox (1 transaction)                           │                    │
@@ -264,8 +270,10 @@ Highlights: `ENCORE_TASK_FAILURE_RATE` (0.2), `ENCORE_TASK_MAX_ATTEMPTS` (6, mai
 `ENCORE_CHAIN_MAX_ATTEMPTS` (60, chain tasks — spent only while a rebuild holds the lock),
 `ENCORE_TICKET_LIMIT` (4), `ENCORE_SNAPSHOT_EVERY` (10), `ENCORE_REPLAY_SLOW_DELAY_MS` (80),
 `ENCORE_CHAOS_SEED` (deterministic dice), and the library's own `OUTBOX_*` keys with demo defaults
-(2 workers, 300 ms poll, 5 s handler timeout, 30 s lease, 3 s storage timeout). `RUST_LOG` is a single
-level (`info`), not a directive list. The library's redelivery backoff (4–300 s) applies only to
+(2 workers, 300 ms poll, 5 s handler timeout, 30 s lease, 3 s storage timeout). The demo lifecycle is the
+sidecar's: `SIDECAR_SEED` (announce the default concerts at start-up), `SIDECAR_RESET_ENABLED`
+(`POST /inspect/reset`), `SIDECAR_BACKEND_URL`, `SIDECAR_ADMIN_DATABASE_URL` (the TRUNCATE-only role).
+`RUST_LOG` is a single level (`info`), not a directive list. The library's redelivery backoff (4–300 s) applies only to
 abnormal paths (expired lease, handler timeout); the mail handler asks for 1–8 s itself.
 
 ## Troubleshooting

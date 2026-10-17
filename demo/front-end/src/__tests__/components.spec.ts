@@ -13,6 +13,7 @@ import ProgressBar from '../components/ui/ProgressBar.vue'
 import JsonView from '../components/xray/JsonView.vue'
 import SeatButton from '../components/app/SeatButton.vue'
 import PersonaPicker from '../components/app/PersonaPicker.vue'
+import ActionBar from '../components/app/ActionBar.vue'
 import { useSessionStore } from '../stores/session'
 import { avatarOf, nameOf, DEFAULT_PERSONAS } from '../lib/personas'
 import OutboxPanel from '../components/xray/OutboxPanel.vue'
@@ -21,6 +22,7 @@ import { useXrayStore } from '../stores/xray'
 import { useCommandsStore } from '../stores/commands'
 import { useConcertsStore } from '../stores/concerts'
 import { useTraceStore } from '../stores/trace'
+import { useRebuildStore } from '../stores/rebuild'
 import type { XrayState } from '../types/xray'
 import { stubFlowGlobals } from './flowStubs'
 
@@ -167,7 +169,7 @@ describe('X-ray panels', () => {
     ])
     // Only the service tag and the business name on the row: no kind icon, no payload summary.
     expect(outbox.text()).toContain('E-mail the ticket to the fan')
-    expect(outbox.find('.xray-task > span').text()).toBe('FanE-mail the ticket to the fan')
+    expect(outbox.find('.xray-task > span').text()).toBe('FanfoxE-mail the ticket to the fan') // tag, aggregate id, action
     expect(outbox.findAll('.xray-task > span')).toHaveLength(3) // name, attempts, status
     await outbox.find('li').trigger('mouseenter')
     expect(useTraceStore().correlationId).toBe('corr-0001-abcd')
@@ -243,6 +245,122 @@ describe('PersonaPicker', () => {
     expect(chips[4]!.text()).toContain('2/4 tickets')
     await chips[5]!.trigger('click')
     expect(useSessionStore().persona).toBe('crowd-12')
+  })
+})
+
+describe('ActionBar race', () => {
+  it("shows the result until the seat map changes again, ignoring the race's own booking", async () => {
+    vi.useFakeTimers()
+    try {
+      const pinia = createPinia()
+      setActivePinia(pinia)
+      let calls = 0
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => {
+          calls++
+          return calls === 1
+            ? { ok: true, status: 200, json: async () => ({ outcome: 'accepted', tasks: [] }) }
+            : {
+                ok: false,
+                status: 422,
+                json: async () => ({ outcome: 'rejected', error: { code: 'seat_taken', params: {} } }),
+              }
+        }),
+      )
+      const concerts = useConcertsStore()
+      const session = useSessionStore()
+      const view = (seats: Record<string, unknown>) =>
+        ({
+          view: {
+            concert: { artist: 'Radiohead', city: 'Minsk', date: '2026-11-21' },
+            seats,
+            capacity: 40,
+            sold: 0,
+            revenue: 0,
+            sold_out: false,
+            incomplete: false,
+          },
+        }) as never
+      concerts.docs = { [session.concertId]: view({}) }
+      const w = mount(ActionBar, { global: { plugins: [i18n('en'), pinia] } })
+      await w.findAll('button')[2]!.trigger('click') // ⚡ Race
+      await vi.advanceTimersByTimeAsync(10)
+      expect(w.text()).toContain('won')
+      const seat = /(?:Fox|Panda) won/.test(w.text())
+        ? (fetch as unknown as { mock: { calls: [string, RequestInit][] } }).mock.calls[0]![1].body
+        : ''
+      const raced = JSON.parse(String(seat)).seat as string
+      const booked = {
+        state: 'booked',
+        fan_id: 'fox',
+        fan_name: 'Fox',
+        zone: 'standard',
+        price: 80,
+        sequence: 1,
+        changed_at: '',
+      }
+      // The race's own booking arrives: the note stays.
+      concerts.docs = { [session.concertId]: view({ [raced]: booked }) }
+      await w.vm.$nextTick()
+      expect(w.text()).toContain('won')
+      // Any later change of the seat map closes it.
+      concerts.docs = {
+        [session.concertId]: view({ [raced]: booked, Z9: { ...booked, fan_id: 'panda', fan_name: 'Panda' } }),
+      }
+      await w.vm.$nextTick()
+      expect(w.text()).not.toContain('won')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('demo reset', () => {
+  it('asks the sidecar, then selects the first default concert and refreshes the stores', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${url}`)
+        const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
+        if (url === '/inspect/reset') return ok({ outcome: 'reset', report: { announced: [] } })
+        if (url === '/api/concerts') return ok([])
+        if (url === '/api/projections/status') return ok({ state: 'idle', last_result: null })
+        return { ok: false, status: 404, json: async () => null }
+      }),
+    )
+    const session = useSessionStore()
+    session.concertId = 'muse-2027-01-16'
+    const concerts = useConcertsStore()
+    concerts.stale = true
+    const ok = await useRebuildStore().resetDemo()
+    expect(ok).toBe(true)
+    expect(calls[0]).toBe('POST /inspect/reset')
+    expect(session.concertId).toBe('radiohead-2026-11-21')
+    expect(concerts.stale).toBe(false)
+    expect(calls).toContain('GET /api/concerts')
+  })
+
+  it('reports a refused reset without touching the selection', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () => ({
+        ok: false,
+        status: 404,
+        json: async () => ({ error: { source: 'demo', message: 'reset is disabled' } }),
+      })),
+    )
+    const session = useSessionStore()
+    session.concertId = 'muse-2027-01-16'
+    const rebuild = useRebuildStore()
+    expect(await rebuild.resetDemo()).toBe(false)
+    expect(rebuild.lastError).toBe('reset is disabled')
+    expect(session.concertId).toBe('muse-2027-01-16')
   })
 })
 

@@ -131,7 +131,9 @@ Vue 3 + Vite 8 + Tailwind 4 (UI) · sidecar на Rust (read-only инспект�
 
 Аватар для `crowd-*` фронт вычисляет детерминированно (хэш `fan_id` → индекс в списке эмодзи).
 
-**Концерты по умолчанию** — создаются seed-ом при старте back-end **обычными командами** `AnnounceConcert`:
+**Концерты по умолчанию** — создаются **sidecar-ом** при его старте **обычными командами** `AnnounceConcert`
+через публичный API back-end (`POST /api/concerts/{id}/commands`, с повторами, пока back-end не поднялся);
+back-end не содержит ни демо-данных, ни демо-переключателей — он образец production-сервиса:
 
 | `concert_id` | Артист | Город | Дата |
 |---|---|---|---|
@@ -140,7 +142,10 @@ Vue 3 + Vite 8 + Tailwind 4 (UI) · sidecar на Rust (read-only инспект�
 | `muse-2027-01-16` | Muse | Tbilisi | 2027-01-16 |
 
 Seed идемпотентен «по-бизнесовому»: повторный `AnnounceConcert` отклоняется правилом R2 (`already_announced`),
-и seed просто игнорирует этот отказ — не нужен ни флаг, ни отдельный SQL.
+и sidecar просто считает это успехом — не нужен ни флаг, ни отдельный SQL. Там же живёт **reset демо**
+(`POST /inspect/reset`, кнопка «⟲ Сбросить демо» в панели Encore): роль `encore_demo_admin` с правом только
+`TRUNCATE` на `events`, `snapshots`, `transactional_outbox`, drop коллекций `concert_halls`, `fan_wallets`,
+`mail_service.inbox`, затем тот же seed. Список концертов по умолчанию отдаёт `GET /inspect/demo`.
 
 ### 2.3 Агрегат `Concert`
 
@@ -827,7 +832,10 @@ MongoDB для демо — без аутентификации; порты Post
 | `ENCORE_TICKET_LIMIT` | back-end | `4` | правило R6 |
 | `ENCORE_SNAPSHOT_EVERY` | back-end | `10` | снапшот каждые N событий (U12) |
 | `ENCORE_REPLAY_SLOW_DELAY_MS` | back-end | `80` | slow-motion replay |
-| `ENCORE_SEED` | back-end | `true` | seed трёх концертов |
+| `SIDECAR_SEED` | sidecar | `true` | анонс трёх концертов по умолчанию при старте (через API back-end) |
+| `SIDECAR_RESET_ENABLED` | sidecar | `true` | `POST /inspect/reset` (кнопка ⟲ в UI) |
+| `SIDECAR_BACKEND_URL` | sidecar | `http://127.0.0.1:8080` | куда слать `AnnounceConcert` |
+| `SIDECAR_ADMIN_DATABASE_URL` | sidecar | `postgresql://encore_demo_admin:…` | роль только для `TRUNCATE` трёх таблиц |
 | `SIDECAR_DATABASE_URL` | sidecar | `postgresql://encore_inspector:inspector@localhost:5434/encore` | только чтение |
 | `SIDECAR_MONGODB_URI` | sidecar | `mongodb://localhost:27018` | |
 | `SIDECAR_HTTP_ADDR` | sidecar | `127.0.0.1:8090` | |
@@ -903,7 +911,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `domain::fan` | `Fan` + `impl Aggregate` (§2.6); `FanCommand` (только внутренние), `FanEvent`, `FanError` (R9–R11) |
 | `app::command_service` | `ConcertCommands` и `FanCommands`: обогащение (`command_id`, `booking_id`/`cancellation_id`, metadata) → `NewTask`-и → `CqrsCommandExecutor::execute_with_metadata` → маппинг исхода + activity; rebuild-lock проверяется для UI-команд, внутренние команды при lock получают `locked` и уходят в `Retry` задачи |
 | `app::tasks` | `RecordTicketV1`, `SendETicketV1`, `RecordCancellationV1`, `IssueRefundV1` (`TaskPayload`), конструкторы `NewTask::new(payload)?.with_metadata(..)?.with_max_attempts(..)?` |
-| `app::seed` | три `AnnounceConcert` при старте; `already_announced` игнорируется |
+| (seed) | переехал в sidecar (`demo.rs`): back-end без демо-кода |
 | `app::rebuild` | `RebuildService`: lock + guard, wipe, два `EventReplay::replay_all` (Concert, затем Fan), прогресс, slow-motion, статус |
 | `app::verify` `[P1]` | пересборка во временные коллекции теми же `ViewProjection` + сравнение с рабочими |
 | `app::time_travel` | `timeline` и `state-at` через `PersistedEventStore::new_event_store(..).load_events(id)` + `Concert::apply` |
@@ -946,7 +954,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
    runtime_config)?` с `TaskDispatcherFactory` из `outbox::dispatcher`; фабрика захватывает `Arc<FanCommands>`
    для задач цепочки и Mongo-клиент для почты. Подготовка не запускает фоновой работы — это делает `run`.
 9. `AppState { concert_commands, fan_commands, read_db, mail_db, pool, activity, rebuild, config }` (всё в `Arc`/`Clone`).
-10. `app::seed::run(&state)` при `ENCORE_SEED=true`.
+10. ~~seed~~ — концерты по умолчанию анонсирует sidecar через публичный API.
 11. `let shutdown = CancellationToken::new(); host::lifecycle::run(axum::serve(listener, router)
     .with_graceful_shutdown(shutdown.clone().cancelled_owned()), runtime.run(shutdown.clone()), shutdown.clone(),
     cqrsx::host::signal::shutdown_signal()).await` → при `Err(e)` вызвать `e.log("encore-backend stopped with an error")`;
@@ -958,7 +966,9 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | Метод и путь | Сторона | Назначение | Коды |
 |---|---|---|---|
 | `GET /api/health` | — | liveness | 200 |
-| `GET /api/config` | справочник | зал, персонажи, seed-концерты, параметры демо | 200 |
+| `GET /api/config` | справочник | зал, персонажи, параметры демо | 200 |
+| `GET /inspect/demo` (sidecar) | демо | концерты по умолчанию, `reset_enabled` | 200 |
+| `POST /inspect/reset` (sidecar) | демо | стереть всё и заново анонсировать концерты по умолчанию | 200, 404 (выключен), 503 |
 | `POST /api/concerts/{concert_id}/commands` | write | выполнить команду | 200, 400, 409, 422, 423, 503 |
 | `GET /api/concerts` | read: `concert_halls` | сводка по всем концертам | 200 (`[]`, если витрина пуста) |
 | `GET /api/concerts/{concert_id}` | read: `concert_halls` | документ схемы зала | 200, 404 `projection_missing` |
@@ -1023,7 +1033,6 @@ fallback, UI берёт текст из i18n по `code` и `params`.
                         { "id": "standard", "rows": ["B","C"], "price": 80 },
                         { "id": "balcony", "rows": ["D","E"], "price": 50 } ] },
   "personas": [ { "fan_id": "fox", "name": "Fox", "avatar": "🦊" } ],
-  "seed_concerts": ["radiohead-2026-11-21", "rammstein-2026-12-05", "muse-2027-01-16"],
   "ticket_limit": 4, "task_failure_rate": 0.2, "task_max_attempts": 6, "snapshot_every": 10
 }
 ```
@@ -1259,7 +1268,7 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 |---|---|---|
 | `AppHeader` | P0 | логотип, переключатель языка, ⓘ — открыть баннер «Как читать экран» |
 | `PipelineStrip` | P0 | диаграмма архитектуры по `docs/img.png` на холсте **Vue Flow** (`@vue-flow/core`, статичный: без drag/pan/zoom, вписан в блок, zoom ≤ 1) в блоке верхнего ряда (50 % ширины, рядом с панелями events и outbox): три рамки сервисов — `Concert service` (Command → Aggregate → events + outbox → `Outbox worker → Fan`), `Fan service` (Command → Aggregate → events + outbox → `Outbox worker → email`), `projection` (read database → ◇ UI); ромбы ◇ UI (касса, под сервисом Concert) и ◇ email; внизу круг с персонажем (🦊 Fox…), соединённый с обоими ◇ UI и с ◇ email; снаружи — «почтовый сервер 🎲» с обратным ребром retry к events + outbox; сигналы — кружки, бегущие по рёбрам (рёбра ортогональные, узлы на сетке: Command над Aggregate, Outbox worker над events + outbox); подсветка по таблице ниже; на холсте только названия блоков — без подписей и пояснений; **клик по любому блоку или рамке** открывает модальное окно `PipelineExplain` с развёрнутым пояснением (`explain.<id>` в i18n), для агрегатов — таблица правил R1–R8 / R9–R11. Данные графа — `pipeline/graph.ts`, хореография сигналов — `pipeline/choreography.ts` |
-| `ConcertTabs` | P0 | концерты из `/api/concerts`; прогресс sold/capacity; бейджи SOLD OUT и ⚠️ incomplete; если витрина пуста — вкладки из `config.seed_concerts` с «?» |
+| `ConcertTabs` | P0 | концерты из `/api/concerts`; прогресс sold/capacity; бейджи SOLD OUT и ⚠️ incomplete; если витрина пуста — вкладки из `GET /inspect/demo` (`default_concerts`) с «?» |
 | `PersonaPicker` | P0 | четыре больших аватара; у каждого «билетов n/4» на текущем концерте |
 | `SeatMap`, `SeatButton` | P0 | сцена со свечением и именем артиста, ряды A–E, легенда зон; состояния — §8.6; клики — ниже |
 | `ActionBar` | P0 / P1 | 🤖 Перекупщик, 🌊 Толпа (P0), ⚡ Гонка (P1) |
@@ -1344,7 +1353,7 @@ Fan и письмо накладывались бы друг на друга. Е
 | Стор | Содержимое |
 |---|---|
 | `session` | персонаж, выбранный концерт, язык, reduced-motion, текущая глава |
-| `concerts` | список и view по id; `stale` после wipe; fallback-список из `config.seed_concerts` |
+| `concerts` | список и view по id; `stale` после wipe; fallback-список из `session.demo.default_concerts` (sidecar) |
 | `wallet` | кошелёк и inbox текущего персонажа |
 | `commands` | `send(concertId, body)` → исход; множество команд в полёте (`concert:seat`); тосты; сигналы для `PipelineStrip` |
 | `activity` | SSE `/api/activity` (`useEventSource` с авто-переподключением); записи; маршрутизация событий в другие сторы |
