@@ -1,9 +1,10 @@
 export default {
-  app: { title: 'Encore', subtitle: 'cqrsx demo', tagline: 'a concert box office that shows its own insides' },
+  app: { title: 'Encore', subtitle: 'cqrsx demo' },
   layout: { app: 'Box office', xray: 'X-ray', pipeline: 'Command path', language: 'Language', help: 'How to read this screen' },
   banner: {
     title: 'How to read this screen',
     body: 'On the left is the box office — what a fan sees. On the right is an X-ray of what the databases hold right now. At the top is the path every command takes. Click any seat and watch what changes.',
+    start_tour: 'Take the tour →',
     close: 'Got it',
   },
   pipeline: {
@@ -205,8 +206,10 @@ export default {
     'rebuild.failed': 'Encore! failed',
   },
   chapters: {
-    bar: 'Chapters',
+    step: 'Step {n} of {total}',
+    back: '← Back',
     next: 'Next →',
+    finish: 'Finish',
     try_it: 'Try it',
     done: 'Close',
     events: {

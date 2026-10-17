@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { useI18n } from 'vue-i18n'
-import { useTourStore } from '@/stores/tour'
+import { CHAPTERS, useTourStore } from '@/stores/tour'
 import { useSessionStore } from '@/stores/session'
 import { useConcertsStore } from '@/stores/concerts'
 import { useCommandsStore } from '@/stores/commands'
@@ -45,14 +45,25 @@ async function tryIt() {
 
 <template>
   <Transition name="fade">
-    <aside v-if="tour.current" class="fixed left-4 bottom-4 z-40 w-[28rem] max-w-[90vw] rounded-xl border border-neon-violet bg-panel p-4 shadow-2xl text-sm">
-      <div class="font-semibold text-neon-violet mb-1">{{ t(`chapters.${tour.current}.title`) }}</div>
+    <aside
+      v-if="tour.current"
+      role="dialog"
+      :aria-label="t(`chapters.${tour.current}.title`)"
+      class="fixed left-4 bottom-4 z-40 w-[28rem] max-w-[90vw] rounded-xl border border-neon-violet bg-panel p-4 shadow-2xl text-sm"
+    >
+      <div class="flex items-start gap-2 mb-1">
+        <div class="font-semibold text-neon-violet">{{ t(`chapters.${tour.current}.title`) }}</div>
+        <span class="ml-auto text-xs opacity-60 whitespace-nowrap">{{ t('chapters.step', { n: tour.index, total: CHAPTERS.length }) }}</span>
+        <button type="button" class="text-xs opacity-70 hover:opacity-100" :aria-label="t('chapters.done')" @click="tour.close()">✕</button>
+      </div>
       <p class="leading-relaxed opacity-90">{{ t(`chapters.${tour.current}.body`) }}</p>
       <p class="mt-2 text-xs opacity-70">{{ t(`chapters.${tour.current}.try`) }}</p>
       <div class="mt-3 flex gap-2">
         <button type="button" class="action-btn text-xs" @click="tryIt">{{ t('chapters.try_it') }}</button>
-        <button type="button" class="action-btn text-xs" @click="tour.next()">{{ t('chapters.next') }}</button>
-        <button type="button" class="ml-auto action-btn text-xs" @click="tour.close()">{{ t('chapters.done') }}</button>
+        <button type="button" class="ml-auto action-btn text-xs" @click="tour.back()">{{ t('chapters.back') }}</button>
+        <button type="button" class="action-btn text-xs" @click="tour.next()">
+          {{ tour.index === CHAPTERS.length ? t('chapters.finish') : t('chapters.next') }}
+        </button>
       </div>
     </aside>
   </Transition>

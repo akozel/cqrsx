@@ -1,9 +1,10 @@
 export default {
-  app: { title: 'Encore', subtitle: 'демо cqrsx', tagline: 'концертная касса, у которой видно всё внутри' },
+  app: { title: 'Encore', subtitle: 'демо cqrsx' },
   layout: { app: 'Касса', xray: 'Рентген', pipeline: 'Путь команды', language: 'Язык', help: 'Как читать этот экран' },
   banner: {
     title: 'Как читать этот экран',
     body: 'Слева — касса концертного зала: то, что видит фанат. Справа — рентген: что прямо сейчас лежит в базах данных. Сверху — путь, который проходит каждая команда. Кликните по любому месту и проследите, что изменится.',
+    start_tour: 'Пройти тур →',
     close: 'Понятно',
   },
   pipeline: {
@@ -205,8 +206,10 @@ export default {
     'rebuild.failed': 'Encore! не удался',
   },
   chapters: {
-    bar: 'Главы',
+    step: 'Шаг {n} из {total}',
+    back: '← Назад',
     next: 'Дальше →',
+    finish: 'Завершить',
     try_it: 'Попробовать',
     done: 'Закрыть',
     events: {

@@ -211,7 +211,7 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
   `ViewProjection`s, compares canonical JSON without `version`, drops the temp collections;
   `GET /api/projections/verify` → `{"ok":true,"checked":{"concert_halls":3,"fan_wallets":53}}` live,
   56 `missing` after a wipe, `ok` again after Encore!; button in `EncorePanel`.
-- 📸 markers, chapters ①–⑤ (`ChapterBar`, `ChapterCallout` with "Try it" actions, other panels dimmed to
+- 📸 markers, guided tour: intro step 0 (ⓘ button) then chapters ①–⑤ as `ChapterCallout` popups with "Try it" actions, other panels dimmed to
   40 %), correlation-id hover trace (event → its outbox rows and its Mongo document), `AnnounceDialog`
   (`concert_id = <city-slug>-<4 hex>`), arrow-key navigation of the seat map, X-ray tabs on medium screens,
   `/inspect/postgres/tables`.
