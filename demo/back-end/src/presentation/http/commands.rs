@@ -1,7 +1,7 @@
 //! `POST /api/concerts/{concert_id}/commands` — the only write endpoint. The UI never validates
 //! business rules: every click becomes a command and the aggregate is the judge.
 use crate::{
-    application::command_service::{CommandMetadata, CommandOutcome},
+    application::command_service::{CommandMetadata, CommandOutcome, Rejection},
     bootstrap::AppState,
     domain::{
         FanId,
@@ -78,7 +78,11 @@ pub async fn execute(
     let metadata = CommandMetadata::ui();
     let command = to_command(dto, &metadata)?;
     let command_id = metadata.command_id;
-    let executed = state.concert_commands.execute(&concert_id, command, metadata).await;
+    let executed = match command {
+        ConcertCommand::AnnounceConcert(command) => state.concerts.announce_concert(&concert_id, command, metadata).await,
+        ConcertCommand::BookSeat(command) => state.concerts.book_seat(&concert_id, command, metadata).await,
+        ConcertCommand::CancelBooking(command) => state.concerts.cancel_booking(&concert_id, command, metadata).await,
+    };
     let base = json!({ "command_id": command_id, "concert_id": concert_id });
     Ok(match executed.outcome {
         CommandOutcome::Accepted { warnings } => (

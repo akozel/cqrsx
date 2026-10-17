@@ -1,39 +1,24 @@
-//! Command services: the demo's use of the cqrsx command port.
+//! The command pipeline shared by both aggregates, around the cqrsx command port.
 //!
-//! One long-lived `CqrsCommandExecutor` per aggregate. Every call builds a fresh `CqrsFramework`
-//! (via the factory closure) that binds the immutable outbox task list to one PostgreSQL
-//! repository; conflict retries reuse that framework. Metadata (`command_id`, `correlation_id`,
-//! `causation_id`, `recorded_at`, `source`) travels through `execute_with_metadata` (decision
-//! D-04) and ends up in the `events.metadata` column of every committed event.
-use crate::{
-    application::{activity::ActivityHub, lock::BoxOfficeLock, projections::notifying::NotifyingHandler, tasks},
-    domain::{
-        ConcertId, FanId,
-        concert::{
-            Concert, ConcertCommand, ConcertError, ConcertServices,
-            commands::{BookSeat, CancelBooking},
-        },
-        fan::{Fan, FanCommand, FanError},
-        shared::venue::VENUE,
-    },
-};
+//! Every use case ends in [`CommandService::run`]: box-office lock → `execute_with_metadata` (the
+//! event and its outbox tasks in one commit) → outcome → activity log. Metadata (`command_id`,
+//! `correlation_id`, `causation_id`, `recorded_at`, `source`) travels through
+//! `execute_with_metadata` (decision D-04) and ends up in the `events.metadata` column of every
+//! committed event.
+use crate::application::{activity::ActivityHub, lock::BoxOfficeLock, projections::notifying::NotifyingHandler};
 use chrono::{SecondsFormat, Utc};
 use cqrsx::{
     cqrs::{
-        CqrsFramework,
         aggregate::Aggregate,
-        command::{CommandGatewayError, executor::CqrsCommandExecutor, retry::AggregateConflictRetryPolicy},
+        command::{CommandExecutor, CommandGatewayError},
         event_handler::EventHandler,
         projection::{View, ViewProjection, repository::ViewRepository},
-        store::{EventStore, persisted::PersistedEventStore},
     },
-    postgres::{event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox},
     task::NewTask,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
-use sqlx::PgPool;
-use std::{collections::HashMap, sync::Arc};
+use std::{collections::HashMap, fmt::Display, marker::PhantomData, sync::Arc};
 use uuid::Uuid;
 
 /// Who issued the command and how it relates to earlier work. For UI commands the three ids are
@@ -90,6 +75,13 @@ impl CommandMetadata {
     }
 }
 
+/// How a domain rejection is reported to the API and the activity log: the stable code from the
+/// domain plus the parameters the UI texts interpolate.
+pub trait Rejection {
+    fn code(&self) -> &'static str;
+    fn params(&self) -> Value;
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Warning {
     pub code: &'static str,
@@ -135,8 +127,6 @@ pub fn map_gateway_result<E>(result: Result<(), CommandGatewayError<E>>, project
     }
 }
 
-type Store<A> = PersistedEventStore<PostgresEventRepositoryWithOutbox, A>;
-type BuildFramework<A> = Box<dyn Fn(Vec<NewTask>) -> CqrsFramework<A, Store<A>> + Send + Sync>;
 pub type HandlerFactory<A> = Arc<dyn Fn() -> Box<dyn EventHandler<A>> + Send + Sync>;
 
 /// An event handler under the name the activity log and the API report it by. Handlers are built
@@ -169,39 +159,6 @@ impl<A: Aggregate + 'static> NamedHandler<A> {
     }
 }
 
-/// Shared wiring for both aggregates.
-pub struct Executors {
-    pub pool: PgPool,
-    pub snapshot_every: usize,
-    pub retry: AggregateConflictRetryPolicy,
-}
-
-impl Executors {
-    /// The executor plus the projection names in registration order.
-    fn build<A>(
-        &self,
-        handlers: Vec<NamedHandler<A>>,
-        services: A::Services,
-    ) -> (CqrsCommandExecutor<A, BuildFramework<A>>, Vec<&'static str>)
-    where
-        A: Aggregate + Clone + 'static,
-        A::Services: Clone,
-    {
-        let (names, factories): (Vec<_>, Vec<_>) = handlers.into_iter().map(|h| (h.name, h.build)).unzip();
-        let pool = self.pool.clone();
-        let snapshot_every = self.snapshot_every;
-        let build: BuildFramework<A> = Box::new(move |tasks| {
-            let repository = PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks);
-            CqrsFramework::new(
-                PersistedEventStore::new_snapshot_store(repository, snapshot_every),
-                factories.iter().map(|build| build()).collect(),
-                services.clone(),
-            )
-        });
-        (CqrsCommandExecutor::new(build, self.retry), names)
-    }
-}
-
 /// What the HTTP layer and task handlers get back: the interpreted outcome plus the formats of the
 /// tasks that were bound to the command (published only if it was accepted).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -211,189 +168,55 @@ pub struct Executed<E> {
 }
 
 impl<E> Executed<E> {
-    fn locked() -> Self {
+    pub fn locked() -> Self {
         Self {
             outcome: CommandOutcome::Locked,
             tasks: vec![],
         }
     }
-}
 
-pub struct ConcertCommands {
-    executor: CqrsCommandExecutor<Concert, BuildFramework<Concert>>,
-    /// Read-only access to committed concert state, used to resolve the booking a cancellation
-    /// refers to before the command runs (tasks must exist before execution).
-    reader: PersistedEventStore<PostgresEventRepository, Concert>,
-    projections: Vec<&'static str>,
-    activity: Arc<ActivityHub>,
-    lock: Arc<BoxOfficeLock>,
-    /// Attempt budget of the chain tasks this service publishes (`encore_record_*`).
-    task_max_attempts: i32,
-}
-
-impl ConcertCommands {
-    pub fn new(
-        executors: &Executors,
-        handlers: Vec<NamedHandler<Concert>>,
-        services: ConcertServices,
-        activity: Arc<ActivityHub>,
-        lock: Arc<BoxOfficeLock>,
-        task_max_attempts: i32,
-    ) -> Self {
-        let (executor, projections) = executors.build(handlers, services);
+    /// The outbox tasks could not be built, so the command was not executed (and is not logged).
+    pub fn tasks_unavailable(error: impl Display) -> Self {
+        tracing::error!("cannot build outbox tasks: {error}");
         Self {
-            executor,
-            reader: PersistedEventStore::new_snapshot_store(
-                PostgresEventRepository::new(executors.pool.clone()),
-                executors.snapshot_every,
-            ),
-            projections,
-            activity,
-            lock,
-            task_max_attempts,
-        }
-    }
-
-    /// Tasks that must be published atomically with the event of an accepted command. They are
-    /// built *before* the command runs, from command data and the venue (the price is static).
-    /// An invalid or unbooked seat yields no task: the aggregate rejects such commands before
-    /// anything is written, so no task can ever be published without its event.
-    async fn tasks_for(
-        &self,
-        concert_id: &ConcertId,
-        command: &ConcertCommand,
-        metadata: &CommandMetadata,
-    ) -> Result<Vec<NewTask>, String> {
-        let task = match command {
-            ConcertCommand::AnnounceConcert(_) => return Ok(vec![]),
-            ConcertCommand::BookSeat(BookSeat {
-                seat,
-                fan_id,
-                fan_name,
-                booking_id,
-            }) => {
-                let Some(info) = VENUE.seat(seat) else { return Ok(vec![]) };
-                tasks::new_task(
-                    tasks::RecordTicketV1 {
-                        booking_id: *booking_id,
-                        concert_id: concert_id.clone(),
-                        seat: info.id,
-                        zone: info.zone,
-                        price: info.price,
-                        fan_id: fan_id.clone(),
-                        fan_name: fan_name.clone(),
-                    },
-                    metadata,
-                    concert_id,
-                    fan_id,
-                    self.task_max_attempts,
-                )
-            }
-            ConcertCommand::CancelBooking(CancelBooking {
-                seat,
-                fan_id,
-                cancellation_id,
-            }) => {
-                let Some(info) = VENUE.seat(seat) else { return Ok(vec![]) };
-                // The booking identity and the refund ("what was paid back then") live in the
-                // concert's history, so read the committed state first. If the booking changes
-                // between this read and the commit, the command is retried on fresh state by the
-                // conflict policy and the aggregate still decides; the task only carries what the
-                // Fan aggregate needs to find the ticket.
-                let context = self
-                    .reader
-                    .load_aggregate(concert_id.as_str())
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let Some(booking) = context.aggregate.bookings().get(&info.id).filter(|b| &b.fan_id == fan_id) else {
-                    return Ok(vec![]);
-                };
-                tasks::new_task(
-                    tasks::RecordCancellationV1 {
-                        booking_id: booking.booking_id,
-                        cancellation_id: *cancellation_id,
-                        concert_id: concert_id.clone(),
-                        seat: info.id,
-                        fan_id: fan_id.clone(),
-                        refund: booking.price,
-                    },
-                    metadata,
-                    concert_id,
-                    fan_id,
-                    self.task_max_attempts,
-                )
-            }
-        };
-        task.map(|t| vec![t]).map_err(|e| e.to_string())
-    }
-
-    pub async fn execute(
-        &self,
-        concert_id: &ConcertId,
-        command: ConcertCommand,
-        metadata: CommandMetadata,
-    ) -> Executed<ConcertError> {
-        if self.lock.is_locked() {
-            return Executed::locked();
-        }
-        let tasks = match self.tasks_for(concert_id, &command, &metadata).await {
-            Ok(tasks) => tasks,
-            Err(error) => {
-                tracing::error!("cannot build outbox tasks: {error}");
-                return Executed {
-                    outcome: CommandOutcome::Unavailable,
-                    tasks: vec![],
-                };
-            }
-        };
-        let task_formats: Vec<String> = tasks.iter().map(|t| t.format().to_string()).collect();
-        let command_type = command.name();
-        let fan_id = command.fan_id().cloned();
-        let result = self
-            .executor
-            .execute_with_metadata(concert_id.as_str(), command, metadata.to_map(), tasks)
-            .await;
-        let outcome = map_gateway_result(result, &self.projections);
-        publish_outcome(
-            &self.activity,
-            &OutcomeContext {
-                aggregate_type: Concert::TYPE,
-                aggregate_id: concert_id.as_str(),
-                command_type,
-                fan_id: fan_id.as_ref().map(FanId::as_str),
-                metadata: &metadata,
-                task_formats: &task_formats,
-            },
-            &outcome,
-            |e| (e.code(), e.params()),
-        );
-        Executed {
-            outcome,
-            tasks: task_formats,
+            outcome: CommandOutcome::Unavailable,
+            tasks: vec![],
         }
     }
 }
 
-pub struct FanCommands {
-    executor: CqrsCommandExecutor<Fan, BuildFramework<Fan>>,
+/// What every `command.*` activity entry says about the command, whatever its outcome.
+#[derive(Debug, Clone, Copy)]
+pub struct CommandLabel<'a> {
+    pub aggregate_id: &'a str,
+    pub command_type: &'static str,
+    pub fan_id: Option<&'a str>,
+}
+
+/// One long-lived service per aggregate around its command executor.
+pub struct CommandService<A, E> {
+    executor: E,
+    /// Projection names in handler registration order (see [`NamedHandler`]).
     projections: Vec<&'static str>,
     activity: Arc<ActivityHub>,
     lock: Arc<BoxOfficeLock>,
+    aggregate: PhantomData<fn() -> A>,
 }
 
-impl FanCommands {
-    pub fn new(
-        executors: &Executors,
-        handlers: Vec<NamedHandler<Fan>>,
-        activity: Arc<ActivityHub>,
-        lock: Arc<BoxOfficeLock>,
-    ) -> Self {
-        let (executor, projections) = executors.build(handlers, ());
+impl<A, E> CommandService<A, E>
+where
+    A: Aggregate,
+    A::Command: Send,
+    A::Error: Rejection,
+    E: CommandExecutor<A>,
+{
+    pub fn new(executor: E, projections: Vec<&'static str>, activity: Arc<ActivityHub>, lock: Arc<BoxOfficeLock>) -> Self {
         Self {
             executor,
             projections,
             activity,
             lock,
+            aggregate: PhantomData,
         }
     }
 
@@ -401,40 +224,29 @@ impl FanCommands {
         &self.lock
     }
 
-    /// Internal commands come from task handlers, which also build the follow-up tasks (from the
-    /// parent task's payload). During a rebuild the outcome is `Locked`, which the task handler
-    /// turns into a short retry: the task is durable, so waiting costs nothing, and the wallet
-    /// projection is not written while its collection is being rebuilt.
-    pub async fn execute(
+    pub fn is_locked(&self) -> bool {
+        self.lock.is_locked()
+    }
+
+    /// Runs one command with the tasks that must be published atomically with its event. A
+    /// rejected command writes nothing, so a task is never published without its event.
+    pub async fn run(
         &self,
-        fan_id: &FanId,
-        command: FanCommand,
+        label: CommandLabel<'_>,
+        command: A::Command,
         metadata: CommandMetadata,
         tasks: Vec<NewTask>,
-    ) -> Executed<FanError> {
+    ) -> Executed<A::Error> {
         if self.lock.is_locked() {
             return Executed::locked();
         }
         let task_formats: Vec<String> = tasks.iter().map(|t| t.format().to_string()).collect();
-        let command_type = command.name();
         let result = self
             .executor
-            .execute_with_metadata(fan_id.as_str(), command, metadata.to_map(), tasks)
+            .execute_with_metadata(label.aggregate_id, command, metadata.to_map(), tasks)
             .await;
         let outcome = map_gateway_result(result, &self.projections);
-        publish_outcome(
-            &self.activity,
-            &OutcomeContext {
-                aggregate_type: Fan::TYPE,
-                aggregate_id: fan_id.as_str(),
-                command_type,
-                fan_id: Some(fan_id.as_str()),
-                metadata: &metadata,
-                task_formats: &task_formats,
-            },
-            &outcome,
-            |e| (e.code(), e.params()),
-        );
+        publish_outcome(&self.activity, A::TYPE, &label, &metadata, &task_formats, &outcome);
         Executed {
             outcome,
             tasks: task_formats,
@@ -442,30 +254,22 @@ impl FanCommands {
     }
 }
 
-/// What every `command.*` activity entry says about the command, whatever its outcome.
-struct OutcomeContext<'a> {
-    aggregate_type: &'a str,
-    aggregate_id: &'a str,
-    command_type: &'a str,
-    fan_id: Option<&'a str>,
-    metadata: &'a CommandMetadata,
-    task_formats: &'a [String],
-}
-
-fn publish_outcome<E>(
+fn publish_outcome<E: Rejection>(
     activity: &ActivityHub,
-    context: &OutcomeContext<'_>,
+    aggregate_type: &str,
+    label: &CommandLabel<'_>,
+    metadata: &CommandMetadata,
+    task_formats: &[String],
     outcome: &CommandOutcome<E>,
-    describe: impl Fn(&E) -> (&'static str, Value),
 ) {
     let base = json!({
-        "aggregate_type": context.aggregate_type,
-        "aggregate_id": context.aggregate_id,
-        "command_id": context.metadata.command_id,
-        "correlation_id": context.metadata.correlation_id,
-        "source": context.metadata.source,
-        "command_type": context.command_type,
-        "fan_id": context.fan_id,
+        "aggregate_type": aggregate_type,
+        "aggregate_id": label.aggregate_id,
+        "command_id": metadata.command_id,
+        "correlation_id": metadata.correlation_id,
+        "source": metadata.source,
+        "command_type": label.command_type,
+        "fan_id": label.fan_id,
     });
     let merge = |extra: Value| {
         let mut map = base.as_object().cloned().unwrap_or_default();
@@ -478,18 +282,20 @@ fn publish_outcome<E>(
         CommandOutcome::Accepted { warnings } => {
             activity.publish(
                 "command.accepted",
-                merge(json!({ "tasks": context.task_formats, "warnings": warnings })),
+                merge(json!({ "tasks": task_formats, "warnings": warnings })),
             );
             for warning in warnings {
                 activity.publish(
                     "projection.failed",
-                    json!({ "projection": warning.projection, "view_id": context.aggregate_id, "message": "event handler failed after commit" }),
+                    json!({ "projection": warning.projection, "view_id": label.aggregate_id, "message": "event handler failed after commit" }),
                 );
             }
         }
         CommandOutcome::Rejected(error) => {
-            let (code, params) = describe(error);
-            activity.publish("command.rejected", merge(json!({ "code": code, "params": params })));
+            activity.publish(
+                "command.rejected",
+                merge(json!({ "code": error.code(), "params": error.params() })),
+            );
         }
         CommandOutcome::Conflict => {
             activity.publish(
@@ -510,7 +316,7 @@ fn publish_outcome<E>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::fan::commands::RecordCancellation;
+    use crate::domain::concert::ConcertError;
 
     #[test]
     fn ui_metadata_uses_one_id_for_all_three_roles_and_fixed_width_time() {
@@ -575,54 +381,5 @@ mod tests {
                 ]
             }
         );
-    }
-
-    #[tokio::test]
-    async fn a_locked_box_office_refuses_commands_before_touching_storage() {
-        let lock = Arc::new(BoxOfficeLock::new());
-        let executors = Executors {
-            pool: crate::testing::lazy_pool(),
-            snapshot_every: 10,
-            retry: AggregateConflictRetryPolicy::default(),
-        };
-        let activity = Arc::new(ActivityHub::new(8, 8));
-        let concerts = ConcertCommands::new(
-            &executors,
-            vec![],
-            ConcertServices::default(),
-            activity.clone(),
-            lock.clone(),
-            6,
-        );
-        let fans = FanCommands::new(&executors, vec![], activity.clone(), lock.clone());
-        let _guard = lock.try_acquire().unwrap();
-        let concert_id = ConcertId::parse("c-1").unwrap();
-        let fan_id = FanId::parse("fox").unwrap();
-        let executed = concerts
-            .execute(
-                &concert_id,
-                ConcertCommand::CancelBooking(CancelBooking {
-                    seat: "B4".into(),
-                    fan_id: fan_id.clone(),
-                    cancellation_id: Uuid::now_v7(),
-                }),
-                CommandMetadata::ui(),
-            )
-            .await;
-        assert_eq!(executed, Executed::locked());
-        let executed = fans
-            .execute(
-                &fan_id,
-                FanCommand::RecordCancellation(RecordCancellation {
-                    booking_id: Uuid::now_v7(),
-                    cancellation_id: Uuid::now_v7(),
-                    refund: 80,
-                }),
-                CommandMetadata::ui(),
-                vec![],
-            )
-            .await;
-        assert_eq!(executed, Executed::locked());
-        assert!(activity.subscribe().0.is_empty(), "a locked outcome is not logged");
     }
 }

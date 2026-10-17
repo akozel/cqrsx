@@ -1,23 +1,33 @@
-//! Business processes driven by outbox tasks, one folder per process, one file per step.
+//! Business processes driven by outbox tasks: one folder per process, one file per step, the
+//! task contracts each process publishes in its `tasks` module.
 //!
-//! This module holds the one step every chain handler performs: metadata from the task, the
+//! - [`ticket_delivery`]: a booked seat reaches the fan's ledger, then the fan gets an e-ticket;
+//! - [`refund`]: a cancelled booking reaches the fan's ledger, then the fan gets a refund.
+//!
+//! This module holds the one step every ledger step performs: metadata from the task, the
 //! follow-up task, the internal `Fan` command, and the mapping of its outcome to a task result
 //! (PLAN.md §2.7). R9/R11 mean "already done" (redelivery), R10 means "too early, retry".
 pub mod refund;
+#[cfg(test)]
+mod test_support;
 pub mod ticket_delivery;
 
 use crate::{
     application::{
-        command_service::{CommandMetadata, CommandOutcome, FanCommands},
+        command_service::{CommandMetadata, CommandOutcome},
+        fan::FanApp,
         lock::BoxOfficeLock,
         tasks::new_task,
     },
     domain::{
         ConcertId, FanId,
-        fan::{FanCommand, FanError},
+        fan::{Fan, FanCommand, FanError},
     },
 };
-use cqrsx::task::{attempt::TaskAttempt, format::TaskPayload, handler::TaskHandlerError};
+use cqrsx::{
+    cqrs::command::CommandExecutor,
+    task::{attempt::TaskAttempt, format::TaskPayload, handler::TaskHandlerError},
+};
 use std::time::Duration;
 use uuid::Uuid;
 
@@ -85,8 +95,8 @@ pub struct ChainStep<'a, F: TaskPayload> {
 /// Runs one chain step on behalf of a task of type `P`. A malformed payload never reaches this
 /// point: the JSON adapter rejects it permanently, ids included. A closed box office waits a
 /// little and then asks for a later redelivery without spending a command on it.
-pub async fn run_chain_step<P: TaskPayload, F: TaskPayload>(
-    fan_commands: &FanCommands,
+pub async fn run_chain_step<P: TaskPayload, F: TaskPayload, E: CommandExecutor<Fan>>(
+    fans: &FanApp<E>,
     attempt: &TaskAttempt,
     step: ChainStep<'_, F>,
 ) -> Result<(), TaskHandlerError> {
@@ -105,12 +115,10 @@ pub async fn run_chain_step<P: TaskPayload, F: TaskPayload>(
     .map_err(|e| TaskHandlerError::Permanent {
         reason: format!("cannot build follow-up task: {e}"),
     })?;
-    if !wait_for_unlock(fan_commands.lock()).await {
+    if !wait_for_unlock(fans.lock()).await {
         return Err(locked_retry());
     }
-    let executed = fan_commands
-        .execute(step.fan_id, step.command, metadata, vec![follow_up])
-        .await;
+    let executed = fans.execute(step.fan_id, step.command, metadata, vec![follow_up]).await;
     map_fan_outcome(executed.outcome)
 }
 

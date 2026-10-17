@@ -4,23 +4,22 @@
 //! lifecycle) and the router tests (which never reach a database) build the very same graph.
 use crate::{
     application::{
+        self,
         activity::ActivityHub,
-        command_service::{ConcertCommands, Executors, FanCommands, NamedHandler},
+        command_service::{CommandService, NamedHandler},
         lock::BoxOfficeLock,
         operations::{rebuild::RebuildService, time_travel::TimeTravel, verify::VerifyService},
     },
     config::Config,
-    domain::concert::ConcertServices,
+    domain::{
+        concert::{Concert, ConcertServices},
+        fan::Fan,
+    },
     infrastructure::{
-        mail::{
-            chaos::Random,
-            flaky_mail_server::{MailSettings, MongoInbox},
-        },
+        mail::flaky_mail_server::{MailSettings, MongoInbox},
         mongo::read_side::{CONCERT_HALLS, FAN_WALLETS, MAIL_INBOX, ReadSide},
-        task_runtime::{
-            adapter::EncoreTaskAdapter,
-            dispatcher::{DispatcherDeps, dispatcher_factory},
-        },
+        postgres::{Executors, HistoryStore, PostgresExecutor},
+        task_runtime::dispatcher::{DispatcherDeps, EncoreAdapter, dispatcher_factory},
     },
 };
 use cqrsx::{
@@ -38,11 +37,16 @@ pub const ACTIVITY_CHANNEL_CAPACITY: usize = 1024;
 /// How many recent entries a new SSE subscriber receives in its `hello`.
 pub const ACTIVITY_BACKLOG: usize = 100;
 
+/// The box office over PostgreSQL.
+pub type ConcertApp = application::concert::ConcertApp<PostgresExecutor<Concert>, HistoryStore<Concert>>;
+/// The fan ledger over PostgreSQL.
+pub type FanApp = application::fan::FanApp<PostgresExecutor<Fan>>;
+
 /// Everything the HTTP handlers use.
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
-    pub concert_commands: Arc<ConcertCommands>,
+    pub concerts: Arc<ConcertApp>,
     pub activity: Arc<ActivityHub>,
     pub rebuild: Arc<RebuildService>,
     pub read: Arc<ReadSide>,
@@ -56,7 +60,7 @@ pub struct AppState {
 /// The wired application: the HTTP state and the task handlers for the outbox runtime.
 pub struct Wiring {
     pub state: AppState,
-    pub dispatcher: TaskDispatcherFactory<EncoreTaskAdapter<MongoInbox, Random>>,
+    pub dispatcher: TaskDispatcherFactory<EncoreAdapter>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -94,26 +98,31 @@ pub fn wire(
         snapshot_every: command_config.snapshot_interval(),
         retry: command_config.conflict_retry(),
     };
-    let concert_commands = Arc::new(ConcertCommands::new(
-        &executors,
+    let (executor, projections) = executors.executor(
         vec![NamedHandler::projection(CONCERT_HALLS, read.halls.clone(), activity.clone())],
         ConcertServices {
             ticket_limit: config.ticket_limit,
         },
-        activity.clone(),
-        lock.clone(),
+    );
+    let concerts = Arc::new(ConcertApp::new(
+        CommandService::new(executor, projections, activity.clone(), lock.clone()),
+        executors.history(),
         config.chain_max_attempts,
     ));
-    let fan_commands = Arc::new(FanCommands::new(
-        &executors,
+    let (executor, projections) = executors.executor(
         vec![NamedHandler::projection(FAN_WALLETS, read.wallets.clone(), activity.clone())],
+        (),
+    );
+    let fans = Arc::new(FanApp::new(CommandService::new(
+        executor,
+        projections,
         activity.clone(),
         lock,
-    ));
+    )));
 
     // Outbox task handlers: a fresh set (and a fresh chaos RNG) for every worker.
     let dispatcher = dispatcher_factory(DispatcherDeps {
-        fan_commands,
+        fans,
         inbox,
         activity: activity.clone(),
         mail: MailSettings {
@@ -129,7 +138,7 @@ pub fn wire(
     Ok(Wiring {
         state: AppState {
             config,
-            concert_commands,
+            concerts,
             activity,
             rebuild,
             read,

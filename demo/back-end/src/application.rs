@@ -7,8 +7,11 @@ pub mod concert;
 pub mod fan;
 pub mod lock;
 pub mod operations;
+pub mod ports;
 pub mod projections;
 pub mod tasks;
+#[cfg(test)]
+mod test_support;
 pub mod workflows;
 
 /// A storage round trip (PostgreSQL or MongoDB) failed. The message is operator-facing; the HTTP

@@ -1,10 +1,10 @@
 use crate::domain::shared::venue::SeatId;
-use serde_json::{Value, json};
 use thiserror::Error;
 
-/// Business-rule rejections R1–R8. `code()` and `params()` feed the API (`{ code, params }`);
-/// user-facing texts live in the front-end i18n files. `PartialEq` + `Clone` are required by
-/// `TestFramework::then_expect_error` and by `CommandGatewayError`.
+/// Business-rule rejections R1–R8. `code()` is the stable key the API and the front-end i18n
+/// files use; the parameters the texts interpolate are an application concern (`Rejection`).
+/// `PartialEq` + `Clone` are required by `TestFramework::then_expect_error` and by
+/// `CommandGatewayError`.
 #[derive(Debug, Clone, PartialEq, Eq, Error)]
 pub enum ConcertError {
     #[error("this concert has not been announced")]
@@ -36,16 +36,6 @@ impl ConcertError {
             ConcertError::TicketLimit { .. } => "ticket_limit",
             ConcertError::SeatNotBooked { .. } => "seat_not_booked",
             ConcertError::NotYourTicket => "not_your_ticket",
-        }
-    }
-
-    pub fn params(&self) -> Value {
-        match self {
-            ConcertError::UnknownSeat { seat } => json!({ "seat": seat }),
-            ConcertError::SeatTaken { seat, by } => json!({ "seat": seat, "by": by }),
-            ConcertError::TicketLimit { limit } => json!({ "limit": limit }),
-            ConcertError::SeatNotBooked { seat } => json!({ "seat": seat }),
-            _ => json!({}),
         }
     }
 }
@@ -87,19 +77,5 @@ mod tests {
                 "not_your_ticket"
             ]
         );
-    }
-
-    #[test]
-    fn params_carry_what_the_ui_texts_interpolate() {
-        let seat = SeatId::parse("B4").unwrap();
-        assert_eq!(
-            ConcertError::SeatTaken { seat, by: "Fox".into() }.params(),
-            serde_json::json!({ "seat": "B4", "by": "Fox" })
-        );
-        assert_eq!(
-            ConcertError::TicketLimit { limit: 4 }.params(),
-            serde_json::json!({ "limit": 4 })
-        );
-        assert_eq!(ConcertError::NotYourTicket.params(), serde_json::json!({}));
     }
 }

@@ -4,17 +4,19 @@
 use crate::{
     application::{
         activity::ActivityHub,
-        command_service::FanCommands,
+        fan::FanApp,
         workflows::{
             refund::{issue_refund::IssueRefundHandler, record_cancellation::RecordCancellationHandler},
             ticket_delivery::{record_ticket::RecordTicketHandler, send_e_ticket::SendETicketHandler},
         },
     },
+    domain::fan::Fan,
     infrastructure::{
         mail::{
             chaos::Random,
             flaky_mail_server::{FlakyMailServer, MailSettings, MongoInbox},
         },
+        postgres::PostgresExecutor,
         task_runtime::adapter::EncoreTaskAdapter,
     },
 };
@@ -28,17 +30,21 @@ use std::sync::{
     atomic::{AtomicU64, Ordering},
 };
 
+/// The adapter the runtime dispatches to in production.
+pub type EncoreAdapter = EncoreTaskAdapter<PostgresExecutor<Fan>, FlakyMailServer<MongoInbox, Random>>;
+
 pub struct DispatcherDeps {
-    pub fan_commands: Arc<FanCommands>,
+    pub fans: Arc<FanApp<PostgresExecutor<Fan>>>,
     pub inbox: Arc<MongoInbox>,
     pub activity: Arc<ActivityHub>,
     pub mail: MailSettings,
     pub failure_rate: f64,
     pub chaos_seed: Option<u64>,
+    /// Attempt budget of the e-mail tasks the ledger steps publish.
     pub task_max_attempts: i32,
 }
 
-pub fn dispatcher_factory(deps: DispatcherDeps) -> TaskDispatcherFactory<EncoreTaskAdapter<MongoInbox, Random>> {
+pub fn dispatcher_factory(deps: DispatcherDeps) -> TaskDispatcherFactory<EncoreAdapter> {
     let counter = AtomicU64::new(0);
     Arc::new(move || {
         let instance = counter.fetch_add(1, Ordering::SeqCst);
@@ -56,20 +62,20 @@ pub fn dispatcher_factory(deps: DispatcherDeps) -> TaskDispatcherFactory<EncoreT
         let adapters = vec![
             EncoreTaskAdapter::RecordTicket(
                 JsonTaskAdapter::new(RecordTicketHandler {
-                    fan_commands: deps.fan_commands.clone(),
-                    task_max_attempts: deps.task_max_attempts,
+                    fans: deps.fans.clone(),
+                    follow_up_max_attempts: deps.task_max_attempts,
                 })
                 .map_err(invalid)?,
             ),
             EncoreTaskAdapter::RecordCancellation(
                 JsonTaskAdapter::new(RecordCancellationHandler {
-                    fan_commands: deps.fan_commands.clone(),
-                    task_max_attempts: deps.task_max_attempts,
+                    fans: deps.fans.clone(),
+                    follow_up_max_attempts: deps.task_max_attempts,
                 })
                 .map_err(invalid)?,
             ),
-            EncoreTaskAdapter::SendETicket(JsonTaskAdapter::new(SendETicketHandler { mail: mail_server() }).map_err(invalid)?),
-            EncoreTaskAdapter::IssueRefund(JsonTaskAdapter::new(IssueRefundHandler { mail: mail_server() }).map_err(invalid)?),
+            EncoreTaskAdapter::SendETicket(JsonTaskAdapter::new(SendETicketHandler { mailer: mail_server() }).map_err(invalid)?),
+            EncoreTaskAdapter::IssueRefund(JsonTaskAdapter::new(IssueRefundHandler { mailer: mail_server() }).map_err(invalid)?),
         ];
         TaskDispatcher::try_new(adapters)
     })

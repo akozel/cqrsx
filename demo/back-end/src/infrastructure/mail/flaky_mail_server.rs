@@ -5,7 +5,13 @@
 //! with an idempotent upsert keyed by the business id. Delivery is at-least-once (a lease can
 //! expire, the process can crash after the effect and before settlement), so a repeat must not
 //! create a second e-mail: `deliveries > 1` means "duplicate suppressed".
-use crate::{application::activity::ActivityHub, infrastructure::mail::chaos::ChaosPolicy};
+use crate::{
+    application::{
+        activity::ActivityHub,
+        ports::{Mail, Mailer},
+    },
+    infrastructure::mail::chaos::ChaosPolicy,
+};
 use chrono::{SecondsFormat, Utc};
 use cqrsx::task::{attempt::TaskAttempt, handler::TaskHandlerError};
 use mongodb::{
@@ -19,19 +25,6 @@ use uuid::Uuid;
 
 /// Funny failure reasons (`reason_code`); texts live in the UI i18n.
 pub const REASONS: [&str; 4] = ["smtp_timeout", "server_on_fire", "rate_limited", "mailbox_full"];
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct Mail {
-    /// Business key: `e_ticket:<booking_id>` or `refund:<cancellation_id>`.
-    pub id: String,
-    pub kind: &'static str,
-    pub to_fan_id: String,
-    pub to_name: String,
-    pub subject: String,
-    pub concert_id: String,
-    pub seat: String,
-    pub amount: u32,
-}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Delivery {
@@ -125,8 +118,10 @@ impl<I: Inbox, C: ChaosPolicy> FlakyMailServer<I, C> {
             .saturating_mul(2u32.saturating_pow(exponent))
             .min(self.settings.retry_max)
     }
+}
 
-    pub async fn send(&mut self, attempt: &TaskAttempt, mail: Mail) -> Result<(), TaskHandlerError> {
+impl<I: Inbox, C: ChaosPolicy> Mailer for FlakyMailServer<I, C> {
+    async fn send(&mut self, attempt: &TaskAttempt, mail: Mail) -> Result<(), TaskHandlerError> {
         let number = attempt.number();
         let format = attempt.format().to_string();
         let correlation_id = attempt.metadata().get("correlation_id").cloned().unwrap_or_default();
