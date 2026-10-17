@@ -1,0 +1,11 @@
+# Rust
+target/
+# Node
+node_modules/
+front-end/dist/
+# Local environment
+.env
+!.env.example
+# Coverage and editor leftovers
+*.profraw
+*.log

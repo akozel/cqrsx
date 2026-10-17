@@ -380,6 +380,7 @@ where Inbound: Future<Output = io::Result<()>>, RuntimeFuture: Future<Output = R
 | D18 | `NewTask::scheduled(TaskSchedule::{Now, After(d), At(t)})` | задачи демо — `Now` |
 | D19 | `HostError` реализует `Debug` без panic-payload; `HostError::log` | в `main`: `if let Err(e) = result { e.log("encore stopped with an error") }` |
 | D20 | Не проверено в песочнице: сигнатуры axum 0.8 (`serve`, `with_graceful_shutdown`, SSE), mongodb 3.9, версии фронтовых пакетов | проверить в Фазе 1 при первой сборке |
+| D21 | **Найдено в Фазе 3.** В axum 0.8.9 `axum::serve(..).with_graceful_shutdown(..)` возвращает `WithGracefulShutdown`, который реализует `IntoFuture`, а не `Future`; `host::lifecycle::run` требует `Future<Output = io::Result<()>>` | в `main.rs`: `.with_graceful_shutdown(token.cancelled_owned()).into_future()` (`use std::future::IntoFuture`) |
 
 ---
 

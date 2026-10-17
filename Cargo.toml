@@ -1,3 +1,4 @@
 [workspace]
 members = ["cqrsx"]
+exclude = ["demo"]
 resolver = "3"
