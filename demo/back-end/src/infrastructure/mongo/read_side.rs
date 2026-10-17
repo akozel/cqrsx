@@ -1,13 +1,13 @@
-//! Shared read-side handles: the two view repositories (MongoDB) and the mail inbox collection.
+//! The read-model collections of `encore_read` and the repositories over them.
 use crate::{
-    application::{concert::views::concert_hall::ConcertHallView, fan::views::fan_wallet::FanWalletView},
-    domain::{FanId, concert::Concert, fan::Fan},
+    application::{
+        concert::views::concert_hall::ConcertHallView, fan::views::fan_wallet::FanWalletView,
+        projections::maintenance::ScratchFactory,
+    },
+    domain::{concert::Concert, fan::Fan},
     infrastructure::mongo::view_repository::MongoViewRepository,
 };
-use mongodb::{
-    Collection, Database,
-    bson::{Document, doc},
-};
+use mongodb::Database;
 use std::sync::Arc;
 
 pub const CONCERT_HALLS: &str = "concert_halls";
@@ -16,29 +16,30 @@ pub const FAN_WALLETS: &str = "fan_wallets";
 /// read-model database: wipe and replay never touch it).
 pub const MAIL_INBOX: &str = "inbox";
 
+pub type HallRepository = MongoViewRepository<ConcertHallView, Concert>;
+pub type WalletRepository = MongoViewRepository<FanWalletView, Fan>;
+
 pub struct ReadSide {
-    pub halls: Arc<MongoViewRepository<ConcertHallView, Concert>>,
-    pub wallets: Arc<MongoViewRepository<FanWalletView, Fan>>,
-    pub inbox: Collection<Document>,
+    pub halls: Arc<HallRepository>,
+    pub wallets: Arc<WalletRepository>,
 }
 
 impl ReadSide {
-    pub fn new(read_db: &Database, mail_db: &Database) -> Self {
+    pub fn new(read_db: &Database) -> Self {
         Self {
             halls: Arc::new(MongoViewRepository::new(read_db, CONCERT_HALLS)),
             wallets: Arc::new(MongoViewRepository::new(read_db, FAN_WALLETS)),
-            inbox: mail_db.collection(MAIL_INBOX),
         }
     }
+}
 
-    /// E-mails of one fan, oldest first.
-    pub async fn inbox_of(&self, fan_id: &FanId) -> Result<Vec<Document>, mongodb::error::Error> {
-        use futures::TryStreamExt;
-        self.inbox
-            .find(doc! { "to_fan_id": fan_id.as_str() })
-            .sort(doc! { "first_delivered_at": 1 })
-            .await?
-            .try_collect()
-            .await
-    }
+/// A scratch copy of the `live` collection for one verify run: `<live>_verify_<run id>`.
+pub fn scratch<V: 'static, A: 'static>(read_db: &Database, live: &'static str) -> ScratchFactory<MongoViewRepository<V, A>> {
+    let read_db = read_db.clone();
+    Arc::new(move |run_id| {
+        Arc::new(MongoViewRepository::new(
+            &read_db,
+            &format!("{live}_verify_{}", run_id.simple()),
+        ))
+    })
 }

@@ -1,6 +1,18 @@
 //! Router tests without a database: every branch that answers before storage is touched
 //! (validation, the box-office lock, the error shape) and the few endpoints that need no storage.
-use crate::{application::lock::BoxOfficeLock, bootstrap, config::Config, presentation::http::router, testing};
+use crate::{
+    application::{
+        concert::views::concert_hall::{ConcertHallView, ConcertSummary},
+        fan::views::fan_wallet::FanWalletView,
+        lock::BoxOfficeLock,
+        ports::{DeliveredMail, Stored},
+        read_models::ReadModels,
+    },
+    bootstrap,
+    config::Config,
+    presentation::http::router,
+    testing::{self, MemoryInbox, MemoryReadModelStore},
+};
 use axum::{
     Router,
     body::Body,
@@ -62,6 +74,26 @@ async fn app() -> App {
     App {
         router: router(wiring.state),
         lock,
+    }
+}
+
+/// The real graph, with the read side served from memory.
+async fn app_reading(read: ReadModels) -> Router {
+    let mongo = testing::lazy_mongo().await;
+    let mut wiring = bootstrap::wire(Arc::new(config()), testing::lazy_pool(), &mongo, CancellationToken::new()).unwrap();
+    wiring.state.read = Arc::new(read);
+    router(wiring.state)
+}
+
+fn read_models(
+    halls: Vec<Stored<ConcertHallView>>,
+    wallets: Vec<Stored<FanWalletView>>,
+    mails: Vec<DeliveredMail>,
+) -> ReadModels {
+    ReadModels {
+        halls: MemoryReadModelStore::new(halls),
+        wallets: MemoryReadModelStore::new(wallets),
+        inbox: Arc::new(MemoryInbox(mails)),
     }
 }
 
@@ -204,4 +236,85 @@ async fn an_unreachable_store_is_reported_as_unavailable() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["concert_id"], "c-1");
     assert!(body["command_id"].is_string());
+}
+
+#[tokio::test]
+async fn empty_read_models_answer_an_empty_list_and_404s() {
+    let router = app_reading(read_models(vec![], vec![], vec![])).await;
+    let (status, body) = send(&router, get("/api/concerts")).await;
+    assert_eq!((status, body), (StatusCode::OK, json!([])));
+    for uri in ["/api/concerts/c-1", "/api/fans/fox/wallet"] {
+        let (status, body) = send(&router, get(uri)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(body["error"]["code"], "projection_missing", "{uri}");
+    }
+    let (status, body) = send(&router, get("/api/fans/fox/inbox")).await;
+    assert_eq!((status, body), (StatusCode::OK, json!([])));
+}
+
+#[tokio::test]
+async fn read_models_are_served_in_the_documented_shapes() {
+    let hall = ConcertHallView {
+        concert: Some(ConcertSummary {
+            artist: "Radiohead".into(),
+            city: "Tbilisi".into(),
+            date: "2026-11-21".into(),
+        }),
+        capacity: 40,
+        sold: 1,
+        revenue: 80,
+        last_sequence: 2,
+        ..ConcertHallView::default()
+    };
+    let wallet = FanWalletView {
+        fan_id: "fox".into(),
+        fan_name: "Fox".into(),
+        active_count: 1,
+        total_spent: 80,
+        last_sequence: 1,
+        ..FanWalletView::default()
+    };
+    let mail = DeliveredMail {
+        inbox_id: "e_ticket:b-1".into(),
+        kind: "e_ticket".into(),
+        to_fan_id: "fox".into(),
+        to_name: "Fox".into(),
+        subject: "🎫".into(),
+        concert_id: "c-1".into(),
+        seat: "B4".into(),
+        amount: 80,
+        task_id: "t-1".into(),
+        delivered_on_attempt: 2,
+        deliveries: 1,
+        first_delivered_at: "2026-10-17T09:00:00.000Z".into(),
+    };
+    let router = app_reading(read_models(
+        vec![Stored {
+            id: "c-1".into(),
+            version: 3,
+            view: hall.clone(),
+        }],
+        vec![Stored {
+            id: "fox".into(),
+            version: 1,
+            view: wallet.clone(),
+        }],
+        vec![mail.clone()],
+    ))
+    .await;
+    let (_, body) = send(&router, get("/api/concerts")).await;
+    assert_eq!(
+        body,
+        json!([{ "concert_id": "c-1", "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21", "sold": 1,
+                 "capacity": 40, "revenue": 80, "sold_out": false, "incomplete": false, "last_sequence": 2, "version": 3 }])
+    );
+    let (_, body) = send(&router, get("/api/concerts/c-1")).await;
+    assert_eq!(body, json!({ "concert_id": "c-1", "version": 3, "view": hall }));
+    let (_, body) = send(&router, get("/api/fans/fox/wallet")).await;
+    assert_eq!(body, json!({ "fan_id": "fox", "version": 1, "view": wallet }));
+    let (_, body) = send(&router, get("/api/fans/fox/inbox")).await;
+    assert_eq!(body, json!([mail]));
+    assert_eq!(body[0]["inbox_id"], "e_ticket:b-1");
+    let (_, body) = send(&router, get("/api/fans/panda/inbox")).await;
+    assert_eq!(body, json!([]));
 }

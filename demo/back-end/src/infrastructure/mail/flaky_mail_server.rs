@@ -12,12 +12,7 @@ use crate::{
     },
     infrastructure::mail::chaos::ChaosPolicy,
 };
-use chrono::{SecondsFormat, Utc};
 use cqrsx::task::{attempt::TaskAttempt, handler::TaskHandlerError};
-use mongodb::{
-    Collection,
-    bson::{Document, doc},
-};
 use rand::{RngExt, SeedableRng, rngs::StdRng};
 use serde_json::json;
 use std::{future::Future, sync::Arc, time::Duration};
@@ -33,55 +28,11 @@ pub struct Delivery {
     pub duplicate: bool,
 }
 
-/// The "external mail service" storage. Native async fn; only the MongoDB implementation exists
-/// at runtime (an in-memory one lives in tests).
-pub trait Inbox: Send + Sync {
+/// The storage of the external mail service. Only the MongoDB implementation exists at runtime
+/// (`infrastructure::mongo::inbox`); an in-memory one lives in the tests.
+pub trait MailStore: Send + Sync {
+    /// Upserts `mail` by its id: a repeat only counts another delivery.
     fn deliver(&self, mail: Mail, task_id: Uuid, attempt: i32) -> impl Future<Output = Result<Delivery, String>> + Send;
-}
-
-/// `mail_service.inbox` — a separate database on purpose: it is an external effect, not a read
-/// model, and wipe/replay never touch it.
-pub struct MongoInbox {
-    collection: Collection<Document>,
-}
-
-impl MongoInbox {
-    pub fn new(collection: Collection<Document>) -> Self {
-        Self { collection }
-    }
-}
-
-impl Inbox for MongoInbox {
-    async fn deliver(&self, mail: Mail, task_id: Uuid, attempt: i32) -> Result<Delivery, String> {
-        let now = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
-        let result = self
-            .collection
-            .update_one(
-                doc! { "_id": &mail.id },
-                doc! {
-                    "$setOnInsert": {
-                        "kind": mail.kind,
-                        "to_fan_id": &mail.to_fan_id,
-                        "to_name": &mail.to_name,
-                        "subject": &mail.subject,
-                        "concert_id": &mail.concert_id,
-                        "seat": &mail.seat,
-                        "amount": mail.amount,
-                        "task_id": task_id.to_string(),
-                        "delivered_on_attempt": attempt,
-                        "first_delivered_at": &now,
-                    },
-                    "$inc": { "deliveries": 1 },
-                },
-            )
-            .upsert(true)
-            .await
-            .map_err(|e| format!("inbox write failed: {e}"))?;
-        Ok(Delivery {
-            inbox_id: mail.id,
-            duplicate: result.upserted_id.is_none(),
-        })
-    }
 }
 
 #[derive(Clone)]
@@ -91,18 +42,18 @@ pub struct MailSettings {
     pub retry_max: Duration,
 }
 
-pub struct FlakyMailServer<I: Inbox, C: ChaosPolicy> {
-    inbox: Arc<I>,
+pub struct FlakyMailServer<S: MailStore, C: ChaosPolicy> {
+    store: Arc<S>,
     chaos: C,
     settings: MailSettings,
     activity: Arc<ActivityHub>,
     latency_rng: StdRng,
 }
 
-impl<I: Inbox, C: ChaosPolicy> FlakyMailServer<I, C> {
-    pub fn new(inbox: Arc<I>, chaos: C, settings: MailSettings, activity: Arc<ActivityHub>, seed: u64) -> Self {
+impl<S: MailStore, C: ChaosPolicy> FlakyMailServer<S, C> {
+    pub fn new(store: Arc<S>, chaos: C, settings: MailSettings, activity: Arc<ActivityHub>, seed: u64) -> Self {
         Self {
-            inbox,
+            store,
             chaos,
             settings,
             activity,
@@ -120,7 +71,7 @@ impl<I: Inbox, C: ChaosPolicy> FlakyMailServer<I, C> {
     }
 }
 
-impl<I: Inbox, C: ChaosPolicy> Mailer for FlakyMailServer<I, C> {
+impl<S: MailStore, C: ChaosPolicy> Mailer for FlakyMailServer<S, C> {
     async fn send(&mut self, attempt: &TaskAttempt, mail: Mail) -> Result<(), TaskHandlerError> {
         let number = attempt.number();
         let format = attempt.format().to_string();
@@ -151,7 +102,7 @@ impl<I: Inbox, C: ChaosPolicy> Mailer for FlakyMailServer<I, C> {
                 retry_after: Some(retry_after),
             });
         }
-        match self.inbox.deliver(mail, attempt.task_id(), number).await {
+        match self.store.deliver(mail, attempt.task_id(), number).await {
             Ok(delivery) => {
                 self.activity.publish(
                     "task.attempt.succeeded",
@@ -184,13 +135,13 @@ pub(crate) mod tests {
     use cqrsx::task::format::TaskFormat;
     use std::{collections::BTreeMap, sync::Mutex};
 
-    /// Test-only inbox with the same upsert semantics as MongoDB.
+    /// Test-only mail store with the same upsert semantics as MongoDB.
     #[derive(Default)]
-    pub(crate) struct MemoryInbox {
+    pub(crate) struct MemoryMailStore {
         pub(crate) mails: Mutex<BTreeMap<String, (Mail, i32, u32)>>,
     }
 
-    impl Inbox for MemoryInbox {
+    impl MailStore for MemoryMailStore {
         async fn deliver(&self, mail: Mail, _: Uuid, attempt: i32) -> Result<Delivery, String> {
             let mut mails = self.mails.lock().map_err(|e| e.to_string())?;
             let id = mail.id.clone();
@@ -242,7 +193,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn always_failing_server_retries_with_backoff_and_writes_nothing() {
-        let inbox = Arc::new(MemoryInbox::default());
+        let inbox = Arc::new(MemoryMailStore::default());
         let activity = Arc::new(ActivityHub::new(16, 16));
         let mut server = FlakyMailServer::new(inbox.clone(), Always, settings(), activity.clone(), 1);
         for (number, expected) in [(1, 1), (2, 2), (3, 4), (4, 8), (5, 8), (6, 8)] {
@@ -262,7 +213,7 @@ pub(crate) mod tests {
 
     #[tokio::test]
     async fn reliable_server_delivers_once_and_a_repeat_is_a_suppressed_duplicate() {
-        let inbox = Arc::new(MemoryInbox::default());
+        let inbox = Arc::new(MemoryMailStore::default());
         let activity = Arc::new(ActivityHub::new(16, 16));
         let mut server = FlakyMailServer::new(inbox.clone(), Never, settings(), activity.clone(), 1);
         server.send(&attempt(2), mail()).await.unwrap();

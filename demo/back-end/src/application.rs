@@ -9,6 +9,7 @@ pub mod lock;
 pub mod operations;
 pub mod ports;
 pub mod projections;
+pub mod read_models;
 pub mod tasks;
 #[cfg(test)]
 mod test_support;

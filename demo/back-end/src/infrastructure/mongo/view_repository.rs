@@ -1,7 +1,13 @@
-//! `ViewRepository` over a MongoDB collection: `{ _id: view_id, version: i64, view: <V as BSON> }`.
+//! `ViewRepository` (write side of a projection) and `ReadModelStore` (queries, wipe) over a MongoDB
+//! collection: `{ _id: view_id, version: i64, view: <V as BSON> }`.
 //! Optimistic locking mirrors the library's `PostgresViewRepository`: `version == 0` inserts (a
 //! duplicate key is a conflict), otherwise `update_one({ _id, version }, { $set: { view, version + 1 } })`
 //! and `matched_count == 0` is a conflict. `ViewProjection` retries conflicts (up to 16 times).
+use crate::application::{
+    StorageError,
+    ports::{ReadModelStore, Stored},
+};
+use async_trait::async_trait;
 use cqrsx::cqrs::{
     aggregate::Aggregate,
     projection::{
@@ -15,7 +21,7 @@ use mongodb::{
     bson::{Bson, Document, doc},
     error::{ErrorKind, WriteFailure},
 };
-use serde::Deserialize;
+use serde::{Deserialize, de::DeserializeOwned};
 use std::marker::PhantomData;
 
 pub struct MongoViewRepository<V, A> {
@@ -23,8 +29,9 @@ pub struct MongoViewRepository<V, A> {
     phantom: PhantomData<fn() -> (V, A)>,
 }
 
+/// A document before its view is decoded: only the version matters for optimistic locking.
 #[derive(Deserialize)]
-struct Stored {
+struct RawView {
     version: i64,
     view: Bson,
 }
@@ -45,36 +52,18 @@ impl<V, A> MongoViewRepository<V, A> {
         }
     }
 
-    /// Wipe = drop the collection. The ledger is untouched; Encore! rebuilds it.
-    pub async fn wipe(&self) -> Result<(), PersistenceError> {
-        self.collection.drop().await.map_err(connection_error)
-    }
-
-    /// Raw documents as stored (`_id`, `version`, `view`), for the read API.
-    pub async fn documents(&self) -> Result<Vec<Document>, PersistenceError> {
-        use futures::TryStreamExt;
-        self.collection
-            .find(doc! {})
-            .sort(doc! { "_id": 1 })
-            .await
-            .map_err(connection_error)?
-            .try_collect()
-            .await
-            .map_err(connection_error)
-    }
-
-    pub async fn document(&self, view_id: &str) -> Result<Option<Document>, PersistenceError> {
+    async fn document(&self, view_id: &str) -> Result<Option<Document>, PersistenceError> {
         self.collection
             .find_one(doc! { "_id": view_id })
             .await
             .map_err(connection_error)
     }
 
-    async fn load_stored(&self, view_id: &str) -> Result<Option<Stored>, PersistenceError> {
+    async fn load_raw(&self, view_id: &str) -> Result<Option<RawView>, PersistenceError> {
         let Some(document) = self.document(view_id).await? else {
             return Ok(None);
         };
-        let stored: Stored =
+        let stored: RawView =
             mongodb::bson::from_document(document).map_err(|e| PersistenceError::DeserializationError(Box::new(e)))?;
         Ok(Some(stored))
     }
@@ -90,7 +79,7 @@ where
     }
 
     async fn load_with_context(&self, view_id: &str) -> Result<Option<(V, ViewContext)>, PersistenceError> {
-        let Some(stored) = self.load_stored(view_id).await? else {
+        let Some(stored) = self.load_raw(view_id).await? else {
             return Ok(None);
         };
         let view: V = mongodb::bson::from_bson(stored.view).map_err(|e| PersistenceError::DeserializationError(Box::new(e)))?;
@@ -126,5 +115,48 @@ where
             return Err(PersistenceError::OptimisticLockError);
         }
         Ok(())
+    }
+}
+
+/// A stored document as the read API returns it: `_id` becomes the view id.
+#[derive(Deserialize)]
+struct StoredDocument<V> {
+    #[serde(rename = "_id")]
+    id: String,
+    version: i64,
+    view: V,
+}
+
+fn decode<V: DeserializeOwned>(document: Document) -> Result<Stored<V>, StorageError> {
+    let StoredDocument { id, version, view } = mongodb::bson::from_document(document).map_err(StorageError::new)?;
+    Ok(Stored { id, version, view })
+}
+
+#[async_trait]
+impl<V, A> ReadModelStore<V> for MongoViewRepository<V, A>
+where
+    V: DeserializeOwned + Send + 'static,
+{
+    async fn load(&self, id: &str) -> Result<Option<Stored<V>>, StorageError> {
+        self.document(id).await.map_err(StorageError::new)?.map(decode).transpose()
+    }
+
+    async fn list(&self) -> Result<Vec<Stored<V>>, StorageError> {
+        use futures::TryStreamExt;
+        let documents: Vec<Document> = self
+            .collection
+            .find(doc! {})
+            .sort(doc! { "_id": 1 })
+            .await
+            .map_err(StorageError::new)?
+            .try_collect()
+            .await
+            .map_err(StorageError::new)?;
+        documents.into_iter().map(decode).collect()
+    }
+
+    /// Wipe = drop the collection.
+    async fn wipe(&self) -> Result<(), StorageError> {
+        self.collection.drop().await.map_err(StorageError::new)
     }
 }

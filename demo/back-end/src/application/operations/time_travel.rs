@@ -7,19 +7,16 @@ use crate::{
         concert::{Concert, ConcertEvent},
     },
 };
-use cqrsx::{
-    cqrs::{
-        aggregate::Aggregate,
-        event::{DomainEvent, EventEnvelope},
-        store::{EventStore, persisted::PersistedEventStore},
-    },
-    postgres::event_repository::PostgresEventRepository,
+use cqrsx::cqrs::{
+    aggregate::Aggregate,
+    event::{DomainEvent, EventEnvelope},
+    store::EventStore,
 };
 use serde_json::{Value, json};
-use sqlx::PgPool;
 
-pub struct TimeTravel {
-    store: PersistedEventStore<PostgresEventRepository, Concert>,
+/// `S` reads the concert's events; give it a store without snapshots.
+pub struct TimeTravel<S> {
+    store: S,
 }
 
 /// One row of the timeline under the slider.
@@ -31,11 +28,9 @@ fn summary(event: &ConcertEvent) -> String {
     }
 }
 
-impl TimeTravel {
-    pub fn new(pool: PgPool) -> Self {
-        Self {
-            store: PersistedEventStore::new_event_store(PostgresEventRepository::new(pool)),
-        }
+impl<S: EventStore<Concert>> TimeTravel<S> {
+    pub fn new(store: S) -> Self {
+        Self { store }
     }
 
     async fn events(&self, concert_id: &ConcertId) -> Result<Vec<EventEnvelope<Concert>>, StorageError> {

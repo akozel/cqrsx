@@ -1,6 +1,12 @@
 //! PostgreSQL through cqrsx: the event store with the transactional outbox, the command executors
 //! built on it and read-only access to the committed history.
-use crate::application::command_service::NamedHandler;
+use crate::application::{
+    StorageError,
+    command_service::NamedHandler,
+    ports::{EventLedgerStats, LedgerTotals},
+    projections::maintenance::HistoryFactory,
+};
+use async_trait::async_trait;
 use cqrsx::{
     cqrs::{
         CqrsFramework,
@@ -12,6 +18,7 @@ use cqrsx::{
     task::NewTask,
 };
 use sqlx::PgPool;
+use std::sync::Arc;
 
 /// The write path: one event plus its outbox tasks in one SQL statement, with snapshots.
 pub type OutboxStore<A> = PersistedEventStore<PostgresEventRepositoryWithOutbox, A>;
@@ -60,4 +67,38 @@ impl Executors {
 /// stored nowhere).
 pub fn event_history<A: Aggregate>(pool: PgPool) -> HistoryStore<A> {
     PersistedEventStore::new_event_store(PostgresEventRepository::new(pool))
+}
+
+/// A fresh repository over the saved history for every replay (`EventReplay` takes it by value).
+pub fn history_repositories(pool: PgPool) -> HistoryFactory<PostgresEventRepository> {
+    Arc::new(move || PostgresEventRepository::new(pool.clone()))
+}
+
+/// Size of the ledger, counted in the `events` table.
+pub struct PostgresLedger {
+    pool: PgPool,
+}
+
+impl PostgresLedger {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+}
+
+#[async_trait]
+impl EventLedgerStats for PostgresLedger {
+    async fn totals(&self) -> Result<LedgerTotals, StorageError> {
+        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(StorageError::new)?;
+        let aggregates: i64 = sqlx::query_scalar("SELECT count(DISTINCT (aggregate_type, aggregate_id)) FROM events")
+            .fetch_one(&self.pool)
+            .await
+            .map_err(StorageError::new)?;
+        Ok(LedgerTotals {
+            events: events.max(0) as u64,
+            aggregates: aggregates.max(0) as u64,
+        })
+    }
 }

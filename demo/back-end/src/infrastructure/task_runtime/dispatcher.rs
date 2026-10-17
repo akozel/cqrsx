@@ -14,8 +14,9 @@ use crate::{
     infrastructure::{
         mail::{
             chaos::Random,
-            flaky_mail_server::{FlakyMailServer, MailSettings, MongoInbox},
+            flaky_mail_server::{FlakyMailServer, MailSettings},
         },
+        mongo::inbox::MongoInbox,
         postgres::PostgresExecutor,
         task_runtime::adapter::EncoreTaskAdapter,
     },

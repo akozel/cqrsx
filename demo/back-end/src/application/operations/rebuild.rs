@@ -4,27 +4,15 @@
 //! while a rebuild runs; the outbox workers keep running (the write side never depends on the
 //! read side) and chain tasks that hit the lock simply retry a moment later.
 //! Replay is safe because it only calls `View::update`: no commands, no tasks, no e-mails.
-use crate::{
-    application::{
-        activity::ActivityHub,
-        lock::{BoxOfficeLock, LockGuard},
-        projections::progress::ProgressHandler,
-    },
-    domain::{concert::Concert, fan::Fan},
-    infrastructure::mongo::read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide},
+use crate::application::{
+    activity::ActivityHub,
+    lock::{BoxOfficeLock, LockGuard},
+    ports::EventLedgerStats,
+    projections::maintenance::MaintainedReadModel,
 };
 use chrono::{SecondsFormat, Utc};
-use cqrsx::{
-    cqrs::{
-        aggregate::Aggregate,
-        event_handler::{EventHandler, replay::EventReplay},
-        projection::ViewProjection,
-    },
-    postgres::event_repository::PostgresEventRepository,
-};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use sqlx::PgPool;
 use std::{
     sync::{
         Arc, Mutex,
@@ -84,8 +72,9 @@ pub struct RebuildService {
     lock: Arc<BoxOfficeLock>,
     replayed: Arc<AtomicU64>,
     status: Mutex<Status>,
-    pool: PgPool,
-    read: Arc<ReadSide>,
+    /// Rebuilt in this order, one pass each (`Concert` first, then `Fan`).
+    read_models: Vec<Arc<dyn MaintainedReadModel>>,
+    ledger: Arc<dyn EventLedgerStats>,
     activity: Arc<ActivityHub>,
     slow_delay: Duration,
 }
@@ -108,8 +97,8 @@ impl Drop for RunningGuard {
 impl RebuildService {
     pub fn new(
         lock: Arc<BoxOfficeLock>,
-        pool: PgPool,
-        read: Arc<ReadSide>,
+        read_models: Vec<Arc<dyn MaintainedReadModel>>,
+        ledger: Arc<dyn EventLedgerStats>,
         activity: Arc<ActivityHub>,
         slow_delay: Duration,
     ) -> Self {
@@ -117,8 +106,8 @@ impl RebuildService {
             lock,
             replayed: Arc::new(AtomicU64::new(0)),
             status: Mutex::new(Status::default()),
-            pool,
-            read,
+            read_models,
+            ledger,
             activity,
             slow_delay,
         }
@@ -148,15 +137,15 @@ impl RebuildService {
         }
     }
 
-    /// 🧨 Drop both read-model collections (the inbox is not a read model and stays).
+    /// 🧨 Drop every read model (the inbox is not a read model and stays).
     pub async fn wipe(&self) -> Result<Vec<&'static str>, WipeError> {
         if self.is_locked() {
             return Err(WipeError::Locked);
         }
-        let storage = |e: cqrsx::cqrs::store::PersistenceError| WipeError::Storage(e.to_string());
-        self.read.halls.wipe().await.map_err(storage)?;
-        self.read.wallets.wipe().await.map_err(storage)?;
-        let collections = vec![CONCERT_HALLS, FAN_WALLETS];
+        for read_model in &self.read_models {
+            read_model.wipe().await.map_err(|e| WipeError::Storage(e.0))?;
+        }
+        let collections: Vec<&'static str> = self.read_models.iter().map(|r| r.name()).collect();
         self.activity
             .publish("projections.wiped", json!({ "collections": collections }));
         Ok(collections)
@@ -202,45 +191,39 @@ impl RebuildService {
             error,
         };
         // Progress figures only: a failed count is reported as 0, the replay itself still decides.
-        let total: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
-            .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
-        let aggregates: i64 = sqlx::query_scalar("SELECT count(DISTINCT (aggregate_type, aggregate_id)) FROM events")
-            .fetch_one(&self.pool)
-            .await
-            .unwrap_or(0);
-        let aggregates = aggregates.max(0) as u64;
+        let totals = self.ledger.totals().await.unwrap_or_default();
+        let (total, aggregates) = (totals.events, totals.aggregates);
         if let Ok(mut status) = self.status.lock()
             && let Some(running) = status.running.as_mut()
         {
-            running.total = total.max(0) as u64;
+            running.total = total;
         }
         self.activity.publish(
             "rebuild.started",
             json!({ "rebuild_id": rebuild_id, "speed": speed, "total": total, "aggregates": aggregates }),
         );
         // Always from scratch: never trust what a previous (maybe failed) run left behind.
-        if let Err(error) = self.read.halls.wipe().await.and(self.read.wallets.wipe().await) {
+        let mut wiped = Ok(());
+        for read_model in &self.read_models {
+            wiped = wiped.and(read_model.wipe().await);
+        }
+        if let Err(error) = wiped {
             let message = format!("wipe failed: {error}");
             self.activity
                 .publish("rebuild.failed", json!({ "rebuild_id": rebuild_id, "message": message }));
             return finish(false, 0, 0, Some(message));
         }
         let delay = (speed == Speed::Slow).then_some(self.slow_delay);
-        // Two passes, one per aggregate type: `stream_all_events::<A>` filters by aggregate_type.
-        // Within a pass events arrive ordered by `sequence` across aggregates ("seats light up in
-        // every hall at once"); per aggregate the order is preserved, which is all LWW needs.
-        let result = match self
-            .pass::<Concert, _>(rebuild_id, speed, ViewProjection::new(self.read.halls.clone()), delay)
-            .await
-        {
-            Ok(()) => {
-                self.pass::<Fan, _>(rebuild_id, speed, ViewProjection::new(self.read.wallets.clone()), delay)
-                    .await
+        // One pass per read model, i.e. per aggregate type. Within a pass events arrive ordered by
+        // `sequence` across aggregates ("seats light up in every hall at once"); per aggregate the
+        // order is preserved, which is all LWW needs.
+        let mut result = Ok(());
+        for read_model in &self.read_models {
+            result = self.pass(read_model.as_ref(), rebuild_id, speed, delay).await;
+            if result.is_err() {
+                break;
             }
-            Err(error) => Err(error),
-        };
+        }
         let replayed = self.replayed.load(Ordering::SeqCst);
         match result {
             Ok(()) => {
@@ -262,11 +245,14 @@ impl RebuildService {
         }
     }
 
-    async fn pass<A, H>(&self, rebuild_id: Uuid, speed: Speed, handler: H, delay: Option<Duration>) -> Result<(), String>
-    where
-        A: Aggregate + 'static,
-        H: EventHandler<A> + 'static,
-    {
+    async fn pass(
+        &self,
+        read_model: &dyn MaintainedReadModel,
+        rebuild_id: Uuid,
+        speed: Speed,
+        delay: Option<Duration>,
+    ) -> Result<(), String> {
+        let aggregate_type = read_model.aggregate_type();
         let activity = self.activity.clone();
         let counter = self.replayed.clone();
         let last_progress = Mutex::new(Instant::now() - Duration::from_secs(1));
@@ -289,38 +275,113 @@ impl RebuildService {
             if emit {
                 activity.publish(
                     "rebuild.progress",
-                    json!({ "rebuild_id": rebuild_id, "replayed": count, "aggregate_type": A::TYPE, "aggregate_id": aggregate_id,
+                    json!({ "rebuild_id": rebuild_id, "replayed": count, "aggregate_type": aggregate_type, "aggregate_id": aggregate_id,
                             "sequence": sequence, "event_type": event_type }),
                 );
             }
         });
-        // Repository and handler are created per rebuild: `EventReplay::new` takes them by value.
-        let replay = EventReplay::new(
-            PostgresEventRepository::new(self.pool.clone()),
-            ProgressHandler::new(handler, delay, on_event),
-        );
-        replay
-            .replay_all()
-            .await
-            .map_err(|e| format!("{} replay failed: {e}", A::TYPE))
+        read_model.rebuild(delay, on_event).await.map_err(|e| e.0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::testing;
+    use crate::application::{
+        StorageError,
+        ports::LedgerTotals,
+        projections::{maintenance::Verification, progress::ProgressCallback},
+    };
+    use async_trait::async_trait;
+
+    /// A read model whose history is `events` (aggregate id, sequence, event type) entries.
+    struct FakeReadModel {
+        name: &'static str,
+        events: Vec<(&'static str, usize, &'static str)>,
+        wipes: AtomicU64,
+        broken: bool,
+    }
+
+    impl FakeReadModel {
+        fn new(name: &'static str, events: Vec<(&'static str, usize, &'static str)>) -> Arc<Self> {
+            Arc::new(Self {
+                name,
+                events,
+                wipes: AtomicU64::new(0),
+                broken: false,
+            })
+        }
+    }
+
+    #[async_trait]
+    impl MaintainedReadModel for FakeReadModel {
+        fn name(&self) -> &'static str {
+            self.name
+        }
+
+        fn aggregate_type(&self) -> &'static str {
+            "Fake"
+        }
+
+        async fn wipe(&self) -> Result<(), StorageError> {
+            self.wipes.fetch_add(1, Ordering::SeqCst);
+            Ok(())
+        }
+
+        async fn rebuild(&self, _: Option<Duration>, on_event: Box<ProgressCallback>) -> Result<(), StorageError> {
+            if self.broken {
+                return Err(StorageError("Fake replay failed: boom".into()));
+            }
+            for (id, sequence, event_type) in &self.events {
+                on_event(id, *sequence, event_type);
+            }
+            Ok(())
+        }
+
+        async fn verify(&self, _: Uuid) -> Result<Verification, StorageError> {
+            unreachable!("not used by rebuild")
+        }
+    }
+
+    struct FixedLedger;
+
+    #[async_trait]
+    impl EventLedgerStats for FixedLedger {
+        async fn totals(&self) -> Result<LedgerTotals, StorageError> {
+            Ok(LedgerTotals {
+                events: 3,
+                aggregates: 2,
+            })
+        }
+    }
+
+    fn service(read_models: Vec<Arc<dyn MaintainedReadModel>>) -> (Arc<RebuildService>, Arc<BoxOfficeLock>, Arc<ActivityHub>) {
+        let lock = Arc::new(BoxOfficeLock::new());
+        let activity = Arc::new(ActivityHub::new(64, 64));
+        let service = RebuildService::new(
+            lock.clone(),
+            read_models,
+            Arc::new(FixedLedger),
+            activity.clone(),
+            Duration::ZERO,
+        );
+        (Arc::new(service), lock, activity)
+    }
+
+    async fn wait_until_idle(service: &RebuildService) -> serde_json::Value {
+        for _ in 0..200 {
+            let status = service.status_json();
+            if status["state"] == "idle" && !status["last_result"].is_null() {
+                return status;
+            }
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+        panic!("the rebuild did not finish")
+    }
 
     #[tokio::test]
     async fn status_is_idle_and_wipe_is_refused_while_the_box_office_is_locked() {
-        let lock = Arc::new(BoxOfficeLock::new());
-        let service = Arc::new(RebuildService::new(
-            lock.clone(),
-            testing::lazy_pool(),
-            Arc::new(testing::lazy_read_side().await),
-            Arc::new(ActivityHub::new(8, 8)),
-            Duration::ZERO,
-        ));
+        let (service, lock, _) = service(vec![]);
         assert_eq!(service.status_json()["state"], "idle");
         assert!(!service.is_locked());
         let guard = lock.try_acquire().unwrap();
@@ -328,5 +389,68 @@ mod tests {
         assert_eq!(service.start(Speed::Fast), Err(AlreadyRunning));
         drop(guard);
         assert!(!service.is_locked());
+    }
+
+    #[tokio::test]
+    async fn a_wipe_drops_every_read_model_and_reports_their_names() {
+        let halls = FakeReadModel::new("concert_halls", vec![]);
+        let wallets = FakeReadModel::new("fan_wallets", vec![]);
+        let (service, _, activity) = service(vec![halls.clone(), wallets.clone()]);
+        assert_eq!(service.wipe().await, Ok(vec!["concert_halls", "fan_wallets"]));
+        assert_eq!(
+            (halls.wipes.load(Ordering::SeqCst), wallets.wipes.load(Ordering::SeqCst)),
+            (1, 1)
+        );
+        assert_eq!(activity.subscribe().0[0].kind, "projections.wiped");
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_wipes_replays_every_read_model_in_order_and_releases_the_lock() {
+        let halls = FakeReadModel::new(
+            "concert_halls",
+            vec![("c-1", 1, "ConcertAnnounced"), ("c-1", 2, "SeatBooked")],
+        );
+        let wallets = FakeReadModel::new("fan_wallets", vec![("fox", 1, "TicketRecorded")]);
+        let (service, lock, activity) = service(vec![halls.clone(), wallets.clone()]);
+        service.start(Speed::Slow).unwrap();
+        let status = wait_until_idle(&service).await;
+        assert_eq!(status["last_result"]["ok"], true);
+        assert_eq!(status["last_result"]["replayed"], 3);
+        assert_eq!(status["last_result"]["aggregates"], 2);
+        assert!(!lock.is_locked());
+        assert_eq!(
+            (halls.wipes.load(Ordering::SeqCst), wallets.wipes.load(Ordering::SeqCst)),
+            (1, 1)
+        );
+        let kinds: Vec<String> = activity.subscribe().0.iter().map(|e| e.kind.clone()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "rebuild.started",
+                "rebuild.progress",
+                "rebuild.progress",
+                "rebuild.progress",
+                "rebuild.finished"
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failed_pass_stops_the_rebuild_and_is_reported() {
+        let broken = Arc::new(FakeReadModel {
+            name: "concert_halls",
+            events: vec![],
+            wipes: AtomicU64::new(0),
+            broken: true,
+        });
+        let wallets = FakeReadModel::new("fan_wallets", vec![("fox", 1, "TicketRecorded")]);
+        let (service, lock, activity) = service(vec![broken, wallets]);
+        service.start(Speed::Fast).unwrap();
+        let status = wait_until_idle(&service).await;
+        assert_eq!(status["last_result"]["ok"], false);
+        assert_eq!(status["last_result"]["error"], "Fake replay failed: boom");
+        assert_eq!(status["last_result"]["replayed"], 0, "the second pass never ran");
+        assert!(!lock.is_locked());
+        assert_eq!(activity.subscribe().0.last().unwrap().kind, "rebuild.failed");
     }
 }
