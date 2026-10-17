@@ -8,7 +8,7 @@ use crate::{
     postgres::outbox::PostgresEventRepositoryWithOutbox,
 };
 use sqlx::PgPool;
-use std::{marker::PhantomData, num::NonZeroUsize};
+use std::{collections::HashMap, marker::PhantomData, num::NonZeroUsize};
 use thiserror::Error;
 
 /// Checked snapshot interval and optimistic-conflict policy. Does not read env.
@@ -99,11 +99,23 @@ where
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
 {
-    /// Execute through the common engine, retrying only optimistic conflicts.
+    /// Execute without event metadata; see [`execute_with_metadata`](Self::execute_with_metadata).
     pub async fn execute(
         &self,
         aggregate_id: &str,
         command: A::Command,
+        tasks: Vec<crate::task::NewTask>,
+    ) -> Result<(), CommandGatewayError<A::Error>> {
+        self.execute_with_metadata(aggregate_id, command, HashMap::new(), tasks).await
+    }
+
+    /// Execute through the common engine, retrying only optimistic conflicts.
+    /// `metadata` is stored in the `metadata` column of the committed event.
+    pub async fn execute_with_metadata(
+        &self,
+        aggregate_id: &str,
+        command: A::Command,
+        metadata: HashMap<String, String>,
         tasks: Vec<crate::task::NewTask>,
     ) -> Result<(), CommandGatewayError<A::Error>> {
         let snapshot_interval = self.config.snapshot_interval();
@@ -115,7 +127,7 @@ where
             },
             self.config.conflict_retry(),
         );
-        executor.execute(aggregate_id, command, tasks).await
+        executor.execute_with_metadata(aggregate_id, command, metadata, tasks).await
     }
 }
 
@@ -125,13 +137,14 @@ where
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
 {
-    async fn execute(
+    async fn execute_with_metadata(
         &self,
         aggregate_id: &str,
         command: A::Command,
+        metadata: HashMap<String, String>,
         tasks: Vec<crate::task::NewTask>,
     ) -> Result<(), CommandGatewayError<A::Error>> {
-        PostgresCommandExecutor::execute(self, aggregate_id, command, tasks).await
+        PostgresCommandExecutor::execute_with_metadata(self, aggregate_id, command, metadata, tasks).await
     }
 }
 

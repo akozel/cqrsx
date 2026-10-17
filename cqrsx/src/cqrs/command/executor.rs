@@ -5,15 +5,15 @@ use crate::{
     },
     task::NewTask,
 };
-use std::{error::Error, marker::PhantomData};
+use std::{collections::HashMap, error::Error, marker::PhantomData};
 /// Executes commands for one aggregate type through frameworks supplied by the
 /// composition root or a runtime adapter factory.
 ///
-/// The framework is built exactly once per [`execute`](Self::execute) call.
-/// Every optimistic-conflict attempt reloads aggregate state through that same
-/// framework and repeats clones of the original command. The immutable outbox
-/// task list is handed to the factory once and therefore cannot be regenerated
-/// or changed between attempts.
+/// The framework is built exactly once per [`execute_with_metadata`](Self::execute_with_metadata)
+/// call. Every optimistic-conflict attempt reloads aggregate state through that
+/// same framework and repeats clones of the original command and of its event
+/// metadata. The immutable outbox task list is handed to the factory once and
+/// therefore cannot be regenerated or changed between attempts.
 pub struct CqrsCommandExecutor<A, BuildFramework> {
     build_framework: BuildFramework,
     retry_policy: AggregateConflictRetryPolicy,
@@ -35,6 +35,7 @@ where
     A: Aggregate + Clone,
     A::Command: Clone + Send,
 {
+    /// Executes without event metadata; see [`execute_with_metadata`](Self::execute_with_metadata).
     pub async fn execute<ES>(
         &self,
         aggregate_id: &str,
@@ -46,10 +47,29 @@ where
         ES: EventStore<A> + 'static,
         ES::AC: Send,
     {
+        self.execute_with_metadata(aggregate_id, command, HashMap::new(), tasks).await
+    }
+
+    /// Builds one framework for `tasks`, then runs the command with bounded
+    /// conflict retry. Each attempt receives a clone of `metadata`, so a retried
+    /// command commits exactly the metadata of its first attempt.
+    pub async fn execute_with_metadata<ES>(
+        &self,
+        aggregate_id: &str,
+        command: A::Command,
+        metadata: HashMap<String, String>,
+        tasks: Vec<NewTask>,
+    ) -> Result<(), CommandGatewayError<A::Error>>
+    where
+        BuildFramework: Fn(Vec<NewTask>) -> CqrsFramework<A, ES> + Send + Sync,
+        ES: EventStore<A> + 'static,
+        ES::AC: Send,
+    {
         let framework = (self.build_framework)(tasks);
         let framework_ref = &framework;
+        let metadata_ref = &metadata;
         retry_on_aggregate_conflict(self.retry_policy, move || {
-            framework_ref.execute(aggregate_id, command.clone())
+            framework_ref.execute_with_metadata(aggregate_id, command.clone(), metadata_ref.clone())
         })
         .await
         .inspect_err(|error| log_aggregate_error(A::TYPE, error))
@@ -82,13 +102,14 @@ where
     ES: EventStore<A> + 'static,
     ES::AC: Send,
 {
-    async fn execute(
+    async fn execute_with_metadata(
         &self,
         aggregate_id: &str,
         command: A::Command,
+        metadata: HashMap<String, String>,
         tasks: Vec<NewTask>,
     ) -> Result<(), CommandGatewayError<A::Error>> {
-        CqrsCommandExecutor::execute(self, aggregate_id, command, tasks).await
+        CqrsCommandExecutor::execute_with_metadata(self, aggregate_id, command, metadata, tasks).await
     }
 }
 
@@ -289,10 +310,11 @@ mod tests {
     struct BorrowingExecutor;
 
     impl CommandExecutor<SendOnlyAggregate> for BorrowingExecutor {
-        async fn execute(
+        async fn execute_with_metadata(
             &self,
             aggregate_id: &str,
             command: std::cell::Cell<u32>,
+            metadata: HashMap<String, String>,
             tasks: Vec<NewTask>,
         ) -> Result<(), CommandGatewayError<DummyError>> {
             let address = aggregate_id.as_ptr() as usize;
@@ -301,6 +323,7 @@ mod tests {
             assert_eq!(aggregate_id, "borrowed-id");
             assert_eq!(aggregate_id.as_ptr() as usize, address);
             assert_eq!(command.get(), 8);
+            assert!(metadata.is_empty(), "the default execute must pass an empty map");
             assert!(tasks.is_empty());
             Ok(())
         }
@@ -315,6 +338,112 @@ mod tests {
         require_send(&future);
         future.await.unwrap();
         assert_eq!(aggregate_id, "borrowed-id");
+    }
+
+    /// Records the metadata of every commit and conflicts a configured number of times first.
+    #[derive(Clone)]
+    struct MetadataStore {
+        conflicts: usize,
+        commits: Arc<Mutex<Vec<HashMap<String, String>>>>,
+    }
+
+    impl EventStore<DummyAggregate> for MetadataStore {
+        type AC = DummyContext;
+
+        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
+            Ok(Vec::new())
+        }
+
+        async fn load_aggregate(&self, _: &str) -> Result<Self::AC, AggregateError<DummyError>> {
+            Ok(DummyContext(DummyAggregate))
+        }
+
+        async fn commit(
+            &self,
+            _: Vec<DummyEvent>,
+            _: Self::AC,
+            metadata: HashMap<String, String>,
+        ) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
+            let mut commits = self.commits.lock().unwrap();
+            commits.push(metadata);
+            if commits.len() <= self.conflicts {
+                Err(AggregateError::AggregateConflict)
+            } else {
+                Ok(Vec::new())
+            }
+        }
+    }
+
+    fn metadata_executor(
+        conflicts: usize,
+        commits: &Arc<Mutex<Vec<HashMap<String, String>>>>,
+    ) -> impl CommandExecutor<DummyAggregate> {
+        let commits = commits.clone();
+        CqrsCommandExecutor::<DummyAggregate, _>::new(
+            move |_| {
+                CqrsFramework::new(
+                    MetadataStore {
+                        conflicts,
+                        commits: commits.clone(),
+                    },
+                    vec![],
+                    Arc::default(),
+                )
+            },
+            no_delay_policy(3),
+        )
+    }
+
+    #[tokio::test]
+    async fn metadata_reaches_the_commit_and_stays_identical_across_conflict_retries() {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let executor = metadata_executor(2, &commits);
+        let metadata = HashMap::from([
+            ("command_id".to_owned(), "cmd-1".to_owned()),
+            ("source".to_owned(), "ui".to_owned()),
+        ]);
+        executor
+            .execute_with_metadata(
+                "aggregate",
+                DummyCommand::Record("value".to_owned()),
+                metadata.clone(),
+                vec![],
+            )
+            .await
+            .unwrap();
+        assert_eq!(*commits.lock().unwrap(), vec![metadata.clone(), metadata.clone(), metadata]);
+    }
+
+    #[tokio::test]
+    async fn execute_without_metadata_commits_an_empty_map_through_both_entry_points() {
+        let commits = Arc::new(Mutex::new(Vec::new()));
+        let executor = metadata_executor(0, &commits);
+        CommandExecutor::execute(&executor, "aggregate", DummyCommand::Record("trait".to_owned()), vec![])
+            .await
+            .unwrap();
+        let commits_inherent = Arc::new(Mutex::new(Vec::new()));
+        let inherent = CqrsCommandExecutor::<DummyAggregate, _>::new(
+            {
+                let commits = commits_inherent.clone();
+                move |_| {
+                    CqrsFramework::new(
+                        MetadataStore {
+                            conflicts: 0,
+                            commits: commits.clone(),
+                        },
+                        vec![],
+                        Arc::default(),
+                    )
+                }
+            },
+            no_delay_policy(1),
+        );
+        inherent
+            .execute("aggregate", DummyCommand::Record("inherent".to_owned()), vec![])
+            .await
+            .unwrap();
+        assert_eq!(*commits.lock().unwrap(), vec![HashMap::new()]);
+        assert_eq!(*commits_inherent.lock().unwrap(), vec![HashMap::new()]);
     }
 
     #[tokio::test]

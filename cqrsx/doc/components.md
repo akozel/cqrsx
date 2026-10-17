@@ -40,7 +40,7 @@ Related configuration and validation errors stay with their owning boundary.
 | Event emission | `EventSink` | Apply events to the working aggregate immediately and buffer them before persistence. |
 | Command orchestration | `CqrsFramework`, `AggregateError` | Load committed state, handle a command on a copy, commit, then invoke event handlers. `Domain` is a business rejection. |
 | Post-commit failures | `CommittedWithEventHandlerFailure`, `EventHandlerFailure` | Record the committed sequence, registration indices and original handler failures without retrying the command. |
-| Command boundary | `CommandExecutor`, `CommandGatewayError` | Technical execution port and safe domain/conflict/unavailable/committed outcome categories. |
+| Command boundary | `CommandExecutor`, `CommandGatewayError` | Technical execution port and safe domain/conflict/unavailable/committed outcome categories. `execute_with_metadata` stores one metadata map with every committed event; `execute` defaults to an empty map. |
 | Command implementation | `CqrsCommandExecutor`, `BuildFramework` callback | One framework per invocation with immutable prebuilt tasks and bounded conflict retry. The callback is a factory. |
 | Conflict retry | `AggregateConflictRetryPolicy`, `AggregateConflictRetryPolicyError`, `retry_on_aggregate_conflict` | Repeat only confirmed optimistic conflicts; independent of durable task redelivery. |
 | Event store | `EventStore`, `AggregateContext`, `PersistenceError` | Typed reconstruction and commit against the last committed context. |

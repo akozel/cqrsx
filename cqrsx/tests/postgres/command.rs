@@ -212,6 +212,40 @@ async fn factory_publishes_atomic_work_and_preserves_rejections_and_rollbacks() 
 }
 
 #[tokio::test]
+async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_object() {
+    let db = Database::new().await;
+    let executor = command_executor::<CommandAggregate>(db.pool.clone(), config(1));
+    let metadata = HashMap::from([
+        ("command_id".to_owned(), "cmd-1".to_owned()),
+        ("source".to_owned(), "integration".to_owned()),
+    ]);
+    let task = new_task();
+    CommandExecutor::execute_with_metadata(
+        &executor,
+        "metadata",
+        record("first", 0),
+        metadata.clone(),
+        vec![task.clone()],
+    )
+    .await
+    .unwrap();
+    executor.execute("metadata", record("second", 1), vec![]).await.unwrap();
+    assert_eq!(
+        executor
+            .execute_with_metadata("metadata", Command::Reject, metadata.clone(), vec![new_task()])
+            .await,
+        Err(CommandGatewayError::Domain(Rejected))
+    );
+    let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    let events = repository.get_events::<CommandAggregate>("metadata").await.unwrap();
+    assert_eq!(events.len(), 2, "a rejected command commits neither event nor metadata");
+    assert_eq!(events[0].metadata, json!({"command_id": "cmd-1", "source": "integration"}));
+    assert_eq!(events[1].metadata, json!({}));
+    assert_eq!(row(&db.pool, task.id()).await.get::<i64, _>("aggregate_sequence"), 1);
+    db.close().await;
+}
+
+#[tokio::test]
 async fn shared_executor_isolates_parallel_command_task_lists() {
     let db = Database::new().await;
     let executor = Arc::new(command_executor::<CommandAggregate>(
