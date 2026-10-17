@@ -3,7 +3,7 @@ use cqrsx::{
     cqrs::{
         AggregateError, CqrsFramework,
         aggregate::Aggregate,
-        command::{CommandGatewayError, executor::CqrsCommandExecutor},
+        command::{CommandGatewayError, FailedHandler, executor::CqrsCommandExecutor},
         event::{DomainEvent, EventEnvelope},
         event_handler::EventHandler,
         event_sink::EventSink,
@@ -114,7 +114,8 @@ fn framework(
     let mut written = ViewProjection::new(Arc::new(WrittenButFailed(PostgresViewRepository::new(
         "command_view",
         pool.clone(),
-    ))));
+    ))))
+    .with_name("written");
     written.set_error_observer(Box::new(move |error| {
         assert!(matches!(error, PersistenceError::ConnectionError(_)));
         reported.fetch_add(1, Ordering::SeqCst);
@@ -158,7 +159,14 @@ async fn projection_failures_preserve_one_command_commit_and_outbox_and_invoke_o
         panic!("must expose the committed outcome")
     };
     assert_eq!(failure.last_sequence, 1);
-    assert_eq!(failure.errors.iter().map(|e| e.handler_index).collect::<Vec<_>>(), [0, 2]);
+    assert_eq!(
+        failure
+            .errors
+            .iter()
+            .map(|e| (e.handler_index, e.handler_name.as_str()))
+            .collect::<Vec<_>>(),
+        [(0, "written"), (2, std::any::type_name::<Projection>())]
+    );
     assert!(matches!(&failure.errors[0].error,PersistenceError::ConnectionError(source) if source.is::<std::io::Error>()));
     assert!(matches!(failure.errors[1].error, PersistenceError::OptimisticLockError));
     let executor = CqrsCommandExecutor::new(
@@ -187,7 +195,16 @@ async fn projection_failures_preserve_one_command_commit_and_outbox_and_invoke_o
             .await,
         Err(CommandGatewayError::CommittedWithEventHandlerFailure {
             last_sequence: 1,
-            handler_indices: vec![0, 2]
+            handlers: vec![
+                FailedHandler {
+                    index: 0,
+                    name: "written".into()
+                },
+                FailedHandler {
+                    index: 2,
+                    name: std::any::type_name::<Projection>().into()
+                },
+            ]
         })
     );
     assert_eq!(calls.load(Ordering::SeqCst), 2);

@@ -2,7 +2,6 @@
 //! built on it and read-only access to the committed history.
 use crate::application::{
     StorageError,
-    command_service::NamedHandler,
     ports::{EventLedgerStats, LedgerTotals},
     projections::maintenance::HistoryFactory,
 };
@@ -12,6 +11,7 @@ use cqrsx::{
         CqrsFramework,
         aggregate::Aggregate,
         command::{executor::CqrsCommandExecutor, retry::AggregateConflictRetryPolicy},
+        event_handler::EventHandler,
         store::persisted::PersistedEventStore,
     },
     postgres::{event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox},
@@ -26,6 +26,8 @@ pub type OutboxStore<A> = PersistedEventStore<PostgresEventRepositoryWithOutbox,
 pub type HistoryStore<A> = PersistedEventStore<PostgresEventRepository, A>;
 pub type BuildFramework<A> = Box<dyn Fn(Vec<NewTask>) -> CqrsFramework<A, OutboxStore<A>> + Send + Sync>;
 pub type PostgresExecutor<A> = CqrsCommandExecutor<A, BuildFramework<A>>;
+/// Builds one event handler; called for every framework, i.e. for every command.
+pub type HandlerFactory<A> = Arc<dyn Fn() -> Box<dyn EventHandler<A>> + Send + Sync>;
 
 /// Shared wiring for the executors of both aggregates.
 pub struct Executors {
@@ -35,15 +37,14 @@ pub struct Executors {
 }
 
 impl Executors {
-    /// One long-lived executor per aggregate, plus the projection names in registration order.
-    /// Every call builds a fresh `CqrsFramework` (via the factory closure) that binds the immutable
-    /// outbox task list to one PostgreSQL repository; conflict retries reuse that framework.
-    pub fn executor<A>(&self, handlers: Vec<NamedHandler<A>>, services: A::Services) -> (PostgresExecutor<A>, Vec<&'static str>)
+    /// One long-lived executor per aggregate. Every call builds a fresh `CqrsFramework` (via the
+    /// factory closure) that binds the immutable outbox task list to one PostgreSQL repository;
+    /// conflict retries reuse that framework.
+    pub fn executor<A>(&self, factories: Vec<HandlerFactory<A>>, services: A::Services) -> PostgresExecutor<A>
     where
         A: Aggregate + 'static,
         A::Services: Clone + 'static,
     {
-        let (names, factories): (Vec<_>, Vec<_>) = handlers.into_iter().map(|h| (h.name, h.build)).unzip();
         let pool = self.pool.clone();
         let snapshot_every = self.snapshot_every;
         let build: BuildFramework<A> = Box::new(move |tasks| {
@@ -54,7 +55,7 @@ impl Executors {
                 services.clone(),
             )
         });
-        (CqrsCommandExecutor::new(build, self.retry), names)
+        CqrsCommandExecutor::new(build, self.retry)
     }
 
     /// Committed state, accelerated by the same snapshots the executors write.

@@ -34,6 +34,7 @@ where
     view_repository: Arc<R>,
     error_observer: Option<Box<PersistenceErrorObserver>>,
     max_attempts: NonZeroUsize,
+    name: Option<String>,
     phantom: PhantomData<(V, A)>,
 }
 
@@ -183,6 +184,7 @@ where
             view_repository,
             error_observer: None,
             max_attempts: NonZeroUsize::new(16).unwrap(),
+            name: None,
             phantom: PhantomData,
         }
     }
@@ -477,6 +479,12 @@ where
         self
     }
 
+    /// Name reported in post-commit failures (default: the type name of `V`).
+    pub fn with_name(mut self, name: impl Into<String>) -> Self {
+        self.name = Some(name.into());
+        self
+    }
+
     async fn load_or_default(&self, view_id: String) -> Result<(V, ViewContext), PersistenceError> {
         Ok(self
             .view_repository
@@ -513,6 +521,10 @@ where
     V: View<A>,
     A: Aggregate,
 {
+    fn name(&self) -> String {
+        self.name.clone().unwrap_or_else(|| std::any::type_name::<V>().to_owned())
+    }
+
     async fn handle(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
         self.apply_events(view_id, events)
             .await
@@ -585,6 +597,13 @@ mod tests {
             payload: TestEvents::SomethingWasDone,
             metadata: Default::default(),
         }
+    }
+
+    #[test]
+    fn a_projection_is_named_after_its_view_unless_named_explicitly() {
+        let projection = ViewProjection::<_, Projection, TestAggregate>::new(Arc::new(Repository::default()));
+        assert_eq!(projection.name(), std::any::type_name::<Projection>());
+        assert_eq!(projection.with_name("halls").name(), "halls");
     }
 
     #[tokio::test]

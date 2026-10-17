@@ -544,7 +544,11 @@ where
         let mut errors = Vec::new();
         for (handler_index, handler) in self.event_handlers.iter().enumerate() {
             if let Err(error) = handler.handle(aggregate_id, &committed_events).await {
-                errors.push(crate::cqrs::EventHandlerFailure { handler_index, error });
+                errors.push(crate::cqrs::EventHandlerFailure {
+                    handler_index,
+                    handler_name: handler.name(),
+                    error,
+                });
             }
         }
         if errors.is_empty() {
@@ -591,8 +595,11 @@ pub struct CommittedWithEventHandlerFailure {
     pub errors: Vec<EventHandlerFailure>,
 }
 
+/// One event handler that failed after the commit, in registration order.
 #[derive(Debug)]
 pub struct EventHandlerFailure {
     pub handler_index: usize,
+    /// [`EventHandler::name`] of the failed handler.
+    pub handler_name: String,
     pub error: crate::cqrs::store::PersistenceError,
 }

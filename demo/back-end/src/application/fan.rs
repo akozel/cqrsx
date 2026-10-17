@@ -93,7 +93,6 @@ mod tests {
         let activity = Arc::new(ActivityHub::new(8, 8));
         let fans = FanApp::new(CommandService::new(
             executor(UnreachableStore, (), BoundTasks::default()),
-            vec![],
             activity.clone(),
             lock.clone(),
         ));

@@ -1,4 +1,4 @@
-use super::{CommandExecutor, CommandGatewayError, retry::retry_on_aggregate_conflict};
+use super::{CommandExecutor, CommandGatewayError, FailedHandler, retry::retry_on_aggregate_conflict};
 use crate::{
     cqrs::{
         AggregateError, CqrsFramework, aggregate::Aggregate, command::retry::AggregateConflictRetryPolicy, store::EventStore,
@@ -119,7 +119,14 @@ pub(super) fn map_aggregate_error<D: Error>(error: AggregateError<D>) -> Command
         AggregateError::AggregateConflict => CommandGatewayError::Conflict,
         AggregateError::CommittedWithEventHandlerFailure(failure) => CommandGatewayError::CommittedWithEventHandlerFailure {
             last_sequence: failure.last_sequence,
-            handler_indices: failure.errors.into_iter().map(|e| e.handler_index).collect(),
+            handlers: failure
+                .errors
+                .into_iter()
+                .map(|e| FailedHandler {
+                    index: e.handler_index,
+                    name: e.handler_name,
+                })
+                .collect(),
         },
         AggregateError::DatabaseConnectionError(_)
         | AggregateError::DeserializationError(_)
@@ -656,7 +663,10 @@ mod tests {
         assert_eq!(
             CommandGatewayError::<DummyError>::CommittedWithEventHandlerFailure {
                 last_sequence: 42,
-                handler_indices: vec![2]
+                handlers: vec![FailedHandler {
+                    index: 2,
+                    name: "halls".into()
+                }]
             }
             .to_string(),
             "command committed through sequence 42; event handlers failed"
@@ -675,13 +685,17 @@ mod tests {
                     last_sequence: 42,
                     errors: vec![crate::cqrs::EventHandlerFailure {
                         handler_index: 2,
+                        handler_name: "halls".into(),
                         error: crate::cqrs::store::PersistenceError::OptimisticLockError
                     }]
                 }
             )),
             CommandGatewayError::CommittedWithEventHandlerFailure {
                 last_sequence: 42,
-                handler_indices: vec![2]
+                handlers: vec![FailedHandler {
+                    index: 2,
+                    name: "halls".into()
+                }]
             }
         );
         for error in [

@@ -140,8 +140,11 @@
 
 ### Готово, когда
 
-- [ ] `grep -rn "handler_indices\|NamedHandler" cqrsx demo/back-end` пуст;
-- [ ] полный набор проверок обеих сборок зелёный.
+- [x] `grep -rn "handler_indices\|NamedHandler" cqrsx demo/back-end` пуст;
+- [x] полный набор проверок обеих сборок зелёный.
+
+Сделано с одним дополнением: в demo не было теста, который бы проверял имя проекции в событиях активити-лога,
+поэтому добавлен юнит-тест `NotifyingHandler` (`projection.updated` и `projection.failed` с `fan_wallets`).
 
 ## 5. Шаг 03. PostgreSQL-исполнитель с services и обработчиками
 

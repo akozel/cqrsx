@@ -918,7 +918,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `domain::concert::events::{concert_announced, seat_booked, booking_cancelled}` | факты (struct) со ссылкой на процесс, который они запускают; `ConcertEvent` (`impl DomainEvent`) |
 | `domain::concert::error` | `ConcertError` R1–R8 и стабильный `code()` |
 | `domain::fan::…` | то же для `Fan`: `commands::{record_ticket, record_cancellation}` (R9–R11), `events::{ticket_recorded, ticket_cancelled}` |
-| `application::command_service` | `CommandService<A, E>`: lock → `execute_with_metadata` → исход → activity; `CommandMetadata`, `CommandOutcome`, `Executed`, `NamedHandler`, `Rejection` (`code` + `params` для API) |
+| `application::command_service` | `CommandService<A, E>`: lock → `execute_with_metadata` → исход → activity; `CommandMetadata`, `CommandOutcome`, `Executed`, `Rejection` (`code` + `params` для API) |
 | `application::concert::{announce_concert, book_seat, cancel_booking}` | use case на файл, методы `ConcertApp<E, S>`; каждый публикует первую задачу своего процесса |
 | `application::concert::tasks` | контракты задач, которые публикует касса: `RecordTicketV1`, `RecordCancellationV1` |
 | `application::fan` | `FanApp<E>`: исполнитель команд `Fan` для шагов процессов |
@@ -947,10 +947,10 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 4. MongoDB-клиент; `read_db = encore_read`, `mail_db = mail_service`.
 5. `ActivityHub::new(capacity = 1024, backlog = 100)`.
 6. Фабрики обработчиков событий (вызываются на каждый `CqrsFramework`, обработчики дешёвые — держат
-   `Arc<MongoViewRepository>`): для `Concert` — `[NamedHandler::projection("concert_halls", halls_repo, activity)]`,
-   для `Fan` — `[NamedHandler::projection("fan_wallets", wallets_repo, activity)]`. `NamedHandler` строит
-   `NotifyingHandler(ViewProjection::new(repo.clone()))`, а имя проекции (для `projection_failed`) выводится из
-   того же списка — порядок регистрации = индекс в `CommittedWithEventHandlerFailure`.
+   `Arc<MongoViewRepository>`): для `Concert` — `NotifyingHandler::new(ViewProjection::new(halls_repo)
+   .with_name("concert_halls"), activity)`, для `Fan` — то же с `"fan_wallets"`. Имя проекции для
+   `projection_failed` приходит из библиотеки: `CommittedWithEventHandlerFailure` несёт `handlers[].name`
+   (`EventHandler::name()`, `NotifyingHandler` отдаёт имя обёрнутой проекции).
 7. Два долгоживущих `CqrsCommandExecutor::new(build_framework, PostgresCommandConfig::conflict_retry())`, по одному
    на агрегат. `build_framework = move |tasks| CqrsFramework::new(PersistedEventStore::new_snapshot_store(
    PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks), snapshot_every), handlers(), services.clone())`.
@@ -1080,7 +1080,7 @@ Activity хранится только в памяти — это лог, а н�
 | `CommandGatewayError`: domain (`ConcertError`) | 422 | `rejected` | `command.rejected` |
 | conflict (после retry-политики) | 409 | `conflict` | `command.failed` |
 | unavailable | 503 | `unavailable` | `command.failed` |
-| committed, но упал `EventHandler` (`CommittedWithEventHandlerFailure { last_sequence, handler_indices }`) | 200 | `accepted` + `warnings: [{ code: "projection_failed", projection }]` (имя витрины по индексу регистрации) | `command.accepted` + `projection.failed` |
+| committed, но упал `EventHandler` (`CommittedWithEventHandlerFailure { last_sequence, handlers }`) | 200 | `accepted` + `warnings: [{ code: "projection_failed", projection }]` (имя витрины = `handlers[].name`) | `command.accepted` + `projection.failed` |
 | rebuild-lock | 423 | `locked` | — |
 | битый JSON / неизвестный `type` (в том числе внутренние `RecordTicket`/`RecordCancellation` через HTTP) | 400 | `invalid` | — |
 

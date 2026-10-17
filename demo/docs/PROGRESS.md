@@ -295,6 +295,7 @@ Known flake (pre-existing, not caused by this series): under `llvm-cov -p cqrsx`
 | Step | Ticket | Commit | Result |
 |---|---|---|---|
 | 01 | `BoxedTaskAdapter`; demo enum adapter deleted | see `git log` | root tests 358 → 363, coverage 97.57 % / 97.57 %; demo 97 tests unchanged; all checks ✓ |
+| 02 | `EventHandler::name`, `FailedHandler` in `CommittedWithEventHandlerFailure`; demo `NamedHandler` deleted | see `git log` | root tests 363 → 366, coverage 97.61 % / 97.61 %; demo 97 → 98 (`NotifyingHandler` names); all checks ✓ |
 
 ## Phase table
 

@@ -5,14 +5,12 @@
 //! `correlation_id`, `causation_id`, `recorded_at`, `source`) travels through
 //! `execute_with_metadata` (decision D-04) and ends up in the `events.metadata` column of every
 //! committed event.
-use crate::application::{activity::ActivityHub, lock::BoxOfficeLock, projections::notifying::NotifyingHandler};
+use crate::application::{activity::ActivityHub, lock::BoxOfficeLock};
 use chrono::{SecondsFormat, Utc};
 use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
         command::{CommandExecutor, CommandGatewayError},
-        event_handler::EventHandler,
-        projection::{View, ViewProjection, repository::ViewRepository},
     },
     task::NewTask,
 };
@@ -107,55 +105,23 @@ impl<E> CommandOutcome<E> {
     }
 }
 
-/// Maps the library outcome to the demo outcome; projection names resolve the handler indices
-/// reported by `CommittedWithEventHandlerFailure` (registration order).
-pub fn map_gateway_result<E>(result: Result<(), CommandGatewayError<E>>, projections: &[&'static str]) -> CommandOutcome<E> {
+/// Maps the library outcome to the demo outcome; a failed projection is reported under the
+/// handler name `CommittedWithEventHandlerFailure` carries (the read-model collection name).
+pub fn map_gateway_result<E>(result: Result<(), CommandGatewayError<E>>) -> CommandOutcome<E> {
     match result {
         Ok(()) => CommandOutcome::Accepted { warnings: vec![] },
         Err(CommandGatewayError::Domain(error)) => CommandOutcome::Rejected(error),
         Err(CommandGatewayError::Conflict) => CommandOutcome::Conflict,
         Err(CommandGatewayError::Unavailable) => CommandOutcome::Unavailable,
-        Err(CommandGatewayError::CommittedWithEventHandlerFailure { handler_indices, .. }) => CommandOutcome::Accepted {
-            warnings: handler_indices
+        Err(CommandGatewayError::CommittedWithEventHandlerFailure { handlers, .. }) => CommandOutcome::Accepted {
+            warnings: handlers
                 .into_iter()
-                .map(|index| Warning {
+                .map(|handler| Warning {
                     code: "projection_failed",
-                    projection: projections.get(index).copied().unwrap_or("unknown").to_owned(),
+                    projection: handler.name,
                 })
                 .collect(),
         },
-    }
-}
-
-pub type HandlerFactory<A> = Arc<dyn Fn() -> Box<dyn EventHandler<A>> + Send + Sync>;
-
-/// An event handler under the name the activity log and the API report it by. Handlers are built
-/// per framework (one per command); they are cheap — an `Arc` to the view repository. The
-/// registration order is the handler index in `CommittedWithEventHandlerFailure`, and the name
-/// list the services use is derived from this vector, so the two cannot drift apart.
-pub struct NamedHandler<A> {
-    pub name: &'static str,
-    pub build: HandlerFactory<A>,
-}
-
-impl<A: Aggregate + 'static> NamedHandler<A> {
-    /// A `ViewProjection` over `repository`, wrapped so the activity log sees
-    /// `projection.updated` / `projection.failed`.
-    pub fn projection<R, V>(name: &'static str, repository: Arc<R>, activity: Arc<ActivityHub>) -> Self
-    where
-        R: ViewRepository<V, A> + 'static,
-        V: View<A> + 'static,
-    {
-        Self {
-            name,
-            build: Arc::new(move || {
-                Box::new(NotifyingHandler::new(
-                    ViewProjection::new(repository.clone()),
-                    name,
-                    activity.clone(),
-                ))
-            }),
-        }
     }
 }
 
@@ -196,8 +162,6 @@ pub struct CommandLabel<'a> {
 /// One long-lived service per aggregate around its command executor.
 pub struct CommandService<A, E> {
     executor: E,
-    /// Projection names in handler registration order (see [`NamedHandler`]).
-    projections: Vec<&'static str>,
     activity: Arc<ActivityHub>,
     lock: Arc<BoxOfficeLock>,
     aggregate: PhantomData<fn() -> A>,
@@ -210,10 +174,9 @@ where
     A::Error: Rejection,
     E: CommandExecutor<A>,
 {
-    pub fn new(executor: E, projections: Vec<&'static str>, activity: Arc<ActivityHub>, lock: Arc<BoxOfficeLock>) -> Self {
+    pub fn new(executor: E, activity: Arc<ActivityHub>, lock: Arc<BoxOfficeLock>) -> Self {
         Self {
             executor,
-            projections,
             activity,
             lock,
             aggregate: PhantomData,
@@ -245,7 +208,7 @@ where
             .executor
             .execute_with_metadata(label.aggregate_id, command, metadata.to_map(), tasks)
             .await;
-        let outcome = map_gateway_result(result, &self.projections);
+        let outcome = map_gateway_result(result);
         publish_outcome(&self.activity, A::TYPE, &label, &metadata, &task_formats, &outcome);
         Executed {
             outcome,
@@ -317,6 +280,7 @@ fn publish_outcome<E: Rejection>(
 mod tests {
     use super::*;
     use crate::domain::concert::ConcertError;
+    use cqrsx::cqrs::command::FailedHandler;
 
     #[test]
     fn ui_metadata_uses_one_id_for_all_three_roles_and_fixed_width_time() {
@@ -343,31 +307,31 @@ mod tests {
 
     #[test]
     fn gateway_results_map_to_outcomes_and_projection_names() {
-        let names = ["concert_halls"];
         assert_eq!(
-            map_gateway_result::<ConcertError>(Ok(()), &names),
+            map_gateway_result::<ConcertError>(Ok(())),
             CommandOutcome::Accepted { warnings: vec![] }
         );
         assert_eq!(
-            map_gateway_result(Err(CommandGatewayError::Domain(ConcertError::SoldOut)), &names),
+            map_gateway_result(Err(CommandGatewayError::Domain(ConcertError::SoldOut))),
             CommandOutcome::Rejected(ConcertError::SoldOut)
         );
         assert_eq!(
-            map_gateway_result::<ConcertError>(Err(CommandGatewayError::Conflict), &names),
+            map_gateway_result::<ConcertError>(Err(CommandGatewayError::Conflict)),
             CommandOutcome::Conflict
         );
         assert_eq!(
-            map_gateway_result::<ConcertError>(Err(CommandGatewayError::Unavailable), &names),
+            map_gateway_result::<ConcertError>(Err(CommandGatewayError::Unavailable)),
             CommandOutcome::Unavailable
         );
+        let failed = |index: usize, name: &str| FailedHandler {
+            index,
+            name: name.into(),
+        };
         assert_eq!(
-            map_gateway_result::<ConcertError>(
-                Err(CommandGatewayError::CommittedWithEventHandlerFailure {
-                    last_sequence: 7,
-                    handler_indices: vec![0, 5]
-                }),
-                &names
-            ),
+            map_gateway_result::<ConcertError>(Err(CommandGatewayError::CommittedWithEventHandlerFailure {
+                last_sequence: 7,
+                handlers: vec![failed(0, "concert_halls"), failed(5, "fan_wallets")]
+            })),
             CommandOutcome::Accepted {
                 warnings: vec![
                     Warning {
@@ -376,7 +340,7 @@ mod tests {
                     },
                     Warning {
                         code: "projection_failed",
-                        projection: "unknown".into()
+                        projection: "fan_wallets".into()
                     },
                 ]
             }

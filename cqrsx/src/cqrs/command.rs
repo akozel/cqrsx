@@ -76,6 +76,15 @@ pub enum CommandGatewayError<D> {
     #[error("command committed through sequence {last_sequence}; event handlers failed")]
     CommittedWithEventHandlerFailure {
         last_sequence: usize,
-        handler_indices: Vec<usize>,
+        /// The failed handlers in registration order.
+        handlers: Vec<FailedHandler>,
     },
+}
+
+/// An event handler that failed after a commit: its registration index and its
+/// [`name`](crate::cqrs::event_handler::EventHandler::name).
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FailedHandler {
+    pub index: usize,
+    pub name: String,
 }

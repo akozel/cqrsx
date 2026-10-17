@@ -39,7 +39,7 @@ Related configuration and validation errors stay with their owning boundary.
 | Domain events | `DomainEvent`, `EventEnvelope` | Domain facts; typed payload plus aggregate ID, sequence and metadata. |
 | Event emission | `EventSink` | Apply events to the working aggregate immediately and buffer them before persistence. |
 | Command orchestration | `CqrsFramework`, `AggregateError` | Load committed state, handle a command on a copy, commit, then invoke event handlers. `Domain` is a business rejection. |
-| Post-commit failures | `CommittedWithEventHandlerFailure`, `EventHandlerFailure` | Record the committed sequence, registration indices and original handler failures without retrying the command. |
+| Post-commit failures | `CommittedWithEventHandlerFailure`, `EventHandlerFailure`, `FailedHandler` | Record the committed sequence and every failed handler's registration index, name and original failure without retrying the command; the gateway error keeps index and name. |
 | Command boundary | `CommandExecutor`, `CommandGatewayError` | Technical execution port and safe domain/conflict/unavailable/committed outcome categories. `execute_with_metadata` stores one metadata map with every committed event; `execute` defaults to an empty map. |
 | Command implementation | `CqrsCommandExecutor`, `BuildFramework` callback | One framework per invocation with immutable prebuilt tasks and bounded conflict retry. The callback is a factory. |
 | Conflict retry | `AggregateConflictRetryPolicy`, `AggregateConflictRetryPolicyError`, `retry_on_aggregate_conflict` | Repeat only confirmed optimistic conflicts; independent of durable task redelivery. |
@@ -50,7 +50,7 @@ Related configuration and validation errors stay with their owning boundary.
 | Event serialization | `SerializedEvent`, serialization/decoding functions, private `EnvelopeMismatch` | Persistence representation and discriminator/version validation. |
 | Event compatibility | `EventUpcaster`, `NumericVersion`, `NumericVersionError`, `NumericVersionUpcaster`, `EventPayloadTransform` | Upcast serialized payloads; numeric version comparison preserves the existing parser, rather than promising SemVer. |
 | Saved-history streaming | `ReplayStream`, `ReplayFeed`, PostgreSQL stream producer | Bounded asynchronous reading of existing events, for one ID or all IDs of an aggregate type. No subscription to future commits. |
-| Event reaction | `EventHandler` | Handle committed events outside their original transaction. It is not a CQRS query or a durable task. |
+| Event reaction | `EventHandler` | Handle committed events outside their original transaction. It is not a CQRS query or a durable task. `name()` identifies it in post-commit failures (default: the type name; `ViewProjection::with_name`, otherwise the view type name). |
 | Event replay | `EventReplay` | Read saved history into an event handler, stopping at the first failure; separate from aggregate reconstruction. |
 | Read-model data | `View`, `ViewContext` | Materialized read-model state and its repository ID/version. |
 | Read-model projection | `ViewProjection`, `ViewRepository`, `PersistenceErrorObserver` | Update stored views with conflict retry, read views, and observe borrowed persistence errors without consuming them. |

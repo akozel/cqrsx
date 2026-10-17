@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано: `feat(cqrsx): handler names in post-commit failures; adopt in demo` |
 | Ценность | высокая: убирает параллельный список имён, который легко рассинхронизировать |
 | Цена | низкая; меняет публичные типы ошибок (крейт не публикуется) |
 | cqrsx | `cqrs/event_handler.rs`, `cqrs/projection.rs`, `cqrs.rs`, `cqrs/command.rs`, `cqrs/command/executor.rs` |
@@ -89,8 +89,8 @@ Err(CommandGatewayError::CommittedWithEventHandlerFailure { handlers, .. }) => C
 
 ## Критерии приёмки
 
-- [ ] `EventHandler::name()` с дефолтом; `ViewProjection::with_name`.
-- [ ] `EventHandlerFailure` и `CommandGatewayError::CommittedWithEventHandlerFailure` несут имя и индекс.
-- [ ] Тест: два обработчика, падает второй, ошибка содержит его имя; дефолтное имя равно имени типа.
-- [ ] `components.md`: строка «Post-commit failures» обновлена.
-- [ ] demo: `NamedHandler` удалён, `CommandService::new` без списка имён, активити-лог по-прежнему пишет `projection.failed` с именем коллекции.
+- [x] `EventHandler::name()` с дефолтом; `ViewProjection::with_name`.
+- [x] `EventHandlerFailure` и `CommandGatewayError::CommittedWithEventHandlerFailure` несут имя и индекс.
+- [x] Тест: два обработчика, падает второй, ошибка содержит его имя; дефолтное имя равно имени типа.
+- [x] `components.md`: строка «Post-commit failures» обновлена.
+- [x] demo: `NamedHandler` удалён, `CommandService::new` без списка имён, активити-лог по-прежнему пишет `projection.failed` с именем коллекции.

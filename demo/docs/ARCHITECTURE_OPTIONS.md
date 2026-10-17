@@ -469,7 +469,8 @@ src/
    `Vec<Box<dyn …>>`) убрала бы enum `EncoreTaskAdapter`, который каждый проект пишет руками.
    *Сделано: `cqrsx::task::adapter::boxed::BoxedTaskAdapter` (бэклог, тикет 01).*
 3. **Имена обработчиков в `CommittedWithEventHandlerFailure`** вместо индексов — `NamedHandler`
-   перестал бы быть нужен.
+   перестал бы быть нужен. *Сделано: `EventHandler::name()`, `FailedHandler { index, name }` (бэклог,
+   тикет 02); `NamedHandler` удалён.*
 4. **Трейт `Decide`** (`fn decide(self, &A, &A::Services) -> Result<A::Event, A::Error>`) и
    blanket-реализация `handle` для enum'ов команд — тогда `aggregate.rs` сводится к `apply`.
 

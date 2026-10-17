@@ -146,6 +146,10 @@ mod contracts {
     }
     #[async_trait]
     impl EventHandler<Ledger> for Observer {
+        fn name(&self) -> String {
+            self.name.to_owned()
+        }
+
         async fn handle(&self, id: &str, events: &[EventEnvelope<Ledger>]) -> Result<(), cqrsx::cqrs::store::PersistenceError> {
             assert_eq!(id, "account");
             self.calls.lock().unwrap().push(self.name);
@@ -271,7 +275,14 @@ mod contracts {
             "events committed through sequence 4; event handling failed"
         );
         assert!(!failure.to_string().contains("original event handler cause"));
-        assert_eq!(failure.errors.iter().map(|e| e.handler_index).collect::<Vec<_>>(), [0, 2]);
+        assert_eq!(
+            failure
+                .errors
+                .iter()
+                .map(|e| (e.handler_index, e.handler_name.as_str()))
+                .collect::<Vec<_>>(),
+            [(0, "failed"), (2, "failed")]
+        );
         for error in failure.errors {
             assert!(
                 matches!(error.error,cqrsx::cqrs::store::PersistenceError::ConnectionError(ref source) if source.downcast_ref::<std::io::Error>().unwrap().to_string()=="original event handler cause")
@@ -280,5 +291,64 @@ mod contracts {
         assert_eq!(*calls.lock().unwrap(), ["handle", "failed", "second", "failed", "fourth"]);
         assert_eq!(seen.lock().unwrap().len(), 8);
         assert_eq!(store.load_events("account").await.unwrap().len(), 4);
+    }
+
+    /// Fails every call under its default name.
+    struct Unnamed;
+    #[async_trait]
+    impl EventHandler<Ledger> for Unnamed {
+        async fn handle(&self, _: &str, _: &[EventEnvelope<Ledger>]) -> Result<(), cqrsx::cqrs::store::PersistenceError> {
+            Err(cqrsx::cqrs::store::PersistenceError::OptimisticLockError)
+        }
+    }
+
+    #[tokio::test]
+    async fn the_gateway_reports_failed_handlers_by_index_and_name_in_registration_order() {
+        use cqrsx::cqrs::command::{
+            CommandGatewayError, FailedHandler, executor::CqrsCommandExecutor, retry::AggregateConflictRetryPolicy,
+        };
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let seen = Arc::new(Mutex::new(Vec::new()));
+        let store = MemStore::<Ledger>::default();
+        let executor = CqrsCommandExecutor::new(
+            |_| {
+                CqrsFramework::new(
+                    store.clone(),
+                    vec![
+                        Box::new(Observer {
+                            calls: calls.clone(),
+                            name: "failed",
+                            seen: seen.clone(),
+                        }),
+                        Box::new(Observer {
+                            calls: calls.clone(),
+                            name: "wallets",
+                            seen: seen.clone(),
+                        }),
+                        Box::new(Unnamed),
+                    ],
+                    Services(calls.clone()),
+                )
+            },
+            AggregateConflictRetryPolicy::default(),
+        );
+        assert_eq!(
+            executor.execute("account", Command::Adjust(vec![1]), vec![]).await,
+            Err(CommandGatewayError::CommittedWithEventHandlerFailure {
+                last_sequence: 1,
+                handlers: vec![
+                    FailedHandler {
+                        index: 0,
+                        name: "failed".into()
+                    },
+                    FailedHandler {
+                        index: 2,
+                        name: std::any::type_name::<Unnamed>().into()
+                    },
+                ]
+            })
+        );
+        assert_eq!(*calls.lock().unwrap(), ["handle", "failed", "wallets"]);
+        assert_eq!(store.load_events("account").await.unwrap().len(), 1);
     }
 }

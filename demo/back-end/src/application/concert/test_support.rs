@@ -37,7 +37,6 @@ where
     let lock = Arc::new(BoxOfficeLock::new());
     let service = CommandService::new(
         executor(store.clone(), ConcertServices::default(), bound.clone()),
-        vec![],
         activity.clone(),
         lock.clone(),
     );

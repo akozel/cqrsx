@@ -31,7 +31,6 @@ pub fn fans(store: MemStore<Fan>) -> (Arc<TestFans>, BoundTasks) {
     let bound = BoundTasks::default();
     let service = CommandService::new(
         executor(store, (), bound.clone()),
-        vec![],
         Arc::new(ActivityHub::new(16, 16)),
         Arc::new(BoxOfficeLock::new()),
     );

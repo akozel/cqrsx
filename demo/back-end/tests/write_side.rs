@@ -94,12 +94,8 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
         snapshot_every: 10,
         retry: AggregateConflictRetryPolicy::default(),
     };
-    let (executor, projections) = executors.executor(vec![], ConcertServices { ticket_limit: 4 });
-    let concerts = ConcertApp::new(
-        CommandService::new(executor, projections, activity, lock),
-        executors.history(),
-        6,
-    );
+    let executor = executors.executor(vec![], ConcertServices { ticket_limit: 4 });
+    let concerts = ConcertApp::new(CommandService::new(executor, activity, lock), executors.history(), 6);
     let concert_id = ConcertId::parse("test-2026").expect("concert id");
     let announce = AnnounceConcert {
         artist: "A".into(),
