@@ -34,9 +34,69 @@ The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the libra
 ## Requirements
 
 - Rust `1.98.1` through `rustup` (`../rust-toolchain.toml` applies here too).
-- Podman with the `podman-compose` provider (`export PODMAN_COMPOSE_PROVIDER=podman-compose`), or Docker (`make up COMPOSE="docker compose"`).
+- Podman 5 with a compose provider (`podman-compose` or `docker-compose`; set `PODMAN_COMPOSE_PROVIDER`
+  if `podman compose version` cannot find one), or Docker (`make up COMPOSE="docker compose"`).
+  Rootless Podman publishes ports through `pasta`, which needs `/dev/net/tun`: if a container fails to
+  start with `Failed to open() /dev/net/tun`, run `sudo modprobe tun` (or reboot after a kernel upgrade).
 - Node.js 24 (`front-end/.nvmrc`), npm.
 - Free ports: 5434 (PostgreSQL), 27018 (MongoDB), 8080 (back-end), 8090 (sidecar), 5173 (Vite).
+
+## Run it as a box (profile `app`)
+
+Everything from images: PostgreSQL, MongoDB, back-end, sidecar and the UI behind nginx. No Rust or
+Node.js on the host is needed, only Podman (or Docker: prefix the commands with `COMPOSE="docker compose"`
+and use `make`, or replace `podman compose` with `docker compose`).
+
+```bash
+cd demo
+podman compose --profile app down -v          # full reset: stop everything, erase both database volumes
+podman compose --profile app up -d --build    # build the three images (≈ 5 min the first time) and start
+podman compose --profile app ps               # all five containers Up, postgres and mongo (healthy)
+```
+
+`down -v` wipes the event ledger, the snapshots, the outbox, both read models and the mail inbox: the next
+start initialises the schemas from `../cqrsx/sql` again and the seed announces the three concerts anew
+(exactly three `ConcertAnnounced` rows in `events`). Without a code change `--build` can be dropped.
+
+| What | Where |
+|---|---|
+| **UI** | <http://localhost:8000> |
+| Back-end API | <http://localhost:8080/api/health>, `/api/concerts`, `/api/activity` (SSE) |
+| Sidecar (X-ray) | <http://localhost:8090/inspect/health>, `/inspect/stats`, `/inspect/stream` (SSE) |
+| PostgreSQL | `postgresql://cqrsx:cqrsx@localhost:5434/encore` (owner, read-write) |
+| PostgreSQL, sidecar role | `postgresql://encore_inspector:inspector@localhost:5434/encore` (read-only) |
+| MongoDB | `mongodb://localhost:27018` (no authentication), databases `encore_read` and `mail_service` |
+
+All ports are bound to `127.0.0.1` only. Port 5173 (Vite) exists only in the development mode below; do
+not run both modes at once, they share 8080 and 8090.
+
+Connect to the databases directly:
+
+```bash
+podman compose exec postgres psql -U cqrsx -d encore          # or: psql postgresql://cqrsx:cqrsx@localhost:5434/encore
+podman compose exec mongo mongosh                              # or: mongosh mongodb://localhost:27018
+```
+
+```sql
+SELECT aggregate_type, aggregate_id, sequence, event_type, metadata FROM events ORDER BY aggregate_type, aggregate_id, sequence;
+SELECT task_type, status, attempts, last_error FROM transactional_outbox ORDER BY created_at;
+```
+
+```js
+use encore_read;  db.concert_halls.find().pretty();  db.fan_wallets.find().pretty()
+use mail_service; db.inbox.find().pretty()
+```
+
+Stop and remove:
+
+```bash
+podman compose --profile app down             # stop and remove the five containers, keep the volumes (the ledger survives)
+podman compose --profile app down -v          # the same plus both volumes: nothing of the demo is left
+podman compose --profile app down -v --rmi local   # ... and also delete the three built images
+```
+
+`--profile app` is required on `down` too: without it compose only sees `postgres` and `mongo` and leaves the
+three application containers running.
 
 ## Quick start (development)
 
@@ -61,8 +121,7 @@ make reset                                    # ⚠️ podman compose down -v �
 make full                                     # profile "app": builds and runs all three images (UI on :8000)
 ```
 
-The `app` profile (`make full`) was written but **not built on the development machine** (no `podman build`
-there); treat its first run as a smoke test.
+`make full` is the same as `podman compose --profile app up -d --build` from the section above.
 
 ## Architecture
 
@@ -155,7 +214,13 @@ abnormal paths (expired lease, handler timeout); the mail handler asks for 1–8
 - **`cannot execute INSERT in a read-only transaction`** in the sidecar log — expected: the sidecar
   role is read-only on two levels.
 - **The tabs show "?"** — the read models are empty (after 🧨 or on a fresh MongoDB): press ⏪ Encore!.
-- **Everything, including the ledger, must go** — `make reset` (`podman compose down -v`).
+- **`Failed to open() /dev/net/tun: No such device` on start** — rootless Podman needs the `tun` kernel
+  module for port publishing: `sudo modprobe tun`; after a kernel upgrade on a rolling distribution a
+  reboot is needed first.
+- **<http://localhost:5173> is empty** — Vite runs only in `make dev`; the `app` profile serves the UI on
+  <http://localhost:8000>.
+- **Everything, including the ledger, must go** — `make reset` (`podman compose down -v`) in development
+  mode, `podman compose --profile app down -v` for the box.
 
 ## Tests
 
