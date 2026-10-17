@@ -1,0 +1,1820 @@
+
+
+# Encore 🎸 — демо-приложение для `cqrsx`
+
+**План реализации для ИИ-агента.** Положите файл в репозиторий как `demo/PLAN.md` и поставьте агенту задачу:
+«Реализуй демо по `demo/PLAN.md`. Начни с Фазы 0 (§10), соблюдай правила из §12».
+
+Версия плана: 1.1 · 17.10.2026 · язык UI: RU + EN · идентификаторы, комментарии в коде, коммиты — на английском.
+
+> **Версия 1.1 — после Фазы 0.** Реальный API `cqrsx` сверен в `demo/docs/API_MAPPING.md`; принятые решения
+> и action items собраны в **§15** и уже внесены в разделы ниже. Главные изменения: два агрегата (`Concert` и
+> `Fan`), связанные цепочкой outbox-задач; правило «принятая команда = ровно одно событие»; событие
+> `ConcertSoldOut` снято; метаданные команд проходят через `execute_with_metadata`, который добавляется в `cqrsx`
+> отдельной Фазой 0.5. При расхождении этого текста с `API_MAPPING.md` побеждает `API_MAPPING.md`.
+
+---
+
+## 0. TL;DR
+
+**Encore** — онлайн-касса концертного зала. Пользователь выбирает персонажа (🦊 Alice, 🐼 Bob, 🦄 Chloe,
+🤖 Scalper Bot), кликает по местам неоновой схемы зала и видит, как каждое действие проходит через архитектуру:
+
+```
+клик → команда → правила агрегата Concert → событие + outbox-задача (одна транзакция PostgreSQL)
+     → проекция «схема зала» в MongoDB → экран
+     → воркер шлёт команду агрегату Fan → событие + outbox-задача (вторая транзакция)
+     → проекция «кошелёк фаната» → экран
+     → воркер «отправляет e-ticket» через капризный почтовый сервер (20 % отказов → retry)
+```
+
+Пять «ага-моментов» — по одному на каждую обязательную тему:
+
+| # | Тема | Что делает пользователь | Что он видит |
+|---|---|---|---|
+| 1 | Event Store / Event Sourcing | бронирует место; двигает ползунок «⏳ машина времени» | в `events` дописывается строка; зал «откатывается» в прошлое, хотя «состояния» не хранит ни одна таблица |
+| 2 | Commands и инварианты | кликает по занятому месту, запускает 🤖 перекупщика, жмёт «🧪 Нарушить правило» | красный тост с названием правила и `Δ events = 0` — в журнал не попало ничего |
+| 3 | Transactional Outbox | бронирует место | строка события и строка задачи появляются одновременно; задача шлёт команду агрегату `Fan`, тот даёт событие и задачу «отправить e-ticket»; та проходит `queued → in progress → 🎲 retry → delivered`; в «почтовом ящике» появляется e-ticket |
+| 4 | Projections | смотрит на MongoDB | один клик → два потока событий (`Concert`, `Fan`) → два документа: «схема зала» и «кошелёк фаната»; кошелёк отстаёт от зала на один шаг цепочки |
+| 5 | Replay | 🧨 стирает проекции, жмёт ⏪ «Encore!» | зал гаснет, но правила продолжают работать; затем места «загораются» обратно одно за другим |
+
+Название — каламбур: *encore* («на бис») — это и есть replay: сыграть всю историю ещё раз.
+
+**Стек:** Rust (axum + `cqrsx`) · PostgreSQL 18 (event store + outbox) · MongoDB (проекции) ·
+Vue 3 + Vite 8 + Tailwind 4 (UI) · sidecar на Rust (read-only инспектор обеих БД).
+
+### 0.1 Покрытие исходных требований
+
+| Требование | Где в плане |
+|---|---|
+| EventStore / EventSourcing | §2.3–2.6, §2.10 (машина времени), панели `events` и `snapshots` (§8.3) |
+| Commands и инварианты | §2.4–2.6 (правила R1–R8), `RuleBreaker`, 🤖 перекупщик (§8.3) |
+| Transactional Outbox | §2.7, §3.3, `OutboxPanel`, `MailboxPanel` |
+| Projections | §2.8, `MongoPanel`, `SeatMap` и `WalletPanel` строятся из проекций |
+| Replay: очистить проекции и воссоздать из event store | §2.9, §3.4, §6.8, `EncorePanel` |
+| Код в `/demo`: `back-end`, `sidecar`, `front-end` | §4, §6, §7, §8 |
+| PostgreSQL как event store | §5.2–5.3 (схемы `cqrsx`, отдельная БД `encore`) |
+| MongoDB для проекций | §2.8, §6.7 |
+| Последний Vue, яркие интерактивные элементы, состояние event store / outbox / проекций, пояснения | §8 (стек, макет, компоненты, анимации), Приложение A (тексты) |
+| Outbox-обработчик с 20 % retry (только демо) | §2.7 (`FlakyMailServer`, `ChaosPolicy`) |
+| Sidecar с API для визуализации таблиц | §7 |
+
+---
+
+## 1. Цели, аудитория, принципы
+
+**Аудитория.**
+1. «Обыватель» (менеджер, аналитик, начинающий разработчик) — понимает идеи по UI и пояснениям, не читая Rust.
+2. Разработчик — видит эталонную интеграцию `cqrsx`: код демо должен быть образцом использования библиотеки.
+
+**Принципы.**
+- **Всё видно.** Каждое действие отражается в «рентгене» (X-ray): сырые строки PostgreSQL и документы MongoDB,
+  рядом — человеческое пояснение и запрос, которым данные получены.
+- **UI не проверяет бизнес-правила.** Клик по занятому месту всё равно отправляет команду — судья только агрегат.
+  Так инварианты становятся наглядными.
+- **Честность.** В рантайме никаких моков: настоящие PostgreSQL и MongoDB, настоящий task runtime `cqrsx`.
+  Хаос (20 %) живёт только в демо-обработчике и явно помечен `// DEMO ONLY`.
+- **Лаконичность.** Два агрегата (`Concert` — места, `Fan` — билеты зрителя), пять команд, пять событий,
+  четыре outbox-задачи, две проекции. Все бизнес-правила проверяются синхронно в `Concert`; `Fan` идёт следом
+  по цепочке outbox и хранит только идемпотентные правила.
+- **Одна команда — одно событие.** Принятая команда даёт ровно одно событие (с ним атомарно пишутся её
+  outbox-задачи); отклонённая не оставляет следа. Это контракт `PostgresEventRepositoryWithOutbox`, он закрепляется
+  тестом (§6.9).
+- **Изоляция.** Демо не меняет библиотеку `cqrsx` и не влияет на корневой CI (сборка `--locked`, покрытие 97 %).
+
+**Приоритеты.** `[P0]` — обязательно (MVP, закрывает исходные требования); `[P1]` — сильно рекомендуется
+(заметно повышает наглядность); `[P2]` — по желанию. Всё, что не помечено, — `[P0]`.
+
+---
+
+## 2. Предметная область «Encore»
+
+### 2.1 Карта соответствия «концепция ↔ домен ↔ где видно»
+
+| Концепция | В домене Encore | Где видно в UI |
+|---|---|---|
+| Aggregate | `Concert` — один концерт = один поток событий (места); `Fan` — один зритель = один поток (его билеты) | правила при бронировании; кошелёк |
+| Межагрегатная цепочка | `SeatBooked` → задача → `Fan.RecordTicket` → `TicketRecorded` → задача → письмо | ⚙ outbox → второй агрегат на PipelineStrip, общий `correlation_id` |
+| Command | «Забронировать B4 для Alice» (`BookSeat`) | клик по месту |
+| Invariant | место существует, свободно, ≤ 4 билетов в одни руки… | тост с ошибкой, `Δ events = 0` |
+| Domain event | `SeatBooked`, `BookingCancelled`, … | строка в 🐘 `events` |
+| Event store | «кассовая книга»: записи только дописываются | 🐘 `events` |
+| Snapshot | «закладка» каждые 10 событий | 🐘 `snapshots` |
+| Optimistic concurrency | два фаната жмут одно место одновременно | ⚡ «Гонка» `[P1]` |
+| Outbox task | «записать билет фанату», «отправить e-ticket», «записать отмену», «вернуть деньги» | 🐘 outbox-таблица |
+| TaskHandler / worker | почтальон, чей сервер капризничает (20 %) | статусы, попытки, backoff, 📬 inbox |
+| Projection / View | «схема зала» и «кошелёк фаната» | 🍃 `encore_read.*` → экран |
+| Replay | «Encore!» — проиграть историю заново | 🧨 / ⏪ кнопки, прогресс-бар |
+| Temporal query | «машина времени» | ползунок ⏳ |
+
+### 2.2 Справочные данные (константы в коде, не события)
+
+**Зал** — один для всех концертов: ряды `A`–`E`, по 8 мест, вместимость 40.
+
+| Зона | Ряды | Цена | Цвет |
+|---|---|---|---|
+| `vip` | A | 120 € | золото `#fbbf24` |
+| `standard` | B, C | 80 € | циан `#22d3ee` |
+| `balcony` | D, E | 50 € | фиолетовый `#a78bfa` |
+
+Идентификатор места соответствует `^[A-E][1-8]$`, например `B4`.
+
+**Персонажи.**
+
+| `fan_id` | Имя | Аватар | Роль в демо |
+|---|---|---|---|
+| `alice` | Alice | 🦊 | основной персонаж |
+| `bob` | Bob | 🐼 | соперник в «гонке» |
+| `chloe` | Chloe | 🦄 | ещё один фанат |
+| `scalper-bot` | Scalper Bot | 🤖 | пытается скупить всё и упирается в лимит |
+| `crowd-<n>` | случайное имя из списка | эмодзи по хэшу `fan_id` | «🌊 Толпа» |
+
+Аватар для `crowd-*` фронт вычисляет детерминированно (хэш `fan_id` → индекс в списке эмодзи).
+
+**Концерты по умолчанию** — создаются seed-ом при старте back-end **обычными командами** `AnnounceConcert`:
+
+| `concert_id` | Артист | Город | Дата |
+|---|---|---|---|
+| `tbilisi-2026` | The Event Sourcerers | Tbilisi | 2026-11-21 |
+| `berlin-2026` | Eventually Consistent | Berlin | 2026-12-05 |
+| `lisbon-2027` | The Idempotents | Lisbon | 2027-01-16 |
+
+Seed идемпотентен «по-бизнесовому»: повторный `AnnounceConcert` отклоняется правилом R2 (`already_announced`),
+и seed просто игнорирует этот отказ — не нужен ни флаг, ни отдельный SQL.
+
+### 2.3 Агрегат `Concert`
+
+`TYPE = "Concert"`, `aggregate_id = concert_id`.
+
+```rust
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Concert {
+    info: Option<ConcertInfo>,            // None ⇒ концерт не анонсирован
+    bookings: BTreeMap<SeatId, Booking>,  // только занятые места
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ConcertInfo { artist: String, city: String, date: NaiveDate }
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Booking { fan_id: FanId, fan_name: String, booking_id: Uuid, price: u32 }
+
+// производные методы: is_sold_out(), tickets_of(&FanId), revenue(), free_seats()
+```
+
+`SeatId` и `FanId` — newtype с валидацией (`SeatId` сериализуется строкой: он ключ `BTreeMap` и попадает в
+снапшот). Справочник зала — `static VENUE` (модуль `domain::venue`).
+
+**Агрегат `Fan`** — `TYPE = "Fan"`, `aggregate_id = fan_id`. Downstream-агрегат: получает команды только от
+outbox-задач, никогда от UI. Хранит личную книгу билетов зрителя.
+
+```rust
+#[derive(Debug, Default, Clone, Serialize, Deserialize)]
+pub struct Fan {
+    name: Option<String>,                 // из первого RecordTicket
+    tickets: BTreeMap<Uuid, Ticket>,      // booking_id -> билет (активный или отменённый)
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, state: TicketState } // Active | Cancelled
+
+// производные методы: active_count(), total_spent()
+```
+
+`Concert` — источник истины по местам и всем бизнес-правилам R1–R8. `Fan` — источник истины по тому, что зритель
+получил; его правила (§2.5, R9–R11) только защищают от повторной и переставленной доставки задач.
+
+### 2.4 Команды → события → outbox-задачи
+
+| Агрегат | Команда (JSON `type` для UI / внутренняя) | Поля | Событие при успехе (ровно одно) | Outbox-задачи (в той же транзакции) |
+|---|---|---|---|---|
+| `Concert` | `AnnounceConcert` (UI) | `artist`, `city`, `date` | `ConcertAnnounced { artist, city, date, capacity }` | — |
+| `Concert` | `BookSeat` (UI) | `seat`, `fan_id`, `fan_name`; `booking_id` генерирует back-end | `SeatBooked { seat, zone, price, fan_id, fan_name, booking_id }` | `encore_record_ticket` v1 |
+| `Concert` | `CancelBooking` (UI) | `seat`, `fan_id`; `cancellation_id` генерирует back-end | `BookingCancelled { seat, fan_id, booking_id, cancellation_id, refund }` | `encore_record_cancellation` v1 |
+| `Fan` | `RecordTicket` (внутренняя, из задачи) | `booking_id`, `concert_id`, `seat`, `zone`, `price`, `fan_name` | `TicketRecorded { booking_id, concert_id, seat, zone, price, fan_name }` | `encore_send_e_ticket` v1 |
+| `Fan` | `RecordCancellation` (внутренняя, из задачи) | `booking_id`, `cancellation_id`, `refund` | `TicketCancelled { booking_id, cancellation_id, concert_id, seat, refund }` | `encore_issue_refund` v1 |
+
+Цепочка бронирования: `BookSeat` → `SeatBooked` + задача → `Fan.RecordTicket` → `TicketRecorded` + задача →
+письмо «🎫 e-ticket». Цепочка отмены зеркальна и заканчивается письмом «💸 Refund». Каждый шаг — отдельная
+атомарная транзакция «событие + его задачи».
+
+Заметки:
+- Событие хранит **факт** (`price`, который заплатили), а не формулу. Сумма возврата `refund` берётся из
+  состояния `Concert` — «сколько заплатили тогда» — и передаётся дальше по цепочке в payload задачи.
+- **Ровно одно событие на принятую команду** (решение D-02, §15). `PostgresEventRepositoryWithOutbox` отклоняет
+  батчи из нескольких событий (`a command may commit at most one domain event` → HTTP 503), а `TestFramework` этого
+  не проверяет, поэтому правило закрепляется тестом (§6.9). Пустой успех (принято, событий нет) не используется:
+  задачи записываются только вместе с событием.
+- `ConcertSoldOut` как событие **снято** (D-03): `sold_out` — производное поле витрины и агрегата
+  (`free_seats() == 0`); SOLD OUT в UI срабатывает по переходу `sold_out: false → true` в витрине (§8.8).
+- `event_type` = имя варианта enum; `event_version` = `"1.0"` (`NumericVersion` принимает `1`, `1.0`, `1.0.0`;
+  при чтении требуется точное строковое равенство — U14).
+- Метаданные каждого события — `HashMap<String, String>`: `command_id`, `correlation_id`, `causation_id`,
+  `recorded_at` (RFC 3339 фиксированной ширины: `to_rfc3339_opts(SecondsFormat::Micros, true)`), `source`.
+  Для UI-команд `correlation_id = command_id`, `causation_id = command_id`, `source = "ui"`. Для внутренних
+  команд `correlation_id` наследуется из метаданных задачи, `causation_id = task_id`, `source = "task:<формат>"`.
+  Метаданные передаются через `CommandExecutor::execute_with_metadata` (добавляется в `cqrsx` Фазой 0.5, D-04).
+
+### 2.5 Инварианты (бизнес-правила)
+
+Проверяются в `Concert::handle` в указанном порядке. Ошибка домена — enum `ConcertError` → в API `{ code, params }`;
+тексты сообщений живут в i18n фронта (EN/RU, Приложение A.4).
+
+| # | Код | Команды | Правило | Текст (RU) |
+|---|---|---|---|---|
+| R1 | `concert_not_found` | BookSeat, CancelBooking | концерт должен быть анонсирован | «Такого концерта нет — его ещё не анонсировали» |
+| R2 | `already_announced` | AnnounceConcert | анонсировать можно один раз | «Этот концерт уже анонсирован» |
+| R3 | `unknown_seat` | BookSeat, CancelBooking | место существует в зале | «Места Z9 нет: ряды A–E, места 1–8» |
+| R4 | `sold_out` | BookSeat | есть свободные места | «Sold out! Билеты закончились» |
+| R5 | `seat_taken` | BookSeat | место свободно | «Место B4 уже занято (🦊 Alice)» |
+| R6 | `ticket_limit` | BookSeat | у фаната меньше 4 билетов на этот концерт | «Правило против перекупщиков: не больше 4 билетов в одни руки» |
+| R7 | `seat_not_booked` | CancelBooking | место забронировано | «Это место никто не бронировал» |
+| R8 | `not_your_ticket` | CancelBooking | отменяет только владелец | «Это не ваш билет — отменить может только владелец» |
+
+Лимит (4) передаётся через `Services` агрегата (`ENCORE_TICKET_LIMIT`): правила могут зависеть от конфигурации,
+а история — нет (replay не вызывает `handle`, только `apply`).
+
+Правила агрегата `Fan` — технические, они защищают от повторной (at-least-once) и переставленной доставки задач.
+Обработчик задачи трактует R9 и R11 как «уже сделано», а R10 — как «ещё рано, повторить» (§2.7):
+
+| # | Код | Команда | Правило | Реакция обработчика задачи |
+|---|---|---|---|---|
+| R9 | `already_recorded` | RecordTicket | `booking_id` ещё не записан | задача выполнена (повторная доставка) |
+| R10 | `unknown_ticket` | RecordCancellation | билет с таким `booking_id` есть | `Retry` через 1 с: задача отмены обогнала задачу записи |
+| R11 | `already_cancelled` | RecordCancellation | билет ещё активен | задача выполнена (повторная доставка) |
+
+Эти коды в UI не показываются как тосты (команды внутренние), но попадают в activity с `source: "task:…"`.
+
+### 2.6 Набросок агрегата
+
+> Сигнатуры сверены с `cqrsx` в Фазе 0 и совпадают: `const TYPE`, native
+> `async fn handle(&mut self, command, &Services, &EventSink<Self>) -> Result<(), Error>`,
+> `sink.write(event, self).await` применяет событие к рабочей копии сразу, `fn apply(&mut self, event)`.
+> Требования к типам: `Aggregate: Default + Clone + Serialize + DeserializeOwned`, `Command: Clone + Send`,
+> `Error: std::error::Error + PartialEq + Clone` (для `TestFramework::then_expect_error`), `Services: Send + Sync + Clone`.
+
+```rust
+impl Aggregate for Concert {
+    const TYPE: &'static str = "Concert";
+    type Command = ConcertCommand;
+    type Event = ConcertEvent;
+    type Error = ConcertError;
+    type Services = ConcertServices; // { ticket_limit: usize }
+
+    async fn handle(&mut self, cmd: ConcertCommand, svc: &ConcertServices, sink: &EventSink<Self>)
+        -> Result<(), ConcertError>
+    {
+        match cmd {
+            ConcertCommand::AnnounceConcert { artist, city, date } => {
+                if self.info.is_some() { return Err(ConcertError::AlreadyAnnounced); }              // R2
+                sink.write(ConcertEvent::ConcertAnnounced { artist, city, date,
+                                                            capacity: VENUE.capacity() }, self).await;
+            }
+            ConcertCommand::BookSeat { seat, fan_id, fan_name, booking_id } => {
+                if self.info.is_none() { return Err(ConcertError::ConcertNotFound); }               // R1
+                let seat = VENUE.seat(&seat).ok_or(ConcertError::UnknownSeat { seat })?;          // R3
+                if self.is_sold_out() { return Err(ConcertError::SoldOut); }                        // R4
+                if let Some(b) = self.bookings.get(&seat.id) {                                       // R5
+                    return Err(ConcertError::SeatTaken { seat: seat.id, by: b.fan_name.clone() });
+                }
+                if self.tickets_of(&fan_id) >= svc.ticket_limit {                                   // R6
+                    return Err(ConcertError::TicketLimit { limit: svc.ticket_limit });
+                }
+                // Ровно одно событие на команду (D-02): sold-out — производное состояние, не событие.
+                sink.write(ConcertEvent::SeatBooked { seat: seat.id, zone: seat.zone, price: seat.price,
+                                                      fan_id, fan_name, booking_id }, self).await;
+            }
+            ConcertCommand::CancelBooking { seat, fan_id, cancellation_id } => {
+                if self.info.is_none() { return Err(ConcertError::ConcertNotFound); }               // R1
+                let seat = VENUE.seat(&seat).ok_or(ConcertError::UnknownSeat { seat })?;          // R3
+                let b = self.bookings.get(&seat.id).cloned()
+                    .ok_or_else(|| ConcertError::SeatNotBooked { seat: seat.id.clone() })?;          // R7
+                if b.fan_id != fan_id { return Err(ConcertError::NotYourTicket); }                  // R8
+                sink.write(ConcertEvent::BookingCancelled { seat: seat.id, fan_id, booking_id: b.booking_id,
+                                                            cancellation_id, refund: b.price }, self).await;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply(&mut self, event: ConcertEvent) {
+        match event {
+            ConcertEvent::ConcertAnnounced { artist, city, date, .. } =>
+                self.info = Some(ConcertInfo { artist, city, date }),
+            ConcertEvent::SeatBooked { seat, fan_id, fan_name, booking_id, price, .. } => {
+                self.bookings.insert(seat, Booking { fan_id, fan_name, booking_id, price });
+            }
+            ConcertEvent::BookingCancelled { seat, .. } => { self.bookings.remove(&seat); }
+        }
+    }
+}
+
+impl Aggregate for Fan {
+    const TYPE: &'static str = "Fan";
+    type Command = FanCommand; type Event = FanEvent; type Error = FanError; type Services = ();
+
+    async fn handle(&mut self, cmd: FanCommand, _: &(), sink: &EventSink<Self>) -> Result<(), FanError> {
+        match cmd {
+            FanCommand::RecordTicket { booking_id, concert_id, seat, zone, price, fan_name } => {
+                if self.tickets.contains_key(&booking_id) { return Err(FanError::AlreadyRecorded { booking_id }); } // R9
+                sink.write(FanEvent::TicketRecorded { booking_id, concert_id, seat, zone, price, fan_name }, self).await;
+            }
+            FanCommand::RecordCancellation { booking_id, cancellation_id, refund } => {
+                let t = self.tickets.get(&booking_id).ok_or(FanError::UnknownTicket { booking_id })?;           // R10
+                if t.state == TicketState::Cancelled { return Err(FanError::AlreadyCancelled { booking_id }); } // R11
+                sink.write(FanEvent::TicketCancelled { booking_id, cancellation_id, concert_id: t.concert_id.clone(),
+                                                       seat: t.seat.clone(), refund }, self).await;
+            }
+        }
+        Ok(())
+    }
+
+    fn apply(&mut self, event: FanEvent) { /* TicketRecorded -> insert Active; TicketCancelled -> state = Cancelled */ }
+}
+```
+
+### 2.7 Outbox: задачи и нестабильный обработчик
+
+| Формат (`TASK_TYPE`, `TASK_VERSION`) | Payload (`TaskPayload`, JSON) | Создаётся вместе с | Обработчик | Эффект |
+|---|---|---|---|---|
+| `encore_record_ticket`, 1 | `{ booking_id, concert_id, seat, zone, price, fan_id, fan_name }` | `Concert::SeatBooked` | `RecordTicketHandler` → команда `Fan.RecordTicket` | событие `TicketRecorded` + задача e-ticket |
+| `encore_send_e_ticket`, 1 | `{ booking_id, concert_id, seat, fan_id, fan_name, price }` | `Fan::TicketRecorded` | `SendETicketHandler` (`FlakyMailServer`) | письмо «🎫 Your e-ticket» в `mail_service.inbox` |
+| `encore_record_cancellation`, 1 | `{ booking_id, cancellation_id, concert_id, seat, fan_id, refund }` | `Concert::BookingCancelled` | `RecordCancellationHandler` → команда `Fan.RecordCancellation` | событие `TicketCancelled` + задача refund |
+| `encore_issue_refund`, 1 | `{ cancellation_id, booking_id, concert_id, seat, fan_id, amount }` | `Fan::TicketCancelled` | `IssueRefundHandler` (`FlakyMailServer`) | письмо «💸 Refund N €» в `mail_service.inbox` |
+
+Имена форматов — только `[A-Za-z0-9_]` (D-05): диагностика `cqrsx` печатает другие имена как `unknown`.
+`TaskFormat` отображается как `"encore_send_e_ticket v1"`.
+
+Метаданные задачи (JSON-объект): `command_id`, `correlation_id`, `causation_id`, `concert_id`, `fan_id` — те же
+значения, что у породившего события; `task_id` генерирует `NewTask::new` (uuid v4, стабилен при conflict-retry),
+он не равен `booking_id`. Строка outbox дополнительно несёт `aggregate_type`, `aggregate_id`, `aggregate_sequence`
+своего события — связь «событие ↔ задача» в UI есть и без метаданных.
+
+**Как задачи попадают в outbox (U1 закрыт).** `CqrsCommandExecutor::execute_with_metadata(id, command, metadata,
+tasks)` получает список `NewTask`, собранный application-слоем **до** выполнения команды; `BuildFramework`-фабрика
+отдаёт его в `PostgresEventRepositoryWithOutbox::with_outbox(tasks)`, и событие, снапшот и задачи пишутся одним
+CTE-оператором. Список неизменяем между попытками conflict-retry. Отклонённая команда не пишет ничего. Выводить
+задачи из событий библиотека не умеет, поэтому payload задачи собирается из данных команды и справочника зала
+(`price` статичен), а для внутренних команд — из payload задачи-родителя.
+
+**Обработчики-«почтальоны» цепочки** (`RecordTicketHandler`, `RecordCancellationHandler`) держат `Arc` командного
+сервиса агрегата `Fan` и маппят исход команды в результат задачи:
+
+| Исход `CommandGatewayError` | Результат `TaskHandler` |
+|---|---|
+| `Ok` | `Ok(())` |
+| `Domain(AlreadyRecorded \| AlreadyCancelled)` (R9, R11) | `Ok(())` — повторная доставка |
+| `Domain(UnknownTicket)` (R10) | `Retry { reason: "unknown_ticket", retry_after: Some(1 с) }` — отмена обогнала запись |
+| `Conflict`, `Unavailable`, rebuild-lock демо | `Retry { retry_after: Some(1 с) }` |
+| `CommittedWithEventHandlerFailure` | `Ok(())` — событие записано, витрину догонит Encore! |
+| прочие `Domain` | `Permanent { reason: code }` |
+
+**Нестабильный обработчик `FlakyMailServer` (DEMO ONLY).** Общий для двух почтовых `TaskHandler`:
+
+1. Публикует в activity `task.attempt.started { task_id, format, attempt }` (`attempt` = `TaskAttempt::number()`).
+2. Ждёт случайную «сетевую» задержку `ENCORE_TASK_LATENCY_MIN_MS..ENCORE_TASK_LATENCY_MAX_MS` (600..1800 мс),
+   чтобы статус «in progress» был виден глазом.
+3. Бросает кубик: с вероятностью `ENCORE_TASK_FAILURE_RATE` (**0.2**) возвращает классификацию **retry**
+   (`TaskHandlerError`, вариант «повторить») с забавной причиной из списка (Приложение A.5) и публикует
+   `task.attempt.failed { reason_code, retry: true }`.
+4. Иначе выполняет **идемпотентный** upsert письма в `mail_service.inbox` по бизнес-ключу
+   `_id = "e_ticket:<booking_id>"` / `"refund:<cancellation_id>"`: `$setOnInsert` (тема, получатель, `task_id`,
+   `delivered_on_attempt`, `first_delivered_at`) + `$inc: { deliveries: 1 }`; публикует `task.attempt.succeeded`.
+5. Возвращает успех — движок фиксирует (settle) задачу отдельной транзакцией.
+
+Зачем идемпотентность: доставка задач — at-least-once (lease может истечь, процесс может упасть после эффекта до
+settlement). Повтор не создаёт второе письмо; `deliveries > 1` означает «дубликат подавлен».
+
+Шанс отказа реализуется через трейт `ChaosPolicy` (`Random { p, rng }`, `Never`, `Always`) — детерминированные
+тесты, опциональный seed `ENCORE_CHAOS_SEED`. `TaskDispatcherFactory` создаёт свежие обработчики на каждого воркера,
+поэтому у каждого воркера свой RNG; индекс воркера фабрике не передаётся, поэтому seed = `ENCORE_CHAOS_SEED +
+AtomicU64`-счётчик внутри замыкания. Задачи цепочки (`record_*`) хаосу не подвержены.
+
+Все четыре `JsonTaskAdapter` оборачиваются в один `enum EncoreTaskAdapter` с `impl TaskAdapter` (делегирование
+`formats()` / `invoke()`): `TaskDispatcher<A>` принимает один тип адаптера. Порядок форматов у всех воркеров
+одинаков (`prepare` сверяет).
+
+Параметры очереди для демо (U6, U10 закрыты): `ENCORE_TASK_MAX_ATTEMPTS = 6` через `NewTask::with_max_attempts`
+(окончательный провал ≈ 0.2⁶ ≈ 0.006 %); короткий backoff задаёт сам обработчик через
+`TaskHandlerError::Retry { retry_after: Some(min(ENCORE_TASK_RETRY_BASE_MS · 2^(n−1), ENCORE_TASK_RETRY_MAX_MS)) }`,
+то есть 1, 2, 4, 8, 8 с (библиотечный `redelivery_backoff` 4–300 с остаётся только для аварийных путей: истёкший
+lease, таймаут обработчика); runtime: 2 воркера, буфер 2, poll 300 мс, handler timeout 5 с, lease **30 с**,
+storage timeout 3 с. Lease валидируется формулой `lease > 2·S + H + 5 с + ceil(Q/C)·(H+S)` = 24 с; «≥ 10 с» из
+версии 1.0 не проходит валидацию.
+
+### 2.8 Проекции (MongoDB, база `encore_read`)
+
+Обе проекции строятся **только** из событий и обновляются `EventHandler`-ами сразу после commit — in-process и без
+гарантии доставки. Именно поэтому нужен replay. Обе — обычные `ViewProjection` (D-06): `concert_halls` над потоком
+`Concert` (`view_id = concert_id`), `fan_wallets` над потоком `Fan` (`view_id = fan_id`). Собственный обработчик с
+группировкой по `fan_id` не нужен: `ViewProjection` передаёт в `View::update` события одного агрегата, а
+`view_id` всегда равен `aggregate_id`. В UI кошелёк отстаёт от зала на один шаг цепочки — это показывается, а не
+прячется.
+
+**Правило обновления (обязательно).** Состояние хранится «по ключу с последним sequence» (LWW-регистр): каждая
+запись (место, билет) помнит `sequence` последнего изменившего её события; событие применяется к записи, только
+если его `sequence` больше. Удаление — это «надгробие» `{ state: "free", sequence }`, а не удаление ключа.
+Производные поля (`sold`, `revenue`, `active_count`, `total_spent`, `sold_out`) **пересчитываются** из карты и
+никогда не инкрементируются. Итог: проекции идемпотентны и не зависят от порядка, в котором отработали обработчики
+параллельных команд.
+
+**1. `concert_halls`** — `ViewProjection` + `MongoViewRepository<ConcertHallView>`, `_id = concert_id`:
+
+```json
+{
+  "_id": "tbilisi-2026",
+  "version": 14,
+  "view": {
+    "concert": { "artist": "The Event Sourcerers", "city": "Tbilisi", "date": "2026-11-21" },
+    "capacity": 40,
+    "seats": {
+      "B4": { "state": "booked", "fan_id": "alice", "fan_name": "Alice", "zone": "standard", "price": 80,
+              "booking_id": "0192f0c4-…", "sequence": 7, "changed_at": "2026-10-17T09:12:03Z" },
+      "A1": { "state": "free", "sequence": 9, "changed_at": "2026-10-17T09:13:40Z" }
+    },
+    "sold": 12, "revenue": 960, "sold_out": false,
+    "last_sequence": 14,
+    "incomplete": false
+  }
+}
+```
+
+- `sold_out = (sold == capacity)` — производное поле (событие `ConcertSoldOut` снято, D-03).
+- `version` — версия документа для оптимистической блокировки самого view (`ViewContext`); не путать с `sequence`.
+- `incomplete = true`, если документ создан без `ConcertAnnounced` (например, после wipe пришло новое событие).
+  UI показывает «⚠️ Витрина неполная: у неё нет истории — нажмите Encore!».
+- `changed_at` берётся из метаданных события (`recorded_at`), а не из `now()`: пересборка даёт тот же документ.
+
+**2. `fan_wallets`** — `ViewProjection` + `MongoViewRepository<FanWalletView>` над агрегатом `Fan`, `_id = fan_id`.
+Строится из `TicketRecorded` / `TicketCancelled` (U4 закрыт решением D-06, собственный обработчик не нужен).
+
+```json
+{
+  "_id": "alice",
+  "version": 5,
+  "view": {
+    "fan_id": "alice", "fan_name": "Alice",
+    "tickets": {
+      "0192f0c4-…": { "concert_id": "tbilisi-2026", "seat": "B4", "price": 80,
+                      "state": "active", "sequence": 7, "changed_at": "2026-10-17T09:12:03Z" }
+    },
+    "active_count": 1, "total_spent": 80
+  }
+}
+```
+
+LWW-ключ — `booking_id`; `sequence` — номер события в потоке `Fan`, поэтому сравнения корректны внутри одного
+кошелька. `changed_at` — `recorded_at` события `Fan`.
+
+**Не проекция: `mail_service.inbox`** — «внешний почтовый сервис» (симуляция) в отдельной базе. Пишется только
+outbox-обработчиками; wipe и replay его **не трогают**. Ключевой урок: «пересборка витрин не рассылает письма заново».
+
+```json
+{ "_id": "e_ticket:0192f0c4-…", "kind": "e_ticket", "to_fan_id": "alice", "to_name": "Alice",
+  "subject": "🎫 Your e-ticket: tbilisi-2026, seat B4", "concert_id": "tbilisi-2026", "seat": "B4",
+  "task_id": "…", "delivered_on_attempt": 2, "deliveries": 1, "first_delivered_at": "2026-10-17T09:12:07Z" }
+```
+
+### 2.9 Replay — «Encore!»
+
+- **🧨 Стереть витрины** (`POST /api/projections/wipe`): drop коллекций `concert_halls` и `fan_wallets`
+  (inbox не трогаем). Write-side продолжает работать: бронирование занятого места по-прежнему отклоняется, потому
+  что агрегат восстанавливается из PostgreSQL, а не из MongoDB. Новое событие после wipe создаёт «неполный»
+  документ (`incomplete: true`) — наглядно: «витрина без истории врёт».
+- **⏪ Encore!** (`POST /api/projections/rebuild`, тело `{ "speed": "slow" }` или `{ "speed": "fast" }`):
+  1. Взять rebuild-lock: команды отвечают `423 rebuild_in_progress`, кнопки в UI блокируются с пояснением.
+     Outbox-воркер продолжает работать — он не зависит от read-side.
+  2. Ещё раз drop коллекций: пересборка всегда с нуля.
+  3. Два прохода `EventReplay::replay_all()` — по одному на тип агрегата, потому что `stream_all_events::<A>`
+     фильтрует по `aggregate_type`: сначала `Concert` → `ViewProjection<ConcertHallView>`, затем `Fan` →
+     `ViewProjection<FanWalletView>`. Обработчики те же, что в live-режиме, но без `NotifyingHandler`, обёрнутые
+     в декоратор прогресса и (в slow-режиме) задержки `ENCORE_REPLAY_SLOW_DELAY_MS = 80` мс/событие.
+     `replay_all` отдаёт события в порядке `ORDER BY sequence` поперёк агрегатов: места «загораются» по очереди
+     во всех залах сразу; внутри одного агрегата порядок сохраняется, LWW это устраивает.
+  4. Прогресс — activity `rebuild.progress`; `rebuild.started` несёт `total` (`SELECT count(*) FROM events`);
+     итог — `rebuild.finished { replayed, aggregates, duration_ms }` или `rebuild.failed` (`EventReplay`
+     останавливается на первой ошибке, применённый префикс остаётся; следующий Encore! снова начинает с wipe).
+  5. Отпустить lock (в том числе при ошибке/панике — guard).
+- **🔍 Проверить витрину** `[P1]` (`GET /api/projections/verify`): пересобрать витрины во временные коллекции
+  `concert_halls_verify` / `fan_wallets_verify` теми же `ViewProjection` и `MongoViewRepository` (без in-memory
+  фейков в рантайме, правило §12.4), сравнить канонический JSON (без `version`) с рабочими коллекциями →
+  «✅ витрина совпадает с журналом» или список расхождений; временные коллекции удалить.
+
+Почему lock, а не «живая» пересборка: проще и детерминированнее для демо. LWW-правило из §2.8 делает живую
+пересборку без блокировки корректной — это вариант `[P2]`.
+
+### 2.10 Машина времени
+
+`GET /api/concerts/{id}/state-at/{sequence}`: back-end читает поток событий одного концерта
+(`PersistedEventStore::<PostgresEventRepository, Concert>::new_event_store(repo).load_events(id)` →
+`Vec<EventEnvelope<Concert>>`; снапшоты **не** используются), применяет `Concert::apply` к пустому агрегату до
+нужного `sequence` и возвращает состояние агрегата и само событие. В UI — ползунок ⏳ под схемой зала: двигаем — зал перерисовывается
+«в прошлом» (сепия, баннер «Это состояние нигде не хранится — оно вычислено из событий 1…7»).
+
+---
+
+## 3. Архитектура
+
+### 3.1 Компоненты
+
+```
+┌──────────────────────────── demo/front-end · Vue 3 + Vite ────────────────────────────┐
+│  APP: схема зала, персонажи, кошелёк, Encore       X-RAY: строки PG, документы Mongo    │
+└───────────────┬────────────────────────────────────────────────┬──────────────────────┘
+   /api/* — команды, запросы, SSE /api/activity         /inspect/* — только чтение, SSE
+┌───────────────▼──────────────────────┐           ┌─────────────▼─────────────────────┐
+│ demo/back-end · axum + cqrsx         │           │ demo/sidecar · axum               │
+│ • write-side: CommandExecutor        │           │ • НЕ зависит от cqrsx             │
+│ • task runtime (воркеры outbox)      │           │ • только SELECT / find            │
+│ • read API поверх проекций           │           │ • read-only роль PostgreSQL       │
+│ • replay, машина времени, activity   │           │ • polling 400 мс → SSE            │
+└───┬────────────────────────┬─────────┘           └─────┬────────────────────┬────────┘
+    │ events + snapshots     │ проекции + inbox          │                    │
+    │ + outbox (1 транзакция)│                           │                    │
+┌───▼──────────────────┐ ┌───▼──────────────────────┐    │                    │
+│ PostgreSQL 18        │ │ MongoDB                  │    │                    │
+│ db `encore`          │◄┼──────────────────────────┼────┘                    │
+│ events, snapshots,   │ │ encore_read.concert_halls│◄──────────────────────────┘
+│ outbox (схемы cqrsx) │ │ encore_read.fan_wallets  │
+└──────────────────────┘ │ mail_service.inbox       │
+                         └──────────────────────────┘
+```
+
+### 3.2 Поток команды `BookSeat`
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant UI as front-end
+  participant API as back-end (axum)
+  participant EX as CommandExecutor (cqrsx)
+  participant AGG as Concert
+  participant PG as PostgreSQL
+  participant EH as EventHandlers (проекции)
+  participant M as MongoDB
+  UI->>API: POST /api/concerts/tbilisi-2026/commands {type: BookSeat, seat: B4, fan_id: alice}
+  API->>API: command_id, booking_id, metadata, NewTask(encore_record_ticket)
+  API->>EX: execute_with_metadata(concert_id, command, metadata, tasks)
+  EX->>PG: загрузить snapshot + хвост событий
+  EX->>AGG: handle(BookSeat) на копии агрегата
+  alt правило нарушено
+    AGG-->>EX: ConcertError (seat_taken …)
+    EX-->>API: Domain error — в БД ничего не записано
+    API-->>UI: 422 {outcome: rejected, error: {code, params}}
+  else правила соблюдены
+    AGG-->>EX: SeatBooked
+    EX->>PG: ОДНА транзакция: INSERT события + INSERT задачи encore_record_ticket (+ snapshot)
+    EX->>EH: committed events
+    EH->>M: upsert concert_halls/tbilisi-2026
+    EX-->>API: Ok
+    API-->>UI: 200 {outcome: accepted}
+  end
+  participant W as Worker (task runtime)
+  participant FAN as Fan (через CommandExecutor<Fan>)
+  W->>PG: claim encore_record_ticket
+  W->>FAN: execute_with_metadata(fan_id, RecordTicket, metadata{correlation_id, causation_id=task_id}, [NewTask(encore_send_e_ticket)])
+  FAN->>PG: ОДНА транзакция: INSERT TicketRecorded + INSERT задачи encore_send_e_ticket
+  FAN->>M: upsert fan_wallets/alice
+  W->>PG: settle completed
+  W->>PG: claim encore_send_e_ticket → FlakyMailServer 🎲 → inbox
+```
+
+Цепочка отмены устроена так же: `CancelBooking` → `BookingCancelled` + `encore_record_cancellation` →
+`Fan.RecordCancellation` → `TicketCancelled` + `encore_issue_refund` → письмо «💸 Refund».
+
+Конфликт версий (два коммита на одну версию агрегата) обрабатывает `retry_on_aggregate_conflict`: проигравшая
+команда повторяется на свежем состоянии и, как правило, отклоняется правилом R5.
+
+### 3.3 Жизненный цикл outbox-задачи
+
+```mermaid
+stateDiagram-v2
+  [*] --> queued: commit вместе с событием
+  queued --> in_progress: claim (lease)
+  in_progress --> delivered: handler OK → settle
+  in_progress --> retry_scheduled: handler retry (🎲 20 %) → settle с backoff
+  retry_scheduled --> in_progress: наступило время → claim
+  in_progress --> failed: исчерпан лимит попыток
+  in_progress --> queued: lease истёк → recovery
+  failed --> queued: requeue оператором [P2]
+```
+
+Названия состояний — UI-уровень; как они выводятся из колонок outbox-таблицы — §8.5.
+
+### 3.4 Поток replay
+
+```mermaid
+sequenceDiagram
+  participant UI as front-end
+  participant API as back-end
+  participant RS as ReplayStream (PostgreSQL)
+  participant ER as EventReplay
+  participant EH as EventHandlers (те же, что live)
+  participant M as MongoDB
+  UI->>API: POST /api/projections/rebuild {speed: slow}
+  API-->>UI: 202 {rebuild_id}
+  API->>API: rebuild-lock (команды → 423)
+  API->>M: drop concert_halls, fan_wallets
+  API->>ER: replay all ids of Concert
+  loop каждое сохранённое событие
+    RS-->>ER: EventEnvelope
+    ER->>EH: handle (+ задержка 80 мс в slow-режиме)
+    EH->>M: upsert view
+    API-->>UI: SSE rebuild.progress
+  end
+  API-->>UI: SSE rebuild.finished
+  API->>API: release lock
+```
+
+### 3.5 Ключевые решения
+
+| Решение | Почему |
+|---|---|
+| Back-end на Rust + axum 0.8 | `cqrsx` — Rust-библиотека; axum — стандарт на tokio |
+| Sidecar — отдельный процесс без зависимости от `cqrsx` | показывает БД «снаружи», как есть; read-only роль доказывает, что он ничего не меняет |
+| MongoDB для проекций | документ-витрина ≈ JSON на экране; подчёркивает, что read-side может жить в другой СУБД |
+| Отдельная база `mail_service` для inbox | внешний эффект ≠ проекция; replay его не трогает |
+| SSE вместо WebSocket | поток в одну сторону, `EventSource` встроен в браузер |
+| Polling в sidecar | не меняем схемы `cqrsx` (никаких триггеров и `LISTEN/NOTIFY`) |
+| Отдельный cargo-workspace в `demo/` | не ломает `cargo build --locked --workspace` и порог покрытия 97 % корневого CI |
+| LWW-проекции, производные поля пересчитываются | идемпотентность и независимость от порядка обработчиков |
+| UI не валидирует правила | инварианты видны |
+| Rebuild-lock в P0 | простой детерминированный сценарий; «живой» rebuild — P2 |
+| Два агрегата, `Fan` — downstream через outbox (D-01) | все бизнес-правила синхронны в `Concert` (тосты и «Δ events = 0» сохраняются); `Fan` показывает межагрегатную цепочку, идемпотентные команды и неупорядоченную доставку задач; `fan_wallets` — обычная `ViewProjection`. Сага с компенсацией (лимит в `Fan`) — P2-эволюция |
+| Ровно одно событие на команду (D-02) | контракт `PostgresEventRepositoryWithOutbox`; закреплён тестом |
+| `ConcertSoldOut` снят (D-03) | `sold_out` производное; межагрегатная цепочка уже показывает «задача → команда» |
+| Метаданные через `execute_with_metadata` в `cqrsx` (D-04) | framework их поддерживает, командный порт терял; правка библиотеки Фазой 0.5 вместо декоратора в демо |
+
+---
+
+## 4. Структура каталога `/demo`
+
+```
+demo/
+├── PLAN.md                     этот план
+├── README.md                   быстрый старт, архитектура, демо-сценарий (Фаза 10)
+├── .gitignore                  target/, node_modules/, .env (корневой .gitignore игнорирует только /target/)
+├── Cargo.toml                  ОТДЕЛЬНЫЙ workspace: back-end, sidecar
+├── Cargo.lock
+├── compose.yaml                postgres, mongo (+ профиль app: backend, sidecar, frontend)
+├── .env.example
+├── Makefile
+├── scripts/dev.sh              up + три процесса, Ctrl+C гасит всё
+├── scripts/wait-db.sh          ждёт готовности PostgreSQL и MongoDB (pg_isready / mongosh ping)
+├── docs/API_MAPPING.md         результат Фазы 0: план ↔ реальный API cqrsx
+├── infra/
+│   ├── postgres/00-inspector-role.sql
+│   ├── postgres/30-grants.sql
+│   └── nginx/default.conf      [P1] для профиля app
+├── back-end/                   crate `encore-backend`
+│   ├── Cargo.toml
+│   ├── Dockerfile              [P1]
+│   └── src/
+│       ├── main.rs             сборка компонентов, host::lifecycle::run
+│       ├── config.rs
+│       ├── domain/             venue.rs, concert/{mod.rs, command.rs, event.rs, error.rs, tests.rs},
+│       │                       fan/{mod.rs, command.rs, event.rs, error.rs, tests.rs}
+│       ├── app/                command_service.rs (два CqrsCommandExecutor: Concert и Fan, метаданные),
+│       │                       tasks.rs (4 TaskPayload + конструкторы NewTask), seed.rs, rebuild.rs,
+│       │                       verify.rs [P1], time_travel.rs, activity.rs, personas.rs
+│       ├── projections/        mongo_view_repository.rs, concert_hall.rs (View<Concert>),
+│       │                       fan_wallet.rs (View<Fan>), notifying.rs, progress.rs (декоратор replay)
+│       ├── outbox/             flaky_mail.rs, chaos.rs, record_ticket.rs, record_cancellation.rs,
+│       │                       send_e_ticket.rs, issue_refund.rs, adapter.rs (enum EncoreTaskAdapter), dispatcher.rs
+│       └── http/               mod.rs (router), commands.rs, queries.rs, projections.rs, activity.rs, error.rs
+├── sidecar/                    crate `encore-sidecar`
+│   ├── Cargo.toml
+│   ├── Dockerfile              [P1]
+│   └── src/                    main.rs, config.rs, postgres.rs, mongo.rs, state.rs (агрегат + хэш), http.rs
+└── front-end/                  npm-пакет `encore-front-end`
+    ├── package.json, vite.config.ts, tsconfig*.json, eslint.config.js, index.html, .nvmrc
+    ├── Dockerfile              [P1]
+    └── src/
+        ├── main.ts, App.vue, styles/main.css
+        ├── i18n/               index.ts, en.ts, ru.ts
+        ├── api/                http.ts, backend.ts, sidecar.ts, sse.ts
+        ├── types/              domain.ts, activity.ts, xray.ts
+        ├── lib/                venue.ts, personas.ts, seatState.ts, outboxStatus.ts, diff.ts, format.ts
+        ├── stores/             session.ts, concerts.ts, wallet.ts, commands.ts, activity.ts, xray.ts,
+        │                       rebuild.ts, tour.ts [P1]
+        ├── components/
+        │   ├── layout/         AppHeader.vue, ChapterBar.vue [P1], ChapterCallout.vue [P1]
+        │   ├── pipeline/       PipelineStrip.vue
+        │   ├── app/            ConcertTabs.vue, PersonaPicker.vue, SeatMap.vue, SeatButton.vue, ActionBar.vue,
+        │   │                   RuleBreaker.vue, WalletPanel.vue, EncorePanel.vue, TimeMachine.vue,
+        │   │                   RaceResult.vue [P1], AnnounceDialog.vue [P1]
+        │   ├── xray/           XrayPanel.vue, EventStorePanel.vue, SnapshotsPanel.vue, OutboxPanel.vue,
+        │   │                   MongoPanel.vue, MailboxPanel.vue, ActivityFeed.vue, QueryBadge.vue, JsonView.vue
+        │   └── ui/             Toasts.vue, StatusChip.vue, Dice.vue, Countdown.vue, ProgressBar.vue, Tooltip.vue
+        └── __tests__/          seatState.spec.ts, outboxStatus.spec.ts, i18nParity.spec.ts, diff.spec.ts
+```
+
+---
+
+## 5. Инфраструктура
+
+### 5.1 Изоляция cargo-workspace
+
+- `demo/Cargo.toml` — **виртуальный манифест своего workspace** (`[workspace] resolver = "3"`,
+  `members = ["back-end", "sidecar"]`, `[workspace.package] edition = "2024"`, `publish = false`,
+  `[workspace.dependencies]`). Cargo, поднимаясь от `demo/back-end`, первым найдёт `demo/Cargo.toml` и остановится.
+- В корневой `Cargo.toml` добавить `exclude = ["demo"]` в секцию `[workspace]` (защита от glob-members и явное
+  намерение). Это одна из двух разрешённых правок вне `demo/`; вторая — при необходимости корневой `.dockerignore`
+  (§5.2).
+- Зависимость на библиотеку: `cqrsx = { path = "../cqrsx", features = ["host", "logging"] }` в
+  `[workspace.dependencies]` (путь относительно `demo/`). Без `host` нет `cqrsx::host`, без `logging` нет
+  `cqrsx::logging`. `cqrsx/Cargo.toml` не использует `workspace = true`, наследовать нечего.
+- Корневой `rust-toolchain.toml` (1.98.1) действует и для `demo/` — rustup ищет его вверх по дереву.
+- `demo/Cargo.lock` коммитится; корневой CI (`cargo build --locked --workspace --all-features`, `cargo llvm-cov …
+  --fail-under-lines 97`) демо не видит.
+- `sqlx` в демо — **той же версии, что в `cqrsx`**: `0.8` (в `Cargo.lock` библиотеки 0.8.6), иначе типы пула не
+  совпадут. Без compile-time макросов (`query!`) — только runtime-запросы, чтобы не требовать `DATABASE_URL` при
+  сборке.
+
+### 5.2 `demo/compose.yaml` (набросок)
+
+```yaml
+name: encore
+services:
+  postgres:
+    image: docker.io/library/postgres:18.6-alpine   # ТОТ ЖЕ образ, что в корневом compose (U9)
+    environment: { POSTGRES_USER: cqrsx, POSTGRES_PASSWORD: cqrsx, POSTGRES_DB: encore }
+    ports: ["127.0.0.1:${ENCORE_POSTGRES_PORT:-5434}:5432"]   # 5433 занят корневым compose
+    volumes:
+      - encore-pg:/var/lib/postgresql                # путь тома как в корневом compose (PG 18+, U9)
+      - ./infra/postgres/00-inspector-role.sql:/docker-entrypoint-initdb.d/00-inspector-role.sql:ro,z
+      - ../cqrsx/sql/001-event-store.sql:/docker-entrypoint-initdb.d/10-event-store.sql:ro,z          # U9
+      - ../cqrsx/sql/002-transactional-outbox.sql:/docker-entrypoint-initdb.d/20-outbox.sql:ro,z     # U9
+      - ./infra/postgres/30-grants.sql:/docker-entrypoint-initdb.d/30-grants.sql:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cqrsx -d encore"]
+      interval: 2s
+      retries: 30
+  mongo:
+    image: docker.io/library/mongo:8.0               # можно 9.0; драйвер 3.9 требует сервер ≥ 4.4
+    ports: ["127.0.0.1:${ENCORE_MONGO_PORT:-27018}:27017"]
+    volumes: ["encore-mongo:/data/db"]
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      retries: 30
+  # [P1] профиль "app": полный стек одной командой (env с адресами сервисов — см. ниже)
+  backend:  { profiles: ["app"], build: { context: .., dockerfile: demo/back-end/Dockerfile }, ports: ["127.0.0.1:8080:8080"] }
+  sidecar:  { profiles: ["app"], build: { context: .., dockerfile: demo/sidecar/Dockerfile },  ports: ["127.0.0.1:8090:8090"] }
+  frontend: { profiles: ["app"], build: { context: ./front-end }, ports: ["127.0.0.1:8000:80"] }
+volumes:
+  encore-pg: {}
+  encore-mongo: {}
+```
+
+- **Схемы event store и outbox не копировать** — монтировать те же SQL-файлы `cqrsx/sql/001-event-store.sql` и
+  `cqrsx/sql/002-transactional-outbox.sql`, что использует корневой compose (единый источник правды; константы
+  `EVENT_STORE_SCHEMA` / `TRANSACTIONAL_OUTBOX_SCHEMA` — `include_str!` тех же файлов). Обе схемы живут в `public`
+  и идемпотентны (`CREATE TABLE IF NOT EXISTS`).
+- Флаги SELinux: для двух SQL-файлов, общих с корневым compose, — строчная `z` (shared); `Z` перемаркировала бы
+  их эксклюзивно. Для собственных файлов демо — тоже `z`.
+- Профиль `app`: `depends_on` с `condition: service_healthy`; внутри сети compose — адреса сервисов, а не
+  `localhost`: `ENCORE_HTTP_ADDR=0.0.0.0:8080`, `ENCORE_DATABASE_URL=postgresql://cqrsx:cqrsx@postgres:5432/encore`,
+  `ENCORE_MONGODB_URI=mongodb://mongo:27017`, `SIDECAR_HTTP_ADDR=0.0.0.0:8090`,
+  `SIDECAR_DATABASE_URL=postgresql://encore_inspector:inspector@postgres:5432/encore`,
+  `SIDECAR_MONGODB_URI=mongodb://mongo:27017`; nginx фронта проксирует на `backend:8080` и `sidecar:8090`.
+- Контекст сборки образов — корень репозитория (back-end нужен `cqrsx/`; workspace демо целиком тоже). В
+  Dockerfile — явные `COPY` только нужных путей. Если контекст раздут каталогами `target/`, разрешено добавить в
+  корень `.dockerignore` с `**/target` и `**/node_modules` (вторая и последняя допустимая правка вне `demo/`).
+
+### 5.3 Роль только для чтения (sidecar)
+
+`infra/postgres/00-inspector-role.sql`:
+
+```sql
+CREATE ROLE encore_inspector LOGIN PASSWORD 'inspector';
+ALTER ROLE encore_inspector SET default_transaction_read_only = on;   -- вторая линия защиты
+GRANT CONNECT ON DATABASE encore TO encore_inspector;
+```
+
+`infra/postgres/30-grants.sql` (после схем):
+
+```sql
+GRANT USAGE ON SCHEMA public TO encore_inspector;                -- если схемы cqrsx создают свою schema — и на неё
+GRANT SELECT ON ALL TABLES IN SCHEMA public TO encore_inspector;
+ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT SELECT ON TABLES TO encore_inspector;
+```
+
+MongoDB для демо — без аутентификации; порты PostgreSQL и MongoDB публикуются только на `127.0.0.1`.
+
+### 5.4 Порты и переменные окружения
+
+| Сервис | Порт (host) | Переопределение |
+|---|---|---|
+| PostgreSQL | 5434 | `ENCORE_POSTGRES_PORT` |
+| MongoDB | 27018 | `ENCORE_MONGO_PORT` |
+| back-end | 8080 | `ENCORE_HTTP_ADDR` |
+| sidecar | 8090 | `SIDECAR_HTTP_ADDR` |
+| front-end (dev, Vite) | 5173 | `vite.config.ts` |
+| front-end (профиль app, nginx) | 8000 | compose |
+
+| Переменная | Кто читает | По умолчанию | Назначение |
+|---|---|---|---|
+| `ENCORE_DATABASE_URL` | back-end | `postgresql://cqrsx:cqrsx@localhost:5434/encore` | event store + outbox |
+| `ENCORE_MONGODB_URI` | back-end | `mongodb://localhost:27018` | проекции, inbox |
+| `ENCORE_READ_DB` / `ENCORE_MAIL_DB` | back-end, sidecar | `encore_read` / `mail_service` | имена баз MongoDB |
+| `ENCORE_HTTP_ADDR` | back-end | `127.0.0.1:8080` | |
+| `ENCORE_TASK_FAILURE_RATE` | back-end | `0.2` | DEMO ONLY: шанс retry |
+| `ENCORE_TASK_LATENCY_MIN_MS` / `_MAX_MS` | back-end | `600` / `1800` | имитация сети |
+| `ENCORE_TASK_MAX_ATTEMPTS` | back-end | `6` | claim-attempt limit задачи (`NewTask::with_max_attempts`) |
+| `ENCORE_TASK_RETRY_BASE_MS` / `ENCORE_TASK_RETRY_MAX_MS` | back-end | `1000` / `8000` | backoff почтовых задач через `retry_after`: 1, 2, 4, 8, 8 с |
+| `ENCORE_CHAOS_SEED` | back-end | пусто | детерминированный RNG (тесты, отладка) |
+| `ENCORE_TICKET_LIMIT` | back-end | `4` | правило R6 |
+| `ENCORE_SNAPSHOT_EVERY` | back-end | `10` | снапшот каждые N событий (U12) |
+| `ENCORE_REPLAY_SLOW_DELAY_MS` | back-end | `80` | slow-motion replay |
+| `ENCORE_SEED` | back-end | `true` | seed трёх концертов |
+| `SIDECAR_DATABASE_URL` | sidecar | `postgresql://encore_inspector:inspector@localhost:5434/encore` | только чтение |
+| `SIDECAR_MONGODB_URI` | sidecar | `mongodb://localhost:27018` | |
+| `SIDECAR_HTTP_ADDR` | sidecar | `127.0.0.1:8090` | |
+| `SIDECAR_POLL_MS` | sidecar | `400` | период опроса БД |
+| `RUST_LOG` | оба | `info` | **один уровень** (`off/error/warn/info/debug/trace`): `cqrsx::logging::LoggingConfig::from_env` директивы вида `info,crate=debug` отвергает; sidecar читает так же |
+| `OUTBOX_WORKER_CONCURRENCY` (C) | back-end | `2` (библиотека: 128) | воркеры task runtime |
+| `OUTBOX_QUEUE_CAPACITY` (Q) | back-end | `2` (128) | локальный буфер claim-ов (`buffer_capacity`) |
+| `OUTBOX_POLL_INTERVAL_MS` | back-end | `300` (1000) | период опроса outbox и recovery просроченных lease |
+| `OUTBOX_HANDLER_TIMEOUT_SECS` (H) | back-end | `5` (15) | должен быть больше `ENCORE_TASK_LATENCY_MAX_MS`; проверяется в `Config` |
+| `OUTBOX_LEASE_SECS` (L) | back-end | `30` (60) | валидируется библиотекой: `L > 2·S + H + 5 с + ceil(Q/C)·(H+S)` = 24 с |
+| `OUTBOX_STORAGE_TIMEOUT_MS` (S) | back-end | `3000` (6000) | бюджет claim/settle; с дефолтом 6000 lease 30 с не пройдёт |
+| `OUTBOX_POSTGRES_STATEMENT_TIMEOUT_MS` | back-end | `4000` (4000) | statement_timeout транзакций очереди |
+
+Ключи `OUTBOX_*` — это собственные имена `cqrsx`; back-end читает их через
+`TaskRuntimeConfig::from_lookup(|name| env::var(name).ok().or_else(|| demo_default(name)))`, то есть библиотечные
+имена с демо-дефолтами, работающими и без `.env`. Все значения — в `demo/.env.example`; оба бинарника читают
+`.env` через `dotenvy` (если файл есть).
+
+### 5.5 `Makefile` и скрипты
+
+```make
+COMPOSE ?= podman compose          # или: make up COMPOSE="docker compose"
+.PHONY: up down reset backend sidecar frontend dev check full
+
+up:       ; $(COMPOSE) up -d postgres mongo && ./scripts/wait-db.sh   # ждёт healthcheck-и
+down:     ; $(COMPOSE) down
+reset:    ; $(COMPOSE) down -v      # стирает ВСЁ, включая журнал событий (только для dev)
+backend:  ; cargo run -p encore-backend
+sidecar:  ; cargo run -p encore-sidecar
+frontend: ; cd front-end && npm run dev
+dev:      ; ./scripts/dev.sh        # up + backend + sidecar + frontend, общий Ctrl+C
+check:    ; cargo fmt --all --check && cargo clippy --workspace --all-targets -- -D warnings \
+            && cargo test --workspace && cd front-end && npm run typecheck && npm run lint && npm test
+full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
+```
+
+`scripts/dev.sh` — bash: `make up`, затем три процесса в фоне с префиксами логов, `trap` на `SIGINT/SIGTERM` гасит
+всех; ждёт `GET /api/health` и `GET /inspect/health` и печатает «Open http://localhost:5173».
+
+---
+
+## 6. `demo/back-end` (crate `encore-backend`)
+
+### 6.1 Зависимости
+
+| Crate | Версия (на 10.2026) | Зачем |
+|---|---|---|
+| `cqrsx` | path `../cqrsx`, `features = ["host", "logging"]` (default `postgres` + `worker` остаются; U11) | всё ES/CQRS/outbox |
+| `async-trait` | 0.1 | `EventHandler` объявлен через `#[async_trait]`; остальные трейты `cqrsx` — native `async fn` |
+| `tokio` | 1.x, `full` | рантайм |
+| `axum` | 0.8.x (последняя 0.8.9) | HTTP, SSE (`axum::response::sse`) |
+| `tower-http` | 0.6.x, `trace` | логирование запросов |
+| `serde`, `serde_json` | 1.x | DTO |
+| `uuid` | 1.x, `v7`, `serde` | `command_id` (сортируемые по времени) |
+| `chrono` | 0.4 с `serde` (как в `cqrsx`) | даты концертов, `recorded_at` |
+| `mongodb` | 3.9.x (BSON через `mongodb::bson`); версия не проверялась в Фазе 0 | проекции, inbox |
+| `sqlx` | **`0.8`, та же, что в `cqrsx`** (0.8.6); `connect_pool` принимает `PgConnectOptions` | пул, requeue `[P2]` |
+| `tokio-util` | 0.7 (как в `cqrsx`) | `CancellationToken` |
+| `tokio-stream`, `futures` | latest | SSE-стримы (`BroadcastStream`) |
+| `rand` | 0.10 (как в `cqrsx`: `rand::rng()`, `Rng::random_bool`, `StdRng::seed_from_u64`) | хаос 20 % |
+| `thiserror` | 2.x | ошибки |
+| `tracing` | 0.1 | логи (инициализация — через `cqrsx::logging::LoggingConfig`) |
+| `sha2`, `hex` | latest | `[P1]` verify |
+| `dotenvy` | latest | `.env` |
+| dev: `testcontainers` | как в корне | `[P1]` интеграционные тесты |
+
+### 6.2 Модули
+
+| Модуль | Ответственность |
+|---|---|
+| `domain::venue` | зал: ряды, зоны, цены; `VENUE.seat("B4") -> Option<SeatInfo>`; парсинг/валидация `SeatId` |
+| `domain::concert` | `Concert` + `impl Aggregate` (§2.6); `ConcertCommand` (HTTP-DTO с `#[serde(tag = "type")]` — отдельный тип в `http`), `ConcertEvent` (`impl DomainEvent`), `ConcertError` (`code()`, `params()`, `PartialEq`) |
+| `domain::fan` | `Fan` + `impl Aggregate` (§2.6); `FanCommand` (только внутренние), `FanEvent`, `FanError` (R9–R11) |
+| `app::command_service` | `ConcertCommands` и `FanCommands`: обогащение (`command_id`, `booking_id`/`cancellation_id`, metadata) → `NewTask`-и → `CqrsCommandExecutor::execute_with_metadata` → маппинг исхода + activity; rebuild-lock проверяется для UI-команд, внутренние команды при lock получают `locked` и уходят в `Retry` задачи |
+| `app::tasks` | `RecordTicketV1`, `SendETicketV1`, `RecordCancellationV1`, `IssueRefundV1` (`TaskPayload`), конструкторы `NewTask::new(payload)?.with_metadata(..)?.with_max_attempts(..)?` |
+| `app::seed` | три `AnnounceConcert` при старте; `already_announced` игнорируется |
+| `app::rebuild` | `RebuildService`: lock + guard, wipe, два `EventReplay::replay_all` (Concert, затем Fan), прогресс, slow-motion, статус |
+| `app::verify` `[P1]` | пересборка во временные коллекции теми же `ViewProjection` + сравнение с рабочими |
+| `app::time_travel` | `timeline` и `state-at` через `PersistedEventStore::new_event_store(..).load_events(id)` + `Concert::apply` |
+| `app::activity` | `ActivityHub`: `tokio::broadcast` + кольцевой буфер последних 100 записей |
+| `app::personas` | справочник персонажей (тот же, что в `GET /api/config`) |
+| `projections::mongo_view_repository` | `MongoViewRepository<V>`: `impl ViewRepository` (§6.7) |
+| `projections::concert_hall` | `ConcertHallView` (`impl View<Concert>`, LWW) |
+| `projections::fan_wallet` | `FanWalletView` (`impl View<Fan>`, LWW по `booking_id`) |
+| `projections::notifying` | декоратор `EventHandler`: после успеха публикует `projection.updated`, при ошибке `projection.failed` |
+| `projections::progress` | `ProgressHandler<H: EventHandler<A>>`: декоратор для replay (прогресс + slow-motion) |
+| `outbox::chaos` | `ChaosPolicy` |
+| `outbox::flaky_mail` | `FlakyMailServer` (§2.7) + трейт `Inbox` (Mongo и in-memory реализации, последняя только в тестах) |
+| `outbox::{record_ticket, record_cancellation}` | `impl TaskHandler<…>`: команда агрегату `Fan` + маппинг исхода из §2.7 |
+| `outbox::{send_e_ticket, issue_refund}` | `impl TaskHandler<…>` поверх `FlakyMailServer` |
+| `outbox::adapter` | `enum EncoreTaskAdapter` из четырёх `JsonTaskAdapter` с `impl TaskAdapter` |
+| `outbox::dispatcher` | `TaskDispatcherFactory`: на каждого воркера свежий `TaskDispatcher<EncoreTaskAdapter>` со своим RNG |
+| `http::*` | роутер, хендлеры, SSE, маппинг ошибок |
+
+### 6.3 Сборка компонентов (`main.rs`)
+
+Точные сигнатуры — в `docs/API_MAPPING.md` §5 (сверены в Фазе 0).
+
+1. `dotenvy::dotenv().ok()`; `LoggingConfig::from_env()?.try_init()?` — один раз, до первого `tracing`.
+2. `Config::from_env()` — переменные из §5.4 (включая `OUTBOX_*` через `TaskRuntimeConfig::from_lookup` с
+   демо-дефолтами), с валидацией (`0.0 ≤ failure_rate ≤ 1.0`, `latency_min ≤ latency_max < handler_timeout` и т. п.).
+3. `connect_pool(config.database_url.parse::<PgConnectOptions>()?.application_name("encore-backend")).await?` →
+   пул PostgreSQL (10 соединений). Готовность БД обеспечивает `scripts/wait-db.sh`, не back-end.
+4. MongoDB-клиент; `read_db = encore_read`, `mail_db = mail_service`.
+5. `ActivityHub::new(capacity = 1024, backlog = 100)`.
+6. Фабрики обработчиков событий (вызываются на каждый `CqrsFramework`, обработчики дешёвые — держат
+   `Arc<MongoViewRepository>`): для `Concert` — `[NotifyingHandler(ViewProjection::new(halls_repo.clone()))]`,
+   для `Fan` — `[NotifyingHandler(ViewProjection::new(wallets_repo.clone()))]`.
+7. Два долгоживущих `CqrsCommandExecutor::new(build_framework, PostgresCommandConfig::conflict_retry())`, по одному
+   на агрегат. `build_framework = move |tasks| CqrsFramework::new(PersistedEventStore::new_snapshot_store(
+   PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks), snapshot_every), handlers(), services.clone())`.
+   `PostgresCommandConfig::new(ENCORE_SNAPSHOT_EVERY, AggregateConflictRetryPolicy::default())` — держатель
+   настроек; `postgres::command::command_executor` не подходит (требует `Services = ()` и не регистрирует
+   обработчики). Вызов: `executor.execute_with_metadata(id, command, metadata, tasks)` (Фаза 0.5).
+8. Task runtime: `prepare_task_runtime(pool.clone(), dispatcher_factory, PostgresTaskQueueConfig::default(),
+   runtime_config)?` с `TaskDispatcherFactory` из `outbox::dispatcher`; фабрика захватывает `Arc<FanCommands>`
+   для задач цепочки и Mongo-клиент для почты. Подготовка не запускает фоновой работы — это делает `run`.
+9. `AppState { concert_commands, fan_commands, read_db, mail_db, pool, activity, rebuild, config }` (всё в `Arc`/`Clone`).
+10. `app::seed::run(&state)` при `ENCORE_SEED=true`.
+11. `let shutdown = CancellationToken::new(); host::lifecycle::run(axum::serve(listener, router)
+    .with_graceful_shutdown(shutdown.clone().cancelled_owned()), runtime.run(shutdown.clone()), shutdown.clone(),
+    cqrsx::host::signal::shutdown_signal()).await` → при `Err(e)` вызвать `e.log("encore-backend stopped with an error")`;
+    затем `pool.close().await`. **SSE-хендлеры обязаны завершать поток по `shutdown.cancelled()`**, иначе graceful
+    shutdown axum ждёт открытые вкладки браузера и Ctrl+C не завершается (критерий приёмки Фазы 4).
+
+### 6.4 HTTP API
+
+| Метод и путь | Сторона | Назначение | Коды |
+|---|---|---|---|
+| `GET /api/health` | — | liveness | 200 |
+| `GET /api/config` | справочник | зал, персонажи, seed-концерты, параметры демо | 200 |
+| `POST /api/concerts/{concert_id}/commands` | write | выполнить команду | 200, 400, 409, 422, 423, 503 |
+| `GET /api/concerts` | read: `concert_halls` | сводка по всем концертам | 200 (`[]`, если витрина пуста) |
+| `GET /api/concerts/{concert_id}` | read: `concert_halls` | документ схемы зала | 200, 404 `projection_missing` |
+| `GET /api/fans/{fan_id}/wallet` | read: `fan_wallets` | кошелёк фаната | 200, 404 |
+| `GET /api/fans/{fan_id}/inbox` | read: `mail_service.inbox` | письма фаната | 200 |
+| `GET /api/concerts/{concert_id}/timeline` | event store | события концерта для ползунка | 200 |
+| `GET /api/concerts/{concert_id}/state-at/{sequence}` | event store | машина времени | 200, 404 |
+| `POST /api/projections/wipe` | admin | стереть витрины | 200, 423 |
+| `POST /api/projections/rebuild` | admin | Encore! | 202, 409 |
+| `GET /api/projections/status` | admin | `idle` / `running`, прогресс, итог последнего запуска | 200 |
+| `GET /api/projections/verify` `[P1]` | admin | сверка витрин с журналом | 200 |
+| `GET /api/activity` | SSE | живой лог | `text/event-stream` |
+| `POST /api/outbox/{task_id}/requeue` `[P2]` | admin | `REQUEUE_FAILED_OUTBOX_TASK` | 200, 404 |
+
+**Команда.** Тело — JSON с полем `type`:
+
+```json
+{ "type": "AnnounceConcert", "artist": "The Event Sourcerers", "city": "Tbilisi", "date": "2026-11-21" }
+{ "type": "BookSeat", "seat": "B4", "fan_id": "alice", "fan_name": "Alice" }
+{ "type": "CancelBooking", "seat": "B4", "fan_id": "alice" }
+```
+
+Алгоритм `app::command_service`:
+1. rebuild-lock взят → `423 { outcome: "locked", error: { code: "rebuild_in_progress" } }`.
+2. Десериализация (ошибка → `400 { outcome: "invalid" }`).
+3. `command_id = Uuid::now_v7()`; `BookSeat` получает `booking_id = command_id`, `CancelBooking` —
+   `cancellation_id = command_id`.
+4. `metadata = { command_id, correlation_id: command_id, causation_id: command_id, recorded_at: now, source: "ui" }`
+   (`HashMap<String, String>`, `recorded_at` фиксированной ширины — §2.4).
+5. Задачи: `BookSeat` → `[NewTask(RecordTicketV1)]`, `CancelBooking` → `[NewTask(RecordCancellationV1)]`,
+   `AnnounceConcert` → `[]`. Метаданные задачи = метаданные команды + `concert_id`, `fan_id`;
+   `with_max_attempts(ENCORE_TASK_MAX_ATTEMPTS)`.
+6. `concert_commands.execute_with_metadata(concert_id, command, metadata, tasks)` (U1, U3, D-04).
+7. Исход → HTTP (§6.6) + activity.
+
+Внутренние команды `Fan` идут тем же сервисом (`fan_commands`), но из обработчиков задач: метаданные наследуют
+`correlation_id` задачи, `causation_id = task_id`, `source = "task:encore_record_ticket"`; задачи —
+`[NewTask(SendETicketV1)]` / `[NewTask(IssueRefundV1)]`; исход маппится в результат задачи по таблице §2.7.
+
+Ответы:
+
+```json
+// 200
+{ "outcome": "accepted", "command_id": "0192f0c4-…", "concert_id": "tbilisi-2026",
+  "tasks": ["encore_record_ticket v1"], "warnings": [] }
+// 422
+{ "outcome": "rejected", "command_id": "0192f0c5-…", "concert_id": "tbilisi-2026",
+  "error": { "code": "seat_taken", "params": { "seat": "B4", "by": "Alice" },
+             "message": "Seat B4 is already taken by Alice" } }
+```
+
+`committed_sequence` в ответе **нет**: `CommandExecutor` при успехе возвращает `()`, а `sequence` UI видит в X-ray
+(решение D-04; наблюдатель с `last_sequence` и счётчиком конфликтов — P1-опция, §15). `message` — английский
+fallback, UI берёт текст из i18n по `code` и `params`.
+
+**`GET /api/config`:**
+
+```json
+{
+  "venue": { "rows": ["A","B","C","D","E"], "seats_per_row": 8,
+             "zones": [ { "id": "vip", "rows": ["A"], "price": 120 },
+                        { "id": "standard", "rows": ["B","C"], "price": 80 },
+                        { "id": "balcony", "rows": ["D","E"], "price": 50 } ] },
+  "personas": [ { "fan_id": "alice", "name": "Alice", "avatar": "🦊" } ],
+  "seed_concerts": ["tbilisi-2026", "berlin-2026", "lisbon-2027"],
+  "ticket_limit": 4, "task_failure_rate": 0.2, "task_max_attempts": 6, "snapshot_every": 10
+}
+```
+
+**`GET /api/concerts`** — `[{ concert_id, artist, city, date, sold, capacity, revenue, sold_out, incomplete }]`.
+**`GET /api/concerts/{id}`** — `{ concert_id, version, view }` (как в §2.8).
+**`GET /api/concerts/{id}/timeline`** — `[{ sequence, event_type, recorded_at, summary }]`, где `summary` — короткая
+строка вида `"B4 → Alice"`.
+**`GET /api/concerts/{id}/state-at/{n}`** — `{ sequence: n, last_sequence, state: { info, bookings }, event }`.
+
+### 6.5 Activity (SSE `GET /api/activity`)
+
+Каждое сообщение: `event: activity`, `data: { "id": <монотонный u64>, "at": "<RFC 3339>", "type": "…", … }`.
+При подключении сначала приходит `hello` (конфиг + до 100 последних записей из буфера), затем живой поток.
+Activity хранится только в памяти — это лог, а не состояние (так и подписано в UI).
+
+| `type` | Когда | Поля |
+|---|---|---|
+| `command.accepted` | команда закоммичена | `aggregate_type`, `aggregate_id`, `command_id`, `correlation_id`, `source`, `command_type`, `fan_id?`, `tasks` (без `sequence`: executor его не возвращает, D-04) |
+| `command.rejected` | доменный отказ | `aggregate_type`, `aggregate_id`, `command_id`, `correlation_id`, `source`, `command_type`, `code`, `params` (для `source: "task:…"` UI не показывает тост) |
+| `command.failed` | conflict / unavailable | `aggregate_type`, `aggregate_id`, `command_id`, `source`, `outcome`, `message` |
+| `projection.updated` | обработчик записал view | `projection`, `view_id`, `sequence` |
+| `projection.failed` | событие закоммичено, обработчик упал | `projection`, `view_id`, `message` |
+| `task.attempt.started` | обработчик задачи начал попытку | `task_id`, `format`, `attempt`, `correlation_id` |
+| `task.attempt.failed` | 🎲 отказ (retry) | `task_id`, `format`, `attempt`, `reason_code`, `retry: true` |
+| `task.attempt.succeeded` | письмо доставлено | `task_id`, `format`, `attempt`, `inbox_id`, `duplicate` |
+| `projections.wiped` | wipe | `collections` |
+| `rebuild.started` / `.progress` / `.finished` / `.failed` | Encore | `rebuild_id`, `speed`, `replayed`, `aggregate_id`, `sequence`, `event_type`, `aggregates`, `duration_ms`, `message` |
+
+`rebuild.progress`: в slow-режиме — на каждое событие, в fast — не чаще 20 раз в секунду плюс финальное значение.
+
+### 6.6 Маппинг исходов команды
+
+| Исход `cqrsx` | HTTP | `outcome` | Activity |
+|---|---|---|---|
+| успех | 200 | `accepted` | `command.accepted` |
+| `CommandGatewayError`: domain (`ConcertError`) | 422 | `rejected` | `command.rejected` |
+| conflict (после retry-политики) | 409 | `conflict` | `command.failed` |
+| unavailable | 503 | `unavailable` | `command.failed` |
+| committed, но упал `EventHandler` (`CommittedWithEventHandlerFailure { last_sequence, handler_indices }`) | 200 | `accepted` + `warnings: [{ code: "projection_failed", projection }]` (имя витрины по индексу регистрации) | `command.accepted` + `projection.failed` |
+| rebuild-lock | 423 | `locked` | — |
+| битый JSON / неизвестный `type` (в том числе внутренние `RecordTicket`/`RecordCancellation` через HTTP) | 400 | `invalid` | — |
+
+Для внутренних команд `Fan` те же исходы маппятся не в HTTP, а в результат `TaskHandler` (§2.7); activity получает
+`command.accepted` / `command.rejected` с `source: "task:…"`, UI показывает их приглушённо и без тостов.
+
+Отказ из-за упавшей проекции — нормальный учебный сценарий: «событие записано, витрина отстала — Encore! её
+догонит» (демо-сценарий, шаг 9).
+
+### 6.7 `MongoViewRepository<V>`
+
+- Документ: `{ _id: view_id, version: i64, view: <V как BSON> }`.
+- `load(view_id)` → `find_one({ _id })` → десериализовать `view`.
+- `load_with_context(view_id)` → `(view, ViewContext { view_id, version })`.
+- `update_view(view, ctx)`:
+  - `ctx.version == 0` → `insert_one({ _id, version: 1, view })`; duplicate key (E11000) → **конфликт**;
+  - иначе `update_one({ _id, version: ctx.version }, { $set: { view, version: ctx.version + 1 } })`;
+    `matched_count == 0` → **конфликт**.
+- Конфликт маппится в тот вариант ошибки `cqrsx`, на который `ViewProjection` отвечает повтором; прочее — в
+  ошибку соединения/неизвестную.
+- В view использовать `BTreeMap` (детерминированный порядок ключей) и знаковые целые (в BSON нет беззнаковых;
+  `u64` не использовать).
+- `wipe()` = `collection.drop()`.
+
+### 6.8 `RebuildService`
+
+- Состояние: `idle` или `running { rebuild_id, speed, replayed, started_at }`, плюс `last_result`.
+- Lock — `tokio::sync::Mutex` / `AtomicBool` + RAII-guard, который освобождает lock при любом выходе
+  (успех, ошибка, паника задачи).
+- Запуск — `tokio::spawn`; HTTP сразу возвращает `202 { rebuild_id }`, повторный запуск во время работы → `409`.
+- Wipe тоже запрещён во время rebuild (`423`).
+- Два прохода: `EventReplay::new(PostgresEventRepository::new(pool.clone()), ProgressHandler::new(ViewProjection::new(halls_repo.clone()), …)).replay_all()`
+  для `Concert`, затем то же для `Fan` с `wallets_repo`. Репозиторий и обработчик создаются на каждый rebuild
+  (`EventReplay::new` забирает их по значению). Те же проекции, что в live-режиме, но **без** `NotifyingHandler`
+  (иначе activity захлебнётся `projection.updated`; прогресс сообщает `ProgressHandler`). В slow-режиме перед
+  каждым событием — `tokio::time::sleep(ENCORE_REPLAY_SLOW_DELAY_MS)`.
+- Outbox-воркеры, цепочка `Fan` и почтовый inbox replay не затрагивает: replay вызывает только `View::update`,
+  команды не выполняются, задачи не создаются (проверяется тестом/демо: число писем и строк outbox до и после равно).
+
+### 6.9 Тесты back-end
+
+- **Домен** (`TestFramework::<A>::with(services).given(..).when(..).then_expect_events / then_expect_error` из
+  `cqrsx`): каждое правило R1–R8 (`Concert`) и R9–R11 (`Fan`) отдельным тестом с узнаваемым именем
+  (`r5_rejects_taken_seat`, `r10_rejects_cancellation_of_unknown_ticket`); happy-path для каждой из пяти команд;
+  после брони последнего места `is_sold_out()`; лимит из `Services`; refund = цена из истории; повторный
+  `RecordTicket` отклоняется, повторный `RecordCancellation` отклоняется.
+- **Инвариант «одно событие на команду»** (D-02): тест, прогоняющий все команды обоих агрегатов через
+  `TestFramework` на репрезентативных состояниях и проверяющий `events.len() == 1` для каждого `Ok`
+  (`TestFramework` сам этого не проверяет, а рантайм ответил бы 503).
+- **Обработчики цепочки**: маппинг исходов `CommandGatewayError` → `TaskHandlerError` по таблице §2.7
+  (`UnknownTicket` → `Retry`, `AlreadyRecorded` → `Ok`), с фейковым командным сервисом.
+- **Проекции** (чистые unit-тесты): применение последовательностей; LWW — порядок 7→6 даёт то же, что 6→7;
+  повтор события ничего не меняет; надгробия; производные поля; `incomplete`.
+- **Outbox**: `FlakyMailServer` с `ChaosPolicy::Always` → retry, без записи в inbox; `Never` → ровно одно письмо;
+  два успешных выполнения одной задачи → один документ, `deliveries = 2`. `Random` с фиксированным seed: на 10 000
+  бросков доля отказов в пределах 0.2 ± 0.02.
+- `[P1]` **Интеграционные** (testcontainers: PostgreSQL того же образа, что в корневых тестах, + MongoDB):
+  принятая команда → строка события + строка задачи с одним `correlation_id`; отклонённая → ни одной строки;
+  полная цепочка `BookSeat` → `TicketRecorded` → письмо; `events.metadata` содержит `command_id`/`recorded_at`;
+  wipe + rebuild → verify OK; replay не меняет число писем и задач.
+
+---
+
+## 7. `demo/sidecar` (crate `encore-sidecar`)
+
+### 7.1 Ответственность
+
+«Окно в базы данных»: показывает сырое состояние таблиц и коллекций **так, как оно лежит в СУБД**. Только чтение.
+Не зависит от `cqrsx` и не знает домен — знает лишь имена таблиц/коллекций и колонки сортировки. Подключается к
+PostgreSQL под ролью `encore_inspector` (read-only на двух уровнях).
+
+### 7.2 Эндпоинты
+
+| Метод и путь | Что отдаёт |
+|---|---|
+| `GET /inspect/health` | liveness + доступность обеих БД |
+| `GET /inspect/postgres/events?aggregate_id=&limit=200` | последние события (новые сверху) |
+| `GET /inspect/postgres/snapshots?aggregate_id=` | снапшоты |
+| `GET /inspect/postgres/outbox?limit=200` | outbox-задачи |
+| `GET /inspect/postgres/tables` `[P1]` | таблицы, колонки (`information_schema`), число строк |
+| `GET /inspect/mongo/{database}/{collection}?limit=100` | документы (whitelist: `encore_read.concert_halls`, `encore_read.fan_wallets`, `mail_service.inbox`; иначе 404) |
+| `GET /inspect/stats` | счётчики: события (всего и по концертам), задачи по статусам, документы по коллекциям |
+| `GET /inspect/stream` | SSE: сообщения `state` со всем перечисленным выше |
+
+Формат ответа таблицы — с самим запросом, чтобы UI мог показать «вот что мы спросили у базы»:
+
+```json
+{ "source": "postgres", "table": "events",
+  "query": "SELECT row_to_json(t) FROM (SELECT * FROM events ORDER BY … DESC LIMIT 200) t",
+  "total": 57,
+  "rows": [ { "aggregate_type": "Concert", "aggregate_id": "tbilisi-2026", "sequence": 7,
+              "event_type": "SeatBooked", "event_version": "1.0", "payload": { }, "metadata": { } } ],
+  "db_time": "2026-10-17T09:12:05.123Z" }
+```
+
+```json
+{ "source": "mongodb", "database": "encore_read", "collection": "concert_halls",
+  "query": "db.getSiblingDB('encore_read').concert_halls.find({}).sort({ _id: 1 }).limit(100)",
+  "total": 3, "docs": [ ] }
+```
+
+### 7.3 Реализация
+
+- Универсальная выборка: `SELECT row_to_json(t) AS row FROM (SELECT * FROM <table> ORDER BY <cols> DESC LIMIT $1) t` —
+  sidecar не нужно знать все колонки; UI сам решает, что показывать. Таблицы и порядок (U5, U15 закрыты;
+  полный список запросов — `API_MAPPING.md` §6): `events` — `ORDER BY metadata->>'recorded_at' DESC NULLS LAST,
+  aggregate_id, sequence DESC` (строка `recorded_at` фиксированной ширины, поэтому сортируется как текст; при
+  фильтре по `aggregate_id` — `ORDER BY sequence DESC`); `snapshots` — `ORDER BY aggregate_type, aggregate_id`;
+  `transactional_outbox` — `ORDER BY created_at DESC, id`. Фильтр по `aggregate_type` (`Concert` / `Fan`) — bind-параметр.
+  **Никакого динамического SQL** из параметров запроса; `aggregate_id` — bind-параметр. `sqlx` — 0.8, как в библиотеке.
+- **Все PostgreSQL-запросы одного цикла опроса — в одной транзакции** `BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY`:
+  так `events` и outbox читаются из одного снимка, и UI никогда не покажет событие без его задачи (или задачу без
+  события) из-за гонки между двумя `SELECT`. Иначе «атомарность» на экране могла бы мигать — а это главное, что
+  демо доказывает про outbox.
+- `db_time` = `SELECT now()` в той же транзакции: фронт считает обратные отсчёты по часам БД, а не браузера.
+- BSON → relaxed Extended JSON → `serde_json::Value` (даты — ISO-строками).
+- Один общий поллер на всех клиентов (`tokio::sync::watch`): каждые `SIDECAR_POLL_MS` собирает `State { events,
+  snapshots, outbox, mongo: { concert_halls, fan_wallets, inbox }, stats, db_time, errors }`, считает хэш без
+  `db_time`; если изменился — рассылает. Новый подписчик сразу получает текущее состояние; heartbeat-комментарий
+  каждые 15 с.
+- Недоступная БД не роняет процесс: в `errors` попадает `{ source, message }`, UI показывает «🐘 PostgreSQL недоступен».
+- Лимиты: events 200, outbox 200, snapshots 50, документов по 100 на коллекцию.
+
+### 7.4 Тесты sidecar
+
+- Unit: стабильность хэша (одинаковые данные → одинаковый хэш), whitelist коллекций.
+- `[P1]` Интеграционный: под ролью `encore_inspector` `INSERT` в `events` завершается ошибкой.
+
+---
+
+## 8. `demo/front-end` (Vue)
+
+### 8.1 Стек
+
+| Пакет | Версия | Комментарий |
+|---|---|---|
+| Node.js | 24 LTS (`.nvmrc`) | Vite 8 требует Node 20.19+ / 22.12+ |
+| `vue` | 3.5.x | последний stable на 17.10.2026 — 3.5.44; ветка 3.6 в статусе RC (3.6.0-rc.11). Если к старту работ выйдет 3.6.0 stable — брать её. Vapor mode не использовать |
+| `vite` | 8.x | Rolldown-сборщик |
+| `@vitejs/plugin-vue` | latest, совместимый с Vite 8 | |
+| `typescript`, `vue-tsc` | latest | `strict: true` |
+| `pinia` | 3.x | сторы |
+| `vue-i18n` | 11.x | Composition API (`legacy: false`) |
+| `@vueuse/core` | latest | `useEventSource`, `useIntervalFn`, `useTimeAgo`, `usePreferredReducedMotion` |
+| `tailwindcss`, `@tailwindcss/vite` | 4.3.x | стили |
+| `canvas-confetti` | latest | 🎉 SOLD OUT |
+| `vitest` | latest, совместимый с Vite 8 | unit-тесты |
+| `eslint` + `eslint-plugin-vue` + `typescript-eslint`, `prettier` | latest | |
+
+Без UI-библиотек и без роутера (одна страница). Шрифты — локально через `@fontsource` (Inter, JetBrains Mono),
+без внешних CDN. Dev-прокси Vite: `/api` → `http://127.0.0.1:8080`, `/inspect` → `http://127.0.0.1:8090`
+(одно происхождение — CORS не нужен; SSE через прокси работает).
+
+### 8.2 Макет экрана (1920×1080, проектор)
+
+```
+┌─────────────────────────────────────────────────────────────────────────────────────────────┐
+│ 🎸 ENCORE · cqrsx demo    ① Журнал ② Правила ③ Outbox ④ Витрины ⑤ Encore!     RU|EN    ⓘ   │
+├─────────────────────────────────────────────────────────────────────────────────────────────┤
+│ 📨 Команда ─▶ 🛡 Агрегат ─▶ ┏ 🐘 events ┓ ─▶ 🍃 Витрины ─▶ 🖥 Экран                          │
+│                            ┃ 🐘 outbox ┃ ─▶ ⚙ Воркер 🎲 ─▶ 📬 Почта                          │
+│                            ┗ 1 транзакция ┛                                                 │
+├───────────────────────────────────────────┬─────────────────────────────────────────────────┤
+│ [Tbilisi 12/40] [Berlin 3/40] [Lisbon]    │ 🐘 events · 57    ⓘ </> │ 🐘 outbox · 14    ⓘ </> │
+│ Кто вы: [🦊 Alice 2/4] 🐼 Bob 🦄 Chloe 🤖   │ #12 SeatBooked B4  ✨   │ 🎫 🎲 retry 2.4 s  2/6  │
+│                                           │ #11 SeatBooked A3       │ 🎫 ✅ delivered    1/6  │
+│          ╭──── 🎤 STAGE ────╮             │ #10 📸 SeatBooked C1    │ 💸 📨 sending…     1/6  │
+│    A  ▢ ▢ 🦊 ▢ ▢ ▢ ▢ ▢   VIP 120 €         ├─────────────────────────┼─────────────────────────┤
+│    B  ▢ ▢ ▢ 🐼 ▢ ▢ ▢ ▢   Standard 80 €     │ 🍃 concert_halls │ wallets│ 📬 inbox │ 📜 activity  │
+│    C  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢                     │ { "_id": "tbilisi-2026",│ 🎫 B4 → Alice (поп. 2)  │
+│    D  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢   Balcony 50 €      │   "version": 13,        │ 🎲 B5: попытка 1 ✖      │
+│    E  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢                     │   "view": { "sold": 12, │ ✅ B4 доставлен         │
+│ ⏳ ●━━━━━━━━━━━━━━━━━━○  событие 12 из 12   │     … } }               │                         │
+│ [🤖 Перекупщик] [🌊 Толпа] [⚡ Гонка]       │                         │                         │
+│ 🧪 [Z9] [занятое] [5-й билет] [чужой] […]  │                         │                         │
+│ 🎫 Мои билеты: B4 · 80 € · 📬 доставлен     │                         │                         │
+│ [🧨 Стереть] [⏪ Encore!] 🐢 ▓▓▓▓▓░░ 62 %    │                         │                         │
+└───────────────────────────────────────────┴─────────────────────────────────────────────────┘
+```
+
+- Сверху — **живая архитектура** (PipelineStrip): путь каждой команды подсвечивается в реальном времени.
+- Слева — **APP**: то, что видит фанат.
+- Справа — **X-RAY**: что лежит в базах (данные sidecar), сетка 2×2 на ширине ≥ 1440 px, вкладки на 1024–1439 px,
+  вертикальный стек ниже (на телефонах ничего не должно ломаться, но оптимизация не требуется).
+- При первом заходе — баннер «Как читать этот экран» (Приложение A.1), закрывается крестиком (помнится в
+  `localStorage`).
+
+### 8.3 Компоненты и поведение
+
+| Компонент | Приоритет | Поведение |
+|---|---|---|
+| `AppHeader` | P0 | логотип, переключатель языка, ⓘ — открыть баннер «Как читать экран» |
+| `PipelineStrip` | P0 | узлы и стрелки (HTML/SVG); подсветка по таблице ниже; скобка «1 транзакция» вокруг events и outbox; второй ряд — обратная стрелка «⚙ Воркер → 📨 Команда (Fan)» и вторая скобка «1 транзакция» для `TicketRecorded` + задача письма |
+| `ConcertTabs` | P0 | концерты из `/api/concerts`; прогресс sold/capacity; бейджи SOLD OUT и ⚠️ incomplete; если витрина пуста — вкладки из `config.seed_concerts` с «?» |
+| `PersonaPicker` | P0 | четыре больших аватара; у каждого «билетов n/4» на текущем концерте |
+| `SeatMap`, `SeatButton` | P0 | сцена со свечением и именем артиста, ряды A–E, легенда зон; состояния — §8.6; клики — ниже |
+| `ActionBar` | P0 / P1 | 🤖 Перекупщик, 🌊 Толпа (P0), ⚡ Гонка (P1) |
+| `RuleBreaker` | P0 | кнопки-нарушители правил — ниже |
+| `WalletPanel` | P0 | билеты текущего персонажа из `fan_wallets`, статус e-ticket, кнопка отмены, письма о возврате; пока бронь есть в зале, но ещё нет в кошельке (задача `encore_record_ticket` в пути) — строка «⏳ записывается в кошелёк…» |
+| `EncorePanel` | P0 / P1 | 🧨 Стереть, ⏪ Encore!, 🐢 slow-motion (по умолчанию вкл.), прогресс-бар (`replayed` / `stats.events_total` из sidecar), итог «✅ 128 событий → 3 зала + 9 кошельков за 1.4 с»; 🔍 Проверить (P1) |
+| `TimeMachine` | P0 | ползунок по событиям концерта; режим `history` для `SeatMap` |
+| `XrayPanel` | P0 | общий каркас панели: бейдж СУБД (🐘 / 🍃), имя таблицы/коллекции, счётчик, ⓘ пояснение (i18n), `</>` — запрос из ответа sidecar, «обновлено N мс назад» |
+| `EventStorePanel` | P0 | последние события обоих агрегатов с бейджем `Concert` / `Fan`; фильтры «только этот концерт» и «только этот фанат»; новые строки въезжают с зелёным свечением 2 с; payload/metadata — `JsonView` (свернуто, однострочный превью); 📸-маркер у строк с `sequence % ENCORE_SNAPSHOT_EVERY == 0` (P1) |
+| `SnapshotsPanel` | P0 | `aggregate_id`, `last_sequence`, payload (`JsonView`); подпись «закладка: грузим снапшот + хвост событий» |
+| `OutboxPanel` | P0 | задачи: короткий id, формат (🔁 `record_*` / 🎫 / 💸), `StatusChip` (§8.5), «попытка n/max» с 🎲 за каждый отказ, `Countdown` до повтора, `last_error`, payload; счётчики по статусам в шапке |
+| `MongoPanel` | P0 | вкладки `concert_halls` / `fan_wallets`; документы `JsonView`; изменённые пути подсвечиваются 2 с (`lib/diff.ts`); документ текущего концерта/персонажа — первым и раскрыт |
+| `MailboxPanel` | P0 | письма из `mail_service.inbox` (тема, кому, на какой попытке, `deliveries`); бейдж «НЕ проекция — внешний сервис» |
+| `ActivityFeed` | P0 | лента activity с иконками, новые сверху (максимум 300); клик → трассировка (P1) |
+| `Toasts` | P0 | успех / отказ (с кодом правила) / предупреждение |
+| `ChapterBar`, `ChapterCallout` | P1 | главы ①–⑤ (§8.10) |
+| `RaceResult` | P1 | карточка «победитель / проигравший» |
+| `AnnounceDialog` | P1 | «+ Анонсировать концерт»: артист/город из подсказок, `concert_id = <city-slug>-<4 hex>` |
+
+**Клики по месту.** Свободное или «?» → `BookSeat` от текущего персонажа. Чужое → **всё равно** `BookSeat` (чтобы
+увидеть R5). Своё → поповер «Отменить билет? Возврат 80 €» → `CancelBooking`. Пока команда в полёте — место
+пульсирует (`pending`); отказ — «тряска» 400 мс и красная вспышка; успех — «поп» 0.6 → 1.15 → 1.
+
+**ActionBar.**
+- 🤖 **Перекупщик**: от `scalper-bot` последовательно 6 × `BookSeat` случайных свободных мест (из последней витрины;
+  если витрины нет — из схемы зала), пауза 250 мс, каждая следующая команда — после ответа на предыдущую. Итоговый
+  тост считается по фактическим ответам, например «🤖 куплено 4 · отклонено 2 правилом R6».
+- 🌊 **Толпа**: 10 × `BookSeat` случайными `crowd-<1..60>` на случайные свободные места, пауза 150 мс, тоже
+  последовательно; нет свободных мест — остановиться. Именно так достигается SOLD OUT.
+- ⚡ **Гонка** `[P1]`: случайное свободное место; `Promise.all` двух `BookSeat` (Alice и Bob) одновременно;
+  `RaceResult`: «🦊 Alice выиграла · 🐼 Bob: seat_taken» + пояснение оптимистической блокировки (A.3).
+
+**RuleBreaker.** Каждая кнопка отправляет заведомо неверную команду и показывает: отправленный JSON, ответ
+(код правила + локализованный текст) и `events: 57 → 57 (Δ 0)` (по `stats` из следующего сообщения sidecar).
+
+| Кнопка | Команда | Правило |
+|---|---|---|
+| «Место Z9» | `BookSeat` `Z9` | R3 |
+| «Занятое место» | `BookSeat` на занятое (если занятых нет — сначала обычная бронь от Chloe) | R5 |
+| «Пятый билет» | от 🤖: добрать до 4, затем пятый | R6 |
+| «Чужой билет» | `CancelBooking` чужого места | R8 |
+| «Отменить свободное» | `CancelBooking` свободного места | R7 |
+| «Повторный анонс» | `AnnounceConcert` текущего концерта | R2 |
+| «Концерт-призрак» | `BookSeat` в `atlantis-2099` | R1 |
+
+**WalletPanel — статус e-ticket** (связка по `booking_id`):
+- в inbox есть `e_ticket:<booking_id>` → «📬 доставлен (попытка n)»;
+- иначе в outbox есть задача с этим `booking_id` (payload) → статус-чип из §8.5;
+- иначе «…».
+
+**TimeMachine.** Ползунок 1…`last_sequence` текущего концерта (из `/timeline`), засечки по событиям (цвет — тип),
+подпись события под курсором, кнопки ⏮ ⏭. Не в конце шкалы → `SeatMap` в режиме `history` с данными
+`/state-at/{n}`, фильтр сепия, баннер «Это состояние нигде не хранится — оно вычислено из событий 1…n», кнопка
+«Вернуться в настоящее». Соответствующая строка в `EventStorePanel` подсвечивается.
+
+**PipelineStrip — когда что светится.**
+
+| Триггер | Анимация |
+|---|---|
+| UI отправил команду (локально) | импульс Команда → Агрегат |
+| ответ `accepted` | Агрегат → events **и** outbox одновременно (скобка «1 транзакция» вспыхивает) → Витрины → Экран |
+| ответ `rejected` | Агрегат мигает красным, пузырь с кодом правила; events/outbox остаются тёмными с подписью «ничего не записано» |
+| `task.attempt.started` | импульс outbox → Воркер, на воркере крутится индикатор |
+| `task.attempt.failed` | 🎲 «бросок» и янтарное кольцо «retry» на Воркере |
+| `task.attempt.succeeded` | зелёный импульс Воркер → Почта |
+| `projections.wiped` | Витрины гаснут, подпись «пусто» |
+| `rebuild.progress` | по стрелке events → Витрины непрерывно бежит градиент, подпись «⏪ replay» |
+
+### 8.4 Данные и сторы (Pinia)
+
+| Стор | Содержимое |
+|---|---|
+| `session` | персонаж, выбранный концерт, язык, reduced-motion, текущая глава |
+| `concerts` | список и view по id; `stale` после wipe; fallback-список из `config.seed_concerts` |
+| `wallet` | кошелёк и inbox текущего персонажа |
+| `commands` | `send(concertId, body)` → исход; множество команд в полёте (`concert:seat`); тосты; сигналы для `PipelineStrip` |
+| `activity` | SSE `/api/activity` (`useEventSource` с авто-переподключением); записи; маршрутизация событий в другие сторы |
+| `xray` | SSE `/inspect/stream`; текущее и предыдущее состояние (для диффов); множества «уже видели» (для вспышек); смещение `db_time` |
+| `rebuild` | статус, прогресс, итог |
+| `tour` | `[P1]` главы |
+
+Правила обновления данных:
+- после ответа на собственную команду → перезапросить зал (концерт), кошелёк (персонаж) и список;
+- `projection.updated` (например, из другой вкладки) → перезапрос с debounce 150 мс;
+- во время rebuild → перезапрос зала и списка не чаще раза в 250 мс (места «загораются» по одному), по
+  `rebuild.finished` — финальный перезапрос;
+- `projections.wiped` → сбросить кэш view → места `unknown`;
+- страховочный опрос раз в 5 с.
+
+### 8.5 Статусы outbox-задач в UI
+
+```ts
+// lib/outboxStatus.ts — чистая функция, покрыта тестами.
+// Колонка transactional_outbox.status явная: 'pending' | 'processing' | 'completed' | 'failed' (U5 закрыт).
+export type UiTaskStatus = 'queued' | 'in_progress' | 'retry_scheduled' | 'delivered' | 'failed';
+
+export function deriveTaskStatus(row: OutboxRow): UiTaskStatus {
+  switch (row.status) {
+    case 'completed':  return 'delivered';
+    case 'failed':     return 'failed';
+    case 'processing': return 'in_progress';   // просроченный lease до recovery тоже in_progress (≤ poll)
+    case 'pending':    return row.attempts > 0 ? 'retry_scheduled' : 'queued';
+  }
+}
+// обратный отсчёт: available_at − dbNow; ≤ 0 → «ждёт воркера»; «попытка n/max» = attempts/max_attempts
+```
+
+| UI-статус | Чип | Подпись (RU) |
+|---|---|---|
+| `queued` | серый | «в очереди» |
+| `in_progress` | синий, пульсирует | «отправляется… (попытка n)» |
+| `retry_scheduled` | янтарный, 🎲, кольцо обратного отсчёта | «сервер капризничает — повтор через 3 с» |
+| `delivered` | зелёный | «доставлено» |
+| `failed` | красный | «не доставлено: исчерпан лимит попыток» (P2: кнопка Requeue) |
+
+- Обратный отсчёт считается по часам БД: `availableAt − (Date.now() + dbTimeOffset)`.
+- Завершённые строки очередь **не удаляет** (`finished_at` заполняется), «призрачные» строки не нужны.
+- Причина 🎲 — колонка `last_error` (туда попадает `reason` из `TaskHandlerError::Retry`, то есть `reason_code`);
+  activity `task.attempt.failed` нужна только для анимации броска.
+- Задачи цепочки (`encore_record_*`) показываются с иконкой 🔁 и подписью «команда агрегату Fan»; почтовые — 🎫 / 💸.
+
+### 8.6 Состояние места
+
+```ts
+// lib/seatState.ts — чистая функция, покрыта тестами.
+export type SeatUiState = 'free' | 'booked' | 'mine' | 'unknown';
+
+export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
+  if (ctx.mode === 'history') {                       // машина времени: данные агрегата, «unknown» не бывает
+    const b = ctx.historyState.bookings[seat];
+    return !b ? 'free' : b.fan_id === ctx.persona ? 'mine' : 'booked';
+  }
+  if (!ctx.view) return 'unknown';                    // витрина стёрта
+  const entry = ctx.view.seats[seat];
+  if (!entry) return ctx.view.incomplete ? 'unknown' : 'free';
+  if (entry.state === 'free') return 'free';
+  return entry.fan_id === ctx.persona ? 'mine' : 'booked';
+}
+// `pending` и анимации — отдельный оверлей поверх базового состояния.
+```
+
+### 8.7 Визуальный стиль
+
+- Тёмная «концертная» тема: фон `#0b0b1a`, панели `#14142b`, рамки `#26264a`; неон: розовый `#ff3ea5`
+  (основной), циан `#22d3ee`, лайм `#a3e635` (успех), янтарь `#fbbf24` (retry), красный `#f43f5e` (отказ),
+  фиолетовый `#a78bfa`. Цвета зон — §2.2.
+- Шрифты: Inter (интерфейс), JetBrains Mono (таблицы, JSON).
+- Анимации — CSS keyframes и `<Transition>` / `<TransitionGroup>`: «поп» места, «тряска» отказа, пульс `pending`,
+  въезд строк со свечением, бросок 🎲, кольцо обратного отсчёта (SVG `stroke-dashoffset`), бегущий градиент по
+  стрелкам `PipelineStrip`, конфетти при SOLD OUT, сепия в режиме истории.
+- `prefers-reduced-motion`: без конфетти, тряски и бегущих градиентов; смена цветов остаётся.
+- Доступность: места — `<button>` с `aria-label` («B4, Standard, 80 €, свободно»), видимый фокус; навигация
+  стрелками по залу — `[P1]`.
+
+### 8.8 Конфетти и SOLD OUT
+
+Срабатывает, когда у выбранного концерта `sold_out` в витрине меняется `false → true` (производное поле
+`sold == capacity`; отдельного события нет, D-03). Над сценой — неоновая надпись SOLD OUT; на вкладке концерта — бейдж.
+
+### 8.9 i18n
+
+- `vue-i18n` 11, `legacy: false`; локали `en`, `ru`; по умолчанию `ru`, если `navigator.language` начинается с
+  `ru`, иначе `en`; переключатель в шапке (запоминается в `localStorage`, доступ обёрнут в `try/catch`).
+- Пространства ключей: `rules.<code>` (с параметрами), `chaos.<reason_code>`, `chapters.<id>.{title,body,try}`,
+  `panels.<id>.{title,explain}`, `pipeline.*`, `actions.*`, `status.*`, `common.*`.
+- Тест `i18nParity.spec.ts`: наборы ключей `en` и `ru` совпадают; есть переводы для всех кодов правил и причин
+  отказа.
+- Тексты — из Приложения A (можно улучшать, смысл сохранять).
+
+### 8.10 Главы-подсказки `[P1]`
+
+`ChapterBar`: ① Журнал · ② Правила · ③ Outbox · ④ Витрины · ⑤ Encore!. Клик открывает `ChapterCallout`
+(плавающая карточка): заголовок, 2–4 предложения (A.2), кнопки «Попробовать» (выполняют действие: забронировать
+случайное место, нарушить правило, стереть витрины…), подсветка нужных панелей (остальные приглушены до 40 %),
+кнопка «Дальше →».
+
+---
+
+## 9. Демо-сценарий (≈ 7 минут)
+
+| Шаг | Время | Действие ведущего | Что показать |
+|---|---|---|---|
+| 1. Знакомство | 30 с | открыть UI, прочитать баннер | слева касса, справа рентген, сверху путь команды; в `events` уже 3 строки `ConcertAnnounced` — «даже концерты появились через команды» |
+| 2. Event Sourcing | 1 мин | как 🦊 Alice кликнуть B4; подвигать ⏳ | новая строка `SeatBooked` (sequence 2); изменился документ `concert_halls`; ползунок показывает зал в прошлом — «состояние вычисляется из событий» |
+| 3. Инварианты | 1 мин | переключиться на 🐼 Bob, кликнуть B4; запустить 🤖; пара кнопок 🧪 | «Место занято», `Δ events = 0`; 🤖: 4 ✅ и 2 ❌ по R6 |
+| 4. Outbox | 1,5 мин | забронировать ещё место | вспышка «1 транзакция»: строка `SeatBooked` и строка задачи 🔁 одновременно; задача 🔁 `delivered` за полсекунды, и в `events` появляется `TicketRecorded` агрегата `Fan` вместе с задачей 🎫 (вторая вспышка); задача 🎫 `in progress` → (возможно) `🎲 retry через 2 с` → `delivered`; письмо в 📬; в кошельке «📬 доставлен (попытка 2)» |
+| 5. Витрины | 1 мин | 🌊 Толпа × 3–4 (до SOLD OUT) | много задач, часть с 🎲; SOLD OUT 🎉 по витрине (`sold == capacity`); два потока событий (`Concert`, `Fan`) → два документа — зал и кошелёк; кошелёк «догоняет» зал через задачу `encore_record_ticket` |
+| 6. Отмена | 30 с | Alice отменяет билет | `BookingCancelled` + задача 🔁 → `TicketCancelled` + задача 💸 → письмо «💸 Refund» |
+| 7. Encore! | 1,5 мин | 🧨 Стереть → кликнуть место, которое было занято → забронировать свободное → ⏪ Encore! (slow) | зал серый, коллекции пусты; занятое место всё равно «занято» — правила работают по журналу; новая бронь даёт «⚠️ неполная витрина»; места загораются по одному; 📬 inbox не изменился — письма повторно не ушли; P1: 🔍 Проверить → ✅ |
+| 8. Гонка `[P1]` | 30 с | ⚡ Гонка | «Alice выиграла, Bob — seat_taken» + пояснение оптимистической блокировки |
+| 9. Отказ MongoDB (по желанию) | 1 мин | `podman compose stop mongo` → забронировать место → `podman compose start mongo` → Encore! | тост «⚠️ событие записано, витрина не обновилась»; после Encore! всё сходится — «событие не потеряно, витрина догнала журнал» |
+
+---
+
+## 10. Этапы работ и критерии приёмки
+
+Каждая фаза — отдельный коммит `demo: phase N — <summary>` с зелёными проверками своей части (Фаза 0.5 —
+коммит в `cqrsx`, сообщение без префикса `demo:`).
+
+### Фаза 0 — Discovery (без кода демо) — ✅ выполнена 17.10.2026
+
+Результат: `demo/docs/API_MAPPING.md`; решения — §15 этого плана. Повторять не нужно.
+
+### Фаза 0.5 — Метаданные в командном порту `cqrsx` (правка библиотеки, D-04)
+
+- Единственная разрешённая правка `cqrsx` (исключение к §12.1), отдельным коммитом **до** Фазы 1.
+- В `cqrs/command.rs`: метод `execute_with_metadata(&self, aggregate_id: &str, command: A::Command,
+  metadata: HashMap<String, String>, tasks: Vec<NewTask>)` в трейте `CommandExecutor`; `execute` получает
+  дефолтную реализацию, делегирующую с пустой картой. Реализации в `CqrsCommandExecutor`
+  (`retry_on_aggregate_conflict` передаёт клон карты в `framework.execute_with_metadata` на каждой попытке) и
+  в `PostgresCommandExecutor`. Возвращаемый тип не меняется.
+- Тесты: unit в `cqrs/command/executor.rs` (метаданные доходят до `commit`, одинаковы между попытками при
+  конфликте); интеграционный в `tests/postgres/command.rs` (`events.metadata` равен переданной карте); обновить
+  doc-тесты, включая `compile_fail` в `cqrs/command.rs` (добавить новый метод, чтобы он падал по прежней причине);
+  строку про `CommandExecutor` в `cqrsx/doc/components.md`.
+- **Приёмка:** команды из корневого `CLAUDE.md` зелёные: `cargo fmt --all --check`,
+  `cargo clippy --locked --workspace --all-targets --all-features -- -D warnings`,
+  `RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-features`, матрица
+  `--no-default-features` (+ по одной `postgres`, `worker`, `host`, `logging`), оба `cargo llvm-cov … --fail-under-lines 97`.
+  Корневой `Cargo.lock` не меняется (новых зависимостей нет).
+
+- Прочитать в `cqrsx/src`: `cqrs/aggregate.rs`, `cqrs/event.rs`, `cqrs/event_sink.rs`, `cqrs/command/{executor,retry}.rs`,
+  `cqrs/event_handler.rs`, `cqrs/event_handler/replay.rs`, `cqrs/projection.rs`, `cqrs/projection/repository.rs`,
+  `cqrs/store/{persisted,stream,upcaster}.rs`, `task.rs`, `task/{format,attempt,handler,adapter/json,dispatcher}.rs`,
+  `task/runtime/*`, `postgres/{command,task_runtime,outbox,view_repository}.rs`, `postgres/task_queue/*`,
+  `host/lifecycle.rs`, `logging.rs`; SQL-ассеты и корневой `compose.yaml`; **интеграционные тесты в `tests/`** —
+  в них есть реальные примеры сборки компонентов.
+- Заполнить `demo/docs/API_MAPPING.md`: по каждому пункту U1–U16 (§13) — ответ, точная сигнатура, решение.
+- **Приёмка:** все U закрыты; где реальность отличается от плана — записано решение; есть точные имена таблиц,
+  колонок и значений статусов. Блокер без fallback → остановиться и описать его.
+- **Контрольная точка:** пройдена, решения в §15.
+
+### Фаза 1 — Каркас и инфраструктура
+
+- Workspace `demo/`, `demo/.gitignore`, `exclude` в корне, `compose.yaml`, init-SQL, `.env.example`, `Makefile`,
+  `scripts/*`.
+- back-end и sidecar с `/health`; front-end (Vite 8 + Vue + TS + Tailwind + Pinia + vue-i18n) с макетом-заглушкой
+  §8.2; черновик `README.md`.
+- **Приёмка:** `make up` → обе БД healthy; таблицы event store и outbox созданы; `encore_inspector` может `SELECT`
+  и не может `INSERT`; `cargo build` в `demo/` проходит; корневой `cargo build --locked --workspace --all-features`
+  проходит, корневой `Cargo.lock` не изменился; `npm run dev` открывает страницу; оба `/health` → 200.
+
+### Фаза 2 — Домен
+
+- `venue`, `Concert` и `Fan`, их команды, события, ошибки; тесты §6.9 (домен и инвариант «одно событие на команду»).
+- **Приёмка:** `cargo test -p encore-backend domain` зелёный; каждое правило R1–R11 покрыто тестом с узнаваемым
+  именем (`r5_rejects_taken_seat`, `r10_rejects_cancellation_of_unknown_ticket` и т. п.); тест инварианта D-02
+  присутствует и зелёный.
+
+### Фаза 3 — Write-side
+
+- Сборка двух `CqrsCommandExecutor` (`Concert`, `Fan`) с `execute_with_metadata` из Фазы 0.5, `POST …/commands`
+  (только команды `Concert`), метаданные (§2.4), маппинг исходов, seed, `GET /api/config`, `ActivityHub` и SSE
+  (`command.*`), завершение SSE по токену остановки.
+- **Приёмка:**
+
+  ```bash
+  curl -s localhost:8080/api/concerts/tbilisi-2026/commands -H 'content-type: application/json' \
+       -d '{"type":"BookSeat","seat":"B4","fan_id":"alice","fan_name":"Alice"}'   # 200 accepted
+  curl -s localhost:8080/api/concerts/tbilisi-2026/commands -H 'content-type: application/json' \
+       -d '{"type":"BookSeat","seat":"B4","fan_id":"bob","fan_name":"Bob"}'       # 422 seat_taken
+  ```
+
+  В `events` ровно одна новая строка, её `metadata` содержит `command_id`, `correlation_id`, `recorded_at`,
+  `source: "ui"`; после перезапуска back-end seed не дублирует события.
+
+### Фаза 4 — Outbox и цепочка агрегатов
+
+- Четыре payload-а и формата задач (§2.7), `NewTask` при командах `Concert` и `Fan`, `ChaosPolicy`,
+  `FlakyMailServer`, четыре `TaskHandler` (два почтовых, два «почтальона» цепочки с маппингом исходов §2.7),
+  `enum EncoreTaskAdapter`, `TaskDispatcherFactory`, runtime под `host::lifecycle::run`, activity `task.*`, inbox.
+- **Приёмка:** после `BookSeat` есть строка `SeatBooked` и строка задачи `encore_record_ticket` с одним
+  `correlation_id`; через ≤ 1 с — строка `TicketRecorded` агрегата `Fan` с тем же `correlation_id` и
+  `causation_id = task_id` и строка задачи `encore_send_e_ticket`; после отклонённой команды — ни одной строки;
+  повторное выполнение задачи `encore_record_ticket` (например, `requeue` вручную) не создаёт второго
+  `TicketRecorded`; на 50 бронях у ≈ 20 % **почтовых** задач больше одной попытки (10 ± 5), у задач цепочки —
+  ровно одна; в inbox ровно одно письмо на бронь; Ctrl+C — корректный drain без ошибок в логах при открытой
+  вкладке с SSE.
+
+### Фаза 5 — Проекции и read API
+
+- `MongoViewRepository`, `ConcertHallView` (`View<Concert>`), `FanWalletView` (`View<Fan>`), обе через
+  `ViewProjection`, `NotifyingHandler`, эндпоинты чтения.
+- **Приёмка:** документы соответствуют командам; unit-тесты LWW зелёные; при остановленной MongoDB команда даёт
+  `200 accepted` с предупреждением `projection_failed`.
+
+### Фаза 6 — Replay и машина времени
+
+- wipe, `RebuildService` (lock, guard, два прохода replay — `Concert`, затем `Fan`, прогресс, slow-motion),
+  `timeline`, `state-at`.
+- **Приёмка:** после wipe коллекций нет, бронь занятого места → всё так же 422; fast-rebuild даёт документы,
+  совпадающие с документами до wipe (сравнение JSON без `version` — тестом или `scripts/compare-projections.sh`);
+  slow-rebuild 100 событий ≈ 8 с с прогрессом; команды во время rebuild → 423, задачи цепочки в это время уходят в
+  `Retry` и завершаются после; число писем в inbox и строк outbox не меняется; `state-at` возвращает верное
+  историческое состояние.
+
+### Фаза 7 — Sidecar
+
+- Эндпоинты §7.2, `row_to_json`, MongoDB, `stats`, общий поллер + SSE, обработка недоступности БД.
+- **Приёмка:** `curl localhost:8090/inspect/postgres/events` отдаёт строки и `query`; SSE шлёт `state` только при
+  изменениях (+ heartbeat); остановка PostgreSQL даёт `errors`, процесс жив.
+
+### Фаза 8 — Front-end: ядро `[P0]`
+
+- Каркас, сторы, API-клиенты, SSE, все P0-компоненты §8.3, тосты, конфетти, i18n RU/EN с текстами Приложения A.
+- **Приёмка:** шаги 1–7 демо-сценария проходятся вручную без devtools; `npm run typecheck && npm run lint &&
+  npm test` зелёные.
+
+### Фаза 9 — Полировка `[P1]`
+
+- Главы, «Гонка», verify, 📸-маркеры, трассировка по `correlation_id` (наведение на событие подсвечивает его задачу и
+  документ), `AnnounceDialog`, навигация с клавиатуры, вкладки X-ray на средних экранах, интеграционные тесты.
+- **Приёмка:** шаг 8 сценария и полный проход по главам; verify ✅ после rebuild.
+
+### Фаза 10 — Упаковка и документация
+
+- Dockerfile-ы, nginx (`/api` → backend, `/inspect` → sidecar; для SSE `proxy_buffering off`, HTTP/1.1,
+  `Connection ''`), профиль `app` в compose, `README.md` (быстрый старт, схема архитектуры, демо-сценарий,
+  troubleshooting), по желанию GIF.
+- **Приёмка:** на чистой машине `make up && make dev` (или `make full`) поднимает рабочее демо; шаги README
+  воспроизводятся без доработок.
+
+---
+
+## 11. Definition of Done
+
+- [ ] Выполнены критерии приёмки фаз 0.5–8 и 10 (P0); Фаза 0 закрыта `docs/API_MAPPING.md`.
+- [ ] Для автономного прогона: `docs/PROGRESS.md` с таблицей «фаза → статус → как проверено → что проверить
+      вручную»; `docs/PHASE_0_5_REVIEW.md` с описанием правки `cqrsx`.
+- [ ] `make check` зелёный: `cargo fmt --check`, `clippy -D warnings`, `cargo test`, `vue-tsc`, `eslint`, `vitest`.
+- [ ] Корень репозитория не затронут, кроме `exclude = ["demo"]` (и, при необходимости, `.dockerignore`); корневые
+      команды из README (`cargo build --locked …`, тесты, coverage) работают как раньше.
+- [ ] Хаос 20 % изолирован в `outbox::chaos` / `outbox::flaky_mail`, помечен `// DEMO ONLY`, настраивается
+      переменной, по умолчанию `0.2`.
+- [ ] Нет `unwrap()` / `expect()` в рабочих путях (кроме разбора конфигурации при старте — с понятными сообщениями).
+- [ ] Все тексты UI — через i18n; тест паритета EN/RU зелёный.
+- [ ] В ключевых местах комментарии объясняют **почему**: порядок правил агрегата, LWW в проекциях,
+      идемпотентность outbox-обработчика, безопасность replay. Демо — учебный материал.
+- [ ] `README.md` описывает запуск, архитектуру и демо-сценарий.
+
+---
+
+## 12. Правила для агента
+
+1. Не изменять `cqrsx/` и файлы вне `demo/`. Исключения: Фаза 0.5 (`execute_with_metadata`, §10) отдельным
+   коммитом; `exclude = ["demo"]` в корневом `Cargo.toml`; при необходимости корневой `.dockerignore` (§5.2).
+2. Фаза 0 выполнена: `docs/API_MAPPING.md` и §15 — источник истины по API `cqrsx`. Если при реализации
+   обнаружится новое расхождение — следовать реальному API, сохраняя наблюдаемое поведение из плана, и дописать
+   отличие в `docs/API_MAPPING.md` §4.
+3. Нужной возможности в `cqrsx` нет — применить fallback из §13 / §15; библиотеку не «допиливать» сверх Фазы 0.5.
+   Fallback невозможен — остановиться и описать блокер.
+4. В рантайме демо никаких моков и in-memory хранилищ (MemStore и фейки — только в тестах).
+5. Код, комментарии и коммиты — по-английски; тексты UI — через i18n (RU/EN).
+6. Простота важнее универсальности: без DI-фреймворков, UI-библиотек и «задела на будущее».
+7. Учётные данные — только dev, как в корневом compose; секретов не коммитить.
+8. `make reset` (`down -v`) стирает журнал событий — в README это помечено предупреждением.
+
+---
+
+## 13. Неизвестные (закрыты в Фазе 0)
+
+Все шестнадцать пунктов закрыты: факты, сигнатуры и решения — в `demo/docs/API_MAPPING.md` (§2 сводка, §3
+карточки). Таблица сохранена как исторический контекст; колонка «Fallback» больше не действует, действуют
+решения §15.
+
+Пути — относительно `cqrsx/src/`.
+
+| # | Вопрос | Где смотреть | Fallback |
+|---|---|---|---|
+| U1 | Как задачи привязываются к команде: prebuilt `NewTask` в executor, через services или выводятся из событий? | `cqrs/command/executor.rs`, `postgres/command.rs`, `postgres/outbox/*`, тесты | prebuilt из данных команды (как в плане) |
+| U2 | Допустимо ли несколько событий в одном коммите с outbox («One event, optional checkpoint and explicit tasks»)? | `postgres/outbox/write_plan.rs` | убрать `ConcertSoldOut`; sold-out — производное поле |
+| U3 | Передаются ли метаданные событий при выполнении команды? | `cqrs/command/executor.rs`, `EventEnvelope` | `recorded_at` — полем payload событий (`announced_at`, `booked_at`, `cancelled_at`), back-end кладёт его в команду |
+| U4 | Умеет ли `ViewProjection` вычислять view-id из события? | `cqrs/projection.rs` | собственный `EventHandler` `FanWalletsProjection` |
+| U5 | Схема outbox: имя таблицы, колонки (id, формат, версия, payload, metadata, статус, счётчик попыток, лимит, время доступности, lease, ошибка, метки времени), значения статусов; удаляются ли завершённые строки | `TRANSACTIONAL_OUTBOX_SCHEMA`, `postgres/task_queue/*` | константы sidecar и `outboxStatus.ts`; «призрачные» строки, если удаляются |
+| U6 | Настраивается ли backoff (`redelivery_backoff`)? | `task/queue/retry.rs`, `PostgresTaskQueueConfig` | дефолт; UI показывает реальное время по БД; упомянуть в README |
+| U7 | API `TaskHandlerError` (retry / permanent), `TaskAttempt` (`task_id`, `number`), требования `TaskDispatcherFactory` | `task/handler.rs`, `task/attempt.rs`, `task/runtime/dispatcher_factory.rs` | — (разобраться обязательно) |
+| U8 | API `EventReplay` / `ReplayStream` (все id и один id), поведение при ошибке обработчика | `cqrs/event_handler/replay.rs`, `cqrs/store/stream.rs`, `postgres/event_repository/stream.rs` | — (обязательно) |
+| U9 | Где SQL-файлы схем для корневого compose; путь тома PG 18; флаги SELinux | корневой `compose.yaml`, `postgres.rs` (`include_str!`) | применять константы при старте back-end (§5.2) |
+| U10 | Какие env-ключи читает `cqrsx` (`OUTBOX_QUEUE_CAPACITY` и др.), дефолты, кросс-валидация бюджетов (lease vs задержка) | `task/runtime/config.rs`, `env.rs`, `postgres/task_runtime.rs` | задать значения кодом |
+| U11 | Feature-флаги `cqrsx`, версия `sqlx` | `cqrsx/Cargo.toml` | — |
+| U12 | Как включить снапшоты (`SnapshotPolicy` приватна) и схема `snapshots` | `cqrs/store/persisted.rs`, `PostgresCommandConfig` | без снапшотов: панель пишет «снапшоты выключены» |
+| U13 | Сигнатура `host::lifecycle::run` (как передать axum как inbound) | `host/lifecycle.rs` | — |
+| U14 | Формат `event_version` для `NumericVersion` (`"1"` или `"1.0"`) | `cqrs/store/upcaster.rs` | — |
+| U15 | Есть ли в `events` глобальная позиция или метка времени для сортировки «последних событий»? | `EVENT_STORE_SCHEMA` | сортировка по `metadata->>'recorded_at'`, затем `sequence` |
+| U16 | Наблюдаемы ли конфликт-ретраи (для «Гонки»)? | `cqrs/command/retry.rs` | показывать только исходы, без числа конфликтов |
+
+---
+
+## 14. Вне рамок
+
+Аутентификация и мультиарендность; настоящая отправка почты; продакшен-деплой; саги / process managers;
+горизонтальное масштабирование back-end (rebuild-lock — внутри процесса, предполагается один экземпляр);
+мобильная вёрстка; отдельный CI-job для демо (можно добавить позже).
+
+Идеи для `[P2]`: requeue упавших задач кнопкой (`REQUEUE_FAILED_OUTBOX_TASK`); «потерянный ack» — успех после
+эффекта превращается в retry, и видно, как идемпотентность подавляет дубликат (`deliveries = 2`); апкастинг
+`SeatBooked` v1 → v2 (`EventUpcaster`, версия `"2.0"`); «живой» rebuild без lock; e2e-тест на Playwright;
+сага с компенсацией — лимит билетов переезжает в `Fan`, при отказе задача шлёт `Concert.ReleaseSeat`
+(вариант B из обсуждения Фазы 0); наблюдатель `EventStore` для `committed_sequence` и счётчика конфликтов в
+ответе команды («Гонка»); таймлайн фаната в машине времени.
+
+---
+
+## 15. Решения по итогам Фазы 0 и action items
+
+Источник фактов — `demo/docs/API_MAPPING.md` (далее AM). Каждое решение уже внесено в разделы выше; здесь —
+контрольный список для реализации. Статус: ☐ не сделано.
+
+| ID | Решение | Где в плане | Action items для реализации |
+|---|---|---|---|
+| **D-01** | **Два агрегата.** `Concert` (места, все бизнес-правила R1–R8 синхронно) и `Fan` (билеты зрителя), связанные цепочкой outbox: `SeatBooked` → `encore_record_ticket` → `Fan.RecordTicket` → `TicketRecorded` → `encore_send_e_ticket` → письмо; отмена зеркально. `Fan` получает команды только из задач. | §1, §2.1, §2.3–2.8, §3.2, §3.5, §4, §6.2–6.4, §6.8, §8.3, §9 | ☐ `domain::fan` с R9–R11 (Фаза 2) ☐ `FanCommands` с `execute_with_metadata` (Фаза 3) ☐ обработчики `record_ticket` / `record_cancellation` с таблицей исходов §2.7 (Фаза 4) ☐ `FanWalletView: View<Fan>` через `ViewProjection` (Фаза 5) ☐ второй проход replay (Фаза 6) ☐ бейдж агрегата и «⏳ записывается в кошелёк» в UI (Фаза 8) |
+| **D-02** | **Ровно одно событие на принятую команду;** отклонённая не оставляет следа. Пустой успех не используется. Причина: `PostgresEventRepositoryWithOutbox` коммитит один `event` и его задачи (AM §1 КТ-1). | §1, §2.4, §6.9 | ☐ тест инварианта на обоих агрегатах (Фаза 2) ☐ в `handle` каждой команды ровно один `sink.write` на пути успеха |
+| **D-03** | **`ConcertSoldOut` снят.** `sold_out` — производное (`free_seats() == 0` в агрегате, `sold == capacity` в витрине). Межагрегатная цепочка уже демонстрирует «задача → команда», самокоманда `CloseSales` не нужна. | §2.4, §2.6, §2.8, §8.8, §9 | ☐ `ConcertEvent` без `ConcertSoldOut` ☐ конфетти только по витрине |
+| **D-04** | **Метаданные через библиотеку:** `CommandExecutor::execute_with_metadata` добавляется в `cqrsx` (Фаза 0.5). Демо держит два долгоживущих `CqrsCommandExecutor`, без декоратора `EventStore`. Следствие: `committed_sequence` и счётчик конфликтов в ответе команды отсутствуют (P2). | §2.4, §6.3 п.7, §6.4, §10 Фаза 0.5, §12.1 | ☐ коммит в `cqrsx` с тестами и зелёным CI-набором из `CLAUDE.md` ☐ `events.metadata` проверяется в приёмке Фазы 3 |
+| **D-05** | **Имена форматов задач** только `[A-Za-z0-9_]`: `encore_record_ticket`, `encore_send_e_ticket`, `encore_record_cancellation`, `encore_issue_refund`, все версии 1. Причина: `diagnostics::safe_type` печатает иные имена как `unknown`. | §2.7, §6.4 | ☐ `TASK_TYPE` констант ровно такие |
+| **D-06** | **Обе витрины — `ViewProjection`** (`view_id == aggregate_id`); `FanWalletsProjection` и `FanOutHandler` из версии 1.0 удалены. | §2.8, §4, §6.2, §6.3 п.6 | ☐ нет собственных `EventHandler`, кроме декораторов `NotifyingHandler` и `ProgressHandler` |
+| **D-07** | **Конфигурация runtime:** C=2, Q=2, poll 300 мс, H=5 с, L=30 с, S=3 с через ключи `OUTBOX_*` с демо-дефолтами (`from_lookup`); `RUST_LOG` — один уровень. | §2.7, §5.4, §6.3 | ☐ `Config::from_env` с проверкой `latency_max < H` ☐ `.env.example` |
+| **D-08** | **Backoff почтовых задач — через `retry_after`** (1, 2, 4, 8, 8 с); задачи цепочки без хаоса; `reason` = код причины (виден в `last_error`). | §2.7, §5.4, §8.5 | ☐ `ENCORE_TASK_RETRY_BASE_MS` / `_MAX_MS` ☐ `outboxStatus.ts` по колонке `status` |
+| **D-09** | **Инфраструктура:** `connect_pool(PgConnectOptions)`; `cqrsx` с `features = ["host", "logging"]` + `async-trait`; `sqlx 0.8`; `rand 0.10`; compose монтирует `../cqrsx/sql/*.sql` с `:ro,z`; `demo/.gitignore`. | §4, §5.1, §5.2, §6.1, §6.3 п.3 | ☐ Фаза 1 |
+| **D-10** | **Graceful shutdown:** SSE-потоки завершаются по `CancellationToken`; после `host::lifecycle::run` — `pool.close()`. | §6.3 п.11, §10 Фаза 4 | ☐ приёмка «Ctrl+C при открытой вкладке» |
+| **D-11** | **Replay:** два `replay_all` (по типу агрегата), порядок событий по `sequence` поперёк агрегатов; `rebuild.started` несёт `total`; verify P1 — во временные коллекции, без in-memory фейков. | §2.9, §6.8 | ☐ Фаза 6 / 9 |
+| **D-12** | **Sidecar:** сортировка `events` по `metadata->>'recorded_at'` (строка фиксированной ширины), outbox по `created_at`, строки outbox не удаляются, `last_error` показывается. Запросы — AM §6. | §7.3, §8.5 | ☐ Фаза 7 |
+
+Открытых вопросов перед Фазой 0.5 нет.
+
+---
+
+## Приложение A. Тексты для UI (RU / EN)
+
+Тексты можно улучшать, но смысл и аналогии (кассовая книга, витрина, конверт в ящике исходящих, «на бис»)
+сохранять — на них держится понятность для неспециалиста.
+
+### A.1 Баннер «Как читать этот экран»
+
+- **RU:** Слева — касса концертного зала: то, что видит фанат. Справа — рентген: что прямо сейчас лежит в базах
+  данных. Сверху — путь, который проходит каждая команда. Кликните по любому месту и проследите, что изменится.
+- **EN:** On the left is the box office — what a fan sees. On the right is an X-ray of what the databases hold right
+  now. At the top is the path every command takes. Click any seat and watch what changes.
+
+### A.2 Главы
+
+**① Журнал событий / Event store**
+- **RU:** Мы ничего не исправляем и не удаляем. Каждое принятое решение — «место B4 продано Alice» — дописывается
+  новой строкой в таблицу `events`, как в кассовой книге. Текущее состояние зала — это все записи концерта,
+  прочитанные по порядку. Каждые 10 событий движок кладёт закладку (snapshot), чтобы не перечитывать книгу с начала.
+  *Попробуйте:* забронируйте место и найдите новую строку в 🐘 events; подвигайте ⏳ машину времени.
+- **EN:** Nothing is ever edited or deleted. Every accepted decision — "seat B4 sold to Alice" — is appended to the
+  `events` table, like a ledger. The current state of the hall is simply all of the concert's records read in order.
+  Every 10 events the engine stores a bookmark (snapshot) so it doesn't have to reread the whole book.
+  *Try it:* book a seat and find the new row in 🐘 events; drag the ⏳ time machine.
+
+**② Команды и правила / Commands and rules**
+- **RU:** Клик — это команда: просьба, а не факт. Агрегат «Концерт» восстанавливает себя из журнала и проверяет
+  правила: место существует, оно свободно, не больше 4 билетов в одни руки. Нарушено правило — команда отклонена,
+  и в журнал не попадает ни одной строки. *Попробуйте:* любую кнопку 🧪 или 🤖 перекупщика.
+- **EN:** A click is a command — a request, not a fact. The Concert aggregate rebuilds itself from the ledger and
+  checks the rules: the seat exists, it is free, no more than 4 tickets per fan. If a rule is broken, the command is
+  rejected and not a single row is written. *Try it:* any 🧪 button or the 🤖 scalper.
+
+**③ Transactional Outbox**
+- **RU:** После покупки фанат должен получить e-ticket. Мы не отправляем письмо «прямо сейчас»: в той же
+  транзакции, что и событие, в таблицу outbox кладётся задача «отправить билет» — как конверт в ящик исходящих.
+  Записано либо и то и другое, либо ничего. Фоновый воркер забирает задачи и доставляет их. Наш почтовый сервер
+  капризный: в 20 % случаев он «падает» 🎲, и задача повторяется позже. Билет всё равно дойдёт — и ровно один раз.
+  *Попробуйте:* забронируйте место и проследите за задачей в 🐘 outbox и письмом в 📬.
+- **EN:** After buying a seat, the fan must get an e-ticket. We don't send the email "right now": in the same
+  transaction as the event, a "send ticket" task goes into the outbox table — like an envelope dropped into the
+  out-tray. Either both are written or neither. A background worker picks tasks up and delivers them. Our mail server
+  is moody: it fails 20 % of the time 🎲 and the task is retried later. The ticket still arrives — exactly once.
+  *Try it:* book a seat and follow its task in 🐘 outbox and the email in 📬.
+
+**④ Витрины / Projections**
+- **RU:** Экрану нужен удобный вид данных, а не журнал. Обработчики событий превращают события в документы MongoDB:
+  схему зала из журнала концерта и кошелёк из журнала фаната. Один клик — два потока событий — две разные витрины,
+  и кошелёк догоняет зал на шаг позже. MongoDB здесь — витрина, которую не страшно разбить: правда хранится только
+  в журнале PostgreSQL.
+  *Попробуйте:* запустите 🌊 толпу и сравните документы `concert_halls` и `fan_wallets`.
+- **EN:** A screen needs data shaped for it, not a ledger. Event handlers turn events into MongoDB documents: a seat
+  map from the concert's ledger and a wallet from the fan's ledger. One click, two event streams, two different read
+  models, and the wallet catches up one step later. MongoDB is a shop window that is safe to break: the truth lives
+  only in the PostgreSQL ledger.
+  *Try it:* run the 🌊 crowd and compare the `concert_halls` and `fan_wallets` documents.
+
+**⑤ Encore! / Replay**
+- **RU:** Сотрите витрины — зал погаснет, но правила продолжат работать: решения принимаются по журналу, а не по
+  витрине. Нажмите «Encore!» — все события будут сыграны на бис, и витрины восстановятся точно такими же. Письма при
+  этом повторно не отправляются: внешние действия живут в outbox, а не в витринах.
+  *Попробуйте:* 🧨 стереть → кликнуть занятое место → ⏪ Encore! в замедленном режиме.
+- **EN:** Wipe the read models — the hall goes dark, but the rules keep working: decisions are made from the ledger,
+  not the shop window. Press "Encore!" — every event is played again and the read models come back exactly the same.
+  No email is re-sent: side effects live in the outbox, not in read models.
+  *Try it:* 🧨 wipe → click a taken seat → ⏪ Encore! in slow motion.
+
+### A.3 Пояснения панелей (ⓘ) и состояний
+
+| Ключ | RU | EN |
+|---|---|---|
+| `panels.events` | Журнал событий. Только INSERT — никогда UPDATE или DELETE. Ключ — (aggregate_type, aggregate_id, sequence); sequence — номер события внутри одного концерта. Если два запроса пишут одно и то же sequence, побеждает первый — это оптимистическая блокировка. | The event ledger. INSERT only — never UPDATE or DELETE. Key: (aggregate_type, aggregate_id, sequence); sequence is the event number within one concert. If two requests write the same sequence, the first wins — that's optimistic locking. |
+| `panels.snapshots` | Закладки: сохранённое состояние агрегата на событии N. Загрузка концерта = снапшот + события после него. | Bookmarks: the aggregate's saved state at event N. Loading a concert = snapshot + the events after it. |
+| `panels.outbox` | Задачи, записанные в той же транзакции, что и событие. Воркер берёт задачу в аренду (lease), выполняет и фиксирует результат: готово — или повтор после паузы (backoff). Задача переживёт даже падение сервера. | Tasks written in the same transaction as the event. A worker leases a task, runs it and records the outcome: done, or retry after a pause (backoff). A task survives even a server crash. |
+| `panels.concert_halls` | Витрина «схема зала»: один документ на концерт. Строится только из событий; её можно удалить и пересобрать. | Read model "seat map": one document per concert. Built only from events; safe to delete and rebuild. |
+| `panels.fan_wallets` | Витрина «кошелёк фаната»: один документ на фаната, построенный из его собственного журнала (агрегат Fan), который заполняется задачами outbox после каждой брони. | Read model "fan wallet": one document per fan, built from the fan's own ledger (the Fan aggregate), which outbox tasks fill in after every booking. |
+| `panels.inbox` | Не витрина! Это «внешний почтовый сервис» (имитация). Replay его не трогает — письма не уходят повторно. | Not a read model! This is the "external mail service" (simulated). Replay never touches it — no email is sent twice. |
+| `panels.activity` | Живой лог back-end: что происходит прямо сейчас. Хранится только в памяти. | Live back-end log: what is happening right now. Kept in memory only. |
+| `states.race` | Оба запроса прочитали версию N и попытались записать N+1. База приняла только первый; второй повторился на свежем состоянии — и правило «место свободно» его отклонило. | Both requests read version N and tried to write N+1. The database accepted only the first; the second was retried on fresh state — and the "seat must be free" rule rejected it. |
+| `states.history` | Это состояние нигде не хранится — оно вычислено из событий 1…{n}. | This state isn't stored anywhere — it was computed from events 1…{n}. |
+| `states.incomplete` | ⚠️ Витрина неполная: у неё нет начала истории. Нажмите Encore! | ⚠️ This read model is incomplete: it is missing the start of the history. Press Encore! |
+| `states.wiped` | Витрины пусты. Журнал цел — нажмите Encore!, чтобы всё восстановить. | Read models are empty. The ledger is intact — press Encore! to restore everything. |
+| `states.locked` | Касса закрыта на минутку: пересобираем витрины. | Box office closed for a moment: rebuilding read models. |
+| `states.projection_failed` | ⚠️ Событие записано, но витрина не обновилась. Encore! её догонит. | ⚠️ The event was recorded, but the read model wasn't updated. Encore! will catch it up. |
+
+### A.4 Сообщения правил
+
+| `code` | RU | EN |
+|---|---|---|
+| `concert_not_found` | Такого концерта нет — его ещё не анонсировали | This concert hasn't been announced |
+| `already_announced` | Этот концерт уже анонсирован | This concert has already been announced |
+| `unknown_seat` | Места {seat} нет: ряды A–E, места 1–8 | Seat {seat} doesn't exist: rows A–E, seats 1–8 |
+| `sold_out` | Sold out! Билеты закончились | Sold out! No tickets left |
+| `seat_taken` | Место {seat} уже занято ({by}) | Seat {seat} is already taken by {by} |
+| `ticket_limit` | Правило против перекупщиков: не больше {limit} билетов в одни руки | Anti-scalper rule: max {limit} tickets per fan |
+| `seat_not_booked` | Место {seat} никто не бронировал | Nobody has booked seat {seat} |
+| `not_your_ticket` | Это не ваш билет — отменить может только владелец | Not your ticket — only the owner can cancel it |
+| `rebuild_in_progress` | Касса закрыта на минутку: пересобираем витрины | Box office closed for a moment: rebuilding read models |
+
+### A.5 Причины «капризов» почтового сервера
+
+Суффикс к любой причине — RU: «(имитация, шанс 20 %) — повтор запланирован», EN: "(simulated, 20 % chance) —
+retry scheduled".
+
+| `reason_code` | RU | EN |
+|---|---|---|
+| `smtp_timeout` | 📡 Почтовый сервер не ответил вовремя | 📡 The mail server timed out |
+| `server_on_fire` | 🔥 Почтовый сервер перегрелся | 🔥 The mail server is on fire |
+| `rate_limited` | 🐌 Провайдер ограничил скорость | 🐌 Rate-limited by the provider |
+| `mailbox_full` | 📦 Ящик получателя переполнен | 📦 The recipient's mailbox is full |
+
+### A.6 Подписи `PipelineStrip`
+
+RU: Команда · Агрегат (правила) · events · outbox · 1 транзакция · Витрины · Экран · Воркер · Почта
+EN: Command · Aggregate (rules) · events · outbox · 1 transaction · Read models · Screen · Worker · Mail
+
+---
+
+## Приложение B. Рассмотренные альтернативы домена
+
+| Домен | Плюсы | Почему не выбран |
+|---|---|---|
+| Банковский счёт | классика ES | скучно; на нём построены примеры upstream `cqrs-es` |
+| Тамагочи | очень весело | «время» (голод растёт сам) требует планировщика команд; outbox-сценарий натянут |
+| Пицца-трекер | понятный жизненный цикл | больше состояний и шагов; нет наглядной «сетки», которая гаснет и загорается при replay |
+| Краудфандинг | естественный outbox (платёж) | меньше интерактивности; прогресс-бар менее выразителен, чем схема зала |
+| Кино / авиабилеты | та же механика мест | концерт веселее (персонажи, перекупщик, SOLD OUT) и обходится без тарифов и багажа |
+
+**Почему концерт.** Бронь места знакома всем; правила интуитивны («место занято», «не больше 4 в одни руки»);
+e-ticket — естественный побочный эффект, который нельзя потерять (идеальный повод для outbox); схема зала — яркая
+визуальная витрина, которую эффектно стереть и восстановить; гонка за одно место сама объясняет оптимистическую
+блокировку; а название *Encore* («на бис») само объясняет replay.
+
+---
