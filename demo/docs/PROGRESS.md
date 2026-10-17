@@ -173,6 +173,21 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 - Note: `encore_inspector`'s role-level `default_transaction_read_only` and the explicit
   `READ ONLY` transaction are both in place; the Phase 1 check proved the role cannot `INSERT`.
 
+## Phase 8 — front-end core — ⏸ IN PROGRESS (run stopped by the usage limit)
+
+Done and green (`npm run typecheck && npm run lint && npm test`, 9 vitest tests):
+`src/types/{domain,activity,xray}.ts`, `src/lib/{venue,personas,seatState,outboxStatus,diff,format}.ts`,
+`src/api/{http,backend,sidecar,sse}.ts`, `src/stores/{session,concerts,wallet,commands,activity,xray,rebuild}.ts`,
+full EN/RU dictionaries in `src/i18n/{en,ru}.ts` (Appendix A texts), specs `seatState`, `outboxStatus`,
+`diff`, `i18nParity`. `App.vue` is still the Phase 1 layout stub.
+
+**Resume here:** write the components of PLAN.md §8.3 (layout/AppHeader, pipeline/PipelineStrip,
+app/{ConcertTabs,PersonaPicker,SeatMap,SeatButton,ActionBar,RuleBreaker,WalletPanel,EncorePanel,TimeMachine},
+xray/{XrayPanel,EventStorePanel,SnapshotsPanel,OutboxPanel,MongoPanel,MailboxPanel,ActivityFeed,QueryBadge,JsonView},
+ui/{Toasts,StatusChip,Dice,Countdown,ProgressBar,Tooltip}) and wire them in `App.vue` using the stores
+(`session.loadConfig()`, `activity.connect()`, `xray.connect()`, `rebuild.refreshStatus()`, 5 s safety
+poll of `concerts.refreshAll()`); then Phase 10 (Dockerfiles, nginx, README) and Phase 9 (P1).
+
 ## Phase table
 
 | Phase | Status | Verified by | Manual check needed |
@@ -186,7 +201,7 @@ All ten commands from the root `CLAUDE.md` are green (integration tests through 
 | 5 | ✅ done | curl read API, MongoDB stop/start, LWW unit tests | — |
 | 6 | ✅ done | curl wipe/rebuild/status/time machine, compare script, SQL traces | — |
 | 7 | ✅ done | curl all /inspect endpoints, SSE counts, PostgreSQL stop/start | — |
-| 8 | pending | | |
+| 8 | ⏸ in progress | typecheck/lint/vitest green for the foundations | steps 1–7 of §9 in a browser (after the components exist) |
 | 10 | pending | | |
 | 9 | pending (P1) | | |
 
@@ -197,6 +212,15 @@ None so far.
 ## Known problems
 
 None so far.
+
+## How to run tomorrow
+
+```bash
+cd demo && make up && make dev        # with a real podman compose; or start the DBs as in "Environment limitations"
+make check                            # fmt, clippy, cargo test, vue-tsc, eslint, vitest (all green at this point)
+```
+Sandbox containers `encore-sandbox-postgres` / `encore-sandbox-mongo` were stopped at the end of the run; their
+volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈121 events).
 
 ## Requires manual verification
 
