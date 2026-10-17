@@ -5,11 +5,12 @@
 //! - [`presentation`]: the HTTP API;
 //! - [`infrastructure`]: PostgreSQL, MongoDB, the simulated mail service and the task runtime wiring.
 //!
-//! The binary (`main.rs`) is the composition root; integration tests use the library directly.
+//! [`bootstrap`] is the composition root shared by the binary (`main.rs`) and the tests.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 // `ApiError` is an HTTP response payload built only on error paths; its size is irrelevant.
 #![allow(clippy::result_large_err)]
 pub mod application;
+pub mod bootstrap;
 pub mod config;
 pub mod domain;
 pub mod infrastructure;

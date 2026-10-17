@@ -1,9 +1,10 @@
 //! Read endpoints: health, config and the read-model queries.
 use crate::{
     application::concert::views::concert_hall::ConcertHallView,
+    bootstrap::AppState,
     config::Config,
     domain::shared::venue::{ROWS, SEATS_PER_ROW, Zone},
-    presentation::http::{AppState, error::ApiError, parse_concert_id, parse_fan_id, personas::PERSONAS},
+    presentation::http::{error::ApiError, parse_concert_id, parse_fan_id, personas::PERSONAS},
 };
 use axum::{
     Json,

@@ -2,8 +2,9 @@
 //! business rules: every click becomes a command and the aggregate is the judge.
 use crate::{
     application::command_service::{CommandMetadata, CommandOutcome},
+    bootstrap::AppState,
     domain::{FanId, concert::ConcertCommand},
-    presentation::http::{AppState, error::ApiError, parse_concert_id},
+    presentation::http::{error::ApiError, parse_concert_id},
 };
 use axum::{
     Json,

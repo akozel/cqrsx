@@ -1,7 +1,8 @@
 //! Admin endpoints: 🧨 wipe, ⏪ Encore! (rebuild), status; ⏳ timeline and time machine.
 use crate::{
     application::operations::rebuild::{AlreadyRunning, Speed, WipeError},
-    presentation::http::{AppState, error::ApiError, parse_concert_id},
+    bootstrap::AppState,
+    presentation::http::{error::ApiError, parse_concert_id},
 };
 use axum::{
     Json,

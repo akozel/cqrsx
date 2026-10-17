@@ -1,26 +1,12 @@
 //! Router tests without a database: every branch that answers before storage is touched
 //! (validation, the box-office lock, the error shape) and the few endpoints that need no storage.
-use crate::{
-    application::{
-        activity::ActivityHub,
-        command_service::{ConcertCommands, Executors, FanCommands},
-        lock::BoxOfficeLock,
-        operations::{rebuild::RebuildService, time_travel::TimeTravel, verify::VerifyService},
-    },
-    config::Config,
-    domain::concert::ConcertServices,
-    presentation::http::{AppState, router},
-    testing,
-};
+use crate::{application::lock::BoxOfficeLock, bootstrap, config::Config, presentation::http::router, testing};
 use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode, header},
 };
-use cqrsx::{
-    cqrs::command::retry::AggregateConflictRetryPolicy, postgres::task_queue::PostgresTaskQueueConfig,
-    task::runtime::config::TaskRuntimeConfig,
-};
+use cqrsx::{postgres::task_queue::PostgresTaskQueueConfig, task::runtime::config::TaskRuntimeConfig};
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::{sync::Arc, time::Duration};
@@ -46,8 +32,8 @@ fn config() -> Config {
     Config {
         database_url: String::new(),
         mongodb_uri: String::new(),
-        read_db: String::new(),
-        mail_db: String::new(),
+        read_db: "encore_read_test".into(),
+        mail_db: "mail_service_test".into(),
         http_addr: "127.0.0.1:0".parse().unwrap(),
         task_failure_rate: 0.2,
         task_latency: (Duration::ZERO, Duration::ZERO),
@@ -70,43 +56,11 @@ struct App {
 }
 
 async fn app() -> App {
-    let pool = testing::lazy_pool();
     let mongo = testing::lazy_mongo().await;
-    let read_db = mongo.database("encore_read_test");
-    let read = Arc::new(testing::lazy_read_side().await);
-    let activity = Arc::new(ActivityHub::new(16, 16));
-    let lock = Arc::new(BoxOfficeLock::new());
-    let executors = Executors {
-        pool: pool.clone(),
-        snapshot_every: 10,
-        retry: AggregateConflictRetryPolicy::default(),
-    };
-    let state = AppState {
-        config: Arc::new(config()),
-        concert_commands: Arc::new(ConcertCommands::new(
-            &executors,
-            vec![],
-            ConcertServices::default(),
-            activity.clone(),
-            lock.clone(),
-            6,
-        )),
-        fan_commands: Arc::new(FanCommands::new(&executors, vec![], activity.clone(), lock.clone())),
-        activity: activity.clone(),
-        rebuild: Arc::new(RebuildService::new(
-            lock.clone(),
-            pool.clone(),
-            read.clone(),
-            activity,
-            Duration::ZERO,
-        )),
-        read: read.clone(),
-        time_travel: Arc::new(TimeTravel::new(pool.clone())),
-        verify: Arc::new(VerifyService::new(pool, read_db, read)),
-        shutdown: CancellationToken::new(),
-    };
+    let wiring = bootstrap::wire(Arc::new(config()), testing::lazy_pool(), &mongo, CancellationToken::new()).unwrap();
+    let lock = wiring.state.rebuild.lock().clone();
     App {
-        router: router(state),
+        router: router(wiring.state),
         lock,
     }
 }

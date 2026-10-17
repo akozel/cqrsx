@@ -1,4 +1,4 @@
-//! HTTP API (axum): router, shared state and handlers.
+//! HTTP API (axum): router and handlers. The shared state is [`AppState`], built by `bootstrap`.
 pub mod activity;
 pub mod commands;
 pub mod error;
@@ -9,38 +9,15 @@ pub mod queries;
 mod tests;
 
 use crate::{
-    application::{
-        activity::ActivityHub,
-        command_service::{ConcertCommands, FanCommands},
-        operations::{rebuild::RebuildService, time_travel::TimeTravel, verify::VerifyService},
-    },
-    config::Config,
+    bootstrap::AppState,
     domain::{ConcertId, FanId},
-    infrastructure::mongo::read_side::ReadSide,
     presentation::http::error::ApiError,
 };
 use axum::{
     Router,
     routing::{get, post},
 };
-use std::sync::Arc;
-use tokio_util::sync::CancellationToken;
 use tower_http::trace::TraceLayer;
-
-#[derive(Clone)]
-pub struct AppState {
-    pub config: Arc<Config>,
-    pub concert_commands: Arc<ConcertCommands>,
-    pub fan_commands: Arc<FanCommands>,
-    pub activity: Arc<ActivityHub>,
-    pub rebuild: Arc<RebuildService>,
-    pub read: Arc<ReadSide>,
-    pub time_travel: Arc<TimeTravel>,
-    pub verify: Arc<VerifyService>,
-    /// SSE streams end when this token is cancelled; otherwise graceful shutdown would wait for
-    /// every open browser tab.
-    pub shutdown: CancellationToken,
-}
 
 /// Path segment → validated id, or `400 invalid_request`.
 pub fn parse_concert_id(raw: &str) -> Result<ConcertId, ApiError> {

@@ -1,6 +1,6 @@
 //! `GET /api/activity` — Server-Sent Events. First a `hello` with the recent backlog, then live
 //! `activity` events. The stream ends on shutdown so Ctrl+C never waits for open tabs.
-use crate::presentation::http::{AppState, queries::config_json};
+use crate::{bootstrap::AppState, presentation::http::queries::config_json};
 use axum::{
     extract::State,
     response::sse::{Event, KeepAlive, Sse},
