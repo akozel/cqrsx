@@ -144,3 +144,22 @@ impl Aggregate for Fan {
         }
     }
 }
+
+/// Wire contract of the aggregate snapshot (`snapshots.payload`): the literal must never change.
+#[cfg(test)]
+mod wire_format_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn fan_snapshot_keeps_its_stored_json() {
+        let document = json!({
+            "name": "Fox",
+            "tickets": { "00000000-0000-0000-0000-000000000001": {
+                "concert_id": "radiohead-2026-11-21", "seat": "B4", "zone": "standard", "price": 80, "state": "cancelled" } },
+        });
+        let fan: Fan = serde_json::from_value(document.clone()).unwrap();
+        assert_eq!(fan.tickets().len(), 1);
+        assert_eq!(serde_json::to_value(&fan).unwrap(), document);
+    }
+}

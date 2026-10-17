@@ -49,3 +49,43 @@ impl ConcertError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The codes are the API contract: the front-end i18n files translate exactly these keys.
+    #[test]
+    fn rejection_codes_are_stable() {
+        let seat = SeatId::parse("B4").unwrap();
+        let codes: Vec<&str> = [
+            ConcertError::ConcertNotFound,
+            ConcertError::AlreadyAnnounced,
+            ConcertError::UnknownSeat { seat: "Z9".into() },
+            ConcertError::SoldOut,
+            ConcertError::SeatTaken {
+                seat: seat.clone(),
+                by: "Fox".into(),
+            },
+            ConcertError::TicketLimit { limit: 4 },
+            ConcertError::SeatNotBooked { seat },
+            ConcertError::NotYourTicket,
+        ]
+        .iter()
+        .map(ConcertError::code)
+        .collect();
+        assert_eq!(
+            codes,
+            [
+                "concert_not_found",
+                "already_announced",
+                "unknown_seat",
+                "sold_out",
+                "seat_taken",
+                "ticket_limit",
+                "seat_not_booked",
+                "not_your_ticket"
+            ]
+        );
+    }
+}

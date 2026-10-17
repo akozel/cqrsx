@@ -206,3 +206,21 @@ impl Aggregate for Concert {
         }
     }
 }
+
+/// Wire contract of the aggregate snapshot (`snapshots.payload`): the literal must never change.
+#[cfg(test)]
+mod wire_format_tests {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn concert_snapshot_keeps_its_stored_json() {
+        let document = json!({
+            "info": { "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21" },
+            "bookings": { "B4": { "fan_id": "fox", "fan_name": "Fox", "booking_id": "00000000-0000-0000-0000-000000000001", "price": 80 } },
+        });
+        let concert: Concert = serde_json::from_value(document.clone()).unwrap();
+        assert_eq!(concert.bookings().len(), 1);
+        assert_eq!(serde_json::to_value(&concert).unwrap(), document);
+    }
+}

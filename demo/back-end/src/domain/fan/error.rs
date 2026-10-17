@@ -30,3 +30,23 @@ impl FanError {
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The codes are the contract of the activity log and the task-outcome mapping.
+    #[test]
+    fn rejection_codes_are_stable() {
+        let booking_id = Uuid::nil();
+        let codes: Vec<&str> = [
+            FanError::AlreadyRecorded { booking_id },
+            FanError::UnknownTicket { booking_id },
+            FanError::AlreadyCancelled { booking_id },
+        ]
+        .iter()
+        .map(FanError::code)
+        .collect();
+        assert_eq!(codes, ["already_recorded", "unknown_ticket", "already_cancelled"]);
+    }
+}
