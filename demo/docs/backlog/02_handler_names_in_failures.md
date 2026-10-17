@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | сделано: `feat(cqrsx): handler names in post-commit failures; adopt in demo` |
+| Статус | сделано, коммит `445f52e`: `feat(cqrsx): handler names in post-commit failures; adopt in demo` |
 | Ценность | высокая: убирает параллельный список имён, который легко рассинхронизировать |
 | Цена | низкая; меняет публичные типы ошибок (крейт не публикуется) |
 | cqrsx | `cqrs/event_handler.rs`, `cqrs/projection.rs`, `cqrs.rs`, `cqrs/command.rs`, `cqrs/command/executor.rs` |

@@ -294,12 +294,17 @@ Known flake (pre-existing, not caused by this series): under `llvm-cov -p cqrsx`
 
 | Step | Ticket | Commit | Result |
 |---|---|---|---|
-| 01 | `BoxedTaskAdapter`; demo enum adapter deleted | see `git log` | root tests 358 → 363, coverage 97.57 % / 97.57 %; demo 97 tests unchanged; all checks ✓ |
-| 02 | `EventHandler::name`, `FailedHandler` in `CommittedWithEventHandlerFailure`; demo `NamedHandler` deleted | see `git log` | root tests 363 → 366, coverage 97.61 % / 97.61 %; demo 97 → 98 (`NotifyingHandler` names); all checks ✓ |
-| 03 | `PostgresCommandExecutor::new(pool, config, services).with_event_handler(Arc<dyn EventHandler>)`, `impl EventHandler for Arc<H>`; demo `Executors` and aliases deleted | see `git log` | root tests 366 → 369 (2 testcontainers), coverage 97.63 % / 97.63 %; demo 98, `write_side` green on PostgreSQL; all checks ✓ |
-| 04 | `cqrs::testing::{command::TestCommandExecutor, unavailable_store::UnavailableStore, mem_view_repository::MemViewRepository}`, `TaskAttempt::first`; demo `application/test_support.rs` and `MemoryReadModelStore` deleted | see `git log` | root tests 369 → 379 (+1 doctest), coverage 97.65 % / 97.65 %; demo 98 (unit 89 unchanged); all checks ✓ |
-| 05 | `cqrs::command::causation::Causation` (`root`, `from_task`, `event_metadata`, `stamp_task`), uuid `v7` (lock unchanged); demo `correlation_of` deleted, `CommandMetadata { causation, recorded_at }` | see `git log` | root tests 379 → 384, coverage 97.68 % / 97.68 %; demo 98, wire guards tightened; all checks ✓ (the `--features postgres` run once failed with a transient "can't find crate" build error, the immediate rerun passed: 156 + 18 + 83 + 5 + 34 + 7) |
-| 06 | `EventReplay::set_progress_observer` (`ReplayProgress`), `with_pace`; demo `projections/progress.rs` deleted | see `git log` | root tests 384 → 388, coverage 97.72 % / 97.72 %; demo 98, rebuild activity sequence unchanged; all checks ✓ |
+| 01 | `BoxedTaskAdapter`; demo enum adapter deleted | `70b41bc` | root tests 358 → 363, coverage 97.57 % / 97.57 %; demo 97 tests unchanged; all checks ✓ |
+| 02 | `EventHandler::name`, `FailedHandler` in `CommittedWithEventHandlerFailure`; demo `NamedHandler` deleted | `445f52e` | root tests 363 → 366, coverage 97.61 % / 97.61 %; demo 97 → 98 (`NotifyingHandler` names); all checks ✓ |
+| 03 | `PostgresCommandExecutor::new(pool, config, services).with_event_handler(Arc<dyn EventHandler>)`, `impl EventHandler for Arc<H>`; demo `Executors` and aliases deleted | `8dd8447` | root tests 366 → 369 (2 testcontainers), coverage 97.63 % / 97.63 %; demo 98, `write_side` green on PostgreSQL; all checks ✓ |
+| 04 | `cqrs::testing::{command::TestCommandExecutor, unavailable_store::UnavailableStore, mem_view_repository::MemViewRepository}`, `TaskAttempt::first`; demo `application/test_support.rs` and `MemoryReadModelStore` deleted | `7292ecd` | root tests 369 → 379 (+1 doctest), coverage 97.65 % / 97.65 %; demo 98 (unit 89 unchanged); all checks ✓ |
+| 05 | `cqrs::command::causation::Causation` (`root`, `from_task`, `event_metadata`, `stamp_task`), uuid `v7` (lock unchanged); demo `correlation_of` deleted, `CommandMetadata { causation, recorded_at }` | `051c5be` | root tests 379 → 384, coverage 97.68 % / 97.68 %; demo 98, wire guards tightened; all checks ✓ (the `--features postgres` run once failed with a transient "can't find crate" build error, the immediate rerun passed: 156 + 18 + 83 + 5 + 34 + 7) |
+| 06 | `EventReplay::set_progress_observer` (`ReplayProgress`), `with_pace`; demo `projections/progress.rs` deleted | `e54cc20` | root tests 384 → 388, coverage 97.72 % / 97.72 %; demo 98, rebuild activity sequence unchanged; all checks ✓ |
+
+Series total (`f0e7d32..e54cc20`): `cqrsx` src + tests +1806 / −40 lines (about half of it tests), demo back-end
++438 / −613 (src +407 / −599); root tests 358 → 388, coverage 97.56 % → 97.72 %; demo tests 97 → 98. Both
+breaking changes (02: `handlers: Vec<FailedHandler>`; 03: `PostgresCommandExecutor::new(pool, config, services)`)
+are listed in their commit messages. Not done here: tickets 07–10, merging into `main`, a browser walk-through.
 
 ## Phase table
 

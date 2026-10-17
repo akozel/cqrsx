@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | сделано: `feat(cqrsx): causation helper; adopt in demo` (вместо `NewTask::caused_by` — `Causation::stamp_task`, см. план, решения Р8–Р9) |
+| Статус | сделано, коммит `051c5be`: `feat(cqrsx): causation helper; adopt in demo` (вместо `NewTask::caused_by` — `Causation::stamp_task`, см. план, решения Р8–Р9) |
 | Ценность | средняя: это соглашение об именах ключей, а не механизм; но без него цепочки между проектами не склеятся |
 | Цена | низкая |
 | cqrsx | `cqrs/command/causation.rs` (новый), `task.rs` (`NewTask::caused_by`) |

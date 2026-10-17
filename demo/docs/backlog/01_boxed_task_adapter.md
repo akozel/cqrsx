@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | сделано: `feat(cqrsx): boxed task adapter; adopt in demo` |
+| Статус | сделано, коммит `70b41bc`: `feat(cqrsx): boxed task adapter; adopt in demo` |
 | Ценность | высокая: каждое приложение с двумя и более типами задач пишет этот enum |
 | Цена | низкая: один новый модуль в `cqrsx`, без новых зависимостей |
 | cqrsx | `task/adapter/boxed.rs` (новый), `task/runtime/dispatcher_factory.rs` (опционально) |

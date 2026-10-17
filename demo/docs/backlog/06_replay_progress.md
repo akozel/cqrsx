@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | сделано: `feat(cqrsx): replay progress observer and pace; adopt in demo` |
+| Статус | сделано, коммит `e54cc20`: `feat(cqrsx): replay progress observer and pace; adopt in demo` |
 | Ценность | средняя: любой инструмент пересборки хочет прогресс-бар и ограничение скорости |
 | Цена | низкая |
 | cqrsx | `cqrs/event_handler/replay.rs` |

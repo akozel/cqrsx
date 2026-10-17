@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | сделано: `feat(cqrsx): postgres executor with services and event handlers; adopt in demo` |
+| Статус | сделано, коммит `8dd8447`: `feat(cqrsx): postgres executor with services and event handlers; adopt in demo` |
 | Ценность | высокая: библиотечный конструктор сейчас не годится ни для одного агрегата с проекцией |
 | Цена | низкая |
 | cqrsx | `postgres/command.rs`, `cqrs/event_handler.rs` (`impl EventHandler for Arc<dyn EventHandler>`) |

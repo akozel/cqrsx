@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | сделано: `feat(cqrsx): use-case testing toolkit; adopt in demo` (исполнитель назван `TestCommandExecutor<A, S>`, см. план, решение Р5) |
+| Статус | сделано, коммит `7292ecd`: `feat(cqrsx): use-case testing toolkit; adopt in demo` (исполнитель назван `TestCommandExecutor<A, S>`, см. план, решение Р5) |
 | Ценность | высокая: решение D7 («use cases тестируются на `MemStore`») становится библиотечным путём для любого проекта |
 | Цена | низкая, без новых зависимостей; код живёт в `pub mod testing`, покрытие обязательно |
 | cqrsx | `cqrs/testing/mem_executor.rs`, `cqrs/testing/mem_view_repository.rs` (новые), `task/attempt.rs` |
