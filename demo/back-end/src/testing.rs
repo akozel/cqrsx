@@ -1,6 +1,7 @@
 //! Test fixtures that need no running database: lazily connecting PostgreSQL pools and MongoDB
 //! clients (enough to wire the whole graph and exercise every branch that returns before
-//! storage), and in-memory doubles of the read-side ports.
+//! storage), and in-memory doubles of the read-side ports (the read models are the cqrsx
+//! `MemViewRepository`).
 use crate::{
     application::{
         StorageError,
@@ -10,14 +11,18 @@ use crate::{
     domain::FanId,
 };
 use async_trait::async_trait;
-use cqrsx::{postgres::task_queue::PostgresTaskQueueConfig, task::runtime::config::TaskRuntimeConfig};
+use cqrsx::{
+    cqrs::{
+        aggregate::Aggregate,
+        projection::{View, repository::ViewRepository},
+        testing::mem_view_repository::MemViewRepository,
+    },
+    postgres::task_queue::PostgresTaskQueueConfig,
+    task::runtime::config::TaskRuntimeConfig,
+};
 use mongodb::{Client, options::ClientOptions};
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use std::{
-    collections::BTreeMap,
-    sync::{Arc, Mutex},
-    time::Duration,
-};
+use std::{sync::Arc, time::Duration};
 
 /// A valid configuration with the demo defaults, no latency and databases nobody listens on.
 pub fn config() -> Config {
@@ -55,31 +60,44 @@ pub async fn lazy_mongo() -> Client {
     Client::with_options(options).unwrap()
 }
 
-/// A read-model collection in memory, ordered by id like the MongoDB one.
-pub struct MemoryReadModelStore<V> {
-    documents: Mutex<BTreeMap<String, Stored<V>>>,
-}
-
-impl<V> MemoryReadModelStore<V> {
-    pub fn new(documents: impl IntoIterator<Item = Stored<V>>) -> Arc<Self> {
-        Arc::new(Self {
-            documents: Mutex::new(documents.into_iter().map(|d| (d.id.clone(), d)).collect()),
-        })
+/// A read-model collection in memory holding `documents`, ordered by id like the MongoDB one.
+pub fn read_model<V: View<A>, A: Aggregate>(documents: impl IntoIterator<Item = Stored<V>>) -> Arc<MemViewRepository<V, A>> {
+    let repository = MemViewRepository::default();
+    for document in documents {
+        repository.put(&document.id, document.version, &document.view).unwrap();
     }
+    Arc::new(repository)
 }
 
 #[async_trait]
-impl<V: Clone + Send + 'static> ReadModelStore<V> for MemoryReadModelStore<V> {
+impl<V, A> ReadModelStore<V> for MemViewRepository<V, A>
+where
+    V: View<A> + 'static,
+    A: Aggregate + 'static,
+{
     async fn load(&self, id: &str) -> Result<Option<Stored<V>>, StorageError> {
-        Ok(self.documents.lock().unwrap().get(id).cloned())
+        let found = self.load_with_context(id).await.map_err(StorageError::new)?;
+        Ok(found.map(|(view, context)| Stored {
+            id: context.view_instance_id,
+            version: context.version,
+            view,
+        }))
     }
 
     async fn list(&self) -> Result<Vec<Stored<V>>, StorageError> {
-        Ok(self.documents.lock().unwrap().values().cloned().collect())
+        let documents = self.list_all().map_err(StorageError::new)?;
+        Ok(documents
+            .into_iter()
+            .map(|(context, view)| Stored {
+                id: context.view_instance_id,
+                version: context.version,
+                view,
+            })
+            .collect())
     }
 
     async fn wipe(&self) -> Result<(), StorageError> {
-        self.documents.lock().unwrap().clear();
+        self.clear();
         Ok(())
     }
 }

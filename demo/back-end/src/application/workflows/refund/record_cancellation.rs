@@ -56,13 +56,10 @@ impl<E: CommandExecutor<Fan>> TaskHandler<RecordCancellationV1> for RecordCancel
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::{
-        concert::tasks::RecordTicketV1,
-        workflows::{
-            CHAIN_RETRY_AFTER,
-            test_support::{attempt, fans, ticket},
-            ticket_delivery::record_ticket::RecordTicketHandler,
-        },
+    use crate::application::workflows::{
+        CHAIN_RETRY_AFTER,
+        test_support::{attempt, fans, ticket},
+        ticket_delivery::record_ticket::RecordTicketHandler,
     };
     use cqrsx::cqrs::{store::EventStore, testing::mem_store::MemStore};
     use uuid::Uuid;
@@ -81,52 +78,52 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancellation_that_overtook_its_ticket_is_retried_later() {
-        let (fans, bound) = fans(MemStore::default());
+        let (fans, executor) = fans(MemStore::default());
         let mut handler = RecordCancellationHandler {
             fans,
             follow_up_max_attempts: 6,
         };
-        let result = handler
-            .handle(
-                cancellation(ticket().booking_id),
-                &attempt::<RecordCancellationV1>(Uuid::now_v7()),
-            )
-            .await;
+        let payload = cancellation(ticket().booking_id);
+        let result = handler.handle(payload.clone(), &attempt(&payload, Uuid::now_v7())).await;
         match result {
             Err(TaskHandlerError::Retry { reason, retry_after }) => {
                 assert_eq!((reason.as_str(), retry_after), ("unknown_ticket", Some(CHAIN_RETRY_AFTER)));
             }
             other => panic!("expected a retry (R10), got {other:?}"),
         }
-        assert_eq!(
-            bound.take().len(),
-            1,
-            "the follow-up was bound but never published: nothing was committed"
+        assert_eq!(executor.take_bound_tasks().len(), 1, "the follow-up was bound to the command");
+        assert!(
+            executor.take_published_tasks().is_empty(),
+            "but never published: nothing was committed"
         );
     }
 
     #[tokio::test]
     async fn a_recorded_ticket_is_cancelled_and_the_refund_mail_task_published() {
         let store = MemStore::default();
-        let (fans, bound) = fans(store.clone());
+        let (fans, executor) = fans(store.clone());
         let ticket = ticket();
         RecordTicketHandler {
             fans: fans.clone(),
             follow_up_max_attempts: 6,
         }
-        .handle(ticket.clone(), &attempt::<RecordTicketV1>(Uuid::now_v7()))
+        .handle(ticket.clone(), &attempt(&ticket, Uuid::now_v7()))
         .await
         .unwrap();
-        bound.take();
+        executor.take_published_tasks();
         let mut handler = RecordCancellationHandler {
             fans,
             follow_up_max_attempts: 6,
         };
-        let delivery = attempt::<RecordCancellationV1>(Uuid::now_v7());
-        handler.handle(cancellation(ticket.booking_id), &delivery).await.unwrap();
+        let payload = cancellation(ticket.booking_id);
+        let delivery = attempt(&payload, Uuid::now_v7());
+        handler.handle(payload.clone(), &delivery).await.unwrap();
         assert_eq!(store.load_events("fox").await.unwrap().len(), 2);
-        assert_eq!(bound.take()[0].format().to_string(), "encore_issue_refund v1");
-        handler.handle(cancellation(ticket.booking_id), &delivery).await.unwrap();
+        assert_eq!(
+            executor.take_published_tasks()[0].format().to_string(),
+            "encore_issue_refund v1"
+        );
+        handler.handle(payload, &delivery).await.unwrap();
         assert_eq!(store.load_events("fox").await.unwrap().len(), 2, "R11: already cancelled");
     }
 }

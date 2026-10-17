@@ -41,7 +41,7 @@ mod tests {
         let executed = h.app.announce_concert(&concert_id(), announce(), CommandMetadata::ui()).await;
         assert!(executed.outcome.is_accepted());
         assert!(executed.tasks.is_empty());
-        assert!(h.bound.take().is_empty());
+        assert!(h.executor.take_bound_tasks().is_empty());
         let log = h.activity();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].kind, "command.accepted");

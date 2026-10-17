@@ -144,8 +144,11 @@
 //! # }
 //! ```
 
+pub mod command;
 pub mod executor;
 pub mod mem_store;
+pub mod mem_view_repository;
+pub mod unavailable_store;
 pub mod validator;
 
 use crate::cqrs::{aggregate::Aggregate, testing::executor::AggregateTestExecutor};

@@ -1,11 +1,10 @@
-//! A box office over in-memory storage, for the use-case tests.
+//! A box office over a test event store, for the use-case tests.
 use crate::{
     application::{
         activity::{ActivityEntry, ActivityHub},
         command_service::CommandService,
         concert::ConcertApp,
         lock::BoxOfficeLock,
-        test_support::{BoundTasks, TestExecutor, executor},
     },
     domain::{
         ConcertId, FanId,
@@ -16,13 +15,14 @@ use crate::{
     },
 };
 use chrono::NaiveDate;
-use cqrsx::cqrs::store::EventStore;
+use cqrsx::cqrs::{store::EventStore, testing::command::TestCommandExecutor};
 use std::sync::Arc;
 use uuid::Uuid;
 
 pub struct Harness<S: EventStore<Concert>> {
-    pub app: ConcertApp<TestExecutor<Concert, S>, S>,
-    pub bound: BoundTasks,
+    pub app: ConcertApp<TestCommandExecutor<Concert, S>, S>,
+    /// A clone of the executor the app runs its commands through: shares the store and the task records.
+    pub executor: TestCommandExecutor<Concert, S>,
     pub activity: Arc<ActivityHub>,
     pub lock: Arc<BoxOfficeLock>,
 }
@@ -32,17 +32,13 @@ where
     S: EventStore<Concert> + Clone + 'static,
     S::AC: Send,
 {
-    let bound = BoundTasks::default();
+    let executor = TestCommandExecutor::new(store.clone(), ConcertServices::default());
     let activity = Arc::new(ActivityHub::new(64, 64));
     let lock = Arc::new(BoxOfficeLock::new());
-    let service = CommandService::new(
-        executor(store.clone(), ConcertServices::default(), bound.clone()),
-        activity.clone(),
-        lock.clone(),
-    );
+    let service = CommandService::new(executor.clone(), activity.clone(), lock.clone());
     Harness {
         app: ConcertApp::new(service, store, 6),
-        bound,
+        executor,
         activity,
         lock,
     }

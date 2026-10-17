@@ -83,11 +83,10 @@ mod tests {
         application::{
             command_service::{CommandMetadata, CommandOutcome},
             concert::test_support::{announce, book, cancel, concert_id, harness},
-            test_support::UnreachableStore,
         },
         domain::concert::ConcertError,
     };
-    use cqrsx::cqrs::testing::mem_store::MemStore;
+    use cqrsx::cqrs::testing::{mem_store::MemStore, unavailable_store::UnavailableStore};
     use serde_json::json;
     use uuid::Uuid;
 
@@ -99,7 +98,7 @@ mod tests {
         h.app
             .book_seat(&concert_id(), book("A1", "fox", booking_id), CommandMetadata::ui())
             .await;
-        h.bound.take();
+        h.executor.take_bound_tasks();
         let metadata = CommandMetadata::ui();
         let cancellation_id = metadata.command_id;
         let executed = h
@@ -109,7 +108,7 @@ mod tests {
         assert!(executed.outcome.is_accepted());
         assert_eq!(executed.tasks, ["encore_record_cancellation v1"]);
         assert_eq!(
-            h.bound.take()[0].payload(),
+            h.executor.take_bound_tasks()[0].payload(),
             &json!({ "booking_id": booking_id, "cancellation_id": cancellation_id, "concert_id": "radiohead-2026-11-21",
                      "seat": "A1", "fan_id": "fox", "refund": 120 })
         );
@@ -122,19 +121,19 @@ mod tests {
         h.app
             .book_seat(&concert_id(), book("B4", "fox", Uuid::now_v7()), CommandMetadata::ui())
             .await;
-        h.bound.take();
+        h.executor.take_bound_tasks();
         let executed = h
             .app
             .cancel_booking(&concert_id(), cancel("B4", "panda", Uuid::now_v7()), CommandMetadata::ui())
             .await;
         assert_eq!(executed.outcome, CommandOutcome::Rejected(ConcertError::NotYourTicket));
         assert!(executed.tasks.is_empty());
-        assert!(h.bound.take().is_empty());
+        assert!(h.executor.take_bound_tasks().is_empty());
     }
 
     #[tokio::test]
     async fn a_closed_box_office_does_not_even_read_the_ledger() {
-        let h = harness(UnreachableStore);
+        let h = harness(UnavailableStore);
         let _guard = h.lock.try_acquire().unwrap();
         let executed = h
             .app
@@ -143,14 +142,14 @@ mod tests {
         assert_eq!(
             executed.outcome,
             CommandOutcome::Locked,
-            "an unreachable store would answer Unavailable"
+            "an unavailable store would answer Unavailable"
         );
         assert!(h.activity().is_empty(), "a locked outcome is not logged");
     }
 
     #[tokio::test]
-    async fn an_unreachable_ledger_makes_the_cancellation_unavailable() {
-        let h = harness(UnreachableStore);
+    async fn an_unavailable_ledger_makes_the_cancellation_unavailable() {
+        let h = harness(UnavailableStore);
         let executed = h
             .app
             .cancel_booking(&concert_id(), cancel("B4", "fox", Uuid::now_v7()), CommandMetadata::ui())

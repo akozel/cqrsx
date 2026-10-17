@@ -1,12 +1,7 @@
 //! A fan ledger over in-memory storage and task attempts, for the workflow step tests.
 use crate::{
     application::{
-        activity::ActivityHub,
-        command_service::CommandService,
-        concert::tasks::RecordTicketV1,
-        fan::FanApp,
-        lock::BoxOfficeLock,
-        test_support::{BoundTasks, TestExecutor, executor},
+        activity::ActivityHub, command_service::CommandService, concert::tasks::RecordTicketV1, fan::FanApp, lock::BoxOfficeLock,
     },
     domain::{
         ConcertId, FanId,
@@ -15,38 +10,29 @@ use crate::{
     },
 };
 use cqrsx::{
-    cqrs::testing::mem_store::MemStore,
-    task::{
-        attempt::TaskAttempt,
-        format::{TaskFormat, TaskPayload},
-    },
+    cqrs::testing::{command::TestCommandExecutor, mem_store::MemStore},
+    task::{attempt::TaskAttempt, format::TaskPayload},
 };
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub type TestFans = FanApp<TestExecutor<Fan, MemStore<Fan>>>;
+pub type TestFans = FanApp<TestCommandExecutor<Fan>>;
 
-pub fn fans(store: MemStore<Fan>) -> (Arc<TestFans>, BoundTasks) {
-    let bound = BoundTasks::default();
+/// The ledger and a clone of the executor it runs its commands through (for the task records).
+pub fn fans(store: MemStore<Fan>) -> (Arc<TestFans>, TestCommandExecutor<Fan>) {
+    let executor = TestCommandExecutor::new(store, ());
     let service = CommandService::new(
-        executor(store, (), bound.clone()),
+        executor.clone(),
         Arc::new(ActivityHub::new(16, 16)),
         Arc::new(BoxOfficeLock::new()),
     );
-    (Arc::new(FanApp::new(service)), bound)
+    (Arc::new(FanApp::new(service)), executor)
 }
 
-/// One claim of a task of type `P`, carrying the correlation id of the command that published it.
-pub fn attempt<P: TaskPayload>(correlation_id: Uuid) -> TaskAttempt {
-    TaskAttempt::new(
-        Uuid::new_v4(),
-        TaskFormat::of::<P>().unwrap(),
-        json!({}),
-        json!({ "correlation_id": correlation_id }),
-        1,
-    )
-    .unwrap()
+/// The first claim of `payload`, carrying the correlation id of the command that published it.
+pub fn attempt<P: TaskPayload>(payload: &P, correlation_id: Uuid) -> TaskAttempt {
+    TaskAttempt::first(payload, json!({ "correlation_id": correlation_id })).unwrap()
 }
 
 /// Fox's B4 ticket, always the same booking.

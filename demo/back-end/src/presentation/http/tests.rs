@@ -9,8 +9,9 @@ use crate::{
         read_models::ReadModels,
     },
     bootstrap,
+    domain::{concert::Concert, fan::Fan},
     presentation::http::router,
-    testing::{self, MemoryInbox, MemoryReadModelStore},
+    testing::{self, MemoryInbox},
 };
 use axum::{
     Router,
@@ -64,8 +65,8 @@ fn read_models(
     mails: Vec<DeliveredMail>,
 ) -> ReadModels {
     ReadModels {
-        halls: MemoryReadModelStore::new(halls),
-        wallets: MemoryReadModelStore::new(wallets),
+        halls: testing::read_model::<_, Concert>(halls),
+        wallets: testing::read_model::<_, Fan>(wallets),
         inbox: Arc::new(MemoryInbox(mails)),
     }
 }

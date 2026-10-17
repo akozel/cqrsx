@@ -64,7 +64,7 @@ mod tests {
             .await;
         assert!(executed.outcome.is_accepted());
         assert_eq!(executed.tasks, ["encore_record_ticket v1"]);
-        let tasks = h.bound.take();
+        let tasks = h.executor.take_published_tasks();
         assert_eq!(tasks.len(), 1);
         assert_eq!(
             tasks[0].payload(),
@@ -90,7 +90,7 @@ mod tests {
             CommandOutcome::Rejected(ConcertError::UnknownSeat { seat: "Z9".into() })
         );
         assert!(executed.tasks.is_empty());
-        assert!(h.bound.take().is_empty());
+        assert!(h.executor.take_bound_tasks().is_empty());
     }
 
     #[tokio::test]

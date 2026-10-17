@@ -1,6 +1,9 @@
 //! Immutable handler-visible input without queue ownership credentials.
 use super::{validate_metadata, validate_payload};
-use crate::task::{TaskValidationError, format::TaskFormat};
+use crate::task::{
+    TaskValidationError,
+    format::{TaskFormat, TaskPayload},
+};
 use serde_json::Value;
 use uuid::Uuid;
 /// Immutable input for one claim, carrying the stable task ID and claim number.
@@ -34,6 +37,14 @@ impl TaskAttempt {
             number,
         })
     }
+    /// The first claim of a new task carrying `payload` and `metadata`, with a random task ID;
+    /// for invoking task handlers outside the runtime, e.g. in their tests.
+    pub fn first<P: TaskPayload>(payload: &P, metadata: Value) -> Result<Self, TaskValidationError> {
+        let format = TaskFormat::of::<P>()?;
+        let payload = serde_json::to_value(payload).map_err(|_| TaskValidationError::Serialization)?;
+        Self::new(Uuid::new_v4(), format, payload, metadata, 1)
+    }
+
     /// Stable identity of the durable task across claims and redelivery.
     pub fn task_id(&self) -> Uuid {
         self.task_id
@@ -65,5 +76,66 @@ mod tests {
         assert!(build(json!([]), json!({}), 1).is_err());
         assert!(build(json!({}), json!([]), 1).is_err());
         assert!(build(json!({}), json!({}), 0).is_err());
+    }
+
+    #[test]
+    fn a_first_attempt_carries_the_payload_format_and_metadata() {
+        #[derive(serde::Serialize)]
+        struct Greeting<'a> {
+            name: &'a str,
+        }
+        impl TaskPayload for Greeting<'_> {
+            const TASK_TYPE: &'static str = "greeting";
+            const TASK_VERSION: i32 = 2;
+        }
+        let attempt = TaskAttempt::first(&Greeting { name: "fox" }, json!({ "correlation_id": "c-1" })).unwrap();
+        assert_eq!(attempt.format(), &TaskFormat::new("greeting", 2).unwrap());
+        assert_eq!(attempt.payload(), &json!({ "name": "fox" }));
+        assert_eq!(attempt.metadata(), &json!({ "correlation_id": "c-1" }));
+        assert_eq!(attempt.number(), 1);
+        let other = TaskAttempt::first(&Greeting { name: "fox" }, json!({})).unwrap();
+        assert_ne!(attempt.task_id(), other.task_id());
+        assert_eq!(
+            TaskAttempt::first(&Greeting { name: "fox" }, json!([])).unwrap_err(),
+            TaskValidationError::MetadataNotObject
+        );
+    }
+
+    #[test]
+    fn a_first_attempt_rejects_what_no_task_could_carry() {
+        #[derive(serde::Serialize)]
+        struct Text(&'static str);
+        impl TaskPayload for Text {
+            const TASK_TYPE: &'static str = "text";
+            const TASK_VERSION: i32 = 1;
+        }
+        struct Broken;
+        impl serde::Serialize for Broken {
+            fn serialize<S: serde::Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
+                Err(serde::ser::Error::custom("broken"))
+            }
+        }
+        impl TaskPayload for Broken {
+            const TASK_TYPE: &'static str = "broken";
+            const TASK_VERSION: i32 = 1;
+        }
+        #[derive(serde::Serialize)]
+        struct Unversioned;
+        impl TaskPayload for Unversioned {
+            const TASK_TYPE: &'static str = "unversioned";
+            const TASK_VERSION: i32 = 0;
+        }
+        assert_eq!(
+            TaskAttempt::first(&Text("a string, not an object"), json!({})).unwrap_err(),
+            TaskValidationError::PayloadNotObject
+        );
+        assert_eq!(
+            TaskAttempt::first(&Broken, json!({})).unwrap_err(),
+            TaskValidationError::Serialization
+        );
+        assert_eq!(
+            TaskAttempt::first(&Unversioned, json!({})).unwrap_err(),
+            TaskValidationError::Format(crate::task::format::TaskFormatError::InvalidVersion)
+        );
     }
 }

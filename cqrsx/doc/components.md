@@ -56,7 +56,7 @@ Related configuration and validation errors stay with their owning boundary.
 | Read-model projection | `ViewProjection`, `ViewRepository`, `PersistenceErrorObserver` | Update stored views with conflict retry, read views, and observe borrowed persistence errors without consuming them. |
 | Publication data | `NewTask`, `TaskSchedule`, `TaskValidationError`, shared payload/metadata validation | Checked immutable task envelope, initial eligibility and claim-attempt limit. |
 | Wire format | `TaskPayload`, `TaskFormat`, `TaskFormatError` | Versioned business DTO contract and complete type/version routing key. |
-| Handler input | `TaskAttempt` | Stable `task_id`, payload, metadata, format and positive claim `number`; no lease credentials. |
+| Handler input | `TaskAttempt` | Stable `task_id`, payload, metadata, format and positive claim `number`; no lease credentials. `TaskAttempt::first(&payload, metadata)` builds a first claim for calling handlers outside the runtime. |
 | Lease ownership | `TaskLease`, `LeasedTask`, `LEASE_SAFETY_MARGIN` | Platform lock token and original monotonic deadline; attempt plus ownership. |
 | Business operation | `TaskHandler<P>`, `TaskHandlerError` | One repeat-safe operation, classified as success, retry or permanent rejection. |
 | Wire adaptation | `TaskAdapter`, `JsonTaskAdapter<P,H>`, `BoxedTaskAdapter`, private `DynTaskAdapter`, `safe_format` | Validate/decode representations and invoke business work. `BoxedTaskAdapter` erases adapter types so one dispatcher holds different handlers (one allocation per invocation). Mutable handler state remains worker-owned. |
@@ -82,7 +82,7 @@ Related configuration and validation errors stay with their owning boundary.
 | Process lifecycle | `host::lifecycle::run`, `HostError`, private `StopReason`, `TaskRuntimeExit`, `shutdown_signal` | Signal/shared cancellation, inbound/runtime failure priority and coordinated drain. |
 | Logging | `LoggingConfig`, `LoggingInitError` | Explicit process-wide subscriber installation; imports/defaults do not initialize it. |
 | Technical support | private `diagnostics`, `env`, `log_task_failure` | Sanitized diagnostics, confirmed task-failure logging shared by execution/recovery, and integer parsing. |
-| Public testing tools | `TestFramework`, `AggregateTestExecutor`, `AggregateResultValidator`, `MemStore`, `MemStoreAggregateContext`, private locked event map | Downstream given/when/then, assertions and in-memory test storage. |
+| Public testing tools | `TestFramework`, `AggregateTestExecutor`, `AggregateResultValidator`, `MemStore`, `MemStoreAggregateContext`, private locked event map; `TestCommandExecutor<A, S>`, `UnavailableStore`, `MemViewRepository<V, A>` | Downstream given/when/then, assertions and in-memory test storage. Use-case level: a `CommandExecutor` over a test store with conflict retry and event handlers that records bound and published tasks; a store that is never reachable; an in-memory JSON view repository with PostgreSQL version rules (`put`, `list_all`, `clear` for tests). |
 | Private test support | inline CQRS fixtures, `task::test_support`, integration-suite fixtures, log capture and isolated-process helpers | Test-owned fakes and observation; no production service or singleton. |
 
 There is no generic production Helper or Service to merge. Constructors and
@@ -107,7 +107,8 @@ src/
 │   ├── store/
 │   │   ├── persisted.rs            Store, snapshot policy, context and restoration
 │   │   ├── repository.rs, snapshot.rs, serialized_event.rs, stream.rs, upcaster.rs
-│   └── testing.rs, testing/         Public downstream testing toolkit
+│   └── testing.rs, testing/         Public downstream testing toolkit (aggregate given/when/then,
+│                                    MemStore, TestCommandExecutor, UnavailableStore, MemViewRepository)
 ├── task.rs                         NewTask, schedule and structural validation
 ├── task/
 │   ├── format.rs, attempt.rs, handler.rs, adapter.rs, adapter/{json,boxed}.rs, dispatcher.rs

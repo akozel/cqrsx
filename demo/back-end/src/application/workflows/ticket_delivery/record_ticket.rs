@@ -69,13 +69,13 @@ mod tests {
     #[tokio::test]
     async fn records_the_ticket_and_publishes_the_e_ticket_mail_task() {
         let store = MemStore::default();
-        let (fans, bound) = fans(store.clone());
+        let (fans, executor) = fans(store.clone());
         let mut handler = RecordTicketHandler {
             fans,
             follow_up_max_attempts: 6,
         };
         let (payload, correlation_id) = (ticket(), uuid::Uuid::now_v7());
-        let delivery = attempt::<RecordTicketV1>(correlation_id);
+        let delivery = attempt(&payload, correlation_id);
         handler.handle(payload.clone(), &delivery).await.unwrap();
         let events = store.load_events("fox").await.unwrap();
         assert!(
@@ -83,7 +83,7 @@ mod tests {
         );
         assert_eq!(events[0].metadata["causation_id"], delivery.task_id().to_string());
         assert_eq!(events[0].metadata["source"], "task:encore_record_ticket");
-        let tasks = bound.take();
+        let tasks = executor.take_published_tasks();
         assert_eq!(tasks[0].format().to_string(), "encore_send_e_ticket v1");
         assert_eq!(tasks[0].metadata()["correlation_id"], json!(correlation_id));
         assert_eq!(tasks[0].max_attempts(), 6);
@@ -97,7 +97,7 @@ mod tests {
             fans,
             follow_up_max_attempts: 6,
         };
-        let delivery = attempt::<RecordTicketV1>(uuid::Uuid::now_v7());
+        let delivery = attempt(&ticket(), uuid::Uuid::now_v7());
         handler.handle(ticket(), &delivery).await.unwrap();
         handler.handle(ticket(), &delivery).await.unwrap();
         assert_eq!(store.load_events("fox").await.unwrap().len(), 1, "R9: already recorded");

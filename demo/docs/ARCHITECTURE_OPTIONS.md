@@ -648,7 +648,11 @@ application/
    библиотечный `PostgresCommandExecutor::new(pool, config, services).with_event_handler(…)` (бэклог, тикет 03),
    а `history()` стал функцией `history_store(pool, snapshot_every)`.*
 6. **Тестовые фикстуры** — модули `test_support` (в `domain::{concert, fan}`, `application`,
-   `application::{concert, workflows}`), сборка `Config` для тестов — `testing::config()`.
+   `application::{concert, workflows}`), сборка `Config` для тестов — `testing::config()`. *Позже
+   `application::test_support` удалён: исполнитель use cases, недоступный журнал, витрины в памяти и первая
+   попытка задачи теперь библиотечные (`cqrsx::cqrs::testing::{command::TestCommandExecutor,
+   unavailable_store::UnavailableStore, mem_view_repository::MemViewRepository}`, `TaskAttempt::first`; бэклог,
+   тикет 04). В demo остались только фикстуры предметной области.*
 7. **Архитектурный тест раскрывает деревья `use`.** Поиск подстрок не видит
    `use crate::{infrastructure::…}`. Тест сразу нашёл BSON-тест view в application; он переехал в
    `infrastructure::mongo::view_repository`. Дополнительно запрещён `crate::config` в domain и

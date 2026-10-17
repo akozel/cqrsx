@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано: `feat(cqrsx): use-case testing toolkit; adopt in demo` (исполнитель назван `TestCommandExecutor<A, S>`, см. план, решение Р5) |
 | Ценность | высокая: решение D7 («use cases тестируются на `MemStore`») становится библиотечным путём для любого проекта |
 | Цена | низкая, без новых зависимостей; код живёт в `pub mod testing`, покрытие обязательно |
 | cqrsx | `cqrs/testing/mem_executor.rs`, `cqrs/testing/mem_view_repository.rs` (новые), `task/attempt.rs` |
@@ -109,7 +109,7 @@ assert_eq!(executor.take_tasks()[0].payload()["price"], 120);   // row A is VIP,
 
 ## Критерии приёмки
 
-- [ ] `MemCommandExecutor`, `UnavailableStore`, `MemViewRepository`, `TaskAttempt::first` публичны и задокументированы.
-- [ ] Тесты: записанные задачи совпадают с переданными; отклонённая команда задач не публикует; `UnavailableStore` даёт `Unavailable`; `MemViewRepository` возвращает `OptimisticLockError` при устаревшей версии.
-- [ ] `components.md`: строка «Public testing tools» дополнена.
-- [ ] demo: три файла тестовой обвязки удалены, тесты use cases и workflow-шагов переведены на библиотечные типы.
+- [x] `MemCommandExecutor`, `UnavailableStore`, `MemViewRepository`, `TaskAttempt::first` публичны и задокументированы.
+- [x] Тесты: записанные задачи совпадают с переданными; отклонённая команда задач не публикует; `UnavailableStore` даёт `Unavailable`; `MemViewRepository` возвращает `OptimisticLockError` при устаревшей версии.
+- [x] `components.md`: строка «Public testing tools» дополнена.
+- [x] demo: три файла тестовой обвязки удалены, тесты use cases и workflow-шагов переведены на библиотечные типы.

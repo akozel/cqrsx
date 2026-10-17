@@ -70,13 +70,10 @@ impl Rejection for FanError {
 mod tests {
     use super::*;
     use crate::{
-        application::{
-            activity::ActivityHub,
-            command_service::CommandOutcome,
-            test_support::{BoundTasks, UnreachableStore, executor},
-        },
+        application::{activity::ActivityHub, command_service::CommandOutcome},
         domain::fan::commands::RecordCancellation,
     };
+    use cqrsx::cqrs::testing::{command::TestCommandExecutor, unavailable_store::UnavailableStore};
     use uuid::Uuid;
 
     #[test]
@@ -92,7 +89,7 @@ mod tests {
         let lock = Arc::new(BoxOfficeLock::new());
         let activity = Arc::new(ActivityHub::new(8, 8));
         let fans = FanApp::new(CommandService::new(
-            executor(UnreachableStore, (), BoundTasks::default()),
+            TestCommandExecutor::new(UnavailableStore, ()),
             activity.clone(),
             lock.clone(),
         ));

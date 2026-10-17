@@ -11,8 +11,6 @@ pub mod ports;
 pub mod projections;
 pub mod read_models;
 pub mod tasks;
-#[cfg(test)]
-mod test_support;
 pub mod workflows;
 
 /// A storage round trip (PostgreSQL or MongoDB) failed. The message is operator-facing; the HTTP
