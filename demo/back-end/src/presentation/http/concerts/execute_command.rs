@@ -63,7 +63,7 @@ fn to_command(dto: CommandDto, metadata: &CommandMetadata) -> Result<ConcertComm
     })
 }
 
-pub async fn execute(
+pub async fn handle(
     State(state): State<AppState>,
     Path(concert_id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
