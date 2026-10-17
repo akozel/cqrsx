@@ -22,7 +22,7 @@ const tour = useTourStore()
       >
         {{ code.toUpperCase() }}
       </button>
-      <button type="button" class="ml-2 rounded-full border border-border w-7 h-7" :title="t('layout.help')" :aria-label="t('layout.help')" @click="tour.start()">ⓘ</button>
+      <button type="button" class="ml-2 rounded border border-border px-2 py-0.5" @click="tour.start()">ⓘ {{ t('layout.help') }}</button>
     </span>
   </header>
 </template>

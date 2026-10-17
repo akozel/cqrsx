@@ -4,6 +4,7 @@ import { useI18n } from 'vue-i18n'
 import confetti from 'canvas-confetti'
 import AppHeader from '@/components/layout/AppHeader.vue'
 import ChapterCallout from '@/components/layout/ChapterCallout.vue'
+import TutorialDialog from '@/components/layout/TutorialDialog.vue'
 import AnnounceDialog from '@/components/app/AnnounceDialog.vue'
 import PipelineStrip from '@/components/pipeline/PipelineStrip.vue'
 import ConcertTabs from '@/components/app/ConcertTabs.vue'
@@ -81,16 +82,6 @@ watch(
   <div class="min-h-screen flex flex-col">
     <AppHeader />
     <PipelineStrip />
-    <div v-if="tour.step === 'intro'" class="mx-4 mt-3 rounded-lg border border-neon-cyan/50 bg-neon-cyan/5 px-4 py-3 text-sm flex flex-wrap gap-3">
-      <div class="flex-1 min-w-[16rem]">
-        <div class="font-semibold text-neon-cyan">{{ t('banner.title') }}</div>
-        <div class="opacity-90">{{ t('banner.body') }}</div>
-      </div>
-      <div class="flex gap-2 self-start">
-        <button type="button" class="action-btn text-xs" @click="tour.next()">{{ t('banner.start_tour') }}</button>
-        <button type="button" class="rounded border border-border px-2 py-0.5 text-xs" @click="tour.close()">✕ {{ t('banner.close') }}</button>
-      </div>
-    </div>
     <div v-if="concerts.backendDown" class="mx-4 mt-2 rounded border border-neon-red/60 px-3 py-1 text-xs text-neon-red">{{ t('xray.backend_down') }}</div>
     <main class="flex-1 grid grid-cols-1 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)] gap-4 p-4 min-h-0">
       <!-- APP: the box office -->
@@ -132,6 +123,7 @@ watch(
       </section>
     </main>
     <ChapterCallout />
+    <TutorialDialog />
     <Toasts />
   </div>
 </template>

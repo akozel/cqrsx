@@ -1,8 +1,8 @@
 export default {
   app: { title: 'Encore', subtitle: 'cqrsx demo' },
-  layout: { app: 'Box office', xray: 'X-ray', pipeline: 'Command path', language: 'Language', help: 'How to read this screen' },
+  layout: { app: 'Box office', xray: 'X-ray', pipeline: 'Command path', language: 'Language', help: 'Tutorial' },
   banner: {
-    title: 'How to read this screen',
+    title: 'Tutorial',
     body: 'On the left is the box office — what a fan sees. On the right is an X-ray of what the databases hold right now. At the top is the path every command takes. Click any seat and watch what changes.',
     start_tour: 'Take the tour →',
     close: 'Got it',

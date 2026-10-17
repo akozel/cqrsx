@@ -86,13 +86,14 @@ describe('X-ray panels', () => {
 })
 
 describe('App', () => {
-  it('mounts with offline services and shows the banner in both languages', async () => {
+  it('mounts with offline services and opens the tutorial modal in both languages', async () => {
     for (const locale of ['en', 'ru'] as const) {
       const pinia = createPinia()
       setActivePinia(pinia)
       const w = mount(App, { global: { plugins: [i18n(locale), pinia] } })
       await new Promise((r) => setTimeout(r, 0))
-      expect(w.text()).toContain(locale === 'en' ? 'How to read this screen' : 'Как читать этот экран')
+      expect(w.text()).toContain(locale === 'en' ? 'Tutorial' : 'Туториал')
+      expect(w.find('[role="dialog"][aria-modal="true"]').exists()).toBe(true)
       expect(w.text()).toContain('STAGE'.toUpperCase() === 'STAGE' && locale === 'ru' ? 'СЦЕНА' : 'STAGE')
       expect(w.findAll('button.seat').length).toBe(40)
       w.unmount()
