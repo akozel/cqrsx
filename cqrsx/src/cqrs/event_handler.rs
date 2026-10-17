@@ -5,6 +5,7 @@ pub mod replay;
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::cqrs::{aggregate::Aggregate, event::EventEnvelope, store::PersistenceError};
 use async_trait::async_trait;
+use std::sync::Arc;
 
 /// Reacts to events after they have been committed to the event store.
 ///
@@ -25,6 +26,23 @@ pub trait EventHandler<A: Aggregate>: Send + Sync {
     async fn handle(&self, aggregate_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError>;
 }
 
+/// A shared handler, e.g. one instance registered with every per-command framework.
+/// Name and handling are those of the shared handler.
+#[async_trait]
+impl<A, H> EventHandler<A> for Arc<H>
+where
+    A: Aggregate,
+    H: EventHandler<A> + ?Sized,
+{
+    fn name(&self) -> String {
+        (**self).name()
+    }
+
+    async fn handle(&self, aggregate_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
+        (**self).handle(aggregate_id, events).await
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -37,6 +55,38 @@ mod tests {
         async fn handle(&self, _: &str, _: &[EventEnvelope<TestAggregate>]) -> Result<(), PersistenceError> {
             Ok(())
         }
+    }
+
+    /// Counts calls and fails on the second one.
+    #[derive(Default)]
+    struct Counting(std::sync::atomic::AtomicUsize);
+
+    #[async_trait]
+    impl EventHandler<TestAggregate> for Counting {
+        fn name(&self) -> String {
+            "counting".into()
+        }
+
+        async fn handle(&self, _: &str, _: &[EventEnvelope<TestAggregate>]) -> Result<(), PersistenceError> {
+            match self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
+                0 => Ok(()),
+                _ => Err(PersistenceError::OptimisticLockError),
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_shared_handler_delegates_name_and_handling_to_the_one_instance() {
+        let shared = Arc::new(Counting::default());
+        let erased: Arc<dyn EventHandler<TestAggregate>> = shared.clone();
+        let boxed: Vec<Box<dyn EventHandler<TestAggregate>>> = vec![Box::new(erased.clone()), Box::new(shared.clone())];
+        assert_eq!(boxed.iter().map(|h| h.name()).collect::<Vec<_>>(), ["counting", "counting"]);
+        boxed[0].handle("id", &[]).await.unwrap();
+        assert!(matches!(
+            boxed[1].handle("id", &[]).await,
+            Err(PersistenceError::OptimisticLockError)
+        ));
+        assert_eq!(shared.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 
     #[tokio::test]

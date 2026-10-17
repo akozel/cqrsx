@@ -17,9 +17,9 @@ use crate::{
             flaky_mail_server::{FlakyMailServer, MailSettings},
         },
         mongo::inbox::MongoInbox,
-        postgres::PostgresExecutor,
     },
 };
+use cqrsx::postgres::command::PostgresCommandExecutor;
 use cqrsx::task::{
     adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, runtime::dispatcher_factory::TaskDispatcherFactory,
 };
@@ -29,7 +29,7 @@ use std::sync::{
 };
 
 pub struct DispatcherDeps {
-    pub fans: Arc<FanApp<PostgresExecutor<Fan>>>,
+    pub fans: Arc<FanApp<PostgresCommandExecutor<Fan>>>,
     pub inbox: Arc<MongoInbox>,
     pub activity: Arc<ActivityHub>,
     pub mail: MailSettings,

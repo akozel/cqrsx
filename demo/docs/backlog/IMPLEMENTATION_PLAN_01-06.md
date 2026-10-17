@@ -180,9 +180,12 @@
 
 ### Готово, когда
 
-- [ ] в `infrastructure/postgres.rs` нет сборки фреймворка вручную;
-- [ ] `tests/write_side.rs` зелёный против PostgreSQL в testcontainers;
-- [ ] полный набор проверок обеих сборок зелёный.
+- [x] в `infrastructure/postgres.rs` нет сборки фреймворка вручную;
+- [x] `tests/write_side.rs` зелёный против PostgreSQL в testcontainers;
+- [x] полный набор проверок обеих сборок зелёный.
+
+Риск из раздела 11 не сработал: `#[async_trait] impl<A, H: EventHandler<A> + ?Sized> EventHandler<A> for Arc<H>`
+компилируется, так что общий `Arc` работает и для `Arc<dyn EventHandler<A>>`, и для конкретных типов.
 
 ## 6. Шаг 04. Тестовый инструментарий уровня use case
 

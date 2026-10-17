@@ -5,7 +5,10 @@
 use chrono::NaiveDate;
 use cqrsx::{
     cqrs::command::retry::AggregateConflictRetryPolicy,
-    postgres::{EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA},
+    postgres::{
+        EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA,
+        command::{PostgresCommandConfig, PostgresCommandExecutor},
+    },
 };
 use encore_backend::{
     application::{
@@ -21,7 +24,7 @@ use encore_backend::{
             commands::{AnnounceConcert, BookSeat},
         },
     },
-    infrastructure::postgres::Executors,
+    infrastructure::postgres::history_store,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -89,13 +92,13 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     let (pool, container) = database().await;
     let activity = Arc::new(ActivityHub::new(64, 64));
     let lock = Arc::new(BoxOfficeLock::new());
-    let executors = Executors {
-        pool: pool.clone(),
-        snapshot_every: 10,
-        retry: AggregateConflictRetryPolicy::default(),
-    };
-    let executor = executors.executor(vec![], ConcertServices { ticket_limit: 4 });
-    let concerts = ConcertApp::new(CommandService::new(executor, activity, lock), executors.history(), 6);
+    let config = PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default()).expect("config");
+    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 });
+    let concerts = ConcertApp::new(
+        CommandService::new(executor, activity, lock),
+        history_store(pool.clone(), 10),
+        6,
+    );
     let concert_id = ConcertId::parse("test-2026").expect("concert id");
     let announce = AnnounceConcert {
         artist: "A".into(),

@@ -929,7 +929,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `application::operations::{rebuild, verify, time_travel}` | Encore!, verify, машина времени — поверх `MaintainedReadModel`, `EventLedgerStats` и `EventStore` |
 | `application::{activity, lock, tasks, read_models}` | `ActivityHub`; `BoxOfficeLock`; `new_task` (метаданные задачи); `ReadModels` — query-порты для HTTP |
 | `presentation::http` | роутер; `{concerts, fans, projections, activity}/<action>.rs` — запрос, ответ и обработчик одного действия; `health`, `config` (+ персонажи), `error` |
-| `infrastructure::postgres` | алиасы `OutboxStore`/`HistoryStore`/`PostgresExecutor`, `Executors` (сборка исполнителей), `PostgresLedger` |
+| `infrastructure::postgres` | `HistoryStore` и `history_store`/`event_history`/`history_repositories` (чтение истории), `PostgresLedger`; исполнители команд — библиотечный `PostgresCommandExecutor`, собираются в `bootstrap` |
 | `infrastructure::mongo::{view_repository, read_side, inbox}` | `MongoViewRepository` (`ViewRepository` + `ReadModelStore`), коллекции read side и scratch-копии verify, `MongoInbox` (`MailStore` + `Inbox`) |
 | `infrastructure::mail::{flaky_mail_server, chaos}` | DEMO ONLY: `FlakyMailServer` (`impl Mailer`) поверх `MailStore`, `ChaosPolicy` |
 | `infrastructure::task_runtime::dispatcher` | `TaskDispatcherFactory<BoxedTaskAdapter>`: по строке регистрации на тип задачи, свой RNG на воркера |
@@ -951,12 +951,14 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
    .with_name("concert_halls"), activity)`, для `Fan` — то же с `"fan_wallets"`. Имя проекции для
    `projection_failed` приходит из библиотеки: `CommittedWithEventHandlerFailure` несёт `handlers[].name`
    (`EventHandler::name()`, `NotifyingHandler` отдаёт имя обёрнутой проекции).
-7. Два долгоживущих `CqrsCommandExecutor::new(build_framework, PostgresCommandConfig::conflict_retry())`, по одному
-   на агрегат. `build_framework = move |tasks| CqrsFramework::new(PersistedEventStore::new_snapshot_store(
-   PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks), snapshot_every), handlers(), services.clone())`.
-   `PostgresCommandConfig::new(ENCORE_SNAPSHOT_EVERY, AggregateConflictRetryPolicy::default())` — держатель
-   настроек; `postgres::command::command_executor` не подходит (требует `Services = ()` и не регистрирует
-   обработчики). Вызов: `executor.execute_with_metadata(id, command, metadata, tasks)` (Фаза 0.5).
+7. Два долгоживущих `PostgresCommandExecutor::new(pool, command_config, services)`, по одному на агрегат, с
+   проекцией через `.with_event_handler(Arc::new(NotifyingHandler::new(ViewProjection::new(repo).with_name(…), activity)))`.
+   Исполнитель на каждую команду строит `CqrsFramework` над `PostgresEventRepositoryWithOutbox::with_outbox(tasks)`
+   со снапшотами, клоном services и общими `Arc`-обработчиками. `PostgresCommandConfig::new(ENCORE_SNAPSHOT_EVERY,
+   AggregateConflictRetryPolicy::default())` — держатель настроек. Вызов:
+   `executor.execute_with_metadata(id, command, metadata, tasks)` (Фаза 0.5). До тикета 03 бэклога эта сборка была
+   написана в demo вручную (`Executors`): библиотечный исполнитель требовал `Services = ()` и не регистрировал
+   обработчики.
 8. Task runtime: `prepare_task_runtime(pool.clone(), dispatcher_factory, PostgresTaskQueueConfig::default(),
    runtime_config)?` с `TaskDispatcherFactory` из `infrastructure::task_runtime::dispatcher`; фабрика захватывает
    `Arc<FanApp>` для шагов процессов и `MongoInbox` для почты. Подготовка не запускает фоновой работы — это делает `run`.

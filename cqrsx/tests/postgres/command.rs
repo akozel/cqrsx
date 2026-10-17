@@ -2,9 +2,13 @@ use super::*;
 use cqrsx::cqrs::store::EventStore;
 use cqrsx::cqrs::store::persisted::PersistedEventStore;
 use cqrsx::{
-    cqrs::command::{CommandExecutor, CommandGatewayError, retry::AggregateConflictRetryPolicy},
+    cqrs::{
+        command::{CommandExecutor, CommandGatewayError, FailedHandler, retry::AggregateConflictRetryPolicy},
+        event_handler::EventHandler,
+    },
     postgres::command::{PostgresCommandConfig, PostgresCommandExecutor, command_executor},
 };
+use std::sync::Mutex;
 use thiserror::Error;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -325,7 +329,7 @@ async fn constructors_need_no_connection_and_closed_pool_errors_remain_unavailab
     let pool = sqlx::postgres::PgPoolOptions::new()
         .connect_lazy("postgres://localhost/unused")
         .unwrap();
-    let named = PostgresCommandExecutor::<CommandAggregate>::new(pool.clone(), config(1));
+    let named = PostgresCommandExecutor::<CommandAggregate>::new(pool.clone(), config(1), ());
     let factory = command_executor::<CommandAggregate>(pool.clone(), config(2));
     assert_eq!(pool.size(), 0);
     pool.close().await;
@@ -337,6 +341,139 @@ async fn constructors_need_no_connection_and_closed_pool_errors_remain_unavailab
         factory.execute("unused", record("value", 0), vec![]).await,
         Err(CommandGatewayError::Unavailable)
     );
+}
+
+/// The cap lives in the services: a value is accepted only while the stream is shorter.
+#[derive(Clone)]
+struct Cap(usize);
+
+#[derive(Clone, Default, Serialize, Deserialize)]
+struct CappedAggregate {
+    values: Vec<String>,
+}
+
+impl Aggregate for CappedAggregate {
+    const TYPE: &'static str = "capped_command_test";
+    type Command = String;
+    type Event = CommandEvent;
+    type Error = Rejected;
+    type Services = Cap;
+
+    async fn handle(&mut self, value: String, cap: &Cap, sink: &EventSink<Self>) -> Result<(), Rejected> {
+        if self.values.len() >= cap.0 {
+            return Err(Rejected);
+        }
+        let mut values = self.values.clone();
+        values.push(value);
+        sink.write(CommandEvent::Recorded { values }, self).await;
+        Ok(())
+    }
+
+    fn apply(&mut self, event: CommandEvent) {
+        let CommandEvent::Recorded { values } = event;
+        self.values = values;
+    }
+}
+
+/// Records every committed batch it sees; fails after recording when `fail` is set.
+#[derive(Default)]
+struct Recorder {
+    name: &'static str,
+    fail: bool,
+    seen: Mutex<Vec<(String, usize, Option<String>)>>,
+}
+
+#[async_trait::async_trait]
+impl EventHandler<CappedAggregate> for Recorder {
+    fn name(&self) -> String {
+        self.name.to_owned()
+    }
+
+    async fn handle(&self, id: &str, events: &[EventEnvelope<CappedAggregate>]) -> Result<(), PersistenceError> {
+        for event in events {
+            let source = event.metadata.get("source").cloned();
+            self.seen.lock().unwrap().push((id.to_owned(), event.sequence, source));
+        }
+        if self.fail {
+            return Err(PersistenceError::OptimisticLockError);
+        }
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn services_decide_and_one_shared_handler_sees_every_committed_event() {
+    let db = Database::new().await;
+    let recorder = Arc::new(Recorder {
+        name: "recorder",
+        ..Recorder::default()
+    });
+    let executor =
+        PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(2)).with_event_handler(recorder.clone());
+    let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
+    for value in ["first", "second"] {
+        executor
+            .execute_with_metadata("capped", value.into(), metadata.clone(), vec![])
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        CommandExecutor::execute(&executor, "capped", "third".into(), vec![]).await,
+        Err(CommandGatewayError::Domain(Rejected)),
+        "the cap from the services rejects the third value"
+    );
+    CommandExecutor::execute(&executor, "other", "first".into(), vec![])
+        .await
+        .unwrap();
+    let source = Some("test".to_owned());
+    assert_eq!(
+        *recorder.seen.lock().unwrap(),
+        [
+            ("capped".to_owned(), 1, source.clone()),
+            ("capped".to_owned(), 2, source),
+            ("other".to_owned(), 1, None),
+        ]
+    );
+    let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    assert_eq!(repository.get_events::<CappedAggregate>("capped").await.unwrap().len(), 2);
+    db.close().await;
+}
+
+#[tokio::test]
+async fn a_failed_handler_is_reported_by_name_after_the_event_and_its_tasks_are_committed() {
+    let db = Database::new().await;
+    let audit = Arc::new(Recorder {
+        name: "audit",
+        fail: true,
+        ..Recorder::default()
+    });
+    let executor = PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(5))
+        .with_event_handler(Arc::new(Recorder {
+            name: "first",
+            ..Recorder::default()
+        }))
+        .with_event_handler(audit.clone());
+    let task = new_task();
+    assert_eq!(
+        executor.execute("audited", "value".into(), vec![task.clone()]).await,
+        Err(CommandGatewayError::CommittedWithEventHandlerFailure {
+            last_sequence: 1,
+            handlers: vec![FailedHandler {
+                index: 1,
+                name: "audit".into()
+            }]
+        })
+    );
+    assert_eq!(*audit.seen.lock().unwrap(), [("audited".to_owned(), 1, None)]);
+    let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
+        .get_events::<CappedAggregate>("audited")
+        .await
+        .unwrap();
+    assert_eq!(events.len(), 1);
+    let saved = row(&db.pool, task.id()).await;
+    assert_eq!(saved.get::<String, _>("aggregate_id"), "audited");
+    assert_eq!(saved.get::<i64, _>("aggregate_sequence"), 1);
+    db.close().await;
 }
 
 mod contracts {

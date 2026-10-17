@@ -3,12 +3,13 @@ use crate::{
         CqrsFramework,
         aggregate::Aggregate,
         command::{CommandExecutor, CommandGatewayError, executor::CqrsCommandExecutor, retry::AggregateConflictRetryPolicy},
+        event_handler::EventHandler,
         store::persisted::PersistedEventStore,
     },
     postgres::outbox::PostgresEventRepositoryWithOutbox,
 };
 use sqlx::PgPool;
-use std::{collections::HashMap, marker::PhantomData, num::NonZeroUsize};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 use thiserror::Error;
 
 /// Checked snapshot interval and optimistic-conflict policy. Does not read env.
@@ -50,7 +51,8 @@ impl Default for PostgresCommandConfig {
     }
 }
 
-/// Assemble a snapshot-backed command executor with unit services and no event_handlers.
+/// Assemble a snapshot-backed command executor with unit services and no event handlers;
+/// shorthand for [`PostgresCommandExecutor::new`] with `()` services.
 ///
 /// Construction performs no I/O. Every command binds its immutable task list to
 /// a fresh repository/framework; conflict retries reuse that framework and reload
@@ -63,39 +65,49 @@ impl Default for PostgresCommandConfig {
 /// applies accepted events to the original committed context, preserving append
 /// and increment semantics without requiring repeatable event application.
 ///
-/// For custom stores, services or event_handlers, use
-/// [`CqrsCommandExecutor::new`] with a framework factory instead.
+/// For custom stores, use [`CqrsCommandExecutor::new`] with a framework factory instead.
 pub fn command_executor<A>(pool: PgPool, config: PostgresCommandConfig) -> PostgresCommandExecutor<A>
 where
     A: Aggregate<Services = ()> + Clone + 'static,
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
 {
-    PostgresCommandExecutor::<A>::new(pool, config)
+    PostgresCommandExecutor::<A>::new(pool, config, ())
 }
 
-/// Named PostgreSQL adapter sharing the pool and immutable command configuration.
-/// Each invocation builds one local CQRS engine; it never retains call-specific tasks.
-pub struct PostgresCommandExecutor<A> {
+/// Named PostgreSQL adapter sharing the pool, immutable command configuration, aggregate
+/// services and event handlers. Each invocation builds one local CQRS engine with a clone of
+/// the services and the shared handlers; it never retains call-specific tasks.
+pub struct PostgresCommandExecutor<A: Aggregate> {
     pool: PgPool,
     config: PostgresCommandConfig,
-    aggregate: PhantomData<fn() -> A>,
+    services: A::Services,
+    event_handlers: Vec<Arc<dyn EventHandler<A>>>,
 }
 
-impl<A> PostgresCommandExecutor<A> {
-    /// Stores the supplied configuration without I/O or environment access.
-    pub fn new(pool: PgPool, config: PostgresCommandConfig) -> Self {
+impl<A: Aggregate> PostgresCommandExecutor<A> {
+    /// Stores the supplied configuration and services without I/O or environment access.
+    pub fn new(pool: PgPool, config: PostgresCommandConfig, services: A::Services) -> Self {
         Self {
             pool,
             config,
-            aggregate: PhantomData,
+            services,
+            event_handlers: Vec::new(),
         }
+    }
+
+    /// Register a handler invoked after every commit, after the handlers registered before it.
+    /// One instance serves every command; its index in post-commit failures is its position.
+    pub fn with_event_handler(mut self, handler: Arc<dyn EventHandler<A>>) -> Self {
+        self.event_handlers.push(handler);
+        self
     }
 }
 
 impl<A> PostgresCommandExecutor<A>
 where
-    A: Aggregate<Services = ()> + Clone + 'static,
+    A: Aggregate + Clone + 'static,
+    A::Services: Clone,
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
 {
@@ -123,7 +135,12 @@ where
             |tasks| {
                 let repository = PostgresEventRepositoryWithOutbox::new(self.pool.clone()).with_outbox(tasks);
                 let store = PersistedEventStore::new_snapshot_store(repository, snapshot_interval);
-                CqrsFramework::new(store, Vec::new(), ())
+                let handlers = self
+                    .event_handlers
+                    .iter()
+                    .map(|handler| Box::new(handler.clone()) as Box<dyn EventHandler<A>>)
+                    .collect();
+                CqrsFramework::new(store, handlers, self.services.clone())
             },
             self.config.conflict_retry(),
         );
@@ -133,7 +150,8 @@ where
 
 impl<A> CommandExecutor<A> for PostgresCommandExecutor<A>
 where
-    A: Aggregate<Services = ()> + Clone + 'static,
+    A: Aggregate + Clone + 'static,
+    A::Services: Clone,
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
 {

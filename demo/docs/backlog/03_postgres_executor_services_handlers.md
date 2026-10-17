@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано: `feat(cqrsx): postgres executor with services and event handlers; adopt in demo` |
 | Ценность | высокая: библиотечный конструктор сейчас не годится ни для одного агрегата с проекцией |
 | Цена | низкая |
 | cqrsx | `postgres/command.rs`, `cqrs/event_handler.rs` (`impl EventHandler for Arc<dyn EventHandler>`) |
@@ -110,8 +110,8 @@ let concerts = PostgresCommandExecutor::<Concert>::new(pool.clone(), command_con
 
 ## Критерии приёмки
 
-- [ ] `PostgresCommandExecutor::new(pool, config, services)` и `with_event_handler(Arc<dyn EventHandler<A>>)`.
-- [ ] `impl EventHandler<A> for Arc<dyn EventHandler<A>>`.
-- [ ] Интеграционный тест в `cqrsx/tests/postgres/command.rs`: обработчик вызывается после коммита, services доходят до `handle`, падение обработчика даёт `CommittedWithEventHandlerFailure`.
-- [ ] `components.md`: строка «Backend assembly» обновлена.
-- [ ] demo: `Executors` удалён, `bootstrap` и `write_side.rs` используют библиотечный конструктор.
+- [x] `PostgresCommandExecutor::new(pool, config, services)` и `with_event_handler(Arc<dyn EventHandler<A>>)`.
+- [x] `impl EventHandler<A> for Arc<dyn EventHandler<A>>`.
+- [x] Интеграционный тест в `cqrsx/tests/postgres/command.rs`: обработчик вызывается после коммита, services доходят до `handle`, падение обработчика даёт `CommittedWithEventHandlerFailure`.
+- [x] `components.md`: строка «Backend assembly» обновлена.
+- [x] demo: `Executors` удалён, `bootstrap` и `write_side.rs` используют библиотечный конструктор.

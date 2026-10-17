@@ -296,6 +296,7 @@ Known flake (pre-existing, not caused by this series): under `llvm-cov -p cqrsx`
 |---|---|---|---|
 | 01 | `BoxedTaskAdapter`; demo enum adapter deleted | see `git log` | root tests 358 → 363, coverage 97.57 % / 97.57 %; demo 97 tests unchanged; all checks ✓ |
 | 02 | `EventHandler::name`, `FailedHandler` in `CommittedWithEventHandlerFailure`; demo `NamedHandler` deleted | see `git log` | root tests 363 → 366, coverage 97.61 % / 97.61 %; demo 97 → 98 (`NotifyingHandler` names); all checks ✓ |
+| 03 | `PostgresCommandExecutor::new(pool, config, services).with_event_handler(Arc<dyn EventHandler>)`, `impl EventHandler for Arc<H>`; demo `Executors` and aliases deleted | see `git log` | root tests 366 → 369 (2 testcontainers), coverage 97.63 % / 97.63 %; demo 98, `write_side` green on PostgreSQL; all checks ✓ |
 
 ## Phase table
 

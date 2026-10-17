@@ -28,19 +28,13 @@ use crate::{
             inbox::MongoInbox,
             read_side::{CONCERT_HALLS, FAN_WALLETS, MAIL_INBOX, ReadSide, scratch},
         },
-        postgres::{
-            Executors, HandlerFactory, HistoryStore, PostgresExecutor, PostgresLedger, event_history, history_repositories,
-        },
+        postgres::{HistoryStore, PostgresLedger, event_history, history_repositories, history_store},
         task_runtime::dispatcher::{DispatcherDeps, dispatcher_factory},
     },
 };
 use cqrsx::{
-    cqrs::{
-        aggregate::Aggregate,
-        command::retry::AggregateConflictRetryPolicy,
-        projection::{View, ViewProjection, repository::ViewRepository},
-    },
-    postgres::command::{PostgresCommandConfig, PostgresCommandConfigError},
+    cqrs::{command::retry::AggregateConflictRetryPolicy, projection::ViewProjection},
+    postgres::command::{PostgresCommandConfig, PostgresCommandConfigError, PostgresCommandExecutor},
     task::{adapter::boxed::BoxedTaskAdapter, runtime::dispatcher_factory::TaskDispatcherFactory},
 };
 use sqlx::PgPool;
@@ -54,9 +48,9 @@ pub const ACTIVITY_CHANNEL_CAPACITY: usize = 1024;
 pub const ACTIVITY_BACKLOG: usize = 100;
 
 /// The box office over PostgreSQL.
-pub type ConcertApp = application::concert::ConcertApp<PostgresExecutor<Concert>, HistoryStore<Concert>>;
+pub type ConcertApp = application::concert::ConcertApp<PostgresCommandExecutor<Concert>, HistoryStore<Concert>>;
 /// The fan ledger over PostgreSQL.
-pub type FanApp = application::fan::FanApp<PostgresExecutor<Fan>>;
+pub type FanApp = application::fan::FanApp<PostgresCommandExecutor<Fan>>;
 /// The time machine over the PostgreSQL history, without snapshots.
 pub type TimeTravel = application::operations::time_travel::TimeTravel<HistoryStore<Concert>>;
 
@@ -127,23 +121,28 @@ pub fn wire(
     let verify = Arc::new(VerifyService::new(read_models));
     let time_travel = Arc::new(TimeTravel::new(event_history(pool.clone())));
     let command_config = PostgresCommandConfig::new(config.snapshot_every, AggregateConflictRetryPolicy::default())?;
-    let executors = Executors {
-        pool,
-        snapshot_every: command_config.snapshot_interval(),
-        retry: command_config.conflict_retry(),
-    };
-    let executor = executors.executor(
-        vec![projection(CONCERT_HALLS, read.halls.clone(), activity.clone())],
+    // One executor per aggregate. Each projection is registered under its collection name, the
+    // name the activity log and the `projection_failed` warning report.
+    let executor = PostgresCommandExecutor::new(
+        pool.clone(),
+        command_config.clone(),
         ConcertServices {
             ticket_limit: config.ticket_limit,
         },
-    );
+    )
+    .with_event_handler(Arc::new(NotifyingHandler::new(
+        ViewProjection::new(read.halls.clone()).with_name(CONCERT_HALLS),
+        activity.clone(),
+    )));
     let concerts = Arc::new(ConcertApp::new(
         CommandService::new(executor, activity.clone(), lock.clone()),
-        executors.history(),
+        history_store(pool.clone(), command_config.snapshot_interval()),
         config.chain_max_attempts,
     ));
-    let executor = executors.executor(vec![projection(FAN_WALLETS, read.wallets.clone(), activity.clone())], ());
+    let executor = PostgresCommandExecutor::new(pool, command_config, ()).with_event_handler(Arc::new(NotifyingHandler::new(
+        ViewProjection::new(read.wallets.clone()).with_name(FAN_WALLETS),
+        activity.clone(),
+    )));
     let fans = Arc::new(FanApp::new(CommandService::new(executor, activity.clone(), lock)));
 
     // Outbox task handlers: a fresh set (and a fresh chaos RNG) for every worker.
@@ -177,22 +176,5 @@ pub fn wire(
             shutdown,
         },
         dispatcher,
-    })
-}
-
-/// A `ViewProjection` named after its collection (the name the activity log and the
-/// `projection_failed` warning report), wrapped so the activity log sees `projection.updated` /
-/// `projection.failed`. Built per command: the handler is cheap, an `Arc` to the repository.
-fn projection<R, V, A>(name: &'static str, repository: Arc<R>, activity: Arc<ActivityHub>) -> HandlerFactory<A>
-where
-    R: ViewRepository<V, A> + 'static,
-    V: View<A> + 'static,
-    A: Aggregate + 'static,
-{
-    Arc::new(move || {
-        Box::new(NotifyingHandler::new(
-            ViewProjection::new(repository.clone()).with_name(name),
-            activity.clone(),
-        ))
     })
 }

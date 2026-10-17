@@ -644,7 +644,9 @@ application/
 4. **Типизированные id в payload'ах задач** сделаны на шаге 4 вместе с доменом, чтобы промежуточный
    код не парсил строки.
 5. **`infrastructure::postgres::Executors`** сохранил имя и стал фабрикой (`executor()`, `history()`);
-   рядом `event_history()`, `history_repositories()` и `PostgresLedger`.
+   рядом `event_history()`, `history_repositories()` и `PostgresLedger`. *Позже `Executors` удалён: его заменил
+   библиотечный `PostgresCommandExecutor::new(pool, config, services).with_event_handler(…)` (бэклог, тикет 03),
+   а `history()` стал функцией `history_store(pool, snapshot_every)`.*
 6. **Тестовые фикстуры** — модули `test_support` (в `domain::{concert, fan}`, `application`,
    `application::{concert, workflows}`), сборка `Config` для тестов — `testing::config()`.
 7. **Архитектурный тест раскрывает деревья `use`.** Поиск подстрок не видит
