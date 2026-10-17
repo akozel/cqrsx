@@ -299,6 +299,7 @@ Known flake (pre-existing, not caused by this series): under `llvm-cov -p cqrsx`
 | 03 | `PostgresCommandExecutor::new(pool, config, services).with_event_handler(Arc<dyn EventHandler>)`, `impl EventHandler for Arc<H>`; demo `Executors` and aliases deleted | see `git log` | root tests 366 → 369 (2 testcontainers), coverage 97.63 % / 97.63 %; demo 98, `write_side` green on PostgreSQL; all checks ✓ |
 | 04 | `cqrs::testing::{command::TestCommandExecutor, unavailable_store::UnavailableStore, mem_view_repository::MemViewRepository}`, `TaskAttempt::first`; demo `application/test_support.rs` and `MemoryReadModelStore` deleted | see `git log` | root tests 369 → 379 (+1 doctest), coverage 97.65 % / 97.65 %; demo 98 (unit 89 unchanged); all checks ✓ |
 | 05 | `cqrs::command::causation::Causation` (`root`, `from_task`, `event_metadata`, `stamp_task`), uuid `v7` (lock unchanged); demo `correlation_of` deleted, `CommandMetadata { causation, recorded_at }` | see `git log` | root tests 379 → 384, coverage 97.68 % / 97.68 %; demo 98, wire guards tightened; all checks ✓ (the `--features postgres` run once failed with a transient "can't find crate" build error, the immediate rerun passed: 156 + 18 + 83 + 5 + 34 + 7) |
+| 06 | `EventReplay::set_progress_observer` (`ReplayProgress`), `with_pace`; demo `projections/progress.rs` deleted | see `git log` | root tests 384 → 388, coverage 97.72 % / 97.72 %; demo 98, rebuild activity sequence unchanged; all checks ✓ |
 
 ## Phase table
 

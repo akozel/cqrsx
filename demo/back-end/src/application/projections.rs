@@ -1,5 +1,5 @@
-//! What every read model shares: event-handler decorators (activity notifications after a live
-//! update, progress and slow motion during a replay) and maintenance (wipe, rebuild, verify).
+//! What every read model shares: the event-handler decorator for activity notifications after a
+//! live update, and maintenance (wipe, rebuild, verify; replay progress and slow motion come from
+//! the cqrsx `EventReplay`).
 pub mod maintenance;
 pub mod notifying;
-pub mod progress;

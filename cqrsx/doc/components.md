@@ -52,7 +52,7 @@ Related configuration and validation errors stay with their owning boundary.
 | Event compatibility | `EventUpcaster`, `NumericVersion`, `NumericVersionError`, `NumericVersionUpcaster`, `EventPayloadTransform` | Upcast serialized payloads; numeric version comparison preserves the existing parser, rather than promising SemVer. |
 | Saved-history streaming | `ReplayStream`, `ReplayFeed`, PostgreSQL stream producer | Bounded asynchronous reading of existing events, for one ID or all IDs of an aggregate type. No subscription to future commits. |
 | Event reaction | `EventHandler` | Handle committed events outside their original transaction. It is not a CQRS query or a durable task. `name()` identifies it in post-commit failures (default: the type name; `ViewProjection::with_name`, otherwise the view type name). `Arc<H>` is a handler too, so one instance can serve every per-command framework. |
-| Event replay | `EventReplay` | Read saved history into an event handler, stopping at the first failure; separate from aggregate reconstruction. |
+| Event replay | `EventReplay`, `ReplayProgress`, `ReplayProgressObserver` | Read saved history into an event handler, stopping at the first failure; separate from aggregate reconstruction. A progress observer sees every handled event with a per-replay count; `with_pace` pauses before each event to limit the rebuild rate. |
 | Read-model data | `View`, `ViewContext` | Materialized read-model state and its repository ID/version. |
 | Read-model projection | `ViewProjection`, `ViewRepository`, `PersistenceErrorObserver` | Update stored views with conflict retry, read views, and observe borrowed persistence errors without consuming them. |
 | Publication data | `NewTask`, `TaskSchedule`, `TaskValidationError`, shared payload/metadata validation | Checked immutable task envelope, initial eligibility and claim-attempt limit. |
@@ -101,7 +101,7 @@ src/
 │   ├── aggregate.rs, event.rs, event_sink.rs
 │   ├── command.rs, command/{executor,retry,causation}.rs
 │   ├── event_handler.rs            EventHandler
-│   ├── event_handler/replay.rs     EventReplay
+│   ├── event_handler/replay.rs     EventReplay, progress and pace
 │   ├── projection.rs              View and ViewProjection
 │   ├── projection/repository.rs    ViewRepository and ViewContext
 │   ├── store.rs                    EventStore, AggregateContext, errors/observer

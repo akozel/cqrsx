@@ -4,12 +4,11 @@
 use crate::application::{
     StorageError,
     ports::{ReadModelStore, Stored},
-    projections::progress::{ProgressCallback, ProgressHandler},
 };
 use async_trait::async_trait;
 use cqrsx::cqrs::{
     aggregate::Aggregate,
-    event_handler::replay::EventReplay,
+    event_handler::replay::{EventReplay, ReplayProgressObserver},
     projection::{View, ViewProjection, repository::ViewRepository},
     store::repository::PersistedEventRepository,
 };
@@ -45,9 +44,9 @@ pub trait MaintainedReadModel: Send + Sync {
     /// The aggregate type whose events feed it.
     fn aggregate_type(&self) -> &'static str;
     async fn wipe(&self) -> Result<(), StorageError>;
-    /// Replays every event of the aggregate type into the live read model; `delay` slows each
-    /// event down (slow motion), `on_event` reports progress.
-    async fn rebuild(&self, delay: Option<Duration>, on_event: Box<ProgressCallback>) -> Result<(), StorageError>;
+    /// Replays every event of the aggregate type into the live read model; `pace` slows each
+    /// event down (slow motion, zero for full speed), `on_event` reports progress.
+    async fn rebuild(&self, pace: Duration, on_event: Box<ReplayProgressObserver>) -> Result<(), StorageError>;
     /// Rebuilds into a scratch copy with the very same projection and compares it with the live
     /// documents (the version is ignored). The scratch copy is always dropped.
     async fn verify(&self, run_id: Uuid) -> Result<Verification, StorageError>;
@@ -88,16 +87,17 @@ where
     async fn replay_into(
         &self,
         repository: Arc<R>,
-        delay: Option<Duration>,
-        on_event: Box<ProgressCallback>,
+        pace: Duration,
+        on_event: Option<Box<ReplayProgressObserver>>,
     ) -> Result<(), StorageError> {
-        EventReplay::new(
-            (self.history)(),
-            ProgressHandler::new(ViewProjection::new(repository), delay, on_event),
-        )
-        .replay_all()
-        .await
-        .map_err(|e| StorageError(format!("{} replay failed: {e}", A::TYPE)))
+        let mut replay = EventReplay::new((self.history)(), ViewProjection::new(repository)).with_pace(pace);
+        if let Some(on_event) = on_event {
+            replay.set_progress_observer(on_event);
+        }
+        replay
+            .replay_all()
+            .await
+            .map_err(|e| StorageError(format!("{} replay failed: {e}", A::TYPE)))
     }
 }
 
@@ -125,14 +125,14 @@ where
         self.live.wipe().await
     }
 
-    async fn rebuild(&self, delay: Option<Duration>, on_event: Box<ProgressCallback>) -> Result<(), StorageError> {
-        self.replay_into(self.live.clone(), delay, on_event).await
+    async fn rebuild(&self, pace: Duration, on_event: Box<ReplayProgressObserver>) -> Result<(), StorageError> {
+        self.replay_into(self.live.clone(), pace, Some(on_event)).await
     }
 
     async fn verify(&self, run_id: Uuid) -> Result<Verification, StorageError> {
         let scratch = (self.scratch)(run_id);
         scratch.wipe().await?;
-        let replayed = self.replay_into(scratch.clone(), None, Box::new(|_, _, _| {})).await;
+        let replayed = self.replay_into(scratch.clone(), Duration::ZERO, None).await;
         let rebuilt = scratch.list().await;
         // Always clean up, even after a failure.
         let _ = scratch.wipe().await;

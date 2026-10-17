@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано: `feat(cqrsx): replay progress observer and pace; adopt in demo` |
 | Ценность | средняя: любой инструмент пересборки хочет прогресс-бар и ограничение скорости |
 | Цена | низкая |
 | cqrsx | `cqrs/event_handler/replay.rs` |
@@ -69,7 +69,7 @@ replay.replay_all().await
 
 ## Критерии приёмки
 
-- [ ] `set_progress_observer` и `with_pace` на `EventReplay`; наблюдатель вызывается после успешного `handle`, не вызывается для упавшего события.
-- [ ] Тест с `start_paused` на темп; тест на счётчик `replayed` при `replay` и `replay_all`.
-- [ ] `components.md`: строка «Event replay» обновлена.
-- [ ] demo: `progress.rs` удалён, активити-лог `rebuild.progress` работает как прежде (slow/fast режимы).
+- [x] `set_progress_observer` и `with_pace` на `EventReplay`; наблюдатель вызывается после успешного `handle`, не вызывается для упавшего события.
+- [x] Тест с `start_paused` на темп; тест на счётчик `replayed` при `replay` и `replay_all`.
+- [x] `components.md`: строка «Event replay» обновлена.
+- [x] demo: `progress.rs` удалён, активити-лог `rebuild.progress` работает как прежде (slow/fast режимы).

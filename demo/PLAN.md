@@ -927,7 +927,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `application::workflows::{ticket_delivery, refund}` | бизнес-процессы на outbox-задачах, файл на шаг: `record_ticket` → `send_e_ticket`, `record_cancellation` → `issue_refund`; `tasks` — контракты следующих задач; корень `workflows` — общий шаг цепочки и маппинг исходов |
 | `application::ports` | `Mailer` (+ `Mail`), `Inbox`, `ReadModelStore<V>` (+ `Stored<V>`), `EventLedgerStats` |
 | `application::{concert,fan}::views` | `ConcertHallView` (`View<Concert>`, LWW), `FanWalletView` (`View<Fan>`, LWW по `booking_id`) |
-| `application::projections` | `notifying` (activity после live-обновления), `progress` (прогресс и slow-motion replay), `maintenance` (`ProjectionMaintenance`: wipe, rebuild, verify для любой view) |
+| `application::projections` | `notifying` (activity после live-обновления), `maintenance` (`ProjectionMaintenance`: wipe, rebuild с темпом и наблюдателем прогресса `EventReplay`, verify для любой view) |
 | `application::operations::{rebuild, verify, time_travel}` | Encore!, verify, машина времени — поверх `MaintainedReadModel`, `EventLedgerStats` и `EventStore` |
 | `application::{activity, lock, tasks, read_models}` | `ActivityHub`; `BoxOfficeLock`; `new_task` (ключи `concert_id`/`fan_id` + `Causation::stamp_task`); `ReadModels` — query-порты для HTTP |
 | `presentation::http` | роутер; `{concerts, fans, projections, activity}/<action>.rs` — запрос, ответ и обработчик одного действия; `health`, `config` (+ персонажи), `error` |
@@ -1117,11 +1117,13 @@ Activity хранится только в памяти — это лог, а н�
   и шаги процессов (`wait_for_unlock`); сервис rebuild всегда полностью сконфигурирован.
 - Запуск — `tokio::spawn`; HTTP сразу возвращает `202 { rebuild_id }`, повторный запуск во время работы → `409`.
 - Wipe тоже запрещён во время rebuild (`423`).
-- Два прохода: `EventReplay::new(PostgresEventRepository::new(pool.clone()), ProgressHandler::new(ViewProjection::new(halls_repo.clone()), …)).replay_all()`
-  для `Concert`, затем то же для `Fan` с `wallets_repo`. Репозиторий и обработчик создаются на каждый rebuild
-  (`EventReplay::new` забирает их по значению). Те же проекции, что в live-режиме, но **без** `NotifyingHandler`
-  (иначе activity захлебнётся `projection.updated`; прогресс сообщает `ProgressHandler`). В slow-режиме перед
-  каждым событием — `tokio::time::sleep(ENCORE_REPLAY_SLOW_DELAY_MS)`.
+- Два прохода: `EventReplay::new(PostgresEventRepository::new(pool.clone()), ViewProjection::new(halls_repo.clone()))
+  .with_pace(…)` с `set_progress_observer(…)` и `replay_all()` для `Concert`, затем то же для `Fan` с `wallets_repo`.
+  Репозиторий и обработчик создаются на каждый rebuild (`EventReplay::new` забирает их по значению). Те же
+  проекции, что в live-режиме, но **без** `NotifyingHandler` (иначе activity захлебнётся `projection.updated`;
+  прогресс сообщает наблюдатель `ReplayProgress` из `cqrsx`). В slow-режиме `with_pace(ENCORE_REPLAY_SLOW_DELAY_MS)`
+  выдерживает паузу перед каждым событием, в fast — `Duration::ZERO`. До тикета 06 бэклога то же делал
+  декоратор `ProgressHandler` в demo.
 - Outbox-воркеры, цепочка `Fan` и почтовый inbox replay не затрагивает: replay вызывает только `View::update`,
   команды не выполняются, задачи не создаются (проверяется тестом/демо: число писем и строк outbox до и после равно).
 

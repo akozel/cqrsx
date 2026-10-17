@@ -11,6 +11,7 @@ use crate::application::{
     projections::maintenance::MaintainedReadModel,
 };
 use chrono::{SecondsFormat, Utc};
+use cqrsx::cqrs::event_handler::replay::{ReplayProgress, ReplayProgressObserver};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -213,13 +214,17 @@ impl RebuildService {
                 .publish("rebuild.failed", json!({ "rebuild_id": rebuild_id, "message": message }));
             return finish(false, 0, 0, Some(message));
         }
-        let delay = (speed == Speed::Slow).then_some(self.slow_delay);
+        let pace = if speed == Speed::Slow {
+            self.slow_delay
+        } else {
+            Duration::ZERO
+        };
         // One pass per read model, i.e. per aggregate type. Within a pass events arrive ordered by
         // `sequence` across aggregates ("seats light up in every hall at once"); per aggregate the
         // order is preserved, which is all LWW needs.
         let mut result = Ok(());
         for read_model in &self.read_models {
-            result = self.pass(read_model.as_ref(), rebuild_id, speed, delay).await;
+            result = self.pass(read_model.as_ref(), rebuild_id, speed, pace).await;
             if result.is_err() {
                 break;
             }
@@ -250,13 +255,14 @@ impl RebuildService {
         read_model: &dyn MaintainedReadModel,
         rebuild_id: Uuid,
         speed: Speed,
-        delay: Option<Duration>,
+        pace: Duration,
     ) -> Result<(), String> {
         let aggregate_type = read_model.aggregate_type();
         let activity = self.activity.clone();
         let counter = self.replayed.clone();
         let last_progress = Mutex::new(Instant::now() - Duration::from_secs(1));
-        let on_event = Box::new(move |aggregate_id: &str, sequence: usize, event_type: &str| {
+        // The library counts per replay; `replayed` here counts across both passes.
+        let on_event: Box<ReplayProgressObserver> = Box::new(move |progress: &ReplayProgress<'_>| {
             let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
             // Slow mode: a message per event; fast mode: at most ~20 per second (the final
             // `rebuild.finished` carries the exact total).
@@ -275,23 +281,19 @@ impl RebuildService {
             if emit {
                 activity.publish(
                     "rebuild.progress",
-                    json!({ "rebuild_id": rebuild_id, "replayed": count, "aggregate_type": aggregate_type, "aggregate_id": aggregate_id,
-                            "sequence": sequence, "event_type": event_type }),
+                    json!({ "rebuild_id": rebuild_id, "replayed": count, "aggregate_type": aggregate_type,
+                            "aggregate_id": progress.aggregate_id, "sequence": progress.sequence, "event_type": progress.event_type }),
                 );
             }
         });
-        read_model.rebuild(delay, on_event).await.map_err(|e| e.0)
+        read_model.rebuild(pace, on_event).await.map_err(|e| e.0)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::{
-        StorageError,
-        ports::LedgerTotals,
-        projections::{maintenance::Verification, progress::ProgressCallback},
-    };
+    use crate::application::{StorageError, ports::LedgerTotals, projections::maintenance::Verification};
     use async_trait::async_trait;
 
     /// A read model whose history is `events` (aggregate id, sequence, event type) entries.
@@ -328,12 +330,17 @@ mod tests {
             Ok(())
         }
 
-        async fn rebuild(&self, _: Option<Duration>, on_event: Box<ProgressCallback>) -> Result<(), StorageError> {
+        async fn rebuild(&self, _: Duration, on_event: Box<ReplayProgressObserver>) -> Result<(), StorageError> {
             if self.broken {
                 return Err(StorageError("Fake replay failed: boom".into()));
             }
-            for (id, sequence, event_type) in &self.events {
-                on_event(id, *sequence, event_type);
+            for (replayed, (id, sequence, event_type)) in (1..).zip(&self.events) {
+                on_event(&ReplayProgress {
+                    aggregate_id: id,
+                    sequence: *sequence,
+                    event_type: (*event_type).to_owned(),
+                    replayed,
+                });
             }
             Ok(())
         }

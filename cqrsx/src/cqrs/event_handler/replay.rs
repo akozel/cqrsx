@@ -2,11 +2,25 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::cqrs::{
     aggregate::Aggregate,
+    event::DomainEvent,
     event_handler::EventHandler,
     store::PersistenceErrorObserver,
     store::{PersistenceError, repository::PersistedEventRepository, stream::ReplayStream, upcaster::EventUpcaster},
 };
-use std::marker::PhantomData;
+use std::{marker::PhantomData, time::Duration};
+
+/// One successfully replayed event, as a progress observer sees it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ReplayProgress<'a> {
+    pub aggregate_id: &'a str,
+    pub sequence: usize,
+    pub event_type: String,
+    /// Events handled by this replay so far, this one included.
+    pub replayed: u64,
+}
+
+/// Observes every event the handler accepted during a replay; it cannot change the replay.
+pub type ReplayProgressObserver = dyn Fn(&ReplayProgress<'_>) + Send + Sync + 'static;
 
 /// A utility for replaying committed events to a `EventHandler`.
 ///
@@ -165,6 +179,8 @@ where
     handler: H,
     event_upcasters: Vec<Box<dyn EventUpcaster>>,
     error_observer: Option<Box<PersistenceErrorObserver>>,
+    progress_observer: Option<Box<ReplayProgressObserver>>,
+    pace: Duration,
     phantom_data: PhantomData<A>,
 }
 
@@ -182,6 +198,8 @@ where
             handler,
             event_upcasters: vec![],
             error_observer: None,
+            progress_observer: None,
+            pace: Duration::ZERO,
             phantom_data: PhantomData,
         }
     }
@@ -191,14 +209,22 @@ where
     /// order that they should be applied
     ///
     /// E.g., an upcaster for version 0.2.3 should be placed before an upcaster for version 0.2.4
-    pub fn with_upcasters(self, event_upcasters: Vec<Box<dyn EventUpcaster>>) -> Self {
-        Self {
-            repository: self.repository,
-            handler: self.handler,
-            error_observer: self.error_observer,
-            event_upcasters,
-            phantom_data: self.phantom_data,
-        }
+    pub fn with_upcasters(mut self, event_upcasters: Vec<Box<dyn EventUpcaster>>) -> Self {
+        self.event_upcasters = event_upcasters;
+        self
+    }
+
+    /// Pause for `pace` before handing each event to the handler (default: no pause). Limits the
+    /// write rate of a rebuild, or slows it down so people can watch it.
+    pub fn with_pace(mut self, pace: Duration) -> Self {
+        self.pace = pace;
+        self
+    }
+
+    /// Observe progress: called after every event the handler accepted, never for an event that
+    /// failed to decode or to be handled. `replayed` counts within one `replay`/`replay_all` call.
+    pub fn set_progress_observer(&mut self, progress_observer: Box<ReplayProgressObserver>) {
+        self.progress_observer = Some(progress_observer);
     }
 
     /// Allows the user to apply a custom error handler to the handler replay.
@@ -375,9 +401,22 @@ where
     }
 
     async fn run_stream(&self, mut stream: ReplayStream) -> Result<(), PersistenceError> {
+        let mut replayed = 0;
         while let Some(event) = stream.next::<A>(&self.event_upcasters).await {
             let event = event?;
+            if !self.pace.is_zero() {
+                tokio::time::sleep(self.pace).await;
+            }
             self.handler.handle(&event.aggregate_id, std::slice::from_ref(&event)).await?;
+            replayed += 1;
+            if let Some(observer) = &self.progress_observer {
+                observer(&ReplayProgress {
+                    aggregate_id: &event.aggregate_id,
+                    sequence: event.sequence,
+                    event_type: event.payload.event_type(),
+                    replayed,
+                });
+            }
         }
         Ok(())
     }
@@ -736,6 +775,137 @@ mod test {
                     }
                 }
             }
+        }
+    }
+
+    type Seen = Arc<Mutex<Vec<(String, usize, String, u64)>>>;
+
+    fn observe(replay: &mut EventReplay<StreamRepository, CapturingEventHandler, MyAggregate>) -> Seen {
+        let seen = Seen::default();
+        let sink = seen.clone();
+        replay.set_progress_observer(Box::new(move |progress| {
+            sink.lock().unwrap().push((
+                progress.aggregate_id.to_owned(),
+                progress.sequence,
+                progress.event_type.clone(),
+                progress.replayed,
+            ));
+        }));
+        seen
+    }
+
+    fn stream(ids_and_sequences: &[(&str, usize)]) -> StreamRepository {
+        let items = ids_and_sequences
+            .iter()
+            .map(|(id, sequence)| {
+                Ok(SerializedEvent::try_from(&EventEnvelope::<MyAggregate> {
+                    aggregate_id: (*id).into(),
+                    sequence: *sequence,
+                    payload: MyEvents::SomethingWasDone,
+                    metadata: HashMap::new(),
+                })
+                .unwrap())
+            })
+            .collect();
+        StreamRepository {
+            items: Mutex::new(items),
+            fail_open: false,
+        }
+    }
+
+    #[tokio::test]
+    async fn progress_is_observed_for_every_handled_event_counting_from_one() {
+        for all in [false, true] {
+            let (handler, _) = CapturingEventHandler::new();
+            let mut replay = EventReplay::new(stream(&[("a", 1), ("b", 1), ("a", 2)]), handler);
+            let seen = observe(&mut replay);
+            if all {
+                replay.replay_all().await.unwrap();
+            } else {
+                replay.replay("a").await.unwrap();
+            }
+            let done = "SomethingWasDone".to_owned();
+            assert_eq!(
+                *seen.lock().unwrap(),
+                [
+                    ("a".into(), 1, done.clone(), 1),
+                    ("b".into(), 1, done.clone(), 2),
+                    ("a".into(), 2, done, 3)
+                ]
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_event_that_fails_to_decode_or_to_be_handled_is_not_reported() {
+        let (mut handler, _) = CapturingEventHandler::new();
+        handler.fail = Some((2, true));
+        let mut replay = EventReplay::new(stream(&[("a", 1), ("a", 2), ("a", 3)]), handler);
+        let seen = observe(&mut replay);
+        assert!(replay.replay_all().await.is_err());
+        assert_eq!(seen.lock().unwrap().iter().map(|e| e.1).collect::<Vec<_>>(), [1]);
+
+        let mut items = stream(&[("a", 1), ("a", 2)]);
+        if let Ok(event) = &mut items.items.get_mut().unwrap()[1] {
+            event.payload = json!({"unknown": true});
+        }
+        let (handler, _) = CapturingEventHandler::new();
+        let mut replay = EventReplay::new(items, handler);
+        let seen = observe(&mut replay);
+        assert!(matches!(
+            replay.replay_all().await,
+            Err(PersistenceError::DeserializationError(_))
+        ));
+        assert_eq!(seen.lock().unwrap().iter().map(|e| e.1).collect::<Vec<_>>(), [1]);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_pace_delays_every_event_and_a_zero_pace_never_sleeps() {
+        let pace = std::time::Duration::from_millis(250);
+        let (handler, seen) = CapturingEventHandler::new();
+        let replay = EventReplay::new(stream(&[("a", 1), ("a", 2), ("a", 3)]), handler).with_pace(pace);
+        let started = tokio::time::Instant::now();
+        replay.replay_all().await.unwrap();
+        assert!(started.elapsed() >= pace * 3);
+        assert_eq!(seen.lock().unwrap().len(), 3);
+
+        let (handler, _) = CapturingEventHandler::new();
+        let replay = EventReplay::new(stream(&[("a", 1), ("a", 2)]), handler).with_pace(std::time::Duration::ZERO);
+        let started = tokio::time::Instant::now();
+        replay.replay_all().await.unwrap();
+        assert_eq!(started.elapsed(), std::time::Duration::ZERO);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn upcasters_and_pace_survive_each_other_in_either_order() {
+        fn upcast(_: Value) -> Value {
+            json!({"SomethingWasDone": ()})
+        }
+        let legacy = || SerializedEvent {
+            aggregate_id: AGGREGATE_ID.to_string(),
+            sequence: 1,
+            aggregate_type: "MyAggregate".to_string(),
+            event_type: "SomethingWasDone".to_string(),
+            event_version: "0.0.1".to_string(),
+            payload: json!({"LegacyName": ()}),
+            metadata: Object(Map::default()),
+        };
+        let pace = std::time::Duration::from_secs(1);
+        for upcasters_first in [false, true] {
+            let upcasters: Vec<Box<dyn crate::cqrs::store::upcaster::EventUpcaster>> = vec![Box::new(
+                NumericVersionUpcaster::new("SomethingWasDone", "0.1.0", Box::new(upcast)),
+            )];
+            let (handler, seen) = CapturingEventHandler::new();
+            let replay = EventReplay::new(MockRepo::with_events(Ok(vec![legacy()])), handler);
+            let replay = if upcasters_first {
+                replay.with_upcasters(upcasters).with_pace(pace)
+            } else {
+                replay.with_pace(pace).with_upcasters(upcasters)
+            };
+            let started = tokio::time::Instant::now();
+            replay.replay_all().await.unwrap();
+            assert!(started.elapsed() >= pace);
+            assert_eq!(seen.lock().unwrap()[0].payload, MyEvents::SomethingWasDone);
         }
     }
 }
