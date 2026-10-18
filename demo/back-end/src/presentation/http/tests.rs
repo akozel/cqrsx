@@ -5,13 +5,13 @@ use crate::{
         concert::views::concert_hall::{ConcertHallView, ConcertSummary},
         fan::views::fan_wallet::FanWalletView,
         lock::BoxOfficeLock,
-        ports::{DeliveredMail, Stored},
+        ports::Stored,
         read_models::ReadModels,
     },
     bootstrap,
     domain::{concert::Concert, fan::Fan},
     presentation::http::router,
-    testing::{self, MemoryInbox},
+    testing,
 };
 use axum::{
     Router,
@@ -59,15 +59,10 @@ async fn app_reading(read: ReadModels) -> Router {
     router(wiring.state)
 }
 
-fn read_models(
-    halls: Vec<Stored<ConcertHallView>>,
-    wallets: Vec<Stored<FanWalletView>>,
-    mails: Vec<DeliveredMail>,
-) -> ReadModels {
+fn read_models(halls: Vec<Stored<ConcertHallView>>, wallets: Vec<Stored<FanWalletView>>) -> ReadModels {
     ReadModels {
         halls: testing::read_model::<_, Concert>(halls),
         wallets: testing::read_model::<_, Fan>(wallets),
-        inbox: Arc::new(MemoryInbox(mails)),
     }
 }
 
@@ -107,10 +102,25 @@ async fn health_and_config_need_no_storage() {
     let (status, body) = send(&app.router, get("/api/config")).await;
     assert_eq!(status, StatusCode::OK);
     assert_eq!(body["ticket_limit"], 4);
+    assert_eq!(body["snapshot_every"], 10);
     assert_eq!(body["venue"]["seats_per_row"], 8);
-    assert_eq!(body["personas"][0]["fan_id"], "fox");
+    assert!(
+        body.get("personas").is_none(),
+        "the cast is a demo prop, served by the sidecar"
+    );
     let (status, body) = send(&app.router, get("/api/projections/status")).await;
     assert_eq!((status, body["state"].as_str()), (StatusCode::OK, Some("idle")));
+}
+
+/// Demo operations and the external mail service's data are the sidecar's: the box office has no
+/// such routes any more.
+#[tokio::test]
+async fn demo_only_routes_moved_to_the_sidecar_are_not_served() {
+    let app = app().await;
+    let (status, _) = send(&app.router, post("/api/projections/wipe")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    let (status, _) = send(&app.router, get("/api/fans/fox/inbox")).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]
@@ -121,7 +131,6 @@ async fn malformed_ids_and_bodies_are_rejected_with_the_shared_error_shape() {
         "/api/concerts/Tbilisi%202026/timeline",
         "/api/concerts/Tbilisi%202026/state-at/1",
         "/api/fans/Fox!/wallet",
-        "/api/fans/Fox!/inbox",
     ] {
         let (status, body) = send(&app.router, get(uri)).await;
         assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}");
@@ -169,11 +178,6 @@ async fn a_closed_box_office_answers_423_before_anything_else() {
     assert_eq!(body["outcome"], "locked");
     assert_eq!(body["error"]["code"], "rebuild_in_progress");
     assert_eq!(body["concert_id"], "c-1");
-    let (status, body) = send(&app.router, post("/api/projections/wipe")).await;
-    assert_eq!(
-        (status, body["error"]["code"].as_str()),
-        (StatusCode::LOCKED, Some("rebuild_in_progress"))
-    );
     let (status, body) = send(&app.router, get("/api/projections/verify")).await;
     assert_eq!(
         (status, body["error"]["code"].as_str()),
@@ -214,7 +218,7 @@ async fn an_unreachable_store_is_reported_as_unavailable() {
 
 #[tokio::test]
 async fn empty_read_models_answer_an_empty_list_and_404s() {
-    let router = app_reading(read_models(vec![], vec![], vec![])).await;
+    let router = app_reading(read_models(vec![], vec![])).await;
     let (status, body) = send(&router, get("/api/concerts")).await;
     assert_eq!((status, body), (StatusCode::OK, json!([])));
     for uri in ["/api/concerts/c-1", "/api/fans/fox/wallet"] {
@@ -222,8 +226,6 @@ async fn empty_read_models_answer_an_empty_list_and_404s() {
         assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
         assert_eq!(body["error"]["code"], "projection_missing", "{uri}");
     }
-    let (status, body) = send(&router, get("/api/fans/fox/inbox")).await;
-    assert_eq!((status, body), (StatusCode::OK, json!([])));
 }
 
 #[tokio::test]
@@ -248,20 +250,6 @@ async fn read_models_are_served_in_the_documented_shapes() {
         last_sequence: 1,
         ..FanWalletView::default()
     };
-    let mail = DeliveredMail {
-        inbox_id: "e_ticket:b-1".into(),
-        kind: "e_ticket".into(),
-        to_fan_id: "fox".into(),
-        to_name: "Fox".into(),
-        subject: "🎫".into(),
-        concert_id: "c-1".into(),
-        seat: "B4".into(),
-        amount: 80,
-        task_id: "t-1".into(),
-        delivered_on_attempt: 2,
-        deliveries: 1,
-        first_delivered_at: "2026-10-17T09:00:00.000Z".into(),
-    };
     let router = app_reading(read_models(
         vec![Stored {
             id: "c-1".into(),
@@ -273,7 +261,6 @@ async fn read_models_are_served_in_the_documented_shapes() {
             version: 1,
             view: wallet.clone(),
         }],
-        vec![mail.clone()],
     ))
     .await;
     let (_, body) = send(&router, get("/api/concerts")).await;
@@ -286,9 +273,4 @@ async fn read_models_are_served_in_the_documented_shapes() {
     assert_eq!(body, json!({ "concert_id": "c-1", "version": 3, "view": hall }));
     let (_, body) = send(&router, get("/api/fans/fox/wallet")).await;
     assert_eq!(body, json!({ "fan_id": "fox", "version": 1, "view": wallet }));
-    let (_, body) = send(&router, get("/api/fans/fox/inbox")).await;
-    assert_eq!(body, json!([mail]));
-    assert_eq!(body[0]["inbox_id"], "e_ticket:b-1");
-    let (_, body) = send(&router, get("/api/fans/panda/inbox")).await;
-    assert_eq!(body, json!([]));
 }

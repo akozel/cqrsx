@@ -12,9 +12,6 @@ use std::sync::Arc;
 
 pub const CONCERT_HALLS: &str = "concert_halls";
 pub const FAN_WALLETS: &str = "fan_wallets";
-/// The simulated external mail service's one collection (in the `mail_db` database, not in the
-/// read-model database: wipe and replay never touch it).
-pub const MAIL_INBOX: &str = "inbox";
 
 pub type HallRepository = MongoViewRepository<ConcertHallView, Concert>;
 pub type WalletRepository = MongoViewRepository<FanWalletView, Fan>;

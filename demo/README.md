@@ -24,8 +24,8 @@ The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the libra
 
 | Directory | What |
 |---|---|
-| `back-end/` | Rust, axum + `cqrsx`, in four layers: `domain` (aggregates, one file per command and per event), `application` (use cases, task-driven workflows, read models, Encore!), `presentation` (one file per HTTP action), `infrastructure` (PostgreSQL, MongoDB, the flaky mail server, the task runtime wiring) |
-| `sidecar/` | Rust, axum, **no `cqrsx` dependency**: read-only X-ray of PostgreSQL (`events`, `snapshots`, `transactional_outbox`) and MongoDB, SSE stream |
+| `back-end/` | Rust, axum + `cqrsx`, in four layers: `domain` (aggregates, one file per command and per event), `application` (use cases, task-driven workflows, read models, Encore!), `presentation` (one file per HTTP action), `infrastructure` (PostgreSQL, MongoDB, the HTTP client of the mail service, the task runtime wiring) |
+| `sidecar/` | Rust, axum, no `cqrsx` dependency: read-only X-ray of PostgreSQL (`events`, `snapshots`, `transactional_outbox`) and MongoDB, SSE stream — plus everything DEMO ONLY: seed, 🧨 wipe, ⟲ reset, the fan's mailbox (`GET /inspect/mail/{fan_id}`) and the moody external mail service the back-end calls (`POST /mail`) |
 | `front-end/` | Vue 3.5 + Vite 8 + Tailwind 4 + Pinia + vue-i18n (RU/EN) |
 | `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx/sql`) and MongoDB; profile `app` builds the three images |
 | `infra/` | read-only PostgreSQL role for the sidecar, nginx config for the `app` profile |
@@ -63,7 +63,7 @@ Without a code change `--build` can be dropped.
 |---|---|
 | **UI** | <http://localhost:8000> |
 | Back-end API | <http://localhost:8080/api/health>, `/api/concerts`, `/api/activity` (SSE) |
-| Sidecar (X-ray) | <http://localhost:8090/inspect/health>, `/inspect/stats`, `/inspect/stream` (SSE) |
+| Sidecar (X-ray, demo, mail service) | <http://localhost:8090/inspect/health>, `/inspect/stats`, `/inspect/stream` (SSE), `/inspect/mail/{fan_id}`, `POST /mail` (the demo's mail service, called by the back-end) |
 | PostgreSQL | `postgresql://cqrsx:cqrsx@localhost:5434/encore` (owner, read-write) |
 | PostgreSQL, sidecar role | `postgresql://encore_inspector:inspector@localhost:5434/encore` (read-only) |
 | MongoDB | `mongodb://localhost:27018` (no authentication), databases `encore_read` and `mail_service` |
@@ -168,7 +168,8 @@ make up          # fresh databases (init scripts run again), then start the apps
 From the UI, DEMO ONLY: **⟲ Reset the demo** (Encore panel) asks the sidecar to `TRUNCATE` the ledger, the
 snapshots and the outbox (role `encore_demo_admin`, which may do nothing else), drop the read models and
 the mail inbox, and announce the three default concerts again — the schemas and the containers stay.
-Only the read models can also be dropped on their own: 🧨 wipe, then ⏪ Encore! rebuilds them.
+Only the read models can also be dropped on their own: 🧨 wipe (the sidecar, `POST /inspect/projections/wipe`),
+then ⏪ Encore! (the back-end) rebuilds them from the ledger.
 
 ### 5. Stop
 
@@ -200,9 +201,10 @@ Do not mix the modes: stop the host apps before `make full`, and remove the `app
 │ • task runtime (outbox workers)      │           │ • SELECT / find only              │
 │ • read API over the projections      │           │ • read-only PostgreSQL role       │
 │ • replay, time machine, activity     │           │ • polling 400 ms → SSE            │
-│ • NO demo-only code                  │           │ • DEMO lifecycle: seed, reset     │
+│ • e-mail = POST /mail (HTTP client)  │           │ • DEMO: seed, wipe, reset         │
+│ • NO demo-only code                  │           │ • DEMO: moody mail service /mail  │
 └───┬────────────────────────┬─────────┘           └─────┬────────────────────┬────────┘
-    │ events + snapshots     │ projections + inbox       │                    │
+    │ events + snapshots     │ projections               │                    │ + inbox (mail service)
     │ + outbox (1 transaction)                           │                    │
 ┌───▼──────────────────┐ ┌───▼──────────────────────┐    │                    │
 │ PostgreSQL 18        │ │ MongoDB                  │    │                    │
@@ -223,16 +225,18 @@ Key points, each visible on screen:
   `recorded_at`, `source`) travels through `CommandExecutor::execute_with_metadata`.
 - **Outbox chain.** `SeatBooked` → `encore_record_ticket` → `Fan.RecordTicket` → `TicketRecorded` →
   `encore_send_e_ticket` → 🎫 e-mail. Cancellation mirrors it and ends with a 💸 refund e-mail. The
-  mail handler fails 20 % of the time (`ENCORE_TASK_FAILURE_RATE`, DEMO ONLY,
-  `infrastructure::mail::{chaos, flaky_mail_server}`) and retries after 1, 2, 4, 8 s; delivery is an
+  e-mail goes to an external mail service over HTTP (`infrastructure::mail::http_mailer`: `POST /mail`
+  with an `Idempotency-Key`; `503` → retry after 1, 2, 4, 8 s, `4xx` → permanent failure). The demo's
+  provider is the sidecar's moody mail service (DEMO ONLY, `sidecar/src/mail.rs`): it refuses 20 % of
+  the deliveries (`SIDECAR_MAIL_FAILURE_RATE`) and stores the rest in `mail_service.inbox` with an
   idempotent upsert, so a repeat only bumps `deliveries`. The steps of both chains live in
   `application::workflows::{ticket_delivery, refund}`, one file per step.
 - **Projections** are last-writer-wins registers keyed by event `sequence` with recomputed derived
   fields, so they are idempotent and order-independent. They are updated in-process after commit —
   without delivery guarantees. That is why Encore! exists.
 - **Replay** drops both collections and replays the ledger through the very same `ViewProjection`s.
-  The mail inbox lives in a separate database and is never touched: rebuilding read models does not
-  resend e-mails.
+  The mail inbox belongs to the mail service, in a database the back-end never connects to: rebuilding
+  read models cannot resend e-mails.
 - **The strip at the top of the page** draws all of this as a live diagram (Vue Flow, sketch in
   `docs/img.png`): the `Concert service` and `Fan service` boundaries with command → aggregate →
   events + outbox → outbox worker inside each, the `projection` boundary with the read database and
@@ -267,13 +271,16 @@ Key points, each visible on screen:
 ## Configuration
 
 Every variable has a default (see `.env.example`); both binaries read `demo/.env` through `dotenvy`.
-Highlights: `ENCORE_TASK_FAILURE_RATE` (0.2), `ENCORE_TASK_MAX_ATTEMPTS` (6, mail tasks),
+Highlights: `ENCORE_MAIL_SERVICE_URL` (where the e-mail tasks `POST /mail`), `ENCORE_TASK_MAX_ATTEMPTS`
+(6, mail tasks), `ENCORE_TASK_RETRY_BASE_MS` / `_MAX_MS` (the backoff after a refused delivery: 1, 2, 4, 8, 8 s),
 `ENCORE_CHAIN_MAX_ATTEMPTS` (60, chain tasks — spent only while a rebuild holds the lock),
-`ENCORE_TICKET_LIMIT` (4), `ENCORE_SNAPSHOT_EVERY` (10), `ENCORE_REPLAY_SLOW_DELAY_MS` (80),
-`ENCORE_CHAOS_SEED` (deterministic dice), and the library's own `OUTBOX_*` keys with demo defaults
-(2 workers, 300 ms poll, 5 s handler timeout, 30 s lease, 3 s storage timeout). The demo lifecycle is the
-sidecar's: `SIDECAR_SEED` (announce the default concerts at start-up), `SIDECAR_RESET_ENABLED`
-(`POST /inspect/reset`), `SIDECAR_BACKEND_URL`, `SIDECAR_ADMIN_DATABASE_URL` (the TRUNCATE-only role).
+`ENCORE_TICKET_LIMIT` (4), `ENCORE_SNAPSHOT_EVERY` (10), `ENCORE_REPLAY_SLOW_DELAY_MS` (80), and the
+library's own `OUTBOX_*` keys with demo defaults (2 workers, 300 ms poll, 5 s handler timeout, 30 s lease,
+3 s storage timeout; a mail request gives up one second before the handler timeout). Everything DEMO ONLY
+is the sidecar's: `SIDECAR_SEED` (announce the default concerts at start-up), `SIDECAR_RESET_ENABLED`
+(`POST /inspect/reset`), `SIDECAR_BACKEND_URL`, `SIDECAR_ADMIN_DATABASE_URL` (the TRUNCATE-only role), and
+the moody mail service's `SIDECAR_MAIL_FAILURE_RATE` (0.2), `SIDECAR_MAIL_LATENCY_MIN_MS` / `_MAX_MS`
+(600 / 1800) and `SIDECAR_MAIL_CHAOS_SEED` (deterministic dice).
 `RUST_LOG` is a single level (`info`), not a directive list. The library's redelivery backoff (4–300 s) applies only to
 abnormal paths (expired lease, handler timeout); the mail handler asks for 1–8 s itself.
 
@@ -285,6 +292,8 @@ abnormal paths (expired lease, handler timeout); the mail handler asks for 1–8
   come later (commands then answer 200 with a `projection_failed` warning).
 - **Tasks stuck `pending` with `last_error = rebuild_in_progress`** — a rebuild is running; they
   resume afterwards.
+- **Mail tasks retry with `last_error = mail_unreachable`** — the sidecar, which hosts the demo's mail
+  service, is not running, or `ENCORE_MAIL_SERVICE_URL` points elsewhere; they resume once it answers.
 - **`cannot execute INSERT in a read-only transaction`** in the sidecar log — expected: the sidecar
   role is read-only on two levels.
 - **The tabs show "?"** — the read models are empty (after 🧨 or on a fresh MongoDB): press ⏪ Encore!.
@@ -301,7 +310,8 @@ abnormal paths (expired lease, handler timeout); the mail handler asks for 1–8
 ```bash
 cd demo
 cargo test --workspace                 # domain rules R1–R11, D-02 invariant, use cases and workflow steps on MemStore,
-                                       # projections (LWW), read API, chaos, chain mapping, layer rules, sidecar
+                                       # projections (LWW), read API, the mail client against a stub provider, chain mapping,
+                                       # layer rules; sidecar: X-ray, demo lifecycle, the moody mail service
 cd front-end && npm test               # seatState, outboxStatus, diff, i18n parity (EN/RU)
 ```
 

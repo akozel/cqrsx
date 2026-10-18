@@ -129,6 +129,6 @@ async function confirmCancel() {
         </div>
       </div>
     </div>
-    <div class="sr-only">{{ nameOf(session.persona, session.config.personas) }}</div>
+    <div class="sr-only">{{ nameOf(session.persona, session.demo.personas) }}</div>
   </div>
 </template>

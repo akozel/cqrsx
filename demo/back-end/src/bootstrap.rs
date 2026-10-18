@@ -23,11 +23,8 @@ use crate::{
         fan::Fan,
     },
     infrastructure::{
-        mail::flaky_mail_server::MailSettings,
-        mongo::{
-            inbox::MongoInbox,
-            read_side::{CONCERT_HALLS, FAN_WALLETS, MAIL_INBOX, ReadSide, scratch},
-        },
+        mail::http_mailer::{HttpMailer, MailClientSettings},
+        mongo::read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide, scratch},
         postgres::{HistoryStore, PostgresLedger, event_history, history_repositories, history_store},
         task_runtime::dispatcher::{DispatcherDeps, dispatcher_factory},
     },
@@ -79,6 +76,8 @@ pub struct Wiring {
 pub enum WiringError {
     #[error("snapshot configuration: {0}")]
     Command(#[from] PostgresCommandConfigError),
+    #[error("mail service client: {0}")]
+    MailClient(#[from] reqwest::Error),
 }
 
 pub fn wire(
@@ -87,10 +86,10 @@ pub fn wire(
     mongo: &mongodb::Client,
     shutdown: CancellationToken,
 ) -> Result<Wiring, WiringError> {
-    // MongoDB: read models (`encore_read`) and the simulated external mail service (`mail_service`).
+    // MongoDB: the read models (`encore_read`). The mail inbox is the external mail service's
+    // storage, not ours: the box office never opens it.
     let read_db = mongo.database(&config.read_db);
     let read = ReadSide::new(&read_db);
-    let inbox = Arc::new(MongoInbox::new(mongo.database(&config.mail_db).collection(MAIL_INBOX)));
 
     // Encore! and verify: both read models, in replay order, over the PostgreSQL history.
     let history = history_repositories(pool.clone());
@@ -145,18 +144,20 @@ pub fn wire(
     )));
     let fans = Arc::new(FanApp::new(CommandService::new(executor, activity.clone(), lock)));
 
-    // Outbox task handlers: a fresh set (and a fresh chaos RNG) for every worker.
+    // Outbox task handlers: a fresh set for every worker. The mailers share one HTTP client to the
+    // external mail service (a connection pool is meant to be shared); building it is no I/O.
+    let mail = MailClientSettings {
+        base_url: config.mail_service_url.clone(),
+        timeout: config.mail_request_timeout(),
+        retry_base: config.task_retry_base,
+        retry_max: config.task_retry_max,
+    };
+    let http = HttpMailer::client(&mail)?;
     let dispatcher = dispatcher_factory(DispatcherDeps {
         fans,
-        inbox: inbox.clone(),
         activity: activity.clone(),
-        mail: MailSettings {
-            latency: config.task_latency,
-            retry_base: config.task_retry_base,
-            retry_max: config.task_retry_max,
-        },
-        failure_rate: config.task_failure_rate,
-        chaos_seed: config.chaos_seed,
+        http,
+        mail,
         task_max_attempts: config.task_max_attempts,
     });
 
@@ -169,7 +170,6 @@ pub fn wire(
             read: Arc::new(ReadModels {
                 halls: read.halls,
                 wallets: read.wallets,
-                inbox,
             }),
             time_travel,
             verify,

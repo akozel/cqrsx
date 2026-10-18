@@ -81,7 +81,34 @@ impl MongoInspector {
         })
     }
 
-    /// The shared client (for the demo lifecycle, which drops the whitelisted collections).
+    /// The e-mails of one fan, oldest first: what the fan would see in a mail client. Raw documents
+    /// of `mail_service.inbox`, as they are stored, like every other collection view.
+    pub async fn inbox_of(&self, fan_id: &str, limit: i64) -> Result<CollectionView, mongodb::error::Error> {
+        let coll = self.client.database(&self.mail_db).collection::<Document>("inbox");
+        let filter = doc! { "to_fan_id": fan_id };
+        let total = coll.count_documents(filter.clone()).await?;
+        let docs: Vec<Document> = coll
+            .find(filter)
+            .sort(doc! { "first_delivered_at": 1 })
+            .limit(limit)
+            .await?
+            .try_collect()
+            .await?;
+        Ok(CollectionView {
+            source: "mongodb",
+            database: "mail_service".to_owned(),
+            collection: "inbox".to_owned(),
+            query: format!(
+                "db.getSiblingDB('mail_service').inbox.find({{ to_fan_id: '{}' }}).sort({{ first_delivered_at: 1 }}).limit({limit})",
+                fan_id.replace('\'', "\\'")
+            ),
+            total,
+            docs: docs.into_iter().map(|d| Bson::Document(d).into_relaxed_extjson()).collect(),
+        })
+    }
+
+    /// The shared client (for the demo lifecycle, which drops the whitelisted collections, and the
+    /// mail service, which writes the inbox).
     pub fn client(&self) -> Client {
         self.client.clone()
     }

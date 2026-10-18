@@ -36,7 +36,7 @@ const color = computed(() => ZONE_COLORS[props.seat.zone])
     :disabled="history"
     @click="emit('click')"
   >
-    <span v-if="state === 'booked' || state === 'mine'">{{ avatarOf(fanId ?? '', session.config.personas) }}</span>
+    <span v-if="state === 'booked' || state === 'mine'">{{ avatarOf(fanId ?? '', session.demo.personas) }}</span>
     <span v-else-if="state === 'unknown'" class="opacity-50">?</span>
     <span v-else class="text-[9px] opacity-60 font-mono">{{ seat.id }}</span>
   </button>

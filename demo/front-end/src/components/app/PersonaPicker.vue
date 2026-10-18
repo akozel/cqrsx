@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// One strip of people: the cast (from /api/config) followed by the guests, every other fan holding
-// a ticket for the current concert (the crowd). Any of them can be "you". The strip scrolls
-// sideways (thin scrollbar, mouse wheel) when it is longer than the block.
+// One strip of people: the cast (a demo prop, from the sidecar's /inspect/demo) followed by the
+// guests, every other fan holding a ticket for the current concert (the crowd). Any of them can be
+// "you". The strip scrolls sideways (thin scrollbar, mouse wheel) when it is longer than the block.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useSessionStore } from '@/stores/session'
@@ -22,7 +22,7 @@ const ticketsOf = computed(() => {
 })
 
 const people = computed(() => {
-  const cast = session.config.personas
+  const cast = session.demo.personas
   const known = new Set(cast.map((p) => p.fan_id))
   const guestIds = new Set(Object.keys(ticketsOf.value).filter((id) => !known.has(id)))
   if (!known.has(session.persona)) guestIds.add(session.persona) // the selected guest stays listed

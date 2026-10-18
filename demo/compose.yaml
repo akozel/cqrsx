@@ -43,6 +43,7 @@ services:
       ENCORE_HTTP_ADDR: 0.0.0.0:8080
       ENCORE_DATABASE_URL: postgresql://cqrsx:cqrsx@postgres:5432/encore
       ENCORE_MONGODB_URI: mongodb://mongo:27017
+      ENCORE_MAIL_SERVICE_URL: http://sidecar:8090   # the external mail service; the demo's moody one is hosted by the sidecar
       RUST_LOG: info
     ports:
       - "127.0.0.1:8080:8080"
@@ -59,6 +60,7 @@ services:
       SIDECAR_DATABASE_URL: postgresql://encore_inspector:inspector@postgres:5432/encore
       SIDECAR_ADMIN_DATABASE_URL: postgresql://encore_demo_admin:demo-admin@postgres:5432/encore   # DEMO ONLY: reset
       SIDECAR_BACKEND_URL: http://backend:8080                                                     # seed + reset announce through the public API
+      # DEMO ONLY: the mail service (POST /mail) runs with its defaults: 20 % refusals, 600–1800 ms latency.
       SIDECAR_MONGODB_URI: mongodb://mongo:27017
       RUST_LOG: info
     ports:

@@ -150,10 +150,10 @@ export default {
   },
   mail_server: {
     title: 'mail server 🎲',
-    lead: 'DEMO ONLY: a capricious external service that fails 20 % of the time (ENCORE_TASK_FAILURE_RATE).',
+    lead: 'DEMO ONLY: a capricious external service, hosted by the sidecar, that refuses 20 % of the deliveries (SIDECAR_MAIL_FAILURE_RATE). The back-end only knows its HTTP API: POST /mail, 200 delivered, 503 try again later.',
     points: [
-      'Failure reasons: ⏱ SMTP timeout, 🔥 server on fire, 🐌 rate limited, 📦 mailbox full. See the outbox panel.',
-      'Delivery is an idempotent upsert into mail_service.inbox (MongoDB): a repeat only bumps the deliveries counter.',
+      'Refusal reasons: ⏱ SMTP timeout, 🔥 server on fire, 🐌 rate limited, 📦 mailbox full. See the outbox panel.',
+      'Delivery is an idempotent upsert into mail_service.inbox (MongoDB) keyed by the Idempotency-Key header: a repeat only bumps the deliveries counter.',
       'Not a projection: ⏪ Encore! never touches this database and never resends an e-mail.',
     ],
   },

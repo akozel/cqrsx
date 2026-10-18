@@ -63,7 +63,7 @@ onKeyStroke('Escape', () => {
         <p class="leading-relaxed opacity-90">{{ t(`explain.${id}.lead`) }}</p>
         <div v-if="id === 'user'" class="mt-3 flex flex-wrap gap-2">
           <button
-            v-for="p in session.config.personas"
+            v-for="p in session.demo.personas"
             :key="p.fan_id"
             type="button"
             class="pipe-persona flex items-center gap-2 rounded-lg border px-2 py-1 text-sm"

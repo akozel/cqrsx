@@ -1,11 +1,17 @@
-//! Encore sidecar: a read-only window into PostgreSQL (events, snapshots, outbox) and MongoDB
-//! (read models, mail inbox), plus the demo lifecycle (seed at start-up, reset on request) so the
-//! back-end carries no demo-only code. Independent of `cqrsx`: it shows the databases "from the
-//! outside".
+//! Encore sidecar: everything around the box office that is not the box office.
+//!
+//! * A read-only window into PostgreSQL (events, snapshots, outbox) and MongoDB (read models, mail
+//!   inbox) under `/inspect`, polled every `SIDECAR_POLL_MS` and streamed over SSE.
+//! * The demo lifecycle: seed at start-up, 🧨 wipe of the read models, ⟲ reset of everything.
+//! * The demo's external mail service (`POST /mail`): the moody provider the back-end's e-mail
+//!   tasks call over HTTP, so that the back-end carries no demo-only code.
+//!
+//! Independent of `cqrsx`: it shows the databases "from the outside".
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 mod config;
 mod demo;
 mod http;
+mod mail;
 mod mongo;
 mod postgres;
 mod state;
@@ -13,6 +19,7 @@ mod state;
 use chrono::{SecondsFormat, Utc};
 use config::Config;
 use demo::DemoAdmin;
+use mail::{MailService, MailSettings, inbox::MongoInbox};
 use mongo::{MongoInspector, WHITELIST};
 use postgres::PgInspector;
 use sqlx::postgres::PgConnectOptions;
@@ -114,7 +121,7 @@ async fn main() {
         config.mail_db.clone(),
     );
 
-    // DEMO ONLY: the lifecycle of the demo data (seed, reset) — see demo.rs.
+    // DEMO ONLY: the lifecycle of the demo data (seed, wipe, reset) — see demo.rs.
     let admin_options = config
         .admin_database_url
         .parse::<PgConnectOptions>()
@@ -131,6 +138,16 @@ async fn main() {
         let demo = demo.clone();
         tokio::spawn(async move { demo.seed_with_retries(90, std::time::Duration::from_secs(2)).await })
     });
+
+    // DEMO ONLY: the external mail service the back-end's e-mail tasks call — see mail.rs.
+    let mail = Arc::new(MailService::new(
+        MongoInbox::new(mongo.client().database(&config.mail_db).collection("inbox")),
+        MailSettings {
+            failure_rate: config.mail_failure_rate,
+            latency: config.mail_latency,
+            seed: config.mail_chaos_seed,
+        },
+    ));
 
     let shutdown = CancellationToken::new();
     let (sender, receiver) = watch::channel(Arc::new(State::default()));
@@ -164,15 +181,18 @@ async fn main() {
         mongo,
         state: receiver,
         shutdown: shutdown.clone(),
-        demo: config.reset_enabled.then_some(demo),
-    });
+        demo,
+        reset_enabled: config.reset_enabled,
+    })
+    .merge(mail::router(mail));
     let listener = tokio::net::TcpListener::bind(config.http_addr)
         .await
         .unwrap_or_else(|e| fail(format!("cannot bind {}: {e}", config.http_addr)));
     tracing::info!(
-        "encore-sidecar listening on http://{} (poll every {:?})",
+        "encore-sidecar listening on http://{} (poll every {:?}; mail service refuses {:.0} % of the deliveries)",
         config.http_addr,
-        config.poll_interval
+        config.poll_interval,
+        config.mail_failure_rate * 100.0
     );
     let server = axum::serve(listener, app)
         .with_graceful_shutdown(shutdown.clone().cancelled_owned())

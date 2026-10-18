@@ -62,12 +62,18 @@ export const useRebuildStore = defineStore('rebuild', () => {
     }
   }
 
+  /** DEMO ONLY: 🧨 the sidecar drops the read models; the ledger is intact, Encore! rebuilds them. */
   async function wipe() {
     busy.value = true
+    lastError.value = null
     try {
-      const { status: code, body } = await backend.wipe()
-      if (code === 200) concerts.markWiped()
-      else lastError.value = body?.outcome ?? `HTTP ${code}`
+      const { status: code, body } = await sidecar.wipe()
+      if (code === 200) {
+        concerts.markWiped()
+        wallet.clear()
+      } else lastError.value = body?.error?.message ?? `HTTP ${code}`
+    } catch (e) {
+      lastError.value = String(e)
     } finally {
       busy.value = false
     }
@@ -103,10 +109,6 @@ export const useRebuildStore = defineStore('rebuild', () => {
         void refreshStatus()
         void concerts.refreshAll()
         void wallet.refresh()
-        break
-      case 'projections.wiped':
-        concerts.markWiped()
-        wallet.clear()
         break
     }
   }

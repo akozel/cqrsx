@@ -154,10 +154,10 @@ export default {
   },
   mail_server: {
     title: 'mail server 🎲',
-    lead: 'ТОЛЬКО ДЛЯ ДЕМО: капризный внешний сервис, который отказывает в 20 % случаев (ENCORE_TASK_FAILURE_RATE).',
+    lead: 'ТОЛЬКО ДЛЯ ДЕМО: капризный внешний сервис в sidecar, который отказывает в 20 % доставок (SIDECAR_MAIL_FAILURE_RATE). Back-end знает только его HTTP API: POST /mail, 200 доставлено, 503 попробуйте позже.',
     points: [
       'Причины отказа: ⏱ таймаут SMTP, 🔥 сервер горит, 🐌 ограничение скорости, 📦 ящик переполнен. См. панель outbox.',
-      'Доставка — идемпотентный upsert в mail_service.inbox (MongoDB): повтор лишь увеличивает счётчик deliveries.',
+      'Доставка — идемпотентный upsert в mail_service.inbox (MongoDB) по заголовку Idempotency-Key: повтор лишь увеличивает счётчик deliveries.',
       'Не проекция: ⏪ Encore! не трогает эту базу и никогда не отправляет письмо заново.',
     ],
   },

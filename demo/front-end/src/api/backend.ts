@@ -7,11 +7,12 @@ import type {
   ConcertSummary,
   FanWalletDoc,
   HistoryState,
-  InboxMail,
   RebuildStatus,
   TimelineEntry,
 } from '@/types/domain'
 
+/** The box office (`/api`): commands, read models, the time machine, Encore!. Demo operations and
+ * the fan's e-mails are the sidecar's (`sidecar.ts`). */
 export const backend = {
   config: () => getJson<AppConfig>('/api/config'),
   concerts: () => getJson<ConcertSummary[]>('/api/concerts'),
@@ -31,7 +32,6 @@ export const backend = {
       throw e
     }
   },
-  inbox: (fanId: string) => getJson<InboxMail[]>(`/api/fans/${encodeURIComponent(fanId)}/inbox`),
   timeline: (id: string) => getJson<TimelineEntry[]>(`/api/concerts/${encodeURIComponent(id)}/timeline`),
   stateAt: (id: string, sequence: number) =>
     getJson<HistoryState>(`/api/concerts/${encodeURIComponent(id)}/state-at/${sequence}`),
@@ -42,7 +42,6 @@ export const backend = {
     )
     return { outcome: 'error', ...(response ?? {}), status } as CommandResponse
   },
-  wipe: () => postJson<{ outcome: string; collections?: string[] }>('/api/projections/wipe'),
   rebuild: (speed: 'slow' | 'fast') => postJson<{ outcome: string; rebuild_id?: string }>('/api/projections/rebuild', { speed }),
   rebuildStatus: () => getJson<RebuildStatus>('/api/projections/status'),
 }

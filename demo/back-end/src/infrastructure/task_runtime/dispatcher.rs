@@ -1,6 +1,6 @@
-//! `TaskDispatcherFactory`: a fresh dispatcher (fresh handlers, own RNG) for every worker and every
-//! worker restart. The factory gets no worker index, so deterministic seeds come from
-//! `ENCORE_CHAOS_SEED + counter`. The ordered format list is identical for every instance.
+//! `TaskDispatcherFactory`: a fresh dispatcher (fresh handlers) for every worker and every worker
+//! restart. The ordered format list is identical for every instance; the mailers share one HTTP
+//! client, since a connection pool is meant to be shared.
 use crate::{
     application::{
         activity::ActivityHub,
@@ -11,49 +11,28 @@ use crate::{
         },
     },
     domain::fan::Fan,
-    infrastructure::{
-        mail::{
-            chaos::Random,
-            flaky_mail_server::{FlakyMailServer, MailSettings},
-        },
-        mongo::inbox::MongoInbox,
-    },
+    infrastructure::mail::http_mailer::{HttpMailer, MailClientSettings},
 };
 use cqrsx::postgres::command::PostgresCommandExecutor;
 use cqrsx::task::{
     adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, runtime::dispatcher_factory::TaskDispatcherFactory,
 };
-use std::sync::{
-    Arc,
-    atomic::{AtomicU64, Ordering},
-};
+use std::sync::Arc;
 
 pub struct DispatcherDeps {
     pub fans: Arc<FanApp<PostgresCommandExecutor<Fan>>>,
-    pub inbox: Arc<MongoInbox>,
     pub activity: Arc<ActivityHub>,
-    pub mail: MailSettings,
-    pub failure_rate: f64,
-    pub chaos_seed: Option<u64>,
+    /// Shared by every mailer: one connection pool to the external mail service.
+    pub http: reqwest::Client,
+    pub mail: MailClientSettings,
     /// Attempt budget of the e-mail tasks the ledger steps publish.
     pub task_max_attempts: i32,
 }
 
 /// Adding a task type means adding one registration line here.
 pub fn dispatcher_factory(deps: DispatcherDeps) -> TaskDispatcherFactory<BoxedTaskAdapter> {
-    let counter = AtomicU64::new(0);
     Arc::new(move || {
-        let instance = counter.fetch_add(1, Ordering::SeqCst);
-        let seed = deps.chaos_seed.map(|s| s.wrapping_add(instance));
-        let mail_server = || {
-            FlakyMailServer::new(
-                deps.inbox.clone(),
-                Random::new(deps.failure_rate, seed),
-                deps.mail.clone(),
-                deps.activity.clone(),
-                seed.unwrap_or(instance).wrapping_mul(7919),
-            )
-        };
+        let mailer = || HttpMailer::new(deps.http.clone(), deps.mail.clone(), deps.activity.clone());
         TaskDispatcher::try_new(vec![
             BoxedTaskAdapter::json(RecordTicketHandler {
                 fans: deps.fans.clone(),
@@ -63,8 +42,8 @@ pub fn dispatcher_factory(deps: DispatcherDeps) -> TaskDispatcherFactory<BoxedTa
                 fans: deps.fans.clone(),
                 follow_up_max_attempts: deps.task_max_attempts,
             })?,
-            BoxedTaskAdapter::json(SendETicketHandler { mailer: mail_server() })?,
-            BoxedTaskAdapter::json(IssueRefundHandler { mailer: mail_server() })?,
+            BoxedTaskAdapter::json(SendETicketHandler { mailer: mailer() })?,
+            BoxedTaskAdapter::json(IssueRefundHandler { mailer: mailer() })?,
         ])
     })
 }

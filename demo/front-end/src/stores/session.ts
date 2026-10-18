@@ -30,20 +30,18 @@ export const PACE_BASE = 1 / 1.33
 export const useSessionStore = defineStore('session', () => {
   const config = ref<AppConfig>({
     venue: DEFAULT_VENUE,
-    personas: DEFAULT_PERSONAS,
     ticket_limit: 4,
-    task_failure_rate: 0.2,
-    task_max_attempts: 6,
     snapshot_every: 10,
   })
   const configLoaded = ref(false)
-  /** From the sidecar: the concerts the demo starts from (fallback tabs) and the reset switch. */
+  /** From the sidecar: the concerts the demo starts from (fallback tabs), the cast and the reset switch. */
   const demo = ref<DemoInfo>({
     default_concerts: [
       { concert_id: 'radiohead-2026-11-21', artist: 'Radiohead', city: 'Minsk', date: '2026-11-21' },
       { concert_id: 'rammstein-2026-12-05', artist: 'Rammstein', city: 'Tokyo', date: '2026-12-05' },
       { concert_id: 'muse-2027-01-16', artist: 'Muse', city: 'Tbilisi', date: '2027-01-16' },
     ],
+    personas: DEFAULT_PERSONAS,
     reset_enabled: false,
   })
   const persona = ref<string>(readLocal('encore.persona') ?? 'fox')
@@ -62,7 +60,7 @@ export const useSessionStore = defineStore('session', () => {
   watch(pace, (v) => writeLocal('encore.pace', String(v)))
 
   const currentPersona = (): Persona =>
-    config.value.personas.find((p) => p.fan_id === persona.value) ?? {
+    demo.value.personas.find((p) => p.fan_id === persona.value) ?? {
       fan_id: persona.value,
       name: persona.value,
       avatar: '🙂',
@@ -76,7 +74,9 @@ export const useSessionStore = defineStore('session', () => {
       configLoaded.value = false
     }
     try {
-      demo.value = await sidecar.demo()
+      const info = await sidecar.demo()
+      // An older sidecar without the cast keeps the built-in one.
+      demo.value = { ...info, personas: info.personas?.length ? info.personas : DEFAULT_PERSONAS }
     } catch {
       // keep the built-in defaults; the reset button stays hidden
     }

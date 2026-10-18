@@ -29,7 +29,7 @@ export const useActivityStore = defineStore('activity', () => {
     const type = entry.type
     if (type.startsWith('task.')) taskSignal.value = { type, entry, seq: ++seq }
     if (type.startsWith('command.')) commandSignal.value = { type, entry, seq: ++seq }
-    if (type.startsWith('rebuild.') || type === 'projections.wiped') rebuild.onActivity(type, entry)
+    if (type.startsWith('rebuild.')) rebuild.onActivity(type, entry)
     if (type === 'projection.updated' || type === 'projection.failed') {
       // Possibly from another tab or from the task chain: refresh with a small debounce.
       concerts.refreshDebounced()

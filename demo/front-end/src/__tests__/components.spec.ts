@@ -316,8 +316,93 @@ describe('ActionBar race', () => {
   })
 })
 
-describe('demo reset', () => {
-  it('asks the sidecar, then selects the first default concert and refreshes the stores', async () => {
+describe('demo operations (sidecar)', () => {
+  it('a wipe asks the sidecar and empties the hall and the wallet locally', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${url}`)
+        if (url === '/inspect/projections/wipe')
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({ outcome: 'wiped', dropped: ['encore_read.concert_halls', 'encore_read.fan_wallets'] }),
+          }
+        return { ok: false, status: 404, json: async () => null }
+      }),
+    )
+    const concerts = useConcertsStore()
+    const rebuild = useRebuildStore()
+    await rebuild.wipe()
+    expect(calls).toEqual(['POST /inspect/projections/wipe'])
+    expect(concerts.stale).toBe(true)
+    expect(rebuild.lastError).toBeNull()
+  })
+
+  it('the wallet reads the fan\'s e-mails from the mail service through the sidecar', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string, init?: RequestInit) => {
+        calls.push(`${init?.method ?? 'GET'} ${url}`)
+        const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
+        if (url === '/api/fans/fox/wallet')
+          return ok({ fan_id: 'fox', version: 1, view: { fan_id: 'fox', fan_name: 'Fox', tickets: {}, active_count: 0, total_spent: 0, last_sequence: 0 } })
+        if (url === '/inspect/mail/fox')
+          return ok({
+            source: 'mongodb',
+            database: 'mail_service',
+            collection: 'inbox',
+            query: '',
+            total: 1,
+            docs: [{ _id: 'e_ticket:b-1', kind: 'e_ticket', to_fan_id: 'fox', delivered_on_attempt: 2, deliveries: 1 }],
+          })
+        return { ok: false, status: 404, json: async () => null }
+      }),
+    )
+    useSessionStore().persona = 'fox' // another test may have left a crowd fan in localStorage
+    const { useWalletStore } = await import('../stores/wallet')
+    const wallet = useWalletStore()
+    await wallet.refresh()
+    expect(calls).toEqual(['GET /api/fans/fox/wallet', 'GET /inspect/mail/fox'])
+    expect(wallet.inbox[0]?.inbox_id).toBe('e_ticket:b-1')
+    expect(wallet.mailByBooking['b-1']?.delivered_on_attempt).toBe(2)
+  })
+
+  it('the cast comes from the sidecar and falls back to the built-in one', async () => {
+    const pinia = createPinia()
+    setActivePinia(pinia)
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (url: string) => {
+        if (url === '/inspect/demo')
+          return {
+            ok: true,
+            status: 200,
+            json: async () => ({
+              default_concerts: [],
+              personas: [{ fan_id: 'owl', name: 'Owl', avatar: '🦉' }],
+              reset_enabled: true,
+            }),
+          }
+        return { ok: false, status: 503, json: async () => null }
+      }),
+    )
+    const session = useSessionStore()
+    expect(session.demo.personas).toEqual(DEFAULT_PERSONAS)
+    await session.loadConfig()
+    expect(session.demo.personas.map((p) => p.fan_id)).toEqual(['owl'])
+    expect(session.demo.reset_enabled).toBe(true)
+    session.persona = 'owl'
+    expect(session.currentPersona().avatar).toBe('🦉')
+  })
+
+  it('a reset asks the sidecar, then selects the first default concert and refreshes the stores', async () => {
     const pinia = createPinia()
     setActivePinia(pinia)
     const calls: string[] = []

@@ -1,4 +1,3 @@
-//! MongoDB: the read-model repository, the read-side collections and the mail service's inbox.
-pub mod inbox;
+//! MongoDB: the read-model repository and the read-side collections.
 pub mod read_side;
 pub mod view_repository;

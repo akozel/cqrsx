@@ -1,8 +1,15 @@
 import { defineStore } from 'pinia'
 import { computed, ref } from 'vue'
 import type { FanWalletDoc, InboxMail } from '@/types/domain'
+import type { InboxDoc } from '@/types/xray'
 import { backend } from '@/api/backend'
+import { sidecar } from '@/api/sidecar'
 import { useSessionStore } from './session'
+
+/** The mail service stores the business id as `_id`; the wallet calls it `inbox_id`. */
+export function toInboxMail({ _id, ...doc }: InboxDoc): InboxMail {
+  return { inbox_id: _id, ...doc }
+}
 
 export const useWalletStore = defineStore('wallet', () => {
   const session = useSessionStore()
@@ -28,14 +35,16 @@ export const useWalletStore = defineStore('wallet', () => {
 
   const refundMails = computed(() => inbox.value.filter((m) => m.kind === 'refund'))
 
+  /** The wallet is the box office's read model; the e-mails are the mail service's, read through
+   * the sidecar (the fan opening their mail client). */
   async function refresh() {
     const fanId = session.persona
     try {
-      const [w, i] = await Promise.all([backend.wallet(fanId), backend.inbox(fanId)])
+      const [w, i] = await Promise.all([backend.wallet(fanId), sidecar.inbox(fanId)])
       // The persona may have changed while we were waiting.
       if (fanId !== session.persona) return
       wallet.value = w
-      inbox.value = i
+      inbox.value = i.docs.map(toInboxMail)
       loadedFor.value = fanId
     } catch {
       // keep the previous state; the next refresh will try again

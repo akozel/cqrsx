@@ -1,4 +1,5 @@
-//! Encore! — wipe and rebuild the read models from the ledger.
+//! Encore! — rebuild the read models from the ledger, always from scratch (the first step drops
+//! them). Dropping them *without* a rebuild is a demo operation and lives in the sidecar.
 //!
 //! Why a lock instead of a live rebuild: simpler and deterministic for a demo. UI commands get 423
 //! while a rebuild runs; the outbox workers keep running (the write side never depends on the
@@ -60,14 +61,6 @@ struct Status {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
 #[error("a rebuild is already running")]
 pub struct AlreadyRunning;
-
-#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
-pub enum WipeError {
-    #[error("a rebuild is in progress")]
-    Locked,
-    #[error("read model storage unavailable: {0}")]
-    Storage(String),
-}
 
 pub struct RebuildService {
     lock: Arc<BoxOfficeLock>,
@@ -136,20 +129,6 @@ impl RebuildService {
             }),
             None => json!({ "state": "idle", "last_result": last }),
         }
-    }
-
-    /// 🧨 Drop every read model (the inbox is not a read model and stays).
-    pub async fn wipe(&self) -> Result<Vec<&'static str>, WipeError> {
-        if self.is_locked() {
-            return Err(WipeError::Locked);
-        }
-        for read_model in &self.read_models {
-            read_model.wipe().await.map_err(|e| WipeError::Storage(e.0))?;
-        }
-        let collections: Vec<&'static str> = self.read_models.iter().map(|r| r.name()).collect();
-        self.activity
-            .publish("projections.wiped", json!({ "collections": collections }));
-        Ok(collections)
     }
 
     /// ⏪ Start a rebuild in the background; returns at once with its id.
@@ -387,28 +366,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn status_is_idle_and_wipe_is_refused_while_the_box_office_is_locked() {
+    async fn status_is_idle_and_a_rebuild_is_refused_while_the_box_office_is_locked() {
         let (service, lock, _) = service(vec![]);
         assert_eq!(service.status_json()["state"], "idle");
         assert!(!service.is_locked());
         let guard = lock.try_acquire().unwrap();
-        assert_eq!(service.wipe().await, Err(WipeError::Locked));
         assert_eq!(service.start(Speed::Fast), Err(AlreadyRunning));
         drop(guard);
         assert!(!service.is_locked());
-    }
-
-    #[tokio::test]
-    async fn a_wipe_drops_every_read_model_and_reports_their_names() {
-        let halls = FakeReadModel::new("concert_halls", vec![]);
-        let wallets = FakeReadModel::new("fan_wallets", vec![]);
-        let (service, _, activity) = service(vec![halls.clone(), wallets.clone()]);
-        assert_eq!(service.wipe().await, Ok(vec!["concert_halls", "fan_wallets"]));
-        assert_eq!(
-            (halls.wipes.load(Ordering::SeqCst), wallets.wipes.load(Ordering::SeqCst)),
-            (1, 1)
-        );
-        assert_eq!(activity.subscribe().0[0].kind, "projections.wiped");
     }
 
     #[tokio::test]

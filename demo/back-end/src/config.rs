@@ -24,18 +24,18 @@ pub struct Config {
     pub database_url: String,
     pub mongodb_uri: String,
     pub read_db: String,
-    pub mail_db: String,
     pub http_addr: SocketAddr,
-    /// DEMO ONLY: probability that a mail task "fails" and is retried.
-    pub task_failure_rate: f64,
-    pub task_latency: (Duration, Duration),
+    /// Base URL of the external mail service the e-mail tasks call (`POST {url}/mail`), without a
+    /// trailing slash. The demo's provider is hosted by the sidecar.
+    pub mail_service_url: String,
+    /// Claim-attempt budget of the e-mail tasks.
     pub task_max_attempts: i32,
-    /// Chain tasks (`encore_record_*`) have no chaos; their budget only matters while a rebuild
-    /// holds the box-office lock, so it is deliberately generous.
+    /// Chain tasks (`encore_record_*`) talk to our own ledger; their budget only matters while a
+    /// rebuild holds the box-office lock, so it is deliberately generous.
     pub chain_max_attempts: i32,
+    /// Backoff an e-mail task asks for after a refused delivery: `min(base · 2^(n−1), max)`.
     pub task_retry_base: Duration,
     pub task_retry_max: Duration,
-    pub chaos_seed: Option<u64>,
     pub ticket_limit: usize,
     pub snapshot_every: usize,
     pub replay_slow_delay: Duration,
@@ -90,25 +90,6 @@ impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let task_runtime = TaskRuntimeConfig::from_lookup(outbox_lookup)?;
         let task_queue = PostgresTaskQueueConfig::from_lookup(outbox_lookup)?;
-        let task_failure_rate: f64 = parse("ENCORE_TASK_FAILURE_RATE", "0.2")?;
-        if !(0.0..=1.0).contains(&task_failure_rate) {
-            return Err(invalid("ENCORE_TASK_FAILURE_RATE", "must be between 0.0 and 1.0"));
-        }
-        let latency_min = Duration::from_millis(parse("ENCORE_TASK_LATENCY_MIN_MS", "600")?);
-        let latency_max = Duration::from_millis(parse("ENCORE_TASK_LATENCY_MAX_MS", "1800")?);
-        if latency_min > latency_max {
-            return Err(invalid(
-                "ENCORE_TASK_LATENCY_MIN_MS",
-                "must not exceed ENCORE_TASK_LATENCY_MAX_MS",
-            ));
-        }
-        let handler_timeout = task_runtime.worker_pool().handler_timeout();
-        if latency_max >= handler_timeout {
-            return Err(invalid(
-                "ENCORE_TASK_LATENCY_MAX_MS",
-                format!("must be below OUTBOX_HANDLER_TIMEOUT_SECS ({handler_timeout:?})"),
-            ));
-        }
         let task_max_attempts: i32 = parse("ENCORE_TASK_MAX_ATTEMPTS", "6")?;
         if task_max_attempts <= 0 {
             return Err(invalid("ENCORE_TASK_MAX_ATTEMPTS", "must be positive"));
@@ -125,10 +106,6 @@ impl Config {
                 "must not exceed ENCORE_TASK_RETRY_MAX_MS",
             ));
         }
-        // Empty or absent = random chaos; any value must be a seed.
-        let chaos_seed = var("ENCORE_CHAOS_SEED")
-            .map(|_| parse("ENCORE_CHAOS_SEED", "0"))
-            .transpose()?;
         let ticket_limit: usize = parse("ENCORE_TICKET_LIMIT", "4")?;
         if ticket_limit == 0 {
             return Err(invalid("ENCORE_TICKET_LIMIT", "must be positive"));
@@ -141,21 +118,32 @@ impl Config {
             database_url: var("ENCORE_DATABASE_URL").unwrap_or_else(|| "postgresql://cqrsx:cqrsx@localhost:5434/encore".into()),
             mongodb_uri: var("ENCORE_MONGODB_URI").unwrap_or_else(|| "mongodb://localhost:27018".into()),
             read_db: var("ENCORE_READ_DB").unwrap_or_else(|| "encore_read".into()),
-            mail_db: var("ENCORE_MAIL_DB").unwrap_or_else(|| "mail_service".into()),
             http_addr: parse("ENCORE_HTTP_ADDR", "127.0.0.1:8080")?,
-            task_failure_rate,
-            task_latency: (latency_min, latency_max),
+            mail_service_url: var("ENCORE_MAIL_SERVICE_URL")
+                .unwrap_or_else(|| "http://127.0.0.1:8090".into())
+                .trim_end_matches('/')
+                .to_owned(),
             task_max_attempts,
             chain_max_attempts,
             task_retry_base,
             task_retry_max,
-            chaos_seed,
             ticket_limit,
             snapshot_every,
             replay_slow_delay: Duration::from_millis(parse("ENCORE_REPLAY_SLOW_DELAY_MS", "80")?),
             task_runtime,
             task_queue,
         })
+    }
+
+    /// A mail request must give up before the task runtime's handler timeout does, so an attempt
+    /// ends with a retry of its own rather than as a timed-out handler: one second earlier, never
+    /// below one second.
+    pub fn mail_request_timeout(&self) -> Duration {
+        self.task_runtime
+            .worker_pool()
+            .handler_timeout()
+            .saturating_sub(Duration::from_secs(1))
+            .max(Duration::from_secs(1))
     }
 }
 
@@ -164,12 +152,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn outbox_defaults_satisfy_the_lease_budget_and_the_latency_budget() {
+    fn outbox_defaults_satisfy_the_lease_budget() {
         let runtime = TaskRuntimeConfig::from_lookup(outbox_default).expect("demo OUTBOX_* defaults must validate");
         assert_eq!(runtime.worker_pool().concurrency(), 2);
         assert_eq!(runtime.worker_pool().lease_duration(), Duration::from_secs(30));
         assert_eq!(runtime.worker_pool().handler_timeout(), Duration::from_secs(5));
-        assert!(Duration::from_millis(1800) < runtime.worker_pool().handler_timeout());
         PostgresTaskQueueConfig::from_lookup(outbox_default).expect("demo statement timeout must validate");
+    }
+
+    #[test]
+    fn the_mail_request_gives_up_a_second_before_the_handler_timeout_but_never_below_a_second() {
+        let mut config = crate::testing::config();
+        assert_eq!(config.mail_request_timeout(), Duration::from_secs(4));
+        config.task_runtime = TaskRuntimeConfig::from_lookup(|name| match name {
+            "OUTBOX_HANDLER_TIMEOUT_SECS" => Some("1".to_owned()),
+            other => outbox_default(other),
+        })
+        .expect("a one-second handler timeout validates");
+        assert_eq!(config.mail_request_timeout(), Duration::from_secs(1));
     }
 }

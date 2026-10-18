@@ -247,7 +247,6 @@ export default {
     'task.attempt.started': 'попытка задачи началась',
     'task.attempt.failed': '🎲 попытка задачи провалилась',
     'task.attempt.succeeded': 'задача доставлена',
-    'projections.wiped': 'витрины стёрты',
     'rebuild.started': 'Encore! начался',
     'rebuild.progress': 'проигрываем',
     'rebuild.finished': 'Encore! завершён',

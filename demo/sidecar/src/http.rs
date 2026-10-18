@@ -1,7 +1,9 @@
-//! HTTP API of the sidecar: tables, collections, stats, the SSE stream of the shared poller, and the
-//! demo lifecycle (`GET /inspect/demo`, `POST /inspect/reset`).
+//! HTTP API of the sidecar under `/inspect`: tables, collections, stats, the SSE stream of the
+//! shared poller, the fan's mailbox, and the demo lifecycle (`GET /inspect/demo`,
+//! `POST /inspect/projections/wipe`, `POST /inspect/reset`). The mail service's own API (`POST
+//! /mail`) is a separate router, see `mail`.
 use crate::{
-    demo::{DEFAULT_CONCERTS, DemoAdmin},
+    demo::{DEFAULT_CONCERTS, DemoAdmin, PERSONAS},
     mongo::{MongoInspector, allowed},
     postgres::{Limits, PgInspector},
     state::State,
@@ -30,8 +32,11 @@ pub struct AppState {
     pub mongo: MongoInspector,
     pub state: watch::Receiver<Arc<State>>,
     pub shutdown: CancellationToken,
-    /// DEMO ONLY: `None` when `SIDECAR_RESET_ENABLED=false`.
-    pub demo: Option<DemoAdmin>,
+    /// DEMO ONLY: the demo lifecycle (seed, wipe, reset).
+    pub demo: DemoAdmin,
+    /// DEMO ONLY: `false` hides `POST /inspect/reset` (`SIDECAR_RESET_ENABLED=false`); a wipe is
+    /// always allowed, it destroys nothing the ledger cannot rebuild.
+    pub reset_enabled: bool,
 }
 
 fn error(status: StatusCode, source: &str, message: impl std::fmt::Display) -> Response {
@@ -120,6 +125,14 @@ async fn collection(
     }
 }
 
+/// `GET /inspect/mail/{fan_id}`: the fan's e-mails, oldest first, as the mail service stored them.
+async fn inbox(AxumState(state): AxumState<AppState>, Path(fan_id): Path<String>, Query(q): Query<TableQuery>) -> Response {
+    match state.mongo.inbox_of(&fan_id, limit(q.limit, 100, 1000)).await {
+        Ok(view) => Json(view).into_response(),
+        Err(e) => error(StatusCode::SERVICE_UNAVAILABLE, "mongodb", e),
+    }
+}
+
 async fn stats(AxumState(state): AxumState<AppState>) -> Json<Value> {
     let current = state.state.borrow().clone();
     Json(json!({ "stats": current.stats, "db_time": current.db_time, "polled_at": current.polled_at, "errors": current.errors }))
@@ -140,24 +153,41 @@ async fn stream(AxumState(state): AxumState<AppState>) -> Sse<impl futures::Stre
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("heartbeat"))
 }
 
-/// `GET /inspect/demo`: what the demo starts from, for the UI's fallback tabs and the reset button.
+/// `GET /inspect/demo`: the props of the demo — the default concerts, the cast — and whether a
+/// reset is allowed.
 async fn demo(AxumState(state): AxumState<AppState>) -> Json<Value> {
     Json(json!({
         "default_concerts": DEFAULT_CONCERTS,
-        "reset_enabled": state.demo.is_some(),
+        "personas": PERSONAS,
+        "reset_enabled": state.reset_enabled,
     }))
+}
+
+/// `POST /inspect/projections/wipe`: 🧨 DEMO ONLY — drop the read models; the ledger is intact and
+/// ⏪ Encore! (back-end) rebuilds them. Shows that the rules keep working from the ledger alone.
+async fn wipe(AxumState(state): AxumState<AppState>) -> Response {
+    match state.demo.wipe_read_models().await {
+        Ok(dropped) => {
+            tracing::info!("read models wiped: {}", dropped.join(", "));
+            Json(json!({ "outcome": "wiped", "dropped": dropped })).into_response()
+        }
+        Err(e) => {
+            tracing::warn!("wipe failed: {e}");
+            error(StatusCode::SERVICE_UNAVAILABLE, "demo", e)
+        }
+    }
 }
 
 /// `POST /inspect/reset`: DEMO ONLY — empty everything and announce the default concerts again.
 async fn reset(AxumState(state): AxumState<AppState>) -> Response {
-    let Some(demo) = state.demo.as_ref() else {
+    if !state.reset_enabled {
         return error(
             StatusCode::NOT_FOUND,
             "demo",
             "reset is disabled (SIDECAR_RESET_ENABLED=false)",
         );
-    };
-    match demo.reset().await {
+    }
+    match state.demo.reset().await {
         Ok(report) => {
             tracing::info!("demo reset: {} announced", report.announced.len());
             Json(json!({ "outcome": "reset", "report": report })).into_response()
@@ -177,9 +207,11 @@ pub fn router(state: AppState) -> Router {
         .route("/inspect/postgres/outbox", get(outbox))
         .route("/inspect/postgres/tables", get(tables))
         .route("/inspect/mongo/{database}/{collection}", get(collection))
+        .route("/inspect/mail/{fan_id}", get(inbox))
         .route("/inspect/stats", get(stats))
         .route("/inspect/stream", get(stream))
         .route("/inspect/demo", get(demo))
+        .route("/inspect/projections/wipe", post(wipe))
         .route("/inspect/reset", post(reset))
         .layer(TraceLayer::new_for_http())
         .with_state(state)

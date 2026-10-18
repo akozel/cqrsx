@@ -253,7 +253,6 @@ export default {
     'task.attempt.started': 'task attempt started',
     'task.attempt.failed': '🎲 task attempt failed',
     'task.attempt.succeeded': 'task delivered',
-    'projections.wiped': 'read models wiped',
     'rebuild.started': 'Encore! started',
     'rebuild.progress': 'replaying',
     'rebuild.finished': 'Encore! finished',

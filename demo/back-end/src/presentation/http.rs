@@ -51,8 +51,6 @@ pub fn router(state: AppState) -> Router {
             get(concerts::state_at::handle),
         )
         .route("/api/fans/{fan_id}/wallet", get(fans::wallet::handle))
-        .route("/api/fans/{fan_id}/inbox", get(fans::inbox::handle))
-        .route("/api/projections/wipe", post(projections::wipe::handle))
         .route("/api/projections/rebuild", post(projections::rebuild::handle))
         .route("/api/projections/status", get(projections::status::handle))
         .route("/api/projections/verify", get(projections::verify::handle))

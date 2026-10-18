@@ -5,10 +5,9 @@
 use crate::{
     application::{
         StorageError,
-        ports::{DeliveredMail, Inbox, ReadModelStore, Stored},
+        ports::{ReadModelStore, Stored},
     },
     config::{Config, outbox_default},
-    domain::FanId,
 };
 use async_trait::async_trait;
 use cqrsx::{
@@ -24,21 +23,18 @@ use mongodb::{Client, options::ClientOptions};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{sync::Arc, time::Duration};
 
-/// A valid configuration with the demo defaults, no latency and databases nobody listens on.
+/// A valid configuration with the demo defaults and databases nobody listens on.
 pub fn config() -> Config {
     Config {
         database_url: String::new(),
         mongodb_uri: String::new(),
         read_db: "encore_read_test".into(),
-        mail_db: "mail_service_test".into(),
         http_addr: "127.0.0.1:0".parse().unwrap(),
-        task_failure_rate: 0.2,
-        task_latency: (Duration::ZERO, Duration::ZERO),
+        mail_service_url: "http://127.0.0.1:1".into(),
         task_max_attempts: 6,
         chain_max_attempts: 60,
         task_retry_base: Duration::from_secs(1),
         task_retry_max: Duration::from_secs(8),
-        chaos_seed: None,
         ticket_limit: 4,
         snapshot_every: 10,
         replay_slow_delay: Duration::ZERO,
@@ -99,15 +95,5 @@ where
     async fn wipe(&self) -> Result<(), StorageError> {
         self.clear();
         Ok(())
-    }
-}
-
-/// The external mail service in memory.
-pub struct MemoryInbox(pub Vec<DeliveredMail>);
-
-#[async_trait]
-impl Inbox for MemoryInbox {
-    async fn of_fan(&self, fan_id: &FanId) -> Result<Vec<DeliveredMail>, StorageError> {
-        Ok(self.0.iter().filter(|m| m.to_fan_id == fan_id.as_str()).cloned().collect())
     }
 }

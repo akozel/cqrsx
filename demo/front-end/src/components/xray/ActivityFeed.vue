@@ -17,7 +17,6 @@ const ICONS: Record<string, string> = {
   'task.attempt.started': '⚙️',
   'task.attempt.failed': '🎲',
   'task.attempt.succeeded': '📬',
-  'projections.wiped': '🧨',
   'rebuild.started': '⏪',
   'rebuild.progress': '⏪',
   'rebuild.finished': '🎉',

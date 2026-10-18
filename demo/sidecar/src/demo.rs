@@ -1,9 +1,12 @@
-//! DEMO ONLY: the lifecycle of the demo data. The back-end is a plain production-style service and
-//! knows nothing about "default concerts" or "resetting everything"; both live here.
+//! DEMO ONLY: the lifecycle and the props of the demo data. The back-end is a plain production-style
+//! service and knows nothing about "default concerts", "the cast" or "resetting everything"; all of
+//! it lives here.
 //!
 //! * `seed` announces the default concerts through the back-end's **public** API — ordinary
 //!   `AnnounceConcert` commands, exactly what the announce dialog of the UI sends. A repeated
 //!   announce is rejected by rule R2 (`already_announced`) and that is the idempotency.
+//! * `wipe_read_models` (🧨) drops the two read-model collections and nothing else: the ledger is
+//!   intact, the mail inbox stays, and ⏪ Encore! (a back-end operation) rebuilds the read models.
 //! * `reset` empties the ledger, the snapshots and the outbox (role `encore_demo_admin`, which may
 //!   do nothing but TRUNCATE those three tables), drops the read models and the mail inbox, then
 //!   seeds again. The back-end keeps running meanwhile: a task a worker holds at that moment ends
@@ -45,13 +48,45 @@ pub const DEFAULT_CONCERTS: [DefaultConcert; 3] = [
     },
 ];
 
-pub const TRUNCATE_SQL: &str = "TRUNCATE TABLE events, snapshots, transactional_outbox RESTART IDENTITY";
-/// `(logical database, collection)` dropped by a reset: the read models and the mail inbox.
-pub const DROPPED: [(&str, &str); 3] = [
-    ("encore_read", "concert_halls"),
-    ("encore_read", "fan_wallets"),
-    ("mail_service", "inbox"),
+/// The cast. `crowd-<n>` fans are not listed (the UI derives their avatar from the id hash). The
+/// box office knows none of them: a fan id is whatever the UI sends.
+#[derive(Debug, Clone, Serialize, PartialEq)]
+pub struct Persona {
+    pub fan_id: &'static str,
+    pub name: &'static str,
+    pub avatar: &'static str,
+}
+
+pub const PERSONAS: [Persona; 4] = [
+    Persona {
+        fan_id: "fox",
+        name: "Fox",
+        avatar: "🦊",
+    },
+    Persona {
+        fan_id: "panda",
+        name: "Panda",
+        avatar: "🐼",
+    },
+    Persona {
+        fan_id: "unicorn",
+        name: "Unicorn",
+        avatar: "🦄",
+    },
+    Persona {
+        fan_id: "arbitrage-bot",
+        name: "Arbitrage Bot",
+        avatar: "🤖",
+    },
 ];
+
+pub const TRUNCATE_SQL: &str = "TRUNCATE TABLE events, snapshots, transactional_outbox RESTART IDENTITY";
+/// `(logical database, collection)` of the read models: what 🧨 drops, and the first part of a reset.
+pub const READ_MODELS: [(&str, &str); 2] = [("encore_read", "concert_halls"), ("encore_read", "fan_wallets")];
+/// The external mail service's storage: dropped by a reset only (a wipe is about read models).
+pub const MAIL_INBOX: (&str, &str) = ("mail_service", "inbox");
+/// Everything a reset drops: the read models and the mail inbox.
+pub const DROPPED: [(&str, &str); 3] = [READ_MODELS[0], READ_MODELS[1], MAIL_INBOX];
 
 #[derive(Debug, Error)]
 pub enum DemoError {
@@ -174,11 +209,10 @@ impl DemoAdmin {
         }
     }
 
-    /// Empties everything and announces the default concerts again.
-    pub async fn reset(&self) -> Result<ResetReport, DemoError> {
-        sqlx::query(TRUNCATE_SQL).execute(&self.admin).await?;
-        let mut dropped = Vec::with_capacity(DROPPED.len());
-        for (database, collection) in DROPPED {
+    /// Drops the given collections; returns their `database.collection` names.
+    async fn drop_collections(&self, collections: &[(&str, &str)]) -> Result<Vec<String>, DemoError> {
+        let mut dropped = Vec::with_capacity(collections.len());
+        for (database, collection) in collections {
             self.mongo
                 .database(&self.database_name(database))
                 .collection::<mongodb::bson::Document>(collection)
@@ -186,6 +220,18 @@ impl DemoAdmin {
                 .await?;
             dropped.push(format!("{database}.{collection}"));
         }
+        Ok(dropped)
+    }
+
+    /// 🧨 Drops the read models and nothing else: the ledger and the inbox stay.
+    pub async fn wipe_read_models(&self) -> Result<Vec<String>, DemoError> {
+        self.drop_collections(&READ_MODELS).await
+    }
+
+    /// Empties everything and announces the default concerts again.
+    pub async fn reset(&self) -> Result<ResetReport, DemoError> {
+        sqlx::query(TRUNCATE_SQL).execute(&self.admin).await?;
+        let dropped = self.drop_collections(&DROPPED).await?;
         let announced = self.seed().await?;
         Ok(ResetReport {
             truncated: vec!["events", "snapshots", "transactional_outbox"],
@@ -215,6 +261,23 @@ mod tests {
     }
 
     #[test]
+    fn persona_ids_are_plain_fan_ids_and_distinct() {
+        for p in &PERSONAS {
+            assert!(
+                p.fan_id
+                    .chars()
+                    .all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-'),
+                "{}",
+                p.fan_id
+            );
+            assert!(!p.fan_id.starts_with("crowd-"), "the crowd is not the cast");
+            assert!(!p.name.is_empty() && !p.avatar.is_empty());
+        }
+        let ids: std::collections::BTreeSet<_> = PERSONAS.iter().map(|p| p.fan_id).collect();
+        assert_eq!(ids.len(), PERSONAS.len());
+    }
+
+    #[test]
     fn the_announce_command_is_what_the_ui_sends() {
         let cmd = DemoAdmin::announce_command(&DEFAULT_CONCERTS[0]);
         assert_eq!(cmd["type"], "AnnounceConcert");
@@ -224,8 +287,10 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_touches_exactly_the_demo_tables_and_collections() {
+    fn a_reset_touches_exactly_the_demo_tables_and_collections_and_a_wipe_only_the_read_models() {
         assert!(TRUNCATE_SQL.starts_with("TRUNCATE TABLE events, snapshots, transactional_outbox"));
         assert_eq!(DROPPED, crate::mongo::WHITELIST);
+        assert!(READ_MODELS.iter().all(|(database, _)| *database == "encore_read"));
+        assert!(!READ_MODELS.contains(&MAIL_INBOX), "a wipe never touches the mail inbox");
     }
 }

@@ -3,7 +3,8 @@
 //! - [`domain`]: aggregates, their commands, events, rules and value objects;
 //! - [`application`]: use cases, the workflows driven by outbox tasks, read models and operations;
 //! - [`presentation`]: the HTTP API;
-//! - [`infrastructure`]: PostgreSQL, MongoDB, the simulated mail service and the task runtime wiring.
+//! - [`infrastructure`]: PostgreSQL, MongoDB, the HTTP client of the external mail service and the
+//!   task runtime wiring.
 //!
 //! [`bootstrap`] is the composition root shared by the binary (`main.rs`) and the tests.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]

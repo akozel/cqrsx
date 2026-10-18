@@ -14,12 +14,11 @@ export interface Persona {
   avatar: string
 }
 
+/** The box office's reference data (`GET /api/config`): the venue and its rule settings. The cast is
+ * a demo prop and comes from the sidecar (`DemoInfo`). */
 export interface AppConfig {
   venue: { rows: string[]; seats_per_row: number; zones: ZoneConfig[] }
-  personas: Persona[]
   ticket_limit: number
-  task_failure_rate: number
-  task_max_attempts: number
   snapshot_every: number
 }
 
@@ -90,6 +89,7 @@ export interface FanWalletDoc {
   view: FanWalletView
 }
 
+/** An e-mail as the wallet shows it: the `mail_service.inbox` document with `_id` as `inbox_id`. */
 export interface InboxMail {
   inbox_id: string
   kind: 'e_ticket' | 'refund'
@@ -167,8 +167,10 @@ export interface RebuildStatus {
   } | null
 }
 
-/** What the demo starts from (sidecar `GET /inspect/demo`). */
+/** The props of the demo (sidecar `GET /inspect/demo`): what it starts from, who plays in it, and
+ * whether a reset is allowed. */
 export interface DemoInfo {
   default_concerts: { concert_id: string; artist: string; city: string; date: string }[]
+  personas: Persona[]
   reset_enabled: boolean
 }

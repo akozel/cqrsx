@@ -48,6 +48,22 @@ export interface PgTable<Row> {
   rows: Row[]
 }
 
+/** One `mail_service.inbox` document, as the mail service stored it. */
+export interface InboxDoc {
+  _id: string
+  kind: 'e_ticket' | 'refund'
+  to_fan_id: string
+  to_name: string
+  subject: string
+  concert_id: string
+  seat: string
+  amount: number
+  task_id: string
+  delivered_on_attempt: number
+  deliveries: number
+  first_delivered_at: string
+}
+
 export interface MongoCollection<Doc = Record<string, unknown>> {
   source: 'mongodb'
   database: string
