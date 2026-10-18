@@ -6,7 +6,7 @@ use cqrsx::{
     postgres::task_queue::{PostgresTaskQueueConfig, PostgresTaskQueueConfigError},
     task::runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
 };
-use std::{env, net::SocketAddr, time::Duration};
+use std::{env, net::SocketAddr, num::NonZeroU32, time::Duration};
 use thiserror::Error;
 
 #[derive(Debug, Error)]
@@ -22,6 +22,9 @@ pub enum ConfigError {
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database_url: String,
+    /// Connections in the one PostgreSQL pool shared by HTTP, the outbox poller and the workers: the
+    /// ceiling of concurrent database work of the process.
+    pub database_pool_size: NonZeroU32,
     pub mongodb_uri: String,
     pub read_db: String,
     pub http_addr: SocketAddr,
@@ -114,8 +117,11 @@ impl Config {
         if snapshot_every == 0 {
             return Err(invalid("ENCORE_SNAPSHOT_EVERY", "must be positive"));
         }
+        // `NonZeroU32` rejects 0 while parsing.
+        let database_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_POOL_SIZE", "10")?;
         Ok(Self {
             database_url: var("ENCORE_DATABASE_URL").unwrap_or_else(|| "postgresql://cqrsx:cqrsx@localhost:5434/encore".into()),
+            database_pool_size,
             mongodb_uri: var("ENCORE_MONGODB_URI").unwrap_or_else(|| "mongodb://localhost:27018".into()),
             read_db: var("ENCORE_READ_DB").unwrap_or_else(|| "encore_read".into()),
             http_addr: parse("ENCORE_HTTP_ADDR", "127.0.0.1:8080")?,
@@ -150,6 +156,21 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_pool_size_defaults_to_ten_and_rejects_zero() {
+        assert_eq!(
+            parse::<NonZeroU32>("ENCORE_DATABASE_POOL_SIZE_UNSET_IN_TESTS", "10")
+                .unwrap()
+                .get(),
+            10
+        );
+        let error = parse::<NonZeroU32>("ENCORE_DATABASE_POOL_SIZE_UNSET_IN_TESTS", "0").unwrap_err();
+        assert!(
+            error.to_string().contains("ENCORE_DATABASE_POOL_SIZE_UNSET_IN_TESTS"),
+            "{error}"
+        );
+    }
 
     #[test]
     fn outbox_defaults_satisfy_the_lease_budget() {

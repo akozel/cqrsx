@@ -4,7 +4,7 @@
 # user session (README.md, "CPU isolation") gives the better measurement.
 #
 # Budget for a 16-core machine (2026-10-18, from the measured peaks): back-end 4, PostgreSQL 4,
-# MongoDB 3, k6 3 (the mail stub shares its cores), 2 left to the host. Override with LOAD_CPUS_*.
+# MongoDB 3, k6 4 (the mail stub shares its cores), 1 left to the host. Override with LOAD_CPUS_*.
 services:
   backend:
     cpus: "${LOAD_CPUS_BACKEND:-4}"
@@ -13,6 +13,6 @@ services:
   mongo:
     cpus: "${LOAD_CPUS_MONGO:-3}"
   mail:
-    cpus: "${LOAD_CPUS_K6:-3}"
+    cpus: "${LOAD_CPUS_K6:-4}"
   k6:
-    cpus: "${LOAD_CPUS_K6:-3}"
+    cpus: "${LOAD_CPUS_K6:-4}"

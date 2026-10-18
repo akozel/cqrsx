@@ -362,7 +362,7 @@ where Inbound: Future<Output = io::Result<()>>, RuntimeFuture: Future<Output = R
 
 | # | Находка | Следствие для демо |
 |---|---|---|
-| D1 | `postgres::pool::connect_pool(options: PgConnectOptions) -> Result<PgPool, sqlx::Error>` (`pool.rs:9`) — не URL; 10 соединений; без ожидания готовности | `config.database_url.parse::<PgConnectOptions>()?` (+ `.application_name("encore-backend")`); готовность БД — `scripts/wait-db.sh` |
+| D1 | `postgres::pool::connect_pool(options: PgConnectOptions) -> Result<PgPool, sqlx::Error>` (`pool.rs:9`) — не URL; 10 соединений; без ожидания готовности. **2026-10-18:** добавлен `connect_pool_with_size(options, NonZeroU32)`, демо берёт размер из `ENCORE_DATABASE_POOL_SIZE` (нагрузочные тесты показали пул как потолок пути записи) | `config.database_url.parse::<PgConnectOptions>()?` (+ `.application_name("encore-backend")`); готовность БД — `scripts/wait-db.sh` |
 | D2 | `postgres::command::command_executor` / `PostgresCommandExecutor` требуют `Aggregate<Services = ()>` и не регистрируют обработчиков (`command.rs:68-75`, док-комментарий отсылает к `CqrsCommandExecutor::new`) | §6.3 п.7: использовать `CqrsCommandExecutor::new` с фабрикой; `PostgresCommandConfig` остаётся держателем интервала и политики |
 | D3 | Успешный `execute` → `()`; `last_sequence` только при `CommittedWithEventHandlerFailure` | `committed_sequence` — из декоратора (A) |
 | D4 | `handler_indices` в `CommittedWithEventHandlerFailure` — индексы регистрации (0 = `concert_halls`, 1 = `fan_wallets`); framework вызывает **все** обработчики даже после сбоя первого (`cqrs.rs:545-549`) | `warnings: [{ code: "projection_failed", projection }]` по индексу |

@@ -1,5 +1,6 @@
 use super::*;
-use cqrsx::postgres::pool::connect_pool;
+use cqrsx::postgres::pool::{DEFAULT_MAX_CONNECTIONS, connect_pool, connect_pool_with_size};
+use std::num::NonZeroU32;
 
 #[tokio::test]
 async fn connection_helper_preserves_ten_connection_limit_and_returns_authentication_error() {
@@ -7,8 +8,17 @@ async fn connection_helper_preserves_ten_connection_limit_and_returns_authentica
     let options = db.pool.connect_options().as_ref().clone();
     let pool = connect_pool(options.clone()).await.unwrap();
     assert_eq!(pool.options().get_max_connections(), 10);
+    assert_eq!(DEFAULT_MAX_CONNECTIONS.get(), 10);
     assert_eq!(sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&pool).await.unwrap(), 1);
     pool.close().await;
+
+    // The sized variant is the same helper with an explicit ceiling.
+    let sized = connect_pool_with_size(options.clone(), NonZeroU32::new(3).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(sized.options().get_max_connections(), 3);
+    assert_eq!(sqlx::query_scalar::<_, i32>("SELECT 2").fetch_one(&sized).await.unwrap(), 2);
+    sized.close().await;
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),

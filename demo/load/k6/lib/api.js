@@ -41,7 +41,12 @@ export function command(concertId, body, tags) {
     headers: JSON_HEADERS,
     tags: ctags,
   });
-  const json = parse(res) || {};
+  // The body is parsed only when it carries information. A 200 whose body says `"warnings":[]` is
+  // the common case by far (tens of thousands per run) and is classified from the status alone;
+  // every other answer is parsed for the rule code, its parameters or the warning list. JSON parsing
+  // is a visible share of the load generator's CPU at ten thousand answers per second.
+  const plainSuccess = res.status === 200 && typeof res.body === 'string' && res.body.includes('"warnings":[]');
+  const json = plainSuccess ? {} : parse(res) || {};
   const error = json.error || {};
   const result = {
     status: res.status,

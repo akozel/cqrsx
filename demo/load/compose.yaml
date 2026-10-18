@@ -59,6 +59,9 @@ services:
       ENCORE_MONGODB_URI: mongodb://mongo:27017
       ENCORE_MAIL_SERVICE_URL: http://mail
       ENCORE_SNAPSHOT_EVERY: ${LOAD_SNAPSHOT_EVERY:-10}
+      # The one PostgreSQL pool shared by HTTP, the poller and the workers: the ceiling of concurrent
+      # database work (run.sh POOL=…).
+      ENCORE_DATABASE_POOL_SIZE: ${LOAD_PG_POOL:-10}
       # Workers = queue capacity. With Q = C the lease budget 2*S + H + 5s + ceil(Q/C)*(H+S) = 24 s
       # stays below the default 30 s lease for any worker count.
       OUTBOX_WORKER_CONCURRENCY: ${LOAD_OUTBOX_WORKERS:-2}

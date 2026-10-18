@@ -20,18 +20,19 @@ databases and destroys them afterwards (`down -v`).
 
 ### CPU isolation
 
-The core budget for a 16-core machine is back-end 4, PostgreSQL 4, MongoDB 3, k6 + mail stub 3, two
-cores left to the host. It was set on 2026-10-18 from the measured peaks: the back-end was the tightest
+The core budget for a 16-core machine is back-end 4, PostgreSQL 4, MongoDB 3, k6 + mail stub 4, one
+core left to the host. It was set on 2026-10-18 from the measured peaks: the back-end was the tightest
 component (150 of 200 % on average at the booking plateau), PostgreSQL used ~1.4 cores during bursts
 and up to 4 only while 32 workers drained the outbox, MongoDB 1.0–1.2 cores, and k6 ran at 98 % of its
-2 cores on the announce storm. The first batches (before the `bal-` runs) were measured with
-2 / 6 / 2 / 2; every run records its budget in `result.json` (`meta.cpu_budget_cores`).
+2 cores on the announce storm and again at 97 % of 3 cores once the pool was 20. The first batches
+(before the `bal-` runs) were measured with 2 / 6 / 2 / 2, the `bal-` and `pool-` runs with 4 / 4 / 3 / 3;
+every run records its budget in `result.json` (`meta.cpu_budget_cores`).
 `run.sh` enforces the budget in one of two ways (`PIN=auto` is the default, `./run.sh --check` tells
 which one will be used):
 
 | Mode | Overlay | When | Trade-off |
 |---|---|---|---|
-| `cpuset` | `compose.pin.yaml` | the `cpuset` cgroup controller is available (docker, or podman with delegation) and the machine has 14 cores or `LOAD_CPUSET_*` is set | best: dedicated cores, no throttling artefacts |
+| `cpuset` | `compose.pin.yaml` | the `cpuset` cgroup controller is available (docker, or podman with delegation) and the machine has 15 cores or `LOAD_CPUSET_*` is set | best: dedicated cores, no throttling artefacts |
 | `quota` | `compose.quota.yaml` | `cpuset` is not delegated (rootless podman by default) | the budget holds, but a quota throttles bursts and makes p99 noisier |
 | `0` | none | `PIN=0` | no isolation; numbers depend on what else runs |
 
@@ -140,8 +141,10 @@ rebuild / verify timing, SSE fan-out, soak, dependency outages. They are the nex
 
 ## Knobs worth turning
 
-- `WORKERS`: outbox workers and queue capacity together. The PostgreSQL pool is fixed at 10
-  connections and is shared by HTTP, the poller and the workers.
+- `WORKERS`: outbox workers and queue capacity together. They share the PostgreSQL pool with HTTP and
+  the poller.
+- `POOL`: the size of that pool (`ENCORE_DATABASE_POOL_SIZE`, default 10). The 2026-10-18 runs put the
+  write-path plateaus (~7.3k announces/s, ~4.3k bookings/s) on this ceiling: nothing else was saturated.
 - `SNAPSHOT_EVERY`: compare 10 with 1000 in test 1 to see what snapshots buy on the command path.
 - `LOAD_OUTBOX_POLL_MS` (compose env): the poller's idle cadence, 300 ms by default.
 - PostgreSQL runs with the image defaults (`fsync`, `synchronous_commit` on). That is part of the

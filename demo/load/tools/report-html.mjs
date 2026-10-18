@@ -38,7 +38,7 @@ function loadRuns(dir) {
 
 const TIMESTAMP = /^\d{8}-\d{6}-/;
 const nameOf = (run) => run.meta.run.replace(TIMESTAMP, '') || run.test || 'run';
-const seriesOf = (run) => nameOf(run).replace(/(-(vus|w)\d+)+$/i, '');
+const seriesOf = (run) => nameOf(run).replace(/(-(vus|w|pool)\d+)+$/i, '');
 const hasNumbers = (run) => typeof run.rps === 'number' && run.latency_ms?.all;
 
 /** Which parameter varies inside a series: VUs, outbox workers, or just the run order. */
@@ -49,6 +49,9 @@ function xAxisOf(runs) {
   }
   if (distinct((r) => r.meta.outbox_workers) > 1) {
     return { label: 'outbox workers', value: (r) => r.meta.outbox_workers ?? 0 };
+  }
+  if (distinct((r) => r.meta.pg_pool) > 1) {
+    return { label: 'PG pool size', value: (r) => r.meta.pg_pool ?? 0 };
   }
   return { label: 'run', value: (r, i) => i + 1 };
 }
@@ -316,6 +319,24 @@ function describe(run) {
   return DESCRIPTIONS[test] ?? null;
 }
 
+/** `back-end 4 · PostgreSQL 4 · MongoDB 3 · k6 4 (quota)` from `meta.cpu_budget_cores`, or what is known. */
+function coresLine(run) {
+  const budget = run.meta?.cpu_budget_cores;
+  const mode = run.meta?.cpu_pinning && run.meta.cpu_pinning !== 'off' ? run.meta.cpu_pinning : null;
+  if (!budget) {
+    return mode ? `CPU budget not recorded for this run (isolation: ${mode})` : 'no CPU isolation recorded';
+  }
+  const part = (label, key) => `${label} ${budget[key] ?? '?'}`;
+  const parts = [part('back-end', 'backend'), part('PostgreSQL', 'postgres'), part('MongoDB', 'mongo'), part('k6 + mail stub', 'k6')];
+  return `${parts.join(' · ')}${mode ? ` (${mode})` : ''}`;
+}
+
+/** Short form for the run table: `4/4/3/4`. */
+function coresShort(run) {
+  const b = run.meta?.cpu_budget_cores;
+  return b ? [b.backend, b.postgres, b.mongo, b.k6].map((x) => x ?? '?').join('/') : '-';
+}
+
 function descriptionHtml(run) {
   const d = describe(run);
   if (!d) {
@@ -362,12 +383,15 @@ function seriesSection(key, runs) {
   if (sorted.length > 0) {
     const test = sorted[0].test ?? sorted[0].meta.script ?? '';
     const fanMode = sorted[0].fan_mode ? ` · fan mode ${sorted[0].fan_mode}` : '';
+    const pool = sorted[0].meta.pg_pool ? `, PG pool ${sorted[0].meta.pg_pool}` : '';
     const constant =
       axis.label === 'VUs'
-        ? `${sorted[0].meta.outbox_workers ?? '?'} outbox workers`
+        ? `${sorted[0].meta.outbox_workers ?? '?'} outbox workers${pool}`
         : axis.label === 'outbox workers'
-          ? `${sorted[0].vus} VUs`
-          : '';
+          ? `${sorted[0].vus} VUs${pool}`
+          : axis.label === 'PG pool size'
+            ? `${sorted[0].vus} VUs, ${sorted[0].meta.outbox_workers ?? '?'} outbox workers`
+            : '';
     charts.push(
       barChart({
         title: 'Throughput',
@@ -447,7 +471,12 @@ function seriesSection(key, runs) {
       );
     }
     const intro = `<p class="series-intro">${esc(test)} · ${esc(constant)}${esc(fanMode)} · ${sorted.length} run${sorted.length === 1 ? '' : 's'} by ${esc(axis.label)}</p>`;
-    return `<section class="series"><h2>${esc(key)}</h2>${descriptionHtml(sorted[0])}${intro}<div class="charts">${charts.join('')}</div></section>`;
+    const budgets = new Set(sorted.map(coresLine));
+    const cores =
+      budgets.size === 1
+        ? `<p class="series-cores"><strong>CPU cores:</strong> ${esc([...budgets][0])}</p>`
+        : `<p class="series-cores"><strong>CPU cores:</strong> differ between runs, see the table (${esc([...budgets].join(' | '))})</p>`;
+    return `<section class="series"><h2>${esc(key)}</h2>${descriptionHtml(sorted[0])}${intro}${cores}<div class="charts">${charts.join('')}</div></section>`;
   }
   return `<section class="series"><h2>${esc(key)}</h2>${descriptionHtml(runs[0])}<p class="series-intro">${runs.length} run${runs.length === 1 ? '' : 's'}, none produced numbers (see the table).</p></section>`;
 }
@@ -456,6 +485,8 @@ const COLUMNS = [
   ['run', (r) => nameOf(r)],
   ['vus', (r) => r.vus],
   ['workers', (r) => r.meta.outbox_workers],
+  ['pool', (r) => r.meta.pg_pool],
+  ['cores be/pg/mongo/k6', (r) => coresShort(r)],
   ['cpu', (r) => r.meta.cpu_pinning],
   ['req/s', (r) => fmt(r.rps)],
   ['p50', (r) => fmt(r.latency_ms?.all?.p50)],
@@ -554,7 +585,9 @@ h2 { font-size: 20px; margin: 36px 0 6px; }
 h4 { font-size: 12px; margin: 10px 0 4px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; }
 .subtitle, .series-intro, .muted { color: var(--ink-2); }
 .subtitle { margin: 0 0 20px; }
-.series-intro { margin: 0 0 12px; font-size: 14px; }
+.series-intro { margin: 0 0 4px; font-size: 14px; }
+.series-cores { margin: 0 0 12px; font-size: 14px; color: var(--ink-2); }
+.series-cores strong { color: var(--ink); font-weight: 600; }
 .series-desc { max-width: 1240px; margin: 6px 0 12px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 14px; color: var(--ink-2); }
 .series-desc p { margin: 4px 0; }
 .series-desc strong { color: var(--ink); }
@@ -710,6 +743,7 @@ ${body}
 <li>Every run is a fresh stand and a closed loop: the VUs send requests back to back; req/s is the throughput at that concurrency, not an arrival rate. Numbers cover the measured window only; the warm-up is excluded.</li>
 <li>Outcomes: accepted = 200, conflict = 409 (a version race the back-end could not win in three retries), rejected = 422 (a domain rule), unavailable = 503 (storage), other = everything else including 423.</li>
 <li>CPU is the maximum of the <code>stats</code> samples, 100 % = one core. Memory is the cgroup peak when the kernel exposes it, otherwise the maximum sampled.</li>
+<li>CPU cores per series are the budgets the stand enforced for those runs (quota or pinning). The mail stub shares the k6 cores. Runs without a recorded budget predate the recording and ran with back-end 2, PostgreSQL 6, MongoDB 2, k6 2.</li>
 <li>Outbox drain: tasks completed per second after the burst ended, until no task was open. Every accepted booking creates two tasks.</li>
 <li>Hover or focus a column for the exact values; every chart also has a table view.</li>
 </ul>

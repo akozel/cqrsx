@@ -110,7 +110,7 @@ if (existsSync(resultPath)) {
 
 const memoryPeak = {};
 const cpuBudget = {};
-for (const service of ['backend', 'postgres', 'mongo']) {
+for (const service of ['backend', 'postgres', 'mongo', 'k6']) {
   const peak = num(env(`PEAK_${service.toUpperCase()}`));
   if (peak !== null) {
     memoryPeak[service] = peak;
@@ -132,6 +132,7 @@ const result = {
     cpu_pinning: env('PIN', 'off'),
     outbox_workers: num(env('WORKERS')) ?? 2,
     snapshot_every: num(env('SNAPSHOT')) ?? 10,
+    pg_pool: num(env('POOL')) ?? 10,
     k6_exit: num(env('K6_EXIT')) ?? -1,
     k6_started_epoch: burstStart,
     k6_ended_epoch: burstEnd,

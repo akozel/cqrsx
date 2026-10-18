@@ -21,12 +21,13 @@ use cqrsx::{
 };
 use mongodb::{Client, options::ClientOptions};
 use sqlx::{PgPool, postgres::PgPoolOptions};
-use std::{sync::Arc, time::Duration};
+use std::{num::NonZeroU32, sync::Arc, time::Duration};
 
 /// A valid configuration with the demo defaults and databases nobody listens on.
 pub fn config() -> Config {
     Config {
         database_url: String::new(),
+        database_pool_size: NonZeroU32::new(10).unwrap(),
         mongodb_uri: String::new(),
         read_db: "encore_read_test".into(),
         http_addr: "127.0.0.1:0".parse().unwrap(),

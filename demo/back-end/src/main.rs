@@ -3,7 +3,7 @@
 use cqrsx::{
     host::{lifecycle, signal::shutdown_signal},
     logging::LoggingConfig,
-    postgres::{pool::connect_pool, task_runtime::prepare_task_runtime},
+    postgres::{pool::connect_pool_with_size, task_runtime::prepare_task_runtime},
 };
 use encore_backend::{bootstrap, config::Config, presentation::http};
 use sqlx::postgres::PgConnectOptions;
@@ -34,7 +34,7 @@ async fn main() {
         .parse::<PgConnectOptions>()
         .unwrap_or_else(|e| fail(format!("ENCORE_DATABASE_URL: {e}")))
         .application_name("encore-backend");
-    let pool = connect_pool(options)
+    let pool = connect_pool_with_size(options, config.database_pool_size)
         .await
         .unwrap_or_else(|e| fail(format!("cannot connect to PostgreSQL: {e}")));
 

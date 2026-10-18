@@ -1,7 +1,7 @@
 # CPU pinning overlay; run.sh adds it when the cpuset controller is available. Pinning (cpuset)
 # beats a quota (cpus) for latency measurements: a quota throttles bursts and distorts p99.
 # Budget for a 16-core machine (2026-10-18, from the measured peaks): back-end 4, PostgreSQL 4,
-# MongoDB 3, k6 + mail stub 3, cores 14–15 left to the host. Override with LOAD_CPUSET_* to fit the
+# MongoDB 3, k6 + mail stub 4, core 15 left to the host. Override with LOAD_CPUSET_* to fit the
 # machine. MongoDB gets its own cores because the projection update is on the path of every command.
 services:
   backend:
@@ -11,6 +11,6 @@ services:
   mongo:
     cpuset: "${LOAD_CPUSET_MONGO:-8-10}"
   mail:
-    cpuset: "${LOAD_CPUSET_K6:-11-13}"
+    cpuset: "${LOAD_CPUSET_K6:-11-14}"
   k6:
-    cpuset: "${LOAD_CPUSET_K6:-11-13}"
+    cpuset: "${LOAD_CPUSET_K6:-11-14}"

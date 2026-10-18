@@ -33,6 +33,8 @@ const columns = [
   ['script', (r) => r.test ?? r.meta?.script],
   ['vus', (r) => r.vus],
   ['workers', (r) => r.meta?.outbox_workers],
+  ['pool', (r) => r.meta?.pg_pool],
+  ['cores', (r) => (r.meta?.cpu_budget_cores ? [r.meta.cpu_budget_cores.backend, r.meta.cpu_budget_cores.postgres, r.meta.cpu_budget_cores.mongo, r.meta.cpu_budget_cores.k6].map((x) => x ?? '?').join('/') : null)],
   ['rps', (r) => r.rps],
   ['p50', (r) => r.latency_ms?.all?.p50],
   ['p95', (r) => r.latency_ms?.all?.p95],
