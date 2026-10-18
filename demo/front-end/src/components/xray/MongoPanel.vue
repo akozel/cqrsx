@@ -6,6 +6,7 @@ import JsonView from './JsonView.vue'
 import { useXrayStore } from '@/stores/xray'
 import { useSessionStore } from '@/stores/session'
 import { changedPaths } from '@/lib/diff'
+import { isLedgerOf } from '@/lib/ledger'
 import { useTraceStore } from '@/stores/trace'
 
 const xray = useXrayStore()
@@ -20,17 +21,22 @@ const previousDocs = computed(() => {
   for (const d of xray.previous.mongo[tab.value]?.docs ?? []) map[String(d._id)] = d
   return map
 })
+/** "Current" documents come first and open expanded: the hall of the current concert, or every
+ * ledger of the current persona (one `fan_wallets` document per fan and concert, D-14). */
+const isCurrent = (id: unknown) =>
+  tab.value === 'concert_halls' ? id === session.concertId : isLedgerOf(String(id), session.persona)
 const docs = computed(() => {
   const list = [...(collection.value?.docs ?? [])]
-  const currentId = tab.value === 'concert_halls' ? session.concertId : session.persona
-  list.sort((a, b) =>
-    a._id === currentId ? -1 : b._id === currentId ? 1 : String(a._id).localeCompare(String(b._id)),
-  )
+  list.sort((a, b) => {
+    const ca = isCurrent(a._id)
+    const cb = isCurrent(b._id)
+    return ca === cb ? String(a._id).localeCompare(String(b._id)) : ca ? -1 : 1
+  })
   return list.map((d) => ({
     id: String(d._id),
     doc: d,
     changed: changedPaths(previousDocs.value[String(d._id)], d),
-    current: d._id === currentId,
+    current: isCurrent(d._id),
   }))
 })
 </script>

@@ -118,7 +118,7 @@ describe('X-ray panels', () => {
           {
             id: 'abc',
             aggregate_type: 'Fan',
-            aggregate_id: 'fox',
+            aggregate_id: 'fox:radiohead-2026-11-21',
             aggregate_sequence: 1,
             task_type: 'encore_send_e_ticket',
             task_version: 1,
@@ -164,16 +164,16 @@ describe('X-ray panels', () => {
       ['task', 'encore_send_e_ticket v1'],
       ['id', 'abc'],
       ['correlation', 'corr-000'],
-      ['aggregate', 'Fan/fox #1'],
+      ['aggregate', 'Fan/fox:radiohead-2026-11-21 #1'],
       ['reason', '🔥 The mail server is on fire'],
     ])
     // Only the service tag and the business name on the row: no kind icon, no payload summary.
     expect(outbox.text()).toContain('E-mail the ticket to the fan')
-    expect(outbox.find('.xray-task > span').text()).toBe('FanfoxE-mail the ticket to the fan') // tag, aggregate id, action
+    expect(outbox.find('.xray-task > span').text()).toBe('Fanfox:radiohead-2026-11-21E-mail the ticket to the fan') // tag, ledger id, action
     expect(outbox.findAll('.xray-task > span')).toHaveLength(3) // name, attempts, status
     await outbox.find('li').trigger('mouseenter')
     expect(useTraceStore().correlationId).toBe('corr-0001-abcd')
-    expect(useTraceStore().aggregateId).toBe('fox')
+    expect(useTraceStore().aggregateId).toBe('fox:radiohead-2026-11-21')
     await outbox.find('li').trigger('mouseleave')
     expect(useTraceStore().correlationId).toBeNull()
     const events = mount(EventStorePanel, { global: { plugins } })
@@ -352,7 +352,11 @@ describe('demo operations (sidecar)', () => {
         calls.push(`${init?.method ?? 'GET'} ${url}`)
         const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
         if (url === '/api/fans/fox/wallet')
-          return ok({ fan_id: 'fox', version: 1, view: { fan_id: 'fox', fan_name: 'Fox', tickets: {}, active_count: 0, total_spent: 0, last_sequence: 0 } })
+          return ok({
+            fan_id: 'fox',
+            ledgers: [{ concert_id: 'radiohead-2026-11-21', version: 1, last_sequence: 0 }],
+            view: { fan_id: 'fox', fan_name: 'Fox', tickets: {}, active_count: 0, total_spent: 0, last_sequence: 0 },
+          })
         if (url === '/inspect/mail/fox')
           return ok({
             source: 'mongodb',

@@ -19,9 +19,11 @@ export const useWalletStore = defineStore('wallet', () => {
 
   const tickets = computed(() => {
     const t = wallet.value?.view.tickets ?? {}
+    // The wallet is assembled from one ledger per concert, so `sequence` is only comparable inside a
+    // ledger: order by time (a fixed-width RFC 3339 string), then by id for a stable tie-break.
     return Object.entries(t)
       .map(([booking_id, ticket]) => ({ booking_id, ...ticket }))
-      .sort((a, b) => a.sequence - b.sequence)
+      .sort((a, b) => a.changed_at.localeCompare(b.changed_at) || a.booking_id.localeCompare(b.booking_id))
   })
 
   const mailByBooking = computed(() => {

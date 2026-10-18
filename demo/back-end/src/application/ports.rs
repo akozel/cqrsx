@@ -42,6 +42,8 @@ pub trait ReadModelStore<V>: Send + Sync {
     async fn load(&self, id: &str) -> Result<Option<Stored<V>>, StorageError>;
     /// Every document, ordered by id.
     async fn list(&self) -> Result<Vec<Stored<V>>, StorageError>;
+    /// The documents whose id is in `[lower, upper)`, ordered by id (a fan's ledgers, D-14).
+    async fn list_range(&self, lower: &str, upper: &str) -> Result<Vec<Stored<V>>, StorageError>;
     /// Drops every document. The ledger is untouched; Encore! rebuilds them.
     async fn wipe(&self) -> Result<(), StorageError>;
 }

@@ -1,9 +1,14 @@
-//! `fan_wallets` read model: one document per fan, built only from the fan's own `Fan` events.
-//! LWW key is `booking_id`; `sequence` is the event number inside the `Fan` stream, so comparisons
-//! are valid within one wallet. Derived counters are recomputed, never incremented.
-use crate::domain::fan::{
-    Fan, FanEvent,
-    events::{TicketCancelled, TicketRecorded},
+//! `fan_wallets` read model: one document per fan ledger (a fan and a concert, D-14), built only
+//! from that ledger's `Fan` events; the wallet a fan sees is assembled from all of their ledgers
+//! (`application::fan::wallet`). LWW key is `booking_id`; `sequence` is the event number inside the
+//! ledger's stream, so comparisons are valid within one document. Derived counters are recomputed,
+//! never incremented.
+use crate::domain::{
+    FanLedgerId,
+    fan::{
+        Fan, FanEvent,
+        events::{TicketCancelled, TicketRecorded},
+    },
 };
 use cqrsx::cqrs::{event::EventEnvelope, projection::View};
 use serde::{Deserialize, Serialize};
@@ -55,7 +60,11 @@ impl View<Fan> for FanWalletView {
         let sequence = envelope.sequence as i64;
         let changed_at = envelope.metadata.get("recorded_at").cloned().unwrap_or_default();
         if self.fan_id.is_empty() {
-            self.fan_id = envelope.aggregate_id.clone();
+            // The stream is a ledger (`fan:concert`); the document names the fan. An id of another
+            // shape is kept as it is: a replay must never fail on it.
+            self.fan_id = FanLedgerId::parse(&envelope.aggregate_id)
+                .map(|ledger| ledger.fan().as_str().to_owned())
+                .unwrap_or_else(|_| envelope.aggregate_id.clone());
         }
         match &envelope.payload {
             FanEvent::TicketRecorded(TicketRecorded {
@@ -129,7 +138,7 @@ mod tests {
 
     fn envelope(sequence: usize, payload: FanEvent) -> EventEnvelope<Fan> {
         EventEnvelope {
-            aggregate_id: "fox".into(),
+            aggregate_id: "fox:radiohead-2026-11-21".into(),
             sequence,
             payload,
             metadata: HashMap::from([("recorded_at".to_owned(), format!("2026-10-17T09:00:{sequence:02}.000000Z"))]),
@@ -180,6 +189,13 @@ mod tests {
         assert_eq!((view.active_count, view.total_spent, view.last_sequence), (1, 120, 3));
         assert_eq!(view.tickets[&a.to_string()].state, TicketEntryState::Cancelled);
         assert_eq!(view.tickets[&a.to_string()].refund, Some(80));
+    }
+
+    #[test]
+    fn a_stream_id_that_is_not_a_ledger_is_kept_as_the_fan_id() {
+        let mut event = recorded(1, Uuid::new_v4(), 80);
+        event.aggregate_id = "legacy".into();
+        assert_eq!(apply(&[event]).fan_id, "legacy");
     }
 
     #[test]

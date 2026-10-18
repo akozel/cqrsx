@@ -3,7 +3,7 @@
 use crate::{
     application::{
         concert::views::concert_hall::{ConcertHallView, ConcertSummary},
-        fan::views::fan_wallet::FanWalletView,
+        fan::views::fan_wallet::{FanWalletView, TicketEntry, TicketEntryState},
         lock::BoxOfficeLock,
         ports::Stored,
         read_models::ReadModels,
@@ -20,7 +20,7 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
 use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
@@ -242,13 +242,31 @@ async fn read_models_are_served_in_the_documented_shapes() {
         last_sequence: 2,
         ..ConcertHallView::default()
     };
-    let wallet = FanWalletView {
+    // One `fan_wallets` document per ledger (fan and concert, D-14): two of fox's, one of a fan whose
+    // id merely starts with "fox".
+    let ledger = |concert: &str, price: i64| FanWalletView {
         fan_id: "fox".into(),
         fan_name: "Fox".into(),
+        tickets: BTreeMap::from([(
+            format!("b-{concert}"),
+            TicketEntry {
+                concert_id: concert.into(),
+                seat: "B4".into(),
+                price,
+                state: TicketEntryState::Active,
+                refund: None,
+                sequence: 1,
+                changed_at: "2026-10-18T10:00:00.000000Z".into(),
+            },
+        )]),
         active_count: 1,
-        total_spent: 80,
+        total_spent: price,
         last_sequence: 1,
-        ..FanWalletView::default()
+    };
+    let stored = |id: &str, version: i64, view: FanWalletView| Stored {
+        id: id.into(),
+        version,
+        view,
     };
     let router = app_reading(read_models(
         vec![Stored {
@@ -256,11 +274,11 @@ async fn read_models_are_served_in_the_documented_shapes() {
             version: 3,
             view: hall.clone(),
         }],
-        vec![Stored {
-            id: "fox".into(),
-            version: 1,
-            view: wallet.clone(),
-        }],
+        vec![
+            stored("fox-2:radiohead-2026-11-21", 1, ledger("radiohead-2026-11-21", 50)),
+            stored("fox:muse-2027-01-16", 2, ledger("muse-2027-01-16", 120)),
+            stored("fox:radiohead-2026-11-21", 1, ledger("radiohead-2026-11-21", 80)),
+        ],
     ))
     .await;
     let (_, body) = send(&router, get("/api/concerts")).await;
@@ -272,5 +290,26 @@ async fn read_models_are_served_in_the_documented_shapes() {
     let (_, body) = send(&router, get("/api/concerts/c-1")).await;
     assert_eq!(body, json!({ "concert_id": "c-1", "version": 3, "view": hall }));
     let (_, body) = send(&router, get("/api/fans/fox/wallet")).await;
-    assert_eq!(body, json!({ "fan_id": "fox", "version": 1, "view": wallet }));
+    let ticket = |concert: &str, price: i64| {
+        json!({ "concert_id": concert, "seat": "B4", "price": price, "state": "active", "sequence": 1,
+                "changed_at": "2026-10-18T10:00:00.000000Z" })
+    };
+    assert_eq!(
+        body,
+        json!({
+            "fan_id": "fox",
+            "ledgers": [
+                { "concert_id": "muse-2027-01-16", "version": 2, "last_sequence": 1 },
+                { "concert_id": "radiohead-2026-11-21", "version": 1, "last_sequence": 1 },
+            ],
+            "view": {
+                "fan_id": "fox", "fan_name": "Fox",
+                "tickets": {
+                    "b-muse-2027-01-16": ticket("muse-2027-01-16", 120),
+                    "b-radiohead-2026-11-21": ticket("radiohead-2026-11-21", 80),
+                },
+                "active_count": 2, "total_spent": 200, "last_sequence": 1,
+            },
+        })
+    );
 }

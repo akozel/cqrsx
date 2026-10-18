@@ -8,6 +8,7 @@ import { useTimeMachineStore } from '@/stores/timemachine'
 import { msAgo } from '@/lib/format'
 import { useTraceStore } from '@/stores/trace'
 import { summarize } from '@/lib/summary'
+import { isLedgerOf } from '@/lib/ledger'
 import type { EventRow } from '@/types/xray'
 
 const xray = useXrayStore()
@@ -30,7 +31,7 @@ const rows = computed(() => {
   return all.filter(
     (r) =>
       (!onlyConcert.value || r.aggregate_id === session.concertId) &&
-      (!onlyFan.value || r.aggregate_id === session.persona),
+      (!onlyFan.value || isLedgerOf(r.aggregate_id, session.persona)),
   )
 })
 const updated = computed(() => msAgo(xray.state.polled_at))

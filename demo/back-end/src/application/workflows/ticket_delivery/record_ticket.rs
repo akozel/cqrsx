@@ -60,7 +60,7 @@ impl<E: CommandExecutor<Fan>> TaskHandler<RecordTicketV1> for RecordTicketHandle
 mod tests {
     use super::*;
     use crate::{
-        application::workflows::test_support::{attempt, fans, ticket},
+        application::workflows::test_support::{attempt, fans, ledger, ticket},
         domain::fan::{FanEvent, events::TicketRecorded},
     };
     use cqrsx::cqrs::{store::EventStore, testing::mem_store::MemStore};
@@ -77,7 +77,7 @@ mod tests {
         let (payload, correlation_id) = (ticket(), uuid::Uuid::now_v7());
         let delivery = attempt(&payload, correlation_id);
         handler.handle(payload.clone(), &delivery).await.unwrap();
-        let events = store.load_events("fox").await.unwrap();
+        let events = store.load_events(ledger().as_str()).await.unwrap();
         assert!(
             matches!(&events[0].payload, FanEvent::TicketRecorded(TicketRecorded { booking_id, .. }) if *booking_id == payload.booking_id)
         );
@@ -100,6 +100,10 @@ mod tests {
         let delivery = attempt(&ticket(), uuid::Uuid::now_v7());
         handler.handle(ticket(), &delivery).await.unwrap();
         handler.handle(ticket(), &delivery).await.unwrap();
-        assert_eq!(store.load_events("fox").await.unwrap().len(), 1, "R9: already recorded");
+        assert_eq!(
+            store.load_events(ledger().as_str()).await.unwrap().len(),
+            1,
+            "R9: already recorded"
+        );
     }
 }

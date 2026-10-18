@@ -4,7 +4,7 @@ use crate::{
         activity::ActivityHub, command_service::CommandService, concert::tasks::RecordTicketV1, fan::FanApp, lock::BoxOfficeLock,
     },
     domain::{
-        ConcertId, FanId,
+        ConcertId, FanId, FanLedgerId,
         fan::Fan,
         shared::venue::{SeatId, Zone},
     },
@@ -33,6 +33,12 @@ pub fn fans(store: MemStore<Fan>) -> (Arc<TestFans>, TestCommandExecutor<Fan>) {
 /// The first claim of `payload`, carrying the correlation id of the command that published it.
 pub fn attempt<P: TaskPayload>(payload: &P, correlation_id: Uuid) -> TaskAttempt {
     TaskAttempt::first(payload, json!({ "correlation_id": correlation_id })).unwrap()
+}
+
+/// Fox's ledger for the Radiohead concert: the stream `ticket()` lands in.
+pub fn ledger() -> FanLedgerId {
+    let ticket = ticket();
+    FanLedgerId::new(&ticket.fan_id, &ticket.concert_id)
 }
 
 /// Fox's B4 ticket, always the same booking.

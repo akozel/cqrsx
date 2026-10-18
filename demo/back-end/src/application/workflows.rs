@@ -20,7 +20,7 @@ use crate::{
         tasks::new_task,
     },
     domain::{
-        ConcertId, FanId,
+        ConcertId, FanId, FanLedgerId,
         fan::{Fan, FanCommand, FanError},
     },
 };
@@ -83,9 +83,9 @@ pub struct ChainStep<'a, F: TaskPayload> {
 }
 
 /// Runs one chain step on behalf of `attempt`: the command continues the task's causation chain
-/// (cqrsx `Causation::from_task`). A malformed payload never reaches this point: the JSON adapter
-/// rejects it permanently, ids included. A closed box office waits a little and then asks for a
-/// later redelivery without spending a command on it.
+/// (cqrsx `Causation::from_task`) and runs on the fan's ledger for the concert (D-14). A malformed
+/// payload never reaches this point: the JSON adapter rejects it permanently, ids included. A closed
+/// box office waits a little and then asks for a later redelivery without spending a command on it.
 pub async fn run_chain_step<F: TaskPayload, E: CommandExecutor<Fan>>(
     fans: &FanApp<E>,
     attempt: &TaskAttempt,
@@ -105,7 +105,8 @@ pub async fn run_chain_step<F: TaskPayload, E: CommandExecutor<Fan>>(
     if !wait_for_unlock(fans.lock()).await {
         return Err(locked_retry());
     }
-    let executed = fans.execute(step.fan_id, step.command, metadata, vec![follow_up]).await;
+    let ledger = FanLedgerId::new(step.fan_id, step.concert_id);
+    let executed = fans.execute(&ledger, step.command, metadata, vec![follow_up]).await;
     map_fan_outcome(executed.outcome)
 }
 

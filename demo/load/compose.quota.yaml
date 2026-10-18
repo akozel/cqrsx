@@ -1,0 +1,15 @@
+# CPU quota overlay: the fallback run.sh picks when the cpuset controller is not delegated to the
+# user (rootless podman by default). Same core budget as compose.pin.yaml, enforced as a quota.
+# A quota throttles bursts, so p99 is less trustworthy than with pinning; delegating cpuset to the
+# user session (README.md, "CPU isolation") gives the better measurement.
+services:
+  backend:
+    cpus: "${LOAD_CPUS_BACKEND:-2}"
+  postgres:
+    cpus: "${LOAD_CPUS_POSTGRES:-6}"
+  mongo:
+    cpus: "${LOAD_CPUS_MONGO:-2}"
+  mail:
+    cpus: "${LOAD_CPUS_K6:-2}"
+  k6:
+    cpus: "${LOAD_CPUS_K6:-2}"

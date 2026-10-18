@@ -132,6 +132,23 @@ fn decode<V: DeserializeOwned>(document: Document) -> Result<Stored<V>, StorageE
     Ok(Stored { id, version, view })
 }
 
+impl<V: DeserializeOwned, A> MongoViewRepository<V, A> {
+    /// The documents matching `filter`, ordered by `_id`, decoded.
+    async fn find_sorted(&self, filter: Document) -> Result<Vec<Stored<V>>, StorageError> {
+        use futures::TryStreamExt;
+        let documents: Vec<Document> = self
+            .collection
+            .find(filter)
+            .sort(doc! { "_id": 1 })
+            .await
+            .map_err(StorageError::new)?
+            .try_collect()
+            .await
+            .map_err(StorageError::new)?;
+        documents.into_iter().map(decode).collect()
+    }
+}
+
 #[async_trait]
 impl<V, A> ReadModelStore<V> for MongoViewRepository<V, A>
 where
@@ -142,17 +159,12 @@ where
     }
 
     async fn list(&self) -> Result<Vec<Stored<V>>, StorageError> {
-        use futures::TryStreamExt;
-        let documents: Vec<Document> = self
-            .collection
-            .find(doc! {})
-            .sort(doc! { "_id": 1 })
-            .await
-            .map_err(StorageError::new)?
-            .try_collect()
-            .await
-            .map_err(StorageError::new)?;
-        documents.into_iter().map(decode).collect()
+        self.find_sorted(doc! {}).await
+    }
+
+    /// A range scan on the `_id` index: no other index is needed to read a fan's ledgers.
+    async fn list_range(&self, lower: &str, upper: &str) -> Result<Vec<Stored<V>>, StorageError> {
+        self.find_sorted(doc! { "_id": { "$gte": lower, "$lt": upper } }).await
     }
 
     /// Wipe = drop the collection.

@@ -30,6 +30,7 @@ The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the libra
 | `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx/sql`) and MongoDB; profile `app` builds the three images |
 | `infra/` | read-only PostgreSQL role for the sidecar, nginx config for the `app` profile |
 | `scripts/` | `dev.sh` (everything in one terminal), `wait-db.sh`, `compare-projections.sh` |
+| `load/` | k6 load tests on an isolated stand (own compose project, no ports, mail stub instead of the sidecar): hot aggregate, new aggregates, spread bookings, outbox drain — see `load/README.md` |
 
 ## Requirements
 
@@ -219,7 +220,9 @@ Key points, each visible on screen:
 
 - **Two aggregates.** `Concert` (one stream per concert) owns the seats and all business rules R1–R8,
   checked synchronously — a rejected click leaves no trace (`Δ events = 0`). `Fan` (one stream per
-  fan) is downstream: it only receives commands from outbox tasks and has idempotency rules R9–R11.
+  fan **and concert**, decision D-14, so a ledger never outgrows the ticket limit; the wallet on screen is
+  assembled from the fan's ledgers) is downstream: it only receives commands from outbox tasks and has
+  idempotency rules R9–R11.
 - **One command → exactly one event**, committed atomically with its outbox tasks by
   `PostgresEventRepositoryWithOutbox`. Metadata (`command_id`, `correlation_id`, `causation_id`,
   `recorded_at`, `source`) travels through `CommandExecutor::execute_with_metadata`.
@@ -259,7 +262,8 @@ Key points, each visible on screen:
    `in progress → (maybe) 🎲 retry in 2 s → delivered`; the e-mail lands in 📬; the wallet says
    "📬 delivered (attempt 2)".
 5. **Projections (1 min).** 🌊 Crowd × 3–4 until SOLD OUT 🎉 (derived from `sold == capacity`). Two event
-   streams (`Concert`, `Fan`) → two documents (hall and wallet); the wallet catches up one chain step later.
+   streams (`Concert`, `Fan`) → two documents (hall and the fan's ledger for this concert, shown merged in
+   the wallet); the wallet catches up one chain step later.
 6. **Cancellation (30 s).** Fox cancels a ticket: `BookingCancelled` + 🔁 → `TicketCancelled` + 💸 → "Refund" e-mail.
 7. **Encore! (1.5 min).** 🧨 Wipe → click a seat that was taken (still rejected: rules read the ledger) →
    book a free seat (⚠️ incomplete read model) → ⏪ Encore! in slow motion: seats light up one by one,
@@ -317,3 +321,15 @@ cd front-end && npm test               # seatState, outboxStatus, diff, i18n par
 
 The root workspace (`cqrsx`) is untouched by the demo except `exclude = ["demo"]` and `.dockerignore`;
 its own CI (`cargo build --locked --workspace --all-features`, 97 % coverage) runs as before.
+
+### Load tests (k6)
+
+```bash
+cd demo
+make load                              # the whole matrix, one fresh isolated stand per run (≈ 15 runs)
+./load/run.sh hot-key VUS=20           # one run; results in load/results/<timestamp>-hot-key/
+make load-report                       # one table over every run
+```
+
+The stand (`load/compose.yaml`, project `encore-load`) never touches the demo's containers or volumes.
+What each test measures, the parameters and how to read the numbers: `load/README.md`.

@@ -83,9 +83,17 @@ export interface FanWalletView {
   last_sequence: number
 }
 
+/** One ledger behind the wallet: the `fan_wallets` document of a fan and a concert (D-14). */
+export interface LedgerRef {
+  concert_id: string
+  version: number
+  last_sequence: number
+}
+
+/** The wallet as `GET /api/fans/{fan_id}/wallet` returns it: assembled from the fan's ledgers. */
 export interface FanWalletDoc {
   fan_id: string
-  version: number
+  ledgers: LedgerRef[]
   view: FanWalletView
 }
 

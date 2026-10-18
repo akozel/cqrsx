@@ -92,6 +92,14 @@ where
             .collect())
     }
 
+    async fn list_range(&self, lower: &str, upper: &str) -> Result<Vec<Stored<V>>, StorageError> {
+        let all = ReadModelStore::list(self).await?;
+        Ok(all
+            .into_iter()
+            .filter(|document| lower <= document.id.as_str() && document.id.as_str() < upper)
+            .collect())
+    }
+
     async fn wipe(&self) -> Result<(), StorageError> {
         self.clear();
         Ok(())

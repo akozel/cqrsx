@@ -188,6 +188,8 @@ executor.execute(&concert_id, command, tasks).await   // -> Result<(), CommandGa
 
 **Правка плана.** §6.2: уточнить, что крейту нужен `async-trait` (трейт `EventHandler` объявлен через `#[async_trait]`, `cqrs/event_handler.rs:14`); `TaskHandler`, `TaskAdapter`, `ViewRepository`, `EventStore`, `Aggregate` — native `async fn`.
 
+**Обновление 2026-10-18 (D-14).** Поток `Fan` стал журналом на пару «фанат + концерт» (`aggregate_id = <fan_id>:<concert_id>`), `fan_wallets` — документ на журнал с тем же `_id`; `ViewProjection` остаётся. `GET /api/fans/{fan_id}/wallet` собирает кошелёк из диапазона `_id` `[<fan>:, <fan>;)` (`ReadModelStore::list_range`, `application/fan/wallet.rs`) и отвечает `{ fan_id, ledgers: [{ concert_id, version, last_sequence }], view }`. Причина — нагрузочный прогон 03b (`docs/discussions/06_fan_ledger_growth.md`).
+
 ### U5. Схема outbox
 
 **Факт** (`cqrsx/sql/002-transactional-outbox.sql`): таблица `transactional_outbox`:

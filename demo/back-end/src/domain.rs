@@ -5,4 +5,4 @@ pub mod concert;
 pub mod fan;
 pub mod shared;
 
-pub use shared::ids::{ConcertId, FanId, InvalidConcertId, InvalidFanId};
+pub use shared::ids::{ConcertId, FanId, FanLedgerId, InvalidConcertId, InvalidFanId, InvalidFanLedgerId};

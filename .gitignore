@@ -12,6 +12,9 @@
 .env.*
 !.env.example
 
+# Load-test results (demo/load/run.sh)
+/demo/load/results/
+
 # Editors and operating systems
 .idea/
 .vscode/

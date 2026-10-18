@@ -93,7 +93,7 @@ Vue 3 + Vite 8 + Tailwind 4 (UI) · sidecar на Rust (read-only инспект�
 
 | Концепция | В домене Encore | Где видно в UI |
 |---|---|---|
-| Aggregate | `Concert` — один концерт = один поток событий (места); `Fan` — один зритель = один поток (его билеты) | правила при бронировании; кошелёк |
+| Aggregate | `Concert` — один концерт = один поток событий (места); `Fan` — журнал зрителя по одному концерту = один поток (его билеты на этот концерт, D-14) | правила при бронировании; кошелёк |
 | Межагрегатная цепочка | `SeatBooked` → задача → `Fan.RecordTicket` → `TicketRecorded` → задача → письмо | ⚙ outbox → второй агрегат на PipelineStrip, общий `correlation_id` |
 | Command | «Забронировать B4 для Fox» (`BookSeat`) | клик по месту |
 | Invariant | место существует, свободно, ≤ 4 билетов в одни руки… | тост с ошибкой, `Δ events = 0` |
@@ -170,8 +170,10 @@ pub struct Booking { fan_id: FanId, fan_name: String, booking_id: Uuid, price: u
 `SeatId` и `FanId` — newtype с валидацией (`SeatId` сериализуется строкой: он ключ `BTreeMap` и попадает в
 снапшот). Справочник зала — `static VENUE` (модуль `domain::venue`).
 
-**Агрегат `Fan`** — `TYPE = "Fan"`, `aggregate_id = fan_id`. Downstream-агрегат: получает команды только от
-outbox-задач, никогда от UI. Хранит личную книгу билетов зрителя.
+**Агрегат `Fan`** — `TYPE = "Fan"`, `aggregate_id = <fan_id>:<concert_id>` (журнал зрителя по одному концерту,
+D-14). Downstream-агрегат: получает команды только от outbox-задач, никогда от UI. Хранит билеты зрителя на этот
+концерт; состояние не превышает `ticket_limit` билетов, поэтому ни снапшот, ни документ кошелька не растут с
+историей зрителя.
 
 ```rust
 #[derive(Debug, Default, Clone, Serialize, Deserialize)]
@@ -421,7 +423,7 @@ storage timeout 3 с. Lease валидируется формулой `lease > 2
 
 Обе проекции строятся **только** из событий и обновляются `EventHandler`-ами сразу после commit — in-process и без
 гарантии доставки. Именно поэтому нужен replay. Обе — обычные `ViewProjection` (D-06): `concert_halls` над потоком
-`Concert` (`view_id = concert_id`), `fan_wallets` над потоком `Fan` (`view_id = fan_id`). Собственный обработчик с
+`Concert` (`view_id = concert_id`), `fan_wallets` над потоком `Fan` (`view_id = <fan_id>:<concert_id>`, D-14). Собственный обработчик с
 группировкой по `fan_id` не нужен: `ViewProjection` передаёт в `View::update` события одного агрегата, а
 `view_id` всегда равен `aggregate_id`. В UI кошелёк отстаёт от зала на один шаг цепочки — это показывается, а не
 прячется.
@@ -460,12 +462,14 @@ storage timeout 3 с. Lease валидируется формулой `lease > 2
   UI показывает «⚠️ Витрина неполная: у неё нет истории — нажмите Encore!».
 - `changed_at` берётся из метаданных события (`recorded_at`), а не из `now()`: пересборка даёт тот же документ.
 
-**2. `fan_wallets`** — `ViewProjection` + `MongoViewRepository<FanWalletView>` над агрегатом `Fan`, `_id = fan_id`.
-Строится из `TicketRecorded` / `TicketCancelled` (U4 закрыт решением D-06, собственный обработчик не нужен).
+**2. `fan_wallets`** — `ViewProjection` + `MongoViewRepository<FanWalletView>` над агрегатом `Fan`,
+`_id = <fan_id>:<concert_id>` — один документ на журнал (D-14). Строится из `TicketRecorded` / `TicketCancelled`
+(U4 закрыт решением D-06, собственный обработчик не нужен). Кошелёк зрителя в API собирается из всех его документов
+одним диапазоном `_id` `[fox:, fox;)` (`application/fan/wallet.rs`).
 
 ```json
 {
-  "_id": "fox",
+  "_id": "fox:radiohead-2026-11-21",
   "version": 5,
   "view": {
     "fan_id": "fox", "fan_name": "Fox",
@@ -478,8 +482,9 @@ storage timeout 3 с. Lease валидируется формулой `lease > 2
 }
 ```
 
-LWW-ключ — `booking_id`; `sequence` — номер события в потоке `Fan`, поэтому сравнения корректны внутри одного
-кошелька. `changed_at` — `recorded_at` события `Fan`.
+LWW-ключ — `booking_id`; `sequence` — номер события в потоке журнала, поэтому сравнения корректны внутри одного
+документа. Кошелёк в API собран из нескольких журналов, их `sequence` несравнимы — UI сортирует билеты по
+`changed_at`. `changed_at` — `recorded_at` события `Fan`.
 
 **Не проекция: `mail_service.inbox`** — «внешний почтовый сервис» (симуляция) в отдельной базе. Пишется только
 outbox-обработчиками; wipe и replay его **не трогают**. Ключевой урок: «пересборка витрин не рассылает письма заново».
@@ -589,9 +594,9 @@ sequenceDiagram
   participant W as Worker (task runtime)
   participant FAN as Fan (через CommandExecutor<Fan>)
   W->>PG: claim encore_record_ticket
-  W->>FAN: execute_with_metadata(fan_id, RecordTicket, metadata{correlation_id, causation_id=task_id}, [NewTask(encore_send_e_ticket)])
+  W->>FAN: execute_with_metadata("fox:radiohead-2026-11-21", RecordTicket, metadata{correlation_id, causation_id=task_id}, [NewTask(encore_send_e_ticket)])
   FAN->>PG: ОДНА транзакция: INSERT TicketRecorded + INSERT задачи encore_send_e_ticket
-  FAN->>M: upsert fan_wallets/fox
+  FAN->>M: upsert fan_wallets/fox:radiohead-2026-11-21
   W->>PG: settle completed
   W->>PG: claim encore_send_e_ticket → FlakyMailServer 🎲 → inbox
 ```
@@ -998,7 +1003,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `POST /api/concerts/{concert_id}/commands` | write | выполнить команду | 200, 400, 409, 422, 423, 503 |
 | `GET /api/concerts` | read: `concert_halls` | сводка по всем концертам | 200 (`[]`, если витрина пуста) |
 | `GET /api/concerts/{concert_id}` | read: `concert_halls` | документ схемы зала | 200, 404 `projection_missing` |
-| `GET /api/fans/{fan_id}/wallet` | read: `fan_wallets` | кошелёк фаната | 200, 404 |
+| `GET /api/fans/{fan_id}/wallet` | read: `fan_wallets`, диапазон `_id` журналов фаната | кошелёк фаната, собранный из его журналов: `{ fan_id, ledgers: [{ concert_id, version, last_sequence }], view }` (D-14) | 200, 404 |
 | `GET /api/concerts/{concert_id}/timeline` | event store | события концерта для ползунка | 200 |
 | `GET /api/concerts/{concert_id}/state-at/{sequence}` | event store | машина времени | 200, 404 |
 | `POST /api/projections/rebuild` | admin | Encore! | 202, 409 |
@@ -1741,6 +1746,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | **D-11** | **Replay:** два `replay_all` (по типу агрегата), порядок событий по `sequence` поперёк агрегатов; `rebuild.started` несёт `total`; verify P1 — во временные коллекции, без in-memory фейков. | §2.9, §6.8 | ☐ Фаза 6 / 9 |
 | **D-12** | **Sidecar:** сортировка `events` по `metadata->>'recorded_at'` (строка фиксированной ширины), outbox по `created_at`, строки outbox не удаляются, `last_error` показывается. Запросы — AM §6. | §7.3, §8.5 | ☐ Фаза 7 |
 | **D-13** | **Граница back-end ↔ sidecar (аудит 2026-10-17, `docs/BOUNDARY_AUDIT.md`).** Back-end — production-подобный сервис кассы; всё demo-only и удаляющее данные — у sidecar: 🧨 wipe (`POST /inspect/projections/wipe`), письма фаната (`GET /inspect/mail/{fan_id}`), персонажи (`GET /inspect/demo`), имитация почтового сервиса (`POST /mail`). Back-end зовёт почту по HTTP (`HttpMailer`) и к базе `mail_service` не подключается. Счётчики журнала — в `cqrsx` (`PostgresEventRepository::totals`, тикет 08). Ограничения «sidecar без `cqrsx`» и «только read-only» сняты. Открытые вопросы — `docs/discussions/`. | §2.7, §2.9, §3.5, §5.4, §6.2, §6.4, §7 | ☑ реализовано 2026-10-17 |
+| **D-14** | **Журнал `Fan` — на пару «фанат + концерт»:** `aggregate_id = <fan_id>:<concert_id>`, `fan_wallets._id` тот же; домен `Fan`, wire-форматы событий и снапшота, `ViewProjection`, rebuild и verify не меняются. Кошелёк фаната собирается при чтении из диапазона `_id` `[<fan>:, <fan>;)` и отвечает `{ fan_id, ledgers, view }`. Причина: нагрузочный прогон 03b 2026-10-18 — состояние, снапшот и документ кошелька одного фаната росли без границы, стоимость задачи O(n), слив outbox 120 → 12 задач/с, потери проекции (`docs/discussions/06_fan_ledger_growth.md`). Данные демо пересоздаются (`make reset`). | §2.1, §2.3, §2.8, §3.2, §6.4 | ☑ реализовано 2026-10-18 |
 
 Открытых вопросов перед Фазой 0.5 нет.
 
@@ -1820,7 +1826,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | `panels.snapshots` | Закладки: сохранённое состояние агрегата на событии N. Загрузка концерта = снапшот + события после него. | Bookmarks: the aggregate's saved state at event N. Loading a concert = snapshot + the events after it. |
 | `panels.outbox` | Задачи, записанные в той же транзакции, что и событие. Воркер берёт задачу в аренду (lease), выполняет и фиксирует результат: готово — или повтор после паузы (backoff). Задача переживёт даже падение сервера. | Tasks written in the same transaction as the event. A worker leases a task, runs it and records the outcome: done, or retry after a pause (backoff). A task survives even a server crash. |
 | `panels.concert_halls` | Витрина «схема зала»: один документ на концерт. Строится только из событий; её можно удалить и пересобрать. | Read model "seat map": one document per concert. Built only from events; safe to delete and rebuild. |
-| `panels.fan_wallets` | Витрина «кошелёк фаната»: один документ на фаната, построенный из его собственного журнала (агрегат Fan), который заполняется задачами outbox после каждой брони. | Read model "fan wallet": one document per fan, built from the fan's own ledger (the Fan aggregate), which outbox tasks fill in after every booking. |
+| `panels.fan_wallets` | Витрина «кошелёк фаната»: один документ на пару фанат + концерт (журнал фаната по этому концерту, агрегат Fan), который заполняется задачами outbox после каждой брони. Кошелёк на экране собран из всех журналов фаната. | Read model "fan wallet": one document per fan and concert (the fan's ledger for that concert, the Fan aggregate), which outbox tasks fill in after every booking. The wallet on screen is assembled from all of the fan's ledgers. |
 | `panels.inbox` | Не витрина! Это «внешний почтовый сервис» (имитация). Replay его не трогает — письма не уходят повторно. | Not a read model! This is the "external mail service" (simulated). Replay never touches it — no email is sent twice. |
 | `panels.activity` | Живой лог back-end: что происходит прямо сейчас. Хранится только в памяти. | Live back-end log: what is happening right now. Kept in memory only. |
 | `states.race` | Оба запроса прочитали версию N и попытались записать N+1. База приняла только первый; второй повторился на свежем состоянии — и правило «место свободно» его отклонило. | Both requests read version N and tried to write N+1. The database accepted only the first; the second was retried on fresh state — and the "seat must be free" rule rejected it. |

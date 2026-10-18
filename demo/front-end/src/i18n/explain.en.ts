@@ -42,7 +42,7 @@ export default {
   },
   svc_fan: {
     title: 'Fan service',
-    lead: 'The downstream side: one stream per fan with the tickets they hold. It only ever receives commands from outbox tasks, so its rules are about idempotency, not business.',
+    lead: 'The downstream side: one stream per fan and concert with the tickets they hold there. It only ever receives commands from outbox tasks, so its rules are about idempotency, not business.',
     points: [
       'Commands arrive from the Concert outbox worker with the correlation_id of the original click.',
       'Its events start the second outbox chain: the e-ticket or the refund e-mail.',
@@ -124,7 +124,7 @@ export default {
   },
   fan_aggregate: {
     title: 'Aggregate Fan — the rules',
-    lead: 'One stream per fan: the tickets they hold. Its rules protect against repeated or reordered task delivery:',
+    lead: 'One stream per fan and concert: the tickets they hold there. Its rules protect against repeated or reordered task delivery:',
     rules: fanRules,
     points: [
       'Events: TicketRecorded (with the refund amount remembered) and TicketCancelled.',

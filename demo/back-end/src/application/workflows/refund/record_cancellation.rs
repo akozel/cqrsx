@@ -58,7 +58,7 @@ mod tests {
     use super::*;
     use crate::application::workflows::{
         CHAIN_RETRY_AFTER,
-        test_support::{attempt, fans, ticket},
+        test_support::{attempt, fans, ledger, ticket},
         ticket_delivery::record_ticket::RecordTicketHandler,
     };
     use cqrsx::cqrs::{store::EventStore, testing::mem_store::MemStore};
@@ -118,12 +118,16 @@ mod tests {
         let payload = cancellation(ticket.booking_id);
         let delivery = attempt(&payload, Uuid::now_v7());
         handler.handle(payload.clone(), &delivery).await.unwrap();
-        assert_eq!(store.load_events("fox").await.unwrap().len(), 2);
+        assert_eq!(store.load_events(ledger().as_str()).await.unwrap().len(), 2);
         assert_eq!(
             executor.take_published_tasks()[0].format().to_string(),
             "encore_issue_refund v1"
         );
         handler.handle(payload, &delivery).await.unwrap();
-        assert_eq!(store.load_events("fox").await.unwrap().len(), 2, "R11: already cancelled");
+        assert_eq!(
+            store.load_events(ledger().as_str()).await.unwrap().len(),
+            2,
+            "R11: already cancelled"
+        );
     }
 }

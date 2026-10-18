@@ -186,7 +186,7 @@ export default {
     fan_wallets: {
       title: '🍃 fan_wallets',
       explain:
-        'Read model "fan wallet": one document per fan, built from the fan\'s own ledger (the Fan aggregate), which outbox tasks fill in after every booking.',
+        'Read model "fan wallet": one document per fan and concert (the fan\'s ledger for that concert, the Fan aggregate), which outbox tasks fill in after every booking. The wallet on screen is assembled from all of the fan\'s ledgers.',
     },
     inbox: {
       title: '📬 inbox',
@@ -307,7 +307,7 @@ export default {
     encore_issue_refund: 'E-mail the refund to the fan',
   },
   verify: {
-    ok: '✅ read models match the ledger ({halls} halls, {wallets} wallets)',
+    ok: '✅ read models match the ledger ({halls} halls, {wallets} wallet ledgers)',
     diff: '❌ {n} differences',
     running: 'verifying…',
   },
