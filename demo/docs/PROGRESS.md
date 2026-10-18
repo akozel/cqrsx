@@ -372,7 +372,7 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   the bottom-left diamond is now the command side of the UI, the persona is a circle at the bottom
   connected to both UI diamonds and to email; scenes start at and return to the person. Canvas
   1206×472, diagram block 32 rem. 46 vitest tests.
-- **2026-10-17, demo lifecycle moved to the sidecar** (no commit yet, by request): the back-end lost
+- **2026-10-17, demo lifecycle moved to the sidecar** (commit `aa11c79`): the back-end lost
   `app::seed`, `ENCORE_SEED` and `seed_concerts` in `/api/config` — it carries no demo-only code. The
   sidecar (`demo.rs`) announces the default concerts at start-up through the back-end's public API
   (retries for 3 min) and serves `GET /inspect/demo` + `POST /inspect/reset` (TRUNCATE of the three
@@ -381,3 +381,24 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   in the sidecar. Requires `make reset` + `make up` (new role) and a rebuild of both binaries.
   Verified: cargo fmt/clippy/test (demo workspace), front-end typecheck/lint/48 tests/build.
   **Manual:** run `make dev`, press ⟲, check `events` holds exactly three `ConcertAnnounced`.
+- **2026-10-17, boundary audit implemented** (commits `3c1b771` cqrsx, `790ec18` demo; the audit is
+  `docs/BOUNDARY_AUDIT.md`, the decision is PLAN.md D-13, the open questions are `docs/discussions/`).
+  Back-end: lost `POST /api/projections/wipe`, `GET /api/fans/{fan_id}/inbox`, the cast and the mail
+  knobs in `/api/config`, and the whole mail simulation (`infrastructure::mail::{chaos,
+  flaky_mail_server}`, `infrastructure::mongo::inbox`, `ENCORE_TASK_FAILURE_RATE`, `_LATENCY_*`,
+  `ENCORE_CHAOS_SEED`, `ENCORE_MAIL_DB`, the `rand`, `sha2`, `hex` dependencies); gained
+  `infrastructure::mail::http_mailer::HttpMailer` (`POST {ENCORE_MAIL_SERVICE_URL}/mail` with
+  `Idempotency-Key`; 503 → retry with the 1, 2, 4, 8 s backoff, 429/5xx/unreachable → retry, 4xx →
+  permanent; tests against a stub axum server) and `PostgresLedger` over the new cqrsx
+  `PostgresEventRepository::totals::<A>()` (backlog 08: `LedgerTotals`, integration test
+  `event_store::totals`, `components.md`). Sidecar: `POST /inspect/projections/wipe`,
+  `GET /inspect/mail/{fan_id}`, `personas` in `GET /inspect/demo`, and the moody mail service
+  `POST /mail` (`sidecar/src/mail.rs` + `mail/{chaos, inbox}.rs`, `SIDECAR_MAIL_FAILURE_RATE`,
+  `_LATENCY_MIN_MS/_MAX_MS`, `_CHAOS_SEED`); `reset` unchanged. UI: `sidecar.wipe()`, `sidecar.inbox()`
+  (raw inbox docs, `_id` → `inbox_id`), `session.demo.personas`; the `projections.wiped` activity is
+  gone (the wipe no longer happens in the back-end). Compose: `ENCORE_MAIL_SERVICE_URL=http://sidecar:8090`.
+  Verified: cqrsx fmt/clippy, all-features tests (88 integration + units) and doctests, the feature matrix
+  and both `llvm-cov --fail-under-lines 97` runs; demo fmt/clippy, `cargo test --workspace`
+  (92 back-end unit, 2 architecture, 1 write_side, 14 sidecar); front-end typecheck/lint/52 tests/build.
+  Requires a rebuild of both binaries. **Manual:** `make dev`, book a seat, watch the 🎫 task go through
+  `POST /mail` in the `[sidecar]` log (some attempts 503), press 🧨 (sidecar) then ⏪ Encore!, then ⟲.

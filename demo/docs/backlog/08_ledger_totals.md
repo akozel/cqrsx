@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | сделано 2026-10-17 (аудит границы, C-1): `PostgresEventRepository::totals::<A>()` и `LedgerTotals` в `cqrsx::postgres::event_repository`, интеграционный тест `tests/postgres/event_store/totals.rs`, demo `PostgresLedger` без raw SQL |
+| Статус | сделано, коммит `3c1b771`: `feat(cqrsx): event ledger totals; adopt in demo` (аудит границы C-1); `PostgresEventRepository::totals::<A>()` и `LedgerTotals` в `cqrsx::postgres::event_repository`, интеграционный тест `tests/postgres/event_store/totals.rs`, demo `PostgresLedger` без raw SQL |
 | Ценность | низкая, но убирает raw SQL приложения по таблице библиотеки |
 | Цена | низкая |
 | cqrsx | `postgres/event_repository/read.rs` |

@@ -376,7 +376,14 @@ CTE-оператором. Список неизменяем между попы�
 | `CommittedWithEventHandlerFailure` | `Ok(())` — событие записано, витрину догонит Encore! |
 | прочие `Domain` | `Permanent { reason: code }` |
 
-**Нестабильный обработчик `FlakyMailServer` (DEMO ONLY).** Общий для двух почтовых `TaskHandler`:
+> **Перенесено в sidecar (2026-10-17, аудит границы, пункт S-4 в `docs/BOUNDARY_AUDIT.md`).** Имитация
+> почтового сервиса живёт в sidecar (`sidecar/src/mail.rs`, `POST /mail`, переменные `SIDECAR_MAIL_*`). В back-end
+> остался только HTTP-клиент `infrastructure::mail::http_mailer::HttpMailer`: `POST {ENCORE_MAIL_SERVICE_URL}/mail`
+> с заголовком `Idempotency-Key`, `200` → успех, `503 { reason_code }` → `Retry` с backoff `ENCORE_TASK_RETRY_*`,
+> недоступность → `Retry { mail_unreachable }`, `4xx` → `Permanent`. Описание ниже — поведение провайдера, теперь
+> на стороне sidecar; события `task.attempt.*` в activity публикует `HttpMailer`.
+
+**Нестабильный обработчик `FlakyMailServer` (DEMO ONLY, теперь — почтовый сервис sidecar).** Общий для двух почтовых `TaskHandler`:
 
 1. Публикует в activity `task.attempt.started { task_id, format, attempt }` (`attempt` = `TaskAttempt::number()`).
 2. Ждёт случайную «сетевую» задержку `ENCORE_TASK_LATENCY_MIN_MS..ENCORE_TASK_LATENCY_MAX_MS` (600..1800 мс),
@@ -485,8 +492,10 @@ outbox-обработчиками; wipe и replay его **не трогают**
 
 ### 2.9 Replay — «Encore!»
 
-- **🧨 Стереть витрины** (`POST /api/projections/wipe`): drop коллекций `concert_halls` и `fan_wallets`
-  (inbox не трогаем). Write-side продолжает работать: бронирование занятого места по-прежнему отклоняется, потому
+- **🧨 Стереть витрины** (sidecar, `POST /inspect/projections/wipe`; до аудита 2026-10-17 это был
+  `POST /api/projections/wipe` back-end): drop коллекций `concert_halls` и `fan_wallets` (inbox не трогаем).
+  Удаление данных без восстановления — демо-операция, поэтому она у sidecar; у back-end такого эндпоинта нет.
+  Write-side продолжает работать: бронирование занятого места по-прежнему отклоняется, потому
   что агрегат восстанавливается из PostgreSQL, а не из MongoDB. Новое событие после wipe создаёт «неполный»
   документ (`incomplete: true`) — наглядно: «витрина без истории врёт».
 - **⏪ Encore!** (`POST /api/projections/rebuild`, тело `{ "speed": "slow" }` или `{ "speed": "fast" }`):
@@ -639,7 +648,7 @@ sequenceDiagram
 | Решение | Почему |
 |---|---|
 | Back-end на Rust + axum 0.8 | `cqrsx` — Rust-библиотека; axum — стандарт на tokio |
-| Sidecar — отдельный процесс без зависимости от `cqrsx` | показывает БД «снаружи», как есть; read-only роль доказывает, что он ничего не меняет |
+| Sidecar — отдельный процесс | показывает БД «снаружи», как есть (read-only роль для инспекции) **и** хостит всё demo-only: seed, 🧨 wipe, ⟲ reset, имитацию почтового сервиса. Ограничение «без `cqrsx`» снято аудитом 2026-10-17 (`docs/BOUNDARY_AUDIT.md`): зависимости любые, пока `cqrsx` ему просто не нужен |
 | MongoDB для проекций | документ-витрина ≈ JSON на экране; подчёркивает, что read-side может жить в другой СУБД |
 | Отдельная база `mail_service` для inbox | внешний эффект ≠ проекция; replay его не трогает |
 | SSE вместо WebSocket | поток в одну сторону, `EventSource` встроен в браузер |
@@ -825,14 +834,16 @@ MongoDB для демо — без аутентификации; порты Post
 | Переменная | Кто читает | По умолчанию | Назначение |
 |---|---|---|---|
 | `ENCORE_DATABASE_URL` | back-end | `postgresql://cqrsx:cqrsx@localhost:5434/encore` | event store + outbox |
-| `ENCORE_MONGODB_URI` | back-end | `mongodb://localhost:27018` | проекции, inbox |
-| `ENCORE_READ_DB` / `ENCORE_MAIL_DB` | back-end, sidecar | `encore_read` / `mail_service` | имена баз MongoDB |
+| `ENCORE_MONGODB_URI` | back-end | `mongodb://localhost:27018` | проекции |
+| `ENCORE_READ_DB` | back-end, sidecar | `encore_read` | база витрин |
+| `ENCORE_MAIL_DB` | sidecar | `mail_service` | база почтового сервиса (пишет его имитация в sidecar, показывает X-ray; back-end к ней не подключается) |
+| `ENCORE_MAIL_SERVICE_URL` | back-end | `http://127.0.0.1:8090` | внешний почтовый сервис (`POST /mail`); в демо его хостит sidecar |
 | `ENCORE_HTTP_ADDR` | back-end | `127.0.0.1:8080` | |
-| `ENCORE_TASK_FAILURE_RATE` | back-end | `0.2` | DEMO ONLY: шанс retry |
-| `ENCORE_TASK_LATENCY_MIN_MS` / `_MAX_MS` | back-end | `600` / `1800` | имитация сети |
+| `SIDECAR_MAIL_FAILURE_RATE` | sidecar | `0.2` | DEMO ONLY: шанс, что почтовый сервис ответит `503` и задача уйдёт в retry (до 2026-10-17 — `ENCORE_TASK_FAILURE_RATE` back-end) |
+| `SIDECAR_MAIL_LATENCY_MIN_MS` / `_MAX_MS` | sidecar | `600` / `1800` | имитация сети почтового сервиса; max должен быть меньше таймаута запроса back-end (H − 1 с) |
+| `SIDECAR_MAIL_CHAOS_SEED` | sidecar | пусто | детерминированный кубик (тесты, отладка) |
 | `ENCORE_TASK_MAX_ATTEMPTS` | back-end | `6` | claim-attempt limit задачи (`NewTask::with_max_attempts`) |
 | `ENCORE_TASK_RETRY_BASE_MS` / `ENCORE_TASK_RETRY_MAX_MS` | back-end | `1000` / `8000` | backoff почтовых задач через `retry_after`: 1, 2, 4, 8, 8 с |
-| `ENCORE_CHAOS_SEED` | back-end | пусто | детерминированный RNG (тесты, отладка) |
 | `ENCORE_TICKET_LIMIT` | back-end | `4` | правило R6 |
 | `ENCORE_SNAPSHOT_EVERY` | back-end | `10` | снапшот каждые N событий (U12) |
 | `ENCORE_REPLAY_SLOW_DELAY_MS` | back-end | `80` | slow-motion replay |
@@ -848,7 +859,7 @@ MongoDB для демо — без аутентификации; порты Post
 | `OUTBOX_WORKER_CONCURRENCY` (C) | back-end | `2` (библиотека: 128) | воркеры task runtime |
 | `OUTBOX_QUEUE_CAPACITY` (Q) | back-end | `2` (128) | локальный буфер claim-ов (`buffer_capacity`) |
 | `OUTBOX_POLL_INTERVAL_MS` | back-end | `300` (1000) | период опроса outbox и recovery просроченных lease |
-| `OUTBOX_HANDLER_TIMEOUT_SECS` (H) | back-end | `5` (15) | должен быть больше `ENCORE_TASK_LATENCY_MAX_MS`; проверяется в `Config` |
+| `OUTBOX_HANDLER_TIMEOUT_SECS` (H) | back-end | `5` (15) | запрос к почтовому сервису сдаётся на секунду раньше (`Config::mail_request_timeout`), чтобы попытка закончилась своим retry, а не таймаутом обработчика |
 | `OUTBOX_LEASE_SECS` (L) | back-end | `30` (60) | валидируется библиотекой: `L > 2·S + H + 5 с + ceil(Q/C)·(H+S)` = 24 с |
 | `OUTBOX_STORAGE_TIMEOUT_MS` (S) | back-end | `3000` (6000) | бюджет claim/settle; с дефолтом 6000 lease 30 с не пройдёт |
 | `OUTBOX_POSTGRES_STATEMENT_TIMEOUT_MS` | back-end | `4000` (4000) | statement_timeout транзакций очереди |
@@ -925,15 +936,15 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `application::concert::tasks` | контракты задач, которые публикует касса: `RecordTicketV1`, `RecordCancellationV1` |
 | `application::fan` | `FanApp<E>`: исполнитель команд `Fan` для шагов процессов |
 | `application::workflows::{ticket_delivery, refund}` | бизнес-процессы на outbox-задачах, файл на шаг: `record_ticket` → `send_e_ticket`, `record_cancellation` → `issue_refund`; `tasks` — контракты следующих задач; корень `workflows` — общий шаг цепочки и маппинг исходов |
-| `application::ports` | `Mailer` (+ `Mail`), `Inbox`, `ReadModelStore<V>` (+ `Stored<V>`), `EventLedgerStats` |
+| `application::ports` | `Mailer` (+ `Mail`), `ReadModelStore<V>` (+ `Stored<V>`), `EventLedgerStats` |
 | `application::{concert,fan}::views` | `ConcertHallView` (`View<Concert>`, LWW), `FanWalletView` (`View<Fan>`, LWW по `booking_id`) |
 | `application::projections` | `notifying` (activity после live-обновления), `maintenance` (`ProjectionMaintenance`: wipe, rebuild с темпом и наблюдателем прогресса `EventReplay`, verify для любой view) |
 | `application::operations::{rebuild, verify, time_travel}` | Encore!, verify, машина времени — поверх `MaintainedReadModel`, `EventLedgerStats` и `EventStore` |
 | `application::{activity, lock, tasks, read_models}` | `ActivityHub`; `BoxOfficeLock`; `new_task` (ключи `concert_id`/`fan_id` + `Causation::stamp_task`); `ReadModels` — query-порты для HTTP |
-| `presentation::http` | роутер; `{concerts, fans, projections, activity}/<action>.rs` — запрос, ответ и обработчик одного действия; `health`, `config` (+ персонажи), `error` |
-| `infrastructure::postgres` | `HistoryStore` и `history_store`/`event_history`/`history_repositories` (чтение истории), `PostgresLedger`; исполнители команд — библиотечный `PostgresCommandExecutor`, собираются в `bootstrap` |
-| `infrastructure::mongo::{view_repository, read_side, inbox}` | `MongoViewRepository` (`ViewRepository` + `ReadModelStore`), коллекции read side и scratch-копии verify, `MongoInbox` (`MailStore` + `Inbox`) |
-| `infrastructure::mail::{flaky_mail_server, chaos}` | DEMO ONLY: `FlakyMailServer` (`impl Mailer`) поверх `MailStore`, `ChaosPolicy` |
+| `presentation::http` | роутер; `{concerts, fans, projections, activity}/<action>.rs` — запрос, ответ и обработчик одного действия; `health`, `config` (зал и настройки правил; персонажи — реквизит демо у sidecar), `error` |
+| `infrastructure::postgres` | `HistoryStore` и `history_store`/`event_history`/`history_repositories` (чтение истории), `PostgresLedger` (через `PostgresEventRepository::totals`, тикет 08); исполнители команд — библиотечный `PostgresCommandExecutor`, собираются в `bootstrap` |
+| `infrastructure::mongo::{view_repository, read_side}` | `MongoViewRepository` (`ViewRepository` + `ReadModelStore`), коллекции read side и scratch-копии verify. К базе `mail_service` back-end не подключается |
+| `infrastructure::mail::http_mailer` | `HttpMailer` (`impl Mailer`): `POST /mail` внешнего почтового сервиса с `Idempotency-Key`; `503` → `Retry` с backoff, недоступность → `Retry`, `4xx` → `Permanent`; публикует `task.attempt.*`. Имитация провайдера (кубик, задержка, inbox) — в sidecar |
 | `infrastructure::task_runtime::dispatcher` | `TaskDispatcherFactory<BoxedTaskAdapter>`: по строке регистрации на тип задачи, свой RNG на воркера |
 | `bootstrap` | composition root: `wire()` собирает `AppState` и фабрику диспетчера; общий для `main.rs` и тестов |
 
@@ -963,7 +974,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
    обработчики.
 8. Task runtime: `prepare_task_runtime(pool.clone(), dispatcher_factory, PostgresTaskQueueConfig::default(),
    runtime_config)?` с `TaskDispatcherFactory` из `infrastructure::task_runtime::dispatcher`; фабрика захватывает
-   `Arc<FanApp>` для шагов процессов и `MongoInbox` для почты. Подготовка не запускает фоновой работы — это делает `run`.
+   `Arc<FanApp>` для шагов процессов и общий `reqwest::Client` для `HttpMailer` почтовых шагов. Подготовка не запускает фоновой работы — это делает `run`.
 9. `AppState { config, concerts, activity, rebuild, read, time_travel, verify, shutdown }` (всё в `Arc`/`Clone`).
    Пункты 4–9 собирает `bootstrap::wire` (без I/O); `main.rs` владеет только жизненным циклом процесса.
 10. ~~seed~~ — концерты по умолчанию анонсирует sidecar через публичный API.
@@ -979,16 +990,17 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 |---|---|---|---|
 | `GET /api/health` | — | liveness | 200 |
 | `GET /api/config` | справочник | зал, персонажи, параметры демо | 200 |
-| `GET /inspect/demo` (sidecar) | демо | концерты по умолчанию, `reset_enabled` | 200 |
+| `GET /inspect/demo` (sidecar) | демо | концерты по умолчанию, персонажи, `reset_enabled` | 200 |
+| `POST /inspect/projections/wipe` (sidecar) | демо | 🧨 стереть витрины (журнал цел, Encore! восстановит) | 200, 503 |
 | `POST /inspect/reset` (sidecar) | демо | стереть всё и заново анонсировать концерты по умолчанию | 200, 404 (выключен), 503 |
+| `GET /inspect/mail/{fan_id}` (sidecar) | read: `mail_service.inbox` | письма фаната, как их сохранил почтовый сервис | 200, 503 |
+| `POST /mail` (sidecar, почтовый сервис) | внешний мир | принять письмо от back-end: `200 { inbox_id, duplicate }` или `503 { reason_code }` | 200, 400, 503 |
 | `POST /api/concerts/{concert_id}/commands` | write | выполнить команду | 200, 400, 409, 422, 423, 503 |
 | `GET /api/concerts` | read: `concert_halls` | сводка по всем концертам | 200 (`[]`, если витрина пуста) |
 | `GET /api/concerts/{concert_id}` | read: `concert_halls` | документ схемы зала | 200, 404 `projection_missing` |
 | `GET /api/fans/{fan_id}/wallet` | read: `fan_wallets` | кошелёк фаната | 200, 404 |
-| `GET /api/fans/{fan_id}/inbox` | read: `mail_service.inbox` | письма фаната | 200 |
 | `GET /api/concerts/{concert_id}/timeline` | event store | события концерта для ползунка | 200 |
 | `GET /api/concerts/{concert_id}/state-at/{sequence}` | event store | машина времени | 200, 404 |
-| `POST /api/projections/wipe` | admin | стереть витрины | 200, 423 |
 | `POST /api/projections/rebuild` | admin | Encore! | 202, 409 |
 | `GET /api/projections/status` | admin | `idle` / `running`, прогресс, итог последнего запуска | 200 |
 | `GET /api/projections/verify` `[P1]` | admin | сверка витрин с журналом | 200 |
@@ -1044,10 +1056,12 @@ fallback, UI берёт текст из i18n по `code` и `params`.
              "zones": [ { "id": "vip", "rows": ["A"], "price": 120 },
                         { "id": "standard", "rows": ["B","C"], "price": 80 },
                         { "id": "balcony", "rows": ["D","E"], "price": 50 } ] },
-  "personas": [ { "fan_id": "fox", "name": "Fox", "avatar": "🦊" } ],
-  "ticket_limit": 4, "task_failure_rate": 0.2, "task_max_attempts": 6, "snapshot_every": 10
+  "ticket_limit": 4, "snapshot_every": 10
 }
 ```
+
+Персонажи и концерты по умолчанию — реквизит демо, их отдаёт sidecar (`GET /inspect/demo`); параметры имитации
+почты у back-end больше нет (аудит 2026-10-17).
 
 **`GET /api/concerts`** — `[{ concert_id, artist, city, date, sold, capacity, revenue, sold_out, incomplete }]`.
 **`GET /api/concerts/{id}`** — `{ concert_id, version, view }` (как в §2.8).
@@ -1155,9 +1169,13 @@ Activity хранится только в памяти — это лог, а н�
 
 ### 7.1 Ответственность
 
-«Окно в базы данных»: показывает сырое состояние таблиц и коллекций **так, как оно лежит в СУБД**. Только чтение.
-Не зависит от `cqrsx` и не знает домен — знает лишь имена таблиц/коллекций и колонки сортировки. Подключается к
-PostgreSQL под ролью `encore_inspector` (read-only на двух уровнях).
+Две роли. Первая — «окно в базы данных»: показывает сырое состояние таблиц и коллекций **так, как оно лежит в
+СУБД**, только чтение, под ролью `encore_inspector` (read-only на двух уровнях); не знает домен — лишь имена
+таблиц/коллекций и колонки сортировки. Вторая (с 2026-10-17, `docs/BOUNDARY_AUDIT.md`) — всё demo-only, чтобы
+back-end оставался production-подобным: seed концертов по умолчанию, персонажи, 🧨 wipe витрин, ⟲ reset
+(`encore_demo_admin`, только `TRUNCATE`), чтение ящика фаната и **имитация внешнего почтового сервиса**
+(`POST /mail`, `sidecar/src/mail.rs`), которую back-end вызывает по HTTP как настоящего провайдера. Не зависит
+от `cqrsx` по факту, не по правилу.
 
 ### 7.2 Эндпоинты
 
@@ -1171,6 +1189,11 @@ PostgreSQL под ролью `encore_inspector` (read-only на двух уро�
 | `GET /inspect/mongo/{database}/{collection}?limit=100` | документы (whitelist: `encore_read.concert_halls`, `encore_read.fan_wallets`, `mail_service.inbox`; иначе 404) |
 | `GET /inspect/stats` | счётчики: события (всего и по концертам), задачи по статусам, документы по коллекциям |
 | `GET /inspect/stream` | SSE: сообщения `state` со всем перечисленным выше |
+| `GET /inspect/mail/{fan_id}?limit=100` | письма фаната из `mail_service.inbox`, старые сверху (как их сохранил почтовый сервис) |
+| `GET /inspect/demo` | реквизит демо: `default_concerts`, `personas`, `reset_enabled` |
+| `POST /inspect/projections/wipe` | DEMO ONLY: 🧨 drop `concert_halls` и `fan_wallets`; `{ outcome: "wiped", dropped }` |
+| `POST /inspect/reset` | DEMO ONLY: TRUNCATE трёх таблиц, drop трёх коллекций, seed заново; 404 при `SIDECAR_RESET_ENABLED=false` |
+| `POST /mail` | DEMO ONLY: почтовый сервис для back-end — задержка, кубик (`503 { reason_code }`), идемпотентный upsert в `mail_service.inbox` по `Idempotency-Key` (`200 { inbox_id, duplicate }`) |
 
 Формат ответа таблицы — с самим запросом, чтобы UI мог показать «вот что мы спросили у базы»:
 
@@ -1717,6 +1740,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | **D-10** | **Graceful shutdown:** SSE-потоки завершаются по `CancellationToken`; после `host::lifecycle::run` — `pool.close()`. | §6.3 п.11, §10 Фаза 4 | ☐ приёмка «Ctrl+C при открытой вкладке» |
 | **D-11** | **Replay:** два `replay_all` (по типу агрегата), порядок событий по `sequence` поперёк агрегатов; `rebuild.started` несёт `total`; verify P1 — во временные коллекции, без in-memory фейков. | §2.9, §6.8 | ☐ Фаза 6 / 9 |
 | **D-12** | **Sidecar:** сортировка `events` по `metadata->>'recorded_at'` (строка фиксированной ширины), outbox по `created_at`, строки outbox не удаляются, `last_error` показывается. Запросы — AM §6. | §7.3, §8.5 | ☐ Фаза 7 |
+| **D-13** | **Граница back-end ↔ sidecar (аудит 2026-10-17, `docs/BOUNDARY_AUDIT.md`).** Back-end — production-подобный сервис кассы; всё demo-only и удаляющее данные — у sidecar: 🧨 wipe (`POST /inspect/projections/wipe`), письма фаната (`GET /inspect/mail/{fan_id}`), персонажи (`GET /inspect/demo`), имитация почтового сервиса (`POST /mail`). Back-end зовёт почту по HTTP (`HttpMailer`) и к базе `mail_service` не подключается. Счётчики журнала — в `cqrsx` (`PostgresEventRepository::totals`, тикет 08). Ограничения «sidecar без `cqrsx`» и «только read-only» сняты. Открытые вопросы — `docs/discussions/`. | §2.7, §2.9, §3.5, §5.4, §6.2, §6.4, §7 | ☑ реализовано 2026-10-17 |
 
 Открытых вопросов перед Фазой 0.5 нет.
 
