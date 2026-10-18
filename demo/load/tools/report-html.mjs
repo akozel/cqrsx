@@ -101,9 +101,11 @@ function niceTicks(max, count = 5) {
 // --- SVG charts -----------------------------------------------------------------------------------
 // One frame for every chart: hairline grid, a baseline, muted tick labels, a column hit area per
 // category for the tooltip. Marks use the categorical slots in fixed order (`--s1`…`--s5`).
-const W = 380;
-const H = 240;
-const MARGIN = { top: 18, right: 14, bottom: 40, left: 46 };
+// Drawn at the size it is shown: the grid below never shrinks a chart under ~600px, so 12px text
+// stays 12px on a 1080p screen at 100 % zoom (an SVG scaled by width scales its text too).
+const W = 600;
+const H = 320;
+const MARGIN = { top: 22, right: 16, bottom: 46, left: 56 };
 
 function frame({ categories, yMax, unit, axisLabel, rightMargin = MARGIN.right }) {
   const l = MARGIN.left;
@@ -117,14 +119,14 @@ function frame({ categories, yMax, unit, axisLabel, rightMargin = MARGIN.right }
   const parts = [];
   for (const tick of ticks) {
     parts.push(`<line class="grid" x1="${l}" x2="${l + pw}" y1="${y(tick).toFixed(1)}" y2="${y(tick).toFixed(1)}"/>`);
-    parts.push(`<text class="tick" x="${l - 6}" y="${(y(tick) + 3.5).toFixed(1)}" text-anchor="end">${esc(fmt(tick))}</text>`);
+    parts.push(`<text class="tick" x="${l - 8}" y="${(y(tick) + 4).toFixed(1)}" text-anchor="end">${esc(fmt(tick))}</text>`);
   }
   parts.push(`<line class="axis" x1="${l}" x2="${l + pw}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>`);
-  parts.push(`<text class="tick" x="${l - 6}" y="${t - 7}" text-anchor="end">${esc(unit)}</text>`);
+  parts.push(`<text class="tick" x="${l - 8}" y="${t - 8}" text-anchor="end">${esc(unit)}</text>`);
   categories.forEach((c, i) => {
-    parts.push(`<text class="tick" x="${(l + (i + 0.5) * band).toFixed(1)}" y="${t + ph + 15}" text-anchor="middle">${esc(c)}</text>`);
+    parts.push(`<text class="tick" x="${(l + (i + 0.5) * band).toFixed(1)}" y="${t + ph + 18}" text-anchor="middle">${esc(c)}</text>`);
   });
-  parts.push(`<text class="tick" x="${(l + pw / 2).toFixed(1)}" y="${H - 6}" text-anchor="middle">${esc(axisLabel)}</text>`);
+  parts.push(`<text class="tick" x="${(l + pw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(axisLabel)}</text>`);
   return { l, t, pw, ph, top, y, band, grid: parts.join('') };
 }
 
@@ -197,7 +199,7 @@ function barChart({ title, subtitle, unit, axisLabel, categories, series, labelC
       const x = x0 + j * (bw + gap);
       marks.push(column(x, f.y(v), bw, f.y(0), s.slot, i));
       if (v > 0 && (labelAll || v === maxValue)) {
-        labels.push(`<text class="cap" x="${(x + bw / 2).toFixed(1)}" y="${(f.y(v) - 4).toFixed(1)}" text-anchor="middle">${esc(fmt(v))}</text>`);
+        labels.push(`<text class="cap" x="${(x + bw / 2).toFixed(1)}" y="${(f.y(v) - 5).toFixed(1)}" text-anchor="middle">${esc(fmt(v))}</text>`);
       }
     });
   });
@@ -231,7 +233,7 @@ function stackedShareChart({ title, subtitle, axisLabel, categories, series }) {
 /** Lines with markers; end labels only where they do not collide, the legend carries the rest. */
 function lineChart({ title, subtitle, unit, axisLabel, categories, series }) {
   const yMax = Math.max(0, ...series.flatMap((s) => s.values.filter((v) => v != null)));
-  const f = frame({ categories, yMax, unit, axisLabel, rightMargin: 52 });
+  const f = frame({ categories, yMax, unit, axisLabel, rightMargin: 64 });
   const px = (i) => f.l + (i + 0.5) * f.band;
   const marks = [];
   const ends = [];
@@ -240,7 +242,7 @@ function lineChart({ title, subtitle, unit, axisLabel, categories, series }) {
     if (points.length > 1) {
       marks.push(`<path class="line" d="${points.map(([x, y], i) => `${i ? 'L' : 'M'}${x.toFixed(1)},${y.toFixed(1)}`).join('')}" stroke="var(--s${s.slot})"/>`);
     }
-    points.forEach(([x, y], i) => marks.push(`<circle class="dot" data-i="${i}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="4" fill="var(--s${s.slot})"/>`));
+    points.forEach(([x, y], i) => marks.push(`<circle class="dot" data-i="${i}" cx="${x.toFixed(1)}" cy="${y.toFixed(1)}" r="5" fill="var(--s${s.slot})"/>`));
     const last = points[points.length - 1];
     if (last) {
       ends.push({ y: last[1], x: last[0], text: fmt(s.values[s.values.length - 1]) });
@@ -250,15 +252,76 @@ function lineChart({ title, subtitle, unit, axisLabel, categories, series }) {
   let lastY = -Infinity;
   const endLabels = ends
     .filter((e) => {
-      const ok = e.y - lastY >= 11;
+      const ok = e.y - lastY >= 13;
       if (ok) {
         lastY = e.y;
       }
       return ok;
     })
-    .map((e) => `<text class="cap" x="${(e.x + 8).toFixed(1)}" y="${(e.y + 3.5).toFixed(1)}">${esc(e.text)}</text>`);
+    .map((e) => `<text class="cap" x="${(e.x + 10).toFixed(1)}" y="${(e.y + 4).toFixed(1)}">${esc(e.text)}</text>`);
   const svg = `<svg class="chart lines" viewBox="0 0 ${W} ${H}" role="img" aria-label="${esc(title)}" data-tip="${tipData(axisLabel, categories, series, unit)}">${f.grid}<line class="crosshair" x1="0" x2="0" y1="${f.t}" y2="${f.t + f.ph}" hidden="hidden"/>${marks.join('')}${endLabels.join('')}${hits(f, categories.length)}</svg>`;
   return figure({ title, subtitle, legendHtml: legend(series, 'line'), svg, twin: tableTwin(axisLabel, categories, series, unit) });
+}
+
+// --- what each test is about ----------------------------------------------------------------------
+// Chosen from the run's data (script, drain measurement, fan mode), so a batch prefix or a custom
+// NAME does not matter. Each entry: the business scenario, the technical point under test, what to
+// look at in the charts.
+const DESCRIPTIONS = {
+  'hot-key': {
+    business:
+      'A flash sale: many fans fight for the seats of ONE concert at the same moment. Every virtual user owns one seat and keeps booking and cancelling it, so every command targets the same concert.',
+    technical:
+      'One aggregate is one event stream, written strictly in order. Concurrent commands race on the events primary key; the loser gets three quick retries (5–50 ms) and then a 409. Each accepted command also updates the single concert_halls document in MongoDB with a version check, and every 10th event writes a snapshot.',
+    read:
+      'Accepted commands per second stop growing with more users (the ceiling of one stream); the 409 share grows instead; p95 stays near the cost of a lost race.',
+  },
+  'announce-storm': {
+    business: 'Organisers register many new concerts at once: every request announces a brand-new concert.',
+    technical:
+      'The lightest write path of the stack: a new stream per request, one event, no outbox task, no snapshot, one MongoDB insert. It measures the ceiling of new-aggregate writes with no contention at all: commit latency and the shared PostgreSQL connection pool.',
+    read: 'Where req/s stops growing while p50 keeps doubling with more users: a fixed resource with a queue in front of it.',
+  },
+  spread: {
+    business:
+      'Normal ticket sales across many concerts: every virtual user fills concerts of its own, ten fans with four seats each, so nobody competes for a seat.',
+    technical:
+      'The full write path without contention: event plus outbox task in one transaction, snapshot every 10th event, synchronous projection update. Compare with the hot key for the cost of contention and with the announce storm for the cost of tasks and snapshots. The outbox workers run during the burst and share the pool with HTTP.',
+    read: 'The req/s plateau and p99 by users; 409 must stay at zero.',
+  },
+  drain: {
+    business:
+      'A sales burst, then the back office catches up: tickets are recorded in the fans’ ledgers and e-tickets are sent after the customers have left.',
+    technical:
+      'Outbox throughput: claim → Fan command → wallet projection → follow-up task → mail stub, as a function of the worker count. Workers, HTTP and the poller share one PostgreSQL pool of 10 connections, so more workers slow the API during the burst and stop scaling.',
+    read: 'Drain seconds and tasks per second by workers; burst req/s compared with the same run without the drain measurement.',
+  },
+  'hot-fan': {
+    business:
+      'One fan (a bot) buys tickets to every concert: all downstream work of the burst lands on a single fan.',
+    technical:
+      'A hot key on the downstream aggregate Fan. Before decision D-14 that was one stream and one wallet document growing without bound: cost per task O(n), a decaying drain, lost projection updates. Since D-14 the fan has a ledger per concert; this is the regression check and must look like the plain drain.',
+    read: 'Tasks per second over the drain (flat, not decaying), drain seconds, back-end memory, and zero event_handler errors in the back-end log.',
+  },
+};
+
+function describe(run) {
+  const test = run.test ?? run.meta?.script;
+  if (test === 'spread-bookings') {
+    if (run.drain) {
+      return run.fan_mode === 'hot' ? DESCRIPTIONS['hot-fan'] : DESCRIPTIONS.drain;
+    }
+    return DESCRIPTIONS.spread;
+  }
+  return DESCRIPTIONS[test] ?? null;
+}
+
+function descriptionHtml(run) {
+  const d = describe(run);
+  if (!d) {
+    return '';
+  }
+  return `<div class="series-desc"><p><strong>Business scenario.</strong> ${esc(d.business)}</p><p><strong>What it tests.</strong> ${esc(d.technical)}</p><p><strong>What to look at.</strong> ${esc(d.read)}</p></div>`;
 }
 
 // --- sections -------------------------------------------------------------------------------------
@@ -384,9 +447,9 @@ function seriesSection(key, runs) {
       );
     }
     const intro = `<p class="series-intro">${esc(test)} · ${esc(constant)}${esc(fanMode)} · ${sorted.length} run${sorted.length === 1 ? '' : 's'} by ${esc(axis.label)}</p>`;
-    return `<section class="series"><h2>${esc(key)}</h2>${intro}<div class="charts">${charts.join('')}</div></section>`;
+    return `<section class="series"><h2>${esc(key)}</h2>${descriptionHtml(sorted[0])}${intro}<div class="charts">${charts.join('')}</div></section>`;
   }
-  return `<section class="series"><h2>${esc(key)}</h2><p class="series-intro">${runs.length} run${runs.length === 1 ? '' : 's'}, none produced numbers (see the table).</p></section>`;
+  return `<section class="series"><h2>${esc(key)}</h2>${descriptionHtml(runs[0])}<p class="series-intro">${runs.length} run${runs.length === 1 ? '' : 's'}, none produced numbers (see the table).</p></section>`;
 }
 
 const COLUMNS = [
@@ -484,33 +547,38 @@ const CSS = `
   --s1: #3987e5; --s2: #d95926; --s3: #199e70; --s4: #c98500; --s5: #d55181;
 }
 * { box-sizing: border-box; }
-body { margin: 0; padding: 24px 16px 48px; background: var(--page); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
-main { max-width: 1280px; margin: 0 auto; }
-h1 { font-size: 24px; margin: 0 0 4px; }
-h2 { font-size: 18px; margin: 32px 0 4px; }
+body { margin: 0; padding: 24px 24px 48px; background: var(--page); color: var(--ink); font: 15px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif; }
+main { max-width: 1880px; margin: 0 auto; }
+h1 { font-size: 26px; margin: 0 0 4px; }
+h2 { font-size: 20px; margin: 36px 0 6px; }
 h4 { font-size: 12px; margin: 10px 0 4px; color: var(--ink-2); text-transform: uppercase; letter-spacing: .04em; }
 .subtitle, .series-intro, .muted { color: var(--ink-2); }
 .subtitle { margin: 0 0 20px; }
-.series-intro { margin: 0 0 12px; font-size: 13px; }
-.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 12px; margin: 16px 0 8px; }
+.series-intro { margin: 0 0 12px; font-size: 14px; }
+.series-desc { max-width: 1240px; margin: 6px 0 12px; padding: 12px 16px; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; font-size: 14px; color: var(--ink-2); }
+.series-desc p { margin: 4px 0; }
+.series-desc strong { color: var(--ink); }
+.tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 12px; margin: 16px 0 8px; }
 .tile { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 16px; }
-.tile-label { font-size: 12px; color: var(--ink-2); }
-.tile-value { font-size: 26px; font-weight: 600; margin: 2px 0; }
-.tile-sub { font-size: 12px; color: var(--muted); }
-.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 12px; }
-.chart-card { margin: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 12px 12px 8px; }
-figcaption { display: flex; flex-direction: column; gap: 1px; margin-bottom: 6px; }
-figcaption strong { font-size: 14px; }
-figcaption span { font-size: 12px; color: var(--muted); }
-.legend { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 12px; color: var(--ink-2); margin: 2px 0 4px; }
+.tile-label { font-size: 13px; color: var(--ink-2); }
+.tile-value { font-size: 28px; font-weight: 600; margin: 2px 0; }
+.tile-sub { font-size: 13px; color: var(--muted); }
+/* A column is never narrower than the chart's drawn width (minus card padding), so the SVG is shown
+ * at 1:1 or slightly larger: three charts per row on a 1920px screen, two on 1440px, one on a phone. */
+.charts { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 600px), 1fr)); gap: 14px; }
+.chart-card { margin: 0; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 14px 14px 10px; }
+figcaption { display: flex; flex-direction: column; gap: 2px; margin-bottom: 8px; }
+figcaption strong { font-size: 16px; }
+figcaption span { font-size: 13px; color: var(--muted); }
+.legend { display: flex; flex-wrap: wrap; gap: 4px 16px; font-size: 13px; color: var(--ink-2); margin: 2px 0 6px; }
 .legend-item { display: inline-flex; align-items: center; gap: 6px; }
 .swatch { display: inline-block; width: 12px; height: 12px; border-radius: 2px; }
 .swatch.line { height: 2px; width: 14px; border-radius: 1px; }
-svg.chart { display: block; width: 100%; height: auto; overflow: visible; }
+svg.chart { display: block; width: 100%; max-width: 960px; height: auto; overflow: visible; }
 svg.chart .grid { stroke: var(--grid); stroke-width: 1; shape-rendering: crispEdges; }
 svg.chart .axis { stroke: var(--axis); stroke-width: 1; shape-rendering: crispEdges; }
-svg.chart .tick { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
-svg.chart .cap { fill: var(--ink-2); font-size: 10px; font-variant-numeric: tabular-nums; }
+svg.chart .tick { fill: var(--muted); font-size: 12px; font-variant-numeric: tabular-nums; }
+svg.chart .cap { fill: var(--ink-2); font-size: 12px; font-variant-numeric: tabular-nums; }
 svg.chart .line { fill: none; stroke-width: 2; stroke-linejoin: round; stroke-linecap: round; }
 svg.chart .dot { stroke: var(--surface); stroke-width: 2; }
 svg.chart .crosshair { stroke: var(--axis); stroke-width: 1; }
@@ -518,10 +586,10 @@ svg.chart .crosshair[hidden] { display: none; }
 svg.chart .hit { fill: transparent; outline: none; cursor: crosshair; }
 svg.chart .hit:focus-visible { fill: var(--grid); fill-opacity: .4; }
 svg.chart .mark.dim, svg.chart .dot.dim { opacity: .45; }
-.table-view { margin-top: 4px; font-size: 12px; }
+.table-view { margin-top: 6px; font-size: 13px; }
 .table-view summary { color: var(--muted); cursor: pointer; }
-table { border-collapse: collapse; font-size: 12px; font-variant-numeric: tabular-nums; }
-th, td { text-align: right; padding: 4px 8px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
+table { border-collapse: collapse; font-size: 13px; font-variant-numeric: tabular-nums; }
+th, td { text-align: right; padding: 5px 10px; border-bottom: 1px solid var(--grid); white-space: nowrap; }
 th:first-child, td:first-child { text-align: left; }
 th { color: var(--ink-2); font-weight: 600; }
 .table-scroll { overflow-x: auto; background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 4px 8px; }
@@ -531,7 +599,7 @@ details.run summary { cursor: pointer; display: flex; gap: 10px; flex-wrap: wrap
 .run-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 8px 20px; padding: 6px 0 4px; }
 dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; margin: 0; font-size: 12px; }
 dt { color: var(--ink-2); } dd { margin: 0; font-variant-numeric: tabular-nums; }
-.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; font-size: 12px; box-shadow: 0 4px 16px rgba(0,0,0,.12); max-width: 260px; }
+.tip { position: fixed; z-index: 10; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--border); border-radius: 8px; padding: 8px 12px; font-size: 13px; box-shadow: 0 4px 16px rgba(0,0,0,.12); max-width: 300px; }
 .tip[hidden] { display: none; }
 .tip-head { color: var(--ink-2); margin-bottom: 4px; }
 .tip-row { display: flex; align-items: center; gap: 8px; }
@@ -620,7 +688,10 @@ function page(runs) {
   const body =
     runs.length === 0
       ? '<p class="subtitle">No results yet. Run ./run.sh or ./matrix.sh first.</p>'
-      : `${headline(runs)}${[...groups.entries()].map(([key, group]) => seriesSection(key, group)).join('')}${runTable(runs)}${runDetails(runs)}`;
+      : `${headline(runs)}${[...groups.entries()]
+          .sort(([a], [b]) => a.localeCompare(b))
+          .map(([key, group]) => seriesSection(key, group))
+          .join('')}${runTable(runs)}${runDetails(runs)}`;
   return `<!doctype html>
 <html lang="en">
 <head>

@@ -20,17 +20,24 @@ databases and destroys them afterwards (`down -v`).
 
 ### CPU isolation
 
-The core budget is back-end 2, PostgreSQL 6, MongoDB 2, k6 + mail stub 2. `run.sh` enforces it in
-one of two ways (`PIN=auto` is the default, `./run.sh --check` tells which one will be used):
+The core budget for a 16-core machine is back-end 4, PostgreSQL 4, MongoDB 3, k6 + mail stub 3, two
+cores left to the host. It was set on 2026-10-18 from the measured peaks: the back-end was the tightest
+component (150 of 200 % on average at the booking plateau), PostgreSQL used ~1.4 cores during bursts
+and up to 4 only while 32 workers drained the outbox, MongoDB 1.0–1.2 cores, and k6 ran at 98 % of its
+2 cores on the announce storm. The first batches (before the `bal-` runs) were measured with
+2 / 6 / 2 / 2; every run records its budget in `result.json` (`meta.cpu_budget_cores`).
+`run.sh` enforces the budget in one of two ways (`PIN=auto` is the default, `./run.sh --check` tells
+which one will be used):
 
 | Mode | Overlay | When | Trade-off |
 |---|---|---|---|
-| `cpuset` | `compose.pin.yaml` | the `cpuset` cgroup controller is available (docker, or podman with delegation) and the machine has 12 cores or `LOAD_CPUSET_*` is set | best: dedicated cores, no throttling artefacts |
+| `cpuset` | `compose.pin.yaml` | the `cpuset` cgroup controller is available (docker, or podman with delegation) and the machine has 14 cores or `LOAD_CPUSET_*` is set | best: dedicated cores, no throttling artefacts |
 | `quota` | `compose.quota.yaml` | `cpuset` is not delegated (rootless podman by default) | the budget holds, but a quota throttles bursts and makes p99 noisier |
 | `0` | none | `PIN=0` | no isolation; numbers depend on what else runs |
 
 Override the pinned cores with `LOAD_CPUSET_BACKEND`, `LOAD_CPUSET_POSTGRES`, `LOAD_CPUSET_MONGO`,
-`LOAD_CPUSET_K6` (e.g. `LOAD_CPUSET_POSTGRES=2-5` on a 10-core machine), the quotas with
+`LOAD_CPUSET_K6` (e.g. `LOAD_CPUSET_BACKEND=0-1 LOAD_CPUSET_POSTGRES=2-5 LOAD_CPUSET_MONGO=6-7
+LOAD_CPUSET_K6=8-9` on a 12-core machine), the quotas with
 `LOAD_CPUS_*`.
 
 Rootless podman only gets the controllers systemd delegates to the user session, and `cpuset` is

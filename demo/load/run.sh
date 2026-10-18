@@ -86,8 +86,8 @@ if [[ "$PIN_MODE" == auto ]]; then
     echo "run: no cpu controller delegated (controllers: $CONTROLLERS): running without CPU isolation" >&2
   fi
 fi
-if [[ "$PIN_MODE" == cpuset ]] && (( $(nproc) < 12 )) && [[ -z "${LOAD_CPUSET_BACKEND:-}" ]]; then
-  echo "run: $(nproc) cores, the default cpusets need 12: using a CPU quota instead (set LOAD_CPUSET_* to pin on fewer cores)" >&2
+if [[ "$PIN_MODE" == cpuset ]] && (( $(nproc) < 14 )) && [[ -z "${LOAD_CPUSET_BACKEND:-}" ]]; then
+  echo "run: $(nproc) cores, the default cpusets need 14: using a CPU quota instead (set LOAD_CPUSET_* to pin on fewer cores)" >&2
   PIN_MODE=quota
 fi
 COMPOSE_FILES=(-f "$HERE/compose.yaml")
@@ -306,15 +306,15 @@ budget_of() { # service → cores, empty when not isolated
   case "$PIN_MODE" in
     cpuset)
       case "$1" in
-        backend) cores_in "${LOAD_CPUSET_BACKEND:-0-1}" ;;
-        postgres) cores_in "${LOAD_CPUSET_POSTGRES:-2-7}" ;;
-        mongo) cores_in "${LOAD_CPUSET_MONGO:-8-9}" ;;
+        backend) cores_in "${LOAD_CPUSET_BACKEND:-0-3}" ;;
+        postgres) cores_in "${LOAD_CPUSET_POSTGRES:-4-7}" ;;
+        mongo) cores_in "${LOAD_CPUSET_MONGO:-8-10}" ;;
       esac ;;
     quota)
       case "$1" in
-        backend) printf '%s' "${LOAD_CPUS_BACKEND:-2}" ;;
-        postgres) printf '%s' "${LOAD_CPUS_POSTGRES:-6}" ;;
-        mongo) printf '%s' "${LOAD_CPUS_MONGO:-2}" ;;
+        backend) printf '%s' "${LOAD_CPUS_BACKEND:-4}" ;;
+        postgres) printf '%s' "${LOAD_CPUS_POSTGRES:-4}" ;;
+        mongo) printf '%s' "${LOAD_CPUS_MONGO:-3}" ;;
       esac ;;
   esac
 }
