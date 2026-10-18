@@ -23,6 +23,15 @@ const DEFAULT_SNAPSHOT_TABLE: &str = "snapshots";
 
 const DEFAULT_STREAMING_CHANNEL_SIZE: usize = 200;
 
+/// Size of the saved history of one aggregate type: the events and the distinct aggregates that
+/// hold them. Counted in one round trip by [`PostgresEventRepository::totals`]; meant for progress
+/// reporting (a replay knows its denominator) and operator dashboards.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LedgerTotals {
+    pub events: u64,
+    pub aggregates: u64,
+}
+
 /// An event repository relying on a Postgres database for persistence.
 pub struct PostgresEventRepository {
     pool: Pool<Postgres>,
@@ -153,6 +162,11 @@ fn decode_usize(value: i64) -> Result<usize, PostgresRepositoryError> {
     usize::try_from(value).map_err(|error| PostgresRepositoryError::DeserializationError(Box::new(error)))
 }
 
+/// `count(*)` is a `bigint`; a negative count can only mean a broken row decode.
+fn decode_count(value: i64) -> Result<u64, PostgresRepositoryError> {
+    u64::try_from(value).map_err(|error| PostgresRepositoryError::DeserializationError(Box::new(error)))
+}
+
 #[cfg(test)]
 mod numeric_tests {
     use super::*;
@@ -160,9 +174,15 @@ mod numeric_tests {
     fn persisted_numbers_are_checked_in_both_directions() {
         assert_eq!(encode_bigint(0).unwrap(), 0);
         assert_eq!(decode_usize(0).unwrap(), 0);
+        assert_eq!(decode_count(0).unwrap(), 0);
+        assert_eq!(decode_count(i64::MAX).unwrap(), i64::MAX as u64);
         for invalid in [-1, i64::MIN] {
             assert!(matches!(
                 decode_usize(invalid),
+                Err(PostgresRepositoryError::DeserializationError(_))
+            ));
+            assert!(matches!(
+                decode_count(invalid),
                 Err(PostgresRepositoryError::DeserializationError(_))
             ));
         }
@@ -197,6 +217,7 @@ mod configuration_tests {
         ] {
             assert_eq!(repository.stream_channel_size, 1);
             assert!(repository.query_factory.select_events().contains("FROM custom_events"));
+            assert!(repository.query_factory.count_events().contains("FROM custom_events"));
             assert!(repository.query_factory.select_snapshot().contains("FROM custom_snapshots"));
         }
         pool.close().await;

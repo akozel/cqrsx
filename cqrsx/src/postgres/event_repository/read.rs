@@ -1,7 +1,7 @@
 //! Event history and snapshot reads, including checked row decoding.
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use super::{PostgresEventRepository, decode_usize};
+use super::{LedgerTotals, PostgresEventRepository, decode_count, decode_usize};
 use crate::{
     cqrs::{
         aggregate::Aggregate,
@@ -13,6 +13,29 @@ use futures::TryStreamExt;
 use sqlx::{Row, postgres::PgRow};
 
 impl PostgresEventRepository {
+    /// Counts the saved events of aggregate type `A` and the distinct aggregates holding them, in
+    /// one query. Other aggregate types in the same table are not counted.
+    ///
+    /// ```
+    /// use cqrsx::cqrs::{aggregate::Aggregate, store::PersistenceError};
+    /// use cqrsx::postgres::event_repository::{LedgerTotals, PostgresEventRepository};
+    ///
+    /// async fn history_size<A: Aggregate>(repository: &PostgresEventRepository) -> Result<LedgerTotals, PersistenceError> {
+    ///     repository.totals::<A>().await
+    /// }
+    /// ```
+    pub async fn totals<A: Aggregate>(&self) -> Result<LedgerTotals, PersistenceError> {
+        let row = sqlx::query(self.query_factory.count_events())
+            .bind(A::TYPE)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(PostgresRepositoryError::from)?;
+        Ok(LedgerTotals {
+            events: decode_count(row.try_get("events").map_err(row_decode_error)?)?,
+            aggregates: decode_count(row.try_get("aggregates").map_err(row_decode_error)?)?,
+        })
+    }
+
     pub(super) async fn load_snapshot<A: Aggregate>(
         &self,
         aggregate_id: &str,

@@ -5,6 +5,7 @@ pub(crate) struct SqlQueryFactory {
     select_events: String,
     insert_event: String,
     all_events: String,
+    count_events: String,
     insert_snapshot: String,
     update_snapshot: String,
     select_snapshot: String,
@@ -32,6 +33,12 @@ SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payloa
   FROM {event_table}
   WHERE aggregate_type = $1
   ORDER BY sequence"
+            ),
+            count_events: format!(
+                "
+SELECT count(*) AS events, count(DISTINCT aggregate_id) AS aggregates
+  FROM {event_table}
+  WHERE aggregate_type = $1"
             ),
             insert_snapshot: format!(
                 "
@@ -69,6 +76,9 @@ SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
     }
     pub fn all_events(&self) -> &str {
         &self.all_events
+    }
+    pub fn count_events(&self) -> &str {
+        &self.count_events
     }
     pub fn select_events_after(&self, after_sequence: i64) -> String {
         format!(

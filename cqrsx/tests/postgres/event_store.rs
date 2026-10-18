@@ -8,6 +8,8 @@ mod persistence;
 mod snapshots;
 #[path = "event_store/streams.rs"]
 mod streams;
+#[path = "event_store/totals.rs"]
+mod totals;
 
 #[path = "event_store/repository.rs"]
 mod repository;

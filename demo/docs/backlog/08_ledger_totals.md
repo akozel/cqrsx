@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-17 (аудит границы, C-1): `PostgresEventRepository::totals::<A>()` и `LedgerTotals` в `cqrsx::postgres::event_repository`, интеграционный тест `tests/postgres/event_store/totals.rs`, demo `PostgresLedger` без raw SQL |
 | Ценность | низкая, но убирает raw SQL приложения по таблице библиотеки |
 | Цена | низкая |
 | cqrsx | `postgres/event_repository/read.rs` |
@@ -54,6 +54,6 @@ LedgerTotals { events: concerts.events + fans.events, aggregates: concerts.aggre
 
 ## Критерии приёмки
 
-- [ ] `PostgresEventRepository::totals::<A>()` с интеграционным тестом (пустая таблица, два агрегата одного типа, чужой тип не считается).
-- [ ] `components.md`: строка «Event persistence» упоминает статистику.
-- [ ] demo: raw SQL из `infrastructure/postgres.rs` удалён.
+- [x] `PostgresEventRepository::totals::<A>()` с интеграционным тестом (пустая таблица, два агрегата одного типа, чужой тип не считается, несуществующая таблица → ошибка).
+- [x] `components.md`: строка «Event persistence» упоминает статистику.
+- [x] demo: raw SQL из `infrastructure/postgres.rs` удалён.

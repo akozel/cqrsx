@@ -1,9 +1,12 @@
 //! PostgreSQL through cqrsx: read-only access to the committed history and the size of the ledger.
 //! The command executors are the library's `PostgresCommandExecutor`, assembled in `bootstrap`.
-use crate::application::{
-    StorageError,
-    ports::{EventLedgerStats, LedgerTotals},
-    projections::maintenance::HistoryFactory,
+use crate::{
+    application::{
+        StorageError,
+        ports::{EventLedgerStats, LedgerTotals},
+        projections::maintenance::HistoryFactory,
+    },
+    domain::{concert::Concert, fan::Fan},
 };
 use async_trait::async_trait;
 use cqrsx::{
@@ -33,31 +36,28 @@ pub fn history_repositories(pool: PgPool) -> HistoryFactory<PostgresEventReposit
     Arc::new(move || PostgresEventRepository::new(pool.clone()))
 }
 
-/// Size of the ledger, counted in the `events` table.
+/// Size of the ledger: the saved history of both aggregate types, counted by the library (the
+/// owner of the `events` table).
 pub struct PostgresLedger {
-    pool: PgPool,
+    repository: PostgresEventRepository,
 }
 
 impl PostgresLedger {
     pub fn new(pool: PgPool) -> Self {
-        Self { pool }
+        Self {
+            repository: PostgresEventRepository::new(pool),
+        }
     }
 }
 
 #[async_trait]
 impl EventLedgerStats for PostgresLedger {
     async fn totals(&self) -> Result<LedgerTotals, StorageError> {
-        let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(StorageError::new)?;
-        let aggregates: i64 = sqlx::query_scalar("SELECT count(DISTINCT (aggregate_type, aggregate_id)) FROM events")
-            .fetch_one(&self.pool)
-            .await
-            .map_err(StorageError::new)?;
+        let concerts = self.repository.totals::<Concert>().await.map_err(StorageError::new)?;
+        let fans = self.repository.totals::<Fan>().await.map_err(StorageError::new)?;
         Ok(LedgerTotals {
-            events: events.max(0) as u64,
-            aggregates: aggregates.max(0) as u64,
+            events: concerts.events + fans.events,
+            aggregates: concerts.aggregates + fans.aggregates,
         })
     }
 }
