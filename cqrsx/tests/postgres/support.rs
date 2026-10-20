@@ -40,7 +40,15 @@ impl Database {
         // This is startup readiness, not a retry of a failed test or command.
         let pool = tokio::time::timeout(Duration::from_secs(60), async {
             loop {
-                match tokio::time::timeout(Duration::from_secs(2), cqrsx::postgres::pool::connect_pool(options.clone())).await {
+                match tokio::time::timeout(
+                    Duration::from_secs(2),
+                    cqrsx::postgres::pool::connect_pool(
+                        options.clone(),
+                        cqrsx::postgres::pool::ConnectionPingPolicy::Idle(cqrsx::postgres::pool::DEFAULT_IDLE_PING_AFTER),
+                    ),
+                )
+                .await
+                {
                     Ok(Ok(pool)) => break pool,
                     Ok(Err(sqlx::Error::Io(_) | sqlx::Error::PoolTimedOut)) | Err(_) => {}
                     Ok(Err(sqlx::Error::Database(error))) if matches!(error.code().as_deref(), Some("57P03" | "3D000")) => {}

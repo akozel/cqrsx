@@ -48,7 +48,7 @@ pub async fn connect_queue_pool(
     config: &PostgresTaskQueueConfig,
 ) -> Result<QueuePool, sqlx::Error> {
     let options = options.options([("statement_timeout", config.statement_timeout().as_millis().to_string())]);
-    // same pool settings as connect_pool_with_size (incl. ticket 02)
+    // the same ConnectionPingPolicy as the main pool (ticket 02), via connect_pool_with
 }
 
 // cqrsx: postgres/task_queue.rs

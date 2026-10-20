@@ -3,10 +3,13 @@
 use cqrsx::{
     host::{lifecycle, signal::shutdown_signal},
     logging::LoggingConfig,
-    postgres::{pool::connect_pool_with_size, task_runtime::prepare_task_runtime},
+    postgres::{
+        pool::{ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, connect_pool_with},
+        task_runtime::prepare_task_runtime,
+    },
 };
 use encore_backend::{bootstrap, config::Config, presentation::http};
-use sqlx::postgres::PgConnectOptions;
+use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use std::{future::IntoFuture, sync::Arc};
 use tokio_util::sync::CancellationToken;
 
@@ -34,9 +37,13 @@ async fn main() {
         .parse::<PgConnectOptions>()
         .unwrap_or_else(|e| fail(format!("ENCORE_DATABASE_URL: {e}")))
         .application_name("encore-backend");
-    let pool = connect_pool_with_size(options, config.database_pool_size)
-        .await
-        .unwrap_or_else(|e| fail(format!("cannot connect to PostgreSQL: {e}")));
+    let pool = connect_pool_with(
+        options,
+        PgPoolOptions::new().max_connections(config.database_pool_size.get()),
+        ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
+    )
+    .await
+    .unwrap_or_else(|e| fail(format!("cannot connect to PostgreSQL: {e}")));
 
     // MongoDB: short server-selection timeout, so when MongoDB is down a command still answers
     // quickly (200 + `projection_failed` warning) instead of hanging for the driver's default 30 s.

@@ -1,34 +1,173 @@
 use super::*;
-use cqrsx::postgres::pool::{DEFAULT_MAX_CONNECTIONS, connect_pool, connect_pool_with_size};
-use std::num::NonZeroU32;
+use cqrsx::postgres::pool::{
+    ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, DEFAULT_MAX_CONNECTIONS, connect_pool, connect_pool_with,
+};
 
 #[tokio::test]
 async fn connection_helper_preserves_ten_connection_limit_and_returns_authentication_error() {
     let db = Database::new().await;
     let options = db.pool.connect_options().as_ref().clone();
-    let pool = connect_pool(options.clone()).await.unwrap();
+    let pool = connect_pool(options.clone(), ConnectionPingPolicy::Default).await.unwrap();
     assert_eq!(pool.options().get_max_connections(), 10);
+    assert!(pool.options().get_test_before_acquire());
     assert_eq!(DEFAULT_MAX_CONNECTIONS.get(), 10);
     assert_eq!(sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&pool).await.unwrap(), 1);
     pool.close().await;
 
-    // The sized variant is the same helper with an explicit ceiling.
-    let sized = connect_pool_with_size(options.clone(), NonZeroU32::new(3).unwrap())
-        .await
-        .unwrap();
+    // The general variant takes any SQLx pool options, here a smaller ceiling and the idle policy.
+    let sized = connect_pool_with(
+        options.clone(),
+        PgPoolOptions::new().max_connections(3),
+        ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
+    )
+    .await
+    .unwrap();
     assert_eq!(sized.options().get_max_connections(), 3);
+    assert!(!sized.options().get_test_before_acquire());
     assert_eq!(sqlx::query_scalar::<_, i32>("SELECT 2").fetch_one(&sized).await.unwrap(), 2);
     sized.close().await;
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        connect_pool(options.password("private_incorrect_password")),
+        connect_pool(options.password("private_incorrect_password"), ConnectionPingPolicy::Default),
     )
     .await
     .unwrap();
     let error = result.unwrap_err();
     assert!(matches!(error, sqlx::Error::Database(_)));
     assert_eq!(error.as_database_error().unwrap().code().as_deref(), Some("28P01"));
+    db.close().await;
+}
+
+async fn backend_pid(pool: &PgPool) -> Result<i32, sqlx::Error> {
+    sqlx::query_scalar("SELECT pg_backend_pid()").fetch_one(pool).await
+}
+
+/// SQLx returns a connection to the pool in a spawned task (after its own ping); wait for it.
+async fn wait_idle(pool: &PgPool) {
+    tokio::time::timeout(Duration::from_secs(5), async {
+        while pool.num_idle() < 1 {
+            tokio::time::sleep(Duration::from_millis(5)).await;
+        }
+    })
+    .await
+    .expect("bounded return to the pool");
+}
+
+/// Kills a backend and waits until PostgreSQL no longer lists it, so the client's next use of that
+/// connection meets a closed session rather than a race with the termination.
+async fn terminate_and_wait(admin: &PgPool, pid: i32) {
+    assert!(
+        sqlx::query_scalar::<_, bool>("SELECT pg_terminate_backend($1)")
+            .bind(pid)
+            .fetch_one(admin)
+            .await
+            .unwrap()
+    );
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while sqlx::query_scalar::<_, i64>("SELECT count(*) FROM pg_stat_activity WHERE pid = $1")
+            .bind(pid)
+            .fetch_one(admin)
+            .await
+            .unwrap()
+            > 0
+        {
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+    })
+    .await
+    .expect("bounded backend termination");
+}
+
+#[tokio::test]
+async fn connection_idle_longer_than_the_threshold_is_pinged_and_replaced_when_its_backend_died() {
+    let db = Database::new().await;
+    let options = db.pool.connect_options().as_ref().clone();
+    let threshold = DEFAULT_IDLE_PING_AFTER;
+    let pool = connect_pool_with(
+        options,
+        PgPoolOptions::new().max_connections(1),
+        ConnectionPingPolicy::Idle(threshold),
+    )
+    .await
+    .unwrap();
+    assert!(!pool.options().get_test_before_acquire());
+    let first = backend_pid(&pool).await.unwrap();
+    wait_idle(&pool).await;
+    terminate_and_wait(&db.pool, first).await;
+    tokio::time::sleep(threshold + Duration::from_millis(100)).await;
+    // The hand-out pings, the ping fails, SQLx drops the connection and opens a new one: the caller
+    // never sees the dead one.
+    let second = tokio::time::timeout(Duration::from_secs(5), backend_pid(&pool))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(first, second);
+    pool.close().await;
+    db.close().await;
+}
+
+#[tokio::test]
+async fn recently_used_connection_is_not_pinged_so_its_dead_backend_fails_the_first_query_only() {
+    let db = Database::new().await;
+    let options = db.pool.connect_options().as_ref().clone();
+    // A threshold far above the time the test needs, so the hand-out below certainly skips the ping.
+    let threshold = Duration::from_secs(60);
+    let pool = connect_pool_with(
+        options,
+        PgPoolOptions::new().max_connections(1),
+        ConnectionPingPolicy::Idle(threshold),
+    )
+    .await
+    .unwrap();
+    let first = backend_pid(&pool).await.unwrap();
+    wait_idle(&pool).await;
+    let released = std::time::Instant::now();
+    terminate_and_wait(&db.pool, first).await;
+    // Handed out without a ping, so the dead session surfaces on the query: the documented risk.
+    let error = tokio::time::timeout(Duration::from_secs(5), backend_pid(&pool))
+        .await
+        .unwrap()
+        .unwrap_err();
+    assert!(
+        released.elapsed() < threshold,
+        "the premise: the connection was idle for less than the threshold"
+    );
+    assert!(
+        matches!(&error, sqlx::Error::Io(_)) || error.as_database_error().and_then(|e| e.code()).as_deref() == Some("57P01"),
+        "a dead connection, not another failure: {error:?}"
+    );
+    // SQLx drops the broken connection when it comes back; the next query opens a new one.
+    let second = tokio::time::timeout(Duration::from_secs(5), backend_pid(&pool))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(first, second);
+    pool.close().await;
+    db.close().await;
+}
+
+#[tokio::test]
+async fn default_policy_pings_every_hand_out_so_a_recently_dead_backend_is_replaced_unseen() {
+    let db = Database::new().await;
+    let options = db.pool.connect_options().as_ref().clone();
+    let pool = connect_pool_with(
+        options,
+        PgPoolOptions::new().max_connections(1),
+        ConnectionPingPolicy::Default,
+    )
+    .await
+    .unwrap();
+    let first = backend_pid(&pool).await.unwrap();
+    wait_idle(&pool).await;
+    terminate_and_wait(&db.pool, first).await;
+    // No idle time to speak of, yet SQLx's own ping finds the dead session before the query does.
+    let second = tokio::time::timeout(Duration::from_secs(5), backend_pid(&pool))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_ne!(first, second);
+    pool.close().await;
     db.close().await;
 }
 

@@ -416,3 +416,33 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   pings on every acquire AND on every return to the pool. Verified: `bash -n`, `node --check`, check runs
   through `perf/run.sh` (02a, 03a-w8 drain) and a plain `load/run.sh` run; reports on old and new results.
   **Manual:** open `load/results/perf-report.html` (not viewed in a browser here).
+- **2026-10-20, backlog 02/02 idle-only connection ping** (branch `perf/postgres`, not committed: the
+  user commits). cqrsx `postgres/pool.rs`: every pool takes an explicit `ConnectionPingPolicy` — `Default` (SQLx's
+  ping on every hand-out) or `Idle(d)` (`test_before_acquire(false)` + a `before_acquire` ping only for
+  connections idle longer than `d`; `DEFAULT_IDLE_PING_AFTER` = 100 ms); the rest of the pool's
+  configuration is SQLx's `PgPoolOptions`: `connect_pool_with(options, pool, policy)`,
+  `connect_pool(options, policy)`, `policy.apply(pool)`. `connect_pool_with_size` removed; the back-end
+  uses `connect_pool_with(options, PgPoolOptions::new().max_connections(n), Idle(DEFAULT_IDLE_PING_AFTER))`.
+  Tests: unit threshold and `apply`, integration "Idle at the default threshold replaces a connection idle
+  longer than it", "Idle at 60 s: a just-dead backend fails the first query, the next one gets a new
+  connection" (the documented risk), "Default replaces a just-dead backend unseen"; `components.md`
+  "Backend assembly". Measured `perf-02-` vs
+  `perf-base-` (02a-vus100, 02b-vus100, 03a-w8 × 3, with a 10 s threshold; one pass at 100 ms confirms the
+  same figures, as connections idle for well under a millisecond under load): −6 packets per command
+  (18 → 12 in 02a), statements unchanged, PostgreSQL CPU per command −4…−7 %, back-end −1…−5 %; req/s and
+  drain tasks/s within noise (02a is k6-bound at ~11k/s); p99 medians up but ranges overlap. Ticket 16 (the
+  ping SQLx sends on every return to the pool) opened. Verified: cqrsx build, fmt, clippy, full tests, the
+  feature matrix, both `llvm-cov --fail-under-lines 97` (97.74 %, `pool.rs` 100 %); demo fmt, clippy,
+  `cargo test --workspace` (99 back-end unit, 2 architecture, 1 write_side, 14 sidecar).
+- **2026-10-20, epic 02 measurement speed and power** (uncommitted). Back-end image: the pinned toolchain in
+  its own layer, cargo registry and `target` as build cache mounts, our crates touched before the build
+  (cargo's mtime freshness let a stale cached binary through for a `git archive` context); `.dockerignore`
+  skips `load/results`. A rebuild after a cqrsx change: ~21 s instead of 1.5–2.5 min. `perf/run.sh`:
+  `GENERATOR=auto|wrk|k6` (wrk image `perf/generator/`, stands in for k6 via `LOAD_K6_IMAGE`, writes k6's
+  `result.json`; ~21 ms CPU per 1000 requests against k6's ~245), `PROFILE=full|db|app` (PostgreSQL or
+  back-end on 2 cores), `BACKEND_IMAGE=` (a "before" image, `compose.image.yaml`). The epic measures one
+  point per ticket in the profile of its bottleneck, before/after interleaved. Ticket 02 remeasured
+  (02a, wrk, × 3): `db` +6 % req/s and p99 −23 % (both ≠), PostgreSQL and back-end CPU per command −6 %;
+  `full` +9 % req/s (overlapping, MongoDB-bound); `app` req/s unreliable under the quota, back-end CPU per
+  command −8 %. Mistake on the way: a `git checkout -- cqrsx/src/postgres/pool.rs` meant to undo a probe
+  edit reverted the ticket's file to HEAD; restored from the session and re-verified.
