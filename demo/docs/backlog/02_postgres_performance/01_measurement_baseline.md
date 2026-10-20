@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-20 |
 | Ценность | высокая: без неё остальные задачи эпика не проверить |
 | Цена | низкая–средняя: только стенд, `cqrsx` не меняется |
 | cqrsx | нет |
-| demo | `load/compose.yaml`, `load/run.sh`, `load/matrix.sh`, `load/tools/collect.mjs`, `load/tools/report-html.mjs`, `load/README.md` |
+| demo | `load/run.sh` и `load/README.md` (точки расширения); инструменты замера — в эпике, [`perf/`](perf/README.md) |
 | Зависимости | нет |
 
 ## Сейчас
@@ -61,12 +61,47 @@
 - Путь к счётчикам пакетов зависит от образа и сети podman. Если `eth0` нет, метрика пропускается с пометкой в
   `run.log`, а не роняет прогон.
 
+## Как сделано
+
+Отличия от раздела «Станет»:
+
+- **Стенд не меняется, инструменты лежат в эпике.** Исходные k6-тесты остаются в `demo/load`. В его
+  `run.sh` добавлены только две общие точки расширения: `LOAD_COMPOSE_EXTRA` (дополнительные compose-файлы) и
+  `LOAD_HOOKS` (функции, которые вызываются перед k6, после k6, после слива и после сбора). Всё
+  остальное лежит в [`perf/`](perf/README.md): overlay с `pg_stat_statements`, снимки (`hooks.sh`),
+  `collect.mjs`, который дописывает метрики в `result.json`, матрица с `REPEAT`/`ONLY`, отчёты с медианами
+  и `compare.mjs`. Отчёт стенда остаётся прежним; HTML эпика — `demo/load/results/perf-report.html`.
+- **Счётчики — в `counters.tsv`, а не в `pg_counters.json`.** Строки `точка  сервис  ключ  значение` в
+  точках `before`, `after` и (при `DRAIN=1`) `drained`. Так же устроены `stats.tsv` и `outbox.tsv`: скрипт
+  пишет TSV, `perf/tools/collect.mjs` дописывает `result.json`. Сырые разности окна лежат в `result.json` → `db`,
+  производные метрики — в `efficiency`.
+- **CPU — из cgroup, а не «средний % × длительность».** Время CPU берётся из `cpu.stat` контейнеров
+  back-end, PostgreSQL и MongoDB, это точное значение без ошибки дискретизации. Только у k6 оно считается по
+  `stats.tsv` (`cpu_source.k6 = "stats"`): к моменту снимка его контейнера уже нет.
+- **WAL — по позиции записи** (`pg_current_wal_insert_lsn()`), а не из `pg_stat_wal`. Счётчики
+  `pg_stat_*` PostgreSQL публикует из каждого backend не чаще раза в секунду, поэтому последняя секунда
+  всплеска в них может не попасть. Для `xact_rollback` другого источника нет: на проверочном прогоне
+  `xact_commit` недосчитал около 1.6 %. Это описано в `perf/README.md`.
+- **Интерфейсы — все, кроме `lo`, а не только `eth0`.**
+- **Отрезок слива.** При `DRAIN=1` после всплеска статистика сбрасывается ещё раз, и `drain.per_task`
+  даёт те же метрики на задачу. Знаменатель — завершённые задачи из того же снимка.
+- **Сверх тикета:** `wal_bytes_per_command`, колонка `shared_blk_read_time` в `pg_statements.tsv` (иначе
+  `track_io_timing` включён впустую), фильтр `matrix.sh ONLY=…` по серии или по имени точки. Полная
+  матрица идёт 28 минут, поэтому задачи эпика меряют только свои точки (README эпика, «Что мерить»).
+  Повторы идут проходами по всей матрице, а не N раз подряд. `compare.mjs` сравнивает медианы и ставит `≠`, когда диапазоны min–max не
+  пересекаются.
+
+Проверочный прогон 02a (VUS 100, пул 20): 3.007 запроса на команду (снапшот, события, CTE), 0 откатов,
+18.02 пакета на команду, то есть 9 обращений × 2. Шесть из них — пинги: три при выдаче соединения (задача
+[02](02_idle_only_connection_ping.md)) и три при возврате в пул. Пинг при возврате sqlx делает всегда,
+см. `sqlx-core 0.8.6`, `pool/connection.rs:314`.
+
 ## Критерии приёмки
 
-- [ ] `pg_stat_statements` включён на стенде, сброс перед k6, `pg_statements.tsv` и `pg_counters.json` в каждом
-      прогоне.
-- [ ] `cpu_ms_per_1k_accepted`, `statements_per_command`, `rollbacks_per_command`, `packets_per_command` есть в
+- [x] `pg_stat_statements` включён на стенде, сброс перед k6, `pg_statements.tsv` и `counters.tsv` (вместо
+      `pg_counters.json`) в каждом прогоне.
+- [x] `cpu_ms_per_1k_accepted`, `statements_per_command`, `rollbacks_per_command`, `packets_per_command` есть в
       `result.json` и в HTML-отчёте.
-- [ ] `matrix.sh REPEAT=N`, отчёт с медианой и min–max.
-- [ ] Базовая линия `perf-base-` (×3) записана в README эпика.
-- [ ] `load/README.md` описывает новые файлы и метрики.
+- [x] `matrix.sh REPEAT=N`, отчёт с медианой и min–max.
+- [x] Базовая линия `perf-base-` (×3) записана в README эпика.
+- [x] `perf/README.md` описывает новые файлы и метрики, `load/README.md` — точки расширения.

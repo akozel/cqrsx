@@ -18,6 +18,12 @@
 #                   or none; auto (default) pins when the cpuset controller is available, else quota
 #   BUILD=1         rebuild the back-end image first
 # Any other KEY=VALUE is passed to k6 as environment (__ENV.KEY).
+# Extension points, for measurement tools that live elsewhere (e.g. backlog epic 02, docs/backlog/…/perf/):
+#   LOAD_COMPOSE_EXTRA=…  more compose files (`:`-separated), added after the CPU isolation overlay
+#   LOAD_HOOKS=…          a bash file sourced once the run folder exists; each function it defines out of
+#                         hook_before_k6, hook_after_k6, hook_after_drain (DRAIN=1 only) and
+#                         hook_after_collect is called at that point, with RUN_DIR, compose and log at hand.
+#                         A failing hook is logged and does not fail the run.
 # Tooling: docker or podman with compose (auto-detected; override with CTR=… COMPOSE=…) and node.
 #   LOAD_HOST_DIR=… the host path of this directory when the container engine runs on another machine
 #   than this script (a sandbox over the host's podman socket); bind mounts are resolved against it.
@@ -98,6 +104,10 @@ case "$PIN_MODE" in
   0) ;;
   *) echo "run: PIN must be auto, cpuset, quota or 0 (got '$PIN_MODE')" >&2; exit 2 ;;
 esac
+IFS=':' read -ra COMPOSE_EXTRA <<<"${LOAD_COMPOSE_EXTRA:-}"
+for extra in ${COMPOSE_EXTRA[@]+"${COMPOSE_EXTRA[@]}"}; do
+  if [[ -n "$extra" ]]; then COMPOSE_FILES+=(-f "$extra"); fi
+done
 PIN_LABEL="$PIN_MODE"
 if [[ "$PIN_LABEL" == 0 ]]; then PIN_LABEL=off; fi
 
@@ -135,6 +145,15 @@ RUN_ID="$(date +%Y%m%d-%H%M%S)-${PREFIX:-}${NAME:-$SCRIPT}"
 RUN_DIR="$HERE/results/$RUN_ID"
 mkdir -p "$RUN_DIR"
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$RUN_DIR/run.log" >&2; }
+hook() { # point → call hook_<point> from LOAD_HOOKS when it is defined
+  if declare -F "hook_$1" >/dev/null; then
+    "hook_$1" || log "hook $1 failed (exit $?)"
+  fi
+}
+if [[ -n "${LOAD_HOOKS:-}" ]]; then
+  # shellcheck source=/dev/null
+  source "$LOAD_HOOKS"
+fi
 
 # --- stand ----------------------------------------------------------------------------------------
 SAMPLER_PID=
@@ -222,6 +241,7 @@ wait_healthy backend || exit 3
 sample_stats &
 SAMPLER_PID=$!
 sleep 3 # a baseline sample of the idle stand
+hook before_k6
 
 # --- k6 -------------------------------------------------------------------------------------------
 RUN_SLUG="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-24)"
@@ -233,6 +253,7 @@ compose run --name "$K6_NAME" --no-deps ${K6_ENV[@]+"${K6_ENV[@]}"} -e "RUN=$RUN
 K6_EXIT=${PIPESTATUS[0]}
 set -e
 BURST_END=$(date +%s)
+hook after_k6
 for f in result.json summary.json; do
   $CTR cp "$K6_NAME:/home/k6/$f" "$RUN_DIR/$f" 2>/dev/null || log "k6 did not produce $f"
 done
@@ -271,6 +292,7 @@ if [[ "${DRAIN:-0}" != 0 ]]; then
     sleep 1
   done
   DRAIN_SECONDS=$(( $(date +%s) - BURST_END ))
+  hook after_drain
   if [[ -n "$DRAIN_FIRST" ]]; then
     read -r _open0 done0 _failed0 _total0 <<<"$DRAIN_FIRST"
     read -r _open1 done1 failed1 _total1 <<<"$DRAIN_LAST"
@@ -331,6 +353,7 @@ LOADC_RUN="$RUN_ID" LOADC_SCRIPT="$SCRIPT" LOADC_PARAMS="$*" LOADC_CTR="$CTR" LO
   LOADC_PEAK_BACKEND="$(peak_of backend)" LOADC_PEAK_POSTGRES="$(peak_of postgres)" LOADC_PEAK_MONGO="$(peak_of mongo)" \
   LOADC_DRAIN_FIRST="$DRAIN_FIRST" LOADC_DRAIN_LAST="$DRAIN_LAST" LOADC_DRAIN_SECONDS="$DRAIN_SECONDS" \
   node "$HERE/tools/collect.mjs" "$RUN_DIR" 2>&1 | tee -a "$RUN_DIR/run.log" >&2
+hook after_collect
 
 log "results: $RUN_DIR"
 exit "$K6_EXIT"

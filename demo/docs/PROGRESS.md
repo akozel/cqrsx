@@ -402,3 +402,17 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   (92 back-end unit, 2 architecture, 1 write_side, 14 sidecar); front-end typecheck/lint/52 tests/build.
   Requires a rebuild of both binaries. **Manual:** `make dev`, book a seat, watch the 🎫 task go through
   `POST /mail` in the `[sidecar]` log (some attempts 503), press 🧨 (sidecar) then ⏪ Encore!, then ⟲.
+- **2026-10-20, backlog 02/01 measurement baseline** (branch `perf/postgres`, not committed: the user
+  commits). The k6 stand `load/` is unchanged except two generic extension points in `load/run.sh`
+  (`LOAD_COMPOSE_EXTRA`, `LOAD_HOOKS`, documented in `load/README.md`). The epic's tools live in
+  `docs/backlog/02_postgres_performance/perf/`: `compose.perf.yaml` (PostgreSQL with `pg_stat_statements`
+  + `track_io_timing`), `hooks.sh` (counter snapshots before/after the burst and after the drain in
+  `counters.tsv`: cgroup CPU of back-end/PostgreSQL/MongoDB, PostgreSQL packets, commits/rollbacks, WAL
+  position, completed tasks; `pg_statements.tsv`, `pg_statements.drain.tsv`), `tools/collect.mjs`
+  (`efficiency` per command, `drain.per_task`), `matrix.sh` (`REPEAT=N` passes, `ONLY=<series|point>`),
+  reports with medians and min–max (`report.sh`, `tools/compare.mjs` with `≠`, `perf-report.html`).
+  Baseline `perf-base-` (01/02a/02b/03a × 3, pool 20, 4/4/3/4 quota) and the per-ticket point lists are
+  in the epic README. Finding: an announce is 3 statements but 18 packets = 9 round trips; sqlx 0.8.6
+  pings on every acquire AND on every return to the pool. Verified: `bash -n`, `node --check`, check runs
+  through `perf/run.sh` (02a, 03a-w8 drain) and a plain `load/run.sh` run; reports on old and new results.
+  **Manual:** open `load/results/perf-report.html` (not viewed in a browser here).

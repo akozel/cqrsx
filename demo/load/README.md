@@ -150,6 +150,19 @@ rebuild / verify timing, SSE fan-out, soak, dependency outages. They are the nex
 - PostgreSQL runs with the image defaults (`fsync`, `synchronous_commit` on). That is part of the
   limit being measured; turn it off only as an explicitly labelled experiment.
 
+## Extension points
+
+Measurement tools that live outside this directory plug into a run without copying it:
+
+- `LOAD_COMPOSE_EXTRA=a.yaml:b.yaml` adds compose files after the CPU isolation overlay (e.g. PostgreSQL
+  settings). Relative paths inside them resolve against this directory, like those of `compose.yaml`.
+- `LOAD_HOOKS=hooks.sh` is sourced once the run folder exists. The functions it defines out of
+  `hook_before_k6`, `hook_after_k6`, `hook_after_drain` (`DRAIN=1` only) and `hook_after_collect` are
+  called at those points and see `RUN_DIR`, `compose` and `log`. A failing hook is logged, the run goes on.
+
+Backlog epic 02 measures its tickets this way: `docs/backlog/02_postgres_performance/perf/` (statement
+statistics, work per command, repeats with medians).
+
 ## Layout
 
 ```

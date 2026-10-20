@@ -1,0 +1,89 @@
+# Epic 02 measurements
+
+The measurement tools of backlog epic 02 ([`../README.md`](../README.md)), written by ticket
+[01](../01_measurement_baseline.md). They run the k6 stand of `demo/load` ([`README.md`](../../../../load/README.md))
+unchanged and add what the epic judges every change by: what PostgreSQL does per command, CPU time per
+command, and repeats with medians. They plug into a run through the stand's two extension points,
+`LOAD_COMPOSE_EXTRA` and `LOAD_HOOKS`; results land in `demo/load/results/` next to the stand's own runs.
+
+## Running
+
+From this directory (`demo/docs/backlog/02_postgres_performance/perf`):
+
+```bash
+./run.sh announce-storm PREFIX=perf-02- NAME=02a-announce-vus100 VUS=100 POOL=20   # one run, demo/load/run.sh parameters
+./matrix.sh PREFIX=perf-02- REPEAT=3 POOL=20 ONLY=02a-announce-vus100,03a-drain-w8  # the points of a ticket
+./report.sh perf-02-                                    # table + demo/load/results/perf-report.html
+node tools/compare.mjs ../../../../load/results perf-base- perf-02- --md            # before → after
+```
+
+`run.sh` takes exactly the parameters of `demo/load/run.sh` (`--check`, `--help`, `LOAD_HOST_DIR`, …). The
+epic README lists the points per ticket ("Что мерить") and holds the baseline `perf-base-`.
+
+`matrix.sh` holds the points of `demo/load/matrix.sh` the epic measures (01, 02a, 02b, 03a) and takes
+two parameters of its own; every other `KEY=VALUE` goes to each run:
+
+- `REPEAT=N` runs the matrix N times, one whole pass after another, and suffixes every `NAME` with
+  `-r1` … `-rN`. Passes rather than N runs in a row spread the repeats of a point over time, so a
+  drift of the machine widens the spread instead of shifting one point. A single run moves by about
+  ±4 % between identical runs (and one run in three by up to 24 % under a CPU quota), so a change
+  smaller than ~5 % needs repeats to be told from noise.
+- `ONLY=…` keeps only the listed lines: a series tag (01, 02a, 02b, 03a) or a whole `NAME`, e.g.
+  `ONLY=02a-announce-vus100,03a-drain-w8`. The whole matrix with `REPEAT=3` takes ~28 minutes, 11 of
+  them the outbox drain with two workers.
+
+The first run that actually starts rebuilds the back-end image; `BUILD=0` skips that.
+
+## What a run adds
+
+| File | Content |
+|---|---|
+| `counters.tsv` | cumulative counters at `before` / `after` the burst (and `drained`): cgroup CPU time of back-end, PostgreSQL and MongoDB, PostgreSQL network packets, commits, rollbacks, WAL position, completed tasks |
+| `pg_statements.tsv` | `pg_stat_statements` over the burst window: one line per normalized statement with calls, total and mean time, rows, buffer hits and reads, read time; most expensive first |
+| `pg_statements.drain.tsv` | `DRAIN=1` only: the statements of the drain, from the end of the burst to the end of the drain |
+| `result.json` → `db`, `efficiency`, `drain.per_task`, `meta.git_describe` | the figures below |
+
+| Piece | What it does |
+|---|---|
+| `compose.perf.yaml` | overlay: PostgreSQL with `shared_preload_libraries=pg_stat_statements`, `track_io_timing=on`, and `postgres/00-pg-stat-statements.sql` |
+| `hooks.sh` | `hook_before_k6` resets the statement statistics and snapshots the counters; `hook_after_k6` and `hook_after_drain` snapshot and dump the statements; `hook_after_collect` runs `tools/collect.mjs` |
+| `tools/collect.mjs` | turns the counters into `db`, `efficiency`, `drain.per_task` |
+| `tools/lib/runs.mjs` | loading results and folding the repeats of a point into its median |
+| `tools/report.mjs` | terminal table (or a batch as Markdown, `--md`): one line per point, median, `n`, min–max |
+| `tools/report-html.mjs` | the stand's HTML report extended with these figures: medians with min–max whiskers, "CPU per 1000 accepted commands", "Database work per command" and "per drained task" |
+| `tools/compare.mjs` | two batches point by point: medians with min–max, relative change, `≠` when the two ranges do not overlap |
+
+## Work per command
+
+`efficiency` puts the work of the burst window (from just before k6 starts to just after it ends,
+`counters.tsv` points `before` and `after`) over every command k6 got accepted in it, setup and warm-up
+included (`accepted_total_all_phases`). These figures move when a change saves work even while req/s
+stays at a ceiling somewhere else, e.g. PostgreSQL work saved while the back-end CPU is the limit.
+
+| Field | Meaning |
+|---|---|
+| `cpu_ms_per_1k_accepted.{backend,postgres,mongo}` | CPU time per 1000 accepted commands from the container's cgroup (`cpu.stat`), exact |
+| `cpu_ms_per_1k_accepted.k6` | the same for k6 from the `stats` samples (its container is gone before its cgroup could be read), approximate |
+| `statements_per_command` | SQL statements (`pg_stat_statements` calls, `BEGIN`/`COMMIT` included) per accepted command |
+| `packets_per_command` | network packets in and out of the PostgreSQL container per accepted command |
+| `rollbacks_per_command` | `pg_stat_database.xact_rollback` per accepted command: write conflicts and errors |
+| `wal_bytes_per_command` | WAL written per accepted command, from the WAL insert position |
+
+`db` holds the raw differences behind them. With `DRAIN=1`, `drain.per_task` gives the same figures for the
+drain (from `after` to `drained`) per task completed in it. What to keep in mind:
+
+- The database works for the whole stand: in 02b and 03a the outbox workers run during the burst, so
+  their statements are part of the per-command figures. Compare like with like.
+- A connection ping (`Sync` → `ReadyForQuery`) is not a statement: it shows only in packets and CPU.
+  A packet is a rough unit (TCP ACKs are packets too, small messages may share one), so read
+  `packets_per_command` as a difference between batches, not as an absolute count of round trips.
+- `pg_stat_statements` counts only statements that succeeded; a write that lost a race shows in
+  `rollbacks_per_command`, not in the statements.
+- PostgreSQL publishes the commit and rollback counters per backend at most once a second, so the last
+  second of a burst may be missing from them (−1.6 % commits on a check run). CPU, packets, statements
+  and WAL are exact.
+- `pg_stat_statements` costs a little CPU itself. Compare only with runs measured the same way, i.e.
+  from the `perf-base-` batch on, never with the stand's plain runs.
+- The drain is measured to the end, not in a window: its rate changes as it goes (the
+  `encore_record_ticket` tasks first, the `encore_send_e_ticket` tasks they create later), and the first
+  30 s show a different, noisier figure than the whole drain.
