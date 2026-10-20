@@ -41,8 +41,12 @@ pub struct PostgresEventRepository {
 
 impl PersistedEventRepository for PostgresEventRepository {
     async fn get_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        self.select_events::<A>(aggregate_id, self.query_factory.select_events())
-            .await
+        self.fetch_events(
+            sqlx::query(self.query_factory.select_events())
+                .bind(A::TYPE)
+                .bind(aggregate_id),
+        )
+        .await
     }
 
     async fn get_events_after<A: Aggregate>(
@@ -50,9 +54,11 @@ impl PersistedEventRepository for PostgresEventRepository {
         aggregate_id: &str,
         after_sequence: usize,
     ) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        let after_sequence = encode_bigint(after_sequence)?;
-        let query = self.query_factory.select_events_after(after_sequence);
-        self.select_events::<A>(aggregate_id, &query).await
+        let query = sqlx::query(self.query_factory.select_events_after())
+            .bind(A::TYPE)
+            .bind(aggregate_id)
+            .bind(encode_bigint(after_sequence)?);
+        self.fetch_events(query).await
     }
 
     async fn get_snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {

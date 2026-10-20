@@ -446,3 +446,11 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   `full` +9 % req/s (overlapping, MongoDB-bound); `app` req/s unreliable under the quota, back-end CPU per
   command −8 %. Mistake on the way: a `git checkout -- cqrsx/src/postgres/pool.rs` meant to undo a probe
   edit reverted the ticket's file to HEAD; restored from the session and re-verified.
+- **2026-10-20, backlog 02/03 bound sequence parameter** (uncommitted). cqrsx `SqlQueryFactory` builds
+  `select_events_after` once with `sequence > $3`; `get_events_after` binds type, id and the watermark;
+  `fetch_events` takes an already bound `Query` for both event reads. No public API change. Tests: the
+  query text (unit), "ten watermarks on one connection → one prepared statement, with `$3`" plus the
+  exclusive lower bound (integration). Measured (01-hot-key-vus40, profile `db`, k6, before/after
+  interleaved × 3): accepted commands/s 417 → 477 (+14 %, ≠), p99 −11 %, PostgreSQL CPU per accepted
+  command −11 %, packets −5 %, statements and the 409 share unchanged. Note: pg_stat_statements normalizes
+  literals, so the old spliced texts never showed as separate rows there.

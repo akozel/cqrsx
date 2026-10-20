@@ -1,8 +1,8 @@
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 pub(crate) struct SqlQueryFactory {
-    event_table: String,
     select_events: String,
+    select_events_after: String,
     insert_event: String,
     all_events: String,
     count_events: String,
@@ -14,12 +14,20 @@ pub(crate) struct SqlQueryFactory {
 impl SqlQueryFactory {
     pub fn new(event_table: &str, snapshot_table: &str) -> Self {
         Self {
-            event_table: event_table.to_string(),
             select_events: format!(
                 "
 SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata
   FROM {event_table}
   WHERE aggregate_type = $1 AND aggregate_id = $2
+  ORDER BY sequence"
+            ),
+            // The watermark is a parameter, not a literal: one text for every watermark, so SQLx's
+            // per-connection statement cache prepares it once instead of once per new snapshot.
+            select_events_after: format!(
+                "
+SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata
+  FROM {event_table}
+  WHERE aggregate_type = $1 AND aggregate_id = $2 AND sequence > $3
   ORDER BY sequence"
             ),
             insert_event: format!(
@@ -80,15 +88,8 @@ SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
     pub fn count_events(&self) -> &str {
         &self.count_events
     }
-    pub fn select_events_after(&self, after_sequence: i64) -> String {
-        format!(
-            "
-SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata
-  FROM {}
-  WHERE aggregate_type = $1 AND aggregate_id = $2 AND sequence > {}
-  ORDER BY sequence",
-            self.event_table, after_sequence
-        )
+    pub fn select_events_after(&self) -> &str {
+        &self.select_events_after
     }
 }
 
@@ -141,11 +142,11 @@ SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
   WHERE aggregate_type = $1 AND aggregate_id = $2"
         );
         assert_eq!(
-            query_factory.select_events_after(20),
+            query_factory.select_events_after(),
             "
 SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata
   FROM my_events
-  WHERE aggregate_type = $1 AND aggregate_id = $2 AND sequence > 20
+  WHERE aggregate_type = $1 AND aggregate_id = $2 AND sequence > $3
   ORDER BY sequence"
         );
     }

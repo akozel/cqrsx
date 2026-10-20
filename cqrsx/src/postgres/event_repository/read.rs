@@ -10,7 +10,11 @@ use crate::{
     postgres::error::PostgresRepositoryError,
 };
 use futures::TryStreamExt;
-use sqlx::{Row, postgres::PgRow};
+use sqlx::{
+    Postgres, Row,
+    postgres::{PgArguments, PgRow},
+    query::Query,
+};
 
 impl PostgresEventRepository {
     /// Counts the saved events of aggregate type `A` and the distinct aggregates holding them, in
@@ -52,12 +56,12 @@ impl PostgresEventRepository {
         Ok(Some(decode_snapshot_row(&row)?))
     }
 
-    pub(super) async fn select_events<A: Aggregate>(
+    /// Runs an event query whose arguments are bound already and decodes its rows in order.
+    pub(super) async fn fetch_events(
         &self,
-        aggregate_id: &str,
-        query: &str,
+        query: Query<'_, Postgres, PgArguments>,
     ) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        let mut rows = sqlx::query(query).bind(A::TYPE).bind(aggregate_id).fetch(&self.pool);
+        let mut rows = query.fetch(&self.pool);
         let mut result = Vec::default();
         while let Some(row) = rows.try_next().await.map_err(PostgresRepositoryError::from)? {
             result.push(decode_event_row(&row)?);

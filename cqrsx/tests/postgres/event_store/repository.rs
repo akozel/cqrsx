@@ -3,7 +3,9 @@ use cqrsx::cqrs::store::snapshot::SnapshotUpdate;
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use super::support::Database;
 use super::support::repository::*;
+use crate::event;
 use cqrsx::cqrs::store::PersistenceError;
+use sqlx::postgres::PgPoolOptions;
 
 // Characterization of the open snapshot issue, not the desired future contract.
 // Change this expectation when repairing doc/known_issues/cqrs_snapshot_event_reapplication.md.
@@ -172,6 +174,49 @@ async fn event_repositories() {
 
     verify_replay_stream(&id, event_repo).await;
 
+    db.close().await;
+}
+
+#[tokio::test]
+async fn events_after_every_watermark_share_one_prepared_statement() {
+    let db = Database::new().await;
+    // One connection: every read below runs in the session whose prepared statements are listed.
+    let pool = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(db.pool.connect_options().as_ref().clone())
+        .await
+        .unwrap();
+    let repository = PostgresEventRepository::new(pool.clone());
+    let id = uuid::Uuid::new_v4().to_string();
+    let events: Vec<_> = (1..=12).map(|sequence| event(&id, sequence)).collect();
+    repository.persist::<TestAggregate>(&events, None).await.unwrap();
+    for after in 0..10 {
+        let found = repository.get_events_after::<TestAggregate>(&id, after).await.unwrap();
+        let sequences: Vec<_> = found.iter().map(|event| event.sequence).collect();
+        assert_eq!(
+            sequences,
+            ((after + 1)..=12).collect::<Vec<_>>(),
+            "exclusive lower bound {after}"
+        );
+    }
+    // A watermark spliced into the text would leave one statement per watermark here.
+    let prepared: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_prepared_statements
+          WHERE statement LIKE '%sequence > %' AND statement NOT LIKE '%pg_prepared_statements%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(prepared, 1);
+    let bound: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM pg_prepared_statements
+          WHERE statement LIKE '%AND sequence > $3%' AND statement NOT LIKE '%pg_prepared_statements%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(bound, 1);
+    pool.close().await;
     db.close().await;
 }
 
