@@ -134,6 +134,11 @@ result.meta ??= {};
 if (process.env.PERF_GIT) {
   result.meta.git_describe = process.env.PERF_GIT;
 }
+result.meta.generator = result.generator ?? 'k6';
+result.meta.profile = process.env.PROFILE ?? 'full';
+if (process.env.BACKEND_IMAGE) {
+  result.meta.backend_image = process.env.BACKEND_IMAGE;
+}
 if (counters.before && counters.after) {
   const burst = between(counters.before, counters.after);
   burst.cpu_ms.k6 = sampledCpuMs(join(runDir, 'stats.tsv'), 'k6', burst.from_ms, burst.to_ms);

@@ -17,8 +17,18 @@ From this directory (`demo/docs/backlog/02_postgres_performance/perf`):
 node tools/compare.mjs ../../../../load/results perf-base- perf-02- --md            # before → after
 ```
 
-`run.sh` takes exactly the parameters of `demo/load/run.sh` (`--check`, `--help`, `LOAD_HOST_DIR`, …). The
-epic README lists the points per ticket ("Что мерить") and holds the baseline `perf-base-`.
+`run.sh` takes the parameters of `demo/load/run.sh` (`--check`, `--help`, `LOAD_HOST_DIR`, …) and three of
+its own, which also go on to the stand's run.sh so that `result.json` records them (`meta.generator`,
+`meta.profile`, `meta.backend_image`):
+
+| Parameter | Values | What it does |
+|---|---|---|
+| `GENERATOR` | `auto` (default), `wrk`, `k6` | `auto` takes wrk when `generator/scenarios/<test>.lua` exists (today: `announce-storm`), k6 otherwise. wrk costs ~21 ms of CPU per 1000 requests against k6's ~245, so it is never the ceiling; k6 is fine where the stand is slower than ~11k requests/s (hot key, bookings, drain). |
+| `PROFILE` | `full` (default), `db`, `app` | The CPU budget. `full` is the stand's (back-end 4, PostgreSQL 4, MongoDB 3, k6 4): with wrk the announce ceiling is MongoDB. `db` gives PostgreSQL 2 cores, so the database is the bottleneck and a saving there shows in req/s; `app` gives the back-end 2 cores, the same for the application; under a CPU quota the multi-threaded back-end hits the quota in bursts and req/s swings by tens of percent, so trust only the per-command figures there unless the cores are pinned (cpuset). |
+| `BACKEND_IMAGE` | an image tag | Runs an already built back-end image (`compose.image.yaml`) instead of building the tree, e.g. the code before a ticket; `BUILD=1` is ignored then, it would overwrite that image. |
+
+The epic README lists the point, profile and generator per ticket ("Что мерить") and how to build the
+"before" image.
 
 `matrix.sh` holds the points of `demo/load/matrix.sh` the epic measures (01, 02a, 02b, 03a) and takes
 two parameters of its own; every other `KEY=VALUE` goes to each run:
@@ -46,6 +56,8 @@ The first run that actually starts rebuilds the back-end image; `BUILD=0` skips 
 | Piece | What it does |
 |---|---|
 | `compose.perf.yaml` | overlay: PostgreSQL with `shared_preload_libraries=pg_stat_statements`, `track_io_timing=on`, and `postgres/00-pg-stat-statements.sql` |
+| `compose.image.yaml` | overlay for `BACKEND_IMAGE`: the back-end service runs that image |
+| `generator/` | the wrk image that stands in for k6 (`LOAD_K6_IMAGE`): `gen.sh` takes k6's arguments and environment, runs wrk for the warm-up and the measured window with `scenarios/<test>.lua`, and writes `result.json` in the shape of `demo/load/k6/lib/summary.js` (no projection-warning count: wrk does not read the bodies) |
 | `hooks.sh` | `hook_before_k6` resets the statement statistics and snapshots the counters; `hook_after_k6` and `hook_after_drain` snapshot and dump the statements; `hook_after_collect` runs `tools/collect.mjs` |
 | `tools/collect.mjs` | turns the counters into `db`, `efficiency`, `drain.per_task` |
 | `tools/lib/runs.mjs` | loading results and folding the repeats of a point into its median |
