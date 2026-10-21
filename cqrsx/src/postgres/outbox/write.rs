@@ -87,6 +87,11 @@ pub(super) async fn persist_one<A: Aggregate>(
     });
     if has_snapshot {
         query.push(") AS input(aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata) WHERE EXISTS (SELECT 1 FROM written_snapshot)");
+    } else {
+        // A taken sequence inserts nothing instead of failing the statement: no server error, no
+        // aborted transaction, no dead row. The count below reports the conflict. With a snapshot
+        // the conflict must stay an error, so that the snapshot rolls back with the event.
+        query.push(" ON CONFLICT (aggregate_type, aggregate_id, sequence) DO NOTHING");
     }
     query.push(" RETURNING sequence)");
     if !tasks.is_empty() {
@@ -108,12 +113,14 @@ pub(super) async fn persist_one<A: Aggregate>(
         });
         query.push(") AS input(id, aggregate_type, aggregate_id, aggregate_sequence, task_type, task_version, payload, metadata, scheduled_at, delay_ms, max_attempts) WHERE EXISTS (SELECT 1 FROM written_events) RETURNING id)");
     }
+    // One written row means the write won: the event without a snapshot, the snapshot (which its
+    // event follows) with one.
     match snapshot {
-        SnapshotWrite::None => query.push(" SELECT 1::bigint AS snapshot_count"),
-        _ => query.push(" SELECT COUNT(*)::bigint AS snapshot_count FROM written_snapshot"),
+        SnapshotWrite::None => query.push(" SELECT (SELECT COUNT(*) FROM written_events)::bigint AS written"),
+        _ => query.push(" SELECT COUNT(*)::bigint AS written FROM written_snapshot"),
     };
     let row = query.build().fetch_one(pool).await.map_err(map_sqlx_error)?;
-    match row.try_get::<i64, _>("snapshot_count").map_err(map_sqlx_error)? {
+    match row.try_get::<i64, _>("written").map_err(map_sqlx_error)? {
         1 => Ok(()),
         _ => Err(PersistenceError::OptimisticLockError),
     }

@@ -46,6 +46,8 @@ const metrics = [
   ['pkt/cmd', (r) => r.efficiency?.packets_per_command],
   ['rollback/cmd', (r) => r.efficiency?.rollbacks_per_command],
   ['WAL B/cmd', (r) => r.efficiency?.wal_bytes_per_command],
+  ['PG log errors/cmd', (r) => r.efficiency?.pg_log_errors_per_command],
+  ['PG log MiB', (r) => (r.db?.pg_log_bytes == null ? null : r.db.pg_log_bytes / 1048576)],
   ['drain s', (r) => r.drain?.seconds],
   ['tasks/s', (r) => r.drain?.tasks_per_second],
   ['open@end', (r) => r.drain?.open_at_end],

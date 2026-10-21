@@ -151,6 +151,8 @@ if (counters.before && counters.after) {
     xact_rollback: burst.xact_rollback,
     wal_bytes: burst.wal_bytes,
     packets: burst.packets,
+    pg_log_errors: num(counters.final?.postgres?.log_errors),
+    pg_log_bytes: num(counters.final?.postgres?.log_bytes),
     cpu_ms: Object.fromEntries(Object.entries(burst.cpu_ms).map(([k, v]) => [k, v === null ? null : round(v)])),
   };
   if (accepted) {
@@ -161,6 +163,8 @@ if (counters.before && counters.after) {
       rollbacks_per_command: per(burst.xact_rollback, accepted, 4),
       packets_per_command: per(burst.packets, accepted, 2),
       wal_bytes_per_command: per(burst.wal_bytes, accepted, 0),
+      // The server log covers the whole run, warm-up and drain included.
+      pg_log_errors_per_command: per(num(counters.final?.postgres?.log_errors), accepted, 3),
     };
   }
 }

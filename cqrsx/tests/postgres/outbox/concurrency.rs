@@ -195,3 +195,79 @@ async fn competing_writes_keep_the_winning_event_snapshot_and_tasks_consistent()
     }
     db.close().await;
 }
+
+/// `xact_rollback` of the database once the session's pending statistics are published.
+async fn rollbacks(session: &PgPool, observer: &PgPool) -> i64 {
+    // The session's backend flushes its statistics before it answers the next statement.
+    sqlx::query("SELECT pg_stat_force_next_flush()")
+        .execute(session)
+        .await
+        .unwrap();
+    sqlx::query_scalar("SELECT xact_rollback FROM pg_stat_database WHERE datname = current_database()")
+        .fetch_one(observer)
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_conflict_without_a_snapshot_is_a_result_and_with_a_new_snapshot_still_an_error() {
+    let db = Database::new().await;
+    // One connection, so every write below is one backend whose statistics are flushed on demand.
+    let session = PgPoolOptions::new()
+        .max_connections(1)
+        .connect_with(db.pool.connect_options().as_ref().clone())
+        .await
+        .unwrap();
+    let start = rollbacks(&session, &db.pool).await;
+    // The counter does see a failed statement.
+    sqlx::query("SELECT 1 / 0").execute(&session).await.unwrap_err();
+    assert_eq!(rollbacks(&session, &db.pool).await, start + 1);
+
+    let id = "conflict-without-error";
+    PostgresEventRepositoryWithOutbox::new(db.pool.clone())
+        .persist::<TestAggregate>(&[event(id, 1)], None)
+        .await
+        .unwrap();
+    let task = NewTask::new(DummyTaskV1 { value: "loser".into() }).unwrap();
+    let loser = PostgresEventRepositoryWithOutbox::new(session.clone()).with_outbox(vec![task.clone()]);
+    assert!(matches!(
+        loser.persist::<TestAggregate>(&[event(id, 1)], None).await,
+        Err(PersistenceError::OptimisticLockError)
+    ));
+    assert_eq!(
+        rollbacks(&session, &db.pool).await,
+        start + 1,
+        "a taken sequence without a snapshot must not fail the statement"
+    );
+    let tasks: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox WHERE id = $1")
+        .bind(task.id())
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(tasks, 0);
+
+    // With a first snapshot the conflict stays an error: the snapshot rolls back with the event.
+    let loser = PostgresEventRepositoryWithOutbox::new(session.clone()).with_outbox(vec![task.clone()]);
+    let snapshot = SnapshotUpdate {
+        aggregate_id: id.into(),
+        payload: json!({"winner": "loser"}),
+        last_sequence: 1,
+        next_version: 1,
+    };
+    assert!(matches!(
+        loser.persist::<TestAggregate>(&[event(id, 1)], Some(snapshot)).await,
+        Err(PersistenceError::OptimisticLockError)
+    ));
+    assert_eq!(rollbacks(&session, &db.pool).await, start + 2);
+    let reader = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    assert_eq!(reader.get_snapshot::<TestAggregate>(id).await.unwrap(), None);
+    assert_eq!(reader.get_events::<TestAggregate>(id).await.unwrap().len(), 1);
+    let tasks: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox WHERE id = $1")
+        .bind(task.id())
+        .fetch_one(&db.pool)
+        .await
+        .unwrap();
+    assert_eq!(tasks, 0);
+    session.close().await;
+    db.close().await;
+}

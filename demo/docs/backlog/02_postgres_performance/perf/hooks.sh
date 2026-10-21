@@ -109,6 +109,13 @@ hook_after_drain() {
 }
 
 hook_after_collect() {
+  # PostgreSQL's server log of the whole run: how many statements failed (ERROR lines, each with its
+  # STATEMENT) and how many bytes the server wrote, e.g. for write conflicts raised as errors.
+  local errors bytes
+  errors="$(compose logs --no-color postgres 2>/dev/null | grep -c 'ERROR:' || true)"
+  bytes="$(compose logs --no-color postgres 2>/dev/null | wc -c | tr -d '[:space:]' || true)"
+  if [[ "$errors" =~ ^[0-9]+$ ]]; then printf 'final\tpostgres\tlog_errors\t%s\n' "$errors" >> "$RUN_DIR/counters.tsv"; fi
+  if [[ "$bytes" =~ ^[0-9]+$ ]]; then printf 'final\tpostgres\tlog_bytes\t%s\n' "$bytes" >> "$RUN_DIR/counters.tsv"; fi
   PERF_GIT="$(git -C "$PERF_DIR" describe --always --dirty --abbrev=7 2>/dev/null || echo unknown)" \
     node "$PERF_DIR/tools/collect.mjs" "$RUN_DIR" 2>&1 | tee -a "$RUN_DIR/run.log" >&2
 }

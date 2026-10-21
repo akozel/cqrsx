@@ -469,3 +469,12 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   script): a slow rebuild of 4 s passes with the main pool capped at 1 s, verify ok before and after.
   Verified: cqrsx build, fmt, clippy, full tests, the feature matrix, both `llvm-cov` (97.72 %); demo fmt,
   clippy, tests.
+- **2026-10-21, backlog 02/06 conflict without an error** (uncommitted). cqrsx outbox writer: without a
+  snapshot the event insert takes `ON CONFLICT (aggregate_type, aggregate_id, sequence) DO NOTHING` and the
+  statement returns the written count (0 = `OptimisticLockError`); with a snapshot unchanged (a first snapshot
+  still fails the statement so it rolls back with the event). Test: a one-connection session with forced
+  statistics flushes sees +0 `xact_rollback` for a conflict without a snapshot, +1 for one with a first
+  snapshot (control: `1/0`). Perf hooks count PostgreSQL log ERROR lines and bytes per run. Measured
+  (01-hot-key-vus40, profile `db`, k6, interleaved × 3): throughput and PostgreSQL CPU per command unchanged
+  (within noise), rollbacks per command 7.1 → 0, WAL per command −47 %, packets −8 %, PostgreSQL log
+  5.8–17.3 MiB → 0.01 MiB per run. Verified: cqrsx full check set (97.73 %), demo tests.
