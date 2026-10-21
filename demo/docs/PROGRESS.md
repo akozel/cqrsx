@@ -478,3 +478,19 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   (01-hot-key-vus40, profile `db`, k6, interleaved × 3): throughput and PostgreSQL CPU per command unchanged
   (within noise), rollbacks per command 7.1 → 0, WAL per command −47 %, packets −8 %, PostgreSQL log
   5.8–17.3 MiB → 0.01 MiB per run. Verified: cqrsx full check set (97.73 %), demo tests.
+- **2026-10-21, backlog 02/05 single-query aggregate load — rejected by measurement, code reverted.**
+  Implemented and verified (full check set, 97.57 %, e2e smoke): a `get_snapshot_with_events` trait method with
+  a two-read default, one PostgreSQL statement (newest snapshot in a `MATERIALIZED` CTE, `UNION ALL` the events
+  after it), the incompatible-snapshot fallback as a second full read. Measured (profile `db`, interleaved):
+  02a +3 % req/s (new aggregates, empty result), 02b −6 % req/s and +4 % PostgreSQL CPU per command (the
+  combined statement executes in 67.6 µs against 62.4 µs for the two simple ones), hot key −12 % accepted
+  commands/s with the same number of attempts but fewer won writes. An isolation run (combined statement +
+  a fresh tail read restores the win share) showed why: on a hot key the race is decided by the time from the
+  last read's MVCC snapshot to the write, and one statement puts the snapshot's transfer and decoding inside
+  that window. Decision: reject; ticket 07 (aggregate cache) keeps the tail read last and simple.
+- **2026-10-21, backlog 02/07 aggregate cache — deferred** (docs only). A snapshot already is the cache of
+  the fold (state at S + events after S); an in-process cache is a second level of the same mechanism.
+  Without aggregate-to-node affinity it goes stale with every write by another node, the tail read stays
+  (ticket 05: it must be the last read), so only back-end JSON/replay CPU is saved, and its share is not
+  measured. Revisit with routing by `aggregate_id` or a back-end profile. Tickets 08 and 09 no longer
+  depend on it.

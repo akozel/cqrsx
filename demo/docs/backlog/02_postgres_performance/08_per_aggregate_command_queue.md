@@ -7,7 +7,7 @@
 | Цена | средняя |
 | cqrsx | `cqrs/command/gate.rs` (новый), `cqrs/command/executor.rs`, `postgres/command.rs`, `doc/components.md` |
 | demo | `back-end/src/bootstrap.rs`, `back-end/src/config.rs`, `load/run.sh` |
-| Зависимости | 07 (желательно: вместе каждая команда — одна запись), 01 для замера |
+| Зависимости | 01 для замера. 07 отложена |
 | Где выигрыш | 01 (горячий ключ); на 02a, 02b и 03a не влияет |
 
 ## Сейчас
