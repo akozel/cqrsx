@@ -30,6 +30,12 @@ its own, which also go on to the stand's run.sh so that `result.json` records th
 | `NODES` | `1` (default), `2` | Back-end nodes ([ticket 17](../17_two_backend_nodes.md)). Two nodes split the profile's back-end CPU budget (`app`: 1 core each) and the outbox workers (`WORKERS` is then the stand's total, default 2, even) between them, so one node and two run on the same back-end CPU and drain the outbox with as many workers. Without the split each node would poll and drain with the full count, and the burst would carry twice the queue work (seen on the first 02b runs: +27 % PostgreSQL CPU per command). The second node (`compose.node2.yaml`) has the image and environment of the first and starts once the first is healthy. |
 | `BALANCE` | `none` (default), `round_robin`, `key` | How requests reach the nodes. `none`: straight to the one node, the stand as it always was. `round_robin`: through nginx (`compose.balancer.yaml`), the nodes in turn. `key`: through nginx, every request for one aggregate (`/api/concerts/{id}/…`, `/api/fans/{id}/…`) to the same node by consistent hashing. `NODES=2` needs a balancer; `NODES=1 BALANCE=round_robin` is one node behind nginx, the baseline for the balancer's own cost. With a balancer the stand runs under a CPU quota (`PIN=quota`, nginx gets 1 core, `PERF_CPUS_BALANCER`); on a machine that pins cores, take the single-node runs of such a comparison with `PIN=quota` too. Every response carries `X-Upstream`, the node that answered. |
 
+The stand's own parameters pass through unchanged. Ticket 08a added three of them to `demo/load/run.sh`:
+`ORDERING=per_aggregate|concurrent`, `TURN_MAX_WAIT_MS=…` and `TURN_MAX_WAITING=…` (the back-end's
+`ENCORE_COMMAND_*`; empty = the back-end's default, `meta.command_ordering` in `result.json`). They live in the
+stand's `compose.yaml`, not in an overlay here, so the second node inherits them through `extends`.
+`tools/compare.mjs` shows accepted commands per second and the 409 and 503 shares next to req/s.
+
 The epic README lists the point, profile and generator per ticket ("Что мерить") and how to build the
 "before" image.
 

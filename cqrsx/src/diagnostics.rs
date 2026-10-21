@@ -59,6 +59,17 @@ pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, 
     );
 }
 
+/// A command refused before it ran: no turn for its aggregate. Expected under overload, hence `warn`.
+pub(crate) fn log_turn_refused(aggregate_type: &str, refused: crate::cqrs::command::turns::TurnRefused) {
+    tracing::warn!(
+        component = "command",
+        operation = "turn",
+        aggregate_type = safe_type(aggregate_type),
+        reason = refused.reason(),
+        "command refused before it ran"
+    );
+}
+
 #[cfg(feature = "worker")]
 pub(crate) fn log_task_failure(task: &crate::task::queue::settlement::TaskFailure) {
     let task_type = task.format.task_type();
@@ -117,6 +128,7 @@ pub(crate) mod test_support {
         tracing::dispatcher::with_default(&dispatch, || {
             // Prime shared callsites that parallel tests may register without a subscriber.
             super::log_command_failure("prime", "unexpected", &io::Error::other("prime"));
+            super::log_turn_refused("prime", crate::cqrs::command::turns::TurnRefused::TimedOut);
             #[cfg(feature = "postgres")]
             {
                 super::log_command_failure("prime", "unexpected", &sqlx::Error::RowNotFound);

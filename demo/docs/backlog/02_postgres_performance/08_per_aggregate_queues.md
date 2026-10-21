@@ -237,9 +237,11 @@ API можно менять (решение 2026-10-21), но смысл сох�
 
 Контроль: `02b-spread-vus50` без регрессии (много ключей, накладные расходы реестра).
 
-Стенду нужны параметры `perf/run.sh`, которые доходят до бэкенда как переменные окружения (через
-`compose.perf.yaml`; старый образ их игнорирует): `ORDERING=`, `TURN_MAX_WAIT_MS=`, `TURN_MAX_WAITING=` (08a),
-`DELIVERY=`, `PROJECTION_BUFFER=`, `PROJECTION_MAX_BATCH=` (08b). Пустой параметр — значение по умолчанию demo.
+Стенду нужны параметры, которые доходят до бэкенда как переменные окружения (старый образ их игнорирует):
+`ORDERING=`, `TURN_MAX_WAIT_MS=`, `TURN_MAX_WAITING=` (08a), `DELIVERY=`, `PROJECTION_BUFFER=`,
+`PROJECTION_MAX_BATCH=` (08b). Пустой параметр — значение по умолчанию demo. Живут они в `demo/load` (`run.sh` и
+`compose.yaml`), а не в оверлее `perf/`: вторая нода наследует `backend` через `extends` только из `compose.yaml`.
+`perf/run.sh` передаёт их стенду как есть.
 
 **Две ноды** ([17](17_two_backend_nodes.md)): тот же ряд при `NODES=2` с `BALANCE=round_robin` и
 `BALANCE=key`, плюс `NODES=1` за nginx как база для накладных расходов балансировщика.
@@ -265,7 +267,7 @@ API можно менять (решение 2026-10-21), но смысл сох�
 
 | Переменная demo | Поле `Config` (проверено при старте) | cqrsx | По умолчанию |
 |---|---|---|---|
-| `ENCORE_COMMAND_ORDERING` = `concurrent` \| `per_aggregate` | `command_ordering` | `CommandOrdering::{Concurrent, PerAggregate(TurnLimits)}` | по замеру 08a |
+| `ENCORE_COMMAND_ORDERING` = `concurrent` \| `per_aggregate` | `command_ordering` | `CommandOrdering::{Concurrent, PerAggregate(TurnLimits)}` | `concurrent` (замер 08a: ход теряет 13–24 % принятых/с горячего ключа, пока проекция внутри хода) |
 | `ENCORE_COMMAND_TURN_MAX_WAIT_MS` | `turn_max_wait: Duration` | `TurnLimits::new(max_wait, …)` | `DEFAULT_TURN_MAX_WAIT` = 1 с |
 | `ENCORE_COMMAND_TURN_MAX_WAITING` | `turn_max_waiting: NonZeroUsize` | `TurnLimits::new(…, max_waiting)` | `DEFAULT_TURN_MAX_WAITING` = 128 |
 | `ENCORE_PROJECTION_DELIVERY` = `inline` \| `ordered` | `projection_delivery` | `HandlerDelivery::{Inline, Ordered(OrderedDeliveryConfig)}` | по замеру 08b |

@@ -3,7 +3,11 @@ use cqrsx::cqrs::store::EventStore;
 use cqrsx::cqrs::store::persisted::PersistedEventStore;
 use cqrsx::{
     cqrs::{
-        command::{CommandExecutor, CommandGatewayError, FailedHandler, retry::AggregateConflictRetryPolicy},
+        command::{
+            CommandExecutor, CommandGatewayError, FailedHandler,
+            retry::AggregateConflictRetryPolicy,
+            turns::{CommandOrdering, TurnLimits},
+        },
         event_handler::EventHandler,
     },
     postgres::command::{PostgresCommandConfig, PostgresCommandExecutor, command_executor},
@@ -66,8 +70,14 @@ impl Aggregate for CommandAggregate {
     }
 }
 
+/// Commands to one aggregate in turns, the default retry policy.
 fn config(interval: usize) -> PostgresCommandConfig {
-    PostgresCommandConfig::new(interval, AggregateConflictRetryPolicy::default()).unwrap()
+    PostgresCommandConfig::new(
+        interval,
+        AggregateConflictRetryPolicy::default(),
+        CommandOrdering::PerAggregate(TurnLimits::default()),
+    )
+    .unwrap()
 }
 
 fn record(value: &str, expected_count: usize) -> Command {
@@ -80,7 +90,9 @@ fn record(value: &str, expected_count: usize) -> Command {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_no_losing_tasks() {
     let db = Database::new().await;
-    let executor = Arc::new(command_executor::<CommandAggregate>(db.pool.clone(), config(1)));
+    // Both commands must reach the database at once: with turns the second would wait for the first.
+    let concurrent = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), CommandOrdering::Concurrent).unwrap();
+    let executor = Arc::new(command_executor::<CommandAggregate>(db.pool.clone(), concurrent));
     let mut gate = db.pool.begin().await.unwrap();
     sqlx::query("LOCK TABLE events IN SHARE MODE")
         .execute(&mut *gate)
@@ -252,10 +264,7 @@ async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_obje
 #[tokio::test]
 async fn shared_executor_isolates_parallel_command_task_lists() {
     let db = Database::new().await;
-    let executor = Arc::new(command_executor::<CommandAggregate>(
-        db.pool.clone(),
-        PostgresCommandConfig::default(),
-    ));
+    let executor = Arc::new(command_executor::<CommandAggregate>(db.pool.clone(), config(25)));
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..16 {
         let executor = executor.clone();
@@ -436,6 +445,94 @@ async fn services_decide_and_one_shared_handler_sees_every_committed_event() {
     );
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     assert_eq!(repository.get_events::<CappedAggregate>("capped").await.unwrap().len(), 2);
+    db.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn per_aggregate_turns_accept_forty_parallel_commands_without_conflicts() {
+    let db = Database::new().await;
+    let recorder = Arc::new(Recorder {
+        name: "recorder",
+        ..Recorder::default()
+    });
+    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
+    let config = PostgresCommandConfig::new(10, single_attempt, CommandOrdering::PerAggregate(TurnLimits::default())).unwrap();
+    let executor = Arc::new(
+        PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config, Cap(40)).with_event_handler(recorder.clone()),
+    );
+    let mut commands = tokio::task::JoinSet::new();
+    for index in 0..40 {
+        let executor = executor.clone();
+        commands.spawn(async move { executor.execute("hot", format!("v{index}"), vec![]).await });
+    }
+    while let Some(result) = commands.join_next().await {
+        assert_eq!(result.unwrap(), Ok(()), "without a conflict there is nothing to retry");
+    }
+    let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
+        .get_events::<CappedAggregate>("hot")
+        .await
+        .unwrap();
+    assert_eq!(
+        events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+        (1..=40).collect::<Vec<_>>()
+    );
+    // Handlers run inside the turn, so they see one aggregate's events in commit order.
+    let seen: Vec<usize> = recorder
+        .seen
+        .lock()
+        .unwrap()
+        .iter()
+        .map(|(_, sequence, _)| *sequence)
+        .collect();
+    assert_eq!(seen, (1..=40).collect::<Vec<_>>());
+    db.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_executors_with_their_own_turns_meet_only_in_the_database() {
+    let db = Database::new().await;
+    // Like two nodes: each executor has its own turns, the optimistic check decides between them.
+    let nodes: Vec<_> = (0..2)
+        .map(|_| {
+            Arc::new(PostgresCommandExecutor::<CappedAggregate>::new(
+                db.pool.clone(),
+                config(10),
+                Cap(40),
+            ))
+        })
+        .collect();
+    let mut commands = tokio::task::JoinSet::new();
+    for index in 0..40 {
+        let node = nodes[index % 2].clone();
+        commands.spawn(async move { node.execute("shared", format!("v{index}"), vec![]).await });
+    }
+    let mut accepted = 0;
+    while let Some(result) = commands.join_next().await {
+        match result.unwrap() {
+            Ok(()) => accepted += 1,
+            Err(CommandGatewayError::Conflict) => {}
+            other => panic!("unexpected result {other:?}"),
+        }
+    }
+    let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
+        .get_events::<CappedAggregate>("shared")
+        .await
+        .unwrap();
+    assert_eq!(events.len(), accepted);
+    assert_eq!(
+        events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+        (1..=accepted).collect::<Vec<_>>()
+    );
+    let Some(last) = events.last() else {
+        panic!("at least one command wins")
+    };
+    let values = last.payload["Recorded"]["values"].as_array().unwrap();
+    let unique: std::collections::BTreeSet<_> = values.iter().map(|value| value.as_str().unwrap()).collect();
+    assert_eq!(
+        (values.len(), unique.len()),
+        (accepted, accepted),
+        "every accepted value once"
+    );
     db.close().await;
 }
 

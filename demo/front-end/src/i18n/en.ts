@@ -221,7 +221,7 @@ export default {
     unknown_ticket: 'Ticket not recorded yet (cancellation overtook the record task — retry)',
     already_cancelled: 'Ticket already cancelled (task redelivered)',
     invalid_request: 'Invalid command',
-    unavailable: 'The event store is unavailable',
+    unavailable: 'Not run: the event store is unavailable or the concert is busy — retry',
     conflict: 'Concurrent change — retries exhausted',
     projection_missing: 'Read model missing',
   },

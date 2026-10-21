@@ -517,3 +517,16 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   unchanged with two nodes and −10 % with key affinity, 409 stays ~70 % — races live inside each process,
   which is what 08a removes. A first series without the worker split was discarded (+27 % PostgreSQL CPU per
   command from doubled queue work).
+- **2026-10-21, backlog 02/08a command turns** (uncommitted). cqrsx: `AggregateKey`, `cqrs/command/turns.rs`
+  (`CommandOrdering::{Concurrent, PerAggregate(TurnLimits)}`, `AggregateTurns`: a tokio mutex per busy key in a
+  registry of busy keys, FIFO, bounded by `max_wait` 1 s and `max_waiting` 128, refusal → `Unavailable`),
+  `CqrsCommandExecutor::with_turns` (the turn covers the conflict retries and the handlers), and
+  `PostgresCommandConfig::new(snapshot_interval, conflict_retry, ordering)` without a default. Demo:
+  `ENCORE_COMMAND_ORDERING` and the turn limits (the wait must stay below the outbox handler timeout); Encore!
+  now waits for the commands admitted before it locked the box office; neutral 503 texts; stand parameters
+  `ORDERING=`, `TURN_MAX_WAIT_MS=`, `TURN_MAX_WAITING=`. Tests include a `proptest` model of the turns.
+  Measured (×3, one and two nodes): on the hot key 409 → 0 and half the work per accepted command (PostgreSQL
+  and back-end CPU −40…−50 %, statements 33 → 10.5), no overhead on many keys; but one command holds the turn
+  ~2 ms with its inline MongoDB projection, so the key tops out at ~500 accepted/s against 600–670 for
+  concurrent commands in the `app` profile, and p50 grows to VUs × 2 ms. Demo default by the plan's rule:
+  `concurrent`; the lever is 08b (the projection out of the turn).

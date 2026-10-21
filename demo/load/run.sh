@@ -13,6 +13,8 @@
 #   DRAIN=1         after the burst, sample transactional_outbox every second until no task is open
 #   DRAIN_TIMEOUT=… seconds to wait for the drain (default 900)
 #   SNAPSHOT_EVERY=… ENCORE_SNAPSHOT_EVERY (default 10);  RUST_LOG=… back-end log level (default warn)
+#   ORDERING=…      ENCORE_COMMAND_ORDERING: concurrent | per_aggregate (default: the back-end's, concurrent)
+#   TURN_MAX_WAIT_MS=… TURN_MAX_WAITING=…  its turn limits, ENCORE_COMMAND_TURN_* (default: the back-end's)
 #   POOL=…          PostgreSQL pool size of the back-end, ENCORE_DATABASE_POOL_SIZE (default 10)
 #   PIN=auto|cpuset|quota|0   CPU isolation: pin cores (compose.pin.yaml), quota (compose.quota.yaml)
 #                   or none; auto (default) pins when the cpuset controller is available, else quota
@@ -143,6 +145,8 @@ export LOAD_OUTBOX_WORKERS="${WORKERS:-2}"
 export LOAD_SNAPSHOT_EVERY="${SNAPSHOT_EVERY:-10}"
 export LOAD_PG_POOL="${POOL:-10}"
 export LOAD_RUST_LOG="${RUST_LOG:-warn}"
+# Empty = the back-end's own default; an image older than these settings ignores them.
+export LOAD_COMMAND_ORDERING="${ORDERING:-}" LOAD_TURN_MAX_WAIT_MS="${TURN_MAX_WAIT_MS:-}" LOAD_TURN_MAX_WAITING="${TURN_MAX_WAITING:-}"
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)-${PREFIX:-}${NAME:-$SCRIPT}"
 RUN_DIR="$HERE/results/$RUN_ID"
@@ -231,7 +235,7 @@ sample_stats() {
   done
 }
 
-log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, pg pool $LOAD_PG_POOL, snapshot every $LOAD_SNAPSHOT_EVERY${LOAD_SERVICES_EXTRA:+, also $LOAD_SERVICES_EXTRA}"
+log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, pg pool $LOAD_PG_POOL, snapshot every $LOAD_SNAPSHOT_EVERY, ordering ${LOAD_COMMAND_ORDERING:-default}${LOAD_SERVICES_EXTRA:+, also $LOAD_SERVICES_EXTRA}"
 compose down -v --remove-orphans >/dev/null 2>&1 || true
 $CTR rm -f "$K6_NAME" >/dev/null 2>&1 || true
 if [[ "${BUILD:-0}" != 0 ]]; then
@@ -356,7 +360,7 @@ budget_of() { # service → cores, empty when not isolated
 LOADC_RUN="$RUN_ID" LOADC_SCRIPT="$SCRIPT" LOADC_PARAMS="$*" LOADC_CTR="$CTR" LOADC_PIN="$PIN_LABEL" \
   LOADC_BUDGET_BACKEND="$(budget_of backend)" LOADC_BUDGET_POSTGRES="$(budget_of postgres)" LOADC_BUDGET_MONGO="$(budget_of mongo)" LOADC_BUDGET_K6="$(budget_of k6)" \
   LOADC_GIT="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
-  LOADC_WORKERS="$LOAD_OUTBOX_WORKERS" LOADC_SNAPSHOT="$LOAD_SNAPSHOT_EVERY" LOADC_POOL="$LOAD_PG_POOL" LOADC_K6_EXIT="$K6_EXIT" \
+  LOADC_WORKERS="$LOAD_OUTBOX_WORKERS" LOADC_SNAPSHOT="$LOAD_SNAPSHOT_EVERY" LOADC_POOL="$LOAD_PG_POOL" LOADC_ORDERING="${LOAD_COMMAND_ORDERING:-default}" LOADC_K6_EXIT="$K6_EXIT" \
   LOADC_BURST_START="$BURST_START" LOADC_BURST_END="$BURST_END" \
   LOADC_PEAK_BACKEND="$(peak_of backend)" LOADC_PEAK_POSTGRES="$(peak_of postgres)" LOADC_PEAK_MONGO="$(peak_of mongo)" \
   LOADC_DRAIN_FIRST="$DRAIN_FIRST" LOADC_DRAIN_LAST="$DRAIN_LAST" LOADC_DRAIN_SECONDS="$DRAIN_SECONDS" \

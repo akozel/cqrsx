@@ -1,6 +1,6 @@
 //! The command pipeline shared by both aggregates, around the cqrsx command port.
 //!
-//! Every use case ends in [`CommandService::run`]: box-office lock → `execute_with_metadata` (the
+//! Every use case ends in [`CommandService::run`]: box-office pass → `execute_with_metadata` (the
 //! event and its outbox tasks in one commit) → outcome → activity log. Metadata (the cqrsx
 //! causation keys `command_id`, `correlation_id`, `causation_id`, `source`, plus `recorded_at`)
 //! travels through `execute_with_metadata` (decision D-04) and ends up in the `events.metadata`
@@ -187,9 +187,10 @@ where
         metadata: CommandMetadata,
         tasks: Vec<NewTask>,
     ) -> Executed<A::Error> {
-        if self.lock.is_locked() {
+        // Held until the outcome is published: a rebuild that locks the box office now waits for it.
+        let Some(_pass) = self.lock.admit() else {
             return Executed::locked();
-        }
+        };
         let task_formats: Vec<String> = tasks.iter().map(|t| t.format().to_string()).collect();
         let result = self
             .executor
@@ -256,7 +257,7 @@ fn publish_outcome<E: Rejection>(
         CommandOutcome::Unavailable => {
             activity.publish(
                 "command.failed",
-                merge(json!({ "outcome": "unavailable", "message": "storage unavailable" })),
+                merge(json!({ "outcome": "unavailable", "message": "not run: storage unavailable or aggregate busy" })),
             );
         }
         CommandOutcome::Locked => {}
@@ -266,10 +267,64 @@ fn publish_outcome<E: Rejection>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::concert::ConcertError;
+    use crate::domain::concert::{Concert, ConcertCommand, ConcertError, commands::AnnounceConcert};
     use cqrsx::{cqrs::command::FailedHandler, task::format::TaskFormat};
-    use std::collections::BTreeSet;
+    use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Mutex, task::Poll};
     use uuid::Uuid;
+
+    /// Answers only once released, like a command waiting for its turn or for the database.
+    struct Gated(Mutex<Option<tokio::sync::oneshot::Receiver<()>>>);
+
+    impl CommandExecutor<Concert> for Gated {
+        async fn execute_with_metadata(
+            &self,
+            _: &str,
+            _: ConcertCommand,
+            _: HashMap<String, String>,
+            _: Vec<NewTask>,
+        ) -> Result<(), CommandGatewayError<ConcertError>> {
+            let released = self.0.lock().unwrap().take().expect("one gated command");
+            released.await.expect("released");
+            Ok(())
+        }
+    }
+
+    async fn is_pending(mut future: Pin<&mut impl Future>) -> bool {
+        std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx).is_pending())).await
+    }
+
+    #[tokio::test]
+    async fn a_running_command_holds_back_a_rebuild_and_a_later_one_is_locked_out() {
+        let (release, released) = tokio::sync::oneshot::channel();
+        let lock = Arc::new(BoxOfficeLock::new());
+        let service = CommandService::<Concert, _>::new(
+            Gated(Mutex::new(Some(released))),
+            Arc::new(ActivityHub::new(8, 8)),
+            lock.clone(),
+        );
+        let label = CommandLabel {
+            aggregate_id: "c-1",
+            command_type: "AnnounceConcert",
+            fan_id: None,
+        };
+        let command = ConcertCommand::AnnounceConcert(AnnounceConcert {
+            artist: "A".into(),
+            city: "C".into(),
+            date: chrono::NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
+        });
+        let mut running = std::pin::pin!(service.run(label, command.clone(), CommandMetadata::ui(), vec![]));
+        assert!(is_pending(running.as_mut()).await);
+        let _rebuild = lock.try_acquire().unwrap();
+        let mut idle = std::pin::pin!(lock.wait_idle());
+        assert!(is_pending(idle.as_mut()).await, "the rebuild waits for the admitted command");
+        release.send(()).unwrap();
+        assert!(running.await.outcome.is_accepted());
+        idle.await;
+        assert_eq!(
+            service.run(label, command, CommandMetadata::ui(), vec![]).await.outcome,
+            CommandOutcome::Locked
+        );
+    }
 
     #[test]
     fn ui_metadata_uses_one_id_for_all_three_roles_and_fixed_width_time() {

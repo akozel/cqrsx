@@ -352,3 +352,32 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// ```
     fn apply(&mut self, event: Self::Event);
 }
+
+/// One aggregate instance, unique across aggregate types: the same ID under two types is two keys.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub struct AggregateKey {
+    aggregate_type: &'static str,
+    aggregate_id: String,
+}
+
+impl AggregateKey {
+    pub fn new(aggregate_type: &'static str, aggregate_id: impl Into<String>) -> Self {
+        Self {
+            aggregate_type,
+            aggregate_id: aggregate_id.into(),
+        }
+    }
+
+    /// The key of `aggregate_id` under [`A::TYPE`](Aggregate::TYPE).
+    pub fn of<A: Aggregate>(aggregate_id: &str) -> Self {
+        Self::new(A::TYPE, aggregate_id)
+    }
+
+    pub fn aggregate_type(&self) -> &'static str {
+        self.aggregate_type
+    }
+
+    pub fn aggregate_id(&self) -> &str {
+        &self.aggregate_id
+    }
+}

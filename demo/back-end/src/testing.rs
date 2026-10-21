@@ -13,6 +13,7 @@ use async_trait::async_trait;
 use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
+        command::turns::CommandOrdering,
         projection::{View, repository::ViewRepository},
         testing::mem_view_repository::MemViewRepository,
     },
@@ -40,6 +41,7 @@ pub fn config() -> Config {
         task_retry_max: Duration::from_secs(8),
         ticket_limit: 4,
         snapshot_every: 10,
+        command_ordering: CommandOrdering::PerAggregate(Default::default()),
         replay_slow_delay: Duration::ZERO,
         task_runtime: TaskRuntimeConfig::from_lookup(outbox_default).unwrap(),
     }

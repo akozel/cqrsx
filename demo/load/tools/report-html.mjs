@@ -275,7 +275,7 @@ const DESCRIPTIONS = {
     business:
       'A flash sale: many fans fight for the seats of ONE concert at the same moment. Every virtual user owns one seat and keeps booking and cancelling it, so every command targets the same concert.',
     technical:
-      'One aggregate is one event stream, written strictly in order. Concurrent commands race on the events primary key; the loser gets three quick retries (5–50 ms) and then a 409. Each accepted command also updates the single concert_halls document in MongoDB with a version check, and every 10th event writes a snapshot.',
+      'One aggregate is one event stream, written strictly in order. With concurrent ordering (the default) commands race on the events primary key and the loser gets three quick retries (5–50 ms) and then a 409; with per-aggregate ordering they take turns inside the back-end instead. Each accepted command also updates the single concert_halls document in MongoDB with a version check, and every 10th event writes a snapshot.',
     read:
       'Accepted commands per second stop growing with more users (the ceiling of one stream); the 409 share grows instead; p95 stays near the cost of a lost race.',
   },
@@ -741,7 +741,7 @@ ${body}
 <footer>
 <ul>
 <li>Every run is a fresh stand and a closed loop: the VUs send requests back to back; req/s is the throughput at that concurrency, not an arrival rate. Numbers cover the measured window only; the warm-up is excluded.</li>
-<li>Outcomes: accepted = 200, conflict = 409 (a version race the back-end could not win in three retries), rejected = 422 (a domain rule), unavailable = 503 (storage), other = everything else including 423.</li>
+<li>Outcomes: accepted = 200, conflict = 409 (a version race the back-end could not win in three retries), rejected = 422 (a domain rule), unavailable = 503 (storage, or no turn for the aggregate in time), other = everything else including 423.</li>
 <li>CPU is the maximum of the <code>stats</code> samples, 100 % = one core. Memory is the cgroup peak when the kernel exposes it, otherwise the maximum sampled.</li>
 <li>CPU cores per series are the budgets the stand enforced for those runs (quota or pinning). The mail stub shares the k6 cores. Runs without a recorded budget predate the recording and ran with back-end 2, PostgreSQL 6, MongoDB 2, k6 2.</li>
 <li>Outbox drain: tasks completed per second after the burst ended, until no task was open. Every accepted booking creates two tasks.</li>

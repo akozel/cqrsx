@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано; умолчание demo по замеру — `concurrent`, ход включается `ENCORE_COMMAND_ORDERING=per_aggregate` |
 | Ценность | высокая для горячих ключей: внутри процесса нет проигранных гонок, повторов и 409 |
 | Цена | средняя–низкая: новый компонент ядра и обёртка вокруг повторов в исполнителе |
-| cqrsx | `cqrs/aggregate.rs` (`AggregateKey`), `cqrs/command/turns.rs` (новый), `cqrs/command.rs` (модуль), `cqrs/command/executor.rs`, `postgres/command.rs`, `doc/components.md` |
-| demo | `back-end/src/config.rs`, `back-end/src/bootstrap.rs`, `.env.example`; стенд `perf/run.sh` (`ORDERING=`, `TURN_MAX_WAIT_MS=`, `TURN_MAX_WAITING=`), `perf/compose.perf.yaml` |
+| cqrsx | `cqrs/aggregate.rs` (`AggregateKey`), `cqrs/command/turns.rs` (новый), `cqrs/command.rs` (модуль), `cqrs/command/executor.rs`, `postgres/command.rs`, `diagnostics.rs`, `doc/components.md` |
+| demo | `back-end/src/config.rs`, `back-end/src/bootstrap.rs`, `.env.example`, `README.md`; замок кассы (`application/lock.rs`, `command_service.rs`, `operations/rebuild.rs`); тексты 503; стенд `demo/load` (`run.sh` `ORDERING=`, `TURN_MAX_WAIT_MS=`, `TURN_MAX_WAITING=`; `compose.yaml`), `perf/tools/compare.mjs` |
 | Зависимости | 01 для замера, [17](17_two_backend_nodes.md) для замера с двумя нодами; общий план — [08](08_per_aggregate_queues.md) |
 | Где выигрыш | 01 (горячий ключ) |
 
@@ -63,10 +63,10 @@ let _turn = match &self.turns {
 retry_on_aggregate_conflict(self.retry_policy, || framework.execute_with_metadata(…)).await   // повторы — внутри хода
 ```
 
-- `CqrsCommandExecutor::with_turns(Arc<AggregateTurns>)` — для своих хранилищ.
+- `CqrsCommandExecutor::with_turns(AggregateTurns)` — для своих хранилищ. `AggregateTurns` — дешёвый хэндл,
+  клон делит реестр.
 - `PostgresCommandConfig::new(snapshot_interval, conflict_retry, ordering)`: `CommandOrdering` — обязательный
-  аргумент, скрытого значения по умолчанию нет. `Default` для конфигурации остаётся с
-  `PerAggregate(TurnLimits::default())` или убирается — решить при реализации по тому, где он используется.
+  аргумент, скрытого значения по умолчанию нет. `Default` для конфигурации убран: им пользовались два теста.
 - `PostgresCommandExecutor::new` создаёт реестр один раз, из конфигурации. Исполнитель команды, который
   собирается на каждый вызов, получает клон `Arc`.
 - `TurnRefused` превращается в `CommandGatewayError::Unavailable`. Причина пишется в лог через `diagnostics`.
@@ -80,7 +80,9 @@ demo, цепочка env → config → cqrsx (таблица — в [08](08_per
   переменной. Значения по умолчанию — константы `cqrsx`, без копий чисел;
 - `.env.example` с комментарием к каждой переменной;
 - сборка в `bootstrap.rs` для обоих исполнителей (`Concert` и `Fan`);
-- стенд: `perf/run.sh ORDERING= TURN_MAX_WAIT_MS= TURN_MAX_WAITING=` → переменные бэкенда через `compose.perf.yaml`.
+- стенд: `demo/load/run.sh ORDERING= TURN_MAX_WAIT_MS= TURN_MAX_WAITING=` (их принимает и `perf/run.sh`) →
+  переменные бэкенда в `demo/load/compose.yaml`. Не в оверлее `perf/`: вторая нода (задача 17) наследует
+  `backend` через `extends` только из `compose.yaml`.
 
 ## Алгоритм
 
@@ -91,92 +93,79 @@ demo, цепочка env → config → cqrsx (таблица — в [08](08_per
 
 ### Очередь одного ключа и реестр
 
+Как реализовано (`cqrsx/src/cqrs/command/turns.rs`, сокращённо):
+
 ```rust
-// cqrs/command/turns.rs
-/// The line of one aggregate key. Tokio's Mutex queues its waiters first in, first out,
-/// so the waiter list of `turn` *is* the line of the key.
+/// The line of one aggregate key. Tokio's mutex queues its waiters first in, first out and hands a
+/// released turn straight to the first of them, so the waiter list of `turn` *is* the line of the key.
 #[derive(Default)]
 struct Lane {
     turn: Arc<tokio::sync::Mutex<()>>,
     waiting: AtomicUsize, // commands in the line, not counting the one holding the turn
 }
 
-/// One line per aggregate key that is busy right now. The std mutex guards only the map
-/// and is held for a lookup or an insert, never across an `.await`.
-type Registry = std::sync::Mutex<HashMap<AggregateKey, Weak<Lane>>>;
+struct Entry {
+    lane: Arc<Lane>,
+    users: usize, // live LaneRefs: commands holding or awaiting the turn; changed only under the lock
+}
+
+/// One line per aggregate key that is busy right now. The std mutex is held for a lookup,
+/// an insert or a removal, never across an `.await`.
+type Registry = std::sync::Mutex<HashMap<AggregateKey, Entry>>;
 ```
 
 ### Вход в очередь
 
 ```rust
-impl AggregateTurns {
-    /// Waits for the key's turn behind the commands that came before; refuses past the limits.
-    pub async fn enter(&self, key: AggregateKey) -> Result<AggregateTurn, TurnRefused> {
-        // 1. Find the key's line, or open one if nobody holds or awaits this key.
-        let lane = self.lane(key);
-        // 2. Stand in the line, unless it is already too long; 3. wait in arrival order, at most max_wait.
-        let guard = {
-            let _slot = WaitingSlot::join(&lane.waiting, self.limits.max_waiting)
-                .ok_or(TurnRefused::TooManyWaiting)?;
-            tokio::time::timeout(self.limits.max_wait, lane.turn.clone().lock_owned())
-                .await
-                .map_err(|_| TurnRefused::TimedOut)?
-        }; // `_slot` leaves the count here: this command no longer waits, it holds the turn
-        Ok(AggregateTurn { _guard: guard, _lane: lane })
+pub async fn enter(&self, key: AggregateKey) -> Result<AggregateTurn, TurnRefused> {
+    let lane = self.lane(key); // under the lock: find the entry or open one, `users += 1`
+    // A free turn has nobody waiting for it (a released turn goes straight to the first waiter), so
+    // taking it here never overtakes anyone. An idle key pays for no slot and no timer.
+    if let Ok(guard) = lane.lane.turn.clone().try_lock_owned() {
+        return Ok(AggregateTurn { _guard: guard, lane });
     }
-
-    fn lane(&self, key: AggregateKey) -> LaneRef {
-        let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
-        let lane = match registry.get(&key).and_then(Weak::upgrade) {
-            Some(lane) => lane, // someone holds or awaits this key: join their line
-            None => {
-                let lane = Arc::new(Lane::default()); // the first command for the key opens a line
-                registry.insert(key.clone(), Arc::downgrade(&lane));
-                lane
-            }
-        };
-        LaneRef { registry: self.registry.clone(), key, lane: Some(lane) }
-    }
+    let guard = {
+        let _slot = WaitingSlot::join(&lane.lane.waiting, self.limits.max_waiting).ok_or(TurnRefused::TooManyWaiting)?;
+        tokio::time::timeout(self.limits.max_wait, lane.lane.turn.clone().lock_owned())
+            .await
+            .map_err(|_| TurnRefused::TimedOut)?
+    }; // `_slot` leaves the count here: this command no longer waits, it holds the turn
+    Ok(AggregateTurn { _guard: guard, lane })
 }
 ```
+
+`WaitingSlot::join` проверяет предел и увеличивает счётчик одним `fetch_update`, поэтому команды, входящие
+одновременно, предел не превысят.
 
 ### Выход: ход переходит к следующему, пустая очередь исчезает
 
 ```rust
-/// The key's turn, held while one command runs. Fields drop in declaration order:
-/// first the guard (tokio wakes the next command in the line), then the line handle.
+/// Fields drop in declaration order: first the guard (tokio passes the turn on), then the line reference.
 pub struct AggregateTurn {
     _guard: tokio::sync::OwnedMutexGuard<()>,
-    _lane: LaneRef,
-}
-
-/// A reference to a key's line, held by every command that waits in it or holds its turn.
-struct LaneRef {
-    registry: Arc<Registry>,
-    key: AggregateKey,
-    lane: Option<Arc<Lane>>,
+    lane: LaneRef,
 }
 
 impl Drop for LaneRef {
     fn drop(&mut self) {
-        let mut registry = self.registry.lock().unwrap_or_else(PoisonError::into_inner);
-        // References are taken and released only under this lock, so "nobody left" is exact.
-        drop(self.lane.take());
-        if registry.get(&self.key).is_some_and(|lane| lane.strong_count() == 0) {
-            registry.remove(&self.key); // nobody holds or awaits the key: close its line
+        let mut registry = lock(&self.registry);
+        if let Some(entry) = registry.get_mut(&self.key) {
+            entry.users -= 1;
+            if entry.users == 0 {
+                registry.remove(&self.key); // nobody holds or awaits the key: close its line
+            }
         }
     }
 }
-
-/// Counts one command in the line and uncounts it on every exit: turn acquired,
-/// timeout, or the request dropped while waiting (the client went away).
-struct WaitingSlot<'a>(&'a AtomicUsize);
 ```
 
-Ссылки на очередь (`Arc<Lane>`) появляются и исчезают только под блокировкой реестра. Поэтому проверка «больше
-никого нет» точна: две команды, уходящие одновременно, не оставят в реестре висящую запись. Освободить свою
-ссылку *до* проверки нужно именно под блокировкой: иначе обе уходящие команды увидели бы друг друга и ни одна не
-удалила бы запись.
+Ссылки на очередь считаются только под блокировкой реестра, поэтому «больше никого нет» определяется точно.
+Две команды, уходящие одновременно, не оставят висящую запись. Уход, совпавший со входом, не закроет занятую
+очередь. Новая запись ключа появляется только после ухода последней ссылки на старую. Страж не переживает свою
+`LaneRef`, поэтому у ключа не бывает двух очередей с занятым ходом.
+
+В эскизе была `Weak<Lane>` в реестре и проверка `strong_count`. Явный счётчик `users` проще: его меняют только под
+блокировкой, и не нужны `Option` и `take()` в `Drop`.
 
 ### Где ход берётся в пути команды
 
@@ -185,10 +174,10 @@ struct WaitingSlot<'a>(&'a AtomicUsize);
 pub async fn execute_with_metadata(&self, aggregate_id: &str, command: A::Command, …) -> Result<(), CommandGatewayError<…>> {
     // The request's own task stands in the key's line; `_turn` lives until the end of the function.
     let _turn = match &self.turns {
-        Some(turns) => Some(turns.enter(AggregateKey::of::<A>(aggregate_id)).await.map_err(turn_refused)?),
+        Some(turns) => Some(turns.enter(AggregateKey::of::<A>(aggregate_id)).await.map_err(turn_refused::<A::Error>(A::TYPE))?),
         None => None, // CommandOrdering::Concurrent: as before
     };
-    let framework = (self.build_framework)(tasks);
+    let framework = (self.build_framework)(tasks); // after the turn: a refused command builds nothing
     retry_on_aggregate_conflict(self.retry_policy, || {
         framework.execute_with_metadata(aggregate_id, command.clone(), metadata.clone()) // load → decide → write → handlers
     })
@@ -236,82 +225,156 @@ R1 бронирует A1 в `hall-1`, R2 — A2 в `hall-1`, R3 — B1 в `hall-
 
 ## Пограничные случаи
 
-| # | Случай | Ожидаемое поведение |
-|---|---|---|
-| 1 | Команды к разным ключам | параллельно, не ждут друг друга |
-| 2 | Тот же `aggregate_id`, другой тип агрегата | разные ключи |
-| 3 | Порядок | FIFO в порядке вызова `enter` (гарантия `tokio::sync::Mutex`) |
-| 4 | Конфликт при записи (другая нода или исполнитель без общего реестра) | повтор внутри хода, место в очереди не теряется |
-| 5 | Ожидание дольше `max_wait` | `Unavailable`; ход не занят, в счётчике ждущих не числится |
-| 6 | Ждущих уже `max_waiting` | немедленный `Unavailable`: всплеск не съедает память |
-| 7 | Запрос отменён во время ожидания | снят из очереди, порядок остальных не нарушен, счётчик уменьшен |
-| 8 | Запрос отменён или паника во время выполнения | ход отпущен при уничтожении стража |
-| 9 | Ключ свободен, никто не ждёт | запись удалена из реестра |
-| 10 | Обработчик синхронно выполняет команду своего агрегата | ждёт свой же ход до `max_wait` → `Unavailable`; правило в `components.md` |
-| 11 | `CommandOrdering::Concurrent` | реестра нет, путь кода прежний (вариант для сравнения на стенде и для тех, кому ход не нужен) |
-| 12 | Проекции | работают под ходом: внутри процесса обновления одного ключа уже идут по порядку, но в последовательном участке |
-| 13 | Задачи outbox, выполняющие команды (цепочка `Fan` в demo) | тоже берут ход: это тот же исполнитель |
-| 14 | Два исполнителя одного типа в процессе | у каждого свой реестр, между ними — проверка в базе, как между нодами. Документировать; общий реестр — через `with_turns` |
+Тесты `turns.rs` и `executor.rs` — модули `cqrsx::cqrs::command::*::tests`, PostgreSQL —
+`cqrsx/tests/postgres/command.rs`, demo — по файлу.
+
+| # | Случай | Поведение | Проверка |
+|---|---|---|---|
+| 1 | Команды к разным ключам | параллельно; общая блокировка реестра — только на поиск в `HashMap` | `keys_are_independent_also_for_the_same_id_of_another_type` |
+| 2 | Тот же `aggregate_id`, другой тип агрегата | разные ключи | то же |
+| 3 | Порядок | FIFO по первому опросу `enter`, то есть по приходу в исполнитель (гарантия `tokio::sync::Mutex`) | `one_holder_per_key_and_waiters_enter_in_arrival_order`, модель |
+| 4 | Новая команда приходит в момент передачи хода | не обгоняет: tokio отдаёт ход прямо голове очереди, быстрый путь — только `try_lock` | `a_newcomer_never_overtakes_a_waiter` |
+| 5 | Клиент ушёл, пока ждал | снят из очереди, порядок остальных цел, счётчик −1, последняя запись удалена | `a_cancelled_waiter_keeps_the_order_and_leaves_the_count`, `the_last_waiter_cancelled_closes_the_line`, модель |
+| 6 | Ждущий уничтожен после того, как ему передали ход | ход переходит следующему | `a_turn_handed_to_a_dropped_waiter_passes_to_the_next`, модель |
+| 7 | Ожидание дольше `max_wait` | `TimedOut` → 503; в счётчике не числится; если передача хода и таймер совпали, побеждает ход (`timeout` сперва опрашивает внутреннее будущее) | `times_out_after_max_wait_uncounted_and_the_next_enters`, `a_turn_handed_over_at_the_deadline_wins_over_the_timeout`, модель |
+| 8 | Ждущих уже `max_waiting` | немедленный 503 без таймера; держатель хода не считается | `refuses_past_max_waiting_at_once_holder_not_counted`, модель |
+| 9 | Параллельный вход на пределе | ждут ровно `max_waiting` | `exactly_max_waiting_wait_under_parallel_entry` (многопоточный рантайм) |
+| 10 | Отмена или паника держателя | ход отпущен при уничтожении стража (при `panic = unwind`) | `a_panicking_holder_releases_the_turn_to_the_next_in_line` |
+| 11 | Двое уходят разом, уход совпал со входом | запись удаляется точно, висящих записей нет, держатель ключа всегда один | `idle_registry_is_empty_after_parallel_churn_and_holders_never_overlap`, модель |
+| 12 | Отравленный мьютекс реестра | `into_inner`: под блокировкой ничего не паникует | ревью |
+| 13 | `mem::forget(AggregateTurn)` | ключ занят до перезапуска | `#[must_use]`, doc-комментарий |
+| 14 | Память | записи — только занятых ключей; ёмкость `HashMap` держится на пике числа занятых ключей | doc-комментарий |
+| 15 | Нулевые или огромные пределы | ноль — ошибка; большой `max_wait` допустим (у tokio дальний дедлайн) | `limits_reject_zero_and_default_uses_the_constants` |
+| 16 | Конфликт при записи (другая нода) | повтор внутри хода; следующая команда ждёт; паузы повторов держат ход — так и задумано | `a_conflict_retries_inside_the_turn_before_the_next_command_starts` (с контролем без хода) |
+| 17 | Отказ хода | `Unavailable`, `warn` без id агрегата; фреймворк не строится, задачи не публикуются | `a_refused_turn_is_unavailable_logged_without_id_and_builds_nothing` |
+| 18 | `CommandOrdering::Concurrent` | реестра нет, путь прежний | прежние тесты, замер против образа до 08a |
+| 19 | Обработчик синхронно командует своим агрегатом (или чужим, тот — его) | ждёт хода до `max_wait` → `CommittedWithEventHandlerFailure`; правило в `components.md`: такие команды — через outbox | `a_handler_waiting_for_its_own_aggregate_times_out_instead_of_hanging` |
+| 20 | Будущее команды держит ход через `.await` | остаётся `Send` | `the_command_future_with_a_turn_is_send` |
+| 21 | Два исполнителя одного типа (или две ноды) | свои реестры, между ними — проверка в базе и повтор | `two_executors_with_their_own_turns_meet_only_in_the_database` |
+| 22 | Медленная база (запрос до 4 с) | ждущие получают 503 через `max_wait` (1 с), а не копятся в очереди к пулу | doc |
+| 23 | 40 параллельных команд к одному агрегату, одна попытка | все приняты, журнал 1..40, обработчик видит события в порядке коммитов | `per_aggregate_turns_accept_forty_parallel_commands_without_conflicts` |
+| 24 | Горячий ключ и пул соединений | ключ держит одно соединение вместо десяти, пул свободен для других ключей | замер |
+| 25 | Замок кассы проверяется до хода | команда получает пропуск (`BoxOfficeLock::admit`), Encore! после взятия замка ждёт все выданные пропуски (`wait_idle`) и только потом стирает модели | `a_rebuild_wipes_nothing_until_the_commands_admitted_before_it_have_finished`, `a_running_command_holds_back_a_rebuild_and_a_later_one_is_locked_out`, `lock.rs`, E2E |
+| 26 | Цепочечные задачи `Fan` | тот же исполнитель и реестр, что у HTTP; `ENCORE_COMMAND_TURN_MAX_WAIT_MS` должен быть меньше `OUTBOX_HANDLER_TIMEOUT_SECS`, иначе старт отклоняется | `command_ordering_names_the_variable_it_rejects` |
+| 27 | Отказ хода у цепочечной задачи | `Unavailable` → повтор через 1 с (`map_fan_outcome`) | прежний тест |
+| 28 | Тексты 503 | нейтральные: «журнал событий недоступен или концерт занят» | ревью |
+| 29 | Остановка процесса | axum ждёт запросы, включая ждущих хода: не дольше `max_wait` + команда | doc |
+| 30 | Запрос уничтожен после коммита | обработчики не выполнятся (как раньше) | 08b |
+| 31 | Две ноды | `BALANCE=key`: все команды ключа на одной ноде; `round_robin`: по претенденту с ноды, дальше база | замер, серия B |
+| 32 | VU больше `max_waiting` + 1 на ключ | немедленные 503; k6 ждёт 50 мс | doc |
 
 ## Тесты
 
-**Unit, `cqrs/command/turns.rs`** (остановленные часы, однопоточный рантайм):
-- взаимное исключение: счётчик одновременных держателей одного ключа не превышает 1;
-- FIFO: N ждущих встают в очередь по одному (`yield_now`), порядок входа совпадает с порядком постановки;
-- независимость ключей: держатель ключа `a` не мешает войти в `b`; одинаковый `aggregate_id` у разных типов не
-  блокирует;
-- `TimedOut` после `max_wait` (продвинуть часы), счётчик ждущих снова 0, следующий входит нормально;
-- `TooManyWaiting` на пределе, без ожидания;
-- отменённый ждущий (уничтоженный future) не ломает порядок и не оставляет следов в счётчике;
-- паника держателя (задача паникует с ходом в руках) отпускает ход, следующий входит;
-- в покое реестр пуст (тестовый доступ к числу записей);
-- `TurnLimits::new` отвергает нулевые значения;
-- модельный тест `proptest`: случайные «войти, выйти, отменить» по трём ключам против простой модели (один
-  держатель, FIFO среди неотменённых, пустой реестр в конце).
+**Unit, `cqrs/command/turns.rs`.** Будущие опрашиваются вручную (`Waker::noop()`) на остановленных часах, время
+двигает только `tokio::time::advance`. Ждущих нельзя ждать через `.await`: простаивающий рантайм сам продвигает
+остановленные часы до ближайшего таймера и выводит всех ждущих по таймауту. Тесты — в таблице выше. Модельный
+тест `turns_match_a_fifo_model` (`proptest`, 256 случаев до 60 шагов): операции `Enter`, `Release`,
+`ReleaseAndDropHead`, `Cancel`, `Advance` по трём ключам против модели «держатель + FIFO с дедлайнами»; после
+каждого шага сверяются вошедшие, отказы, `waiting` и число записей. Модель проверена на зубы: без уменьшения
+счётчика ждущих и без удаления пустой записи она падает.
 
-**Unit, исполнитель** (`cqrs/command/executor.rs`, `MemStore`):
-- 20 параллельных команд к одному агрегату при политике повторов в одну попытку: с ходом все приняты;
-- контроль без хода — на хранилище, которое уступает управление между загрузкой и записью, там конфликт есть;
-- конфликт извне (хранилище отвечает конфликтом на первую запись): повтор идёт внутри хода, вторая команда,
-  вставшая в очередь, начинается только после первой (журнал вызовов);
-- `TurnRefused` → `Unavailable`; `Concurrent` → прежнее поведение.
+**Unit, исполнитель** (`cqrs/command/executor.rs`, хранилище с проверкой версии, уступающее управление между
+загрузкой и записью): `turns_accept_twenty_parallel_commands_with_a_single_attempt_where_concurrency_conflicts`
+(с ходом 20 из 20, контроль без хода — 1 и 19 конфликтов) и тесты 16, 17, 19, 20 из таблицы.
 
-**Интеграция на PostgreSQL** (`tests/postgres/command/…`):
-- 40 параллельных команд к одному агрегату, повторы в одну попытку, ход включён: 40 приняты, журнал 1..40 без
-  дыр, ни одного `Conflict`;
-- «две ноды»: два исполнителя со своими реестрами, по 20 команд к одному агрегату, обычная политика повторов:
-  журнал без дыр и дублей, все ответы — приняты или `Conflict` (как сейчас между процессами);
-- `PostgresCommandConfig::new` с обоими вариантами `CommandOrdering`.
+**PostgreSQL:** 23 и 21 из таблицы. Конфликтный тест `a_conflicting_command_reloads_the_winner_…` закреплён на
+`Concurrent`: ему нужны две команды в базе одновременно.
 
 **demo:**
-- разбор переменных: значения, ошибки с именем переменной;
-- сборка использует конфигурацию;
-- E2E smoke (временный скрипт на отдельном стенде) с `per_aggregate`: брони, verify `ok` до и после пересборки,
-  машина времени.
-
-**Проверки:** полный набор из корневого `CLAUDE.md`, покрытие ≥ 97 %, `--no-default-features` (компонент в ядре).
+- `config.rs`: `command_ordering_defaults_to_turns_with_the_library_limits`, `command_ordering_names_the_variable_it_rejects`;
+- замок кассы — тесты случая 25;
+- `tests/write_side.rs`: `parallel_bookings_of_one_concert_take_turns_and_need_no_retry` (20 броней одного
+  концерта, одна попытка: все приняты).
 
 ## Замер
 
-`01-hot-key` 5 / 10 / 20 / 40 VU, профили `db` и `app`, k6; HEAD против `ORDERING=concurrent` против
-`ORDERING=per_aggregate`, вперемешку, 3 прохода. Контроль — `02b-spread-vus50` в профиле `db`. Затем то же при
-`NODES=2` (`BALANCE=round_robin` и `BALANCE=key`, задача [17](17_two_backend_nodes.md)).
+2026-10-21. Образы собраны заранее, во время серии ничего не компилировалось:
+- `encore-load-backend:pre08a` — код до 08a (бэкенд не менялся с `a747f06`);
+- `encore-load-backend:08a` — рабочее дерево.
 
-Ожидание на горячем ключе:
-- 409 и откаты → около 0;
-- попыток записи на принятую команду ≈ 1 (сейчас ~10);
-- CPU PostgreSQL на принятую команду заметно ниже, принятых команд/с больше;
-- p99 может вырасти: ожидание в очереди становится видимым.
+Варианты:
+- `pre` — образ до 08a;
+- `conc` — 08a с `ORDERING=concurrent`;
+- `turn` — 08a с `ORDERING=per_aggregate`.
 
-Потолок ключа ≈ 1 / (загрузка + решение + запись + обработчики). Сколько из этого займут обработчики, покажет
-замер. От этой доли зависит, окупится ли шаг B.
+3 прохода по 30 прогонов, порядок внутри прохода перемешан, `POOL=20`, k6, CPU под квотой. Префиксы результатов:
+`perf-08a-{pre,conc,turn}-{db,app}-` (серия A, одна нода) и `perf-08a-{n1lb,n2rr,n2key}-{conc,turn}-` (серия B,
+профиль `app`). Медианы трёх повторов, в скобках — изменение, `≠` — диапазоны повторов не пересекаются.
+
+```bash
+cd demo/docs/backlog/02_postgres_performance/perf
+node tools/compare.mjs ../../../../load/results perf-08a-conc-app- perf-08a-turn-app- --md
+```
+
+**Серия A, горячий ключ, профиль `app`** (бэкенд 2 ядра):
+
+| VU | принято/с: concurrent → turn | 409 % | p50, мс | p99, мс | CPU PG, мс на 1000 | CPU бэкенда, мс на 1000 | запросов PG на команду |
+|---|---|---|---|---|---|---|---|
+| 1 | — → 414 | — → 0 | — → 2.04 | — → 5.3 | — → 1302 | — → 2110 | — → 6.8 |
+| 5 | 522 → 525 (+1 %) | 11.9 → 0 | 3.7 → 8.9 | 24.3 → 19.0 | 1935 → 1570 (−19 % ≠) | 1900 → 1707 (−10 % ≠) | 11.3 → 8.2 |
+| 10 | 607 → 527 (−13 % ≠) | 28.2 → 0 | 9.3 → 17.9 | 26.0 → 38.6 | 2236 → 1718 (−23 % ≠) | 1707 → 1546 (−9 % ≠) | 14.5 → 9.0 |
+| 20 | 670 → 511 (−24 % ≠) | 49.8 → 0 | 18.5 → 37.0 | 28.5 → 73.8 | 2828 → 1830 (−35 % ≠) | 1824 → 1438 (−21 % ≠) | 20.7 → 9.7 |
+| 40 | 641 → 494 (−23 % ≠) | 69.7 → 0 | 20.6 → 78.2 | 41.2 → 156 | 3966 → 2040 (−49 % ≠) | 2489 → 1528 (−39 % ≠) | 33.2 → 10.5 |
+
+**Серия A, горячий ключ, профиль `db`** (PostgreSQL 2 ядра):
+
+| VU | принято/с: concurrent → turn | 409 % | p50, мс | p99, мс | CPU PG, мс на 1000 | CPU бэкенда, мс на 1000 | запросов PG на команду |
+|---|---|---|---|---|---|---|---|
+| 5 | 544 → 515 (−5 %) | 12.2 → 0 | 3.2 → 9.0 | 23.6 → 16.5 | 1921 → 1607 (−16 % ≠) | 2095 → 1817 (−13 % ≠) | 11.1 → 8.2 |
+| 10 | 633 → 516 (−18 %) | 28.0 → 0 | 9.0 → 18.2 | 24.9 → 43.5 | 2283 → 1786 (−22 % ≠) | 1977 → 1723 (−13 % ≠) | 14.4 → 9.1 |
+| 20 | 598 → 529 (−12 % ≠) | 51.0 → 0 | 18.8 → 37.1 | 43.4 → 47.6 | 3000 → 1877 (−37 % ≠) | 2272 → 1637 (−28 % ≠) | 21.2 → 9.8 |
+| 40 | 450 → 495 (+10 % ≠) | 73.0 → 0 | 23.7 → 78.5 | 59.4 → 122 | 4389 → 2004 (−54 % ≠) | 3351 → 1668 (−50 % ≠) | 35.1 → 10.4 |
+
+**Контроль, серия A:**
+- `pre` против `conc` на горячем ключе при 40 VU: `db` — 462 и 450 принятых/с, `app` — 639 и 641; CPU и запросы на команду
+  совпадают. Путь `Concurrent` не изменился.
+- `02b-spread-vus50` (`db`): `pre`, `conc` и `turn` дают 3629, 3629 и 3752 команд/с; диапазоны пересекаются, CPU на
+  команду совпадает (бэкенд 655–657, PG 552–556 мс на 1000). Реестр на тысячах ключей не виден.
+
+**Серия B, горячий ключ, 40 VU, профиль `app`, nginx:**
+
+| Топология | принято/с: concurrent → turn | 409 % | p50, мс | CPU PG, мс на 1000 | CPU бэкенда, мс на 1000 |
+|---|---|---|---|---|---|
+| 1 нода за nginx | 646 → 481 (−25 % ≠) | 69.4 → 0 | 20.7 → 78.7 | 3984 → 2022 (−49 % ≠) | 2535 → 1529 (−40 % ≠) |
+| 2 ноды, по очереди | 676 → 532 (−21 % ≠) | 68.0 → 4.0 | 20.5 → 71.3 | 4230 → 2175 (−49 % ≠) | 2284 → 1409 (−38 % ≠) |
+| 2 ноды, по ключу | 544 → 507 (−7 % ≠) | 69.1 → 0 | 24.8 → 74.6 | 4224 → 2082 (−51 % ≠) | 2110 → 1342 (−36 % ≠) |
+
+`02b-spread-vus50` на двух нодах по очереди: 4354 → 4357 команд/с, CPU на команду одинаковый.
+
+### Выводы
+
+1. **Ход делает то, что обещал.**
+   - 409 исчезают на одной ноде и на двух с привязкой по ключу. На двух нодах по очереди остаётся 4 %: это
+     конфликты между нодами, их разбирает база.
+   - Работа на принятую команду на горячем ключе падает вдвое: запросов PG 33 → 10.5 на команду, CPU PG −49 %,
+     бэкенда −39 % (40 VU, `app`).
+   - Накладных расходов на многих ключах нет, путь `Concurrent` не изменился.
+2. **Потолок ключа с ходом — задержка одной команды.**
+   - Одна команда держит ход ~2 мс: загрузка, решение, запись и inline-проекция в MongoDB, при VUS=1 p50 = 2.04 мс.
+     Отсюда ~500 принятых/с при любом числе VU.
+   - `concurrent` перекрывает команды друг с другом и в профиле `app` берёт 600–670/с, платя вдвое большим CPU и
+     50–70 % ответов 409.
+   - В профиле `db` при 40 VU повторы `concurrent` выжигают CPU PostgreSQL, и ход выигрывает 10 %.
+3. **Ожидание в очереди видно в задержке:** p50 ≈ VU × время хода (закон Литтла), при 40 VU — ~78 мс против ~21.
+   503 нет: 40 ждущих × 2 мс далеко от `max_wait` = 1 с.
+4. **Умолчание demo — `ENCORE_COMMAND_ORDERING=concurrent`.** Это правило из плана: `per_aggregate` только при
+   принятых/с не хуже в обоих профилях, а в `app` ход теряет 13–24 %. `per_aggregate` включается переменной, когда
+   важнее CPU на команду и отсутствие 409, чем пиковая пропускная способность одного ключа.
+5. **Рычаг — шаг B ([08b](08b_ordered_projection_delivery.md)).** Вынести проекцию из хода: ход сожмётся до
+   «загрузка + решение + запись». Насколько, покажет замер 08b с `DELIVERY=ordered`. До этого времени, которое
+   проекция занимает внутри хода, отдельно не измерено.
 
 ## Критерии приёмки
 
-- [ ] `AggregateKey`, `CommandOrdering`, `TurnLimits`, `AggregateTurns`, `AggregateTurn`, `TurnRefused` с
+- [x] `AggregateKey`, `CommandOrdering`, `TurnLimits`, `AggregateTurns`, `AggregateTurn`, `TurnRefused` с
       комментариями и unit-тестами из списка выше, включая модельный тест.
-- [ ] Исполнитель: ход вокруг повторов, `with_turns`, отказ → `Unavailable`; `CommandOrdering` в `PostgresCommandConfig::new`.
-- [ ] Интеграционные тесты на PostgreSQL: 40 команд без конфликтов, «две ноды».
-- [ ] Константы по умолчанию в `cqrsx`; demo: цепочка env → config → cqrsx, `.env.example`, сборка; E2E smoke.
-- [ ] `components.md`: строка «Command turns», дерево исходников, правила имён (turn), правило о вложенных командах.
-- [ ] Стенд: `ORDERING=`, `TURN_MAX_WAIT_MS=`, `TURN_MAX_WAITING=`; замер (одна и две ноды) записан в тикет.
+- [x] Исполнитель: ход вокруг повторов, `with_turns`, отказ → `Unavailable`; `CommandOrdering` в `PostgresCommandConfig::new`.
+- [x] Интеграционные тесты на PostgreSQL: 40 команд без конфликтов, «две ноды».
+- [x] Константы по умолчанию в `cqrsx`; demo: цепочка env → config → cqrsx, `.env.example`, сборка; E2E smoke
+      (брони, Encore! посреди всплеска в трёх раундах, verify `ok` после каждого, машина времени).
+- [x] `components.md`: строка «Command turns», дерево исходников, правила имён (turn), правило о вложенных командах.
+- [x] Стенд: `ORDERING=`, `TURN_MAX_WAIT_MS=`, `TURN_MAX_WAITING=`; замер (одна и две ноды) записан в тикет.
+- [x] Encore! ждёт команды, допущенные до замка (случай 25).
+
+Проверки: полный набор из корневого `CLAUDE.md` зелёный, покрытие 97.78 % строк (`turns.rs` — 99.58 %); demo —
+fmt, clippy, тесты (включая `write_side` на PostgreSQL), фронтенд — typecheck, lint, 54 теста.

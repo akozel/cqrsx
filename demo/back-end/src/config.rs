@@ -3,6 +3,7 @@
 //! Parsing happens once at start-up, so this is the one place where a hard failure with a clear
 //! message is acceptable; everything after `Config::from_env` is free of `unwrap`/`expect`.
 use cqrsx::{
+    cqrs::command::turns::{CommandOrdering, DEFAULT_TURN_MAX_WAIT, DEFAULT_TURN_MAX_WAITING, TurnLimits, TurnLimitsError},
     postgres::pool::StatementTimeout,
     task::runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
 };
@@ -45,6 +46,9 @@ pub struct Config {
     pub task_retry_max: Duration,
     pub ticket_limit: usize,
     pub snapshot_every: usize,
+    /// How commands to one concert or fan ledger run (`ENCORE_COMMAND_ORDERING` and the turn limits
+    /// `ENCORE_COMMAND_TURN_MAX_WAIT_MS`, `ENCORE_COMMAND_TURN_MAX_WAITING`).
+    pub command_ordering: CommandOrdering,
     pub replay_slow_delay: Duration,
     /// The library's own `OUTBOX_*` keys: worker pool and storage timeouts.
     pub task_runtime: TaskRuntimeConfig,
@@ -76,11 +80,56 @@ fn parse<T: std::str::FromStr>(name: &'static str, default: &str) -> Result<T, C
 where
     T::Err: std::fmt::Display,
 {
-    let raw = var(name).unwrap_or_else(|| default.to_owned());
+    parse_value(name, &var(name).unwrap_or_else(|| default.to_owned()))
+}
+
+fn parse_value<T: std::str::FromStr>(name: &'static str, raw: &str) -> Result<T, ConfigError>
+where
+    T::Err: std::fmt::Display,
+{
     raw.parse().map_err(|error: T::Err| ConfigError::Invalid {
         name,
         message: format!("cannot parse {raw:?}: {error}"),
     })
+}
+
+const COMMAND_ORDERING: &str = "ENCORE_COMMAND_ORDERING";
+const TURN_MAX_WAIT: &str = "ENCORE_COMMAND_TURN_MAX_WAIT_MS";
+const TURN_MAX_WAITING: &str = "ENCORE_COMMAND_TURN_MAX_WAITING";
+
+/// `concurrent` (unset) lets the commands to one aggregate race, `per_aggregate` runs them one at a time, in
+/// arrival order. The default follows backlog 02/08a's measurement: on the hot key turns cut the work per command
+/// by half but cap the key at one command per ~2 ms, and that costs accepted commands per second while the
+/// projection still runs inside the turn. The turn limits default to the library's and are checked either way,
+/// so a typo never hides. A chain task waits for its turn inside its handler, so the wait must end
+/// before the handler times out.
+fn command_ordering(
+    lookup: impl Fn(&'static str) -> Option<String>,
+    handler_timeout: Duration,
+) -> Result<CommandOrdering, ConfigError> {
+    let max_wait = match lookup(TURN_MAX_WAIT) {
+        Some(raw) => Duration::from_millis(parse_value(TURN_MAX_WAIT, &raw)?),
+        None => DEFAULT_TURN_MAX_WAIT,
+    };
+    let max_waiting = match lookup(TURN_MAX_WAITING) {
+        Some(raw) => parse_value(TURN_MAX_WAITING, &raw)?,
+        None => DEFAULT_TURN_MAX_WAITING.get(),
+    };
+    let limits = TurnLimits::new(max_wait, max_waiting).map_err(|error| match error {
+        TurnLimitsError::ZeroMaxWait => invalid(TURN_MAX_WAIT, "must be positive"),
+        TurnLimitsError::ZeroMaxWaiting => invalid(TURN_MAX_WAITING, "must be positive"),
+    })?;
+    if max_wait >= handler_timeout {
+        return Err(invalid(TURN_MAX_WAIT, "must be below OUTBOX_HANDLER_TIMEOUT_SECS"));
+    }
+    match lookup(COMMAND_ORDERING).as_deref() {
+        None | Some("concurrent") => Ok(CommandOrdering::Concurrent),
+        Some("per_aggregate") => Ok(CommandOrdering::PerAggregate(limits)),
+        Some(other) => Err(invalid(
+            COMMAND_ORDERING,
+            format!("must be concurrent or per_aggregate (got {other:?})"),
+        )),
+    }
 }
 
 /// Unset = `StatementTimeout::Default`, `0` = `Unlimited`, any other number of milliseconds = `Custom`.
@@ -132,6 +181,7 @@ impl Config {
         let database_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_POOL_SIZE", "10")?;
         let database_history_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_HISTORY_POOL_SIZE", "1")?;
         let database_statement_timeout = statement_timeout(var("ENCORE_DATABASE_STATEMENT_TIMEOUT_MS"))?;
+        let command_ordering = command_ordering(var, task_runtime.worker_pool().handler_timeout())?;
         Ok(Self {
             database_url: var("ENCORE_DATABASE_URL").unwrap_or_else(|| "postgresql://cqrsx:cqrsx@localhost:5434/encore".into()),
             database_pool_size,
@@ -150,6 +200,7 @@ impl Config {
             task_retry_max,
             ticket_limit,
             snapshot_every,
+            command_ordering,
             replay_slow_delay: Duration::from_millis(parse("ENCORE_REPLAY_SLOW_DELAY_MS", "80")?),
             task_runtime,
         })
@@ -200,6 +251,62 @@ mod tests {
         assert!(
             error.to_string().contains("ENCORE_DATABASE_POOL_SIZE_UNSET_IN_TESTS"),
             "{error}"
+        );
+    }
+
+    fn ordering(pairs: &[(&'static str, &str)], handler_timeout_secs: u64) -> Result<CommandOrdering, ConfigError> {
+        let pairs: std::collections::HashMap<_, _> = pairs.iter().map(|(k, v)| (*k, v.to_string())).collect();
+        command_ordering(|name| pairs.get(name).cloned(), Duration::from_secs(handler_timeout_secs))
+    }
+
+    #[test]
+    fn command_ordering_defaults_to_concurrent_and_turns_take_the_library_limits() {
+        assert_eq!(ordering(&[], 5).unwrap(), CommandOrdering::Concurrent);
+        assert_eq!(
+            ordering(&[(COMMAND_ORDERING, "per_aggregate")], 5).unwrap(),
+            CommandOrdering::PerAggregate(TurnLimits::default())
+        );
+        assert_eq!(
+            ordering(&[(COMMAND_ORDERING, "concurrent")], 5).unwrap(),
+            CommandOrdering::Concurrent
+        );
+        assert_eq!(
+            ordering(
+                &[
+                    (COMMAND_ORDERING, "per_aggregate"),
+                    (TURN_MAX_WAIT, "250"),
+                    (TURN_MAX_WAITING, "16")
+                ],
+                5
+            )
+            .unwrap(),
+            CommandOrdering::PerAggregate(TurnLimits::new(Duration::from_millis(250), 16).unwrap())
+        );
+    }
+
+    #[test]
+    fn command_ordering_names_the_variable_it_rejects() {
+        for (pairs, name, timeout) in [
+            (vec![(COMMAND_ORDERING, "serial")], COMMAND_ORDERING, 5),
+            (vec![(TURN_MAX_WAIT, "x")], TURN_MAX_WAIT, 5),
+            (vec![(TURN_MAX_WAIT, "0")], TURN_MAX_WAIT, 5),
+            (vec![(TURN_MAX_WAITING, "-1")], TURN_MAX_WAITING, 5),
+            // Checked even when the turns are off, so a typo never hides.
+            (
+                vec![(COMMAND_ORDERING, "concurrent"), (TURN_MAX_WAITING, "0")],
+                TURN_MAX_WAITING,
+                5,
+            ),
+            // A chain task's handler would time out before its command is refused.
+            (vec![], TURN_MAX_WAIT, 1),
+            (vec![(TURN_MAX_WAIT, "5000")], TURN_MAX_WAIT, 5),
+        ] {
+            let error = ordering(&pairs, timeout).unwrap_err().to_string();
+            assert!(error.starts_with(&format!("{name}: ")), "{error}");
+        }
+        assert_eq!(
+            ordering(&[(TURN_MAX_WAIT, "5000")], 5).unwrap_err().to_string(),
+            "ENCORE_COMMAND_TURN_MAX_WAIT_MS: must be below OUTBOX_HANDLER_TIMEOUT_SECS"
         );
     }
 

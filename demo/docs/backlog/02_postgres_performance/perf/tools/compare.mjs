@@ -31,14 +31,18 @@ const before = batch(beforePrefix);
 const after = batch(afterPrefix);
 const names = [...new Set([...before.keys(), ...after.keys()])].sort();
 
-const conflictPct = (r) => (r.requests_measured ? (100 * (r.outcomes?.conflict ?? 0)) / r.requests_measured : null);
+const sharePct = (outcome) => (r) => (r.requests_measured ? (100 * (r.outcomes?.[outcome] ?? 0)) / r.requests_measured : null);
+// Accepted commands per second of the measured window: req/s times the accepted share.
+const acceptedPerSecond = (r) => (r.requests_measured && r.rps != null ? (r.rps * (r.outcomes?.accepted ?? 0)) / r.requests_measured : null);
 const cpuPer1k = (service) => (r) => r.efficiency?.cpu_ms_per_1k_accepted?.[service];
 const cpuPer1kTasks = (service) => (r) => r.drain?.per_task?.cpu_ms_per_1k_tasks?.[service];
 const metrics = [
   ['req/s', (r) => r.rps],
+  ['accepted/s', acceptedPerSecond],
   ['p50 ms', (r) => r.latency_ms?.all?.p50],
   ['p99 ms', (r) => r.latency_ms?.all?.p99],
-  ['409 %', conflictPct],
+  ['409 %', sharePct('conflict')],
+  ['503 %', sharePct('unavailable')],
   ['CPU ms/1k back-end', cpuPer1k('backend')],
   ['CPU ms/1k PG', cpuPer1k('postgres')],
   ['CPU ms/1k Mongo', cpuPer1k('mongo')],

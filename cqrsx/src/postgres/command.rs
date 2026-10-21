@@ -2,7 +2,12 @@ use crate::{
     cqrs::{
         CqrsFramework,
         aggregate::Aggregate,
-        command::{CommandExecutor, CommandGatewayError, executor::CqrsCommandExecutor, retry::AggregateConflictRetryPolicy},
+        command::{
+            CommandExecutor, CommandGatewayError,
+            executor::CqrsCommandExecutor,
+            retry::AggregateConflictRetryPolicy,
+            turns::{AggregateTurns, CommandOrdering},
+        },
         event_handler::EventHandler,
         store::persisted::PersistedEventStore,
     },
@@ -12,11 +17,12 @@ use sqlx::PgPool;
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 use thiserror::Error;
 
-/// Checked snapshot interval and optimistic-conflict policy. Does not read env.
+/// Checked snapshot interval, optimistic-conflict policy and command ordering. Does not read env.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PostgresCommandConfig {
     snapshot_interval: NonZeroUsize,
     conflict_retry: AggregateConflictRetryPolicy,
+    ordering: CommandOrdering,
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -26,13 +32,17 @@ pub enum PostgresCommandConfigError {
 }
 
 impl PostgresCommandConfig {
+    /// `ordering` has no default on purpose: [`CommandOrdering::PerAggregate`] runs the commands to one
+    /// aggregate one at a time inside the process, [`CommandOrdering::Concurrent`] lets them race.
     pub fn new(
         snapshot_interval: usize,
         conflict_retry: AggregateConflictRetryPolicy,
+        ordering: CommandOrdering,
     ) -> Result<Self, PostgresCommandConfigError> {
         Ok(Self {
             snapshot_interval: NonZeroUsize::new(snapshot_interval).ok_or(PostgresCommandConfigError::InvalidSnapshotInterval)?,
             conflict_retry,
+            ordering,
         })
     }
 
@@ -43,11 +53,9 @@ impl PostgresCommandConfig {
     pub fn conflict_retry(&self) -> AggregateConflictRetryPolicy {
         self.conflict_retry
     }
-}
 
-impl Default for PostgresCommandConfig {
-    fn default() -> Self {
-        Self::new(25, AggregateConflictRetryPolicy::default()).expect("valid default PostgreSQL command configuration")
+    pub fn ordering(&self) -> CommandOrdering {
+        self.ordering
     }
 }
 
@@ -65,6 +73,9 @@ impl Default for PostgresCommandConfig {
 /// applies accepted events to the original committed context, preserving append
 /// and increment semantics without requiring repeatable event application.
 ///
+/// With [`CommandOrdering::PerAggregate`] the executor's commands to one aggregate
+/// wait for each other's turn; see [`PostgresCommandExecutor`].
+///
 /// For custom stores, use [`CqrsCommandExecutor::new`] with a framework factory instead.
 pub fn command_executor<A>(pool: PgPool, config: PostgresCommandConfig) -> PostgresCommandExecutor<A>
 where
@@ -78,9 +89,15 @@ where
 /// Named PostgreSQL adapter sharing the pool, immutable command configuration, aggregate
 /// services and event handlers. Each invocation builds one local CQRS engine with a clone of
 /// the services and the shared handlers; it never retains call-specific tasks.
+///
+/// With [`CommandOrdering::PerAggregate`] the executor owns one turn registry, shared by all its
+/// calls: its commands to one aggregate run one at a time, in arrival order, each holding the turn
+/// through its conflict retries and event handlers. Two executors of one aggregate type, like two
+/// processes, do not order each other; between them the optimistic check still decides.
 pub struct PostgresCommandExecutor<A: Aggregate> {
     pool: PgPool,
     config: PostgresCommandConfig,
+    turns: Option<AggregateTurns>,
     services: A::Services,
     event_handlers: Vec<Arc<dyn EventHandler<A>>>,
 }
@@ -90,6 +107,7 @@ impl<A: Aggregate> PostgresCommandExecutor<A> {
     pub fn new(pool: PgPool, config: PostgresCommandConfig, services: A::Services) -> Self {
         Self {
             pool,
+            turns: config.ordering().turns(),
             config,
             services,
             event_handlers: Vec::new(),
@@ -121,7 +139,8 @@ where
         self.execute_with_metadata(aggregate_id, command, HashMap::new(), tasks).await
     }
 
-    /// Execute through the common engine, retrying only optimistic conflicts.
+    /// Execute through the common engine, retrying only optimistic conflicts, inside the aggregate's
+    /// turn when the configuration orders commands per aggregate (a refused turn is `Unavailable`).
     /// `metadata` is stored in the `metadata` column of the committed event.
     pub async fn execute_with_metadata(
         &self,
@@ -144,6 +163,10 @@ where
             },
             self.config.conflict_retry(),
         );
+        let executor = match &self.turns {
+            Some(turns) => executor.with_turns(turns.clone()),
+            None => executor,
+        };
         executor.execute_with_metadata(aggregate_id, command, metadata, tasks).await
     }
 }
@@ -169,19 +192,20 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cqrs::command::turns::TurnLimits;
     use std::time::Duration;
 
     #[test]
-    fn config_defaults_overrides_and_zero_interval_are_checked() {
-        let defaults = PostgresCommandConfig::default();
-        assert_eq!(defaults.snapshot_interval(), 25);
-        assert_eq!(defaults.conflict_retry(), AggregateConflictRetryPolicy::default());
+    fn config_keeps_its_values_and_checks_the_interval() {
         let retry = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-        let custom = PostgresCommandConfig::new(2, retry).unwrap();
-        assert_eq!(custom.snapshot_interval(), 2);
-        assert_eq!(custom.conflict_retry(), retry);
+        let concurrent = PostgresCommandConfig::new(2, retry, CommandOrdering::Concurrent).unwrap();
+        assert_eq!(concurrent.snapshot_interval(), 2);
+        assert_eq!(concurrent.conflict_retry(), retry);
+        assert_eq!(concurrent.ordering(), CommandOrdering::Concurrent);
+        let turns = CommandOrdering::PerAggregate(TurnLimits::new(Duration::from_millis(5), 2).unwrap());
+        assert_eq!(PostgresCommandConfig::new(25, retry, turns).unwrap().ordering(), turns);
         assert_eq!(
-            PostgresCommandConfig::new(0, retry),
+            PostgresCommandConfig::new(0, retry, turns),
             Err(PostgresCommandConfigError::InvalidSnapshotInterval)
         );
     }

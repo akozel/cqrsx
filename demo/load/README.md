@@ -146,6 +146,9 @@ rebuild / verify timing, SSE fan-out, soak, dependency outages. They are the nex
 - `POOL`: the size of that pool (`ENCORE_DATABASE_POOL_SIZE`, default 10). The 2026-10-18 runs put the
   write-path plateaus (~7.3k announces/s, ~4.3k bookings/s) on this ceiling: nothing else was saturated.
 - `SNAPSHOT_EVERY`: compare 10 with 1000 in test 1 to see what snapshots buy on the command path.
+- `ORDERING`: `concurrent` (the back-end's default) lets the commands to one concert race on the events
+  primary key and retry; `per_aggregate` runs them one at a time, in arrival order. Compare both in test 1.
+  `TURN_MAX_WAIT_MS` and `TURN_MAX_WAITING` bound the wait for a turn; past them a command gets 503.
 - `LOAD_OUTBOX_POLL_MS` (compose env): the poller's idle cadence, 300 ms by default.
 - PostgreSQL runs with the image defaults (`fsync`, `synchronous_commit` on). That is part of the
   limit being measured; turn it off only as an explicitly labelled experiment.

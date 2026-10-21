@@ -278,7 +278,10 @@ Every variable has a default (see `.env.example`); both binaries read `demo/.env
 Highlights: `ENCORE_MAIL_SERVICE_URL` (where the e-mail tasks `POST /mail`), `ENCORE_TASK_MAX_ATTEMPTS`
 (6, mail tasks), `ENCORE_TASK_RETRY_BASE_MS` / `_MAX_MS` (the backoff after a refused delivery: 1, 2, 4, 8, 8 s),
 `ENCORE_CHAIN_MAX_ATTEMPTS` (60, chain tasks — spent only while a rebuild holds the lock),
-`ENCORE_TICKET_LIMIT` (4), `ENCORE_SNAPSHOT_EVERY` (10), `ENCORE_REPLAY_SLOW_DELAY_MS` (80), and the
+`ENCORE_TICKET_LIMIT` (4), `ENCORE_SNAPSHOT_EVERY` (10), `ENCORE_COMMAND_ORDERING` (`concurrent`: commands to
+one concert or fan ledger race and the losers retry; `per_aggregate`: they take turns, in arrival order) with its turn
+limits `ENCORE_COMMAND_TURN_MAX_WAIT_MS` (1000, then 503) and `ENCORE_COMMAND_TURN_MAX_WAITING` (128 per aggregate),
+`ENCORE_REPLAY_SLOW_DELAY_MS` (80), and the
 library's own `OUTBOX_*` keys with demo defaults (2 workers, 300 ms poll, 5 s handler timeout, 30 s lease,
 3 s storage timeout; a mail request gives up one second before the handler timeout). Everything DEMO ONLY
 is the sidecar's: `SIDECAR_SEED` (announce the default concerts at start-up), `SIDECAR_RESET_ENABLED`

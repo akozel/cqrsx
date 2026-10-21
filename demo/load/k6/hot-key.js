@@ -1,10 +1,11 @@
 // Test 1, hot key: every VU writes to the SAME concert, i.e. the same event stream.
 //
 // A VU owns one seat and one fan and alternates BookSeat / CancelBooking on it, so every command is
-// meant to be accepted; the only expected rejection path is a lost version race: the back-end
-// retries a conflict three times (5–50 ms) and then answers 409. What this measures is the
-// serialisation of one stream (events primary key), the snapshot CAS every 10th event and the
-// synchronous CAS on the one `concert_halls` document in MongoDB.
+// meant to be accepted. With concurrent ordering (the back-end's default) the expected rejection path is
+// a lost version race: the back-end retries a conflict three times (5–50 ms) and then answers 409; with
+// ORDERING=per_aggregate the commands to the concert take turns inside the back-end instead. What this
+// measures is the serialisation of one stream (events primary key), the snapshot CAS every 10th event and
+// the synchronous CAS on the one `concert_halls` document in MongoDB.
 //
 // The hall has 40 seats, so up to VUS=40 every VU has a seat of its own. Beyond that two VUs share
 // a seat and 422 seat_taken / not_your_ticket appear; that is noise, not a finding.

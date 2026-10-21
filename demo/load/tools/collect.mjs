@@ -132,6 +132,8 @@ const result = {
     cpu_pinning: env('PIN', 'off'),
     outbox_workers: num(env('WORKERS')) ?? 2,
     snapshot_every: num(env('SNAPSHOT')) ?? 10,
+    // ENCORE_COMMAND_ORDERING as run.sh passed it; `default` = the back-end's own default.
+    command_ordering: env('ORDERING', 'default'),
     pg_pool: num(env('POOL')) ?? 10,
     k6_exit: num(env('K6_EXIT')) ?? -1,
     k6_started_epoch: burstStart,

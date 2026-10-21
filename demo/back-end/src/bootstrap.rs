@@ -123,9 +123,15 @@ pub fn wire(
     ));
     let verify = Arc::new(VerifyService::new(read_models));
     let time_travel = Arc::new(TimeTravel::new(event_history(history_pool)));
-    let command_config = PostgresCommandConfig::new(config.snapshot_every, AggregateConflictRetryPolicy::default())?;
-    // One executor per aggregate. Each projection is registered under its collection name, the
-    // name the activity log and the `projection_failed` warning report.
+    let command_config = PostgresCommandConfig::new(
+        config.snapshot_every,
+        AggregateConflictRetryPolicy::default(),
+        config.command_ordering,
+    )?;
+    // One executor per aggregate: with per-aggregate ordering it owns the turns of that aggregate, so the
+    // HTTP commands and the chain tasks' commands to one concert or fan ledger wait for each other. Each
+    // projection is registered under its collection name, the name the activity log and the
+    // `projection_failed` warning report.
     let executor = PostgresCommandExecutor::new(
         pool.clone(),
         command_config.clone(),

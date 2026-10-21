@@ -170,6 +170,9 @@ impl RebuildService {
             finished_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
             error,
         };
+        // Commands admitted before the lock was taken finish first: their projections write into the
+        // read models this rebuild is about to wipe. The wait is bounded by one command, its turn included.
+        self.lock.wait_idle().await;
         // Progress figures only: a failed count is reported as 0, the replay itself still decides.
         let totals = self.ledger.totals().await.unwrap_or_default();
         let (total, aggregates) = (totals.events, totals.aggregates);
@@ -405,6 +408,27 @@ mod tests {
                 "rebuild.finished"
             ]
         );
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_wipes_nothing_until_the_commands_admitted_before_it_have_finished() {
+        let halls = FakeReadModel::new("concert_halls", vec![("c-1", 1, "ConcertAnnounced")]);
+        let (service, lock, _) = service(vec![halls.clone()]);
+        let command = lock.admit().unwrap();
+        service.start(Speed::Fast).unwrap();
+        assert!(
+            lock.admit().is_none(),
+            "no command is admitted once the rebuild holds the lock"
+        );
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(halls.wipes.load(Ordering::SeqCst), 0, "the admitted command is still running");
+        assert_eq!(service.status_json()["state"], "running");
+        drop(command);
+        let status = wait_until_idle(&service).await;
+        assert_eq!(status["last_result"]["ok"], true);
+        assert_eq!(halls.wipes.load(Ordering::SeqCst), 1);
     }
 
     #[tokio::test]

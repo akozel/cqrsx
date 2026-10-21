@@ -107,9 +107,11 @@ pub async fn handle(
         )
         .with_extra(base)
         .into_response(),
-        CommandOutcome::Unavailable => ApiError::unavailable("the event store is unavailable")
-            .with_extra(base)
-            .into_response(),
+        CommandOutcome::Unavailable => {
+            ApiError::unavailable("the command did not run: the event store is unavailable or the concert is busy; retry")
+                .with_extra(base)
+                .into_response()
+        }
         CommandOutcome::Locked => ApiError::locked().with_extra(base).into_response(),
     })
 }

@@ -5,6 +5,7 @@ use thiserror::Error;
 pub mod causation;
 pub mod executor;
 pub mod retry;
+pub mod turns;
 
 /// Technical command boundary; the application gateway selects the aggregate ID.
 ///
