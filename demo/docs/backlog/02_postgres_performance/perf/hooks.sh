@@ -8,7 +8,8 @@
 # dumped to pg_statements.tsv, and reset again with DRAIN=1), `drained` (dumped to
 # pg_statements.drain.tsv). The containers are probed in parallel, everything inside one container in
 # one go, so a snapshot is a single moment to within a few milliseconds per container.
-# - cpu_usec: the container's cgroup CPU time, exact.
+# - cpu_usec: the container's cgroup CPU time, exact; for the back-end, PostgreSQL, MongoDB and every
+#   service of LOAD_SERVICES_EXTRA (the second node and the balancer of ticket 17).
 # - net_rx_packets / net_tx_packets: every interface of the PostgreSQL container but `lo`, i.e. its
 #   traffic with the back-end (psql below uses the unix socket).
 # - xact_commit / xact_rollback: pg_stat_database. PostgreSQL publishes them per backend at most once
@@ -61,19 +62,22 @@ cpu_probe() { # service → `cpu_usec <n>` from the container's own cgroup (cgro
 
 STATEMENTS_HEADER=$'queryid\tcalls\ttotal_exec_time_ms\tmean_exec_time_ms\trows\tshared_blks_hit\tshared_blks_read\tshared_blk_read_time_ms\tquery'
 
+# The containers whose CPU time a snapshot reads besides PostgreSQL's (which its own probe reads).
+read -ra CPU_SERVICES <<<"backend mongo ${LOAD_SERVICES_EXTRA:-}"
+
 snapshot() { # point  mode (none | reset | dump | dump-reset)  [statements file]
   local point="$1" mode="$2" statements="${3:-}" tmp service line pids=()
   tmp="$(mktemp -d "$RUN_DIR/.snapshot.XXXXXX")"
   printf '%s\tstand\tepoch_ms\t%s\n' "$point" "$(date +%s%3N)" >> "$RUN_DIR/counters.tsv"
   compose exec -T postgres sh -c "$PG_PROBE" sh "$mode" > "$tmp/postgres" 2>"$tmp/postgres.err" &
   pids+=($!)
-  cpu_probe backend > "$tmp/backend" &
-  pids+=($!)
-  cpu_probe mongo > "$tmp/mongo" &
-  pids+=($!)
+  for service in "${CPU_SERVICES[@]}"; do
+    cpu_probe "$service" > "$tmp/$service" &
+    pids+=($!)
+  done
   wait "${pids[@]}" || true # never a bare `wait`: the stats sampler is a background job too
   if [[ -n "$statements" ]]; then printf '%s\n' "$STATEMENTS_HEADER" > "$statements"; fi
-  for service in postgres backend mongo; do
+  for service in postgres "${CPU_SERVICES[@]}"; do
     while IFS= read -r line; do
       case "$line" in
         stmt$'\t'*) if [[ -n "$statements" ]]; then printf '%s\n' "${line#stmt$'\t'}" >> "$statements"; fi ;;
@@ -85,8 +89,9 @@ snapshot() { # point  mode (none | reset | dump | dump-reset)  [statements file]
   grep -q '^cpu_usec' "$tmp/postgres" || missing+=("postgres cpu")
   grep -q '^xact_commit' "$tmp/postgres" || missing+=("postgres statistics ($(head -c 200 "$tmp/postgres.err" | tr '\n' ' '))")
   grep -q '^net_rx_packets' "$tmp/postgres" || missing+=("postgres network packets (no interface but lo)")
-  grep -q '^cpu_usec' "$tmp/backend" || missing+=("backend cpu")
-  grep -q '^cpu_usec' "$tmp/mongo" || missing+=("mongo cpu")
+  for service in "${CPU_SERVICES[@]}"; do
+    grep -q '^cpu_usec' "$tmp/$service" || missing+=("$service cpu")
+  done
   if (( ${#missing[@]} > 0 )); then log "snapshot $point: could not read: $(IFS=';'; echo "${missing[*]}")"; fi
   rm -rf "$tmp"
 }

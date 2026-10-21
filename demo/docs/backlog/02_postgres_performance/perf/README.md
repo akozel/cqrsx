@@ -3,8 +3,9 @@
 The measurement tools of backlog epic 02 ([`../README.md`](../README.md)), written by ticket
 [01](../01_measurement_baseline.md). They run the k6 stand of `demo/load` ([`README.md`](../../../../load/README.md))
 unchanged and add what the epic judges every change by: what PostgreSQL does per command, CPU time per
-command, and repeats with medians. They plug into a run through the stand's two extension points,
-`LOAD_COMPOSE_EXTRA` and `LOAD_HOOKS`; results land in `demo/load/results/` next to the stand's own runs.
+command, and repeats with medians. They plug into a run through the stand's extension points,
+`LOAD_COMPOSE_EXTRA`, `LOAD_SERVICES_EXTRA` and `LOAD_HOOKS`; results land in `demo/load/results/` next to
+the stand's own runs.
 
 ## Running
 
@@ -17,15 +18,17 @@ From this directory (`demo/docs/backlog/02_postgres_performance/perf`):
 node tools/compare.mjs ../../../../load/results perf-base- perf-02- --md            # before → after
 ```
 
-`run.sh` takes the parameters of `demo/load/run.sh` (`--check`, `--help`, `LOAD_HOST_DIR`, …) and three of
+`run.sh` takes the parameters of `demo/load/run.sh` (`--check`, `--help`, `LOAD_HOST_DIR`, …) and five of
 its own, which also go on to the stand's run.sh so that `result.json` records them (`meta.generator`,
-`meta.profile`, `meta.backend_image`):
+`meta.profile`, `meta.backend_image`, `meta.nodes`, `meta.balance`):
 
 | Parameter | Values | What it does |
 |---|---|---|
 | `GENERATOR` | `auto` (default), `wrk`, `k6` | `auto` takes wrk when `generator/scenarios/<test>.lua` exists (today: `announce-storm`), k6 otherwise. wrk costs ~21 ms of CPU per 1000 requests against k6's ~245, so it is never the ceiling; k6 is fine where the stand is slower than ~11k requests/s (hot key, bookings, drain). |
 | `PROFILE` | `full` (default), `db`, `app` | The CPU budget. `full` is the stand's (back-end 4, PostgreSQL 4, MongoDB 3, k6 4): with wrk the announce ceiling is MongoDB. `db` gives PostgreSQL 2 cores, so the database is the bottleneck and a saving there shows in req/s; `app` gives the back-end 2 cores, the same for the application; under a CPU quota the multi-threaded back-end hits the quota in bursts and req/s swings by tens of percent, so trust only the per-command figures there unless the cores are pinned (cpuset). |
-| `BACKEND_IMAGE` | an image tag | Runs an already built back-end image (`compose.image.yaml`) instead of building the tree, e.g. the code before a ticket; `BUILD=1` is ignored then, it would overwrite that image. |
+| `BACKEND_IMAGE` | an image tag | Runs an already built back-end image (`compose.image.yaml`) instead of building the tree, e.g. the code before a ticket; `BUILD=1` is ignored then, it would overwrite that image. With `NODES=2` both nodes run it. |
+| `NODES` | `1` (default), `2` | Back-end nodes ([ticket 17](../17_two_backend_nodes.md)). Two nodes split the profile's back-end CPU budget (`app`: 1 core each) and the outbox workers (`WORKERS` is then the stand's total, default 2, even) between them, so one node and two run on the same back-end CPU and drain the outbox with as many workers. Without the split each node would poll and drain with the full count, and the burst would carry twice the queue work (seen on the first 02b runs: +27 % PostgreSQL CPU per command). The second node (`compose.node2.yaml`) has the image and environment of the first and starts once the first is healthy. |
+| `BALANCE` | `none` (default), `round_robin`, `key` | How requests reach the nodes. `none`: straight to the one node, the stand as it always was. `round_robin`: through nginx (`compose.balancer.yaml`), the nodes in turn. `key`: through nginx, every request for one aggregate (`/api/concerts/{id}/…`, `/api/fans/{id}/…`) to the same node by consistent hashing. `NODES=2` needs a balancer; `NODES=1 BALANCE=round_robin` is one node behind nginx, the baseline for the balancer's own cost. With a balancer the stand runs under a CPU quota (`PIN=quota`, nginx gets 1 core, `PERF_CPUS_BALANCER`); on a machine that pins cores, take the single-node runs of such a comparison with `PIN=quota` too. Every response carries `X-Upstream`, the node that answered. |
 
 The epic README lists the point, profile and generator per ticket ("Что мерить") and how to build the
 "before" image.
@@ -48,7 +51,8 @@ The first run that actually starts rebuilds the back-end image; `BUILD=0` skips 
 
 | File | Content |
 |---|---|
-| `counters.tsv` | cumulative counters at `before` / `after` the burst (and `drained`): cgroup CPU time of back-end, PostgreSQL and MongoDB, PostgreSQL network packets, commits, rollbacks, WAL position, completed tasks |
+| `counters.tsv` | cumulative counters at `before` / `after` the burst (and `drained`): cgroup CPU time of back-end, PostgreSQL and MongoDB (and of `backend-2` and `balancer` when they run), PostgreSQL network packets, commits, rollbacks, WAL position, completed tasks |
+| `backend-2.log`, `balancer.log` | the logs of the second node and of nginx, when they run (the stand's `LOAD_SERVICES_EXTRA`) |
 | `pg_statements.tsv` | `pg_stat_statements` over the burst window: one line per normalized statement with calls, total and mean time, rows, buffer hits and reads, read time; most expensive first |
 | `pg_statements.drain.tsv` | `DRAIN=1` only: the statements of the drain, from the end of the burst to the end of the drain |
 | `result.json` → `db`, `efficiency`, `drain.per_task`, `meta.git_describe` | the figures below |
@@ -57,6 +61,9 @@ The first run that actually starts rebuilds the back-end image; `BUILD=0` skips 
 |---|---|
 | `compose.perf.yaml` | overlay: PostgreSQL with `shared_preload_libraries=pg_stat_statements`, `track_io_timing=on`, and `postgres/00-pg-stat-statements.sql` |
 | `compose.image.yaml` | overlay for `BACKEND_IMAGE`: the back-end service runs that image |
+| `compose.balancer.yaml` | overlay for `BALANCE`: the `balancer` service (nginx) in front of the node(s), the generator's `BASE_URL` pointed at it |
+| `compose.node2.yaml` | overlay for `NODES=2`: the `backend-2` service, `extends` of the stand's `backend` |
+| `nginx/` | `nginx.conf` (one worker, no access log, keep-alive both ways, `$aggregate_key` from the path, `X-Upstream`) and the upstreams `upstream-{single,round_robin,key}.conf` |
 | `generator/` | the wrk image that stands in for k6 (`LOAD_K6_IMAGE`): `gen.sh` takes k6's arguments and environment, runs wrk for the warm-up and the measured window with `scenarios/<test>.lua`, and writes `result.json` in the shape of `demo/load/k6/lib/summary.js` (no projection-warning count: wrk does not read the bodies) |
 | `hooks.sh` | `hook_before_k6` resets the statement statistics and snapshots the counters; `hook_after_k6` and `hook_after_drain` snapshot and dump the statements; `hook_after_collect` runs `tools/collect.mjs` |
 | `tools/collect.mjs` | turns the counters into `db`, `efficiency`, `drain.per_task` |
@@ -74,7 +81,8 @@ stays at a ceiling somewhere else, e.g. PostgreSQL work saved while the back-end
 
 | Field | Meaning |
 |---|---|
-| `cpu_ms_per_1k_accepted.{backend,postgres,mongo}` | CPU time per 1000 accepted commands from the container's cgroup (`cpu.stat`), exact |
+| `cpu_ms_per_1k_accepted.{backend,postgres,mongo}` | CPU time per 1000 accepted commands from the container's cgroup (`cpu.stat`), exact. `backend` is every back-end node together, so one node and two compare as they are |
+| `cpu_ms_per_1k_accepted.{backend_node1,backend_node2,balancer}` | with `NODES=2`: each node on its own (how evenly the balancer spread the work); with a balancer: nginx |
 | `cpu_ms_per_1k_accepted.k6` | the same for k6 from the `stats` samples (its container is gone before its cgroup could be read), approximate |
 | `statements_per_command` | SQL statements (`pg_stat_statements` calls, `BEGIN`/`COMMIT` included) per accepted command |
 | `packets_per_command` | network packets in and out of the PostgreSQL container per accepted command |

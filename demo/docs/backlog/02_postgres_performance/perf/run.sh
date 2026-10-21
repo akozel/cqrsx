@@ -14,6 +14,17 @@
 #                          database side show in req/s); app = back-end 2 cores (tickets in the back-end).
 #   BACKEND_IMAGE=…        run this already built back-end image instead of building the tree, e.g. a
 #                          baseline of older code; BUILD=1 is ignored then (it would overwrite the image).
+#   NODES=1|2              back-end nodes (default 1). Two nodes split the profile's back-end CPU budget
+#                          and the outbox workers (WORKERS, the stand's total, default 2; must be even)
+#                          between them, so one node and two run on the same back-end CPU and drain the
+#                          outbox with the same number of workers.
+#   BALANCE=none|round_robin|key   how requests reach the nodes: none (default) = straight to the one
+#                          node, as always; round_robin = through nginx, in turn; key = through nginx,
+#                          every request for one aggregate to the same node. NODES=2 needs a balancer;
+#                          NODES=1 BALANCE=round_robin is one node behind nginx, the balancer's own cost.
+#                          With a balancer the stand runs under a CPU quota (PIN=quota): nginx and the
+#                          second node get quotas too. Compare such runs with single-node runs taken
+#                          with PIN=quota as well when the machine could pin cores.
 # Results land in demo/load/results/ next to the stand's own runs.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -24,12 +35,15 @@ if [[ "${1:-}" == --check || "${1:-}" == -h || "${1:-}" == --help ]]; then
 fi
 
 SCRIPT="${1:-}"
-GENERATOR=auto PROFILE=full BACKEND_IMAGE=""
+GENERATOR=auto PROFILE=full BACKEND_IMAGE="" NODES=1 BALANCE=none WORKERS=2
 for arg in "$@"; do
   case "$arg" in
     GENERATOR=*) GENERATOR="${arg#GENERATOR=}" ;;
     PROFILE=*) PROFILE="${arg#PROFILE=}" ;;
     BACKEND_IMAGE=*) BACKEND_IMAGE="${arg#BACKEND_IMAGE=}" ;;
+    NODES=*) NODES="${arg#NODES=}" ;;
+    BALANCE=*) BALANCE="${arg#BALANCE=}" ;;
+    WORKERS=*) WORKERS="${arg#WORKERS=}" ;;
   esac
 done
 ARGS=()
@@ -61,9 +75,52 @@ case "$PROFILE" in
 esac
 
 EXTRA="$HERE/compose.perf.yaml"
+unset PERF_BACKEND_IMAGE
 if [[ -n "$BACKEND_IMAGE" ]]; then
   export PERF_BACKEND_IMAGE="$BACKEND_IMAGE"
   EXTRA="$EXTRA:$HERE/compose.image.yaml"
+fi
+
+# Nodes and the balancer (ticket 17). The defaults leave the stand exactly as it is without them.
+case "$NODES:$BALANCE" in
+  1:none) ;;
+  1:round_robin) PERF_UPSTREAM=single ;;
+  2:round_robin|2:key) PERF_UPSTREAM="$BALANCE" ;;
+  2:none) echo "perf: NODES=2 needs a balancer: BALANCE=round_robin or BALANCE=key" >&2; exit 2 ;;
+  1:key) echo "perf: BALANCE=key spreads aggregates over nodes, it needs NODES=2" >&2; exit 2 ;;
+  *) echo "perf: NODES must be 1 or 2 and BALANCE none, round_robin or key (got NODES=$NODES BALANCE=$BALANCE)" >&2; exit 2 ;;
+esac
+if [[ -n "${PERF_UPSTREAM:-}" ]]; then
+  # The balancer and the second node get CPU quotas (compose.balancer.yaml, compose.node2.yaml), so the
+  # whole stand runs under quotas: pinning some containers and capping others would not compare.
+  if [[ "${PIN:-auto}" == cpuset ]]; then
+    echo "perf: a balancer runs under a CPU quota; PIN=cpuset is not supported with BALANCE=$BALANCE" >&2
+    exit 2
+  fi
+  if [[ "${PIN:-auto}" == auto || "${PIN:-}" == 1 ]]; then export PIN=quota; fi
+  export PERF_UPSTREAM
+  EXTRA="$EXTRA:$HERE/compose.balancer.yaml"
+  services="balancer"
+  if [[ "$NODES" == 2 ]]; then
+    # The profile's back-end budget (compose.quota.yaml default: 4 cores), split between the nodes.
+    LOAD_CPUS_BACKEND="$(awk -v total="${LOAD_CPUS_BACKEND:-4}" 'BEGIN { printf "%g", total / 2 }')"
+    export LOAD_CPUS_BACKEND
+    # The outbox workers too: every node polls and drains the queue with its own workers.
+    if ! [[ "$WORKERS" =~ ^[0-9]+$ ]] || (( WORKERS < 2 || WORKERS % 2 != 0 )); then
+      echo "perf: with NODES=2, WORKERS is the stand's total and must be even, at least 2 (got '$WORKERS')" >&2
+      exit 2
+    fi
+    kept=()
+    for arg in "${ARGS[@]}"; do
+      if [[ "$arg" != WORKERS=* ]]; then kept+=("$arg"); fi
+    done
+    ARGS=("${kept[@]}" "WORKERS=$((WORKERS / 2))")
+    export PERF_WORKERS_TOTAL="$WORKERS"
+    EXTRA="$EXTRA:$HERE/compose.node2.yaml"
+    services="backend-2 balancer"
+  fi
+  export LOAD_SERVICES_EXTRA="$services${LOAD_SERVICES_EXTRA:+ $LOAD_SERVICES_EXTRA}"
+  export PERF_CPUS_BALANCER="${PERF_CPUS_BALANCER:-1}"
 fi
 export LOAD_COMPOSE_EXTRA="$EXTRA${LOAD_COMPOSE_EXTRA:+:$LOAD_COMPOSE_EXTRA}"
 export LOAD_HOOKS="$HERE/hooks.sh"

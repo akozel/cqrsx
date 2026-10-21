@@ -156,6 +156,9 @@ Measurement tools that live outside this directory plug into a run without copyi
 
 - `LOAD_COMPOSE_EXTRA=a.yaml:b.yaml` adds compose files after the CPU isolation overlay (e.g. PostgreSQL
   settings). Relative paths inside them resolve against this directory, like those of `compose.yaml`.
+- `LOAD_SERVICES_EXTRA="a b"` starts more services (defined by those compose files) with the stand. Each
+  must become healthy before k6 starts, and its log is saved next to `backend.log` as `<service>.log`.
+  Their order is up to `depends_on` in the compose files.
 - `LOAD_HOOKS=hooks.sh` is sourced once the run folder exists. The functions it defines out of
   `hook_before_k6`, `hook_after_k6`, `hook_after_drain` (`DRAIN=1` only) and `hook_after_collect` are
   called at those points and see `RUN_DIR`, `compose` and `log`. A failing hook is logged, the run goes on.

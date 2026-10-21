@@ -1,0 +1,20 @@
+# perf/run.sh NODES=2: a second back-end node, the same image and environment as `backend`, behind the
+# balancer (compose.balancer.yaml). Ticket 17. It starts once the first node is healthy, so the stand
+# initializes once. `extends` reads the stand's compose.yaml only: an overlay that changes `backend`
+# (an image, more environment) has to change `backend-2` the same way, as compose.image.yaml does
+# through PERF_BACKEND_IMAGE below.
+services:
+  backend-2:
+    extends:
+      file: compose.yaml # resolved against demo/load, like every relative path of these overlays
+      service: backend
+    build: !reset null # never built: the image of the first node (built by run.sh BUILD=1 or BACKEND_IMAGE)
+    image: ${PERF_BACKEND_IMAGE:-encore-load-backend}
+    # The same per-node budget as the first node: perf/run.sh splits the back-end budget between them.
+    cpus: "${LOAD_CPUS_BACKEND:-4}"
+    depends_on:
+      backend: { condition: service_healthy }
+
+  balancer:
+    depends_on:
+      backend-2: { condition: service_healthy }

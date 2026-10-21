@@ -505,3 +505,15 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   argument of the command config; every limit is configurable env → config → cqrsx with the defaults as public
   cqrsx constants; `Ordered` delivery without per-key turns is a configuration error; a stand with two back-end
   nodes behind nginx (round robin or hash by aggregate key) is ticket 17, done before measuring 08a.
+- **2026-10-21, backlog 02/17 two back-end nodes behind nginx** (uncommitted). The stand gets one generic
+  extension point, `LOAD_SERVICES_EXTRA` (services started with the stand, waited healthy, logs saved). The
+  epic's `perf/run.sh` gets `NODES=1|2` and `BALANCE=none|round_robin|key`: `compose.balancer.yaml` (nginx
+  1.30.6, one worker, no access log, keep-alive both ways, `X-Upstream` header, consistent hash of the
+  aggregate key taken from the path), `compose.node2.yaml` (`extends` of the stand's back-end); two nodes
+  split the profile's back-end CPU and the outbox workers; with a balancer the stand runs under a CPU quota.
+  `collect.mjs` reports the back-end as the sum of the nodes plus each node and nginx. Checked: compose
+  configs, `nginx -t`, the distribution per concert through `X-Upstream`, smoke runs, unchanged single-node
+  figures. Baseline for HEAD (profile `app`, ×3): 02b two nodes +28 % commands/s at the same CPU; hot key
+  unchanged with two nodes and −10 % with key affinity, 409 stays ~70 % — races live inside each process,
+  which is what 08a removes. A first series without the worker split was discarded (+27 % PostgreSQL CPU per
+  command from doubled queue work).

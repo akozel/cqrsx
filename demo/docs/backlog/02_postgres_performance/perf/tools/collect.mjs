@@ -92,6 +92,35 @@ function sampledCpuMs(statsPath, service, fromMs, toMs) {
 
 const SERVICES_WITH_CGROUP = ['backend', 'postgres', 'mongo'];
 
+/**
+ * The services whose cgroup CPU time a snapshot carries: always the back-end, PostgreSQL and MongoDB
+ * (null when unreadable), plus every other service hooks.sh probed (ticket 17: `backend-2`, `balancer`).
+ */
+function cpuServices(snapshot) {
+  const probed = Object.keys(snapshot ?? {}).filter((service) => snapshot[service].cpu_usec !== undefined);
+  return [...new Set([...SERVICES_WITH_CGROUP, ...probed])];
+}
+
+/**
+ * The back-end's CPU is that of every node together (`backend`), so one node and two compare as they
+ * are; with two nodes or more each one also appears on its own (`backend_node1`, `backend_node2`).
+ */
+function withNodes(cpuMs) {
+  const nodes = Object.keys(cpuMs)
+    .filter((service) => /^backend(-\d+)?$/.test(service))
+    .sort();
+  if (nodes.length < 2) {
+    return cpuMs;
+  }
+  const out = Object.fromEntries(Object.entries(cpuMs).filter(([service]) => !nodes.includes(service)));
+  const parts = nodes.map((node) => cpuMs[node]);
+  out.backend = parts.includes(null) ? null : parts.reduce((sum, ms) => sum + ms, 0);
+  nodes.forEach((node, i) => {
+    out[`backend_node${i + 1}`] = cpuMs[node];
+  });
+  return out;
+}
+
 /** What happened between two snapshots, from the cumulative counters; null parts were not readable. */
 function between(a, b) {
   const diff = (service, key) => {
@@ -103,7 +132,7 @@ function between(a, b) {
   const rx = diff('postgres', 'net_rx_packets');
   const tx = diff('postgres', 'net_tx_packets');
   const cpuMs = {};
-  for (const service of SERVICES_WITH_CGROUP) {
+  for (const service of cpuServices(b)) {
     const usec = diff(service, 'cpu_usec');
     cpuMs[service] = usec === null ? null : usec / 1000;
   }
@@ -112,7 +141,7 @@ function between(a, b) {
     from_ms: num(a?.stand?.epoch_ms),
     to_ms: num(b?.stand?.epoch_ms),
     window_s: windowMs === null ? null : round(windowMs / 1000, 2),
-    cpu_ms: cpuMs,
+    cpu_ms: withNodes(cpuMs),
     xact_commit: diff('postgres', 'xact_commit'),
     xact_rollback: diff('postgres', 'xact_rollback'),
     wal_bytes: wal.includes(null) ? null : wal[1] - wal[0],
@@ -139,6 +168,19 @@ result.meta.profile = process.env.PROFILE ?? 'full';
 if (process.env.BACKEND_IMAGE) {
   result.meta.backend_image = process.env.BACKEND_IMAGE;
 }
+// Ticket 17: back-end nodes and how requests reach them. `cpu_budget_cores.backend` (demo/load's
+// collect.mjs) is the budget of one node; the second node has the same, the balancer its own.
+result.meta.nodes = num(process.env.NODES) ?? 1;
+result.meta.balance = process.env.BALANCE ?? 'none';
+// `outbox_workers` (demo/load) is per node; perf/run.sh splits the stand's total between the nodes.
+result.meta.outbox_workers_total = num(process.env.PERF_WORKERS_TOTAL) ?? result.meta.outbox_workers ?? null;
+const budget = result.meta.cpu_budget_cores;
+if (budget && result.meta.nodes > 1 && budget.backend) {
+  budget['backend-2'] = budget.backend;
+}
+if (budget && result.meta.balance !== 'none' && num(process.env.PERF_CPUS_BALANCER)) {
+  budget.balancer = num(process.env.PERF_CPUS_BALANCER);
+}
 if (counters.before && counters.after) {
   const burst = between(counters.before, counters.after);
   burst.cpu_ms.k6 = sampledCpuMs(join(runDir, 'stats.tsv'), 'k6', burst.from_ms, burst.to_ms);
@@ -158,7 +200,7 @@ if (counters.before && counters.after) {
   if (accepted) {
     result.efficiency = {
       cpu_ms_per_1k_accepted: perEach(burst.cpu_ms, accepted, 1000, 1),
-      cpu_source: { backend: 'cgroup', postgres: 'cgroup', mongo: 'cgroup', k6: 'stats' },
+      cpu_source: Object.fromEntries(Object.keys(burst.cpu_ms).map((service) => [service, service === 'k6' ? 'stats' : 'cgroup'])),
       statements_per_command: per(statements, accepted, 3),
       rollbacks_per_command: per(burst.xact_rollback, accepted, 4),
       packets_per_command: per(burst.packets, accepted, 2),
@@ -187,8 +229,10 @@ const dash = (x) => (x == null ? '-' : String(x));
 const eff = result.efficiency;
 if (eff) {
   const c = eff.cpu_ms_per_1k_accepted;
+  const nodes = c.backend_node1 === undefined ? '' : ` (nodes ${dash(c.backend_node1)} + ${dash(c.backend_node2)})`;
+  const balancer = c.balancer === undefined ? '' : ` balancer ${dash(c.balancer)}`;
   console.log(
-    `per cmd   stmt ${dash(eff.statements_per_command)}  pkt ${dash(eff.packets_per_command)}  rollback ${dash(eff.rollbacks_per_command)}  wal ${dash(eff.wal_bytes_per_command)} B  cpu ms/1k backend ${dash(c.backend)} postgres ${dash(c.postgres)} mongo ${dash(c.mongo)} k6 ${dash(c.k6)}`,
+    `per cmd   stmt ${dash(eff.statements_per_command)}  pkt ${dash(eff.packets_per_command)}  rollback ${dash(eff.rollbacks_per_command)}  wal ${dash(eff.wal_bytes_per_command)} B  cpu ms/1k backend ${dash(c.backend)}${nodes} postgres ${dash(c.postgres)} mongo ${dash(c.mongo)}${balancer} k6 ${dash(c.k6)}`,
   );
 } else {
   console.log('per cmd   no counters (see run.log)');

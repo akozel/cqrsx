@@ -20,6 +20,8 @@
 # Any other KEY=VALUE is passed to k6 as environment (__ENV.KEY).
 # Extension points, for measurement tools that live elsewhere (e.g. backlog epic 02, docs/backlog/…/perf/):
 #   LOAD_COMPOSE_EXTRA=…  more compose files (`:`-separated), added after the CPU isolation overlay
+#   LOAD_SERVICES_EXTRA=… more services (space-separated, defined by those files) started with the stand;
+#                         each must be healthy before k6, and its log is saved as <service>.log
 #   LOAD_HOOKS=…          a bash file sourced once the run folder exists; each function it defines out of
 #                         hook_before_k6, hook_after_k6, hook_after_drain (DRAIN=1 only) and
 #                         hook_after_collect is called at that point, with RUN_DIR, compose and log at hand.
@@ -108,6 +110,7 @@ IFS=':' read -ra COMPOSE_EXTRA <<<"${LOAD_COMPOSE_EXTRA:-}"
 for extra in ${COMPOSE_EXTRA[@]+"${COMPOSE_EXTRA[@]}"}; do
   if [[ -n "$extra" ]]; then COMPOSE_FILES+=(-f "$extra"); fi
 done
+read -ra SERVICES_EXTRA <<<"${LOAD_SERVICES_EXTRA:-}"
 PIN_LABEL="$PIN_MODE"
 if [[ "$PIN_LABEL" == 0 ]]; then PIN_LABEL=off; fi
 
@@ -228,15 +231,17 @@ sample_stats() {
   done
 }
 
-log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, pg pool $LOAD_PG_POOL, snapshot every $LOAD_SNAPSHOT_EVERY"
+log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, pg pool $LOAD_PG_POOL, snapshot every $LOAD_SNAPSHOT_EVERY${LOAD_SERVICES_EXTRA:+, also $LOAD_SERVICES_EXTRA}"
 compose down -v --remove-orphans >/dev/null 2>&1 || true
 $CTR rm -f "$K6_NAME" >/dev/null 2>&1 || true
 if [[ "${BUILD:-0}" != 0 ]]; then
   log "building the back-end image"
   compose build backend || { log "the back-end image did not build"; exit 3; }
 fi
-compose up -d postgres mongo mail backend || { log "the stand did not start"; exit 3; }
-wait_healthy backend || exit 3
+compose up -d postgres mongo mail backend ${SERVICES_EXTRA[@]+"${SERVICES_EXTRA[@]}"} || { log "the stand did not start"; exit 3; }
+for service in backend ${SERVICES_EXTRA[@]+"${SERVICES_EXTRA[@]}"}; do
+  wait_healthy "$service" || exit 3
+done
 : > "$RUN_DIR/stats.tsv"
 sample_stats &
 SAMPLER_PID=$!
@@ -303,6 +308,9 @@ fi
 # --- collect --------------------------------------------------------------------------------------
 stop_sampler
 compose logs --no-color backend > "$RUN_DIR/backend.log" 2>&1 || true
+for service in ${SERVICES_EXTRA[@]+"${SERVICES_EXTRA[@]}"}; do
+  compose logs --no-color "$service" > "$RUN_DIR/$service.log" 2>&1 || true
+done
 
 # Exact peak memory from cgroup v2, read inside each container; empty on cgroup v1 (then the report
 # falls back to the maximum sampled by `stats`).

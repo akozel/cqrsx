@@ -42,6 +42,9 @@ const metrics = [
   ['CPU ms/1k back-end', cpuPer1k('backend')],
   ['CPU ms/1k PG', cpuPer1k('postgres')],
   ['CPU ms/1k Mongo', cpuPer1k('mongo')],
+  ['CPU ms/1k balancer', cpuPer1k('balancer')],
+  ['CPU ms/1k node 1', cpuPer1k('backend_node1')],
+  ['CPU ms/1k node 2', cpuPer1k('backend_node2')],
   ['stmt/cmd', (r) => r.efficiency?.statements_per_command],
   ['pkt/cmd', (r) => r.efficiency?.packets_per_command],
   ['rollback/cmd', (r) => r.efficiency?.rollbacks_per_command],
@@ -56,6 +59,7 @@ const metrics = [
   ['CPU ms/1k tasks back-end', cpuPer1kTasks('backend')],
   ['CPU ms/1k tasks PG', cpuPer1kTasks('postgres')],
   ['be CPU % max', (r) => r.resources?.backend?.cpu_max_pct],
+  ['be-2 CPU % max', (r) => r.resources?.['backend-2']?.cpu_max_pct],
   ['be MiB', (r) => (r.memory_peak_bytes?.backend ?? r.resources?.backend?.mem_max_sampled_bytes) / 1048576],
 ];
 
