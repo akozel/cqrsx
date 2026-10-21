@@ -494,3 +494,14 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   (ticket 05: it must be the last read), so only back-end JSON/replay CPU is saved, and its share is not
   measured. Revisit with routing by `aggregate_id` or a back-end profile. Tickets 08 and 09 no longer
   depend on it.
+- **2026-10-21, backlog 02/08 planned and split** (docs only). Ticket 08 is now the plan for per-aggregate-key
+  queues (key = aggregate type + ID): 08a, a FIFO turn per key for commands (`tokio::sync::Mutex` per key in
+  our own registry, held around the conflict retries; refusal → `Unavailable`), and 08b, ordered delivery of
+  committed events to each projection (bounded `tokio::sync::mpsc` per projection and key, a worker per
+  active key, batches, receipts; the turn is released after the hand-over; Encore! and shutdown wait for
+  `drained()`). Found on the way: `ViewProjection` applies events without an order check, so concurrent
+  handlers of one aggregate may apply them out of commit order, and handlers of a dropped request never run.
+  Decisions the same day: refusal → `Unavailable`; API may break, so `CommandOrdering` becomes a required
+  argument of the command config; every limit is configurable env → config → cqrsx with the defaults as public
+  cqrsx constants; `Ordered` delivery without per-key turns is a configuration error; a stand with two back-end
+  nodes behind nginx (round robin or hash by aggregate key) is ticket 17, done before measuring 08a.

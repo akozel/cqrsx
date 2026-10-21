@@ -2,12 +2,12 @@
 
 | | |
 |---|---|
-| Статус | идея: нужно архитектурное решение после замера 08 |
+| Статус | идея: нужно архитектурное решение после замеров 08a и 08b |
 | Ценность | условная: только если горячие агрегаты — реальный сценарий, а потолка из 08 мало |
 | Цена | высокая: меняется контракт записи (несколько событий разных команд за раз) |
-| cqrsx | `cqrs/store.rs` (`EventStore::commit`), `cqrs/store/persisted.rs`, `postgres/outbox/{write_plan,write}.rs`, `cqrs/command/gate.rs`, `doc/components.md` |
+| cqrsx | `cqrs/store.rs` (`EventStore::commit`), `cqrs/store/persisted.rs`, `postgres/outbox/{write_plan,write}.rs`, `cqrs/command/turns.rs`, `doc/components.md` |
 | demo | нет, если API исполнителя сохранится |
-| Зависимости | 08 (07 отложена) |
+| Зависимости | 08a, 08b (07 отложена) |
 | Где выигрыш | 01 (горячий ключ), выше потолка «одна запись за раз» |
 
 ## Сейчас
