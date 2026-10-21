@@ -80,9 +80,13 @@ pub enum WiringError {
     MailClient(#[from] reqwest::Error),
 }
 
+/// `pool` serves the commands and the outbox queue: short statements under its statement timeout.
+/// `history_pool` has no statement timeout and serves the reads of whole histories: Encore!, verify,
+/// the ledger totals and the time machine.
 pub fn wire(
     config: Arc<Config>,
     pool: PgPool,
+    history_pool: PgPool,
     mongo: &mongodb::Client,
     shutdown: CancellationToken,
 ) -> Result<Wiring, WiringError> {
@@ -92,7 +96,7 @@ pub fn wire(
     let read = ReadSide::new(&read_db);
 
     // Encore! and verify: both read models, in replay order, over the PostgreSQL history.
-    let history = history_repositories(pool.clone());
+    let history = history_repositories(history_pool.clone());
     let read_models: Vec<Arc<dyn MaintainedReadModel>> = vec![
         Arc::new(ProjectionMaintenance::<_, _, ConcertHallView, Concert>::new(
             CONCERT_HALLS,
@@ -113,12 +117,12 @@ pub fn wire(
     let rebuild = Arc::new(RebuildService::new(
         lock.clone(),
         read_models.clone(),
-        Arc::new(PostgresLedger::new(pool.clone())),
+        Arc::new(PostgresLedger::new(history_pool.clone())),
         activity.clone(),
         config.replay_slow_delay,
     ));
     let verify = Arc::new(VerifyService::new(read_models));
-    let time_travel = Arc::new(TimeTravel::new(event_history(pool.clone())));
+    let time_travel = Arc::new(TimeTravel::new(event_history(history_pool)));
     let command_config = PostgresCommandConfig::new(config.snapshot_every, AggregateConflictRetryPolicy::default())?;
     // One executor per aggregate. Each projection is registered under its collection name, the
     // name the activity log and the `projection_failed` warning report.

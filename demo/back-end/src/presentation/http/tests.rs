@@ -34,6 +34,7 @@ async fn app() -> App {
     let wiring = bootstrap::wire(
         Arc::new(testing::config()),
         testing::lazy_pool(),
+        testing::lazy_pool(),
         &mongo,
         CancellationToken::new(),
     )
@@ -50,6 +51,7 @@ async fn app_reading(read: ReadModels) -> Router {
     let mongo = testing::lazy_mongo().await;
     let mut wiring = bootstrap::wire(
         Arc::new(testing::config()),
+        testing::lazy_pool(),
         testing::lazy_pool(),
         &mongo,
         CancellationToken::new(),

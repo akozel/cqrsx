@@ -23,7 +23,9 @@ use cqrsx::cqrs::store::serialized_event::SerializedEvent;
 use cqrsx::task::runtime::{dispatcher_factory::TaskDispatcherFactory, worker_pool_config::TaskWorkerPoolConfig};
 use cqrsx::{
     postgres::{
-        EVENT_STORE_SCHEMA, REQUEUE_FAILED_OUTBOX_TASK, TRANSACTIONAL_OUTBOX_SCHEMA, outbox::PostgresEventRepositoryWithOutbox,
+        EVENT_STORE_SCHEMA, REQUEUE_FAILED_OUTBOX_TASK, TRANSACTIONAL_OUTBOX_SCHEMA,
+        outbox::PostgresEventRepositoryWithOutbox,
+        pool::{ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, StatementTimeout, connect_pool, connect_pool_with},
         task_queue::PostgresTaskQueue,
     },
     task::{

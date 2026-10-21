@@ -3,7 +3,7 @@
 //! command writes nothing; the command's metadata is stored with the event.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use chrono::NaiveDate;
-use cqrsx::postgres::pool::{ConnectionPingPolicy, connect_pool};
+use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
 use cqrsx::{
     cqrs::command::retry::AggregateConflictRetryPolicy,
     postgres::{
@@ -70,6 +70,7 @@ async fn database() -> (PgPool, testcontainers::ContainerAsync<GenericImage>) {
             if let Ok(pool) = connect_pool(
                 options.clone(),
                 ConnectionPingPolicy::Idle(cqrsx::postgres::pool::DEFAULT_IDLE_PING_AFTER),
+                StatementTimeout::Default,
             )
             .await
                 && sqlx::query("SELECT 1").execute(&pool).await.is_ok()

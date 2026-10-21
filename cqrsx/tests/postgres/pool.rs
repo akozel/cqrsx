@@ -1,13 +1,13 @@
 use super::*;
-use cqrsx::postgres::pool::{
-    ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, DEFAULT_MAX_CONNECTIONS, connect_pool, connect_pool_with,
-};
+use cqrsx::postgres::pool::DEFAULT_MAX_CONNECTIONS;
 
 #[tokio::test]
 async fn connection_helper_preserves_ten_connection_limit_and_returns_authentication_error() {
     let db = Database::new().await;
     let options = db.pool.connect_options().as_ref().clone();
-    let pool = connect_pool(options.clone(), ConnectionPingPolicy::Default).await.unwrap();
+    let pool = connect_pool(options.clone(), ConnectionPingPolicy::Default, StatementTimeout::Default)
+        .await
+        .unwrap();
     assert_eq!(pool.options().get_max_connections(), 10);
     assert!(pool.options().get_test_before_acquire());
     assert_eq!(DEFAULT_MAX_CONNECTIONS.get(), 10);
@@ -19,6 +19,7 @@ async fn connection_helper_preserves_ten_connection_limit_and_returns_authentica
         options.clone(),
         PgPoolOptions::new().max_connections(3),
         ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
+        StatementTimeout::Default,
     )
     .await
     .unwrap();
@@ -29,7 +30,11 @@ async fn connection_helper_preserves_ten_connection_limit_and_returns_authentica
 
     let result = tokio::time::timeout(
         Duration::from_secs(5),
-        connect_pool(options.password("private_incorrect_password"), ConnectionPingPolicy::Default),
+        connect_pool(
+            options.password("private_incorrect_password"),
+            ConnectionPingPolicy::Default,
+            StatementTimeout::Default,
+        ),
     )
     .await
     .unwrap();
@@ -88,6 +93,7 @@ async fn connection_idle_longer_than_the_threshold_is_pinged_and_replaced_when_i
         options,
         PgPoolOptions::new().max_connections(1),
         ConnectionPingPolicy::Idle(threshold),
+        StatementTimeout::Default,
     )
     .await
     .unwrap();
@@ -117,6 +123,7 @@ async fn recently_used_connection_is_not_pinged_so_its_dead_backend_fails_the_fi
         options,
         PgPoolOptions::new().max_connections(1),
         ConnectionPingPolicy::Idle(threshold),
+        StatementTimeout::Default,
     )
     .await
     .unwrap();
@@ -155,6 +162,7 @@ async fn default_policy_pings_every_hand_out_so_a_recently_dead_backend_is_repla
         options,
         PgPoolOptions::new().max_connections(1),
         ConnectionPingPolicy::Default,
+        StatementTimeout::Default,
     )
     .await
     .unwrap();
@@ -168,6 +176,60 @@ async fn default_policy_pings_every_hand_out_so_a_recently_dead_backend_is_repla
         .unwrap();
     assert_ne!(first, second);
     pool.close().await;
+    db.close().await;
+}
+
+#[tokio::test]
+async fn every_session_carries_the_pools_statement_timeout() {
+    let db = Database::new().await;
+    let options = db.pool.connect_options().as_ref().clone();
+    for (timeout, shown) in [
+        (StatementTimeout::Default, "4s"),
+        (StatementTimeout::Custom(Duration::from_millis(125)), "125ms"),
+        (StatementTimeout::Unlimited, "0"),
+    ] {
+        let pool = connect_pool_with(
+            options.clone(),
+            PgPoolOptions::new().max_connections(2),
+            ConnectionPingPolicy::Default,
+            timeout,
+        )
+        .await
+        .unwrap();
+        // Both connections of the pool, not just the first one handed out.
+        let (mut first, mut second) = (pool.acquire().await.unwrap(), pool.acquire().await.unwrap());
+        for connection in [&mut first, &mut second] {
+            let setting: String = sqlx::query_scalar("SHOW statement_timeout")
+                .fetch_one(&mut **connection)
+                .await
+                .unwrap();
+            assert_eq!(setting, shown, "{timeout:?}");
+        }
+        drop((first, second));
+        pool.close().await;
+    }
+    // The cap is enforced: a statement longer than it fails, the next one runs.
+    let capped = connect_pool_with(
+        options.clone(),
+        PgPoolOptions::new().max_connections(1),
+        ConnectionPingPolicy::Default,
+        StatementTimeout::Custom(Duration::from_millis(100)),
+    )
+    .await
+    .unwrap();
+    let error = sqlx::query("SELECT pg_sleep(1)").execute(&capped).await.unwrap_err();
+    assert_eq!(error.as_database_error().unwrap().code().as_deref(), Some("57014"));
+    assert_eq!(sqlx::query_scalar::<_, i32>("SELECT 1").fetch_one(&capped).await.unwrap(), 1);
+    capped.close().await;
+    // A cap PostgreSQL cannot hold is refused before connecting.
+    let error = connect_pool(
+        options,
+        ConnectionPingPolicy::Default,
+        StatementTimeout::Custom(Duration::ZERO),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(error, sqlx::Error::Configuration(_)));
     db.close().await;
 }
 

@@ -35,16 +35,17 @@ impl Database {
             // This local fixture has no TLS. Keep early connection closes on the
             // retryable I/O path instead of SQLx's SSLRequest protocol error path.
             .ssl_mode(sqlx::postgres::PgSslMode::Disable)
-            .options([("statement_timeout", "30000"), ("lock_timeout", "15000")]);
+            .options([("lock_timeout", "15000")]);
         // Poll the actual protocol endpoint: log delivery may lag under Podman.
         // This is startup readiness, not a retry of a failed test or command.
         let pool = tokio::time::timeout(Duration::from_secs(60), async {
             loop {
                 match tokio::time::timeout(
                     Duration::from_secs(2),
-                    cqrsx::postgres::pool::connect_pool(
+                    connect_pool(
                         options.clone(),
-                        cqrsx::postgres::pool::ConnectionPingPolicy::Idle(cqrsx::postgres::pool::DEFAULT_IDLE_PING_AFTER),
+                        ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
+                        StatementTimeout::Custom(Duration::from_secs(30)),
                     ),
                 )
                 .await
@@ -71,6 +72,19 @@ impl Database {
         self.pool.close().await;
         self.container.stop().await.unwrap();
     }
+}
+
+/// A pool on this database whose sessions carry `timeout`, like the one a host shares between the
+/// command executors and the task queue.
+pub(super) async fn pool_with(db: &Database, pool: PgPoolOptions, timeout: StatementTimeout) -> PgPool {
+    connect_pool_with(
+        db.pool.connect_options().as_ref().clone(),
+        pool,
+        ConnectionPingPolicy::Default,
+        timeout,
+    )
+    .await
+    .unwrap()
 }
 
 pub(super) fn new_task() -> NewTask {

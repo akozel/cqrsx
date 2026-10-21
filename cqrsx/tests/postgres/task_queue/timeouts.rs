@@ -1,9 +1,6 @@
 use super::*;
 use cqrsx::task::queue::lease::TaskLease;
-use cqrsx::{
-    postgres::task_queue::PostgresTaskQueueConfig,
-    task::{executor::default_executor::DefaultTaskExecutor, queue::storage_config::TaskStorageConfig},
-};
+use cqrsx::task::{executor::default_executor::DefaultTaskExecutor, queue::storage_config::TaskStorageConfig};
 
 struct LostReplyQueue {
     inner: PostgresTaskQueue,
@@ -261,22 +258,19 @@ async fn insufficient_remaining_lease_returns_task_to_retry_without_performing_i
 
 async fn assert_session_timeout(pool: &PgPool) {
     let setting: String = sqlx::query_scalar("SHOW statement_timeout").fetch_one(pool).await.unwrap();
-    assert_eq!(setting, "10s");
+    assert_eq!(setting, "100ms");
 }
 
 #[tokio::test]
-async fn server_timeout_bounds_queue_lock_waits_rolls_back_and_restores_pool_settings() {
+async fn server_timeout_bounds_queue_lock_waits_and_leaves_no_partial_change() {
     let db = Database::new().await;
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect_with(db.pool.connect_options().as_ref().clone())
-        .await
-        .unwrap();
-    sqlx::query("SET statement_timeout = '10s'").execute(&pool).await.unwrap();
-    let queue = PostgresTaskQueue::with_config(
-        pool.clone(),
-        PostgresTaskQueueConfig::new(Duration::from_millis(100)).unwrap(),
-    );
+    let pool = pool_with(
+        &db,
+        PgPoolOptions::new().max_connections(1),
+        StatementTimeout::Custom(Duration::from_millis(100)),
+    )
+    .await;
+    let queue = PostgresTaskQueue::new(pool.clone());
 
     let processing = new_task();
     enqueue(&db.pool, vec![processing.clone()]).await;
@@ -341,9 +335,13 @@ async fn server_timeout_cancels_slow_execution_and_claim_changes_are_rolled_back
     .execute(&db.pool)
     .await
     .unwrap();
-    let queue = PostgresTaskQueue::with_config(
-        db.pool.clone(),
-        PostgresTaskQueueConfig::new(Duration::from_millis(100)).unwrap(),
+    let queue = PostgresTaskQueue::new(
+        pool_with(
+            &db,
+            PgPoolOptions::new(),
+            StatementTimeout::Custom(Duration::from_millis(100)),
+        )
+        .await,
     );
     let result = tokio::time::timeout(
         Duration::from_secs(3),
@@ -366,11 +364,7 @@ async fn server_timeout_cancels_slow_execution_and_claim_changes_are_rolled_back
 #[tokio::test]
 async fn runtime_deadline_includes_connection_acquisition() {
     let db = Database::new().await;
-    let pool = PgPoolOptions::new()
-        .max_connections(1)
-        .connect_with(db.pool.connect_options().as_ref().clone())
-        .await
-        .unwrap();
+    let pool = pool_with(&db, PgPoolOptions::new().max_connections(1), StatementTimeout::Default).await;
     let held_connection = pool.acquire().await.unwrap();
     let queue = Arc::new(PostgresTaskQueue::new(pool.clone()));
     let executor = Arc::new(DefaultTaskExecutor::new(

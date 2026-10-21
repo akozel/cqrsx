@@ -17,7 +17,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{error, info};
 use uuid::Uuid;
 
-// PostgreSQL recovery currently performs one UPDATE per row; do not scale this with C.
+// Expired-lease recovery returns at most this many rows per poller tick, in one statement.
 const RECOVERY_BATCH_LIMIT: usize = 32;
 /// One producer claims under free bounded-channel capacity; at most C deliveries run and Q wait.
 /// Each worker owns its dispatcher for its entire Tokio task lifetime. Token cancellation

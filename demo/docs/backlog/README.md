@@ -6,7 +6,7 @@
 | Эпик | Тема | Задач | Статус |
 |---|---|---|---|
 | [01_cqrsx_extractions](01_cqrsx_extractions/README.md) | Перенос кода из demo в `cqrsx` | 10 | 7 сделано, 07, 09, 10 предложены |
-| [02_postgres_performance](02_postgres_performance/README.md) | Пропускная способность PostgreSQL-хранилища | 16 | в работе: 01–03 сделаны |
+| [02_postgres_performance](02_postgres_performance/README.md) | Пропускная способность PostgreSQL-хранилища | 16 | в работе: 01–04 сделаны |
 
 Откуда берутся задачи: обсуждения ([`../discussions/`](../discussions/README.md)), аудиты и нагрузочные тесты
 ([`../../load/`](../../load/README.md)). Новая задача — файл `NN_snake_case.md` в каталоге эпика и строка в его

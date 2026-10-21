@@ -26,7 +26,6 @@ pub(crate) mod test_support {
         child.args(["--exact", test.split_once("::").unwrap().1, "--nocapture"]);
         for name in [
             "OUTBOX_STORAGE_TIMEOUT_MS",
-            "OUTBOX_POSTGRES_STATEMENT_TIMEOUT_MS",
             "OUTBOX_WORKER_CONCURRENCY",
             "OUTBOX_QUEUE_CAPACITY",
             "OUTBOX_POLL_INTERVAL_MS",

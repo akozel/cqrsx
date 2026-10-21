@@ -454,3 +454,18 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   interleaved × 3): accepted commands/s 417 → 477 (+14 %, ≠), p99 −11 %, PostgreSQL CPU per accepted
   command −11 %, packets −5 %, statements and the 409 share unchanged. Note: pg_stat_statements normalizes
   literals, so the old spliced texts never showed as separate rows there.
+- **2026-10-21, backlog 02/04 single-statement queue** (uncommitted). After measuring a separate queue pool
+  (its `W/10` default starved the drain, −35 %), the decision: one shared pool whose sessions carry a
+  statement timeout, and a separate uncapped pool for whole-history reads. cqrsx: `StatementTimeout::{Default
+  (4 s), Custom(Duration), Unlimited}`, a required argument of `connect_pool` / `connect_pool_with` (a startup
+  parameter of every session); claim, settle and recovery are one autocommitted statement each (recovery's
+  backoff in SQL, per row); `PostgresTaskQueue::new(PgPool)`, `prepare_task_runtime(pool, factory,
+  runtime_config)`; `PostgresTaskQueueConfig` and env `OUTBOX_POSTGRES_STATEMENT_TIMEOUT_MS` removed;
+  components.md warns that an aggregate with a long history and no snapshots can reach the cap. Demo: main
+  pool with `ENCORE_DATABASE_STATEMENT_TIMEOUT_MS`, history pool (`ENCORE_DATABASE_HISTORY_POOL_SIZE`,
+  `Unlimited`, no idle connection) for Encore!, verify, totals and the time machine. Measured (03a-w8,
+  profile `db`, shared pool 20, interleaved × 3): statements per drained task −59 %, packets −41 %, back-end
+  CPU per task −14 % (all ≠), drain tasks/s +9 % (overlapping), API during the burst −2 %. E2E (temporary
+  script): a slow rebuild of 4 s passes with the main pool capped at 1 s, verify ok before and after.
+  Verified: cqrsx build, fmt, clippy, full tests, the feature matrix, both `llvm-cov` (97.72 %); demo fmt,
+  clippy, tests.

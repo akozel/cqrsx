@@ -244,3 +244,49 @@ async fn retries_failed_tasks_and_expired_leases_preserve_identity_and_fence_old
     assert_eq!(claim(&queue).await[0].attempt().task_id(), zero_delay.id());
     db.close().await;
 }
+
+#[tokio::test]
+async fn recovery_backoff_keeps_the_bounds_of_redelivery_backoff_per_attempt() {
+    let db = Database::new().await;
+    let queue = PostgresTaskQueue::new(db.pool.clone());
+    // Eight tasks per attempt number 1..=8, each later redelivered at most ten times.
+    let tasks: Vec<_> = (0..64).map(|_| new_task().with_max_attempts(10).unwrap()).collect();
+    enqueue(&db.pool, tasks).await;
+    let owned = claim(&queue).await;
+    assert_eq!(owned.len(), 64);
+    for (index, task) in owned.iter().enumerate() {
+        sqlx::query("UPDATE transactional_outbox SET attempts = $2, locked_until = now() - interval '1 second' WHERE id = $1")
+            .bind(task.attempt().task_id())
+            .bind(1 + (index / 8) as i32)
+            .execute(&db.pool)
+            .await
+            .unwrap();
+    }
+    let report = queue.recover_expired(64).await.unwrap();
+    assert_eq!(report.processed_count(), 64);
+    assert!(report.failures().is_empty());
+    let rows = sqlx::query(
+        "SELECT attempts, EXTRACT(EPOCH FROM available_at - now())::float8 AS delay FROM transactional_outbox \
+         WHERE status = 'pending' AND last_error = 'worker lease expired'",
+    )
+    .fetch_all(&db.pool)
+    .await
+    .unwrap();
+    assert_eq!(rows.len(), 64);
+    let mut distinct = std::collections::HashSet::new();
+    for row in rows {
+        let attempts: i32 = row.get("attempts");
+        let delay: f64 = row.get("delay");
+        // The same rule as redelivery_backoff: min(5 s * 2^(n - 1), 300 s) * U(0.8, 1.2), at most 300 s.
+        let base = (5.0 * 2f64.powi((attempts - 1).clamp(0, 6))).min(300.0);
+        // One second of slack below for the time between recovery and this read.
+        assert!(
+            delay > base * 0.8 - 1.0 && delay <= (base * 1.2).min(300.0),
+            "attempt {attempts}: {delay} s outside {base} s ± 20 %"
+        );
+        distinct.insert((delay * 1000.0) as i64);
+    }
+    // Every row draws its own jitter, also within one recovery statement.
+    assert!(distinct.len() > 32, "only {} distinct delays", distinct.len());
+    db.close().await;
+}

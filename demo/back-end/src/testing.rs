@@ -16,7 +16,7 @@ use cqrsx::{
         projection::{View, repository::ViewRepository},
         testing::mem_view_repository::MemViewRepository,
     },
-    postgres::task_queue::PostgresTaskQueueConfig,
+    postgres::pool::StatementTimeout,
     task::runtime::config::TaskRuntimeConfig,
 };
 use mongodb::{Client, options::ClientOptions};
@@ -28,6 +28,8 @@ pub fn config() -> Config {
     Config {
         database_url: String::new(),
         database_pool_size: NonZeroU32::new(10).unwrap(),
+        database_statement_timeout: StatementTimeout::Default,
+        database_history_pool_size: NonZeroU32::new(1).unwrap(),
         mongodb_uri: String::new(),
         read_db: "encore_read_test".into(),
         http_addr: "127.0.0.1:0".parse().unwrap(),
@@ -40,7 +42,6 @@ pub fn config() -> Config {
         snapshot_every: 10,
         replay_slow_delay: Duration::ZERO,
         task_runtime: TaskRuntimeConfig::from_lookup(outbox_default).unwrap(),
-        task_queue: PostgresTaskQueueConfig::from_lookup(outbox_default).unwrap(),
     }
 }
 

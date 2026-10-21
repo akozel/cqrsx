@@ -1,4 +1,4 @@
-//! Atomic ready-task claims with conservative local lease anchoring.
+//! Atomic ready-task claims with conservative local lease anchoring, one autocommitted statement.
 use super::{milliseconds, storage_error};
 use crate::{
     postgres::task_queue::PostgresTaskQueue,
@@ -57,7 +57,6 @@ pub(super) async fn claim(
         .checked_add(lease_duration)
         .ok_or(QueueRequestError::InvalidLeaseDuration)?;
     let limit = i64::try_from(limit).map_err(|_| TaskProcessingError::from(QueueRequestError::InvalidLimit))?;
-    let mut tx = queue.begin_queue_transaction("claim").await?;
     let rows = sqlx::query_as::<_, ClaimRow>(
         r#"
         WITH ready AS (
@@ -79,14 +78,21 @@ pub(super) async fn claim(
     .bind(limit)
     .bind(owner)
     .bind(milliseconds(lease_duration, QueueRequestError::InvalidLeaseDuration)?)
-    .fetch_all(&mut *tx)
+    .fetch_all(&queue.pool)
     .await
     .map_err(|error| storage_error(error, "claim"))?;
-    let tasks = rows
-        .into_iter()
-        .map(|row| row.into_claimed_task(format, lease_deadline))
-        .collect::<Result<Vec<_>, TaskProcessingError>>()?;
-    tx.commit().await.map_err(|error| storage_error(error, "claim"))?;
+    // The claim is committed. A row that is not a valid delivery stays leased and comes back through
+    // lease recovery, attempt counted, until it fails; the rest of the batch is delivered. (Rolling
+    // the batch back would hand the same row out first on every poll and block its format.)
+    let mut tasks = Vec::with_capacity(rows.len());
+    for row in rows {
+        let task_id = row.id;
+        match row.into_claimed_task(format, lease_deadline) {
+            Ok(task) => tasks.push(task),
+            Err(_) => tracing::error!(%task_id, task_type = %crate::diagnostics::safe_type(format.task_type()),
+                task_version = format.task_version(), "claimed task is not a valid delivery; left to lease recovery"),
+        }
+    }
     Ok(tasks)
 }
 

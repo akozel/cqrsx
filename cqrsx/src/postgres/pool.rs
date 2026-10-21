@@ -11,6 +11,49 @@ pub const DEFAULT_MAX_CONNECTIONS: NonZeroU32 = NonZeroU32::new(10).expect("10 i
 /// connections the pings stop above ~100 acquisitions per second.
 pub const DEFAULT_IDLE_PING_AFTER: Duration = Duration::from_millis(100);
 
+/// The server-side cap of `StatementTimeout::Default`.
+pub const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_secs(4);
+
+/// How long PostgreSQL lets one statement of the pool run (`statement_timeout`, a startup parameter
+/// of every session, so no statement needs a transaction to scope it). Every pool this crate connects
+/// takes one explicitly.
+///
+/// The commands and the task queue issue short static statements over indexed tables: the latest
+/// snapshot, the events after it, one write; claim, settle, recovery. A cap turns a stuck statement
+/// (a lock wait, an overloaded server) into a fast failure, reported as `CommandGatewayError::Unavailable`
+/// with an unknown outcome or as `TaskProcessingError::Unavailable`, instead of a connection held for as
+/// long as it takes. Without snapshots, though, a command reads its aggregate's whole history: an
+/// aggregate with a long history and no snapshots can reach the cap, so give such aggregates snapshots.
+/// Long reads (replaying the whole store into a projection, counting it) belong to a pool of their own
+/// with `Unlimited`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StatementTimeout {
+    /// `DEFAULT_STATEMENT_TIMEOUT`, 4 s.
+    Default,
+    /// From 1 ms to `i32::MAX` ms; anything else fails the connection with `sqlx::Error::Configuration`.
+    Custom(Duration),
+    /// No cap (`statement_timeout = 0`), whatever the server or role configures.
+    Unlimited,
+}
+
+impl StatementTimeout {
+    /// The `statement_timeout` value in milliseconds; `0` means no cap.
+    fn milliseconds(self) -> Result<u128, sqlx::Error> {
+        match self {
+            Self::Default => Ok(DEFAULT_STATEMENT_TIMEOUT.as_millis()),
+            Self::Unlimited => Ok(0),
+            Self::Custom(timeout) => match timeout.as_millis() {
+                millis @ 1..=MAX_STATEMENT_TIMEOUT_MS => Ok(millis),
+                _ => Err(sqlx::Error::Configuration(
+                    format!("statement timeout must be 1..={MAX_STATEMENT_TIMEOUT_MS} ms").into(),
+                )),
+            },
+        }
+    }
+}
+
+const MAX_STATEMENT_TIMEOUT_MS: u128 = i32::MAX as u128;
+
 /// When the pool checks that a connection is alive (`Sync` → `ReadyForQuery`, one round trip)
 /// before handing it out. Every pool this crate connects takes one explicitly. SQLx still pings
 /// every connection when it returns to the pool, whatever the policy; that one is not configurable.
@@ -52,23 +95,30 @@ impl ConnectionPingPolicy {
     }
 }
 
-/// Connect using caller-supplied options, the given ping policy and SQLx's pool defaults
-/// (`DEFAULT_MAX_CONNECTIONS`). See `connect_pool_with` for the rest of the contract.
-pub async fn connect_pool(options: PgConnectOptions, ping: ConnectionPingPolicy) -> Result<PgPool, sqlx::Error> {
-    connect_pool_with(options, PgPoolOptions::new(), ping).await
+/// Connect using caller-supplied options, the given ping policy and statement timeout, and SQLx's
+/// pool defaults (`DEFAULT_MAX_CONNECTIONS`). See `connect_pool_with` for the rest of the contract.
+pub async fn connect_pool(
+    options: PgConnectOptions,
+    ping: ConnectionPingPolicy,
+    timeout: StatementTimeout,
+) -> Result<PgPool, sqlx::Error> {
+    connect_pool_with(options, PgPoolOptions::new(), ping, timeout).await
 }
 
-/// Connect using caller-supplied connection and pool options with the given ping policy on top.
-/// One pool is usually shared by every PostgreSQL user of a process (command executors, the task
-/// runtime's poller and workers), so its size (`PgPoolOptions::max_connections`) is the ceiling of
-/// concurrent database work and belongs to the process configuration.
+/// Connect using caller-supplied connection and pool options with the given ping policy and
+/// statement timeout on top. One pool is usually shared by the command executors and the task
+/// runtime's poller and workers, so its size (`PgPoolOptions::max_connections`) is the ceiling of
+/// concurrent database work and belongs to the process configuration; long reads take a second
+/// pool with `StatementTimeout::Unlimited`.
 /// No dotenv loading, URL parsing, custom retries or logger installation occurs here.
 /// The original SQLx error is returned; diagnostics omit its arbitrary text.
 pub async fn connect_pool_with(
     options: PgConnectOptions,
     pool: PgPoolOptions,
     ping: ConnectionPingPolicy,
+    timeout: StatementTimeout,
 ) -> Result<PgPool, sqlx::Error> {
+    let options = options.options([("statement_timeout", timeout.milliseconds()?.to_string())]);
     ping.apply(pool)
         .connect_with(options)
         .await
@@ -90,6 +140,32 @@ mod tests {
         assert!(!needs_ping(threshold - Duration::from_millis(1), threshold));
         assert!(!needs_ping(threshold, threshold));
         assert!(needs_ping(threshold + Duration::from_millis(1), threshold));
+    }
+
+    #[test]
+    fn statement_timeout_maps_to_milliseconds_and_rejects_what_postgresql_cannot_hold() {
+        assert_eq!(StatementTimeout::Default.milliseconds().unwrap(), 4000);
+        assert_eq!(StatementTimeout::Unlimited.milliseconds().unwrap(), 0);
+        assert_eq!(
+            StatementTimeout::Custom(Duration::from_millis(125)).milliseconds().unwrap(),
+            125
+        );
+        assert_eq!(
+            StatementTimeout::Custom(Duration::from_millis(i32::MAX as u64))
+                .milliseconds()
+                .unwrap(),
+            i32::MAX as u128
+        );
+        for invalid in [
+            Duration::ZERO,
+            Duration::from_micros(999),
+            Duration::from_millis(i32::MAX as u64 + 1),
+        ] {
+            assert!(matches!(
+                StatementTimeout::Custom(invalid).milliseconds(),
+                Err(sqlx::Error::Configuration(_))
+            ));
+        }
     }
 
     #[test]

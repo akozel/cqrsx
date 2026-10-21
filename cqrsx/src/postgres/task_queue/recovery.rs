@@ -1,12 +1,11 @@
-//! Atomic expired-lease recovery and confirmed failure reporting.
-use super::{milliseconds, storage_error};
+//! Atomic expired-lease recovery in one statement and confirmed failure reporting.
+use super::storage_error;
 use crate::{
     postgres::task_queue::PostgresTaskQueue,
     task::{
         format::TaskFormat,
         queue::{
             QueueRequestError, TaskProcessingError,
-            retry::redelivery_backoff,
             settlement::{LeaseRecoveryReport, TaskFailure, TaskFailureCause},
         },
     },
@@ -43,44 +42,37 @@ impl RecoveryRow {
     }
 }
 pub(super) async fn recover_expired(queue: &PostgresTaskQueue, limit: usize) -> Result<LeaseRecoveryReport, TaskProcessingError> {
-    let mut tx = queue.begin_queue_transaction("recover_expired").await?;
+    // One statement: lock the expired rows, return each to `pending` after its redelivery backoff or
+    // to `failed` on its last attempt. The backoff is `redelivery_backoff` in SQL, so every row draws
+    // its own jitter: min(5 s * 2^min(max(n - 1, 0), 6), 300 s) * U(0.8, 1.2), at most 300 s.
     let rows = sqlx::query_as::<_, RecoveryRow>(
         r#"
-        SELECT id, task_type, task_version, attempts, max_attempts FROM transactional_outbox
-        WHERE status = 'processing' AND locked_until <= statement_timestamp()
-        ORDER BY locked_until, id LIMIT $1 FOR UPDATE SKIP LOCKED
+        WITH expired AS (
+            SELECT id FROM transactional_outbox
+            WHERE status = 'processing' AND locked_until <= statement_timestamp()
+            ORDER BY locked_until, id LIMIT $1 FOR UPDATE SKIP LOCKED
+        )
+        UPDATE transactional_outbox AS o
+        SET status = CASE WHEN o.attempts >= o.max_attempts THEN 'failed' ELSE 'pending' END,
+            available_at = statement_timestamp() + LEAST(
+                LEAST(5000 * power(2, LEAST(GREATEST(o.attempts - 1, 0), 6)), 300000) * (0.8 + random() * 0.4),
+                300000) * interval '1 millisecond',
+            finished_at = CASE WHEN o.attempts >= o.max_attempts THEN statement_timestamp() ELSE NULL END,
+            last_error = 'worker lease expired', locked_by = NULL, lock_token = NULL, locked_until = NULL
+        FROM expired WHERE o.id = expired.id
+        RETURNING o.id, o.task_type, o.task_version, o.attempts, o.max_attempts
     "#,
     )
     .bind(i64::try_from(limit).map_err(|_| TaskProcessingError::from(QueueRequestError::InvalidLimit))?)
-    .fetch_all(&mut *tx)
+    .fetch_all(&queue.pool)
     .await
     .map_err(|error| storage_error(error, "recover_expired"))?;
-    let mut failed = Vec::new();
     let processed_count = rows.len();
-    for row in rows {
-        sqlx::query(
-            r#"
-            UPDATE transactional_outbox
-            SET status = CASE WHEN attempts >= max_attempts THEN 'failed' ELSE 'pending' END,
-                available_at = statement_timestamp() + $2 * interval '1 millisecond',
-                finished_at = CASE WHEN attempts >= max_attempts THEN statement_timestamp() ELSE NULL END,
-                last_error = 'worker lease expired', locked_by = NULL, lock_token = NULL, locked_until = NULL
-            WHERE id = $1
-        "#,
-        )
-        .bind(row.id)
-        .bind(milliseconds(
-            redelivery_backoff(row.attempts),
-            QueueRequestError::InvalidRetryDelay,
-        )?)
-        .execute(&mut *tx)
-        .await
-        .map_err(|error| storage_error(error, "recover_expired"))?;
-        if row.attempts >= row.max_attempts {
-            failed.push(row.into_failure()?);
-        }
-    }
-    tx.commit().await.map_err(|error| storage_error(error, "recover_expired"))?;
+    let failed = rows
+        .into_iter()
+        .filter(|row| row.attempts >= row.max_attempts)
+        .map(RecoveryRow::into_failure)
+        .collect::<Result<Vec<_>, _>>()?;
     Ok(LeaseRecoveryReport::new(processed_count - failed.len(), failed))
 }
 

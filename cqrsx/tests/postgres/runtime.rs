@@ -4,7 +4,7 @@ use std::sync::Mutex;
 
 use super::*;
 use cqrsx::{
-    postgres::{task_queue::PostgresTaskQueueConfig, task_runtime::prepare_task_runtime},
+    postgres::task_runtime::prepare_task_runtime,
     task::{dispatcher::TaskDispatcherError, queue::storage_config::TaskStorageConfig, runtime::config::TaskRuntimeConfig},
 };
 
@@ -49,12 +49,8 @@ async fn two_live_workers_complete_every_supported_task_and_quarantine_bad_paylo
     .unwrap();
     let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), config).unwrap();
     // A startup failure must leave existing durable work unclaimed.
-    let failed = prepare_task_runtime::<DummyHandler>(
-        db.pool.clone(),
-        Arc::new(|| Err(TaskDispatcherError::Empty)),
-        PostgresTaskQueueConfig::default(),
-        config.clone(),
-    );
+    let failed =
+        prepare_task_runtime::<DummyHandler>(db.pool.clone(), Arc::new(|| Err(TaskDispatcherError::Empty)), config.clone());
     assert!(matches!(
         failed,
         Err(WorkerSetupError::Build {
@@ -62,14 +58,8 @@ async fn two_live_workers_complete_every_supported_task_and_quarantine_bad_paylo
             source: TaskDispatcherError::Empty,
         })
     ));
-    let left = prepare_task_runtime(
-        db.pool.clone(),
-        factory.clone(),
-        PostgresTaskQueueConfig::default(),
-        config.clone(),
-    )
-    .unwrap();
-    let right = prepare_task_runtime(db.pool.clone(), factory, PostgresTaskQueueConfig::default(), config).unwrap();
+    let left = prepare_task_runtime(db.pool.clone(), factory.clone(), config.clone()).unwrap();
+    let right = prepare_task_runtime(db.pool.clone(), factory, config).unwrap();
     for task in [&first, &second, &bad] {
         assert_worker_state(&db.pool, task.id(), "pending", 0, None).await;
     }
@@ -160,7 +150,6 @@ async fn one_worker_pool_routes_two_registered_task_types() {
     let prepared = prepare_task_runtime(
         db.pool.clone(),
         factory,
-        PostgresTaskQueueConfig::default(),
         TaskRuntimeConfig::new(
             TaskStorageConfig::default(),
             TaskWorkerPoolConfig::new(
@@ -268,7 +257,7 @@ async fn old_terminal_tasks_are_retained_while_old_pending_and_processing_tasks_
     )
     .unwrap();
     let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), workers).unwrap();
-    let prepared = prepare_task_runtime(db.pool.clone(), factory, PostgresTaskQueueConfig::default(), config).unwrap();
+    let prepared = prepare_task_runtime(db.pool.clone(), factory, config).unwrap();
     let shutdown = CancellationToken::new();
     let runtime = tokio::spawn(prepared.run(shutdown.clone()));
     let progress = tokio::time::timeout(Duration::from_secs(10), async {

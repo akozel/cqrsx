@@ -4,7 +4,7 @@ use cqrsx::{
     host::{lifecycle, signal::shutdown_signal},
     logging::LoggingConfig,
     postgres::{
-        pool::{ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, connect_pool_with},
+        pool::{ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, StatementTimeout, connect_pool_with},
         task_runtime::prepare_task_runtime,
     },
 };
@@ -32,18 +32,34 @@ async fn main() {
     let config = Arc::new(Config::from_env().unwrap_or_else(|e| fail(format!("invalid configuration: {e}"))));
 
     // PostgreSQL: event store + outbox. Readiness is the job of scripts/wait-db.sh, not ours.
+    // The main pool serves the commands and the outbox queue: short static statements, so every
+    // session carries a statement timeout. Whole-history reads go to the history pool below.
     let options = config
         .database_url
         .parse::<PgConnectOptions>()
         .unwrap_or_else(|e| fail(format!("ENCORE_DATABASE_URL: {e}")))
         .application_name("encore-backend");
     let pool = connect_pool_with(
-        options,
+        options.clone(),
         PgPoolOptions::new().max_connections(config.database_pool_size.get()),
         ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
+        config.database_statement_timeout,
     )
     .await
     .unwrap_or_else(|e| fail(format!("cannot connect to PostgreSQL: {e}")));
+    // Encore!, verify, the ledger totals and the time machine read whole histories: no statement
+    // timeout, and no connection kept while none of them runs.
+    let history_pool = connect_pool_with(
+        options,
+        PgPoolOptions::new()
+            .max_connections(config.database_history_pool_size.get())
+            .min_connections(0)
+            .idle_timeout(std::time::Duration::from_secs(30)),
+        ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
+        StatementTimeout::Unlimited,
+    )
+    .await
+    .unwrap_or_else(|e| fail(format!("cannot connect the history pool to PostgreSQL: {e}")));
 
     // MongoDB: short server-selection timeout, so when MongoDB is down a command still answers
     // quickly (200 + `projection_failed` warning) instead of hanging for the driver's default 30 s.
@@ -56,21 +72,18 @@ async fn main() {
     let mongo = mongodb::Client::with_options(mongo_options).unwrap_or_else(|e| fail(format!("MongoDB client: {e}")));
 
     let shutdown = CancellationToken::new();
-    let wiring = bootstrap::wire(config.clone(), pool.clone(), &mongo, shutdown.clone()).unwrap_or_else(|e| fail(e));
+    let wiring =
+        bootstrap::wire(config.clone(), pool.clone(), history_pool.clone(), &mongo, shutdown.clone()).unwrap_or_else(|e| fail(e));
 
     let listener = tokio::net::TcpListener::bind(config.http_addr)
         .await
         .unwrap_or_else(|e| fail(format!("cannot bind {}: {e}", config.http_addr)));
     tracing::info!("encore-backend listening on http://{}", config.http_addr);
 
-    // Outbox task runtime: prepared here (no background work yet), started by `lifecycle::run`.
-    let runtime = prepare_task_runtime(
-        pool.clone(),
-        wiring.dispatcher,
-        config.task_queue.clone(),
-        config.task_runtime.clone(),
-    )
-    .unwrap_or_else(|e| fail(format!("task runtime setup: {e}")));
+    // Outbox task runtime on the main pool: claim, settlement and recovery are one statement each.
+    // Prepared here (no background work yet), started by `lifecycle::run`.
+    let runtime = prepare_task_runtime(pool.clone(), wiring.dispatcher, config.task_runtime.clone())
+        .unwrap_or_else(|e| fail(format!("task runtime setup: {e}")));
     let task_runtime = runtime.run(shutdown.clone());
 
     // axum 0.8: `with_graceful_shutdown` returns an `IntoFuture`, not a `Future`.
@@ -81,5 +94,6 @@ async fn main() {
         error.log("encore-backend stopped with an error");
     }
     pool.close().await;
+    history_pool.close().await;
     tracing::info!("encore-backend stopped");
 }

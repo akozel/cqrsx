@@ -3,7 +3,7 @@
 //! Parsing happens once at start-up, so this is the one place where a hard failure with a clear
 //! message is acceptable; everything after `Config::from_env` is free of `unwrap`/`expect`.
 use cqrsx::{
-    postgres::task_queue::{PostgresTaskQueueConfig, PostgresTaskQueueConfigError},
+    postgres::pool::StatementTimeout,
     task::runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
 };
 use std::{env, net::SocketAddr, num::NonZeroU32, time::Duration};
@@ -15,16 +15,20 @@ pub enum ConfigError {
     Invalid { name: &'static str, message: String },
     #[error("task runtime configuration: {0}")]
     TaskRuntime(#[from] TaskRuntimeConfigError),
-    #[error("task queue configuration: {0}")]
-    TaskQueue(#[from] PostgresTaskQueueConfigError),
 }
 
 #[derive(Clone, Debug)]
 pub struct Config {
     pub database_url: String,
-    /// Connections in the one PostgreSQL pool shared by HTTP, the outbox poller and the workers: the
-    /// ceiling of concurrent database work of the process.
+    /// Connections in the main PostgreSQL pool, shared by HTTP commands, the commands task handlers
+    /// run and the outbox queue: the ceiling of concurrent short database work of the process.
     pub database_pool_size: NonZeroU32,
+    /// Server-side cap of every statement of the main pool (`ENCORE_DATABASE_STATEMENT_TIMEOUT_MS`:
+    /// unset = the library's default, 4 s; 0 = no cap).
+    pub database_statement_timeout: StatementTimeout,
+    /// Connections of the history pool, which has no statement timeout: Encore!, verify, the ledger
+    /// totals and the time machine read whole histories. It keeps no idle connection.
+    pub database_history_pool_size: NonZeroU32,
     pub mongodb_uri: String,
     pub read_db: String,
     pub http_addr: SocketAddr,
@@ -42,10 +46,8 @@ pub struct Config {
     pub ticket_limit: usize,
     pub snapshot_every: usize,
     pub replay_slow_delay: Duration,
-    /// The library's own `OUTBOX_*` keys: worker pool and storage timeouts …
+    /// The library's own `OUTBOX_*` keys: worker pool and storage timeouts.
     pub task_runtime: TaskRuntimeConfig,
-    /// … and the PostgreSQL statement timeout of the task queue.
-    pub task_queue: PostgresTaskQueueConfig,
 }
 
 /// Demo defaults for the library's own `OUTBOX_*` keys, used when the variable is absent.
@@ -57,7 +59,6 @@ pub(crate) fn outbox_default(name: &str) -> Option<String> {
         "OUTBOX_HANDLER_TIMEOUT_SECS" => "5",
         "OUTBOX_LEASE_SECS" => "30",
         "OUTBOX_STORAGE_TIMEOUT_MS" => "3000",
-        "OUTBOX_POSTGRES_STATEMENT_TIMEOUT_MS" => "4000",
         _ => return None,
     };
     Some(value.to_owned())
@@ -82,6 +83,17 @@ where
     })
 }
 
+/// Unset = `StatementTimeout::Default`, `0` = `Unlimited`, any other number of milliseconds = `Custom`.
+fn statement_timeout(value: Option<String>) -> Result<StatementTimeout, ConfigError> {
+    const NAME: &str = "ENCORE_DATABASE_STATEMENT_TIMEOUT_MS";
+    match value.map(|value| value.parse::<u32>()) {
+        None => Ok(StatementTimeout::Default),
+        Some(Ok(0)) => Ok(StatementTimeout::Unlimited),
+        Some(Ok(millis)) if millis <= i32::MAX as u32 => Ok(StatementTimeout::Custom(Duration::from_millis(millis.into()))),
+        Some(_) => Err(invalid(NAME, "must be 0 (no cap) or 1..=2147483647 milliseconds")),
+    }
+}
+
 fn invalid(name: &'static str, message: impl Into<String>) -> ConfigError {
     ConfigError::Invalid {
         name,
@@ -92,7 +104,6 @@ fn invalid(name: &'static str, message: impl Into<String>) -> ConfigError {
 impl Config {
     pub fn from_env() -> Result<Self, ConfigError> {
         let task_runtime = TaskRuntimeConfig::from_lookup(outbox_lookup)?;
-        let task_queue = PostgresTaskQueueConfig::from_lookup(outbox_lookup)?;
         let task_max_attempts: i32 = parse("ENCORE_TASK_MAX_ATTEMPTS", "6")?;
         if task_max_attempts <= 0 {
             return Err(invalid("ENCORE_TASK_MAX_ATTEMPTS", "must be positive"));
@@ -119,9 +130,13 @@ impl Config {
         }
         // `NonZeroU32` rejects 0 while parsing.
         let database_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_POOL_SIZE", "10")?;
+        let database_history_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_HISTORY_POOL_SIZE", "1")?;
+        let database_statement_timeout = statement_timeout(var("ENCORE_DATABASE_STATEMENT_TIMEOUT_MS"))?;
         Ok(Self {
             database_url: var("ENCORE_DATABASE_URL").unwrap_or_else(|| "postgresql://cqrsx:cqrsx@localhost:5434/encore".into()),
             database_pool_size,
+            database_statement_timeout,
+            database_history_pool_size,
             mongodb_uri: var("ENCORE_MONGODB_URI").unwrap_or_else(|| "mongodb://localhost:27018".into()),
             read_db: var("ENCORE_READ_DB").unwrap_or_else(|| "encore_read".into()),
             http_addr: parse("ENCORE_HTTP_ADDR", "127.0.0.1:8080")?,
@@ -137,7 +152,6 @@ impl Config {
             snapshot_every,
             replay_slow_delay: Duration::from_millis(parse("ENCORE_REPLAY_SLOW_DELAY_MS", "80")?),
             task_runtime,
-            task_queue,
         })
     }
 
@@ -156,6 +170,23 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn statement_timeout_reads_unset_as_default_zero_as_unlimited_and_milliseconds_as_custom() {
+        assert_eq!(statement_timeout(None).unwrap(), StatementTimeout::Default);
+        assert_eq!(statement_timeout(Some("0".into())).unwrap(), StatementTimeout::Unlimited);
+        assert_eq!(
+            statement_timeout(Some("2500".into())).unwrap(),
+            StatementTimeout::Custom(Duration::from_millis(2500))
+        );
+        for invalid in ["-1", "x", "2147483648", ""] {
+            let error = statement_timeout(Some(invalid.into())).unwrap_err();
+            assert!(
+                error.to_string().contains("ENCORE_DATABASE_STATEMENT_TIMEOUT_MS"),
+                "{invalid}"
+            );
+        }
+    }
 
     #[test]
     fn the_pool_size_defaults_to_ten_and_rejects_zero() {
@@ -178,7 +209,6 @@ mod tests {
         assert_eq!(runtime.worker_pool().concurrency(), 2);
         assert_eq!(runtime.worker_pool().lease_duration(), Duration::from_secs(30));
         assert_eq!(runtime.worker_pool().handler_timeout(), Duration::from_secs(5));
-        PostgresTaskQueueConfig::from_lookup(outbox_default).expect("demo statement timeout must validate");
     }
 
     #[test]

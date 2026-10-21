@@ -98,7 +98,8 @@ PgPoolOptions::new()
   - `policy.apply(PgPoolOptions)` нужен тем, кто подключается сам.
 
   `connect_pool_with_size` удалена. demo пишет `connect_pool_with(options,
-  PgPoolOptions::new().max_connections(n), ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER))`.
+  PgPoolOptions::new().max_connections(n), ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER))`. (С задачи
+  [04](04_single_statement_queue.md) у обеих функций есть ещё обязательный `StatementTimeout`.)
 - **Рекомендуемый порог — 100 мс (`DEFAULT_IDLE_PING_AFTER`), а не 10 с.** Очередь свободных соединений в sqlx
   работает по принципу «первым пришёл — первым ушёл», поэтому соединение простаивает примерно `размер пула /
   выдач в секунду`. При 10 соединениях и 100 мс пинги пропадают уже от ~100 выдач в секунду (при 20 — от

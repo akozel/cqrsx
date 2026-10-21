@@ -66,7 +66,6 @@ pub(super) async fn settle(
     task: &LeasedTask,
     request: SettlementRequest,
 ) -> Result<SettlementResult, TaskProcessingError> {
-    let mut tx = queue.begin_queue_transaction("settle").await?;
     let parameters = settlement_parameters(request);
     // Lock first, then check time on the locked row. An UPDATE predicate can
     // be evaluated before waiting on a lock and is not necessarily rechecked
@@ -87,8 +86,7 @@ pub(super) async fn settle(
         RETURNING o.status
     "#).bind(task.attempt().task_id()).bind(task.lease().lock_token()).bind(parameters.status).bind(milliseconds(parameters.delay, QueueRequestError::InvalidRetryDelay)?)
         .bind(parameters.last_error.map(|reason| reason.chars().take(2048).collect::<String>()))
-        .fetch_optional(&mut *tx).await.map_err(|error| storage_error(error, "settle"))?;
-    tx.commit().await.map_err(|error| storage_error(error, "settle"))?;
+        .fetch_optional(&queue.pool).await.map_err(|error| storage_error(error, "settle"))?;
     let status = row
         .map(|row| row.try_get::<String, _>("status"))
         .transpose()
