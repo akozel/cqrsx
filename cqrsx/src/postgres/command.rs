@@ -4,25 +4,29 @@ use crate::{
         aggregate::Aggregate,
         command::{
             CommandExecutor, CommandGatewayError,
-            executor::CqrsCommandExecutor,
+            executor::{CqrsCommandExecutor, FrameworkFactory},
+            locks::LockLimits,
             retry::AggregateConflictRetryPolicy,
-            turns::{AggregateTurns, CommandOrdering},
         },
-        event_handler::EventHandler,
+        event_handler::{
+            EventHandler,
+            delivery::{DeliveryBacklog, DeliveryConfig},
+        },
         store::persisted::PersistedEventStore,
     },
     postgres::outbox::PostgresEventRepositoryWithOutbox,
+    task::NewTask,
 };
 use sqlx::PgPool;
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 use thiserror::Error;
 
-/// Checked snapshot interval, optimistic-conflict policy and command ordering. Does not read env.
+/// Checked snapshot interval, optimistic-conflict policy and aggregate lock limits. Does not read env.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PostgresCommandConfig {
     snapshot_interval: NonZeroUsize,
     conflict_retry: AggregateConflictRetryPolicy,
-    ordering: CommandOrdering,
+    lock_limits: LockLimits,
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -32,17 +36,17 @@ pub enum PostgresCommandConfigError {
 }
 
 impl PostgresCommandConfig {
-    /// `ordering` has no default on purpose: [`CommandOrdering::PerAggregate`] runs the commands to one
-    /// aggregate one at a time inside the process, [`CommandOrdering::Concurrent`] lets them race.
+    /// `lock_limits` bound how long, and how many, commands wait for one aggregate's lock; pass
+    /// [`LockLimits::default`] for the library's bounds.
     pub fn new(
         snapshot_interval: usize,
         conflict_retry: AggregateConflictRetryPolicy,
-        ordering: CommandOrdering,
+        lock_limits: LockLimits,
     ) -> Result<Self, PostgresCommandConfigError> {
         Ok(Self {
             snapshot_interval: NonZeroUsize::new(snapshot_interval).ok_or(PostgresCommandConfigError::InvalidSnapshotInterval)?,
             conflict_retry,
-            ordering,
+            lock_limits,
         })
     }
 
@@ -54,120 +58,76 @@ impl PostgresCommandConfig {
         self.conflict_retry
     }
 
-    pub fn ordering(&self) -> CommandOrdering {
-        self.ordering
+    pub fn lock_limits(&self) -> LockLimits {
+        self.lock_limits
     }
 }
 
-/// Assemble a snapshot-backed command executor with unit services and no event handlers;
-/// shorthand for [`PostgresCommandExecutor::new`] with `()` services.
+/// Builds the framework of one command: a repository on the shared pool bound to the command's outbox
+/// tasks, a snapshot-backed store over it and a clone of the services.
+struct PostgresFrameworkFactory<A: Aggregate> {
+    pool: PgPool,
+    snapshot_interval: usize,
+    services: A::Services,
+}
+
+impl<A> FrameworkFactory<A> for PostgresFrameworkFactory<A>
+where
+    A: Aggregate,
+    A::Services: Clone,
+{
+    type Store = PersistedEventStore<PostgresEventRepositoryWithOutbox, A>;
+
+    fn framework(&self, tasks: Vec<NewTask>) -> CqrsFramework<A, Self::Store> {
+        let repository = PostgresEventRepositoryWithOutbox::new(self.pool.clone()).with_outbox(tasks);
+        let store = PersistedEventStore::new_snapshot_store(repository, self.snapshot_interval);
+        CqrsFramework::new(store, self.services.clone())
+    }
+}
+
+/// The command executor over PostgreSQL: a [`CqrsCommandExecutor`] whose factory binds every command's
+/// outbox tasks to a fresh repository on the shared pool, with a snapshot-backed store and a clone of the
+/// services. One per aggregate type and process: it owns the aggregate locks and the handlers' buffers, so
+/// share it (e.g. in an `Arc`) instead of building a second one. Commands run through [`CommandExecutor`].
 ///
-/// Construction performs no I/O. Every command binds its immutable task list to
-/// a fresh repository/framework; conflict retries reuse that framework and reload
-/// state. The pool is shared, never a mutable task buffer. Accepted event, optional
-/// snapshot and explicit tasks commit atomically; at most one event is supported
-/// per command. Connection/timeout failures may have unknown commit outcomes and
-/// are not automatically retried.
-///
-/// Command handling uses a working clone of committed state. Snapshot creation
-/// applies accepted events to the original committed context, preserving append
-/// and increment semantics without requiring repeatable event application.
-///
-/// With [`CommandOrdering::PerAggregate`] the executor's commands to one aggregate
-/// wait for each other's turn; see [`PostgresCommandExecutor`].
+/// Construction performs no I/O. Accepted event, optional snapshot and explicit tasks commit atomically; at
+/// most one event is supported per command. Connection/timeout failures may have unknown commit outcomes
+/// and are not automatically retried. Command handling uses a working clone of committed state; snapshot
+/// creation applies accepted events to the original committed context, preserving append and increment
+/// semantics without requiring repeatable event application.
 ///
 /// For custom stores, use [`CqrsCommandExecutor::new`] with a framework factory instead.
-pub fn command_executor<A>(pool: PgPool, config: PostgresCommandConfig) -> PostgresCommandExecutor<A>
-where
-    A: Aggregate<Services = ()> + Clone + 'static,
-    A::Command: Clone + Send + 'static,
-    A::Error: Send + 'static,
-{
-    PostgresCommandExecutor::<A>::new(pool, config, ())
-}
-
-/// Named PostgreSQL adapter sharing the pool, immutable command configuration, aggregate
-/// services and event handlers. Each invocation builds one local CQRS engine with a clone of
-/// the services and the shared handlers; it never retains call-specific tasks.
-///
-/// With [`CommandOrdering::PerAggregate`] the executor owns one turn registry, shared by all its
-/// calls: its commands to one aggregate run one at a time, in arrival order, each holding the turn
-/// through its conflict retries and event handlers. Two executors of one aggregate type, like two
-/// processes, do not order each other; between them the optimistic check still decides.
 pub struct PostgresCommandExecutor<A: Aggregate> {
-    pool: PgPool,
-    config: PostgresCommandConfig,
-    turns: Option<AggregateTurns>,
-    services: A::Services,
-    event_handlers: Vec<Arc<dyn EventHandler<A>>>,
+    inner: CqrsCommandExecutor<A, PostgresFrameworkFactory<A>>,
 }
 
-impl<A: Aggregate> PostgresCommandExecutor<A> {
-    /// Stores the supplied configuration and services without I/O or environment access.
+impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
+    /// Stores the pool, the configuration and the services without I/O or environment access: the conflict
+    /// retry policy and the lock limits go to the executor, the snapshot interval to every command's store.
     pub fn new(pool: PgPool, config: PostgresCommandConfig, services: A::Services) -> Self {
-        Self {
+        let factory = PostgresFrameworkFactory {
             pool,
-            turns: config.ordering().turns(),
-            config,
+            snapshot_interval: config.snapshot_interval(),
             services,
-            event_handlers: Vec::new(),
+        };
+        Self {
+            inner: CqrsCommandExecutor::new(factory, config.conflict_retry(), config.lock_limits()),
         }
     }
 
-    /// Register a handler invoked after every commit, after the handlers registered before it.
-    /// One instance serves every command; its index in post-commit failures is its position.
-    pub fn with_event_handler(mut self, handler: Arc<dyn EventHandler<A>>) -> Self {
-        self.event_handlers.push(handler);
-        self
-    }
-}
-
-impl<A> PostgresCommandExecutor<A>
-where
-    A: Aggregate + Clone + 'static,
-    A::Services: Clone,
-    A::Command: Clone + Send + 'static,
-    A::Error: Send + 'static,
-{
-    /// Execute without event metadata; see [`execute_with_metadata`](Self::execute_with_metadata).
-    pub async fn execute(
-        &self,
-        aggregate_id: &str,
-        command: A::Command,
-        tasks: Vec<crate::task::NewTask>,
-    ) -> Result<(), CommandGatewayError<A::Error>> {
-        self.execute_with_metadata(aggregate_id, command, HashMap::new(), tasks).await
+    /// Registers a handler after the handlers registered before it; it gets the committed events through
+    /// a buffer per aggregate key bounded by `config`. One instance serves every command; its index in
+    /// post-commit failures is its position. Register every handler before the executor is shared.
+    pub fn with_event_handler(self, handler: Arc<dyn EventHandler<A>>, config: DeliveryConfig) -> Self {
+        Self {
+            inner: self.inner.with_event_handler(handler, config),
+        }
     }
 
-    /// Execute through the common engine, retrying only optimistic conflicts, inside the aggregate's
-    /// turn when the configuration orders commands per aggregate (a refused turn is `Unavailable`).
-    /// `metadata` is stored in the `metadata` column of the committed event.
-    pub async fn execute_with_metadata(
-        &self,
-        aggregate_id: &str,
-        command: A::Command,
-        metadata: HashMap<String, String>,
-        tasks: Vec<crate::task::NewTask>,
-    ) -> Result<(), CommandGatewayError<A::Error>> {
-        let snapshot_interval = self.config.snapshot_interval();
-        let executor = CqrsCommandExecutor::<A, _>::new(
-            |tasks| {
-                let repository = PostgresEventRepositoryWithOutbox::new(self.pool.clone()).with_outbox(tasks);
-                let store = PersistedEventStore::new_snapshot_store(repository, snapshot_interval);
-                let handlers = self
-                    .event_handlers
-                    .iter()
-                    .map(|handler| Box::new(handler.clone()) as Box<dyn EventHandler<A>>)
-                    .collect();
-                CqrsFramework::new(store, handlers, self.services.clone())
-            },
-            self.config.conflict_retry(),
-        );
-        let executor = match &self.turns {
-            Some(turns) => executor.with_turns(turns.clone()),
-            None => executor,
-        };
-        executor.execute_with_metadata(aggregate_id, command, metadata, tasks).await
+    /// The hand-overs of this executor not handled yet; empty without handlers. Take it before the
+    /// executor is moved away, to wait for the handlers before maintenance or shutdown.
+    pub fn backlog(&self) -> DeliveryBacklog {
+        self.inner.backlog()
     }
 }
 
@@ -178,34 +138,90 @@ where
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
 {
+    /// Runs the command under the aggregate's lock with conflict retry (a refused lock, or no space for a
+    /// handler before the lock's deadline, is `Unavailable`); `metadata` is stored with the committed event.
     async fn execute_with_metadata(
         &self,
         aggregate_id: &str,
         command: A::Command,
         metadata: HashMap<String, String>,
-        tasks: Vec<crate::task::NewTask>,
+        tasks: Vec<NewTask>,
     ) -> Result<(), CommandGatewayError<A::Error>> {
-        PostgresCommandExecutor::execute_with_metadata(self, aggregate_id, command, metadata, tasks).await
+        self.inner.execute_with_metadata(aggregate_id, command, metadata, tasks).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::command::turns::TurnLimits;
     use std::time::Duration;
+
+    #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+    struct Quiet;
+
+    #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+    struct Said;
+
+    impl crate::cqrs::event::DomainEvent for Said {
+        fn event_type(&self) -> String {
+            "said".into()
+        }
+
+        fn event_version(&self) -> String {
+            "1".into()
+        }
+    }
+
+    impl Aggregate for Quiet {
+        const TYPE: &'static str = "quiet";
+        type Command = ();
+        type Event = Said;
+        type Error = std::convert::Infallible;
+        type Services = ();
+
+        async fn handle(&mut self, _: (), _: &(), _: &crate::cqrs::event_sink::EventSink<Self>) -> Result<(), Self::Error> {
+            Ok(())
+        }
+
+        fn apply(&mut self, _: Said) {}
+    }
+
+    struct Ignore;
+
+    #[async_trait::async_trait]
+    impl EventHandler<Quiet> for Ignore {
+        async fn handle(
+            &self,
+            _: &str,
+            _: &[crate::cqrs::event::EventEnvelope<Quiet>],
+        ) -> Result<(), crate::cqrs::store::PersistenceError> {
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn handlers_register_and_share_one_backlog() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://nobody@localhost/none")
+            .unwrap();
+        let config = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap();
+        let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ())
+            .with_event_handler(Arc::new(Ignore), DeliveryConfig::default())
+            .with_event_handler(Arc::new(Ignore), DeliveryConfig::new(1, 1).unwrap());
+        assert!(executor.backlog().is_empty());
+        assert_eq!(executor.inner.lock_limits(), LockLimits::default());
+    }
 
     #[test]
     fn config_keeps_its_values_and_checks_the_interval() {
         let retry = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-        let concurrent = PostgresCommandConfig::new(2, retry, CommandOrdering::Concurrent).unwrap();
-        assert_eq!(concurrent.snapshot_interval(), 2);
-        assert_eq!(concurrent.conflict_retry(), retry);
-        assert_eq!(concurrent.ordering(), CommandOrdering::Concurrent);
-        let turns = CommandOrdering::PerAggregate(TurnLimits::new(Duration::from_millis(5), 2).unwrap());
-        assert_eq!(PostgresCommandConfig::new(25, retry, turns).unwrap().ordering(), turns);
+        let limits = LockLimits::new(Duration::from_millis(5), 2).unwrap();
+        let config = PostgresCommandConfig::new(2, retry, limits).unwrap();
+        assert_eq!(config.snapshot_interval(), 2);
+        assert_eq!(config.conflict_retry(), retry);
+        assert_eq!(config.lock_limits(), limits);
         assert_eq!(
-            PostgresCommandConfig::new(0, retry, turns),
+            PostgresCommandConfig::new(0, retry, limits),
             Err(PostgresCommandConfigError::InvalidSnapshotInterval)
         );
     }

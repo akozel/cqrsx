@@ -18,13 +18,11 @@ use cqrsx::cqrs::store::AggregateContext;
 use cqrsx::cqrs::store::EventStore;
 use cqrsx::{
     cqrs::command::{
-        CommandGatewayError,
-        executor::CqrsCommandExecutor,
+        CommandExecutor, CommandGatewayError, executor::CqrsCommandExecutor, locks::LockLimits,
         retry::AggregateConflictRetryPolicy,
-        turns::{CommandOrdering, TurnLimits},
     },
     host::error::HostError,
-    postgres::command::{PostgresCommandConfig, command_executor},
+    postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
     task::{
         adapter::TaskAdapter,
         attempt::TaskAttempt,
@@ -158,20 +156,16 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         .connect_lazy("postgres://localhost/unused")
         .unwrap();
     pool.close().await;
-    let config = PostgresCommandConfig::new(
-        25,
-        AggregateConflictRetryPolicy::default(),
-        CommandOrdering::PerAggregate(TurnLimits::default()),
-    )
-    .unwrap();
-    let executor = command_executor::<ProbeAggregate>(pool, config);
+    let config = PostgresCommandConfig::new(25, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap();
+    let executor = PostgresCommandExecutor::<ProbeAggregate>::new(pool, config, ());
     assert!(matches!(
         executor.execute("private_id", (), vec![]).await,
         Err(CommandGatewayError::Unavailable)
     ));
     let executor = CqrsCommandExecutor::<ProbeAggregate, _>::new(
-        |_| CqrsFramework::new(UnavailableStore, vec![], ()),
+        |_| CqrsFramework::new(UnavailableStore, ()),
         AggregateConflictRetryPolicy::default(),
+        LockLimits::default(),
     );
     assert!(matches!(
         executor.execute("private_id", (), vec![]).await,

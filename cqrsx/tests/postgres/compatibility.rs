@@ -93,7 +93,7 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
         assert_eq!(events_only.load_aggregate(id).await.unwrap().aggregate.value, value);
     }
     let store = PersistedEventStore::<_, State>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 2);
-    let framework = CqrsFramework::new(store, vec![], ());
+    let framework = CqrsFramework::new(store, ());
     framework
         .execute_with_metadata("old", 50, HashMap::from([("correlation_id".into(), "after-fork".into())]))
         .await

@@ -207,7 +207,7 @@ where
     /// let repo = MyEventRepository::new(my_db_connection);
     /// let store = PersistedEventStore::<MyEventRepository,MyAggregate>::new_event_store(repo);
     /// let service = MyService;
-    /// let cqrs = CqrsFramework::new(store, vec![], service);
+    /// let cqrs = CqrsFramework::new(store, service);
     /// # }
     /// ```
     pub fn new_event_store(repo: R) -> Self {
@@ -366,7 +366,7 @@ where
     /// # fn config(my_db_connection: MyDatabaseConnection) {
     /// let repo = MyEventRepository::new(my_db_connection);
     /// let store = PersistedEventStore::<MyEventRepository,MyAggregate>::new_snapshot_store(repo, 100);
-    /// let cqrs = CqrsFramework::new(store, vec![], MyService);
+    /// let cqrs = CqrsFramework::new(store, MyService);
     /// # }
     /// ```
     pub fn new_snapshot_store(repo: R, snapshot_interval: usize) -> Self {

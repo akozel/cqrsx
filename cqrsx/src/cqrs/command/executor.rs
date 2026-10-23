@@ -1,146 +1,218 @@
 use super::{
     CommandExecutor, CommandGatewayError, FailedHandler,
+    locks::{AggregateLocks, LockLimits, LockRefused},
     retry::retry_on_aggregate_conflict,
-    turns::{AggregateTurns, TurnRefused},
 };
 use crate::{
     cqrs::{
         AggregateError, CqrsFramework,
         aggregate::{Aggregate, AggregateKey},
         command::retry::AggregateConflictRetryPolicy,
+        event::EventEnvelope,
+        event_handler::{
+            EventHandler,
+            delivery::{DeliveryBacklog, DeliveryConfig, RegisteredHandlers},
+        },
         store::EventStore,
     },
     task::NewTask,
 };
-use std::{collections::HashMap, error::Error, marker::PhantomData};
-/// Executes commands for one aggregate type through frameworks supplied by the
-/// composition root or a runtime adapter factory.
+use std::{collections::HashMap, error::Error, sync::Arc};
+
+/// Builds the framework one command runs through: the event store, bound to the command's outbox tasks
+/// where the store publishes them, and the aggregate's services. Called once per command, before its first
+/// attempt; conflict retries reuse the framework, so the tasks cannot change between attempts.
 ///
-/// The framework is built exactly once per [`execute_with_metadata`](Self::execute_with_metadata)
-/// call. Every optimistic-conflict attempt reloads aggregate state through that
-/// same framework and repeats clones of the original command and of its event
-/// metadata. The immutable outbox task list is handed to the factory once and
-/// therefore cannot be regenerated or changed between attempts.
-///
-/// With [`with_turns`](Self::with_turns) a command first waits for its aggregate's turn and holds it
-/// through every attempt and the event handlers; a refused turn is [`CommandGatewayError::Unavailable`]
-/// and nothing is built or written. An event handler must not execute a command synchronously through
-/// an executor with turns: for its own aggregate it would wait for its own turn, for another one two
-/// such handlers could wait for each other; both end only when the wait times out. Use the outbox.
-pub struct CqrsCommandExecutor<A, BuildFramework> {
-    build_framework: BuildFramework,
-    retry_policy: AggregateConflictRetryPolicy,
-    turns: Option<AggregateTurns>,
-    aggregate: PhantomData<fn() -> A>,
+/// Every `Fn(Vec<NewTask>) -> CqrsFramework<A, S>` is a factory, which is enough for a custom store; the
+/// PostgreSQL and the test executors have factories of their own.
+pub trait FrameworkFactory<A: Aggregate>: Send + Sync {
+    type Store: EventStore<A>;
+
+    fn framework(&self, tasks: Vec<NewTask>) -> CqrsFramework<A, Self::Store>;
 }
 
-impl<A, BuildFramework> CqrsCommandExecutor<A, BuildFramework> {
-    /// Commands to one aggregate run concurrently; the store's optimistic check resolves races.
-    pub fn new(build_framework: BuildFramework, retry_policy: AggregateConflictRetryPolicy) -> Self {
+impl<A, S, F> FrameworkFactory<A> for F
+where
+    A: Aggregate,
+    S: EventStore<A>,
+    F: Fn(Vec<NewTask>) -> CqrsFramework<A, S> + Send + Sync,
+{
+    type Store = S;
+
+    fn framework(&self, tasks: Vec<NewTask>) -> CqrsFramework<A, S> {
+        self(tasks)
+    }
+}
+
+/// Executes the commands of one aggregate type: one long-lived executor per aggregate type and process,
+/// shared (e.g. in an `Arc`) by everything that issues its commands.
+///
+/// A command first waits for its aggregate's lock, so the executor's commands to one aggregate run one at
+/// a time, in arrival order; two executors of one aggregate type are like two processes, which meet only in
+/// the store's optimistic check. Holding the lock the command reserves space in the handlers' buffers,
+/// builds its framework through the [`FrameworkFactory`], commits with bounded conflict retry (every
+/// attempt reloads the aggregate through that framework and repeats clones of the command and of its
+/// metadata) and hands its events over; then it releases the lock and waits for the handlers' receipts.
+/// The lock and the space share one deadline, the lock's `max_wait` from the command's arrival; past it
+/// the command is [`CommandGatewayError::Unavailable`] and nothing is built or written.
+///
+/// The committed events go to the executor's handlers ([`with_event_handler`](Self::with_event_handler)),
+/// each through an ordered buffer per aggregate key, numbered by registration in post-commit failures. An
+/// event handler never executes a command (see [`EventHandler`]): it would wait for its own receipt
+/// forever, and handlers of two aggregates could wait for each other.
+pub struct CqrsCommandExecutor<A: Aggregate, F> {
+    factory: F,
+    retry_policy: AggregateConflictRetryPolicy,
+    locks: AggregateLocks,
+    handlers: RegisteredHandlers<A>,
+}
+
+impl<A: Aggregate + 'static, F> CqrsCommandExecutor<A, F> {
+    /// An executor with a lock registry of its own, bounded by `lock_limits`, and no event handlers.
+    pub fn new(factory: F, retry_policy: AggregateConflictRetryPolicy, lock_limits: LockLimits) -> Self {
         Self {
-            build_framework,
+            factory,
             retry_policy,
-            turns: None,
-            aggregate: PhantomData,
+            locks: AggregateLocks::new(lock_limits),
+            handlers: RegisteredHandlers::default(),
         }
     }
 
-    /// Commands to one aggregate run one at a time through `turns`. Pass the same registry (a clone) to
-    /// every executor whose commands must order each other, e.g. to one built per call.
-    pub fn with_turns(mut self, turns: AggregateTurns) -> Self {
-        self.turns = Some(turns);
+    /// Registers a handler after the handlers registered before it; it gets the committed events through
+    /// a buffer per aggregate key bounded by `config`. Register every handler before the executor is shared.
+    pub fn with_event_handler(mut self, handler: Arc<dyn EventHandler<A>>, config: DeliveryConfig) -> Self {
+        self.add_event_handler(handler, config);
         self
+    }
+
+    /// The executor's hand-overs not handled yet; empty without handlers.
+    pub fn backlog(&self) -> DeliveryBacklog {
+        self.handlers.backlog()
+    }
+
+    pub(crate) fn add_event_handler(&mut self, handler: Arc<dyn EventHandler<A>>, config: DeliveryConfig) {
+        self.handlers.push(handler, config);
+    }
+
+    pub(crate) fn factory(&self) -> &F {
+        &self.factory
+    }
+
+    #[cfg(all(test, feature = "postgres"))]
+    pub(crate) fn lock_limits(&self) -> LockLimits {
+        self.locks.limits()
     }
 }
 
-impl<A, BuildFramework> CqrsCommandExecutor<A, BuildFramework>
+impl<A, F> CqrsCommandExecutor<A, F>
 where
-    A: Aggregate + Clone,
+    A: Aggregate + Clone + 'static,
     A::Command: Clone + Send,
+    F: FrameworkFactory<A>,
+    F::Store: 'static,
+    <F::Store as EventStore<A>>::AC: Send,
 {
     /// Executes without event metadata; see [`execute_with_metadata`](Self::execute_with_metadata).
-    pub async fn execute<ES>(
+    pub async fn execute(
         &self,
         aggregate_id: &str,
         command: A::Command,
         tasks: Vec<NewTask>,
-    ) -> Result<(), CommandGatewayError<A::Error>>
-    where
-        BuildFramework: Fn(Vec<NewTask>) -> CqrsFramework<A, ES> + Send + Sync,
-        ES: EventStore<A> + 'static,
-        ES::AC: Send,
-    {
+    ) -> Result<(), CommandGatewayError<A::Error>> {
         self.execute_with_metadata(aggregate_id, command, HashMap::new(), tasks).await
     }
 
-    /// Waits for the aggregate's turn when the executor has turns, builds one framework for `tasks`,
-    /// then runs the command with bounded conflict retry. Each attempt receives a clone of `metadata`,
-    /// so a retried command commits exactly the metadata of its first attempt.
-    pub async fn execute_with_metadata<ES>(
+    /// Waits for the aggregate's lock and the handlers' space, builds one framework for `tasks`,
+    /// then runs the command with bounded conflict retry. Each attempt receives a
+    /// clone of `metadata`, so a retried command commits exactly the metadata of its first attempt.
+    pub async fn execute_with_metadata(
         &self,
         aggregate_id: &str,
         command: A::Command,
         metadata: HashMap<String, String>,
         tasks: Vec<NewTask>,
-    ) -> Result<(), CommandGatewayError<A::Error>>
-    where
-        BuildFramework: Fn(Vec<NewTask>) -> CqrsFramework<A, ES> + Send + Sync,
-        ES: EventStore<A> + 'static,
-        ES::AC: Send,
-    {
-        // Held until the end of this function: through every attempt and the event handlers.
-        let _turn = match &self.turns {
-            Some(turns) => Some(
-                turns
-                    .enter(AggregateKey::of::<A>(aggregate_id))
-                    .await
-                    .map_err(turn_refused::<A::Error>(A::TYPE))?,
-            ),
-            None => None,
+    ) -> Result<(), CommandGatewayError<A::Error>> {
+        let arrived = tokio::time::Instant::now();
+        // Held through every attempt and the hand-over to the handlers.
+        let lock = self
+            .locks
+            .acquire(AggregateKey::of::<A>(aggregate_id))
+            .await
+            .map_err(lock_refused::<A::Error>(A::TYPE))?;
+        // Space first, commit second: once committed, the hand-over below cannot wait or be lost.
+        let reserved = if !self.handlers.is_empty() {
+            tokio::time::timeout_at(arrived + self.locks.limits().max_wait(), self.handlers.reserve(aggregate_id))
+                .await
+                .map_err(|_| {
+                    crate::diagnostics::log_delivery_refused(A::TYPE);
+                    CommandGatewayError::Unavailable
+                })?
+        } else {
+            self.handlers.reserve(aggregate_id).await // no handlers: ready at once
         };
-        let framework = (self.build_framework)(tasks);
+        let framework = self.factory.framework(tasks);
         let framework_ref = &framework;
         let metadata_ref = &metadata;
-        retry_on_aggregate_conflict(self.retry_policy, move || {
+        let committed = retry_on_aggregate_conflict(self.retry_policy, move || {
             framework_ref.execute_with_metadata(aggregate_id, command.clone(), metadata_ref.clone())
         })
         .await
         .inspect_err(|error| log_aggregate_error(A::TYPE, error))
-        .map_err(map_aggregate_error)
+        .map_err(map_aggregate_error)?;
+        let Some(last_sequence) = committed.last().map(|event| event.sequence) else {
+            return Ok(()); // no events: nothing to hand over, the reserved space goes back
+        };
+        let events: Arc<[EventEnvelope<A>]> = committed.into();
+        // In the same poll as the commit's completion: a caller gone from here on does not lose it.
+        let receipts = reserved.deliver(&events);
+        drop(lock); // the next command of the aggregate may start while the handlers work
+        let mut failed = Vec::new();
+        for (position, receipt) in receipts {
+            // The worker has logged a failure once for its whole batch.
+            if receipt.outcome().await.is_err() {
+                failed.push(FailedHandler {
+                    index: position,
+                    name: self.handlers.name(position),
+                });
+            }
+        }
+        if failed.is_empty() {
+            return Ok(());
+        }
+        Err(CommandGatewayError::CommittedWithEventHandlerFailure {
+            last_sequence,
+            handlers: failed,
+        })
     }
 }
 
-fn turn_refused<D>(aggregate_type: &'static str) -> impl FnOnce(TurnRefused) -> CommandGatewayError<D> {
+fn lock_refused<D>(aggregate_type: &'static str) -> impl FnOnce(LockRefused) -> CommandGatewayError<D> {
     move |refused| {
-        crate::diagnostics::log_turn_refused(aggregate_type, refused);
+        crate::diagnostics::log_lock_refused(aggregate_type, refused);
         CommandGatewayError::Unavailable
     }
 }
 
+/// Logs the technical failures of a load or commit; domain rejections and conflicts are outcomes, and
+/// handler failures are logged by the delivery worker.
 fn log_aggregate_error<D: Error>(aggregate_type: &str, error: &AggregateError<D>) {
     let (category, source) = match error {
         AggregateError::DatabaseConnectionError(source) => ("connection", source),
         AggregateError::DeserializationError(source) => ("deserialization", source),
         AggregateError::UnexpectedError(source) => ("unexpected", source),
-        AggregateError::CommittedWithEventHandlerFailure(failure) => {
-            for error in &failure.errors {
-                crate::diagnostics::log_command_failure(aggregate_type, "event_handler", &error.error);
-            }
-            return;
-        }
         AggregateError::Domain(_) | AggregateError::AggregateConflict => return,
     };
     crate::diagnostics::log_command_failure(aggregate_type, category, source.as_ref());
 }
 
-impl<A, BuildFramework, ES> CommandExecutor<A> for CqrsCommandExecutor<A, BuildFramework>
+impl<A, F> CommandExecutor<A> for CqrsCommandExecutor<A, F>
 where
     A: Aggregate + Clone + 'static,
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
-    BuildFramework: Fn(Vec<NewTask>) -> CqrsFramework<A, ES> + Send + Sync,
-    ES: EventStore<A> + 'static,
-    ES::AC: Send,
+    F: FrameworkFactory<A>,
+    F::Store: 'static,
+    <F::Store as EventStore<A>>::AC: Send,
 {
     async fn execute_with_metadata(
         &self,
@@ -157,17 +229,6 @@ pub(super) fn map_aggregate_error<D: Error>(error: AggregateError<D>) -> Command
     match error {
         AggregateError::Domain(error) => CommandGatewayError::Domain(error),
         AggregateError::AggregateConflict => CommandGatewayError::Conflict,
-        AggregateError::CommittedWithEventHandlerFailure(failure) => CommandGatewayError::CommittedWithEventHandlerFailure {
-            last_sequence: failure.last_sequence,
-            handlers: failure
-                .errors
-                .into_iter()
-                .map(|e| FailedHandler {
-                    index: e.handler_index,
-                    name: e.handler_name,
-                })
-                .collect(),
-        },
         AggregateError::DatabaseConnectionError(_)
         | AggregateError::DeserializationError(_)
         | AggregateError::UnexpectedError(_) => CommandGatewayError::Unavailable,
@@ -195,8 +256,9 @@ mod tests {
     use crate::cqrs::AggregateError;
     use crate::cqrs::CqrsFramework;
     use crate::cqrs::aggregate::Aggregate;
-    use crate::cqrs::command::turns::TurnLimits;
+    use crate::cqrs::command::locks::LockLimits;
     use crate::cqrs::event_handler::EventHandler;
+    use crate::cqrs::event_handler::delivery::DeliveryConfig;
     use crate::cqrs::store::{EventStore, PersistenceError};
     use crate::task::{NewTask, format::TaskPayload};
     use std::time::Duration;
@@ -339,14 +401,9 @@ mod tests {
     #[tokio::test]
     async fn executor_accepts_send_commands_without_requiring_sync() {
         let executor = Arc::new(CqrsCommandExecutor::new(
-            |_| {
-                CqrsFramework::new(
-                    crate::cqrs::testing::mem_store::MemStore::<SendOnlyAggregate>::default(),
-                    vec![],
-                    (),
-                )
-            },
+            |_| CqrsFramework::new(crate::cqrs::testing::mem_store::MemStore::<SendOnlyAggregate>::default(), ()),
             no_delay_policy(1),
+            LockLimits::default(),
         ));
         let result = tokio::spawn(async move {
             CommandExecutor::execute(executor.as_ref(), "send-only", std::cell::Cell::new(7), vec![]).await
@@ -435,11 +492,11 @@ mod tests {
                         conflicts,
                         commits: commits.clone(),
                     },
-                    vec![],
                     Arc::default(),
                 )
             },
             no_delay_policy(3),
+            LockLimits::default(),
         )
     }
 
@@ -480,12 +537,12 @@ mod tests {
                             conflicts: 0,
                             commits: commits.clone(),
                         },
-                        vec![],
                         Arc::default(),
                     )
                 }
             },
             no_delay_policy(1),
+            LockLimits::default(),
         );
         inherent
             .execute("aggregate", DummyCommand::Record("inherent".to_owned()), vec![])
@@ -516,12 +573,12 @@ mod tests {
                             conflicts: 2,
                             load_error: None,
                         },
-                        vec![],
                         commands.clone(),
                     )
                 }
             },
             no_delay_policy(3),
+            LockLimits::default(),
         ));
         let task = NewTask::new(DummyTask { value: "same" }).unwrap();
 
@@ -557,11 +614,11 @@ mod tests {
                         conflicts: 0,
                         load_error: None,
                     },
-                    vec![],
                     Arc::default(),
                 )
             },
             no_delay_policy(3),
+            LockLimits::default(),
         ));
         assert_eq!(
             CommandExecutor::execute(domain_executor.as_ref(), "aggregate", DummyCommand::Reject, vec![]).await,
@@ -579,12 +636,12 @@ mod tests {
                             conflicts: usize::MAX,
                             load_error: None,
                         },
-                        vec![],
                         Arc::default(),
                     )
                 }
             },
             no_delay_policy(3),
+            LockLimits::default(),
         ));
         assert_eq!(
             CommandExecutor::execute(
@@ -611,11 +668,11 @@ mod tests {
                             conflicts: 0,
                             load_error: Some(error),
                         },
-                        vec![],
                         Arc::default(),
                     )
                 },
                 no_delay_policy(3),
+                LockLimits::default(),
             ));
             assert_eq!(
                 CommandExecutor::execute(
@@ -646,11 +703,11 @@ mod tests {
                                 conflicts: 0,
                                 load_error: Some(error),
                             },
-                            vec![],
                             Arc::default(),
                         )
                     },
                     no_delay_policy(3),
+                    LockLimits::default(),
                 );
                 assert_eq!(
                     executor
@@ -673,11 +730,11 @@ mod tests {
                             conflicts: usize::MAX,
                             load_error: None,
                         },
-                        vec![],
                         Arc::default(),
                     )
                 },
                 no_delay_policy(3),
+                LockLimits::default(),
             );
             assert_eq!(
                 executor.execute("private_id", DummyCommand::Reject, vec![]).await,
@@ -707,6 +764,8 @@ mod tests {
         journal: Arc<Mutex<Vec<String>>>,
         calls: Arc<Mutex<Vec<String>>>,
         external_conflicts: Arc<AtomicUsize>,
+        /// When set, every load takes a permit first: a command holds its lock while its load waits.
+        load_gate: Option<Arc<tokio::sync::Semaphore>>,
     }
 
     struct VersionedContext(DummyAggregate, usize);
@@ -725,6 +784,9 @@ mod tests {
         }
 
         async fn load_aggregate(&self, _: &str) -> Result<Self::AC, AggregateError<DummyError>> {
+            if let Some(gate) = &self.load_gate {
+                gate.acquire().await.unwrap().forget();
+            }
             self.calls.lock().unwrap().push("load".to_owned());
             let sequence = self.journal.lock().unwrap().len();
             tokio::task::yield_now().await;
@@ -762,18 +824,23 @@ mod tests {
 
     type VersionedFramework = CqrsFramework<DummyAggregate, VersionedStore>;
 
-    fn versioned_executor<H>(
+    fn versioned_executor(
         store: &VersionedStore,
         attempts: usize,
-        handlers: H,
-    ) -> CqrsCommandExecutor<DummyAggregate, impl Fn(Vec<NewTask>) -> VersionedFramework + Send + Sync + use<H>>
-    where
-        H: Fn() -> Vec<Box<dyn EventHandler<DummyAggregate>>> + Send + Sync,
-    {
+    ) -> CqrsCommandExecutor<DummyAggregate, impl Fn(Vec<NewTask>) -> VersionedFramework + Send + Sync + use<>> {
+        versioned_executor_with(store, attempts, LockLimits::default())
+    }
+
+    fn versioned_executor_with(
+        store: &VersionedStore,
+        attempts: usize,
+        limits: LockLimits,
+    ) -> CqrsCommandExecutor<DummyAggregate, impl Fn(Vec<NewTask>) -> VersionedFramework + Send + Sync + use<>> {
         let store = store.clone();
         CqrsCommandExecutor::new(
-            move |_| CqrsFramework::new(store.clone(), handlers(), Arc::default()),
+            move |_| CqrsFramework::new(store.clone(), Arc::default()),
             no_delay_policy(attempts),
+            limits,
         )
     }
 
@@ -782,18 +849,18 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn turns_accept_twenty_parallel_commands_with_a_single_attempt_where_concurrency_conflicts() {
-        for with_turns in [false, true] {
+    async fn locks_accept_twenty_parallel_commands_with_a_single_attempt_where_separate_executors_conflict() {
+        for shared in [true, false] {
             let store = VersionedStore::default();
-            let executor = versioned_executor(&store, 1, Vec::new);
-            let executor = Arc::new(if with_turns {
-                executor.with_turns(AggregateTurns::new(TurnLimits::default()))
-            } else {
-                executor
-            });
+            let executor = Arc::new(versioned_executor(&store, 1));
             let mut commands = tokio::task::JoinSet::new();
             for index in 0..20 {
-                let executor = executor.clone();
+                // An executor of its own per command is like a process per command: nothing orders them.
+                let executor = if shared {
+                    executor.clone()
+                } else {
+                    Arc::new(versioned_executor(&store, 1))
+                };
                 commands.spawn(async move { executor.execute("aggregate", record(&index.to_string()), vec![]).await });
             }
             let mut conflicts = 0;
@@ -805,7 +872,7 @@ mod tests {
                 }
             }
             let accepted = store.journal.lock().unwrap().len();
-            if with_turns {
+            if shared {
                 assert_eq!(
                     (accepted, conflicts),
                     (20, 0),
@@ -818,54 +885,60 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_conflict_retries_inside_the_turn_before_the_next_command_starts() {
-        for with_turns in [false, true] {
+    async fn a_conflict_retries_inside_the_lock_before_the_next_command_starts() {
+        for shared in [true, false] {
             let store = VersionedStore::default();
             store.external_conflicts.store(1, Ordering::SeqCst);
-            let executor = versioned_executor(&store, 3, Vec::new);
-            let executor = Arc::new(if with_turns {
-                executor.with_turns(AggregateTurns::new(TurnLimits::default()))
+            let executor = Arc::new(versioned_executor(&store, 3));
+            let second_executor = if shared {
+                executor.clone()
             } else {
-                executor
-            });
+                Arc::new(versioned_executor(&store, 3))
+            };
             let first = tokio::spawn({
                 let executor = executor.clone();
                 async move { executor.execute("aggregate", record("a"), vec![]).await }
             });
-            let second = tokio::spawn({
-                let executor = executor.clone();
-                async move { executor.execute("aggregate", record("b"), vec![]).await }
-            });
+            let second = tokio::spawn(async move { second_executor.execute("aggregate", record("b"), vec![]).await });
             assert_eq!((first.await.unwrap(), second.await.unwrap()), (Ok(()), Ok(())));
             let calls = store.calls.lock().unwrap().clone();
-            if with_turns {
+            if shared {
                 assert_eq!(calls, ["load", "conflict a", "load", "commit a", "load", "commit b"]);
             } else {
                 assert_eq!(
                     calls[..2],
                     ["load", "load"],
-                    "the control: `b` loads while `a` is still deciding"
+                    "the control: with an executor of its own `b` loads while `a` is still deciding"
                 );
             }
         }
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_refused_turn_is_unavailable_logged_without_id_and_builds_nothing() {
+    async fn a_refused_lock_is_unavailable_logged_without_id_and_builds_nothing() {
         let builds = Arc::new(AtomicUsize::new(0));
-        let turns = AggregateTurns::new(TurnLimits::new(Duration::from_millis(100), 1).unwrap());
-        let executor = CqrsCommandExecutor::<DummyAggregate, _>::new(
+        let load_gate = closed_gate();
+        let store = VersionedStore {
+            load_gate: Some(load_gate.clone()),
+            ..VersionedStore::default()
+        };
+        let executor = Arc::new(CqrsCommandExecutor::<DummyAggregate, _>::new(
             {
                 let builds = builds.clone();
                 move |_| {
                     builds.fetch_add(1, Ordering::SeqCst);
-                    CqrsFramework::new(VersionedStore::default(), vec![], Arc::default())
+                    CqrsFramework::new(store.clone(), Arc::default())
                 }
             },
             no_delay_policy(1),
-        )
-        .with_turns(turns.clone());
-        let held = turns.enter(AggregateKey::of::<DummyAggregate>("private_id")).await.unwrap();
+            LockLimits::new(Duration::from_millis(100), 1).unwrap(),
+        ));
+        // The holder keeps the key's lock while its load waits at the gate.
+        let holder = tokio::spawn({
+            let executor = executor.clone();
+            async move { executor.execute("private_id", record("private_holder"), vec![]).await }
+        });
+        until(|| builds.load(Ordering::SeqCst) == 1).await;
         let (_, log) = crate::diagnostics::test_support::capture_at(tracing::Level::WARN, async {
             let mut waiting = Box::pin(executor.execute("private_id", record("private_waiting"), vec![]));
             assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(waiting.as_mut().poll(cx).is_pending())).await);
@@ -878,68 +951,284 @@ mod tests {
             assert_eq!(
                 waiting.await,
                 Err(CommandGatewayError::Unavailable),
-                "the turn did not come in time"
+                "the lock was not acquired in time"
             );
         })
         .await;
-        drop(held);
+        load_gate.add_permits(1);
+        assert_eq!(holder.await.unwrap(), Ok(()));
         assert_eq!(
             builds.load(Ordering::SeqCst),
-            0,
-            "a refused command builds and writes nothing"
+            1,
+            "only the holder built a framework: a refused command builds and writes nothing"
         );
         assert_eq!(log.matches("command refused before it ran").count(), 2, "{log}");
         assert!(
-            log.contains("reason=\"too_many_waiting\"") && log.contains("reason=\"timed_out\""),
+            log.contains("reason=\"too_many_waiters\"") && log.contains("reason=\"timed_out\""),
             "{log}"
         );
         assert!(log.contains("aggregate_type=\"dummy\""), "{log}");
         assert!(!log.contains("private_"), "{log}");
     }
 
-    /// Does what a command executed synchronously from a handler would do first: wait for its aggregate's turn.
-    struct WaitsForItsOwnTurn(AggregateTurns);
+    #[test]
+    fn the_command_future_holding_a_lock_is_send() {
+        fn require_send<F: std::future::Future + Send>(_: F) {}
+        let executor = versioned_executor(&VersionedStore::default(), 1);
+        require_send(executor.execute("aggregate", record("a"), vec![]));
+    }
+
+    /// Logs `"{name} {sequence}"` into `log` for every event it is handed, after taking a permit of
+    /// `gate`; fails every call when told to.
+    struct Recorder {
+        name: &'static str,
+        log: Arc<Mutex<Vec<String>>>,
+        gate: Arc<tokio::sync::Semaphore>,
+        fail: bool,
+    }
 
     #[async_trait::async_trait]
-    impl EventHandler<DummyAggregate> for WaitsForItsOwnTurn {
+    impl EventHandler<DummyAggregate> for Recorder {
         fn name(&self) -> String {
-            "nested".to_owned()
+            self.name.to_owned()
         }
 
-        async fn handle(&self, aggregate_id: &str, _: &[EventEnvelope<DummyAggregate>]) -> Result<(), PersistenceError> {
-            let turn = self.0.enter(AggregateKey::of::<DummyAggregate>(aggregate_id)).await;
-            turn.map(drop)
-                .map_err(|refused| PersistenceError::UnknownError(Box::new(refused)))
+        async fn handle(&self, _: &str, events: &[EventEnvelope<DummyAggregate>]) -> Result<(), PersistenceError> {
+            self.gate.acquire().await.unwrap().forget();
+            let mut log = self.log.lock().unwrap();
+            log.extend(events.iter().map(|event| format!("{} {}", self.name, event.sequence)));
+            if self.fail {
+                Err(PersistenceError::OptimisticLockError)
+            } else {
+                Ok(())
+            }
         }
+    }
+
+    fn recorder(
+        name: &'static str,
+        log: &Arc<Mutex<Vec<String>>>,
+        gate: &Arc<tokio::sync::Semaphore>,
+        fail: bool,
+    ) -> Arc<dyn EventHandler<DummyAggregate>> {
+        Arc::new(Recorder {
+            name,
+            log: log.clone(),
+            gate: gate.clone(),
+            fail,
+        })
+    }
+
+    fn open_gate() -> Arc<tokio::sync::Semaphore> {
+        Arc::new(tokio::sync::Semaphore::new(tokio::sync::Semaphore::MAX_PERMITS))
+    }
+
+    fn closed_gate() -> Arc<tokio::sync::Semaphore> {
+        Arc::new(tokio::sync::Semaphore::new(0))
+    }
+
+    fn ordered(capacity: usize) -> DeliveryConfig {
+        DeliveryConfig::new(capacity, 32).unwrap()
+    }
+
+    async fn until(mut done: impl FnMut() -> bool) {
+        for _ in 0..1000 {
+            if done() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("the condition never came true");
+    }
+
+    #[tokio::test]
+    async fn the_lock_is_released_before_an_ordered_handler_finishes() {
+        let store = VersionedStore::default();
+        let (log, gate) = (Arc::default(), closed_gate());
+        let executor =
+            Arc::new(versioned_executor(&store, 1).with_event_handler(recorder("ordered", &log, &gate, false), ordered(64)));
+        let spawn = |value: &'static str| {
+            let executor = executor.clone();
+            tokio::spawn(async move { executor.execute("aggregate", record(value), vec![]).await })
+        };
+        let (first, second) = (spawn("a"), spawn("b"));
+        until(|| store.journal.lock().unwrap().len() == 2).await;
+        assert!(
+            !first.is_finished() && !second.is_finished(),
+            "both committed, both wait for their receipts"
+        );
+        assert!(log.lock().unwrap().is_empty());
+        gate.add_permits(2);
+        assert_eq!((first.await.unwrap(), second.await.unwrap()), (Ok(()), Ok(())));
+        assert_eq!(*log.lock().unwrap(), ["ordered 1", "ordered 2"]);
+        assert!(executor.backlog().is_empty());
+    }
+
+    #[tokio::test]
+    async fn handlers_report_their_registration_indices_and_each_sees_every_event_in_order() {
+        use tracing::instrument::WithSubscriber;
+        let store = VersionedStore::default();
+        let (log, gate) = (Arc::default(), open_gate());
+        let executor = Arc::new(
+            versioned_executor(&store, 1)
+                .with_event_handler(recorder("a", &log, &gate, false), ordered(64))
+                .with_event_handler(recorder("b", &log, &gate, true), ordered(64))
+                .with_event_handler(recorder("c", &log, &gate, true), ordered(64)),
+        );
+        let ((first, second), text) = crate::diagnostics::test_support::capture(async {
+            let first = tokio::spawn(
+                {
+                    let executor = executor.clone();
+                    async move { executor.execute("aggregate", record("a"), vec![]).await }
+                }
+                .with_current_subscriber(),
+            );
+            let second = executor.execute("aggregate", record("b"), vec![]).await;
+            (first.await.unwrap(), second)
+        })
+        .await;
+        let failed = |last_sequence| {
+            Err(CommandGatewayError::CommittedWithEventHandlerFailure {
+                last_sequence,
+                handlers: [(1, "b"), (2, "c")]
+                    .map(|(index, name)| FailedHandler {
+                        index,
+                        name: name.to_owned(),
+                    })
+                    .to_vec(),
+            })
+        };
+        let mut outcomes = [first, second];
+        outcomes.sort_by_key(|outcome| format!("{outcome:?}"));
+        assert_eq!(outcomes, [failed(1), failed(2)]);
+        let calls = log.lock().unwrap().clone();
+        for name in ["a", "b", "c"] {
+            let seen: Vec<_> = calls.iter().filter(|call| call.starts_with(name)).collect();
+            assert_eq!(seen, [&format!("{name} 1"), &format!("{name} 2")], "{calls:?}");
+        }
+        assert!(text.contains("event delivery failed"), "{text}");
+        assert!(!text.contains("category=\"event_handler\""), "{text}");
+        assert!(executor.backlog().is_empty());
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn twenty_parallel_commands_reach_an_ordered_projection_in_commit_order() {
+        let store = VersionedStore::default();
+        let (log, gate) = (Arc::default(), open_gate());
+        let executor =
+            Arc::new(versioned_executor(&store, 1).with_event_handler(recorder("ordered", &log, &gate, false), ordered(4)));
+        let mut commands = tokio::task::JoinSet::new();
+        for index in 0..20 {
+            let executor = executor.clone();
+            commands.spawn(async move { executor.execute("aggregate", record(&index.to_string()), vec![]).await });
+        }
+        while let Some(result) = commands.join_next().await {
+            assert_eq!(result.unwrap(), Ok(()));
+        }
+        assert_eq!(
+            *log.lock().unwrap(),
+            (1..=20).map(|s| format!("ordered {s}")).collect::<Vec<_>>()
+        );
+        assert!(executor.backlog().is_empty());
     }
 
     #[tokio::test(start_paused = true)]
-    async fn a_handler_waiting_for_its_own_aggregate_times_out_instead_of_hanging() {
+    async fn a_full_buffer_refuses_before_the_commit_within_max_wait() {
         let store = VersionedStore::default();
-        let turns = AggregateTurns::new(TurnLimits::new(Duration::from_millis(100), 8).unwrap());
-        let nested = turns.clone();
-        let executor = versioned_executor(&store, 1, move || {
-            vec![Box::new(WaitsForItsOwnTurn(nested.clone())) as Box<dyn EventHandler<DummyAggregate>>]
-        })
-        .with_turns(turns);
-        assert_eq!(
-            executor.execute("aggregate", record("a"), vec![]).await,
-            Err(CommandGatewayError::CommittedWithEventHandlerFailure {
-                last_sequence: 1,
-                handlers: vec![FailedHandler {
-                    index: 0,
-                    name: "nested".to_owned()
-                }]
-            })
+        let (log, gate) = (Arc::default(), closed_gate());
+        let limits = LockLimits::new(Duration::from_millis(100), 8).unwrap();
+        let executor = Arc::new(
+            versioned_executor_with(&store, 1, limits).with_event_handler(recorder("ordered", &log, &gate, false), ordered(1)),
         );
+        let first = tokio::spawn({
+            let executor = executor.clone();
+            async move { executor.execute("private_id", record("a"), vec![]).await }
+        });
+        until(|| store.journal.lock().unwrap().len() == 1).await;
+        let (refused, text) = crate::diagnostics::test_support::capture_at(tracing::Level::WARN, async {
+            let arrived = tokio::time::Instant::now();
+            let refused = executor.execute("private_id", record("private_b"), vec![]).await;
+            (refused, arrived.elapsed())
+        })
+        .await;
+        assert_eq!(refused, (Err(CommandGatewayError::Unavailable), Duration::from_millis(100)));
+        assert_eq!(*store.journal.lock().unwrap(), ["a"], "the refused command wrote nothing");
+        assert!(
+            text.contains("reason=\"buffer_full\"") && text.contains("aggregate_type=\"dummy\""),
+            "{text}"
+        );
+        assert!(!text.contains("private_"), "{text}");
+        gate.add_permits(1);
+        assert_eq!(first.await.unwrap(), Ok(()));
+    }
+
+    #[tokio::test]
+    async fn a_caller_dropped_right_after_the_commit_still_reaches_the_ordered_handler() {
+        let store = VersionedStore::default();
+        let (log, gate) = (Arc::default(), closed_gate());
+        let executor = versioned_executor(&store, 1).with_event_handler(recorder("ordered", &log, &gate, false), ordered(64));
+        let mut command = Box::pin(executor.execute("aggregate", record("a"), vec![]));
+        for _ in 0..10 {
+            if store.journal.lock().unwrap().len() == 1 {
+                break;
+            }
+            let poll = std::future::poll_fn(|cx| std::task::Poll::Ready(command.as_mut().poll(cx))).await;
+            assert!(poll.is_pending(), "the command waits for its receipt");
+        }
         assert_eq!(*store.journal.lock().unwrap(), ["a"]);
+        drop(command); // the client went away after the commit
+        assert_eq!(executor.backlog().len(), 1);
+        gate.add_permits(1);
+        executor.backlog().drained().await;
+        assert_eq!(*log.lock().unwrap(), ["ordered 1"]);
+    }
+
+    #[tokio::test]
+    async fn a_conflict_retry_reserves_once_and_delivers_once() {
+        let store = VersionedStore::default();
+        store.external_conflicts.store(2, Ordering::SeqCst);
+        let (log, gate) = (Arc::default(), open_gate());
+        // Room for one command: a second reservation by the same command would never get space.
+        let executor = versioned_executor(&store, 3).with_event_handler(recorder("ordered", &log, &gate, false), ordered(1));
+        assert_eq!(executor.execute("aggregate", record("a"), vec![]).await, Ok(()));
+        assert_eq!(*log.lock().unwrap(), ["ordered 1"]);
+        assert_eq!(
+            *store.calls.lock().unwrap(),
+            ["load", "conflict a", "load", "conflict a", "load", "commit a"]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_command_without_events_hands_nothing_over() {
+        let (log, gate) = (Arc::default(), open_gate());
+        let executor = CqrsCommandExecutor::<DummyAggregate, _>::new(
+            |_| {
+                CqrsFramework::new(
+                    DummyStore {
+                        commits: Arc::default(),
+                        conflicts: 0,
+                        load_error: None,
+                    },
+                    Arc::default(),
+                )
+            },
+            no_delay_policy(1),
+            LockLimits::default(),
+        )
+        .with_event_handler(recorder("ordered", &log, &gate, false), ordered(1));
+        for _ in 0..3 {
+            assert_eq!(executor.execute("aggregate", record("a"), vec![]).await, Ok(()));
+        }
+        assert!(log.lock().unwrap().is_empty() && executor.backlog().is_empty());
     }
 
     #[test]
-    fn the_command_future_with_a_turn_is_send() {
+    fn the_command_future_with_ordered_handlers_is_send() {
         fn require_send<F: std::future::Future + Send>(_: F) {}
-        let executor =
-            versioned_executor(&VersionedStore::default(), 1, Vec::new).with_turns(AggregateTurns::new(TurnLimits::default()));
+        let (log, gate) = (Arc::default(), open_gate());
+        let executor = versioned_executor(&VersionedStore::default(), 1)
+            .with_event_handler(recorder("first", &log, &gate, false), ordered(1))
+            .with_event_handler(recorder("second", &log, &gate, false), ordered(64));
         require_send(executor.execute("aggregate", record("a"), vec![]));
     }
 
@@ -963,25 +1252,6 @@ mod tests {
         assert_eq!(
             map_aggregate_error::<DummyError>(AggregateError::AggregateConflict),
             CommandGatewayError::Conflict
-        );
-        assert_eq!(
-            map_aggregate_error::<DummyError>(AggregateError::CommittedWithEventHandlerFailure(
-                crate::cqrs::CommittedWithEventHandlerFailure {
-                    last_sequence: 42,
-                    errors: vec![crate::cqrs::EventHandlerFailure {
-                        handler_index: 2,
-                        handler_name: "halls".into(),
-                        error: crate::cqrs::store::PersistenceError::OptimisticLockError
-                    }]
-                }
-            )),
-            CommandGatewayError::CommittedWithEventHandlerFailure {
-                last_sequence: 42,
-                handlers: vec![FailedHandler {
-                    index: 2,
-                    name: "halls".into()
-                }]
-            }
         );
         for error in [
             AggregateError::DatabaseConnectionError(Box::new(io::Error::other("db"))),

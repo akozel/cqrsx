@@ -1,40 +1,34 @@
-//! Composition root: every service built from the configuration and the open connections.
+//! Composition root: what the box office is made of, built from a [`Process`] without I/O, so the
+//! binary and the router tests share one graph. Each registry below is the one place to add a
+//! component of its kind:
 //!
-//! [`wire`] performs no I/O: pools and clients connect lazily, so `main.rs` (which owns the process
-//! lifecycle) and the router tests (which never reach a database) build the very same graph.
+//! - [`aggregates`]: one module per aggregate: its command executor and the event handlers it feeds;
+//! - [`projections`]: the read models: their collections, repositories, maintenance and query ports;
+//! - [`tasks`]: the outbox task handlers;
+//! - [`routes`]: the HTTP endpoints.
+pub mod aggregates;
+pub mod projections;
+pub mod routes;
+pub mod tasks;
+
 use crate::{
     application::{
         self,
         activity::ActivityHub,
-        command_service::CommandService,
-        concert::views::concert_hall::ConcertHallView,
-        fan::views::fan_wallet::FanWalletView,
         lock::BoxOfficeLock,
         operations::{rebuild::RebuildService, verify::VerifyService},
-        projections::{
-            maintenance::{MaintainedReadModel, ProjectionMaintenance},
-            notifying::NotifyingHandler,
-        },
         read_models::ReadModels,
     },
     config::Config,
-    domain::{
-        concert::{Concert, ConcertServices},
-        fan::Fan,
-    },
-    infrastructure::{
-        mail::http_mailer::{HttpMailer, MailClientSettings},
-        mongo::read_side::{CONCERT_HALLS, FAN_WALLETS, ReadSide, scratch},
-        postgres::{HistoryStore, PostgresLedger, event_history, history_repositories, history_store},
-        task_runtime::dispatcher::{DispatcherDeps, dispatcher_factory},
-    },
+    domain::{concert::Concert, fan::Fan},
+    infrastructure::postgres::{HistoryStore, PostgresLedger, event_history},
+    process::Process,
 };
 use cqrsx::{
-    cqrs::{command::retry::AggregateConflictRetryPolicy, projection::ViewProjection},
-    postgres::command::{PostgresCommandConfig, PostgresCommandConfigError, PostgresCommandExecutor},
+    cqrs::event_handler::delivery::DeliveryBacklog,
+    postgres::command::{PostgresCommandConfigError, PostgresCommandExecutor},
     task::{adapter::boxed::BoxedTaskAdapter, runtime::dispatcher_factory::TaskDispatcherFactory},
 };
-use sqlx::PgPool;
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
 
@@ -66,10 +60,12 @@ pub struct AppState {
     pub shutdown: CancellationToken,
 }
 
-/// The wired application: the HTTP state and the task handlers for the outbox runtime.
+/// The wired application: the HTTP state, the task handlers for the outbox runtime and what the
+/// projections still have to apply when the process stops.
 pub struct Wiring {
     pub state: AppState,
     pub dispatcher: TaskDispatcherFactory<BoxedTaskAdapter>,
+    pub projection_backlogs: Vec<DeliveryBacklog>,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -80,96 +76,31 @@ pub enum WiringError {
     MailClient(#[from] reqwest::Error),
 }
 
-/// `pool` serves the commands and the outbox queue: short statements under its statement timeout.
-/// `history_pool` has no statement timeout and serves the reads of whole histories: Encore!, verify,
-/// the ledger totals and the time machine.
-pub fn wire(
-    config: Arc<Config>,
-    pool: PgPool,
-    history_pool: PgPool,
-    mongo: &mongodb::Client,
-    shutdown: CancellationToken,
-) -> Result<Wiring, WiringError> {
-    // MongoDB: the read models (`encore_read`). The mail inbox is the external mail service's
-    // storage, not ours: the box office never opens it.
-    let read_db = mongo.database(&config.read_db);
-    let read = ReadSide::new(&read_db);
-
-    // Encore! and verify: both read models, in replay order, over the PostgreSQL history.
-    let history = history_repositories(history_pool.clone());
-    let read_models: Vec<Arc<dyn MaintainedReadModel>> = vec![
-        Arc::new(ProjectionMaintenance::<_, _, ConcertHallView, Concert>::new(
-            CONCERT_HALLS,
-            history.clone(),
-            read.halls.clone(),
-            scratch(&read_db, CONCERT_HALLS),
-        )),
-        Arc::new(ProjectionMaintenance::<_, _, FanWalletView, Fan>::new(
-            FAN_WALLETS,
-            history,
-            read.wallets.clone(),
-            scratch(&read_db, FAN_WALLETS),
-        )),
-    ];
-
+/// Builds the graph in dependency order: the read models, the aggregates that feed them, the
+/// operations over the whole ledger, the task handlers.
+pub fn wire(process: &Process) -> Result<Wiring, WiringError> {
+    let config = process.config.clone();
     let activity = Arc::new(ActivityHub::new(ACTIVITY_CHANNEL_CAPACITY, ACTIVITY_BACKLOG));
     let lock = Arc::new(BoxOfficeLock::new());
+
+    let read = projections::read_models(process);
+    let (concerts, concert_backlog) = aggregates::concert::wire(process, &read, &activity, &lock)?;
+    let (fans, fan_backlog) = aggregates::fan::wire(process, &read, &activity, &lock)?;
+    let projection_backlogs = vec![concert_backlog, fan_backlog];
+
+    // Operations over the whole ledger: Encore! (rebuild), verify and the time machine.
     let rebuild = Arc::new(RebuildService::new(
         lock.clone(),
-        read_models.clone(),
-        Arc::new(PostgresLedger::new(history_pool.clone())),
+        read.maintenance.clone(),
+        projection_backlogs.clone(),
+        Arc::new(PostgresLedger::new(process.history_pool.clone())),
         activity.clone(),
         config.replay_slow_delay,
     ));
-    let verify = Arc::new(VerifyService::new(read_models));
-    let time_travel = Arc::new(TimeTravel::new(event_history(history_pool)));
-    let command_config = PostgresCommandConfig::new(
-        config.snapshot_every,
-        AggregateConflictRetryPolicy::default(),
-        config.command_ordering,
-    )?;
-    // One executor per aggregate: with per-aggregate ordering it owns the turns of that aggregate, so the
-    // HTTP commands and the chain tasks' commands to one concert or fan ledger wait for each other. Each
-    // projection is registered under its collection name, the name the activity log and the
-    // `projection_failed` warning report.
-    let executor = PostgresCommandExecutor::new(
-        pool.clone(),
-        command_config.clone(),
-        ConcertServices {
-            ticket_limit: config.ticket_limit,
-        },
-    )
-    .with_event_handler(Arc::new(NotifyingHandler::new(
-        ViewProjection::new(read.halls.clone()).with_name(CONCERT_HALLS),
-        activity.clone(),
-    )));
-    let concerts = Arc::new(ConcertApp::new(
-        CommandService::new(executor, activity.clone(), lock.clone()),
-        history_store(pool.clone(), command_config.snapshot_interval()),
-        config.chain_max_attempts,
-    ));
-    let executor = PostgresCommandExecutor::new(pool, command_config, ()).with_event_handler(Arc::new(NotifyingHandler::new(
-        ViewProjection::new(read.wallets.clone()).with_name(FAN_WALLETS),
-        activity.clone(),
-    )));
-    let fans = Arc::new(FanApp::new(CommandService::new(executor, activity.clone(), lock)));
+    let verify = Arc::new(VerifyService::new(read.maintenance));
+    let time_travel = Arc::new(TimeTravel::new(event_history(process.history_pool.clone())));
 
-    // Outbox task handlers: a fresh set for every worker. The mailers share one HTTP client to the
-    // external mail service (a connection pool is meant to be shared); building it is no I/O.
-    let mail = MailClientSettings {
-        base_url: config.mail_service_url.clone(),
-        timeout: config.mail_request_timeout(),
-        retry_base: config.task_retry_base,
-        retry_max: config.task_retry_max,
-    };
-    let http = HttpMailer::client(&mail)?;
-    let dispatcher = dispatcher_factory(DispatcherDeps {
-        fans,
-        activity: activity.clone(),
-        http,
-        mail,
-        task_max_attempts: config.task_max_attempts,
-    });
+    let dispatcher = tasks::dispatcher(process, fans, activity.clone())?;
 
     Ok(Wiring {
         state: AppState {
@@ -177,14 +108,28 @@ pub fn wire(
             concerts,
             activity,
             rebuild,
-            read: Arc::new(ReadModels {
-                halls: read.halls,
-                wallets: read.wallets,
-            }),
+            read: Arc::new(read.queries),
             time_travel,
             verify,
-            shutdown,
+            shutdown: process.shutdown.clone(),
         },
         dispatcher,
+        projection_backlogs,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing;
+    use cqrsx::cqrs::event_handler::delivery::DeliveryConfig;
+
+    #[tokio::test]
+    async fn ordered_projections_are_wired_with_one_backlog_each() {
+        let mut config = testing::config();
+        config.projection_delivery = DeliveryConfig::new(8, 1).unwrap();
+        let wiring = wire(&testing::process_with(config).await).unwrap();
+        assert_eq!(wiring.projection_backlogs.len(), 2, "one per projection");
+        assert!(wiring.projection_backlogs.iter().all(DeliveryBacklog::is_empty));
+    }
 }

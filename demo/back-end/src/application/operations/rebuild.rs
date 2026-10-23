@@ -12,7 +12,10 @@ use crate::application::{
     projections::maintenance::MaintainedReadModel,
 };
 use chrono::{SecondsFormat, Utc};
-use cqrsx::cqrs::event_handler::replay::{ReplayProgress, ReplayProgressObserver};
+use cqrsx::cqrs::event_handler::{
+    delivery::DeliveryBacklog,
+    replay::{ReplayProgress, ReplayProgressObserver},
+};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::{
@@ -68,6 +71,8 @@ pub struct RebuildService {
     status: Mutex<Status>,
     /// Rebuilt in this order, one pass each (`Concert` first, then `Fan`).
     read_models: Vec<Arc<dyn MaintainedReadModel>>,
+    /// What the commands handed to ordered projections and the projections have not applied yet.
+    projection_backlogs: Vec<DeliveryBacklog>,
     ledger: Arc<dyn EventLedgerStats>,
     activity: Arc<ActivityHub>,
     slow_delay: Duration,
@@ -92,6 +97,7 @@ impl RebuildService {
     pub fn new(
         lock: Arc<BoxOfficeLock>,
         read_models: Vec<Arc<dyn MaintainedReadModel>>,
+        projection_backlogs: Vec<DeliveryBacklog>,
         ledger: Arc<dyn EventLedgerStats>,
         activity: Arc<ActivityHub>,
         slow_delay: Duration,
@@ -101,6 +107,7 @@ impl RebuildService {
             replayed: Arc::new(AtomicU64::new(0)),
             status: Mutex::new(Status::default()),
             read_models,
+            projection_backlogs,
             ledger,
             activity,
             slow_delay,
@@ -171,8 +178,13 @@ impl RebuildService {
             error,
         };
         // Commands admitted before the lock was taken finish first: their projections write into the
-        // read models this rebuild is about to wipe. The wait is bounded by one command, its turn included.
+        // read models this rebuild is about to wipe. The wait is bounded by one command, its wait for the aggregate's lock included.
         self.lock.wait_idle().await;
+        // So do the ordered projections: a command that is done may have left events in their buffers,
+        // e.g. when its client went away before the receipt. Nothing new arrives while the lock is held.
+        for backlog in &self.projection_backlogs {
+            backlog.drained().await;
+        }
         // Progress figures only: a failed count is reported as 0, the replay itself still decides.
         let totals = self.ledger.totals().await.unwrap_or_default();
         let (total, aggregates) = (totals.events, totals.aggregates);
@@ -275,8 +287,19 @@ impl RebuildService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::application::{StorageError, ports::LedgerTotals, projections::maintenance::Verification};
+    use crate::domain::fan::test_support::record;
+    use crate::{
+        application::{StorageError, ports::LedgerTotals, projections::maintenance::Verification},
+        domain::fan::Fan,
+    };
     use async_trait::async_trait;
+    use cqrsx::cqrs::{
+        command::CommandExecutor,
+        event::EventEnvelope,
+        event_handler::{EventHandler, delivery::DeliveryConfig},
+        store::PersistenceError,
+        testing::{command::TestCommandExecutor, mem_store::MemStore},
+    };
 
     /// A read model whose history is `events` (aggregate id, sequence, event type) entries.
     struct FakeReadModel {
@@ -345,11 +368,19 @@ mod tests {
     }
 
     fn service(read_models: Vec<Arc<dyn MaintainedReadModel>>) -> (Arc<RebuildService>, Arc<BoxOfficeLock>, Arc<ActivityHub>) {
+        service_with(read_models, Vec::new())
+    }
+
+    fn service_with(
+        read_models: Vec<Arc<dyn MaintainedReadModel>>,
+        backlogs: Vec<DeliveryBacklog>,
+    ) -> (Arc<RebuildService>, Arc<BoxOfficeLock>, Arc<ActivityHub>) {
         let lock = Arc::new(BoxOfficeLock::new());
         let activity = Arc::new(ActivityHub::new(64, 64));
         let service = RebuildService::new(
             lock.clone(),
             read_models,
+            backlogs,
             Arc::new(FixedLedger),
             activity.clone(),
             Duration::ZERO,
@@ -426,6 +457,49 @@ mod tests {
         assert_eq!(halls.wipes.load(Ordering::SeqCst), 0, "the admitted command is still running");
         assert_eq!(service.status_json()["state"], "running");
         drop(command);
+        let status = wait_until_idle(&service).await;
+        assert_eq!(status["last_result"]["ok"], true);
+        assert_eq!(halls.wipes.load(Ordering::SeqCst), 1);
+    }
+
+    /// A projection that holds every call until the test lets it through.
+    struct Held(tokio::sync::Semaphore);
+
+    #[async_trait]
+    impl EventHandler<Fan> for Held {
+        async fn handle(&self, _: &str, _: &[EventEnvelope<Fan>]) -> Result<(), PersistenceError> {
+            self.0.acquire().await.unwrap().forget();
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rebuild_wipes_nothing_until_the_projections_have_applied_what_was_handed_over() {
+        let halls = FakeReadModel::new("concert_halls", vec![("c-1", 1, "ConcertAnnounced")]);
+        let held = Arc::new(Held(tokio::sync::Semaphore::new(0)));
+        let executor =
+            TestCommandExecutor::new(MemStore::<Fan>::default(), ()).with_event_handler(held.clone(), DeliveryConfig::default());
+        // A command that is done, its client gone, and its events still in the projection's buffer.
+        drop(tokio::spawn({
+            let executor = executor.clone();
+            async move { executor.execute("fox", record(Uuid::from_u128(1)), vec![]).await }
+        }));
+        let backlog = executor.backlog();
+        for _ in 0..100 {
+            if !backlog.is_empty() {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(backlog.len(), 1, "the command handed its events over");
+        let (service, _, _) = service_with(vec![halls.clone()], vec![DeliveryBacklog::default(), backlog]);
+        service.start(Speed::Fast).unwrap();
+        for _ in 0..20 {
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(halls.wipes.load(Ordering::SeqCst), 0, "the projection has not applied it yet");
+        assert_eq!(service.status_json()["state"], "running");
+        held.0.add_permits(1);
         let status = wait_until_idle(&service).await;
         assert_eq!(status["last_result"]["ok"], true);
         assert_eq!(halls.wipes.load(Ordering::SeqCst), 1);

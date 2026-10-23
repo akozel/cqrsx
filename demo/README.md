@@ -24,7 +24,7 @@ The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the libra
 
 | Directory | What |
 |---|---|
-| `back-end/` | Rust, axum + `cqrsx`, in four layers: `domain` (aggregates, one file per command and per event), `application` (use cases, task-driven workflows, read models, Encore!), `presentation` (one file per HTTP action), `infrastructure` (PostgreSQL, MongoDB, the HTTP client of the mail service, the task runtime wiring) |
+| `back-end/` | Rust, axum + `cqrsx`, in four layers: `domain` (aggregates, one file per command and per event), `application` (use cases, task-driven workflows, read models, Encore!), `presentation` (one file per HTTP action), `infrastructure` (PostgreSQL, MongoDB, the HTTP client of the mail service). `bootstrap/` registers what runs: `aggregates/` (a module per aggregate), `projections`, `tasks`, `routes`; `process.rs` starts and stops the process (logging, configuration, connections, HTTP server, task runtime) |
 | `sidecar/` | Rust, axum, no `cqrsx` dependency: read-only X-ray of PostgreSQL (`events`, `snapshots`, `transactional_outbox`) and MongoDB, SSE stream — plus everything DEMO ONLY: seed, 🧨 wipe, ⟲ reset, the fan's mailbox (`GET /inspect/mail/{fan_id}`) and the moody external mail service the back-end calls (`POST /mail`) |
 | `front-end/` | Vue 3.5 + Vite 8 + Tailwind 4 + Pinia + vue-i18n (RU/EN) |
 | `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx/sql`) and MongoDB; profile `app` builds the three images |
@@ -274,22 +274,13 @@ Key points, each visible on screen:
 
 ## Configuration
 
-Every variable has a default (see `.env.example`); both binaries read `demo/.env` through `dotenvy`.
-Highlights: `ENCORE_MAIL_SERVICE_URL` (where the e-mail tasks `POST /mail`), `ENCORE_TASK_MAX_ATTEMPTS`
-(6, mail tasks), `ENCORE_TASK_RETRY_BASE_MS` / `_MAX_MS` (the backoff after a refused delivery: 1, 2, 4, 8, 8 s),
-`ENCORE_CHAIN_MAX_ATTEMPTS` (60, chain tasks — spent only while a rebuild holds the lock),
-`ENCORE_TICKET_LIMIT` (4), `ENCORE_SNAPSHOT_EVERY` (10), `ENCORE_COMMAND_ORDERING` (`concurrent`: commands to
-one concert or fan ledger race and the losers retry; `per_aggregate`: they take turns, in arrival order) with its turn
-limits `ENCORE_COMMAND_TURN_MAX_WAIT_MS` (1000, then 503) and `ENCORE_COMMAND_TURN_MAX_WAITING` (128 per aggregate),
-`ENCORE_REPLAY_SLOW_DELAY_MS` (80), and the
-library's own `OUTBOX_*` keys with demo defaults (2 workers, 300 ms poll, 5 s handler timeout, 30 s lease,
-3 s storage timeout; a mail request gives up one second before the handler timeout). Everything DEMO ONLY
-is the sidecar's: `SIDECAR_SEED` (announce the default concerts at start-up), `SIDECAR_RESET_ENABLED`
-(`POST /inspect/reset`), `SIDECAR_BACKEND_URL`, `SIDECAR_ADMIN_DATABASE_URL` (the TRUNCATE-only role), and
-the moody mail service's `SIDECAR_MAIL_FAILURE_RATE` (0.2), `SIDECAR_MAIL_LATENCY_MIN_MS` / `_MAX_MS`
-(600 / 1800) and `SIDECAR_MAIL_CHAOS_SEED` (deterministic dice).
-`RUST_LOG` is a single level (`info`), not a directive list. The library's redelivery backoff (4–300 s) applies only to
-abnormal paths (expired lease, handler timeout); the mail handler asks for 1–8 s itself.
+Every variable has a default. `.env.example` lists them all, grouped by topic, each with a description and
+its default on a commented line: copy it to `demo/.env` and uncomment what you change. Both binaries read
+`demo/.env` through `dotenvy`; compose reads the published ports from it. The back-end's variables are
+`ENCORE_*` plus the library's own `OUTBOX_*` keys (worker pool and storage timeouts, with demo defaults);
+everything DEMO ONLY is the sidecar's `SIDECAR_*`. `RUST_LOG` is a single level (`info`), not a directive
+list. The library's redelivery backoff (4–300 s) applies only to abnormal paths (expired lease, handler
+timeout); the mail handler asks for 1–8 s itself.
 
 ## Troubleshooting
 

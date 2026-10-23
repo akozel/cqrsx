@@ -59,11 +59,13 @@ services:
       ENCORE_MONGODB_URI: mongodb://mongo:27017
       ENCORE_MAIL_SERVICE_URL: http://mail
       ENCORE_SNAPSHOT_EVERY: ${LOAD_SNAPSHOT_EVERY:-10}
-      # Command ordering and its turn limits (run.sh ORDERING=…, TURN_MAX_WAIT_MS=…, TURN_MAX_WAITING=…).
+      # The aggregate lock's limits (run.sh LOCK_MAX_WAIT_MS=…, LOCK_MAX_WAITERS=…).
       # Empty = the back-end's default. Here, not in an overlay, so a second node (`extends`) gets them too.
-      ENCORE_COMMAND_ORDERING: ${LOAD_COMMAND_ORDERING:-}
-      ENCORE_COMMAND_TURN_MAX_WAIT_MS: ${LOAD_TURN_MAX_WAIT_MS:-}
-      ENCORE_COMMAND_TURN_MAX_WAITING: ${LOAD_TURN_MAX_WAITING:-}
+      ENCORE_COMMAND_LOCK_MAX_WAIT_MS: ${LOAD_LOCK_MAX_WAIT_MS:-}
+      ENCORE_COMMAND_LOCK_MAX_WAITERS: ${LOAD_LOCK_MAX_WAITERS:-}
+      # The projection buffers (run.sh PROJECTION_BUFFER=…, PROJECTION_MAX_BATCH=…).
+      ENCORE_PROJECTION_BUFFER: ${LOAD_PROJECTION_BUFFER:-}
+      ENCORE_PROJECTION_MAX_BATCH: ${LOAD_PROJECTION_MAX_BATCH:-}
       # The one PostgreSQL pool shared by HTTP, the poller and the workers: the ceiling of concurrent
       # database work (run.sh POOL=…).
       ENCORE_DATABASE_POOL_SIZE: ${LOAD_PG_POOL:-10}

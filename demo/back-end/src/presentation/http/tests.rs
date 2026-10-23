@@ -8,9 +8,8 @@ use crate::{
         ports::Stored,
         read_models::ReadModels,
     },
-    bootstrap,
+    bootstrap::{self, routes::router},
     domain::{concert::Concert, fan::Fan},
-    presentation::http::router,
     testing,
 };
 use axum::{
@@ -21,7 +20,6 @@ use axum::{
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
-use tokio_util::sync::CancellationToken;
 use tower::ServiceExt;
 
 struct App {
@@ -30,15 +28,7 @@ struct App {
 }
 
 async fn app() -> App {
-    let mongo = testing::lazy_mongo().await;
-    let wiring = bootstrap::wire(
-        Arc::new(testing::config()),
-        testing::lazy_pool(),
-        testing::lazy_pool(),
-        &mongo,
-        CancellationToken::new(),
-    )
-    .unwrap();
+    let wiring = bootstrap::wire(&testing::process().await).unwrap();
     let lock = wiring.state.rebuild.lock().clone();
     App {
         router: router(wiring.state),
@@ -48,15 +38,7 @@ async fn app() -> App {
 
 /// The real graph, with the read side served from memory.
 async fn app_reading(read: ReadModels) -> Router {
-    let mongo = testing::lazy_mongo().await;
-    let mut wiring = bootstrap::wire(
-        Arc::new(testing::config()),
-        testing::lazy_pool(),
-        testing::lazy_pool(),
-        &mongo,
-        CancellationToken::new(),
-    )
-    .unwrap();
+    let mut wiring = bootstrap::wire(&testing::process().await).unwrap();
     wiring.state.read = Arc::new(read);
     router(wiring.state)
 }

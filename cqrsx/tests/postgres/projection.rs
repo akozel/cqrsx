@@ -55,9 +55,10 @@ async fn test_valid_cqrs_framework() {
     create_view(&pool).await;
     let repo = PostgresViewRepository::<TestView, TestAggregate>::new("test_view", pool.clone());
     let projection = TestProjection::new(Arc::new(repo));
-    let repository = cqrsx::postgres::event_repository::PostgresEventRepository::new(pool);
-    let store = cqrsx::cqrs::store::persisted::PersistedEventStore::new_event_store(repository);
-    let _framework = cqrsx::cqrs::CqrsFramework::new(store, vec![Box::new(projection)], TestServices);
+    let config = cqrsx::postgres::command::PostgresCommandConfig::new(1, Default::default(), Default::default()).unwrap();
+    let executor = cqrsx::postgres::command::PostgresCommandExecutor::<TestAggregate>::new(pool, config, TestServices)
+        .with_event_handler(Arc::new(projection), Default::default());
+    assert!(executor.backlog().is_empty());
 
     db.close().await;
 }

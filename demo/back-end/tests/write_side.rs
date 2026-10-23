@@ -1,18 +1,23 @@
 //! [P1] Integration test against a real PostgreSQL (testcontainers, same image as the root tests).
 //! An accepted command writes one event and one task sharing the correlation id; a rejected
-//! command writes nothing; the command's metadata is stored with the event. With per-aggregate
-//! ordering, bookings racing for one concert take turns instead of conflicting.
+//! command writes nothing; the command's metadata is stored with the event. Bookings racing for
+//! one concert wait for its lock instead of conflicting, and an ordered read model applies them
+//! in commit order.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use chrono::NaiveDate;
 use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
 use cqrsx::{
-    cqrs::command::{
-        retry::AggregateConflictRetryPolicy,
-        turns::{CommandOrdering, TurnLimits},
+    cqrs::{
+        command::{locks::LockLimits, retry::AggregateConflictRetryPolicy},
+        event_handler::delivery::DeliveryConfig,
+        projection::{View, ViewProjection, repository::ViewRepository},
+        store::{EventStore, persisted::PersistedEventStore},
+        testing::mem_view_repository::MemViewRepository,
     },
     postgres::{
         EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA,
         command::{PostgresCommandConfig, PostgresCommandExecutor},
+        event_repository::PostgresEventRepository,
     },
 };
 use encore_backend::{
@@ -20,12 +25,13 @@ use encore_backend::{
         activity::ActivityHub,
         command_service::{CommandMetadata, CommandOutcome, CommandService},
         concert::ConcertApp,
+        concert::views::concert_hall::ConcertHallView,
         lock::BoxOfficeLock,
     },
     domain::{
         ConcertId, FanId,
         concert::{
-            ConcertError, ConcertServices,
+            Concert, ConcertError, ConcertServices,
             commands::{AnnounceConcert, BookSeat},
         },
     },
@@ -107,12 +113,7 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     let (pool, container) = database().await;
     let activity = Arc::new(ActivityHub::new(64, 64));
     let lock = Arc::new(BoxOfficeLock::new());
-    let config = PostgresCommandConfig::new(
-        10,
-        AggregateConflictRetryPolicy::default(),
-        CommandOrdering::PerAggregate(TurnLimits::default()),
-    )
-    .expect("config");
+    let config = PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default()).expect("config");
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 });
     let concerts = ConcertApp::new(
         CommandService::new(executor, activity, lock),
@@ -209,12 +210,11 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn parallel_bookings_of_one_concert_take_turns_and_need_no_retry() {
+async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() {
     let (pool, container) = database().await;
     // One attempt only: a booking that lost a version race would answer `Conflict`.
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
-    let config =
-        PostgresCommandConfig::new(10, single_attempt, CommandOrdering::PerAggregate(TurnLimits::default())).expect("config");
+    let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 });
     let concerts = Arc::new(ConcertApp::new(
         CommandService::new(executor, Arc::new(ActivityHub::new(64, 64)), Arc::new(BoxOfficeLock::new())),
@@ -258,6 +258,72 @@ async fn parallel_bookings_of_one_concert_take_turns_and_need_no_retry() {
         .await
         .expect("events");
     assert_eq!(events, 21, "the announcement and every booking");
+
+    pool.close().await;
+    container.stop().await.expect("stop");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn parallel_bookings_reach_an_ordered_read_model_in_commit_order() {
+    let (pool, container) = database().await;
+    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
+    let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
+    let halls = Arc::new(MemViewRepository::<ConcertHallView, Concert>::default());
+    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 }).with_event_handler(
+        Arc::new(ViewProjection::new(halls.clone()).with_name("concert_halls")),
+        DeliveryConfig::default(),
+    );
+    let backlog = executor.backlog();
+    let concerts = Arc::new(ConcertApp::new(
+        CommandService::new(executor, Arc::new(ActivityHub::new(64, 64)), Arc::new(BoxOfficeLock::new())),
+        history_store(pool.clone(), 10),
+        6,
+    ));
+    let concert_id = ConcertId::parse("ordered-2026").expect("concert id");
+    let announce = AnnounceConcert {
+        artist: "A".into(),
+        city: "C".into(),
+        date: NaiveDate::from_ymd_opt(2026, 11, 21).expect("date"),
+    };
+    assert!(
+        concerts
+            .announce_concert(&concert_id, announce, CommandMetadata::with_source("seed"))
+            .await
+            .outcome
+            .is_accepted()
+    );
+    let mut bookings = tokio::task::JoinSet::new();
+    for index in 0..20 {
+        let (concerts, concert_id) = (concerts.clone(), concert_id.clone());
+        bookings.spawn(async move {
+            let metadata = CommandMetadata::ui();
+            let book = BookSeat {
+                seat: format!("{}{}", ["A", "B", "C"][index / 8], index % 8 + 1),
+                fan_id: FanId::parse(&format!("fan-{index}")).expect("fan"),
+                fan_name: "Fan".into(),
+                booking_id: metadata.causation.command_id,
+            };
+            concerts.book_seat(&concert_id, book, metadata).await.outcome
+        });
+    }
+    while let Some(outcome) = bookings.join_next().await {
+        let outcome = outcome.expect("booking task");
+        assert!(outcome.is_accepted(), "{outcome:?}");
+    }
+    // Every booking answered after its receipt, so the read model is complete without waiting.
+    assert!(backlog.is_empty());
+    let journal = PersistedEventStore::<_, Concert>::new_event_store(PostgresEventRepository::new(pool.clone()))
+        .load_events("ordered-2026")
+        .await
+        .expect("journal");
+    assert_eq!(journal.len(), 21, "the announcement and every booking");
+    let mut replayed = ConcertHallView::default();
+    for event in &journal {
+        replayed.update(event);
+    }
+    let view = halls.load("ordered-2026").await.expect("view").expect("a document");
+    assert_eq!(view, replayed);
+    assert_eq!((view.sold, view.last_sequence), (20, 21));
 
     pool.close().await;
     container.stop().await.expect("stop");

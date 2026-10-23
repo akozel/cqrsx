@@ -46,12 +46,12 @@ impl cqrsx::cqrs::aggregate::Aggregate for History {
 #[tokio::test]
 async fn snapshot_command_applies_one_event_once() {
     use cqrsx::{
-        cqrs::command::turns::CommandOrdering,
-        postgres::command::{PostgresCommandConfig, command_executor},
+        cqrs::command::{CommandExecutor, locks::LockLimits},
+        postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
     };
     let db = Database::new().await;
-    let config = PostgresCommandConfig::new(1, Default::default(), CommandOrdering::PerAggregate(Default::default())).unwrap();
-    let executor = command_executor::<History>(db.pool.clone(), config);
+    let config = PostgresCommandConfig::new(1, Default::default(), LockLimits::default()).unwrap();
+    let executor = PostgresCommandExecutor::<History>::new(db.pool.clone(), config, ());
     executor.execute("history", 7, vec![]).await.unwrap();
     let store = PersistedEventStore::<_, History>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 1);
     assert_eq!(store.load_events("history").await.unwrap().len(), 1);

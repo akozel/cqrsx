@@ -1,11 +1,11 @@
 use crate::support::{Database, new_task};
 use cqrsx::{
     cqrs::{
-        AggregateError, CqrsFramework,
+        CqrsFramework,
         aggregate::Aggregate,
         command::{CommandGatewayError, FailedHandler, executor::CqrsCommandExecutor},
         event::{DomainEvent, EventEnvelope},
-        event_handler::EventHandler,
+        event_handler::{EventHandler, delivery::DeliveryConfig},
         event_sink::EventSink,
         projection::{
             View, ViewProjection,
@@ -17,7 +17,6 @@ use cqrsx::{
         },
     },
     postgres::{outbox::PostgresEventRepositoryWithOutbox, view_repository::PostgresViewRepository},
-    task::NewTask,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -103,34 +102,27 @@ impl EventHandler<State> for Capture {
         Ok(())
     }
 }
-fn framework(
+/// The handlers in registration order: a view whose write succeeds but whose reply is lost, a capture,
+/// a view that always conflicts, and a second capture.
+fn handlers(
     pool: sqlx::PgPool,
-    calls: Arc<AtomicUsize>,
     attempts: Arc<AtomicUsize>,
     reported: Arc<AtomicUsize>,
     seen: Arc<Mutex<Vec<SerializedEvent>>>,
-    tasks: Vec<NewTask>,
-) -> CqrsFramework<State, PersistedEventStore<PostgresEventRepositoryWithOutbox, State>> {
-    let mut written = ViewProjection::new(Arc::new(WrittenButFailed(PostgresViewRepository::new(
-        "command_view",
-        pool.clone(),
-    ))))
-    .with_name("written");
+) -> Vec<Arc<dyn EventHandler<State>>> {
+    let mut written =
+        ViewProjection::new(Arc::new(WrittenButFailed(PostgresViewRepository::new("command_view", pool)))).with_name("written");
     written.set_error_observer(Box::new(move |error| {
         assert!(matches!(error, PersistenceError::ConnectionError(_)));
         reported.fetch_add(1, Ordering::SeqCst);
     }));
     let conflict = ViewProjection::new(Arc::new(Conflict(attempts))).with_max_attempts(NonZeroUsize::new(3).unwrap());
-    CqrsFramework::new(
-        PersistedEventStore::new_snapshot_store(PostgresEventRepositoryWithOutbox::new(pool).with_outbox(tasks), 1),
-        vec![
-            Box::new(written),
-            Box::new(Capture(seen.clone())),
-            Box::new(conflict),
-            Box::new(Capture(seen)),
-        ],
-        Services(calls),
-    )
+    vec![
+        Arc::new(written),
+        Arc::new(Capture(seen.clone())),
+        Arc::new(conflict),
+        Arc::new(Capture(seen)),
+    ]
 }
 #[tokio::test]
 async fn projection_failures_preserve_one_command_commit_and_outbox_and_invoke_other_handlers() {
@@ -143,75 +135,51 @@ async fn projection_failures_preserve_one_command_commit_and_outbox_and_invoke_o
     let attempts = Arc::new(AtomicUsize::new(0));
     let reported = Arc::new(AtomicUsize::new(0));
     let seen = Arc::new(Mutex::new(Vec::new()));
-    let direct_task = new_task();
-    let gateway_task = new_task();
-    let Err(AggregateError::CommittedWithEventHandlerFailure(failure)) = framework(
-        db.pool.clone(),
-        calls.clone(),
-        attempts.clone(),
-        reported.clone(),
-        seen.clone(),
-        vec![direct_task.clone()],
-    )
-    .execute("direct", "accepted".into())
-    .await
-    else {
-        panic!("must expose the committed outcome")
-    };
-    assert_eq!(failure.last_sequence, 1);
-    assert_eq!(
-        failure
-            .errors
-            .iter()
-            .map(|e| (e.handler_index, e.handler_name.as_str()))
-            .collect::<Vec<_>>(),
-        [(0, "written"), (2, std::any::type_name::<Projection>())]
-    );
-    assert!(matches!(&failure.errors[0].error,PersistenceError::ConnectionError(source) if source.is::<std::io::Error>()));
-    assert!(matches!(failure.errors[1].error, PersistenceError::OptimisticLockError));
+    let first_task = new_task();
+    let second_task = new_task();
     let executor = CqrsCommandExecutor::new(
         {
             let pool = db.pool.clone();
             let calls = calls.clone();
-            let attempts = attempts.clone();
-            let reported = reported.clone();
-            let seen = seen.clone();
             move |tasks| {
-                framework(
-                    pool.clone(),
-                    calls.clone(),
-                    attempts.clone(),
-                    reported.clone(),
-                    seen.clone(),
-                    tasks,
+                let repository = PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks);
+                CqrsFramework::new(
+                    PersistedEventStore::new_snapshot_store(repository, 1),
+                    Services(calls.clone()),
                 )
             }
         },
         Default::default(),
+        cqrsx::cqrs::command::locks::LockLimits::default(),
     );
-    assert_eq!(
-        executor
-            .execute("gateway", "accepted".into(), vec![gateway_task.clone()])
-            .await,
-        Err(CommandGatewayError::CommittedWithEventHandlerFailure {
-            last_sequence: 1,
-            handlers: vec![
-                FailedHandler {
-                    index: 0,
-                    name: "written".into()
-                },
-                FailedHandler {
-                    index: 2,
-                    name: std::any::type_name::<Projection>().into()
-                },
-            ]
-        })
-    );
+    let executor = handlers(db.pool.clone(), attempts.clone(), reported.clone(), seen.clone())
+        .into_iter()
+        .fold(executor, |executor, handler| {
+            executor.with_event_handler(handler, DeliveryConfig::default())
+        });
+    for (id, task) in [("first", &first_task), ("second", &second_task)] {
+        assert_eq!(
+            executor.execute(id, "accepted".into(), vec![task.clone()]).await,
+            Err(CommandGatewayError::CommittedWithEventHandlerFailure {
+                last_sequence: 1,
+                handlers: vec![
+                    FailedHandler {
+                        index: 0,
+                        name: "written".into()
+                    },
+                    FailedHandler {
+                        index: 2,
+                        name: std::any::type_name::<Projection>().into()
+                    },
+                ]
+            })
+        );
+    }
     assert_eq!(calls.load(Ordering::SeqCst), 2);
     assert_eq!(attempts.load(Ordering::SeqCst), 6);
     assert_eq!(reported.load(Ordering::SeqCst), 2);
     let repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    for (id, task) in [("direct", direct_task), ("gateway", gateway_task)] {
+    for (id, task) in [("first", first_task), ("second", second_task)] {
         let events = repo.get_events::<State>(id).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].sequence, 1);

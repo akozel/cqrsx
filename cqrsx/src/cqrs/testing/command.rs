@@ -3,8 +3,16 @@ use crate::{
     cqrs::{
         CqrsFramework,
         aggregate::Aggregate,
-        command::{CommandExecutor, CommandGatewayError, executor::CqrsCommandExecutor, retry::AggregateConflictRetryPolicy},
-        event_handler::EventHandler,
+        command::{
+            CommandExecutor, CommandGatewayError,
+            executor::{CqrsCommandExecutor, FrameworkFactory},
+            locks::LockLimits,
+            retry::AggregateConflictRetryPolicy,
+        },
+        event_handler::{
+            EventHandler,
+            delivery::{DeliveryBacklog, DeliveryConfig},
+        },
         store::EventStore,
         testing::mem_store::MemStore,
     },
@@ -15,14 +23,40 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-/// The production command path behind [`CommandExecutor`] over a test store: the same
-/// [`CqrsCommandExecutor`] with conflict retry and post-commit event handlers, plus a record of
-/// the tasks every call carries.
+/// Builds every command's framework over the one test store; the tasks go to the executor's records, as
+/// the store does not model the outbox.
+struct TestFrameworkFactory<A: Aggregate, S> {
+    store: S,
+    services: A::Services,
+}
+
+impl<A, S> FrameworkFactory<A> for TestFrameworkFactory<A, S>
+where
+    A: Aggregate,
+    A::Services: Clone,
+    S: EventStore<A> + Clone,
+{
+    type Store = S;
+
+    fn framework(&self, _: Vec<NewTask>) -> CqrsFramework<A, S> {
+        CqrsFramework::new(self.store.clone(), self.services.clone())
+    }
+}
+
+/// The production command path behind [`CommandExecutor`] over a test store: one [`CqrsCommandExecutor`]
+/// with aggregate locks, the default conflict retry and post-commit event handlers, plus a record of the
+/// tasks every call carries.
 ///
 /// *Bound* tasks are everything handed to the executor, whatever the outcome. *Published* tasks
 /// are only those of calls that committed (`Ok` or `CommittedWithEventHandlerFailure`), i.e.
-/// what a transactional outbox would hold. Clones share the store, the handlers and both
-/// records, so a use case can own one clone while the test inspects another.
+/// what a transactional outbox would hold. Clones share the store, the handlers, the locks and
+/// both records, so a use case can own one clone while the test inspects another; register the
+/// handlers before cloning.
+///
+/// Handlers get the committed events the way production handlers do: through an ordered buffer per
+/// aggregate key, in a worker task of their own, so the test needs a Tokio runtime. A command returns
+/// only after its handlers' receipts; a failing or panicking handler shows as
+/// `CommittedWithEventHandlerFailure`.
 ///
 /// The store does not model the outbox: a call that commits no event still counts as
 /// published, while the PostgreSQL outbox rejects tasks without an event.
@@ -86,42 +120,48 @@ use std::{
 /// # }
 /// ```
 pub struct TestCommandExecutor<A: Aggregate, S = MemStore<A>> {
-    store: S,
-    services: A::Services,
-    event_handlers: Vec<Arc<dyn EventHandler<A>>>,
-    retry_policy: AggregateConflictRetryPolicy,
+    inner: Arc<CqrsCommandExecutor<A, TestFrameworkFactory<A, S>>>,
     bound: Arc<Mutex<Vec<NewTask>>>,
     published: Arc<Mutex<Vec<NewTask>>>,
 }
 
-impl<A: Aggregate, S> TestCommandExecutor<A, S> {
-    /// Execute against `store` with `services`, no event handlers and the default conflict retry.
+impl<A: Aggregate + 'static, S> TestCommandExecutor<A, S> {
+    /// Execute against `store` with `services`, no event handlers, the default conflict retry and
+    /// the default lock limits.
     pub fn new(store: S, services: A::Services) -> Self {
+        let factory = TestFrameworkFactory { store, services };
         Self {
-            store,
-            services,
-            event_handlers: Vec::new(),
-            retry_policy: AggregateConflictRetryPolicy::default(),
+            inner: Arc::new(CqrsCommandExecutor::new(
+                factory,
+                AggregateConflictRetryPolicy::default(),
+                LockLimits::default(),
+            )),
             bound: Arc::default(),
             published: Arc::default(),
         }
     }
 
-    /// Register a handler invoked after every commit, after the handlers registered before it.
-    pub fn with_event_handler(mut self, handler: Arc<dyn EventHandler<A>>) -> Self {
-        self.event_handlers.push(handler);
+    /// Register a handler after the handlers registered before it; it gets the committed events through
+    /// a buffer per aggregate key bounded by `config`.
+    ///
+    /// # Panics
+    ///
+    /// When a clone of the executor exists: the handler would serve one clone and not the other.
+    pub fn with_event_handler(mut self, handler: Arc<dyn EventHandler<A>>, config: DeliveryConfig) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("register event handlers before cloning the executor")
+            .add_event_handler(handler, config);
         self
     }
 
-    /// Replace the default optimistic-conflict retry policy.
-    pub fn with_retry_policy(mut self, retry_policy: AggregateConflictRetryPolicy) -> Self {
-        self.retry_policy = retry_policy;
-        self
+    /// The hand-overs not handled yet, shared by every clone.
+    pub fn backlog(&self) -> DeliveryBacklog {
+        self.inner.backlog()
     }
 
     /// The store the commands run against.
     pub fn store(&self) -> &S {
-        &self.store
+        &self.inner.factory().store
     }
 
     /// Every task handed to the executor since the last call, in call order and whatever the
@@ -140,18 +180,10 @@ fn take(tasks: &Mutex<Vec<NewTask>>) -> Vec<NewTask> {
     std::mem::take(&mut *tasks.lock().unwrap_or_else(PoisonError::into_inner))
 }
 
-impl<A, S> Clone for TestCommandExecutor<A, S>
-where
-    A: Aggregate,
-    A::Services: Clone,
-    S: Clone,
-{
+impl<A: Aggregate, S> Clone for TestCommandExecutor<A, S> {
     fn clone(&self) -> Self {
         Self {
-            store: self.store.clone(),
-            services: self.services.clone(),
-            event_handlers: self.event_handlers.clone(),
-            retry_policy: self.retry_policy,
+            inner: self.inner.clone(),
             bound: self.bound.clone(),
             published: self.published.clone(),
         }
@@ -179,19 +211,7 @@ where
             .unwrap_or_else(PoisonError::into_inner)
             .extend(tasks.iter().cloned());
         let candidates = tasks.clone();
-        let result = CqrsCommandExecutor::<A, _>::new(
-            |_| {
-                let handlers = self
-                    .event_handlers
-                    .iter()
-                    .map(|handler| Box::new(handler.clone()) as Box<dyn EventHandler<A>>)
-                    .collect();
-                CqrsFramework::new(self.store.clone(), handlers, self.services.clone())
-            },
-            self.retry_policy,
-        )
-        .execute_with_metadata(aggregate_id, command, metadata, tasks)
-        .await;
+        let result = self.inner.execute_with_metadata(aggregate_id, command, metadata, tasks).await;
         if matches!(
             result,
             Ok(()) | Err(CommandGatewayError::CommittedWithEventHandlerFailure { .. })
@@ -220,7 +240,6 @@ mod tests {
     };
     use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
-    use std::time::Duration;
 
     /// Accepts values up to the cap in its services; `Conflict` in the store forces retries.
     #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -316,7 +335,8 @@ mod tests {
     #[tokio::test]
     async fn committed_handler_failures_publish_and_report_the_handler() {
         let broken = Arc::new(Broken::default());
-        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 5).with_event_handler(broken.clone());
+        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 5)
+            .with_event_handler(broken.clone(), DeliveryConfig::default());
         let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
         assert_eq!(
             executor.execute_with_metadata("s", 7, metadata, vec![task(7)]).await,
@@ -329,6 +349,10 @@ mod tests {
             })
         );
         assert_eq!(*broken.0.lock().unwrap(), [1]);
+        assert!(
+            executor.clone().backlog().is_empty(),
+            "the command returned after its receipt"
+        );
         assert_eq!(executor.take_published_tasks().len(), 1);
         let events = executor.store().load_events("s").await.unwrap();
         assert_eq!(events[0].metadata["source"], "test");
@@ -336,8 +360,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unavailable_store_is_reported_as_unavailable_and_publishes_nothing() {
-        let retry = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-        let executor = TestCommandExecutor::<Stack, _>::new(UnavailableStore, 1).with_retry_policy(retry);
+        let executor = TestCommandExecutor::<Stack, _>::new(UnavailableStore, 1);
         assert_eq!(
             executor.execute("s", 1, vec![task(1)]).await,
             Err(CommandGatewayError::Unavailable)
@@ -345,5 +368,13 @@ mod tests {
         assert_eq!(executor.take_bound_tasks().len(), 1);
         assert!(executor.take_published_tasks().is_empty());
         let _: &UnavailableStore = executor.store();
+    }
+
+    #[test]
+    #[should_panic(expected = "register event handlers before cloning the executor")]
+    fn a_handler_registered_after_a_clone_is_refused() {
+        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1);
+        let _use_case = executor.clone();
+        let _ = executor.with_event_handler(Arc::new(Broken::default()), DeliveryConfig::default());
     }
 }

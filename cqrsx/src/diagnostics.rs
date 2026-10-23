@@ -37,16 +37,10 @@ pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, 
     // These details are inspected before CommandGatewayError intentionally discards
     // technical sources. They never change the outward error or retry policy.
     #[cfg(feature = "postgres")]
-    {
-        let mut current = Some(source);
-        while let Some(error) = current {
-            if let Some(error) = error.downcast_ref::<sqlx::Error>() {
-                tracing::error!(component = "command", operation = "execute", aggregate_type = safe_type(aggregate_type), category,
-                    storage_category = sqlx_kind(error), sqlstate = ?sqlstate(error), "command execution failed");
-                return;
-            }
-            current = error.source();
-        }
+    if let Some(error) = find_sqlx(source) {
+        tracing::error!(component = "command", operation = "execute", aggregate_type = safe_type(aggregate_type), category,
+            storage_category = sqlx_kind(error), sqlstate = ?sqlstate(error), "command execution failed");
+        return;
     }
     #[cfg(not(feature = "postgres"))]
     let _ = source;
@@ -59,13 +53,76 @@ pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, 
     );
 }
 
-/// A command refused before it ran: no turn for its aggregate. Expected under overload, hence `warn`.
-pub(crate) fn log_turn_refused(aggregate_type: &str, refused: crate::cqrs::command::turns::TurnRefused) {
+/// The first SQLx error in `source`'s chain: the only technical detail safe to log.
+#[cfg(feature = "postgres")]
+fn find_sqlx<'e>(source: &'e (dyn std::error::Error + 'static)) -> Option<&'e sqlx::Error> {
+    let mut current = Some(source);
+    while let Some(error) = current {
+        if let Some(error) = error.downcast_ref::<sqlx::Error>() {
+            return Some(error);
+        }
+        current = error.source();
+    }
+    None
+}
+
+/// A command refused before it ran: no lock for its aggregate. Expected under overload, hence `warn`.
+pub(crate) fn log_lock_refused(aggregate_type: &str, refused: crate::cqrs::command::locks::LockRefused) {
     tracing::warn!(
         component = "command",
-        operation = "turn",
+        operation = "lock",
         aggregate_type = safe_type(aggregate_type),
         reason = refused.reason(),
+        "command refused before it ran"
+    );
+}
+
+/// An ordered event handler failed for a batch of `commands`; logged once for the whole batch.
+/// `handler` is the handler's name: a type or read-model name chosen by the application, never a payload.
+pub(crate) fn log_delivery_failure(
+    aggregate_type: &str,
+    handler: &str,
+    commands: usize,
+    source: &(dyn std::error::Error + 'static),
+) {
+    #[cfg(feature = "postgres")]
+    if let Some(error) = find_sqlx(source) {
+        tracing::error!(component = "event_handler", operation = "deliver", aggregate_type = safe_type(aggregate_type), handler, commands,
+            storage_category = sqlx_kind(error), sqlstate = ?sqlstate(error), "event delivery failed");
+        return;
+    }
+    #[cfg(not(feature = "postgres"))]
+    let _ = source;
+    tracing::error!(
+        component = "event_handler",
+        operation = "deliver",
+        aggregate_type = safe_type(aggregate_type),
+        handler,
+        commands,
+        "event delivery failed"
+    );
+}
+
+/// An ordered event handler panicked while it handled a batch of `commands`.
+pub(crate) fn log_delivery_panic(aggregate_type: &str, handler: &str, commands: usize) {
+    tracing::error!(
+        component = "event_handler",
+        operation = "deliver",
+        aggregate_type = safe_type(aggregate_type),
+        handler,
+        commands,
+        "event handler panicked"
+    );
+}
+
+/// A command refused before it ran: an ordered handler's buffer for its aggregate stayed full until the
+/// command's deadline. Expected under overload, hence `warn`.
+pub(crate) fn log_delivery_refused(aggregate_type: &str) {
+    tracing::warn!(
+        component = "command",
+        operation = "deliver",
+        aggregate_type = safe_type(aggregate_type),
+        reason = "buffer_full",
         "command refused before it ran"
     );
 }
@@ -128,10 +185,14 @@ pub(crate) mod test_support {
         tracing::dispatcher::with_default(&dispatch, || {
             // Prime shared callsites that parallel tests may register without a subscriber.
             super::log_command_failure("prime", "unexpected", &io::Error::other("prime"));
-            super::log_turn_refused("prime", crate::cqrs::command::turns::TurnRefused::TimedOut);
+            super::log_lock_refused("prime", crate::cqrs::command::locks::LockRefused::TimedOut);
+            super::log_delivery_failure("prime", "prime", 1, &io::Error::other("prime"));
+            super::log_delivery_panic("prime", "prime", 1);
+            super::log_delivery_refused("prime");
             #[cfg(feature = "postgres")]
             {
                 super::log_command_failure("prime", "unexpected", &sqlx::Error::RowNotFound);
+                super::log_delivery_failure("prime", "prime", 1, &sqlx::Error::RowNotFound);
                 super::log_sqlx_failure("prime", &sqlx::Error::RowNotFound);
             }
             tracing::callsite::rebuild_interest_cache();
@@ -341,6 +402,35 @@ mod tests {
         assert!(!log.contains("storage_category"));
         assert!(!log.contains("sqlstate"));
         assert!(!log.contains("private_"));
+    }
+
+    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn delivery_diagnostics_log_one_safe_event_per_batch_with_the_storage_category() {
+        let source = crate::cqrs::store::PersistenceError::UnknownError(Box::new(sqlx::Error::PoolTimedOut));
+        let (_, log) = test_support::capture(async {
+            log_delivery_failure("private_type\nmail@example.com", "concert_halls", 3, &source);
+            log_delivery_failure("Account", "fan_wallets", 1, &std::io::Error::other("private_source"));
+        })
+        .await;
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 2, "{log}");
+        for field in [
+            "event delivery failed",
+            "aggregate_type=\"unknown\"",
+            "handler=\"concert_halls\"",
+            "commands=3",
+            "storage_category=\"pool_timeout\"",
+        ] {
+            assert!(lines[0].contains(field), "missing {field}: {log}");
+        }
+        assert!(
+            lines[1].contains("handler=\"fan_wallets\"")
+                && lines[1].contains("commands=1")
+                && !lines[1].contains("storage_category"),
+            "{log}"
+        );
+        assert!(!log.contains("private_") && !log.contains("mail@example.com"), "{log}");
     }
 
     #[cfg(feature = "postgres")]

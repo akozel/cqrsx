@@ -43,6 +43,9 @@ const metrics = [
   ['p99 ms', (r) => r.latency_ms?.all?.p99],
   ['409 %', sharePct('conflict')],
   ['503 %', sharePct('unavailable')],
+  ['projection_failed %', sharePct('projection_warning')],
+  // 1 when the read models matched a rebuild after the run (run.sh VERIFY=1), 0 when they differed.
+  ['verify ok', (r) => (r.verify ? Number(r.verify.ok) : null)],
   ['CPU ms/1k back-end', cpuPer1k('backend')],
   ['CPU ms/1k PG', cpuPer1k('postgres')],
   ['CPU ms/1k Mongo', cpuPer1k('mongo')],

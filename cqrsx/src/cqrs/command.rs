@@ -1,11 +1,12 @@
-//! Command gateways with bounded optimistic-conflict retry.
+//! Command gateways: the executor contract and its outcomes, the aggregate locks that order the commands of
+//! one aggregate, bounded optimistic-conflict retry and the causation metadata convention.
 use crate::{cqrs::aggregate::Aggregate, task::NewTask};
 use std::{collections::HashMap, future::Future};
 use thiserror::Error;
 pub mod causation;
 pub mod executor;
+pub mod locks;
 pub mod retry;
-pub mod turns;
 
 /// Technical command boundary; the application gateway selects the aggregate ID.
 ///
@@ -65,13 +66,16 @@ where
     ) -> impl Future<Output = Result<(), CommandGatewayError<A::Error>>> + Send;
 }
 
-/// Domain rejection, exhausted conflict, unavailable storage, or a confirmed commit with event-handler failures.
+/// Domain rejection, exhausted conflict retry, a command that was not run or whose outcome is unknown, or a
+/// confirmed commit with event-handler failures.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum CommandGatewayError<D> {
     #[error("domain command failed a domain rule: {0}")]
     Domain(D),
     #[error("domain command conflicted with a concurrent change")]
     Conflict,
+    /// Not run, or outcome unknown: the storage failed or timed out, the aggregate's lock was not acquired
+    /// within its `max_wait`, or a handler's buffer had no space before that deadline. The reason is logged.
     #[error("command gateway is temporarily unavailable")]
     Unavailable,
     /// The event commit succeeded. Repair the event-handler failure without repeating the command.

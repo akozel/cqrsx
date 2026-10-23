@@ -146,9 +146,17 @@ rebuild / verify timing, SSE fan-out, soak, dependency outages. They are the nex
 - `POOL`: the size of that pool (`ENCORE_DATABASE_POOL_SIZE`, default 10). The 2026-10-18 runs put the
   write-path plateaus (~7.3k announces/s, ~4.3k bookings/s) on this ceiling: nothing else was saturated.
 - `SNAPSHOT_EVERY`: compare 10 with 1000 in test 1 to see what snapshots buy on the command path.
-- `ORDERING`: `concurrent` (the back-end's default) lets the commands to one concert race on the events
-  primary key and retry; `per_aggregate` runs them one at a time, in arrival order. Compare both in test 1.
-  `TURN_MAX_WAIT_MS` and `TURN_MAX_WAITING` bound the wait for a turn; past them a command gets 503.
+- `LOCK_MAX_WAIT_MS` and `LOCK_MAX_WAITERS`: the back-end runs the commands to one concert one at a time
+  under its lock, in arrival order; these bound the wait for the lock, past them a command gets 503. Before
+  backlog 02/08c an `ORDERING` parameter could also let them race (`concurrent`); `meta.command_ordering` in
+  an older `result.json` records it, and `default` there means `concurrent` for images built before 08b.
+- `PROJECTION_BUFFER` and `PROJECTION_MAX_BATCH`: a command hands its events to a buffer per concert or fan
+  ledger and read model, applied in commit order and in batches after the command released its lock. Before
+  backlog 02/08d a `DELIVERY` parameter could also let a command update the read models itself (`inline`);
+  `meta.projection_delivery` in an older `result.json` records it. `PROJECTION_BUFFER` bounds that buffer (64 commands per aggregate), `PROJECTION_MAX_BATCH` the commands per
+  read-model update (32; 1 = no batches).
+- `VERIFY=1`: after the burst, wait for the chain tasks, then compare the read models with a rebuild from
+  the journal (`verify.json`, `verify` in `result.json`). Adds a few seconds per run.
 - `LOAD_OUTBOX_POLL_MS` (compose env): the poller's idle cadence, 300 ms by default.
 - PostgreSQL runs with the image defaults (`fsync`, `synchronous_commit` on). That is part of the
   limit being measured; turn it off only as an explicitly labelled experiment.

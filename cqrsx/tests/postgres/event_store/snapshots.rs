@@ -65,10 +65,7 @@ async fn snapshot_histories(through_framework: bool) {
                         interval,
                     );
                     if through_framework {
-                        CqrsFramework::new(store, vec![], ())
-                            .execute(&id, changes.clone())
-                            .await
-                            .unwrap();
+                        CqrsFramework::new(store, ()).execute(&id, changes.clone()).await.unwrap();
                     } else {
                         let context = store.load_aggregate(&id).await.unwrap();
                         store

@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 // Assembles results/<run>/result.json after a run: k6's result.json (copied out of the container)
-// + run metadata + container resources from stats.tsv + cgroup memory peaks + outbox drain figures.
+// + run metadata + container resources from stats.tsv + cgroup memory peaks + outbox drain figures
+// + the read-model verify (verify.json, VERIFY=1).
 // Prints a short human summary. run.sh calls it with everything in LOADC_* environment variables,
 // so the harness needs no jq or awk on the host.
 //
@@ -108,6 +109,25 @@ if (existsSync(resultPath)) {
   }
 }
 
+/** verify.json (GET /api/projections/verify) → ok, documents checked, differences; null without the file. */
+function verify(path, seconds) {
+  if (!existsSync(path)) {
+    return null;
+  }
+  try {
+    const report = JSON.parse(readFileSync(path, 'utf8'));
+    const checked = Object.values(report.checked ?? {}).reduce((sum, n) => sum + (num(n) ?? 0), 0);
+    return {
+      ok: report.ok === true,
+      checked,
+      differences: (report.differences ?? []).length,
+      seconds: num(seconds),
+    };
+  } catch {
+    return { ok: false, checked: 0, differences: null, seconds: num(seconds), error: 'unreadable verify.json' };
+  }
+}
+
 const memoryPeak = {};
 const cpuBudget = {};
 for (const service of ['backend', 'postgres', 'mongo', 'k6']) {
@@ -132,8 +152,9 @@ const result = {
     cpu_pinning: env('PIN', 'off'),
     outbox_workers: num(env('WORKERS')) ?? 2,
     snapshot_every: num(env('SNAPSHOT')) ?? 10,
-    // ENCORE_COMMAND_ORDERING as run.sh passed it; `default` = the back-end's own default.
-    command_ordering: env('ORDERING', 'default'),
+    // ENCORE_PROJECTION_MAX_BATCH as run.sh passed it; `default` = the back-end's own default. Runs before
+    // backlog 02/08d also have `projection_delivery`, before 08c `command_ordering`.
+    projection_max_batch: num(env('MAX_BATCH')) ?? 'default',
     pg_pool: num(env('POOL')) ?? 10,
     k6_exit: num(env('K6_EXIT')) ?? -1,
     k6_started_epoch: burstStart,
@@ -146,6 +167,10 @@ const result = {
 const drained = drain(env('DRAIN_FIRST'), env('DRAIN_LAST'), env('DRAIN_SECONDS'));
 if (drained) {
   result.drain = drained;
+}
+const verified = verify(join(runDir, 'verify.json'), env('VERIFY_SECONDS'));
+if (verified) {
+  result.verify = verified;
 }
 writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`);
 
@@ -160,4 +185,7 @@ console.log(
 console.log(`mem peak  backend ${mib(peakOf('backend'))}  postgres ${mib(peakOf('postgres'))}  mongo ${mib(peakOf('mongo'))}`);
 if (drained) {
   console.log(`drain     ${drained.seconds} s, ${drained.tasks_per_second} tasks/s, ${drained.tasks_total} tasks total, ${drained.failed} failed`);
+}
+if (verified) {
+  console.log(`verify    ${verified.ok ? 'ok' : 'DIFFERS'}, ${verified.differences} differences in ${verified.checked} documents`);
 }

@@ -8,12 +8,14 @@ use crate::{
         ports::{ReadModelStore, Stored},
     },
     config::{Config, outbox_default},
+    process::Process,
 };
 use async_trait::async_trait;
 use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
-        command::turns::CommandOrdering,
+        command::locks::LockLimits,
+        event_handler::delivery::DeliveryConfig,
         projection::{View, repository::ViewRepository},
         testing::mem_view_repository::MemViewRepository,
     },
@@ -23,6 +25,7 @@ use cqrsx::{
 use mongodb::{Client, options::ClientOptions};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
+use tokio_util::sync::CancellationToken;
 
 /// A valid configuration with the demo defaults and databases nobody listens on.
 pub fn config() -> Config {
@@ -41,7 +44,8 @@ pub fn config() -> Config {
         task_retry_max: Duration::from_secs(8),
         ticket_limit: 4,
         snapshot_every: 10,
-        command_ordering: CommandOrdering::PerAggregate(Default::default()),
+        command_lock_limits: LockLimits::default(),
+        projection_delivery: DeliveryConfig::default(),
         replay_slow_delay: Duration::ZERO,
         task_runtime: TaskRuntimeConfig::from_lookup(outbox_default).unwrap(),
     }
@@ -58,6 +62,23 @@ pub async fn lazy_mongo() -> Client {
     let mut options = ClientOptions::parse("mongodb://127.0.0.1:1").await.unwrap();
     options.server_selection_timeout = Some(Duration::from_millis(50));
     Client::with_options(options).unwrap()
+}
+
+/// A process over `config` and databases nobody listens on: enough to wire the whole graph and to
+/// exercise every branch that answers before storage is touched.
+pub async fn process_with(config: Config) -> Process {
+    Process {
+        config: Arc::new(config),
+        pool: lazy_pool(),
+        history_pool: lazy_pool(),
+        mongo: lazy_mongo().await,
+        shutdown: CancellationToken::new(),
+    }
+}
+
+/// [`process_with`] over the demo defaults.
+pub async fn process() -> Process {
+    process_with(config()).await
 }
 
 /// A read-model collection in memory holding `documents`, ordered by id like the MongoDB one.

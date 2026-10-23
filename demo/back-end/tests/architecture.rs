@@ -2,8 +2,8 @@
 //!
 //! Every `use` tree is expanded to full paths and every other qualified path is collected, with
 //! comments and string literals removed first (event docs link to the workflows they start).
-//! `bootstrap.rs`, `main.rs`, `config.rs`, `lib.rs` and `testing.rs` compose the layers and are
-//! exempt. A few rules apply to production code only: test modules may use test tooling.
+//! `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and `testing.rs`
+//! compose the layers and are exempt. A few rules apply to production code only: test modules may use test tooling.
 use std::{
     collections::BTreeSet,
     fs,

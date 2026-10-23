@@ -272,7 +272,7 @@ mod tests {
     use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Mutex, task::Poll};
     use uuid::Uuid;
 
-    /// Answers only once released, like a command waiting for its turn or for the database.
+    /// Answers only once released, like a command waiting for its aggregate's lock or for the database.
     struct Gated(Mutex<Option<tokio::sync::oneshot::Receiver<()>>>);
 
     impl CommandExecutor<Concert> for Gated {

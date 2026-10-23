@@ -530,3 +530,64 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   ~2 ms with its inline MongoDB projection, so the key tops out at ~500 accepted/s against 600–670 for
   concurrent commands in the `app` profile, and p50 grows to VUs × 2 ms. Demo default by the plan's rule:
   `concurrent`; the lever is 08b (the projection out of the turn).
+- **2026-10-21, backlog 02/08b ordered projection delivery** (uncommitted). cqrsx: `CqrsFramework` split into
+  `decide_and_commit` and `notify`; `cqrs/event_handler/delivery.rs` (`HandlerDelivery::{Inline, Ordered}`,
+  `OrderedDeliveryConfig` 64/32, `DeliveryBacklog` with `drained()`) and `delivery/ordered.rs` (a mailbox per key
+  under one std mutex instead of an mpsc channel, so a job can never slip past a worker that is leaving; one
+  worker per busy key, batches, `catch_unwind` per poll); executors get `with_event_handler_via` and `backlog()`.
+  A command reserves buffer space after its turn and before it commits (bounded by the turn's `max_wait`, then
+  503 with nothing written), hands its events over in the poll that saw the commit, releases its turn, then
+  awaits the receipt; a client that leaves after the commit no longer loses its projection. Demo:
+  `ENCORE_PROJECTION_DELIVERY`, `_BUFFER`, `_MAX_BATCH`; Encore! and shutdown wait for the backlog (5 s limit);
+  stand `DELIVERY=`, `PROJECTION_BUFFER=`, `PROJECTION_MAX_BATCH=`, `VERIFY=1`. Tests include a `proptest`
+  model of the mailbox. Measured (×3, one and two nodes, verify `ok` in every run): the hot key takes
+  ~720–770 accepted/s (turn of 08a ~470–540, concurrent 460–680), 409 → 0, PostgreSQL CPU per command −60 %
+  against concurrent; batches hardly form on the stand (batch 1 = batch 32); two nodes round-robin lose 22 %
+  against concurrent (they fight over the key in the database), key affinity gains 21 %. Demo default by the
+  plan's rule: `per_aggregate` + `ordered`; unset delivery follows the ordering.
+- **2026-10-21, backlog 02/08c aggregate lock only** (uncommitted). The measurement left `concurrent` ahead only
+  for two nodes sharing a hot key round-robin, at 409 for two clients in three, so the mode is gone from cqrsx
+  and the demo: every command runs under its aggregate's lock. The mechanism is renamed turn → lock
+  (`cqrs/command/locks.rs`: `AggregateLocks`, `AggregateLock`, `LockLimits`, `LockRefused`, `DEFAULT_LOCK_*`;
+  `acquire` instead of `enter`). `CqrsCommandExecutor::new` takes the registry, `PostgresCommandConfig::new` the
+  `LockLimits`; `CommandOrdering`, `with_turns` and `OrderedDeliveryWithoutTurns` are removed, and
+  `with_event_handler_via` returns the executor. `TestCommandExecutor` shares one registry across its clones.
+  Demo: `ENCORE_COMMAND_ORDERING` removed, `ENCORE_COMMAND_TURN_*` → `ENCORE_COMMAND_LOCK_*`, unset delivery is
+  `ordered`; `.env.example` lists every lock and delivery value explicitly. Stand: `ORDERING=` removed,
+  `TURN_MAX_*` → `LOCK_MAX_*`. Tests that compared a run with and without turns now compare one shared registry
+  with registries of their own, like separate processes. No new measurement: the measured path is unchanged.
+- **2026-10-21, backlog 02/08d ordered delivery only** (uncommitted). `Inline` delivery is gone and `CqrsFramework`
+  has no event handlers: `CqrsFramework::new(store, services)`, `execute`/`execute_with_metadata` return the
+  committed events; `append_event_handler`, `decide_and_commit`, `notify`, the `AggregateError` variant for
+  handler failures, `CommittedWithEventHandlerFailure` and `EventHandlerFailure` are removed. Every handler belongs to a
+  command executor and gets its events through an ordered buffer per aggregate key:
+  `with_event_handler(handler, OrderedDeliveryConfig)` on `CqrsCommandExecutor`, `PostgresCommandExecutor` and
+  `TestCommandExecutor`; `HandlerDelivery` and `with_event_handler_via` are removed, and a failed handler's index
+  is its registration position. The handlers of one command now run side by side. Demo:
+  `ENCORE_PROJECTION_DELIVERY` removed (buffer and batch stay), the test configuration is ordered too; stand:
+  `DELIVERY=` removed. Framework tests check the returned events; handler tests moved to the executor.
+- **2026-10-23, backlog 02/08e executor API** (uncommitted). One engine, two factories: `FrameworkFactory<A>`
+  (every `Fn(Vec<NewTask>) -> CqrsFramework<A, S>` implements it), `CqrsCommandExecutor::new(factory, retry_policy,
+  lock_limits)` is long-lived and owns its lock registry and handlers; `PostgresCommandExecutor` and
+  `TestCommandExecutor` wrap one engine each (the test one in an `Arc`: clones share it, handlers are registered
+  before cloning) and run commands only through the `CommandExecutor` trait; `with_handlers`, `command_executor()`
+  and `with_retry_policy` are gone. `AggregateLocks`, `AggregateLock`, `LockRefused`, `OrderedDelivery`,
+  `DeliverySlot`, `DeliveryReceipt` and `DeliveryError` are crate-private; public are `LockLimits`, `DeliveryConfig`
+  (was `OrderedDeliveryConfig`), `DeliveryBacklog` and the defaults. `max_waiting` → `max_waiters` everywhere
+  (`ENCORE_COMMAND_LOCK_MAX_WAITERS`, stand `LOCK_MAX_WAITERS=`); internal `Lane`/`LaneRef` → `Line`/`LineRef`
+  (locks) and `KeyBuffer`/`BufferRef` (delivery). Delivery failure and panic logs carry the handler's name. Demo
+  tests that drove `OrderedDelivery` directly now go through `TestCommandExecutor<Fan>` with a held projection.
+  Known limitation recorded in `components.md`: a command future dropped while its commit is in flight may leave
+  committed events without their hand-over.
+- **2026-10-23, demo start-up and configuration tidy-up** (uncommitted). Both binaries start in three steps:
+  `Process::start()` (`.env`, logging, `Config`, connections), `bootstrap::wire(&process)` (the application
+  graph) and `process.serve(app)` (HTTP server, task runtime, stop, drain, close). Back-end: `process.rs` holds
+  the technical start and stop (the projection drain moved there from `bootstrap`), `bootstrap/` holds one
+  registry per kind of component: `aggregates/` (a module per aggregate: its command executor and the
+  handlers it feeds), `projections.rs` (read models: collections, repositories, maintenance, query ports),
+  `tasks.rs` (the outbox task handlers, moved from `infrastructure/task_runtime/dispatcher.rs`) and
+  `routes.rs` (the HTTP route table, moved from `presentation/http.rs`); `testing::process()` replaces the
+  five-argument `wire` in the router and bootstrap tests. Sidecar: `process.rs` (logging, config,
+  inspectors, server) and `bootstrap.rs` (X-ray poller and routes, demo lifecycle, mail service).
+  `.env.example` rewritten: eight sections, a description and the default per variable on a commented
+  line; README's configuration section points at it.

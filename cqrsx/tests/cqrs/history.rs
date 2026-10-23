@@ -84,7 +84,7 @@ mod snapshots {
                 for batch in batches {
                     let before=model.len();
                     let store=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),interval);
-                    if framework { CqrsFramework::new(store,vec![],Services::default()).execute("history",Command::Adjust(batch.clone())).await.unwrap(); }
+                    if framework { CqrsFramework::new(store,Services::default()).execute("history",Command::Adjust(batch.clone())).await.unwrap(); }
                     else { let context=store.load_aggregate("history").await.unwrap(); store.commit(batch.iter().map(|v|Delta(*v)).collect(),context,HashMap::new()).await.unwrap(); }
                     model.extend(batch);
                     let boundaries:Vec<_>=(before+1..=model.len()).filter(|n|n%interval==0).collect();
@@ -115,7 +115,7 @@ mod memory {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
                 let store = MemStore::<Ledger>::default();
-                let framework = CqrsFramework::new(store.clone(), vec![], Services::default());
+                let framework = CqrsFramework::new(store.clone(), Services::default());
                 let mut balances = [0i64; 3];
                 let mut accepted: [Vec<i32>; 3] = Default::default();
                 let mut metadata_history: [Vec<HashMap<String,String>>; 3] = Default::default();

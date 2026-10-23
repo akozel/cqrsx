@@ -1,77 +1,48 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use async_trait::async_trait;
 use std::collections::HashMap;
-use std::sync::Arc;
-use std::sync::RwLock;
 
 use cqrsx::cqrs::AggregateError;
 use cqrsx::cqrs::CqrsFramework;
-use cqrsx::cqrs::event::EventEnvelope;
 use cqrsx::cqrs::event_handler::EventHandler;
 use cqrsx::cqrs::store::EventStore;
 use cqrsx::cqrs::testing::mem_store::MemStore;
 
 use crate::support::scenario::*;
 
-struct CapturingEventHandler {
-    events: Arc<RwLock<Vec<EventEnvelope<TestAggregate>>>>,
-}
-
-impl CapturingEventHandler {
-    fn new(events: Arc<RwLock<Vec<EventEnvelope<TestAggregate>>>>) -> Self {
-        Self { events }
-    }
-}
-#[async_trait]
-impl EventHandler<TestAggregate> for CapturingEventHandler {
-    async fn handle(
-        &self,
-        _aggregate_id: &str,
-        events: &[EventEnvelope<TestAggregate>],
-    ) -> Result<(), cqrsx::cqrs::store::PersistenceError> {
-        for event in events {
-            let mut event_list = self.events.write().unwrap();
-            event_list.push(event.clone());
-        }
-        Ok(())
-    }
-}
-
 #[tokio::test]
 async fn framework_test() {
     let event_store = MemStore::<TestAggregate>::default();
 
-    let delivered_events = Arc::default();
-    let view = CapturingEventHandler::new(Arc::clone(&delivered_events));
-
-    let cqrs = CqrsFramework::new(event_store.clone(), vec![Box::new(view)], TestService);
+    let cqrs = CqrsFramework::new(event_store.clone(), TestService);
     let uuid = uuid::Uuid::new_v4().to_string();
     let id = uuid.clone();
     let metadata = metadata();
-    cqrs.execute_with_metadata(
-        &id,
-        TestCommand::ConfirmTest(ConfirmTest { test_name: uuid.clone() }),
-        metadata,
-    )
-    .await
-    .unwrap_or_default();
+    let committed = cqrs
+        .execute_with_metadata(
+            &id,
+            TestCommand::ConfirmTest(ConfirmTest { test_name: uuid.clone() }),
+            metadata,
+        )
+        .await
+        .unwrap();
 
     assert_eq!(1, event_store.load_events(&id).await.unwrap().len());
-    assert_eq!(1, delivered_events.read().unwrap().len());
+    assert_eq!(committed.iter().map(|e| e.sequence).collect::<Vec<_>>(), [1]);
 
     let test = "TEST_A";
     let id = uuid.clone();
-    cqrs.execute(
-        &id,
-        TestCommand::ConfirmTest(ConfirmTest {
-            test_name: test.to_string(),
-        }),
-    )
-    .await
-    .unwrap_or_default();
+    let committed = cqrs
+        .execute(
+            &id,
+            TestCommand::ConfirmTest(ConfirmTest {
+                test_name: test.to_string(),
+            }),
+        )
+        .await
+        .unwrap();
 
-    assert_eq!(2, delivered_events.read().unwrap().len());
+    assert_eq!(committed.iter().map(|e| e.sequence).collect::<Vec<_>>(), [2]);
     let stored_event_count = event_store.load_events(uuid.clone().as_str()).await.unwrap().len();
     assert_eq!(2, stored_event_count);
 
@@ -92,7 +63,6 @@ async fn framework_test() {
         _ => panic!("not the expected error"),
     }
 
-    assert_eq!(2, delivered_events.read().unwrap().len());
     let stored_event_count = event_store.load_events(uuid.clone().as_str()).await.unwrap().len();
     assert_eq!(2, stored_event_count);
 }
@@ -100,16 +70,32 @@ async fn framework_test() {
 mod contracts {
     use super::*;
     use async_trait::async_trait;
-    use cqrsx::cqrs::event::EventEnvelope;
-    use std::sync::{Arc, Mutex};
+    use cqrsx::{
+        cqrs::{
+            command::{
+                CommandGatewayError, FailedHandler, executor::CqrsCommandExecutor, locks::LockLimits,
+                retry::AggregateConflictRetryPolicy,
+            },
+            event::EventEnvelope,
+            event_handler::delivery::DeliveryConfig,
+        },
+        task::NewTask,
+    };
+    use std::{
+        sync::{Arc, Mutex},
+        time::Duration,
+    };
     use {
         crate::support::ledger::*, cqrsx::cqrs::store::AggregateContext, cqrsx::cqrs::store::EventStore,
         cqrsx::cqrs::testing::mem_store::MemStore, cqrsx::cqrs::testing::mem_store::MemStoreAggregateContext,
     };
 
+    type Calls = Arc<Mutex<Vec<&'static str>>>;
+
+    #[derive(Clone)]
     struct Store {
         inner: MemStore<Ledger>,
-        calls: Arc<Mutex<Vec<&'static str>>>,
+        calls: Calls,
         failure: Option<&'static str>,
     }
     impl EventStore<Ledger> for Store {
@@ -140,7 +126,7 @@ mod contracts {
         }
     }
     struct Observer {
-        calls: Arc<Mutex<Vec<&'static str>>>,
+        calls: Calls,
         name: &'static str,
         seen: Arc<Mutex<Vec<EventEnvelope<Ledger>>>>,
     }
@@ -162,44 +148,75 @@ mod contracts {
             Ok(())
         }
     }
+
+    /// Fails every call under its default name.
+    struct Unnamed;
+    #[async_trait]
+    impl EventHandler<Ledger> for Unnamed {
+        async fn handle(&self, _: &str, _: &[EventEnvelope<Ledger>]) -> Result<(), cqrsx::cqrs::store::PersistenceError> {
+            Err(cqrsx::cqrs::store::PersistenceError::OptimisticLockError)
+        }
+    }
+
+    /// An executor over `store` with one attempt per command and `handlers` in registration order.
+    fn executor<S>(
+        store: S,
+        calls: &Calls,
+        handlers: Vec<Arc<dyn EventHandler<Ledger>>>,
+    ) -> CqrsCommandExecutor<Ledger, impl Fn(Vec<NewTask>) -> CqrsFramework<Ledger, S> + Send + Sync>
+    where
+        S: EventStore<Ledger> + Clone + Send + Sync,
+    {
+        let services = Services(calls.clone());
+        let one_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
+        let executor = CqrsCommandExecutor::new(
+            move |_| CqrsFramework::new(store.clone(), services.clone()),
+            one_attempt,
+            LockLimits::default(),
+        );
+        handlers.into_iter().fold(executor, |executor, handler| {
+            executor.with_event_handler(handler, DeliveryConfig::default())
+        })
+    }
+
+    fn observers(
+        calls: &Calls,
+        seen: &Arc<Mutex<Vec<EventEnvelope<Ledger>>>>,
+        names: &[&'static str],
+    ) -> Vec<Arc<dyn EventHandler<Ledger>>> {
+        names
+            .iter()
+            .map(|&name| {
+                Arc::new(Observer {
+                    calls: calls.clone(),
+                    name,
+                    seen: seen.clone(),
+                }) as Arc<dyn EventHandler<Ledger>>
+            })
+            .collect()
+    }
+
     #[tokio::test]
-    async fn load_handle_commit_notify_preserves_services_metadata_and_appended_handlers() {
-        let calls = Arc::default();
-        let seen = Arc::new(Mutex::new(Vec::new()));
+    async fn load_handle_commit_preserves_services_and_metadata_and_returns_the_events() {
+        let calls = Calls::default();
         let store = Store {
             inner: MemStore::default(),
             calls: Arc::clone(&calls),
             failure: None,
         };
-        let framework = CqrsFramework::new(
-            store,
-            vec![Box::new(Observer {
-                calls: Arc::clone(&calls),
-                name: "first",
-                seen: seen.clone(),
-            })],
-            Services(Arc::clone(&calls)),
-        )
-        .append_event_handler(Box::new(Observer {
-            calls: Arc::clone(&calls),
-            name: "second",
-            seen: seen.clone(),
-        }));
+        let framework = CqrsFramework::new(store, Services(Arc::clone(&calls)));
         let metadata = HashMap::from([("trace".into(), "данные 🦀".into())]);
-        framework
+        let events = framework
             .execute_with_metadata("account", Command::Adjust(vec![5, -3]), metadata.clone())
             .await
             .unwrap();
-        assert_eq!(*calls.lock().unwrap(), ["load", "handle", "commit", "first", "second"]);
-        let events = seen.lock().unwrap();
-        assert_eq!(events.len(), 4);
-        for chunk in events.chunks(2) {
-            for (i, event) in chunk.iter().enumerate() {
-                assert_eq!(event.aggregate_id, "account");
-                assert_eq!(event.sequence, i + 1);
-                assert_eq!(event.payload, Delta([5, -3][i]));
-                assert_eq!(event.metadata, metadata);
-            }
+        assert_eq!(*calls.lock().unwrap(), ["load", "handle", "commit"]);
+        assert_eq!(events.len(), 2);
+        for (i, event) in events.iter().enumerate() {
+            assert_eq!(event.aggregate_id, "account");
+            assert_eq!(event.sequence, i + 1);
+            assert_eq!(event.payload, Delta([5, -3][i]));
+            assert_eq!(event.metadata, metadata);
         }
     }
     #[tokio::test]
@@ -211,32 +228,26 @@ mod contracts {
             (None, Command::RejectAfterWrite, vec!["load", "handle"]),
             (None, Command::Adjust(vec![5, -6]), vec!["load", "handle"]),
         ] {
-            let calls = Arc::new(Mutex::new(Vec::new()));
+            let calls = Calls::default();
             let seen = Arc::new(Mutex::new(Vec::new()));
             let inner = MemStore::default();
-            let framework = CqrsFramework::new(
-                Store {
-                    inner: inner.clone(),
-                    calls: calls.clone(),
-                    failure,
-                },
-                vec![Box::new(Observer {
-                    calls: calls.clone(),
-                    name: "handle",
-                    seen: seen.clone(),
-                })],
-                Services(calls.clone()),
-            );
+            let store = Store {
+                inner: inner.clone(),
+                calls: calls.clone(),
+                failure,
+            };
+            let executor = executor(store, &calls, observers(&calls, &seen, &["observer"]));
             let empty = matches!(&command, Command::Adjust(v) if v.is_empty());
-            let result = framework.execute("account", command).await;
+            let result = executor.execute("account", command, vec![]).await;
             match failure {
-                Some("load") => assert!(matches!(result, Err(AggregateError::DatabaseConnectionError(_)))),
-                Some("commit") => assert!(matches!(result, Err(AggregateError::AggregateConflict))),
-                _ if empty => result.unwrap(),
-                _ => assert!(matches!(result, Err(AggregateError::Domain(Rejected)))),
+                Some("load") => assert_eq!(result, Err(CommandGatewayError::Unavailable)),
+                Some("commit") => assert_eq!(result, Err(CommandGatewayError::Conflict)),
+                _ if empty => assert_eq!(result, Ok(())),
+                _ => assert_eq!(result, Err(CommandGatewayError::Domain(Rejected))),
             }
             assert_eq!(*calls.lock().unwrap(), expected);
             assert!(seen.lock().unwrap().is_empty());
+            assert!(executor.backlog().is_empty());
             assert!(inner.load_events("account").await.unwrap().is_empty());
         }
     }
@@ -251,104 +262,35 @@ mod contracts {
             )
             .await
             .unwrap();
-        let calls = Arc::new(Mutex::new(Vec::new()));
+        let calls = Calls::default();
         let seen = Arc::new(Mutex::new(Vec::new()));
-        let event_handlers: Vec<Box<dyn EventHandler<Ledger>>> = ["failed", "second", "failed", "fourth"]
-            .into_iter()
-            .map(|name| {
-                Box::new(Observer {
-                    calls: calls.clone(),
-                    name,
-                    seen: seen.clone(),
-                }) as Box<dyn EventHandler<Ledger>>
-            })
-            .collect();
-        let framework = CqrsFramework::new(store.clone(), event_handlers, Services(calls.clone()));
-        let Err(AggregateError::CommittedWithEventHandlerFailure(failure)) =
-            framework.execute("account", Command::Adjust(vec![3, 2])).await
-        else {
-            panic!("commit outcome must be explicit")
-        };
-        assert_eq!(failure.last_sequence, 4);
+        let mut handlers = observers(&calls, &seen, &["failed", "second", "failed", "fourth"]);
+        handlers.push(Arc::new(Unnamed));
+        let executor = executor(store.clone(), &calls, handlers);
+        // The workers log each handler's own error once; the gateway names the handlers.
         assert_eq!(
-            failure.to_string(),
-            "events committed through sequence 4; event handling failed"
-        );
-        assert!(!failure.to_string().contains("original event handler cause"));
-        assert_eq!(
-            failure
-                .errors
-                .iter()
-                .map(|e| (e.handler_index, e.handler_name.as_str()))
-                .collect::<Vec<_>>(),
-            [(0, "failed"), (2, "failed")]
-        );
-        for error in failure.errors {
-            assert!(
-                matches!(error.error,cqrsx::cqrs::store::PersistenceError::ConnectionError(ref source) if source.downcast_ref::<std::io::Error>().unwrap().to_string()=="original event handler cause")
-            );
-        }
-        assert_eq!(*calls.lock().unwrap(), ["handle", "failed", "second", "failed", "fourth"]);
-        assert_eq!(seen.lock().unwrap().len(), 8);
-        assert_eq!(store.load_events("account").await.unwrap().len(), 4);
-    }
-
-    /// Fails every call under its default name.
-    struct Unnamed;
-    #[async_trait]
-    impl EventHandler<Ledger> for Unnamed {
-        async fn handle(&self, _: &str, _: &[EventEnvelope<Ledger>]) -> Result<(), cqrsx::cqrs::store::PersistenceError> {
-            Err(cqrsx::cqrs::store::PersistenceError::OptimisticLockError)
-        }
-    }
-
-    #[tokio::test]
-    async fn the_gateway_reports_failed_handlers_by_index_and_name_in_registration_order() {
-        use cqrsx::cqrs::command::{
-            CommandGatewayError, FailedHandler, executor::CqrsCommandExecutor, retry::AggregateConflictRetryPolicy,
-        };
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        let seen = Arc::new(Mutex::new(Vec::new()));
-        let store = MemStore::<Ledger>::default();
-        let executor = CqrsCommandExecutor::new(
-            |_| {
-                CqrsFramework::new(
-                    store.clone(),
-                    vec![
-                        Box::new(Observer {
-                            calls: calls.clone(),
-                            name: "failed",
-                            seen: seen.clone(),
-                        }),
-                        Box::new(Observer {
-                            calls: calls.clone(),
-                            name: "wallets",
-                            seen: seen.clone(),
-                        }),
-                        Box::new(Unnamed),
-                    ],
-                    Services(calls.clone()),
-                )
-            },
-            AggregateConflictRetryPolicy::default(),
-        );
-        assert_eq!(
-            executor.execute("account", Command::Adjust(vec![1]), vec![]).await,
+            executor.execute("account", Command::Adjust(vec![3, 2]), vec![]).await,
             Err(CommandGatewayError::CommittedWithEventHandlerFailure {
-                last_sequence: 1,
-                handlers: vec![
-                    FailedHandler {
-                        index: 0,
-                        name: "failed".into()
-                    },
-                    FailedHandler {
-                        index: 2,
-                        name: std::any::type_name::<Unnamed>().into()
-                    },
-                ]
+                last_sequence: 4,
+                handlers: [(0, "failed"), (2, "failed"), (4, std::any::type_name::<Unnamed>())]
+                    .map(|(index, name)| FailedHandler {
+                        index,
+                        name: name.to_owned(),
+                    })
+                    .to_vec(),
             })
         );
-        assert_eq!(*calls.lock().unwrap(), ["handle", "failed", "wallets"]);
-        assert_eq!(store.load_events("account").await.unwrap().len(), 1);
+        // The handlers of one command run side by side, so only the command's own steps have an order.
+        let mut calls = calls.lock().unwrap().clone();
+        assert_eq!(calls.remove(0), "handle");
+        calls.sort_unstable();
+        assert_eq!(calls, ["failed", "failed", "fourth", "second"]);
+        let sequences: Vec<usize> = seen.lock().unwrap().iter().map(|event| event.sequence).collect();
+        assert_eq!(sequences.len(), 8);
+        assert!(
+            sequences.iter().all(|&sequence| sequence > 2),
+            "only the command's own events"
+        );
+        assert_eq!(store.load_events("account").await.unwrap().len(), 4);
     }
 }

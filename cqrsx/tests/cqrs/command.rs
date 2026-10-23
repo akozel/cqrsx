@@ -52,8 +52,9 @@ async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command(
     let seen = Arc::new(Mutex::new(Vec::new()));
     let commands = seen.clone();
     let executor = CqrsCommandExecutor::<Ledger, _>::new(
-        move |_| CqrsFramework::new(store.clone(), vec![], Services(commands.clone())),
+        move |_| CqrsFramework::new(store.clone(), Services(commands.clone())),
         AggregateConflictRetryPolicy::new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
+        cqrsx::cqrs::command::locks::LockLimits::default(),
     );
     assert_eq!(
         CommandExecutor::execute(&executor, "lost-ack", Command::Adjust(vec![1]), vec![]).await,

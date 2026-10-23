@@ -1,4 +1,6 @@
-//! Reactions to committed domain events and replay of saved history.
+//! Reactions to committed domain events, their ordered delivery per aggregate key and replay of saved
+//! history.
+pub mod delivery;
 pub mod replay;
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
@@ -11,7 +13,16 @@ use std::sync::Arc;
 ///
 /// A handler may update a read-model projection or perform another event reaction.
 /// Invocation is outside the event transaction and has no durable redelivery guarantee.
-/// Use transactional outbox tasks when a reaction requires durable delivery.
+/// Use transactional outbox tasks when a reaction requires durable delivery. An executor
+/// hands it the events through an ordered per-key buffer ([`delivery`]), possibly the events
+/// of several commands of one aggregate in one call; the handlers of one command run side by
+/// side, not one after another.
+///
+/// A handler never executes a command, not even from a task it spawns: the follow-up would
+/// be recorded nowhere and lost by a crash, its failure would reach the client of a command
+/// that succeeded, and the handler would wait for its own receipt forever. Publish
+/// the follow-up as an outbox task with the command instead; the framework does not detect
+/// the mistake (see the naming and integration rules in `doc/components.md`).
 #[async_trait]
 pub trait EventHandler<A: Aggregate>: Send + Sync {
     /// Identifies the handler in post-commit failures
@@ -26,8 +37,8 @@ pub trait EventHandler<A: Aggregate>: Send + Sync {
     async fn handle(&self, aggregate_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError>;
 }
 
-/// A shared handler, e.g. one instance registered with every per-command framework.
-/// Name and handling are those of the shared handler.
+/// A shared handler: `Arc<H>` handles like `H`, so one instance can serve a decorator and the executor's
+/// registration alike. Name and handling are those of the shared handler.
 #[async_trait]
 impl<A, H> EventHandler<A> for Arc<H>
 where

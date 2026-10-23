@@ -3,7 +3,10 @@
 //! Parsing happens once at start-up, so this is the one place where a hard failure with a clear
 //! message is acceptable; everything after `Config::from_env` is free of `unwrap`/`expect`.
 use cqrsx::{
-    cqrs::command::turns::{CommandOrdering, DEFAULT_TURN_MAX_WAIT, DEFAULT_TURN_MAX_WAITING, TurnLimits, TurnLimitsError},
+    cqrs::{
+        command::locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits, LockLimitsError},
+        event_handler::delivery::{DEFAULT_DELIVERY_CAPACITY, DEFAULT_DELIVERY_MAX_BATCH, DeliveryConfig, DeliveryConfigError},
+    },
     postgres::pool::StatementTimeout,
     task::runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
 };
@@ -46,9 +49,12 @@ pub struct Config {
     pub task_retry_max: Duration,
     pub ticket_limit: usize,
     pub snapshot_every: usize,
-    /// How commands to one concert or fan ledger run (`ENCORE_COMMAND_ORDERING` and the turn limits
-    /// `ENCORE_COMMAND_TURN_MAX_WAIT_MS`, `ENCORE_COMMAND_TURN_MAX_WAITING`).
-    pub command_ordering: CommandOrdering,
+    /// How long, and how many, commands wait for one concert's or fan ledger's lock
+    /// (`ENCORE_COMMAND_LOCK_MAX_WAIT_MS`, `ENCORE_COMMAND_LOCK_MAX_WAITERS`).
+    pub command_lock_limits: LockLimits,
+    /// The bounds of the ordered delivery that brings committed events to each read model
+    /// (`ENCORE_PROJECTION_BUFFER`, `ENCORE_PROJECTION_MAX_BATCH`).
+    pub projection_delivery: DeliveryConfig,
     pub replay_slow_delay: Duration,
     /// The library's own `OUTBOX_*` keys: worker pool and storage timeouts.
     pub task_runtime: TaskRuntimeConfig,
@@ -93,43 +99,54 @@ where
     })
 }
 
-const COMMAND_ORDERING: &str = "ENCORE_COMMAND_ORDERING";
-const TURN_MAX_WAIT: &str = "ENCORE_COMMAND_TURN_MAX_WAIT_MS";
-const TURN_MAX_WAITING: &str = "ENCORE_COMMAND_TURN_MAX_WAITING";
+const LOCK_MAX_WAIT: &str = "ENCORE_COMMAND_LOCK_MAX_WAIT_MS";
+const LOCK_MAX_WAITERS: &str = "ENCORE_COMMAND_LOCK_MAX_WAITERS";
 
-/// `concurrent` (unset) lets the commands to one aggregate race, `per_aggregate` runs them one at a time, in
-/// arrival order. The default follows backlog 02/08a's measurement: on the hot key turns cut the work per command
-/// by half but cap the key at one command per ~2 ms, and that costs accepted commands per second while the
-/// projection still runs inside the turn. The turn limits default to the library's and are checked either way,
-/// so a typo never hides. A chain task waits for its turn inside its handler, so the wait must end
-/// before the handler times out.
-fn command_ordering(
+/// Commands to one concert or fan ledger run one at a time under its lock, in arrival order (backlog 02/08c);
+/// these bound the wait for the lock (and, from the same arrival, for space in the projection's buffer) and
+/// default to the library's. A chain task waits for the lock inside its handler, so the wait must end before
+/// the handler times out.
+fn command_lock_limits(
     lookup: impl Fn(&'static str) -> Option<String>,
     handler_timeout: Duration,
-) -> Result<CommandOrdering, ConfigError> {
-    let max_wait = match lookup(TURN_MAX_WAIT) {
-        Some(raw) => Duration::from_millis(parse_value(TURN_MAX_WAIT, &raw)?),
-        None => DEFAULT_TURN_MAX_WAIT,
+) -> Result<LockLimits, ConfigError> {
+    let max_wait = match lookup(LOCK_MAX_WAIT) {
+        Some(raw) => Duration::from_millis(parse_value(LOCK_MAX_WAIT, &raw)?),
+        None => DEFAULT_LOCK_MAX_WAIT,
     };
-    let max_waiting = match lookup(TURN_MAX_WAITING) {
-        Some(raw) => parse_value(TURN_MAX_WAITING, &raw)?,
-        None => DEFAULT_TURN_MAX_WAITING.get(),
+    let max_waiters = match lookup(LOCK_MAX_WAITERS) {
+        Some(raw) => parse_value(LOCK_MAX_WAITERS, &raw)?,
+        None => DEFAULT_LOCK_MAX_WAITERS.get(),
     };
-    let limits = TurnLimits::new(max_wait, max_waiting).map_err(|error| match error {
-        TurnLimitsError::ZeroMaxWait => invalid(TURN_MAX_WAIT, "must be positive"),
-        TurnLimitsError::ZeroMaxWaiting => invalid(TURN_MAX_WAITING, "must be positive"),
+    let limits = LockLimits::new(max_wait, max_waiters).map_err(|error| match error {
+        LockLimitsError::ZeroMaxWait => invalid(LOCK_MAX_WAIT, "must be positive"),
+        LockLimitsError::ZeroMaxWaiters => invalid(LOCK_MAX_WAITERS, "must be positive"),
     })?;
     if max_wait >= handler_timeout {
-        return Err(invalid(TURN_MAX_WAIT, "must be below OUTBOX_HANDLER_TIMEOUT_SECS"));
+        return Err(invalid(LOCK_MAX_WAIT, "must be below OUTBOX_HANDLER_TIMEOUT_SECS"));
     }
-    match lookup(COMMAND_ORDERING).as_deref() {
-        None | Some("concurrent") => Ok(CommandOrdering::Concurrent),
-        Some("per_aggregate") => Ok(CommandOrdering::PerAggregate(limits)),
-        Some(other) => Err(invalid(
-            COMMAND_ORDERING,
-            format!("must be concurrent or per_aggregate (got {other:?})"),
-        )),
-    }
+    Ok(limits)
+}
+
+const PROJECTION_BUFFER: &str = "ENCORE_PROJECTION_BUFFER";
+const PROJECTION_MAX_BATCH: &str = "ENCORE_PROJECTION_MAX_BATCH";
+
+/// A command hands its events to a buffer per concert or fan ledger and read model, applied in commit order and
+/// in batches after the command has released its lock (backlog 02/08b, 08d). The bounds default to the
+/// library's.
+fn projection_delivery(lookup: impl Fn(&'static str) -> Option<String>) -> Result<DeliveryConfig, ConfigError> {
+    let capacity = match lookup(PROJECTION_BUFFER) {
+        Some(raw) => parse_value(PROJECTION_BUFFER, &raw)?,
+        None => DEFAULT_DELIVERY_CAPACITY.get(),
+    };
+    let max_batch = match lookup(PROJECTION_MAX_BATCH) {
+        Some(raw) => parse_value(PROJECTION_MAX_BATCH, &raw)?,
+        None => DEFAULT_DELIVERY_MAX_BATCH.get(),
+    };
+    DeliveryConfig::new(capacity, max_batch).map_err(|error| match error {
+        DeliveryConfigError::ZeroCapacity => invalid(PROJECTION_BUFFER, "must be positive"),
+        DeliveryConfigError::ZeroMaxBatch => invalid(PROJECTION_MAX_BATCH, "must be positive"),
+    })
 }
 
 /// Unset = `StatementTimeout::Default`, `0` = `Unlimited`, any other number of milliseconds = `Custom`.
@@ -181,7 +198,8 @@ impl Config {
         let database_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_POOL_SIZE", "10")?;
         let database_history_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_HISTORY_POOL_SIZE", "1")?;
         let database_statement_timeout = statement_timeout(var("ENCORE_DATABASE_STATEMENT_TIMEOUT_MS"))?;
-        let command_ordering = command_ordering(var, task_runtime.worker_pool().handler_timeout())?;
+        let command_lock_limits = command_lock_limits(var, task_runtime.worker_pool().handler_timeout())?;
+        let projection_delivery = projection_delivery(var)?;
         Ok(Self {
             database_url: var("ENCORE_DATABASE_URL").unwrap_or_else(|| "postgresql://cqrsx:cqrsx@localhost:5434/encore".into()),
             database_pool_size,
@@ -200,7 +218,8 @@ impl Config {
             task_retry_max,
             ticket_limit,
             snapshot_every,
-            command_ordering,
+            command_lock_limits,
+            projection_delivery,
             replay_slow_delay: Duration::from_millis(parse("ENCORE_REPLAY_SLOW_DELAY_MS", "80")?),
             task_runtime,
         })
@@ -254,60 +273,65 @@ mod tests {
         );
     }
 
-    fn ordering(pairs: &[(&'static str, &str)], handler_timeout_secs: u64) -> Result<CommandOrdering, ConfigError> {
+    fn lock_limits(pairs: &[(&'static str, &str)], handler_timeout_secs: u64) -> Result<LockLimits, ConfigError> {
         let pairs: std::collections::HashMap<_, _> = pairs.iter().map(|(k, v)| (*k, v.to_string())).collect();
-        command_ordering(|name| pairs.get(name).cloned(), Duration::from_secs(handler_timeout_secs))
+        command_lock_limits(|name| pairs.get(name).cloned(), Duration::from_secs(handler_timeout_secs))
     }
 
     #[test]
-    fn command_ordering_defaults_to_concurrent_and_turns_take_the_library_limits() {
-        assert_eq!(ordering(&[], 5).unwrap(), CommandOrdering::Concurrent);
+    fn command_lock_limits_default_to_the_library_limits() {
+        assert_eq!(lock_limits(&[], 5).unwrap(), LockLimits::default());
         assert_eq!(
-            ordering(&[(COMMAND_ORDERING, "per_aggregate")], 5).unwrap(),
-            CommandOrdering::PerAggregate(TurnLimits::default())
-        );
-        assert_eq!(
-            ordering(&[(COMMAND_ORDERING, "concurrent")], 5).unwrap(),
-            CommandOrdering::Concurrent
-        );
-        assert_eq!(
-            ordering(
-                &[
-                    (COMMAND_ORDERING, "per_aggregate"),
-                    (TURN_MAX_WAIT, "250"),
-                    (TURN_MAX_WAITING, "16")
-                ],
-                5
-            )
-            .unwrap(),
-            CommandOrdering::PerAggregate(TurnLimits::new(Duration::from_millis(250), 16).unwrap())
+            lock_limits(&[(LOCK_MAX_WAIT, "250"), (LOCK_MAX_WAITERS, "16")], 5).unwrap(),
+            LockLimits::new(Duration::from_millis(250), 16).unwrap()
         );
     }
 
     #[test]
-    fn command_ordering_names_the_variable_it_rejects() {
+    fn command_lock_limits_name_the_variable_they_reject() {
         for (pairs, name, timeout) in [
-            (vec![(COMMAND_ORDERING, "serial")], COMMAND_ORDERING, 5),
-            (vec![(TURN_MAX_WAIT, "x")], TURN_MAX_WAIT, 5),
-            (vec![(TURN_MAX_WAIT, "0")], TURN_MAX_WAIT, 5),
-            (vec![(TURN_MAX_WAITING, "-1")], TURN_MAX_WAITING, 5),
-            // Checked even when the turns are off, so a typo never hides.
-            (
-                vec![(COMMAND_ORDERING, "concurrent"), (TURN_MAX_WAITING, "0")],
-                TURN_MAX_WAITING,
-                5,
-            ),
+            (vec![(LOCK_MAX_WAIT, "x")], LOCK_MAX_WAIT, 5),
+            (vec![(LOCK_MAX_WAIT, "0")], LOCK_MAX_WAIT, 5),
+            (vec![(LOCK_MAX_WAITERS, "-1")], LOCK_MAX_WAITERS, 5),
+            (vec![(LOCK_MAX_WAITERS, "0")], LOCK_MAX_WAITERS, 5),
             // A chain task's handler would time out before its command is refused.
-            (vec![], TURN_MAX_WAIT, 1),
-            (vec![(TURN_MAX_WAIT, "5000")], TURN_MAX_WAIT, 5),
+            (vec![], LOCK_MAX_WAIT, 1),
+            (vec![(LOCK_MAX_WAIT, "5000")], LOCK_MAX_WAIT, 5),
         ] {
-            let error = ordering(&pairs, timeout).unwrap_err().to_string();
+            let error = lock_limits(&pairs, timeout).unwrap_err().to_string();
             assert!(error.starts_with(&format!("{name}: ")), "{error}");
         }
         assert_eq!(
-            ordering(&[(TURN_MAX_WAIT, "5000")], 5).unwrap_err().to_string(),
-            "ENCORE_COMMAND_TURN_MAX_WAIT_MS: must be below OUTBOX_HANDLER_TIMEOUT_SECS"
+            lock_limits(&[(LOCK_MAX_WAIT, "5000")], 5).unwrap_err().to_string(),
+            "ENCORE_COMMAND_LOCK_MAX_WAIT_MS: must be below OUTBOX_HANDLER_TIMEOUT_SECS"
         );
+    }
+
+    fn delivery(pairs: &[(&'static str, &str)]) -> Result<DeliveryConfig, ConfigError> {
+        let pairs: std::collections::HashMap<_, _> = pairs.iter().map(|(k, v)| (*k, v.to_string())).collect();
+        projection_delivery(|name| pairs.get(name).cloned())
+    }
+
+    #[test]
+    fn projection_delivery_defaults_to_the_library_bounds() {
+        assert_eq!(delivery(&[]).unwrap(), DeliveryConfig::default());
+        assert_eq!(
+            delivery(&[(PROJECTION_BUFFER, "8"), (PROJECTION_MAX_BATCH, "1")]).unwrap(),
+            DeliveryConfig::new(8, 1).unwrap()
+        );
+    }
+
+    #[test]
+    fn projection_delivery_names_the_variable_it_rejects() {
+        for (pairs, name) in [
+            (vec![(PROJECTION_BUFFER, "x")], PROJECTION_BUFFER),
+            (vec![(PROJECTION_BUFFER, "0")], PROJECTION_BUFFER),
+            (vec![(PROJECTION_MAX_BATCH, "-1")], PROJECTION_MAX_BATCH),
+            (vec![(PROJECTION_MAX_BATCH, "0")], PROJECTION_MAX_BATCH),
+        ] {
+            let error = delivery(&pairs).unwrap_err().to_string();
+            assert!(error.starts_with(&format!("{name}: ")), "{error}");
+        }
     }
 
     #[test]

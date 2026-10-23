@@ -2,10 +2,12 @@
 //! chain tasks wait a little, then retry. The write side never depends on the read side, so the
 //! lock is only what keeps a demo rebuild simple and deterministic (see `rebuild`).
 //!
-//! A command is admitted with a [`CommandPass`] and holds it until it has finished, its inline
-//! projection included. A rebuild takes the lock and then waits for every pass already given out
-//! ([`BoxOfficeLock::wait_idle`]): an admitted command may still wait for its aggregate's turn, and
-//! its projection must not write into a read model that is being wiped and replayed.
+//! A command is admitted with a [`CommandPass`] and holds it until it has finished, its projection
+//! included (the receipt of its ordered delivery). A rebuild takes the lock and then waits for
+//! every pass already given out ([`BoxOfficeLock::wait_idle`]): an admitted command may still wait for
+//! its aggregate's lock, and its projection must not write into a read model that is being wiped and
+//! replayed. Events a command handed to an ordered projection outlive its pass when its client went
+//! away; the rebuild waits for those through the projections' backlogs.
 use std::sync::{
     Arc,
     atomic::{AtomicBool, AtomicUsize, Ordering},

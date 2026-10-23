@@ -102,7 +102,7 @@ use std::{
 /// use cqrsx::cqrs::testing::mem_store::MemStore;
 ///
 /// let store = MemStore::<MyAggregate>::default();
-/// let cqrs = CqrsFramework::new(store, vec![], MyService);
+/// let cqrs = CqrsFramework::new(store, MyService);
 /// ```
 #[derive(Debug, Clone)]
 pub struct MemStore<A: Aggregate + Send + Sync> {

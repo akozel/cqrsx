@@ -13,8 +13,11 @@
 #   DRAIN=1         after the burst, sample transactional_outbox every second until no task is open
 #   DRAIN_TIMEOUT=… seconds to wait for the drain (default 900)
 #   SNAPSHOT_EVERY=… ENCORE_SNAPSHOT_EVERY (default 10);  RUST_LOG=… back-end log level (default warn)
-#   ORDERING=…      ENCORE_COMMAND_ORDERING: concurrent | per_aggregate (default: the back-end's, concurrent)
-#   TURN_MAX_WAIT_MS=… TURN_MAX_WAITING=…  its turn limits, ENCORE_COMMAND_TURN_* (default: the back-end's)
+#   LOCK_MAX_WAIT_MS=… LOCK_MAX_WAITERS=…  the aggregate lock's limits, ENCORE_COMMAND_LOCK_* (default: the back-end's)
+#   PROJECTION_BUFFER=… PROJECTION_MAX_BATCH=…  its buffer bounds, ENCORE_PROJECTION_* (default: the back-end's)
+#   VERIFY=1        after the burst (and the drain): wait until no chain task is open, then compare the read
+#                   models with a rebuild from the journal (GET /api/projections/verify) → verify.json
+#   VERIFY_TIMEOUT=… seconds to wait for the chain tasks first (default 300)
 #   POOL=…          PostgreSQL pool size of the back-end, ENCORE_DATABASE_POOL_SIZE (default 10)
 #   PIN=auto|cpuset|quota|0   CPU isolation: pin cores (compose.pin.yaml), quota (compose.quota.yaml)
 #                   or none; auto (default) pins when the cpuset controller is available, else quota
@@ -146,7 +149,8 @@ export LOAD_SNAPSHOT_EVERY="${SNAPSHOT_EVERY:-10}"
 export LOAD_PG_POOL="${POOL:-10}"
 export LOAD_RUST_LOG="${RUST_LOG:-warn}"
 # Empty = the back-end's own default; an image older than these settings ignores them.
-export LOAD_COMMAND_ORDERING="${ORDERING:-}" LOAD_TURN_MAX_WAIT_MS="${TURN_MAX_WAIT_MS:-}" LOAD_TURN_MAX_WAITING="${TURN_MAX_WAITING:-}"
+export LOAD_LOCK_MAX_WAIT_MS="${LOCK_MAX_WAIT_MS:-}" LOAD_LOCK_MAX_WAITERS="${LOCK_MAX_WAITERS:-}"
+export LOAD_PROJECTION_BUFFER="${PROJECTION_BUFFER:-}" LOAD_PROJECTION_MAX_BATCH="${PROJECTION_MAX_BATCH:-}"
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)-${PREFIX:-}${NAME:-$SCRIPT}"
 RUN_DIR="$HERE/results/$RUN_ID"
@@ -235,7 +239,7 @@ sample_stats() {
   done
 }
 
-log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, pg pool $LOAD_PG_POOL, snapshot every $LOAD_SNAPSHOT_EVERY, ordering ${LOAD_COMMAND_ORDERING:-default}${LOAD_SERVICES_EXTRA:+, also $LOAD_SERVICES_EXTRA}"
+log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, pg pool $LOAD_PG_POOL, snapshot every $LOAD_SNAPSHOT_EVERY${LOAD_PROJECTION_MAX_BATCH:+, projection batch $LOAD_PROJECTION_MAX_BATCH}${LOAD_SERVICES_EXTRA:+, also $LOAD_SERVICES_EXTRA}"
 compose down -v --remove-orphans >/dev/null 2>&1 || true
 $CTR rm -f "$K6_NAME" >/dev/null 2>&1 || true
 if [[ "${BUILD:-0}" != 0 ]]; then
@@ -309,6 +313,33 @@ if [[ "${DRAIN:-0}" != 0 ]]; then
   fi
 fi
 
+# --- verify ---------------------------------------------------------------------------------------
+# The read models against a rebuild from the journal. Chain tasks keep changing fan ledgers after the
+# burst and verify does not lock the box office, so it waits for them first; mail tasks touch no ledger.
+VERIFY_SECONDS=""
+if [[ "${VERIFY:-0}" != 0 ]]; then
+  chain_open() {
+    compose exec -T postgres psql -U cqrsx -d encore -Atc \
+      "select count(*) from transactional_outbox where status in ('pending','processing') and task_type like 'encore_record_%'" 2>/dev/null
+  }
+  deadline=$((SECONDS + ${VERIFY_TIMEOUT:-300}))
+  until [[ "$(chain_open || true)" == 0 ]]; do
+    if (( SECONDS >= deadline )); then
+      log "verify: chain tasks still open after ${VERIFY_TIMEOUT:-300}s, verifying anyway"
+      break
+    fi
+    sleep 1
+  done
+  verify_start=$SECONDS
+  if compose exec -T backend curl -sS --max-time 600 http://127.0.0.1:8080/api/projections/verify > "$RUN_DIR/verify.json" 2>>"$RUN_DIR/run.log"; then
+    VERIFY_SECONDS=$((SECONDS - verify_start))
+    log "verify: $(head -c 300 "$RUN_DIR/verify.json") (${VERIFY_SECONDS} s)"
+  else
+    log "verify request failed"
+    rm -f "$RUN_DIR/verify.json"
+  fi
+fi
+
 # --- collect --------------------------------------------------------------------------------------
 stop_sampler
 compose logs --no-color backend > "$RUN_DIR/backend.log" 2>&1 || true
@@ -360,7 +391,8 @@ budget_of() { # service → cores, empty when not isolated
 LOADC_RUN="$RUN_ID" LOADC_SCRIPT="$SCRIPT" LOADC_PARAMS="$*" LOADC_CTR="$CTR" LOADC_PIN="$PIN_LABEL" \
   LOADC_BUDGET_BACKEND="$(budget_of backend)" LOADC_BUDGET_POSTGRES="$(budget_of postgres)" LOADC_BUDGET_MONGO="$(budget_of mongo)" LOADC_BUDGET_K6="$(budget_of k6)" \
   LOADC_GIT="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
-  LOADC_WORKERS="$LOAD_OUTBOX_WORKERS" LOADC_SNAPSHOT="$LOAD_SNAPSHOT_EVERY" LOADC_POOL="$LOAD_PG_POOL" LOADC_ORDERING="${LOAD_COMMAND_ORDERING:-default}" LOADC_K6_EXIT="$K6_EXIT" \
+  LOADC_WORKERS="$LOAD_OUTBOX_WORKERS" LOADC_SNAPSHOT="$LOAD_SNAPSHOT_EVERY" LOADC_POOL="$LOAD_PG_POOL" LOADC_K6_EXIT="$K6_EXIT" \
+  LOADC_MAX_BATCH="${LOAD_PROJECTION_MAX_BATCH:-default}" LOADC_VERIFY_SECONDS="$VERIFY_SECONDS" \
   LOADC_BURST_START="$BURST_START" LOADC_BURST_END="$BURST_END" \
   LOADC_PEAK_BACKEND="$(peak_of backend)" LOADC_PEAK_POSTGRES="$(peak_of postgres)" LOADC_PEAK_MONGO="$(peak_of mongo)" \
   LOADC_DRAIN_FIRST="$DRAIN_FIRST" LOADC_DRAIN_LAST="$DRAIN_LAST" LOADC_DRAIN_SECONDS="$DRAIN_SECONDS" \

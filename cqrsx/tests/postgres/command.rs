@@ -3,14 +3,17 @@ use cqrsx::cqrs::store::EventStore;
 use cqrsx::cqrs::store::persisted::PersistedEventStore;
 use cqrsx::{
     cqrs::{
-        command::{
-            CommandExecutor, CommandGatewayError, FailedHandler,
-            retry::AggregateConflictRetryPolicy,
-            turns::{CommandOrdering, TurnLimits},
+        command::{CommandExecutor, CommandGatewayError, FailedHandler, locks::LockLimits, retry::AggregateConflictRetryPolicy},
+        event_handler::{EventHandler, delivery::DeliveryConfig},
+        projection::{
+            View, ViewProjection,
+            repository::{ViewContext, ViewRepository},
         },
-        event_handler::EventHandler,
     },
-    postgres::command::{PostgresCommandConfig, PostgresCommandExecutor, command_executor},
+    postgres::{
+        command::{PostgresCommandConfig, PostgresCommandExecutor},
+        view_repository::PostgresViewRepository,
+    },
 };
 use std::sync::Mutex;
 use thiserror::Error;
@@ -70,14 +73,9 @@ impl Aggregate for CommandAggregate {
     }
 }
 
-/// Commands to one aggregate in turns, the default retry policy.
+/// The default retry policy and lock limits.
 fn config(interval: usize) -> PostgresCommandConfig {
-    PostgresCommandConfig::new(
-        interval,
-        AggregateConflictRetryPolicy::default(),
-        CommandOrdering::PerAggregate(TurnLimits::default()),
-    )
-    .unwrap()
+    PostgresCommandConfig::new(interval, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap()
 }
 
 fn record(value: &str, expected_count: usize) -> Command {
@@ -90,9 +88,15 @@ fn record(value: &str, expected_count: usize) -> Command {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_no_losing_tasks() {
     let db = Database::new().await;
-    // Both commands must reach the database at once: with turns the second would wait for the first.
-    let concurrent = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), CommandOrdering::Concurrent).unwrap();
-    let executor = Arc::new(command_executor::<CommandAggregate>(db.pool.clone(), concurrent));
+    // Both commands must reach the database at once, so each goes through an executor of its own, like
+    // two nodes: through one executor the second would wait for the first's lock.
+    let nodes = [(); 2].map(|_| {
+        Arc::new(PostgresCommandExecutor::<CommandAggregate>::new(
+            db.pool.clone(),
+            config(1),
+            (),
+        ))
+    });
     let mut gate = db.pool.begin().await.unwrap();
     sqlx::query("LOCK TABLE events IN SHARE MODE")
         .execute(&mut *gate)
@@ -100,8 +104,7 @@ async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_
         .unwrap();
     let mut calls = tokio::task::JoinSet::new();
     let mut tasks = Vec::new();
-    for value in ["left", "right"] {
-        let executor = executor.clone();
+    for (value, executor) in ["left", "right"].into_iter().zip(nodes.clone()) {
         let task = NewTask::new(DummyTaskV1 { value: value.into() }).unwrap();
         tasks.push((value, task.clone()));
         calls.spawn(async move { (value, executor.execute("contended", record(value, 0), vec![task]).await) });
@@ -147,7 +150,7 @@ async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_
 #[tokio::test]
 async fn factory_publishes_atomic_work_and_preserves_rejections_and_rollbacks() {
     let db = Database::new().await;
-    let executor = command_executor::<CommandAggregate>(db.pool.clone(), config(1));
+    let executor = PostgresCommandExecutor::<CommandAggregate>::new(db.pool.clone(), config(1), ());
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     let task = new_task();
     executor
@@ -230,7 +233,7 @@ async fn factory_publishes_atomic_work_and_preserves_rejections_and_rollbacks() 
 #[tokio::test]
 async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_object() {
     let db = Database::new().await;
-    let executor = command_executor::<CommandAggregate>(db.pool.clone(), config(1));
+    let executor = PostgresCommandExecutor::<CommandAggregate>::new(db.pool.clone(), config(1), ());
     let metadata = HashMap::from([
         ("command_id".to_owned(), "cmd-1".to_owned()),
         ("source".to_owned(), "integration".to_owned()),
@@ -264,7 +267,11 @@ async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_obje
 #[tokio::test]
 async fn shared_executor_isolates_parallel_command_task_lists() {
     let db = Database::new().await;
-    let executor = Arc::new(command_executor::<CommandAggregate>(db.pool.clone(), config(25)));
+    let executor = Arc::new(PostgresCommandExecutor::<CommandAggregate>::new(
+        db.pool.clone(),
+        config(25),
+        (),
+    ));
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..16 {
         let executor = executor.clone();
@@ -298,7 +305,7 @@ async fn shared_executor_isolates_parallel_command_task_lists() {
 #[tokio::test]
 async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     let db = Database::new().await;
-    let executor = command_executor::<CommandAggregate>(db.pool.clone(), config(2));
+    let executor = PostgresCommandExecutor::<CommandAggregate>::new(db.pool.clone(), config(2), ());
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     executor.execute("snapshot", record("first", 0), vec![]).await.unwrap();
     assert!(
@@ -334,20 +341,15 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
 }
 
 #[tokio::test]
-async fn constructors_need_no_connection_and_closed_pool_errors_remain_unavailable() {
+async fn the_constructor_needs_no_connection_and_closed_pool_errors_remain_unavailable() {
     let pool = sqlx::postgres::PgPoolOptions::new()
         .connect_lazy("postgres://localhost/unused")
         .unwrap();
-    let named = PostgresCommandExecutor::<CommandAggregate>::new(pool.clone(), config(1), ());
-    let factory = command_executor::<CommandAggregate>(pool.clone(), config(2));
+    let executor = PostgresCommandExecutor::<CommandAggregate>::new(pool.clone(), config(1), ());
     assert_eq!(pool.size(), 0);
     pool.close().await;
     assert_eq!(
-        CommandExecutor::execute(&named, "unused", record("value", 0), vec![]).await,
-        Err(CommandGatewayError::Unavailable)
-    );
-    assert_eq!(
-        factory.execute("unused", record("value", 0), vec![]).await,
+        executor.execute("unused", record("value", 0), vec![]).await,
         Err(CommandGatewayError::Unavailable)
     );
 }
@@ -417,8 +419,8 @@ async fn services_decide_and_one_shared_handler_sees_every_committed_event() {
         name: "recorder",
         ..Recorder::default()
     });
-    let executor =
-        PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(2)).with_event_handler(recorder.clone());
+    let executor = PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(2))
+        .with_event_handler(recorder.clone(), DeliveryConfig::default());
     let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
     for value in ["first", "second"] {
         executor
@@ -449,16 +451,17 @@ async fn services_decide_and_one_shared_handler_sees_every_committed_event() {
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn per_aggregate_turns_accept_forty_parallel_commands_without_conflicts() {
+async fn aggregate_locks_accept_forty_parallel_commands_without_conflicts() {
     let db = Database::new().await;
     let recorder = Arc::new(Recorder {
         name: "recorder",
         ..Recorder::default()
     });
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-    let config = PostgresCommandConfig::new(10, single_attempt, CommandOrdering::PerAggregate(TurnLimits::default())).unwrap();
+    let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).unwrap();
     let executor = Arc::new(
-        PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config, Cap(40)).with_event_handler(recorder.clone()),
+        PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config, Cap(40))
+            .with_event_handler(recorder.clone(), DeliveryConfig::default()),
     );
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..40 {
@@ -476,7 +479,7 @@ async fn per_aggregate_turns_accept_forty_parallel_commands_without_conflicts() 
         events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
         (1..=40).collect::<Vec<_>>()
     );
-    // Handlers run inside the turn, so they see one aggregate's events in commit order.
+    // The lock hands the events over in commit order, so the handler sees one aggregate's events in it.
     let seen: Vec<usize> = recorder
         .seen
         .lock()
@@ -489,9 +492,9 @@ async fn per_aggregate_turns_accept_forty_parallel_commands_without_conflicts() 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn two_executors_with_their_own_turns_meet_only_in_the_database() {
+async fn two_executors_with_their_own_locks_meet_only_in_the_database() {
     let db = Database::new().await;
-    // Like two nodes: each executor has its own turns, the optimistic check decides between them.
+    // Like two nodes: each executor has its own locks, the optimistic check decides between them.
     let nodes: Vec<_> = (0..2)
         .map(|_| {
             Arc::new(PostgresCommandExecutor::<CappedAggregate>::new(
@@ -545,11 +548,14 @@ async fn a_failed_handler_is_reported_by_name_after_the_event_and_its_tasks_are_
         ..Recorder::default()
     });
     let executor = PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(5))
-        .with_event_handler(Arc::new(Recorder {
-            name: "first",
-            ..Recorder::default()
-        }))
-        .with_event_handler(audit.clone());
+        .with_event_handler(
+            Arc::new(Recorder {
+                name: "first",
+                ..Recorder::default()
+            }),
+            DeliveryConfig::default(),
+        )
+        .with_event_handler(audit.clone(), DeliveryConfig::default());
     let task = new_task();
     assert_eq!(
         executor.execute("audited", "value".into(), vec![task.clone()]).await,
@@ -570,6 +576,187 @@ async fn a_failed_handler_is_reported_by_name_after_the_event_and_its_tasks_are_
     let saved = row(&db.pool, task.id()).await;
     assert_eq!(saved.get::<String, _>("aggregate_id"), "audited");
     assert_eq!(saved.get::<i64, _>("aggregate_sequence"), 1);
+    db.close().await;
+}
+
+/// The sequences and the last values of one capped aggregate, as an ordered projection builds them.
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+struct ValuesView {
+    sequences: Vec<usize>,
+    values: Vec<String>,
+}
+
+impl View<CappedAggregate> for ValuesView {
+    fn update(&mut self, event: &EventEnvelope<CappedAggregate>) {
+        let CommandEvent::Recorded { values } = &event.payload;
+        self.sequences.push(event.sequence);
+        self.values = values.clone();
+    }
+}
+
+/// The PostgreSQL view repository, failing the update of one chosen call.
+struct FailingUpdate {
+    inner: PostgresViewRepository<ValuesView, CappedAggregate>,
+    fail_on: usize,
+    updates: AtomicUsize,
+}
+
+impl ViewRepository<ValuesView, CappedAggregate> for FailingUpdate {
+    async fn load(&self, id: &str) -> Result<Option<ValuesView>, PersistenceError> {
+        self.inner.load(id).await
+    }
+
+    async fn load_with_context(&self, id: &str) -> Result<Option<(ValuesView, ViewContext)>, PersistenceError> {
+        self.inner.load_with_context(id).await
+    }
+
+    async fn update_view(&self, view: ValuesView, context: ViewContext) -> Result<(), PersistenceError> {
+        if self.updates.fetch_add(1, Ordering::SeqCst) + 1 == self.fail_on {
+            return Err(PersistenceError::ConnectionError(
+                std::io::Error::other("view store down").into(),
+            ));
+        }
+        self.inner.update_view(view, context).await
+    }
+}
+
+/// Holds its first call until the test opens the gate, so the commands behind it gather into batches.
+struct Gated<H> {
+    inner: H,
+    gate: tokio::sync::Semaphore,
+    calls: AtomicUsize,
+}
+
+#[async_trait::async_trait]
+impl<H: EventHandler<CappedAggregate>> EventHandler<CappedAggregate> for Gated<H> {
+    fn name(&self) -> String {
+        self.inner.name()
+    }
+
+    async fn handle(&self, id: &str, events: &[EventEnvelope<CappedAggregate>]) -> Result<(), PersistenceError> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        drop(self.gate.acquire().await.unwrap());
+        self.inner.handle(id, events).await
+    }
+}
+
+type OrderedProjection = Gated<ViewProjection<FailingUpdate, ValuesView, CappedAggregate>>;
+
+/// 40 parallel commands to one aggregate with an ordered projection held on its first call until all 40
+/// have committed: the results, the projection's calls and the view.
+async fn forty_commands_through_an_ordered_projection(
+    db: &Database,
+    fail_on: usize,
+) -> (Vec<Result<(), CommandGatewayError<Rejected>>>, Arc<OrderedProjection>) {
+    sqlx::query("CREATE TABLE ordered_view (view_id text PRIMARY KEY, version bigint NOT NULL, payload json NOT NULL)")
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    let repository = FailingUpdate {
+        inner: PostgresViewRepository::new("ordered_view", db.pool.clone()),
+        fail_on,
+        updates: AtomicUsize::new(0),
+    };
+    let projection = Arc::new(Gated {
+        inner: ViewProjection::new(Arc::new(repository)).with_name("values"),
+        gate: tokio::sync::Semaphore::new(0),
+        calls: AtomicUsize::new(0),
+    });
+    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
+    let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).unwrap();
+    let executor = Arc::new(
+        PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config, Cap(40))
+            .with_event_handler(projection.clone(), DeliveryConfig::new(64, 32).unwrap()),
+    );
+    let mut commands = JoinSet::new();
+    for index in 0..40 {
+        let executor = executor.clone();
+        commands.spawn(async move { (index, executor.execute("hot", format!("v{index}"), vec![]).await) });
+    }
+    let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    for _ in 0..500 {
+        if repository.get_events::<CappedAggregate>("hot").await.unwrap().len() == 40 {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(
+        executor.backlog().len(),
+        40,
+        "every command committed and handed over, none handled yet"
+    );
+    projection.gate.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
+    let mut results = Vec::new();
+    while let Some(result) = commands.join_next().await {
+        results.push(result.unwrap().1);
+    }
+    assert!(executor.backlog().is_empty());
+    (results, projection)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ordered_projection_of_forty_parallel_commands_equals_the_replay() {
+    let db = Database::new().await;
+    let (results, projection) = forty_commands_through_an_ordered_projection(&db, 0).await;
+    assert!(results.iter().all(Result::is_ok), "{results:?}");
+    assert_eq!(
+        projection.calls.load(Ordering::SeqCst),
+        3,
+        "the first command alone, then batches of 32 and 7"
+    );
+    let journal =
+        PersistedEventStore::<_, CappedAggregate>::new_event_store(PostgresEventRepositoryWithOutbox::new(db.pool.clone()))
+            .load_events("hot")
+            .await
+            .unwrap();
+    let mut replayed = ValuesView::default();
+    for event in &journal {
+        replayed.update(event);
+    }
+    let (view, context) = PostgresViewRepository::<ValuesView, CappedAggregate>::new("ordered_view", db.pool.clone())
+        .load_with_context("hot")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(view, replayed);
+    assert_eq!(view.sequences, (1..=40).collect::<Vec<_>>());
+    assert_eq!(context.version, 3, "one view write per batch");
+    db.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_view_storage_failure_fails_only_its_batch() {
+    let db = Database::new().await;
+    let (results, _) = forty_commands_through_an_ordered_projection(&db, 2).await;
+    let failed: Vec<usize> = results
+        .iter()
+        .filter_map(|result| match result {
+            Ok(()) => None,
+            Err(CommandGatewayError::CommittedWithEventHandlerFailure { last_sequence, handlers }) => {
+                assert_eq!(
+                    handlers,
+                    &[FailedHandler {
+                        index: 0,
+                        name: "values".into()
+                    }]
+                );
+                Some(*last_sequence)
+            }
+            other => panic!("unexpected result {other:?}"),
+        })
+        .collect::<std::collections::BTreeSet<_>>()
+        .into_iter()
+        .collect();
+    assert_eq!(failed, (2..=33).collect::<Vec<_>>(), "the second call held commands 2 to 33");
+    let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
+        .get_events::<CappedAggregate>("hot")
+        .await
+        .unwrap();
+    assert_eq!(
+        events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
+        (1..=40).collect::<Vec<_>>(),
+        "the journal keeps every committed event"
+    );
     db.close().await;
 }
 
@@ -653,12 +840,12 @@ mod contracts {
                             commits: commits.clone(),
                             durable: Arc::default(),
                         },
-                        vec![],
                         (),
                     )
                 }
             },
             Default::default(),
+            cqrsx::cqrs::command::locks::LockLimits::default(),
         );
         assert!(matches!(
             executor.execute("command", vec![2], vec![]).await,
@@ -699,12 +886,12 @@ mod contracts {
                                 commits: commits.clone(),
                                 durable: durable.clone(),
                             },
-                            vec![],
                             (),
                         )
                     }
                 },
                 AggregateConflictRetryPolicy::new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
+                cqrsx::cqrs::command::locks::LockLimits::default(),
             );
             if mode == 2 {
                 let id = id.clone();
