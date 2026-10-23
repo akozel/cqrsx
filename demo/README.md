@@ -24,7 +24,7 @@ The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the libra
 
 | Directory | What |
 |---|---|
-| `back-end/` | Rust, axum + `cqrsx`, in four layers: `domain` (aggregates, one file per command and per event), `application` (use cases, task-driven workflows, read models, Encore!), `presentation` (one file per HTTP action), `infrastructure` (PostgreSQL, MongoDB, the HTTP client of the mail service). `bootstrap/` registers what runs: `aggregates/` (a module per aggregate), `projections`, `tasks`, `routes`; `process.rs` starts and stops the process (logging, configuration, connections, HTTP server, task runtime) |
+| `back-end/` | Rust, axum + `cqrsx`, in four layers: `domain` (aggregates, one file per command and per event), `application` (use cases, task-driven workflows, read models, Encore!), `presentation` (one file per HTTP action), `infrastructure` (PostgreSQL, MongoDB, the HTTP client of the mail service). `bootstrap/` registers what runs: `aggregates/` (a module per aggregate), `projections/` (a module per read model), `tasks`, `routes`; `process.rs` starts and stops the process (logging, configuration, connections, HTTP server, task runtime) |
 | `sidecar/` | Rust, axum, no `cqrsx` dependency: read-only X-ray of PostgreSQL (`events`, `snapshots`, `transactional_outbox`) and MongoDB, SSE stream — plus everything DEMO ONLY: seed, 🧨 wipe, ⟲ reset, the fan's mailbox (`GET /inspect/mail/{fan_id}`) and the moody external mail service the back-end calls (`POST /mail`) |
 | `front-end/` | Vue 3.5 + Vite 8 + Tailwind 4 + Pinia + vue-i18n (RU/EN) |
 | `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx/sql`) and MongoDB; profile `app` builds the three images |

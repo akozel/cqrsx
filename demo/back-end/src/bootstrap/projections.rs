@@ -1,20 +1,18 @@
-//! The read models: a MongoDB collection and a repository each, the maintenance Encore! and verify run
-//! over them, and the ports the HTTP queries read through. A new read model is declared here and
-//! handed to its aggregate's executor in [`aggregates`](super::aggregates).
+//! One module per read model: its MongoDB collection and repository, and the maintenance Encore! and
+//! verify run over it. The index collects them for the aggregates (which register the projections on
+//! their executors in [`aggregates`](super::aggregates)), the operations and the HTTP queries. A new
+//! read model gets a module like these two, listed here and handed to its aggregate.
+pub mod concert_halls;
+pub mod fan_wallets;
+
 use crate::{
     application::{
         activity::ActivityHub,
-        concert::views::concert_hall::ConcertHallView,
-        fan::views::fan_wallet::FanWalletView,
-        projections::{
-            maintenance::{MaintainedReadModel, ProjectionMaintenance},
-            notifying::NotifyingHandler,
-        },
+        projections::{maintenance::MaintainedReadModel, notifying::NotifyingHandler},
         read_models::ReadModels,
     },
-    domain::{concert::Concert, fan::Fan},
     infrastructure::{
-        mongo::read_side::{CONCERT_HALLS, FAN_WALLETS, HallRepository, ReadSide, WalletRepository, scratch},
+        mongo::read_side::{HallRepository, WalletRepository},
         postgres::history_repositories,
     },
     process::Process,
@@ -25,6 +23,12 @@ use cqrsx::cqrs::{
     projection::{View, ViewProjection, repository::ViewRepository},
 };
 use std::sync::Arc;
+
+/// One read model as its module wires it: the live repository and the maintenance over it.
+pub struct ReadModel<R> {
+    pub repository: Arc<R>,
+    pub maintenance: Arc<dyn MaintainedReadModel>,
+}
 
 /// The read side as the composition root sees it.
 pub struct ReadSideWiring {
@@ -40,30 +44,17 @@ pub struct ReadSideWiring {
 /// Every read model lives in `ENCORE_READ_DB`; its maintenance replays the history pool.
 pub fn read_models(process: &Process) -> ReadSideWiring {
     let read_db = process.mongo.database(&process.config.read_db);
-    let read = ReadSide::new(&read_db);
     let history = history_repositories(process.history_pool.clone());
-    let maintenance: Vec<Arc<dyn MaintainedReadModel>> = vec![
-        Arc::new(ProjectionMaintenance::<_, _, ConcertHallView, Concert>::new(
-            CONCERT_HALLS,
-            history.clone(),
-            read.halls.clone(),
-            scratch(&read_db, CONCERT_HALLS),
-        )),
-        Arc::new(ProjectionMaintenance::<_, _, FanWalletView, Fan>::new(
-            FAN_WALLETS,
-            history,
-            read.wallets.clone(),
-            scratch(&read_db, FAN_WALLETS),
-        )),
-    ];
+    let halls = concert_halls::wire(&read_db, &history);
+    let wallets = fan_wallets::wire(&read_db, &history);
     ReadSideWiring {
         queries: ReadModels {
-            halls: read.halls.clone(),
-            wallets: read.wallets.clone(),
+            halls: halls.repository.clone(),
+            wallets: wallets.repository.clone(),
         },
-        halls: read.halls,
-        wallets: read.wallets,
-        maintenance,
+        maintenance: vec![halls.maintenance, wallets.maintenance],
+        halls: halls.repository,
+        wallets: wallets.repository,
     }
 }
 

@@ -584,10 +584,16 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   graph) and `process.serve(app)` (HTTP server, task runtime, stop, drain, close). Back-end: `process.rs` holds
   the technical start and stop (the projection drain moved there from `bootstrap`), `bootstrap/` holds one
   registry per kind of component: `aggregates/` (a module per aggregate: its command executor and the
-  handlers it feeds), `projections.rs` (read models: collections, repositories, maintenance, query ports),
+  handlers it feeds), `projections/` (a module per read model: collection, repository, maintenance; the index
+  collects the query ports),
   `tasks.rs` (the outbox task handlers, moved from `infrastructure/task_runtime/dispatcher.rs`) and
   `routes.rs` (the HTTP route table, moved from `presentation/http.rs`); `testing::process()` replaces the
   five-argument `wire` in the router and bootstrap tests. Sidecar: `process.rs` (logging, config,
   inspectors, server) and `bootstrap.rs` (X-ray poller and routes, demo lifecycle, mail service).
   `.env.example` rewritten: eight sections, a description and the default per variable on a commented
   line; README's configuration section points at it.
+- **2026-10-23, cqrsx README** (uncommitted). `cqrsx/README.md` written from scratch: what the library
+  guarantees, a path diagram, a complete in-memory quick start (aggregate, read model, outbox task, the test
+  framework and the test executor) that `lib.rs` includes as the crate documentation so it compiles and runs
+  with the doctests, a PostgreSQL assembly sketch pointing at the demo's `process.rs` and `bootstrap/`, the
+  configuration table with every default, the rules worth knowing, the testing tools and the features.

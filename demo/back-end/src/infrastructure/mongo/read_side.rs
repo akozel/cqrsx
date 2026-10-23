@@ -1,4 +1,6 @@
-//! The read-model collections of `encore_read` and the repositories over them.
+//! The read-model collections of `encore_read`: their names, the repository types over them and the
+//! scratch copies a verify run compares against. The repositories are built per read model in
+//! `bootstrap::projections`.
 use crate::{
     application::{
         concert::views::concert_hall::ConcertHallView, fan::views::fan_wallet::FanWalletView,
@@ -15,20 +17,6 @@ pub const FAN_WALLETS: &str = "fan_wallets";
 
 pub type HallRepository = MongoViewRepository<ConcertHallView, Concert>;
 pub type WalletRepository = MongoViewRepository<FanWalletView, Fan>;
-
-pub struct ReadSide {
-    pub halls: Arc<HallRepository>,
-    pub wallets: Arc<WalletRepository>,
-}
-
-impl ReadSide {
-    pub fn new(read_db: &Database) -> Self {
-        Self {
-            halls: Arc::new(MongoViewRepository::new(read_db, CONCERT_HALLS)),
-            wallets: Arc::new(MongoViewRepository::new(read_db, FAN_WALLETS)),
-        }
-    }
-}
 
 /// A scratch copy of the `live` collection for one verify run: `<live>_verify_<run id>`.
 pub fn scratch<V: 'static, A: 'static>(read_db: &Database, live: &'static str) -> ScratchFactory<MongoViewRepository<V, A>> {

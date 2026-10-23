@@ -6,7 +6,11 @@
 //! - `host`: optional process signals and coordinated component shutdown.
 //! - `logging`: optional explicit logger configuration and installation.
 //!
-//! Applications own business transitions and repeat-safe task effects.
+//! Applications own business transitions and repeat-safe task effects. The README below is the
+//! guide: a complete in-memory example (compiled with the doctests), the PostgreSQL assembly, the
+//! configuration and the rules.
+//!
+#![doc = include_str!("../README.md")]
 
 pub mod cqrs;
 mod diagnostics;
