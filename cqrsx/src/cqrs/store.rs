@@ -1,4 +1,5 @@
 //! Event-store contracts, persistence errors and repository-backed implementations.
+pub mod feed;
 pub mod persisted;
 pub mod repository;
 pub mod serialized_event;

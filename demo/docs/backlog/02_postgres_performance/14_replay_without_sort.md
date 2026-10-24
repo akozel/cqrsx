@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | закрыта тикетом [03/02](../03_durable_projections/02_event_position.md) 2026-10-24: у события есть позиция `tx`, журнал читается лентой `feed_after` по индексу, сортировки нет |
 | Ценность | средняя: время rebuild и verify («Encore!») и нагрузка на живой трафик во время них |
 | Цена | низкая–средняя |
 | cqrsx | `postgres/event_repository/{sql_query,stream}.rs`, `cqrs/store/stream.rs` (контракт порядка), `doc/components.md` |

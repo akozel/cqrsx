@@ -96,4 +96,20 @@ impl PersistedEventRepository for PostgresEventRepositoryWithOutbox {
     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
         self.reader.stream_all_events::<A>().await
     }
+
+    async fn feed_after<A: Aggregate>(
+        &self,
+        after: crate::cqrs::store::feed::Position,
+        limit: usize,
+    ) -> Result<Vec<crate::cqrs::store::feed::FeedEntry>, PersistenceError> {
+        self.reader.feed_after::<A>(after, limit).await
+    }
+
+    async fn head<A: Aggregate>(&self) -> Result<crate::cqrs::store::feed::Position, PersistenceError> {
+        self.reader.head::<A>().await
+    }
+
+    async fn aggregate_ids_after<A: Aggregate>(&self, after: &str, limit: usize) -> Result<Vec<String>, PersistenceError> {
+        self.reader.aggregate_ids_after::<A>(after, limit).await
+    }
 }

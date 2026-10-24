@@ -2,11 +2,19 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::cqrs::{
     aggregate::Aggregate,
-    store::{PersistenceError, serialized_event::SerializedEvent, snapshot::SerializedSnapshot, stream::ReplayStream},
+    store::{
+        PersistenceError,
+        feed::{FeedEntry, Position},
+        serialized_event::SerializedEvent,
+        snapshot::SerializedSnapshot,
+        stream::ReplayStream,
+    },
 };
 use std::future::Future;
 
-/// Handles the database access needed for operation of a PersistedSnapshotStore.
+/// The persistence behind a `PersistedEventStore`: the events and snapshots of every aggregate,
+/// written one commit per transaction, and the journal of an aggregate type read in commit order
+/// (`feed_after`, `head`, `aggregate_ids_after`; see `store::feed`).
 pub trait PersistedEventRepository: Send + Sync {
     /// Returns all events for a single aggregate instance.
     fn get_events<A: Aggregate>(
@@ -42,4 +50,30 @@ pub trait PersistedEventRepository: Send + Sync {
 
     /// Streams all events for an aggregate type.
     fn stream_all_events<A: Aggregate>(&self) -> impl Future<Output = Result<ReplayStream, PersistenceError>> + Send;
+
+    /// The events of aggregate type `A` after `after` in the order of [`Position`], taken from the
+    /// transactions that had finished when the read began: at least `limit` events when that many
+    /// exist, and always to the end of the last transaction started, so a page never cuts a commit in
+    /// two. Positions never decrease along a page; inside one aggregate the sequence grows by one.
+    /// A reader that keeps the last position of every page sees every event exactly once: a slower
+    /// transaction with a lower id is waited for, never skipped. `limit == 0` is an error.
+    fn feed_after<A: Aggregate>(
+        &self,
+        after: Position,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<FeedEntry>, PersistenceError>> + Send;
+
+    /// The greatest position among the written events of aggregate type `A`, [`Position::START`]
+    /// for an empty journal. It can lie above what `feed_after` returns yet, while a slower
+    /// transaction with a lower id is still open.
+    fn head<A: Aggregate>(&self) -> impl Future<Output = Result<Position, PersistenceError>> + Send;
+
+    /// The ids of the aggregates of type `A` above `after` in id order, at most `limit` of them:
+    /// the keys of a journal page by page, for a projection that rebuilds its documents.
+    /// `limit == 0` is an error.
+    fn aggregate_ids_after<A: Aggregate>(
+        &self,
+        after: &str,
+        limit: usize,
+    ) -> impl Future<Output = Result<Vec<String>, PersistenceError>> + Send;
 }

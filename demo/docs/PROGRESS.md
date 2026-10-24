@@ -609,3 +609,14 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   contiguity table and a property test in `projection.rs`, `stress_two_writers_of_one_document_converge` and
   `a_view_storage_failure_stalls_the_document_at_its_last_applied_event` on PostgreSQL,
   `a_booking_after_a_wipe_is_recorded_but_the_read_model_refuses_the_gap` in `write_side.rs`.
+- **2026-10-24, event position in the journal (epic 03/02)** (uncommitted). `events.tx xid8 NOT NULL DEFAULT
+  pg_current_xact_id()` and `events_feed_idx (aggregate_type, tx, aggregate_id, sequence)`: every event records the
+  transaction that wrote it. `PersistedEventRepository` gains `feed_after` (a page above a position and below the
+  snapshot horizon, never cutting a transaction in two), `head` and `aggregate_ids_after`; `Position` and `FeedEntry`
+  live in `cqrs::store::feed`. New `cqrs::testing::mem_event_repository::MemEventRepository`, an in-memory repository
+  with the PostgreSQL write rules by meaning and one position per commit (`MemStore` only implements `EventStore`);
+  it replaced the fake in `tests/cqrs/history.rs`. Tests: eleven horizon, paging and key cases on PostgreSQL in
+  `tests/postgres/event_store/feed.rs`, an EXPLAIN test in `schema.rs` that keeps the feed and the head on
+  `events_feed_idx` and the keys on the primary key, in-memory tests and the snapshot property test over the new
+  repository. No upgrade asset: the project is unreleased. The sidecar's X-ray column list now shows `tx xid8`; its
+  code is unchanged. The hot-key before/after measurement moved to 03/03.

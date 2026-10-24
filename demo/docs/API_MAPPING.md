@@ -345,7 +345,7 @@ where Inbound: Future<Output = io::Result<()>>, RuntimeFuture: Future<Output = R
 
 ### U15. Глобальная позиция / метка времени в `events`
 
-**Факт** (`cqrsx/sql/001-event-store.sql`): `events(aggregate_type text, aggregate_id text, sequence bigint, event_type text, event_version text, payload json, metadata json)`, PK `(aggregate_type, aggregate_id, sequence)`. Ни глобальной позиции, ни `created_at`. Вставка — `ON CONFLICT DO NOTHING` + проверка `rows_affected` (или 23505 на `events_pkey`) → `OptimisticLockError`.
+**Факт** (`cqrsx/sql/001-event-store.sql`): `events(aggregate_type text, aggregate_id text, sequence bigint, event_type text, event_version text, payload json, metadata json)`, PK `(aggregate_type, aggregate_id, sequence)`. Ни глобальной позиции, ни `created_at` (с эпика 03/02 есть `tx xid8` — номер записавшей транзакции, индекс `events_feed_idx` и лента `feed_after`; `recorded_at` в метаданных остаётся для X-ray). Вставка — `ON CONFLICT DO NOTHING` + проверка `rows_affected` (или 23505 на `events_pkey`) → `OptimisticLockError`.
 
 **Решение.** При U3 = A: `recorded_at` пишется фиксированной шириной (`to_rfc3339_opts(SecondsFormat::Micros, true)` → `2026-10-17T09:12:03.123456Z`), и sidecar сортирует строкой без приведения типов:
 `SELECT row_to_json(t) FROM (SELECT * FROM events WHERE aggregate_type = 'Concert' [AND aggregate_id = $2] ORDER BY metadata->>'recorded_at' DESC NULLS LAST, aggregate_id, sequence DESC LIMIT $1) t`. При U3 = C: `ORDER BY ctid DESC` (физический порядок вставки; для демо без `VACUUM FULL` приемлемо, но недокументировано) или по полю payload.
@@ -481,6 +481,10 @@ pub trait PersistedEventRepository: Send + Sync {
     fn persist<A: Aggregate>(&self, events: &[SerializedEvent], snapshot_update: Option<SnapshotUpdate>) -> …Result<(), PersistenceError>;
     fn stream_events<A: Aggregate>(&self, aggregate_id: &str) -> …Result<ReplayStream, PersistenceError>;
     fn stream_all_events<A: Aggregate>(&self) -> …Result<ReplayStream, PersistenceError>;
+    // эпик 03/02: журнал типа в порядке коммитов (cqrs/store/feed.rs: Position, FeedEntry)
+    fn feed_after<A: Aggregate>(&self, after: Position, limit: usize) -> …Result<Vec<FeedEntry>, PersistenceError>;
+    fn head<A: Aggregate>(&self) -> …Result<Position, PersistenceError>;
+    fn aggregate_ids_after<A: Aggregate>(&self, after: &str, limit: usize) -> …Result<Vec<String>, PersistenceError>;
 }
 // cqrs/store/stream.rs:12-50
 impl ReplayStream { pub fn new(queue_size: usize) -> (ReplayFeed, Self); pub async fn next<A: Aggregate>(&mut self, upcasters: &[Box<dyn EventUpcaster>]) -> Option<Result<EventEnvelope<A>, PersistenceError>>; }
@@ -577,7 +581,9 @@ pub struct LoggingConfig; impl { pub fn new(level_filter: LevelFilter) -> Self; 
 
 ```sql
 events(aggregate_type text, aggregate_id text, sequence bigint CHECK (>= 0), event_type text, event_version text,
-       payload json, metadata json, PRIMARY KEY (aggregate_type, aggregate_id, sequence))
+       payload json, metadata json, tx xid8 NOT NULL DEFAULT pg_current_xact_id(),  -- эпик 03/02
+       PRIMARY KEY (aggregate_type, aggregate_id, sequence))
+CREATE INDEX events_feed_idx ON events (aggregate_type, tx, aggregate_id, sequence)  -- эпик 03/02
 snapshots(aggregate_type text, aggregate_id text, last_sequence bigint, current_snapshot bigint, payload json,
           PRIMARY KEY (aggregate_type, aggregate_id, last_sequence))
 ```

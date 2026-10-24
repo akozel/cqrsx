@@ -157,6 +157,26 @@ pub type ReplayProgressObserver = dyn Fn(&ReplayProgress<'_>) + Send + Sync + 's
 /// #     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
 /// #         todo!()
 /// #     }
+/// #
+/// #     async fn feed_after<A: Aggregate>(
+/// #         &self,
+/// #         _after: cqrsx::cqrs::store::feed::Position,
+/// #         _limit: usize,
+/// #     ) -> Result<Vec<cqrsx::cqrs::store::feed::FeedEntry>, PersistenceError> {
+/// #         todo!()
+/// #     }
+/// #
+/// #     async fn head<A: Aggregate>(&self) -> Result<cqrsx::cqrs::store::feed::Position, PersistenceError> {
+/// #         todo!()
+/// #     }
+/// #
+/// #     async fn aggregate_ids_after<A: Aggregate>(
+/// #         &self,
+/// #         _after: &str,
+/// #         _limit: usize,
+/// #     ) -> Result<Vec<String>, PersistenceError> {
+/// #         todo!()
+/// #     }
 /// # }
 /// # }
 /// # use example::MyAggregate;
@@ -361,6 +381,26 @@ where
     /// #     }
     /// #
     /// #     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
+    /// #         todo!()
+    /// #     }
+    /// #
+    /// #     async fn feed_after<A: Aggregate>(
+    /// #         &self,
+    /// #         _after: cqrsx::cqrs::store::feed::Position,
+    /// #         _limit: usize,
+    /// #     ) -> Result<Vec<cqrsx::cqrs::store::feed::FeedEntry>, PersistenceError> {
+    /// #         todo!()
+    /// #     }
+    /// #
+    /// #     async fn head<A: Aggregate>(&self) -> Result<cqrsx::cqrs::store::feed::Position, PersistenceError> {
+    /// #         todo!()
+    /// #     }
+    /// #
+    /// #     async fn aggregate_ids_after<A: Aggregate>(
+    /// #         &self,
+    /// #         _after: &str,
+    /// #         _limit: usize,
+    /// #     ) -> Result<Vec<String>, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// # }
@@ -695,6 +735,25 @@ mod test {
                 feed.push(item).await?;
             }
             Ok(stream)
+        }
+        async fn feed_after<A: crate::cqrs::aggregate::Aggregate>(
+            &self,
+            _: crate::cqrs::store::feed::Position,
+            _: usize,
+        ) -> Result<Vec<crate::cqrs::store::feed::FeedEntry>, PersistenceError> {
+            unreachable!()
+        }
+        async fn head<A: crate::cqrs::aggregate::Aggregate>(
+            &self,
+        ) -> Result<crate::cqrs::store::feed::Position, PersistenceError> {
+            unreachable!()
+        }
+        async fn aggregate_ids_after<A: crate::cqrs::aggregate::Aggregate>(
+            &self,
+            _: &str,
+            _: usize,
+        ) -> Result<Vec<String>, PersistenceError> {
+            unreachable!()
         }
     }
     #[tokio::test]

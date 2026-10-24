@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-24 (см. «Отклонения») |
 | Ценность | высокая: без сквозного порядка проекция не может читать журнал сама; попутно список ключей типа для пересборки; 02/14 закрывается — журнал больше не сортируют |
 | Цена | низкая–средняя |
 | cqrsx | `sql/001-event-store.sql`, `postgres/event_repository/{sql_query,read}.rs`, `cqrs/store/repository.rs` (`feed_after`, `head`, `aggregate_ids_after`), новый `cqrs/store/feed.rs` (`Position`, `FeedEntry`), `cqrs/testing/mem_store.rs`, `doc/components.md`; тесты `tests/postgres/event_store/*` |
@@ -31,8 +31,8 @@ CREATE TABLE IF NOT EXISTS events
 CREATE INDEX IF NOT EXISTS events_feed_idx ON events (aggregate_type, tx, aggregate_id, sequence);
 ```
 
-Ассет обновления для существующих баз не нужен: проект не выпущен, базы пересоздаются (решение 0 в README
-эпика).
+Ассет обновления для существующих баз не нужен: проект не выпущен, базы пересоздаются (правило эпика об
+отсутствии совместимости).
 
 Путь записи не меняется: CTE в `outbox/write.rs` и `insert_event` колонку не перечисляют, умолчание заполняет её
 внутри той же транзакции; все события одного коммита получают один номер. Цена — одна запись в индекс на событие,
@@ -73,9 +73,9 @@ SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payloa
 SELECT ... FROM events
  WHERE aggregate_type = $1 AND tx = $2::text::xid8 AND (aggregate_id, sequence) > ($3, $4)
  ORDER BY aggregate_id, sequence;
--- head (max(xid8) есть с PostgreSQL 15; в compose — 18)
-SELECT coalesce(max(tx), '0')::text FROM events WHERE aggregate_type = $1;
--- aggregate_ids_after: skip scan по первичному ключу (PostgreSQL 18)
+-- head: по индексу, без зависимости от оператора сортировки у max(xid8); пустой журнал — нет строки = START
+SELECT tx::text AS position FROM events WHERE aggregate_type = $1 ORDER BY tx DESC LIMIT 1;
+-- aggregate_ids_after: диапазон по первичному ключу с Unique; страница стоит столько, сколько историй у её ключей
 SELECT DISTINCT aggregate_id FROM events
  WHERE aggregate_type = $1 AND aggregate_id > $2
  ORDER BY aggregate_id
@@ -97,10 +97,13 @@ SELECT DISTINCT aggregate_id FROM events
 Почему порядок внутри агрегата сохраняется: событие n+1 пишет команда, загрузившая событие n, то есть после его
 коммита; номер транзакции выдаётся при INSERT, ещё позже. Значит `tx(n+1) > tx(n)`.
 
-### `MemStore`
+### `MemEventRepository`
 
-Счётчик коммитов: каждый `commit` получает следующую позицию, все события одного коммита — одну. `feed_after`,
-`head` и `aggregate_ids_after` читают этот журнал. Нужно тестам процессора без PostgreSQL. Горизонта у `MemStore` нет: коммит атомарен.
+`MemStore` реализует только `EventStore<A>` над типизированными конвертами одного агрегата и трейт репозитория
+реализовать не может. Для тестов без PostgreSQL есть `cqrs::testing::mem_event_repository::MemEventRepository`:
+полная реализация `PersistedEventRepository` с правилами записи PostgreSQL по смыслу (занятый номер или версия
+снапшота — `OptimisticLockError`, ничего не записано) и позицией на каждый непустой `persist`, общей у всех его
+событий. `feed_after`, `head` и `aggregate_ids_after` читают этот журнал. Горизонта у него нет: коммит атомарен.
 
 ### Контракт порядка
 
@@ -122,19 +125,35 @@ SELECT DISTINCT aggregate_id FROM events
 | 8 | Пустой журнал | `head` = `START`, страница пуста | `an_empty_journal_has_no_head` |
 | 9 | Другой тип агрегата в той же таблице | не читается и не считается головой | `the_feed_filters_by_aggregate_type` |
 | 10 | `with_tables` (свои имена таблиц) | запросы с именами таблицы и индекса репозитория | `custom_table_names_feed_too` |
-| 11 | `limit` = 0 или позиция не число | `UnknownError` до запроса | `invalid_feed_arguments_are_refused` |
+| 11 | `limit` = 0 или больше `bigint` | `UnknownError` до запроса; «позиция не число» у `Position(u64)` невозможна, разбор текста проверяет `FromStr` | `invalid_feed_arguments_are_refused` |
 
 ## Как измерить
 
-Горячий ключ `01-hot-key-vus40` в профиле `db`, код до и после колонки с индексом: ожидание — CPU PostgreSQL на
-команду в пределах шума, WAL на команду чуть выше (одна запись в индекс). Полная пересборка ([03](03_projection_processor.md)) на 1 и 5 млн событий:
-время, `pg_stat_database.temp_bytes = 0`, стоимость страницы ключей.
+Перенесено в [03](03_projection_processor.md) по решению пользователя 2026-10-24: путь записи не меняется, цена —
+одна запись в индекс на событие, а замер «горячий ключ до/после колонки» и пересборка на 1 и 5 млн событий
+осмысленны вместе с потребителями ленты.
 
 ## Критерии приёмки
 
-- [ ] Колонка и индекс в `001-event-store.sql`; ассета обновления нет (решение 0).
-- [ ] `Position`, `FeedEntry`, `feed_after`, `head`, `aggregate_ids_after` в трейте, в PostgreSQL и в `MemStore`.
-- [ ] Тесты таблицы; покрытие ≥ 97 %.
-- [ ] `components.md`: «Event position» в инвентаре, контракт порядка, абзац про горизонт; 02/14 закрыт ссылкой
+- [x] Колонка и индекс в `001-event-store.sql`; ассета обновления нет (правило эпика об отсутствии совместимости).
+- [x] `Position`, `FeedEntry`, `feed_after`, `head`, `aggregate_ids_after` в трейте, в PostgreSQL и в
+      `MemEventRepository`.
+- [x] Тесты таблицы; покрытие ≥ 97 %.
+- [x] `components.md`: «Event position» в инвентаре, контракт порядка, абзац про горизонт; 02/14 закрыт ссылкой
       сюда.
-- [ ] Замер записан в тикет.
+- [ ] Замер записан в тикет — перенесён в [03](03_projection_processor.md).
+
+## Отклонения
+
+- **`MemEventRepository` вместо `MemStore`.** Тикет предполагал, что `MemStore` реализует трейт репозитория; он
+  реализует только `EventStore<A>`. Новый тестовый репозиторий реализует трейт целиком и заменил фейк в
+  `tests/cqrs/history.rs`, так что property-тест снапшотов теперь проверяет и его.
+- **`head` через `ORDER BY tx DESC LIMIT 1`**, а не `max(tx)`: идёт по индексу независимо от оператора
+  сортировки у `max(xid8)`; пустой журнал — отсутствие строки.
+- **Список ключей** — обычный диапазон по первичному ключу с `Unique`, а не skip scan: стоимость страницы
+  пропорциональна историям её ключей. Тест плана (`schema.rs`) подтверждает индекс и отсутствие сортировки.
+- **Хвост транзакции** планировщик читает bitmap-сканом по `events_feed_idx` и досортировывает строки одной
+  транзакции — допустимо, хвост мал; страница, голова и ключи идут по индексу в его порядке.
+- **Случай 11:** «позиция не число» у `Position(u64)` невозможна; проверяется разбор текста (`FromStr`) и
+  `limit` за пределами `bigint`.
+- **Замер** перенесён в [03](03_projection_processor.md) по решению пользователя.

@@ -1,82 +1,21 @@
 use std::collections::HashMap;
 use {
-    cqrsx::cqrs::AggregateError, cqrsx::cqrs::aggregate::Aggregate, cqrsx::cqrs::event::EventEnvelope,
-    cqrsx::cqrs::store::EventStore, cqrsx::cqrs::store::PersistenceError, cqrsx::cqrs::store::persisted::PersistedEventStore,
-    cqrsx::cqrs::store::repository::PersistedEventRepository, cqrsx::cqrs::store::serialized_event::SerializedEvent,
-    cqrsx::cqrs::store::snapshot::SnapshotUpdate, cqrsx::cqrs::testing::mem_store::MemStore,
+    cqrsx::cqrs::AggregateError, cqrsx::cqrs::event::EventEnvelope, cqrsx::cqrs::store::EventStore,
+    cqrsx::cqrs::store::persisted::PersistedEventStore, cqrsx::cqrs::store::repository::PersistedEventRepository,
+    cqrsx::cqrs::store::serialized_event::SerializedEvent, cqrsx::cqrs::testing::mem_event_repository::MemEventRepository,
+    cqrsx::cqrs::testing::mem_store::MemStore,
 };
 
 mod snapshots {
     use super::*;
     use proptest::prelude::*;
-    use std::sync::{Arc, Mutex};
-    use {
-        crate::support::ledger::*, crate::support::property_config, cqrsx::cqrs::CqrsFramework,
-        cqrsx::cqrs::store::snapshot::SerializedSnapshot, cqrsx::cqrs::store::stream::ReplayStream,
-    };
-    #[derive(Default)]
-    struct Rows {
-        events: Vec<SerializedEvent>,
-        snapshot: Option<SnapshotUpdate>,
-    }
-    #[derive(Clone, Default)]
-    struct Repository(Arc<Mutex<Rows>>);
-    impl PersistedEventRepository for Repository {
-        async fn get_events<A: Aggregate>(&self, _: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
-            Ok(self.0.lock().unwrap().events.clone())
-        }
-        async fn get_events_after<A: Aggregate>(
-            &self,
-            _: &str,
-            sequence: usize,
-        ) -> Result<Vec<SerializedEvent>, PersistenceError> {
-            Ok(self
-                .0
-                .lock()
-                .unwrap()
-                .events
-                .iter()
-                .filter(|e| e.sequence > sequence)
-                .cloned()
-                .collect())
-        }
-        async fn get_snapshot<A: Aggregate>(&self, _: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
-            Ok(self.0.lock().unwrap().snapshot.as_ref().map(|s| SerializedSnapshot {
-                aggregate_id: s.aggregate_id.clone(),
-                aggregate: s.payload.clone(),
-                last_sequence: s.last_sequence,
-                snapshot_version: s.next_version,
-            }))
-        }
-        async fn persist<A: Aggregate>(
-            &self,
-            events: &[SerializedEvent],
-            snapshot: Option<SnapshotUpdate>,
-        ) -> Result<(), PersistenceError> {
-            let mut rows = self.0.lock().unwrap();
-            rows.events.extend_from_slice(events);
-            if let Some(snapshot) = snapshot {
-                assert_eq!(
-                    snapshot.next_version,
-                    rows.snapshot.as_ref().map_or(1, |s| s.next_version + 1)
-                );
-                rows.snapshot = Some(snapshot);
-            }
-            Ok(())
-        }
-        async fn stream_events<A: Aggregate>(&self, _: &str) -> Result<ReplayStream, PersistenceError> {
-            unreachable!()
-        }
-        async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-            unreachable!()
-        }
-    }
+    use {crate::support::ledger::*, crate::support::property_config, cqrsx::cqrs::CqrsFramework};
     proptest! {
         #![proptest_config(property_config())]
         #[test]
         fn property_snapshot_histories_match_prefix_model(interval in 1usize..26, initial in 0usize..8, framework in any::<bool>(), batches in prop::collection::vec(prop::collection::vec(0i32..30,0..12),1..20)) {
             tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-                let repo=Repository::default();
+                let repo=MemEventRepository::default();
                 let mut model=vec![1;initial];
                 let seed:Vec<_>=model.iter().enumerate().map(|(i,v)|SerializedEvent::try_from(&EventEnvelope::<Ledger>{aggregate_id:"history".into(),sequence:i+1,payload:Delta(*v),metadata:HashMap::new()}).unwrap()).collect();
                 repo.persist::<Ledger>(&seed,None).await.unwrap();

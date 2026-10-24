@@ -255,7 +255,7 @@ run(shutdown):
 
 ## Модель сбоев
 
-Каждая строка — тест. Единичные тесты идут против `MemStore` + `MemCheckpointStore` + `MemViewRepository` с
+Каждая строка — тест. Единичные тесты идут против `MemEventRepository` + `MemCheckpointStore` + `MemViewRepository` с
 управляемыми сбоями; интеграционные — PostgreSQL через testcontainers с `PostgresViewRepository` (MongoDB в cqrsx
 нет). «Падение» в тестах — `JoinHandle::abort` задачи процессора в выбранной точке (точки сообщает тестовый хук
 `ProcessorProbe` из `testing`) и запуск нового процессора над теми же хранилищами. Сбои хранилища вида — обёртка
@@ -313,7 +313,18 @@ run(shutdown):
 - `ViewProjection::rebuild`: свёртка с нуля заменяет документ любой версии; пустая история ничего не пишет;
   конфликт версии повторяется, как в `apply_events`.
 - Матрица фич: ядро процессора компилируется без `postgres`; хранилище — за фичей.
-- Doc-тест quick start с `MemStore`, `MemCheckpointStore`, `MemViewRepository`.
+- Doc-тест quick start с `MemEventRepository`, `MemCheckpointStore`, `MemViewRepository`.
+
+## Как измерить
+
+- Перенесено из [02](02_event_position.md) (решение пользователя 2026-10-24): горячий ключ `01-hot-key-vus40` в
+  профиле `db` до и после колонки `tx` с индексом; ожидание — CPU PostgreSQL на команду в пределах шума, WAL на
+  команду чуть выше (одна запись в индекс). Стенд `02_postgres_performance/perf/`,
+  `./run.sh 01-hot-key-vus40 … POOL=20 PROFILE=db VERIFY=1 REPEAT=3`; «до» — оверлей `LOAD_COMPOSE_EXTRA` с
+  init-скриптом, снимающим индекс и колонку (схема стенда монтируется из рабочего дерева, образ back-end DDL не
+  выполняет); метрики `cpu_ms_per_1k_accepted.postgres` и `wal_bytes_per_command` из `collect.mjs`.
+- Полная пересборка на 1 и 5 млн событий (нужен генератор истории): время, `pg_stat_database.temp_bytes = 0`,
+  стоимость страницы ключей `aggregate_ids_after`.
 
 ## Риски
 

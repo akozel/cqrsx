@@ -2,6 +2,8 @@
 use super::*;
 #[path = "event_store/concurrency.rs"]
 mod concurrency;
+#[path = "event_store/feed.rs"]
+mod feed;
 #[path = "event_store/persistence.rs"]
 mod persistence;
 #[path = "event_store/snapshots.rs"]

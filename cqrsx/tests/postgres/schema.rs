@@ -82,6 +82,66 @@ async fn schema_rejects_inconsistent_direct_writes_and_accepts_valid_lifecycle_s
     db.close().await;
 }
 
+/// The journal reads stay on indexes: feed pages and the head on `events_feed_idx`, the aggregate ids
+/// on the primary key. 200 commits of two interleaved aggregate types give `tx` 200 distinct values,
+/// so the page comes from the middle of a real journal, not from one transaction.
+#[tokio::test]
+async fn feed_pages_use_the_feed_index_and_key_pages_use_the_primary_key() {
+    let db = Database::new().await;
+    for commit in 1..=200i64 {
+        sqlx::query(
+            "INSERT INTO events (aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata) \
+             SELECT CASE WHEN $1 % 2 = 0 THEN 'contract_ledger' ELSE 'other_ledger' END, \
+                    'ledger-' || lpad((($1 - 1) / 2)::text, 3, '0'), n, 'delta', '1', '1', '{}' \
+               FROM generate_series(1, 100) AS n",
+        )
+        .bind(commit)
+        .execute(&db.pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("ANALYZE events").execute(&db.pool).await.unwrap();
+    let middle: String = sqlx::query_scalar(
+        "SELECT tx::text FROM (SELECT DISTINCT tx FROM events WHERE aggregate_type = 'contract_ledger' ORDER BY tx OFFSET 50 LIMIT 1) t",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let feed = format!(
+        "EXPLAIN (FORMAT JSON) SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata, tx::text AS position \
+         FROM events WHERE aggregate_type = 'contract_ledger' AND tx > '{middle}'::xid8 AND tx < pg_snapshot_xmin(pg_current_snapshot()) \
+         ORDER BY tx, aggregate_id, sequence LIMIT 100"
+    );
+    let tail = format!(
+        "EXPLAIN (FORMAT JSON) SELECT aggregate_id FROM events WHERE aggregate_type = 'contract_ledger' AND tx = '{middle}'::xid8 \
+         AND (aggregate_id, sequence) > ('ledger-050', 40) ORDER BY aggregate_id, sequence"
+    );
+    // The tail of one transaction is small: a bitmap scan of the index plus a sort of its rows is fine
+    // there; a page, the head and the keys must come out of an index in order.
+    for (query, index, sort_allowed) in [
+        (feed.as_str(), "events_feed_idx", false),
+        (tail.as_str(), "events_feed_idx", true),
+        (
+            // `AS position` matters: a bare `tx::text` would be named `tx` and ORDER BY would sort the text.
+            "EXPLAIN (FORMAT JSON) SELECT tx::text AS position FROM events WHERE aggregate_type = 'contract_ledger' ORDER BY tx DESC LIMIT 1",
+            "events_feed_idx",
+            false,
+        ),
+        (
+            "EXPLAIN (FORMAT JSON) SELECT DISTINCT aggregate_id FROM events WHERE aggregate_type = 'contract_ledger' AND aggregate_id > 'ledger-010' ORDER BY aggregate_id LIMIT 20",
+            "events_pkey",
+            false,
+        ),
+    ] {
+        let plan: Value = sqlx::query_scalar(query).fetch_one(&db.pool).await.unwrap();
+        let text = plan.to_string();
+        assert!(text.contains(index), "{query}\n{text}");
+        assert!(!text.contains("Seq Scan"), "{query}\n{text}");
+        assert!(sort_allowed || !text.contains("\"Sort\""), "{query}\n{text}");
+    }
+    db.close().await;
+}
+
 #[tokio::test]
 async fn queue_indexes_serve_ready_and_expired_queries_with_finished_history() {
     let db = Database::new().await;

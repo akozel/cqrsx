@@ -6,6 +6,10 @@ pub(crate) struct SqlQueryFactory {
     insert_event: String,
     all_events: String,
     count_events: String,
+    feed_page: String,
+    feed_tail: String,
+    head: String,
+    aggregate_ids_after: String,
     insert_snapshot: String,
     update_snapshot: String,
     select_snapshot: String,
@@ -47,6 +51,42 @@ SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payloa
 SELECT count(*) AS events, count(DISTINCT aggregate_id) AS aggregates
   FROM {event_table}
   WHERE aggregate_type = $1"
+            ),
+            // sqlx has no xid8: the position travels as decimal text in both directions. The horizon
+            // `pg_snapshot_xmin(pg_current_snapshot())` belongs to this statement's snapshot: every
+            // transaction below it has finished, so the page has no holes, and the LIMIT keeps the
+            // planner on the feed index whatever it estimates for the range.
+            feed_page: format!(
+                "
+SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata, tx::text AS position
+  FROM {event_table}
+  WHERE aggregate_type = $1 AND tx > $2::text::xid8 AND tx < pg_snapshot_xmin(pg_current_snapshot())
+  ORDER BY tx, aggregate_id, sequence
+  LIMIT $3"
+            ),
+            // The rest of the transaction a full page ended in; it finished before the page was read.
+            feed_tail: format!(
+                "
+SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata, tx::text AS position
+  FROM {event_table}
+  WHERE aggregate_type = $1 AND tx = $2::text::xid8 AND (aggregate_id, sequence) > ($3, $4)
+  ORDER BY aggregate_id, sequence"
+            ),
+            head: format!(
+                "
+SELECT tx::text AS position
+  FROM {event_table}
+  WHERE aggregate_type = $1
+  ORDER BY tx DESC
+  LIMIT 1"
+            ),
+            aggregate_ids_after: format!(
+                "
+SELECT DISTINCT aggregate_id
+  FROM {event_table}
+  WHERE aggregate_type = $1 AND aggregate_id > $2
+  ORDER BY aggregate_id
+  LIMIT $3"
             ),
             insert_snapshot: format!(
                 "
@@ -90,6 +130,18 @@ SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
     }
     pub fn select_events_after(&self) -> &str {
         &self.select_events_after
+    }
+    pub fn feed_page(&self) -> &str {
+        &self.feed_page
+    }
+    pub fn feed_tail(&self) -> &str {
+        &self.feed_tail
+    }
+    pub fn head(&self) -> &str {
+        &self.head
+    }
+    pub fn aggregate_ids_after(&self) -> &str {
+        &self.aggregate_ids_after
     }
 }
 
@@ -148,6 +200,41 @@ SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payloa
   FROM my_events
   WHERE aggregate_type = $1 AND aggregate_id = $2 AND sequence > $3
   ORDER BY sequence"
+        );
+        assert_eq!(
+            query_factory.feed_page(),
+            "
+SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata, tx::text AS position
+  FROM my_events
+  WHERE aggregate_type = $1 AND tx > $2::text::xid8 AND tx < pg_snapshot_xmin(pg_current_snapshot())
+  ORDER BY tx, aggregate_id, sequence
+  LIMIT $3"
+        );
+        assert_eq!(
+            query_factory.feed_tail(),
+            "
+SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata, tx::text AS position
+  FROM my_events
+  WHERE aggregate_type = $1 AND tx = $2::text::xid8 AND (aggregate_id, sequence) > ($3, $4)
+  ORDER BY aggregate_id, sequence"
+        );
+        assert_eq!(
+            query_factory.head(),
+            "
+SELECT tx::text AS position
+  FROM my_events
+  WHERE aggregate_type = $1
+  ORDER BY tx DESC
+  LIMIT 1"
+        );
+        assert_eq!(
+            query_factory.aggregate_ids_after(),
+            "
+SELECT DISTINCT aggregate_id
+  FROM my_events
+  WHERE aggregate_type = $1 AND aggregate_id > $2
+  ORDER BY aggregate_id
+  LIMIT $3"
         );
     }
 }

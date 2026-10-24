@@ -10,8 +10,12 @@ use crate::{
     cqrs::{
         aggregate::Aggregate,
         store::{
-            PersistenceError, repository::PersistedEventRepository, serialized_event::SerializedEvent,
-            snapshot::SerializedSnapshot, stream::ReplayStream,
+            PersistenceError,
+            feed::{FeedEntry, Position},
+            repository::PersistedEventRepository,
+            serialized_event::SerializedEvent,
+            snapshot::SerializedSnapshot,
+            stream::ReplayStream,
         },
     },
     postgres::error::PostgresRepositoryError,
@@ -91,6 +95,18 @@ impl PersistedEventRepository for PostgresEventRepository {
             self.pool.clone(),
             self.stream_channel_size,
         ))
+    }
+
+    async fn feed_after<A: Aggregate>(&self, after: Position, limit: usize) -> Result<Vec<FeedEntry>, PersistenceError> {
+        self.feed_page::<A>(after, limit).await
+    }
+
+    async fn head<A: Aggregate>(&self) -> Result<Position, PersistenceError> {
+        self.journal_head::<A>().await
+    }
+
+    async fn aggregate_ids_after<A: Aggregate>(&self, after: &str, limit: usize) -> Result<Vec<String>, PersistenceError> {
+        self.aggregate_ids_page::<A>(after, limit).await
     }
 }
 
