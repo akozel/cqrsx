@@ -82,7 +82,6 @@ async function confirmCancel() {
       {{ t('states.history', { n: timeMachine.sequence }) }}
     </div>
     <div v-else-if="concerts.stale" class="mb-2 rounded border border-border px-3 py-1 text-xs opacity-80">{{ t('states.wiped') }}</div>
-    <div v-else-if="concerts.currentView?.incomplete" class="mb-2 rounded border border-neon-amber/60 px-3 py-1 text-xs text-neon-amber">{{ t('states.incomplete') }}</div>
     <!-- Three columns: row letters · stage + seats (the stage is centred on the seats alone) · zones -->
     <div class="mx-auto flex w-fit gap-1">
       <div class="flex w-5 flex-col gap-1.5">

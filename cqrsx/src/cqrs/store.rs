@@ -71,6 +71,16 @@ pub enum PersistenceError {
     /// An unexpected error occurred while accessing the database.
     #[error("{0}")]
     UnknownError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    /// A view document is behind the delivered events: it has applied `expected - 1` of its
+    /// aggregate and the batch continues at `found`. Nothing of the batch is written; the document
+    /// stays a correct prefix of its aggregate's history until a replay fills the gap.
+    #[error("sequence gap: expected event {expected}, found {found}")]
+    SequenceGap {
+        /// The next event the document can apply (`last_sequence + 1`).
+        expected: usize,
+        /// The first event of the batch above `expected`.
+        found: usize,
+    },
 }
 
 impl<T: std::error::Error> From<PersistenceError> for AggregateError<T> {
@@ -80,6 +90,7 @@ impl<T: std::error::Error> From<PersistenceError> for AggregateError<T> {
             PersistenceError::ConnectionError(error) => Self::DatabaseConnectionError(error),
             PersistenceError::DeserializationError(error) => Self::DeserializationError(error),
             PersistenceError::UnknownError(error) => Self::UnexpectedError(error),
+            gap @ PersistenceError::SequenceGap { .. } => Self::UnexpectedError(Box::new(gap)),
         }
     }
 }
@@ -155,6 +166,16 @@ mod tests {
             };
             assert_eq!(boxed.downcast_ref::<io::Error>().unwrap().to_string(), "original cause");
         }
+        let AggregateError::UnexpectedError(boxed) =
+            AggregateError::<Infallible>::from(PersistenceError::SequenceGap { expected: 2, found: 5 })
+        else {
+            panic!("a sequence gap is a technical category")
+        };
+        assert_eq!(boxed.to_string(), "sequence gap: expected event 2, found 5");
+        assert!(matches!(
+            boxed.downcast_ref::<PersistenceError>(),
+            Some(PersistenceError::SequenceGap { expected: 2, found: 5 })
+        ));
     }
     fn serde_errors() -> Vec<serde_json::Error> {
         struct BrokenReader;

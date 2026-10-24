@@ -432,8 +432,10 @@ storage timeout 3 с. Lease валидируется формулой `lease > 2
 запись (место, билет) помнит `sequence` последнего изменившего её события; событие применяется к записи, только
 если его `sequence` больше. Удаление — это «надгробие» `{ state: "free", sequence }`, а не удаление ключа.
 Производные поля (`sold`, `revenue`, `active_count`, `total_spent`, `sold_out`) **пересчитываются** из карты и
-никогда не инкрементируются. Итог: проекции идемпотентны и не зависят от порядка, в котором отработали обработчики
-параллельных команд.
+никогда не инкрементируются. Поверх этого библиотека применяет события агрегата к документу строго по порядку и
+ровно один раз (эпик 03/01): документ хранит `last_sequence` и принимает только `last_sequence + 1`, повтор
+пропускается, дыра — ошибка `SequenceGap` без записи, документ без истории не создаётся (D-15). LWW внутри
+свёртки остаётся: свёртка детерминирована и не зависит от порядка.
 
 **1. `concert_halls`** — `ViewProjection` + `MongoViewRepository<ConcertHallView>`, `_id = concert_id`:
 
@@ -441,6 +443,7 @@ storage timeout 3 с. Lease валидируется формулой `lease > 2
 {
   "_id": "radiohead-2026-11-21",
   "version": 14,
+  "last_sequence": 14,
   "view": {
     "concert": { "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21" },
     "capacity": 40,
@@ -450,16 +453,16 @@ storage timeout 3 с. Lease валидируется формулой `lease > 2
       "A1": { "state": "free", "sequence": 9, "changed_at": "2026-10-17T09:13:40Z" }
     },
     "sold": 12, "revenue": 960, "sold_out": false,
-    "last_sequence": 14,
-    "incomplete": false
+    "last_sequence": 14
   }
 }
 ```
 
 - `sold_out = (sold == capacity)` — производное поле (событие `ConcertSoldOut` снято, D-03).
 - `version` — версия документа для оптимистической блокировки самого view (`ViewContext`); не путать с `sequence`.
-- `incomplete = true`, если документ создан без `ConcertAnnounced` (например, после wipe пришло новое событие).
-  UI показывает «⚠️ Витрина неполная: у неё нет истории — нажмите Encore!».
+- `last_sequence` конверта — последнее применённое событие агрегата (`ViewContext::last_sequence`, эпик 03/01):
+  документ принимает только следующее, повтор пропускает, дыру отвергает; документ без истории не создаётся
+  (D-15). `last_sequence` внутри `view` — бегущий максимум витрины для UI.
 - `changed_at` берётся из метаданных события (`recorded_at`), а не из `now()`: пересборка даёт тот же документ.
 
 **2. `fan_wallets`** — `ViewProjection` + `MongoViewRepository<FanWalletView>` над агрегатом `Fan`,
@@ -501,8 +504,9 @@ outbox-обработчиками; wipe и replay его **не трогают**
   `POST /api/projections/wipe` back-end): drop коллекций `concert_halls` и `fan_wallets` (inbox не трогаем).
   Удаление данных без восстановления — демо-операция, поэтому она у sidecar; у back-end такого эндпоинта нет.
   Write-side продолжает работать: бронирование занятого места по-прежнему отклоняется, потому
-  что агрегат восстанавливается из PostgreSQL, а не из MongoDB. Новое событие после wipe создаёт «неполный»
-  документ (`incomplete: true`) — наглядно: «витрина без истории врёт».
+  что агрегат восстанавливается из PostgreSQL, а не из MongoDB. Новое событие после wipe документ не создаёт:
+  проекция отвергает дыру (`SequenceGap`), команда принята с предупреждением `projection_failed`, витрина пуста
+  до Encore! (D-15).
 - **⏪ Encore!** (`POST /api/projections/rebuild`, тело `{ "speed": "slow" }` или `{ "speed": "fast" }`):
   1. Взять rebuild-lock: команды отвечают `423 rebuild_in_progress`, кнопки в UI блокируются с пояснением.
      Outbox-воркер продолжает работать — он не зависит от read-side.
@@ -1068,7 +1072,7 @@ fallback, UI берёт текст из i18n по `code` и `params`.
 Персонажи и концерты по умолчанию — реквизит демо, их отдаёт sidecar (`GET /inspect/demo`); параметры имитации
 почты у back-end больше нет (аудит 2026-10-17).
 
-**`GET /api/concerts`** — `[{ concert_id, artist, city, date, sold, capacity, revenue, sold_out, incomplete }]`.
+**`GET /api/concerts`** — `[{ concert_id, artist, city, date, sold, capacity, revenue, sold_out, last_sequence, version }]`.
 **`GET /api/concerts/{id}`** — `{ concert_id, version, view }` (как в §2.8).
 **`GET /api/concerts/{id}/timeline`** — `[{ sequence, event_type, recorded_at, summary }]`, где `summary` — короткая
 строка вида `"B4 → Fox"`.
@@ -1115,12 +1119,14 @@ Activity хранится только в памяти — это лог, а н�
 
 ### 6.7 `MongoViewRepository<V>`
 
-- Документ: `{ _id: view_id, version: i64, view: <V как BSON> }`.
+- Документ: `{ _id: view_id, version: i64, last_sequence: i64, view: <V как BSON> }` (`last_sequence` —
+  последнее применённое событие агрегата, поле обязательное: старых документов нет, базы пересоздаются).
 - `load(view_id)` → `find_one({ _id })` → десериализовать `view`.
-- `load_with_context(view_id)` → `(view, ViewContext { view_id, version })`.
+- `load_with_context(view_id)` → `(view, ViewContext { view_id, version, last_sequence })`.
 - `update_view(view, ctx)`:
-  - `ctx.version == 0` → `insert_one({ _id, version: 1, view })`; duplicate key (E11000) → **конфликт**;
-  - иначе `update_one({ _id, version: ctx.version }, { $set: { view, version: ctx.version + 1 } })`;
+  - `ctx.version == 0` → `insert_one({ _id, version: 1, last_sequence, view })`; duplicate key (E11000) →
+    **конфликт**;
+  - иначе `update_one({ _id, version: ctx.version }, { $set: { view, version: ctx.version + 1, last_sequence } })`;
     `matched_count == 0` → **конфликт**.
 - Конфликт маппится в тот вариант ошибки `cqrsx`, на который `ViewProjection` отвечает повтором; прочее — в
   ошибку соединения/неизвестную.
@@ -1159,7 +1165,7 @@ Activity хранится только в памяти — это лог, а н�
 - **Обработчики цепочки**: маппинг исходов `CommandGatewayError` → `TaskHandlerError` по таблице §2.7
   (`UnknownTicket` → `Retry`, `AlreadyRecorded` → `Ok`), с фейковым командным сервисом.
 - **Проекции** (чистые unit-тесты): применение последовательностей; LWW — порядок 7→6 даёт то же, что 6→7;
-  повтор события ничего не меняет; надгробия; производные поля; `incomplete`.
+  повтор события ничего не меняет; надгробия; производные поля.
 - **Outbox**: `FlakyMailServer` с `ChaosPolicy::Always` → retry, без записи в inbox; `Never` → ровно одно письмо;
   два успешных выполнения одной задачи → один документ, `deliveries = 2`. `Random` с фиксированным seed: на 10 000
   бросков доля отказов в пределах 0.2 ± 0.02.
@@ -1311,7 +1317,7 @@ back-end оставался production-подобным: seed концертов
 |---|---|---|
 | `AppHeader` | P0 | логотип, переключатель языка, ⓘ — открыть баннер «Как читать экран» |
 | `PipelineStrip` | P0 | диаграмма архитектуры по `docs/img.png` на холсте **Vue Flow** (`@vue-flow/core`, статичный: без drag/pan/zoom, вписан в блок, zoom ≤ 1) в блоке верхнего ряда (50 % ширины, рядом с панелями events и outbox): три рамки сервисов — `Concert service` (Command → Aggregate → events + outbox → `Outbox worker → Fan`), `Fan service` (Command → Aggregate → events + outbox → `Outbox worker → email`), `projection` (read database → ◇ UI); ромбы ◇ UI (касса, под сервисом Concert) и ◇ email; внизу круг с персонажем (🦊 Fox…), соединённый с обоими ◇ UI и с ◇ email; снаружи — «почтовый сервер 🎲» с обратным ребром retry к events + outbox; сигналы — кружки, бегущие по рёбрам (рёбра ортогональные, узлы на сетке: Command над Aggregate, Outbox worker над events + outbox); подсветка по таблице ниже; на холсте только названия блоков — без подписей и пояснений; **клик по любому блоку или рамке** открывает модальное окно `PipelineExplain` с развёрнутым пояснением (`explain.<id>` в i18n), для агрегатов — таблица правил R1–R8 / R9–R11. Данные графа — `pipeline/graph.ts`, хореография сигналов — `pipeline/choreography.ts` |
-| `ConcertTabs` | P0 | концерты из `/api/concerts`; прогресс sold/capacity; бейджи SOLD OUT и ⚠️ incomplete; если витрина пуста — вкладки из `GET /inspect/demo` (`default_concerts`) с «?» |
+| `ConcertTabs` | P0 | концерты из `/api/concerts`; прогресс sold/capacity; бейдж SOLD OUT; если витрина пуста — вкладки из `GET /inspect/demo` (`default_concerts`) с «?» |
 | `PersonaPicker` | P0 | четыре больших аватара; у каждого «билетов n/4» на текущем концерте |
 | `SeatMap`, `SeatButton` | P0 | сцена со свечением и именем артиста, ряды A–E, легенда зон; состояния — §8.6; клики — ниже |
 | `ActionBar` | P0 / P1 | 🤖 Перекупщик, 🌊 Толпа (P0), ⚡ Гонка (P1) |
@@ -1457,7 +1463,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
   }
   if (!ctx.view) return 'unknown';                    // витрина стёрта
   const entry = ctx.view.seats[seat];
-  if (!entry) return ctx.view.incomplete ? 'unknown' : 'free';
+  if (!entry) return 'free';
   if (entry.state === 'free') return 'free';
   return entry.fan_id === ctx.persona ? 'mine' : 'booked';
 }
@@ -1747,6 +1753,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | **D-12** | **Sidecar:** сортировка `events` по `metadata->>'recorded_at'` (строка фиксированной ширины), outbox по `created_at`, строки outbox не удаляются, `last_error` показывается. Запросы — AM §6. | §7.3, §8.5 | ☐ Фаза 7 |
 | **D-13** | **Граница back-end ↔ sidecar (аудит 2026-10-17, `docs/BOUNDARY_AUDIT.md`).** Back-end — production-подобный сервис кассы; всё demo-only и удаляющее данные — у sidecar: 🧨 wipe (`POST /inspect/projections/wipe`), письма фаната (`GET /inspect/mail/{fan_id}`), персонажи (`GET /inspect/demo`), имитация почтового сервиса (`POST /mail`). Back-end зовёт почту по HTTP (`HttpMailer`) и к базе `mail_service` не подключается. Счётчики журнала — в `cqrsx` (`PostgresEventRepository::totals`, тикет 08). Ограничения «sidecar без `cqrsx`» и «только read-only» сняты. Открытые вопросы — `docs/discussions/`. | §2.7, §2.9, §3.5, §5.4, §6.2, §6.4, §7 | ☑ реализовано 2026-10-17 |
 | **D-14** | **Журнал `Fan` — на пару «фанат + концерт»:** `aggregate_id = <fan_id>:<concert_id>`, `fan_wallets._id` тот же; домен `Fan`, wire-форматы событий и снапшота, `ViewProjection`, rebuild и verify не меняются. Кошелёк фаната собирается при чтении из диапазона `_id` `[<fan>:, <fan>;)` и отвечает `{ fan_id, ledgers, view }`. Причина: нагрузочный прогон 03b 2026-10-18 — состояние, снапшот и документ кошелька одного фаната росли без границы, стоимость задачи O(n), слив outbox 120 → 12 задач/с, потери проекции (`docs/discussions/06_fan_ledger_growth.md`). Данные демо пересоздаются (`make reset`). | §2.1, §2.3, §2.8, §3.2, §6.4 | ☑ реализовано 2026-10-18 |
+| **D-15** | **Документ без истории не создаётся.** Документ витрины хранит `last_sequence` и принимает только следующее событие своего агрегата (`cqrsx`, эпик 03/01: повтор пропускается, дыра — `SequenceGap` без записи). После 🧨 wipe бронь принимается с предупреждением `projection_failed`, лента называет дыру, витрина пуста до Encore!; флаг `incomplete` удалён из вида, API и UI. Совместимость со старыми базами не поддерживается: проект не выпущен, данные пересоздаются (`make reset`). | §2.8, §2.9, §6.7, §8.6 | ☑ реализовано 2026-10-24 |
 
 Открытых вопросов перед Фазой 0.5 нет.
 
@@ -1831,7 +1838,6 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | `panels.activity` | Живой лог back-end: что происходит прямо сейчас. Хранится только в памяти. | Live back-end log: what is happening right now. Kept in memory only. |
 | `states.race` | Оба запроса прочитали версию N и попытались записать N+1. База приняла только первый; второй повторился на свежем состоянии — и правило «место свободно» его отклонило. | Both requests read version N and tried to write N+1. The database accepted only the first; the second was retried on fresh state — and the "seat must be free" rule rejected it. |
 | `states.history` | Это состояние нигде не хранится — оно вычислено из событий 1…{n}. | This state isn't stored anywhere — it was computed from events 1…{n}. |
-| `states.incomplete` | ⚠️ Витрина неполная: у неё нет начала истории. Нажмите Encore! | ⚠️ This read model is incomplete: it is missing the start of the history. Press Encore! |
 | `states.wiped` | Витрины пусты. Журнал цел — нажмите Encore!, чтобы всё восстановить. | Read models are empty. The ledger is intact — press Encore! to restore everything. |
 | `states.locked` | Касса закрыта на минутку: пересобираем витрины. | Box office closed for a moment: rebuilding read models. |
 | `states.projection_failed` | ⚠️ Событие записано, но витрина не обновилась. Encore! её догонит. | ⚠️ The event was recorded, but the read model wasn't updated. Encore! will catch it up. |

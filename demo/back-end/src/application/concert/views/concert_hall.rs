@@ -1,16 +1,18 @@
 //! `concert_halls` read model: one document per concert, built only from `Concert` events.
 //!
-//! LWW rule: every seat entry remembers the `sequence` of the event that last changed it and an
-//! event is applied only if its sequence is greater. A cancellation is a tombstone
+//! The library applies the events of a concert to its document strictly in order and only once (the
+//! document's `last_sequence`); a document is never created from the middle of a history, so a
+//! booking after a wipe stays in the ledger until Encore! rebuilds the read model. Inside the fold,
+//! every seat entry remembers the `sequence` of the event that last changed it and an event is
+//! applied only if its sequence is greater (LWW). A cancellation is a tombstone
 //! `{ state: "free", sequence }`, never a deleted key. Derived fields (`sold`, `revenue`,
-//! `sold_out`) are recomputed from the map, never incremented. Result: idempotent and
-//! order-independent updates — handlers of parallel commands and replays all converge.
+//! `sold_out`) are recomputed from the map, never incremented.
 use crate::domain::{
     concert::{
         Concert, ConcertEvent,
         events::{BookingCancelled, ConcertAnnounced, SeatBooked},
     },
-    shared::venue::{VENUE, Zone},
+    shared::venue::Zone,
 };
 use cqrsx::cqrs::{event::EventEnvelope, projection::View};
 use serde::{Deserialize, Serialize};
@@ -58,9 +60,6 @@ pub struct ConcertHallView {
     pub revenue: i64,
     pub sold_out: bool,
     pub last_sequence: i64,
-    /// `true` when the document was created without `ConcertAnnounced` (e.g. a booking after a
-    /// wipe): the read model has no beginning of its history.
-    pub incomplete: bool,
 }
 
 impl ConcertHallView {
@@ -98,7 +97,6 @@ impl View<Concert> for ConcertHallView {
                     date: date.to_string(),
                 });
                 self.capacity = i64::from(*capacity);
-                self.incomplete = false;
             }
             ConcertEvent::SeatBooked(SeatBooked {
                 seat,
@@ -142,13 +140,6 @@ impl View<Concert> for ConcertHallView {
                 }
             }
         }
-        if self.concert.is_none() {
-            // Something happened before we saw the announcement: the document lacks its history.
-            self.incomplete = true;
-            if self.capacity == 0 {
-                self.capacity = i64::from(VENUE.capacity());
-            }
-        }
         self.last_sequence = self.last_sequence.max(sequence);
         self.recompute();
     }
@@ -157,7 +148,10 @@ impl View<Concert> for ConcertHallView {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::{FanId, shared::venue::SeatId};
+    use crate::domain::{
+        FanId,
+        shared::venue::{SeatId, VENUE},
+    };
     use chrono::NaiveDate;
     use std::collections::HashMap;
     use uuid::Uuid;
@@ -238,7 +232,6 @@ mod tests {
             (SeatState::Free, 4, true)
         );
         assert_eq!(view.last_sequence, 4);
-        assert!(!view.incomplete);
     }
 
     #[test]
@@ -272,15 +265,6 @@ mod tests {
         let mut view = view;
         view.update(&cancelled(100, "A1", "crowd-0"));
         assert_eq!((view.sold, view.sold_out), (39, false));
-    }
-
-    #[test]
-    fn a_booking_without_announcement_marks_the_document_incomplete() {
-        let view = apply(&[booked(5, "B4", "fox")]);
-        assert!(view.incomplete);
-        assert_eq!((view.capacity, view.sold), (40, 1));
-        let repaired = apply(&[booked(5, "B4", "fox"), announced(1)]);
-        assert!(!repaired.incomplete, "the announcement completes the history");
     }
 
     #[test]

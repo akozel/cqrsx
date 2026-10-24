@@ -269,7 +269,7 @@ async fn read_models_are_served_in_the_documented_shapes() {
     assert_eq!(
         body,
         json!([{ "concert_id": "c-1", "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21", "sold": 1,
-                 "capacity": 40, "revenue": 80, "sold_out": false, "incomplete": false, "last_sequence": 2, "version": 3 }])
+                 "capacity": 40, "revenue": 80, "sold_out": false, "last_sequence": 2, "version": 3 }])
     );
     let (_, body) = send(&router, get("/api/concerts/c-1")).await;
     assert_eq!(body, json!({ "concert_id": "c-1", "version": 3, "view": hall }));

@@ -184,7 +184,7 @@ executor.execute(&concert_id, command, tasks).await   // -> Result<(), CommandGa
 
 **Факт.** `cqrs/projection.rs:509-521`: `impl EventHandler<A> for ViewProjection` — `handle(&self, view_id: &str, events)`; framework передаёт сюда `aggregate_id` (`cqrs.rs:546`). Вычисления id из события нет. `apply_events` — `pub(crate)` (`projection.rs:488`), переиспользовать цикл retry нельзя. Публичны: `ViewProjection::new(Arc<R>)`, `with_max_attempts(NonZeroUsize)` (по умолчанию 16), `set_error_observer(Box<PersistenceErrorObserver>)`, `load(view_id)`.
 
-**Решение.** Как в плане: `FanWalletsProjection` — собственный `#[async_trait] impl EventHandler<Concert>`; группирует события по `fan_id`; на каждый кошелёк: `load_with_context` → `Default` при `None` с `ViewContext::new(id, 0)` → `View::update` → `update_view`; при `OptimisticLockError` повтор (≤ 16 попыток, `tokio::task::yield_now().await` между ними — как в `projection.rs:489-499`). Остальные ошибки — наружу.
+**Решение.** Как в плане: `FanWalletsProjection` — собственный `#[async_trait] impl EventHandler<Concert>`; группирует события по `fan_id`; на каждый кошелёк: `load_with_context` → `Default` при `None` с `ViewContext::new(id, 0, 0)` → `View::update` → `update_view`; при `OptimisticLockError` повтор (≤ 16 попыток, `tokio::task::yield_now().await` между ними — как в `projection.rs:489-499`). Остальные ошибки — наружу.
 
 **Правка плана.** §6.2: уточнить, что крейту нужен `async-trait` (трейт `EventHandler` объявлен через `#[async_trait]`, `cqrs/event_handler.rs:14`); `TaskHandler`, `TaskAdapter`, `ViewRepository`, `EventStore`, `Aggregate` — native `async fn`.
 
@@ -367,8 +367,8 @@ where Inbound: Future<Output = io::Result<()>>, RuntimeFuture: Future<Output = R
 | D3 | Успешный `execute` → `()`; `last_sequence` только при `CommittedWithEventHandlerFailure` | `committed_sequence` — из декоратора (A) |
 | D4 | `handler_indices` в `CommittedWithEventHandlerFailure` — индексы регистрации (0 = `concert_halls`, 1 = `fan_wallets`); framework вызывает **все** обработчики даже после сбоя первого (`cqrs.rs:545-549`) | `warnings: [{ code: "projection_failed", projection }]` по индексу |
 | D5 | `ViewProjection::set_error_observer(Box<dyn Fn(&PersistenceError)>)` — синхронный наблюдатель ошибок | альтернатива `NotifyingHandler` для `projection.failed`; `projection.updated` — всё равно декоратором |
-| D6 | `ViewRepository` — native async fn с `Send`-фьючами; `update_view(view, ViewContext { view_instance_id, version })`: `version == 0` → insert, иначе update `WHERE version = ctx.version`, новая версия `ctx.version + 1` (`view_repository.rs:187-210` как образец) | §6.7 верен; `MongoViewRepository` повторяет контракт, конфликт → `PersistenceError::OptimisticLockError` |
-| D7 | `View<A>: Debug + Default + Serialize + DeserializeOwned + Send + Sync`, `update(&mut self, &EventEnvelope<A>)` — синхронно и безошибочно | LWW и `incomplete` реализуются в `update` |
+| D6 | `ViewRepository` — native async fn с `Send`-фьючами; `update_view(view, ViewContext { view_instance_id, version, last_sequence })`: `version == 0` → insert, иначе update `WHERE version = ctx.version`, новая версия `ctx.version + 1`, `last_sequence` пишется тем же CAS (эпик 03/01) (`view_repository.rs:187-210` как образец) | §6.7 верен; `MongoViewRepository` повторяет контракт, конфликт → `PersistenceError::OptimisticLockError` |
+| D7 | `View<A>: Debug + Default + Serialize + DeserializeOwned + Send + Sync`, `update(&mut self, &EventEnvelope<A>)` — синхронно и безошибочно | LWW реализуется в `update`; порядок и однократность применения обеспечивает библиотека (`last_sequence`, эпик 03/01) |
 | D8 | `TestFramework::<A>::with(services).given(vec)/.given_no_previous_events().and(vec).when(cmd)` (sync, свой runtime) или `.when_async(cmd).await`; валидатор: `then_expect_events(vec)`, `then_expect_error(err)` (нужен `PartialEq` у ошибки), `then_expect_error_message(&str)`, `inspect_result()` | `ConcertError: thiserror::Error + PartialEq + Clone`; тесты R1–R8 — по одному на правило |
 | D9 | `Aggregate: Default + Serialize + DeserializeOwned + Send + Sync` (+ `Clone` для framework); `Services: Send + Sync`; `DomainEvent: Clone + PartialEq + Debug + Serialize + DeserializeOwned` | `Concert` сериализуется в снапшот → ключи `BTreeMap<SeatId, _>` должны сериализоваться строкой (newtype над `String`) |
 | D10 | `EventSink::write` применяет событие к рабочей копии сразу (`event_sink.rs:23-26`) | комментарий в §2.6 верен |
@@ -457,7 +457,7 @@ pub trait ViewRepository<V: View<A>, A: Aggregate>: Send + Sync {
     fn load_with_context(&self, view_id: &str) -> impl Future<Output = Result<Option<(V, ViewContext)>, PersistenceError>> + Send;
     fn update_view(&self, view: V, context: ViewContext) -> impl Future<Output = Result<(), PersistenceError>> + Send;
 }
-pub struct ViewContext { pub view_instance_id: String, pub version: i64 }  impl ViewContext { pub fn new(view_instance_id: String, version: i64) -> Self; }
+pub struct ViewContext { pub view_instance_id: String, pub version: i64, pub last_sequence: usize }  impl ViewContext { pub fn new(view_instance_id: String, version: i64, last_sequence: usize) -> Self; }
 // cqrs/store.rs:15-129
 pub trait EventStore<A: Aggregate>: Send + Sync {
     type AC: AggregateContext<A>;
@@ -466,7 +466,7 @@ pub trait EventStore<A: Aggregate>: Send + Sync {
     fn commit(&self, events: Vec<A::Event>, context: Self::AC, metadata: HashMap<String, String>) -> impl Future<Output = Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>>> + Send;
 }
 pub trait AggregateContext<A: Aggregate> { fn aggregate(&mut self) -> &mut A; }
-pub enum PersistenceError { OptimisticLockError, ConnectionError(Box<dyn Error + Send + Sync>), DeserializationError(..), UnknownError(..) }
+pub enum PersistenceError { OptimisticLockError, ConnectionError(Box<dyn Error + Send + Sync>), DeserializationError(..), UnknownError(..), SequenceGap { expected: usize, found: usize } }
 pub type PersistenceErrorObserver = dyn Fn(&PersistenceError) + Send + Sync + 'static;
 // cqrs/store/persisted.rs:46-569
 pub struct PersistedEventStore<R: PersistedEventRepository, A: Aggregate>;

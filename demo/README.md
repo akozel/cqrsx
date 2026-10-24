@@ -234,9 +234,12 @@ Key points, each visible on screen:
   the deliveries (`SIDECAR_MAIL_FAILURE_RATE`) and stores the rest in `mail_service.inbox` with an
   idempotent upsert, so a repeat only bumps `deliveries`. The steps of both chains live in
   `application::workflows::{ticket_delivery, refund}`, one file per step.
-- **Projections** are last-writer-wins registers keyed by event `sequence` with recomputed derived
-  fields, so they are idempotent and order-independent. They are updated in-process after commit —
-  without delivery guarantees. That is why Encore! exists.
+- **Projections** are contiguous documents: each remembers the last event of its aggregate it applied
+  (`last_sequence`) and takes only the next one — a repeat is skipped, a gap is refused and nothing is
+  written, so a document is never created from the middle of a history and never silently misses an
+  event. Inside the fold, seat and ticket entries are last-writer-wins registers keyed by event
+  `sequence` with recomputed derived fields. Documents are updated in-process after commit — without
+  delivery guarantees. That is why Encore! exists.
 - **Replay** drops both collections and replays the ledger through the very same `ViewProjection`s.
   The mail inbox belongs to the mail service, in a database the back-end never connects to: rebuilding
   read models cannot resend e-mails.
@@ -266,11 +269,14 @@ Key points, each visible on screen:
    the wallet); the wallet catches up one chain step later.
 6. **Cancellation (30 s).** Fox cancels a ticket: `BookingCancelled` + 🔁 → `TicketCancelled` + 💸 → "Refund" e-mail.
 7. **Encore! (1.5 min).** 🧨 Wipe → click a seat that was taken (still rejected: rules read the ledger) →
-   book a free seat (⚠️ incomplete read model) → ⏪ Encore! in slow motion: seats light up one by one,
+   book a free seat (⚠️ accepted with a warning: the booking is in the ledger, but a document without its
+   history is not created, so the hall stays "?") → ⏪ Encore! in slow motion: seats light up one by one,
    the 📬 inbox does not change.
 8. **Race (30 s).** ⚡ Race: "Fox won · Panda: seat_taken" with the optimistic-locking explanation.
 9. **MongoDB outage (optional).** `podman compose stop mongo` → book a seat → the command is accepted with
-   the warning "event recorded, read model not updated" → `podman compose start mongo` → Encore! catches up.
+   the warning "event recorded, read model not updated" → `podman compose start mongo` → every later command
+   on that concert carries the same warning, because a document that fell behind refuses the next events
+   instead of silently skipping the missed one → Encore! catches up.
 
 ## Configuration
 

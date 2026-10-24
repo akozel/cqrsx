@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-24 (см. «Отклонения») |
 | Ценность | высокая: любая `ViewProjection` становится идемпотентной; без этого доставка «хотя бы раз» и несколько нод портят витрину |
 | Цена | низкая |
 | cqrsx | `cqrs/projection.rs`, `cqrs/projection/repository.rs`, `cqrs/store.rs` (вариант ошибки), `postgres/view_repository.rs`, `cqrs/testing/mem_view_repository.rs`, `doc/components.md`; тесты `tests/postgres/projection*.rs`, `tests/cqrs/*`, `tests/postgres/command.rs` (DDL таблиц видов) |
@@ -45,8 +45,9 @@ match event.sequence.cmp(&(context.last_sequence + 1)) {
 - `PersistenceError::SequenceGap { expected, found }` — новый вариант: процессор ([03](03_projection_processor.md)),
   статус и лог отличают «нет истории» от сбоя хранилища.
 - Репозитории хранят `last_sequence` рядом с версией и пишут его тем же CAS, что и документ:
-  - `PostgresViewRepository`: колонка `last_sequence bigint NOT NULL DEFAULT 0 CHECK (last_sequence >= 0)` в
-    таблице вида; INSERT/UPDATE пишут её, SELECT читает;
+  - `PostgresViewRepository`: колонка `last_sequence bigint NOT NULL CHECK (last_sequence >= 0)` в таблице
+    вида (каноническая DDL — в doc-комментарии `PostgresViewRepository::new`); INSERT/UPDATE пишут её, SELECT
+    читает;
   - `MemViewRepository`: третье поле документа; `put` и `list_all` с `last_sequence`;
   - demo `MongoViewRepository`: поле документа `{ _id, version, last_sequence, view }`.
 - Повторы при конфликте версии остаются (до 16 попыток): после `OptimisticLockError` документ перечитывается и
@@ -81,8 +82,8 @@ match event.sequence.cmp(&(context.last_sequence + 1)) {
 | 6 | Новый документ, пачка не с 1 | `SequenceGap { expected: 1 }` | `a_new_document_refuses_a_batch_that_does_not_start_at_one` |
 | 7 | Конфликт версии | перечитать, правило к свежему `last_sequence` | `a_version_conflict_rereads_and_skips_what_the_winner_applied` |
 | 8 | Два писателя одного документа одновременно, разные пачки одного агрегата | оба приходят к одному документу, каждое событие применено один раз | `two_writers_of_one_document_converge` (PostgreSQL, `tokio::join!`) |
-| 9 | Таблица вида без колонки | ошибка SQL при первом обращении; ассет обновления + пересборка | doc, `components.md` |
-| 10 | Старые документы: `last_sequence = 0`, вид непустой | первое же событие → `SequenceGap`; после обновления схемы витрины пересобираются | doc, README демо |
+| 9 | Таблица вида без колонки | снято: совместимости со старыми базами нет, таблицы создаются по канонической DDL | — |
+| 10 | Старые документы без поля | снято: базы пересоздаются (`make reset`), витрины — Encore! | — |
 
 ## Тесты
 
@@ -99,16 +100,32 @@ match event.sequence.cmp(&(context.last_sequence + 1)) {
 
 - Поведение после 🧨 wipe меняется (D-15). Если владелец демо хочет сохранить сцену «витрина без истории», её
   можно показывать по статусу «остановлена: нет истории», а не поддельным документом.
-- Любая существующая база нуждается в обновлении таблиц видов и пересборке витрин. Демо пересоздаёт данные
-  (`make reset`).
+- Существующие базы не обновляются: проект не выпущен, данные пересоздаются (`make reset`), витрины — Encore!.
 
 ## Критерии приёмки
 
-- [ ] `ViewContext::last_sequence`, правило непрерывности в `ViewProjection`, `PersistenceError::SequenceGap`.
-- [ ] Три репозитория хранят и пишут `last_sequence` одним CAS с версией; инструкция обновления таблиц видов в
-      `components.md` (имя таблицы задаёт пользователь, поэтому ассет — шаблон `ALTER TABLE <view> ADD COLUMN …`).
-- [ ] Тесты таблицы и property-тест; покрытие ≥ 97 %.
-- [ ] `components.md`: строки «Read-model data», «Read-model projection», инвариант непрерывности в правилах имён
+- [x] `ViewContext::last_sequence`, правило непрерывности в `ViewProjection`, `PersistenceError::SequenceGap`.
+- [x] Три репозитория хранят и пишут `last_sequence` одним CAS с версией; каноническая DDL таблицы вида в
+      doc-комментарии `PostgresViewRepository::new` (шаблон `ALTER TABLE` снят, см. «Отклонения»).
+- [x] Тесты таблицы и property-тест; покрытие ≥ 97 %.
+- [x] `components.md`: строки «Read-model data», «Read-model projection», инвариант непрерывности в правилах имён
       и интеграции.
-- [ ] demo: поле в MongoDB; `incomplete` удалён из вида и UI (или оставлен по решению владельца с пометкой);
-      README «Architecture».
+- [x] demo: поле в MongoDB; `incomplete` удалён из вида, API и UI (D-15 подтверждено); README «Architecture».
+
+## Отклонения
+
+- **Без совместимости.** По решению пользователя 2026-10-24 проект не выпущен: колонка без `DEFAULT`, шаблона
+  `ALTER TABLE` и теста «старой таблицы» нет, поле `last_sequence` в документе MongoDB обязательно (без
+  `serde(default)`); пограничные случаи 9–10 сняты. Правило записано в README эпика.
+- **Имена тестов.** Случай 8 — `stress_two_writers_of_one_document_converge` (префикс `stress_`, CI гоняет
+  `--test postgres stress_` с сидом коммита); случай 7 в двух вариантах (победитель применил часть пачки /
+  всю пачку); тест `a_view_storage_failure_fails_only_its_batch` переименован в
+  `a_view_storage_failure_stalls_the_document_at_its_last_applied_event`: после сбоя пачки следующая — дыра.
+- **`tests/cqrs/*`** не менялись: проекций там нет.
+- **Демо.** Витрины оставили своё поле `last_sequence` (бегущий максимум для API и UI) и LWW внутри свёртки;
+  `Stored { id, version, view }` не менялся. `testing::read_model` сеет документы с `last_sequence = 0`: сиды
+  служат только запросам.
+- **Сцена 🧨 wipe до тикета 04:** бронь принята с предупреждением `projection_failed`, лента содержит
+  `projection.failed` с текстом `sequence gap: expected event 1, found N`, места остаются «?» под баннером
+  «wiped» до Encore!. Отставший из-за сбоя хранилища документ отвергает все следующие события своего агрегата —
+  каждая команда по нему идёт с предупреждением до Encore! (G4).

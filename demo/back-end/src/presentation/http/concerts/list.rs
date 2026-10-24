@@ -19,7 +19,6 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
                 "capacity": view.capacity,
                 "revenue": view.revenue,
                 "sold_out": view.sold_out,
-                "incomplete": view.incomplete,
                 "last_sequence": view.last_sequence,
                 "version": version,
             })

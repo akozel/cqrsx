@@ -594,11 +594,11 @@ impl View<CappedAggregate> for ValuesView {
     }
 }
 
-/// The PostgreSQL view repository, failing the update of one chosen call.
+/// The PostgreSQL view repository, failing the update of one chosen call and counting the writes attempted.
 struct FailingUpdate {
     inner: PostgresViewRepository<ValuesView, CappedAggregate>,
     fail_on: usize,
-    updates: AtomicUsize,
+    updates: Arc<AtomicUsize>,
 }
 
 impl ViewRepository<ValuesView, CappedAggregate> for FailingUpdate {
@@ -643,22 +643,35 @@ impl<H: EventHandler<CappedAggregate>> EventHandler<CappedAggregate> for Gated<H
 type OrderedProjection = Gated<ViewProjection<FailingUpdate, ValuesView, CappedAggregate>>;
 
 /// 40 parallel commands to one aggregate with an ordered projection held on its first call until all 40
-/// have committed: the results, the projection's calls and the view.
+/// have committed: the results, the projection (its calls), the view writes attempted and the errors the
+/// projection observed.
 async fn forty_commands_through_an_ordered_projection(
     db: &Database,
     fail_on: usize,
-) -> (Vec<Result<(), CommandGatewayError<Rejected>>>, Arc<OrderedProjection>) {
-    sqlx::query("CREATE TABLE ordered_view (view_id text PRIMARY KEY, version bigint NOT NULL, payload json NOT NULL)")
+) -> (
+    Vec<Result<(), CommandGatewayError<Rejected>>>,
+    Arc<OrderedProjection>,
+    Arc<AtomicUsize>,
+    Arc<std::sync::Mutex<Vec<String>>>,
+) {
+    sqlx::query("CREATE TABLE ordered_view (view_id text PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
         .execute(&db.pool)
         .await
         .unwrap();
+    let updates = Arc::new(AtomicUsize::new(0));
     let repository = FailingUpdate {
         inner: PostgresViewRepository::new("ordered_view", db.pool.clone()),
         fail_on,
-        updates: AtomicUsize::new(0),
+        updates: updates.clone(),
     };
+    let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut inner = ViewProjection::new(Arc::new(repository)).with_name("values");
+    inner.set_error_observer(Box::new({
+        let errors = errors.clone();
+        move |error| errors.lock().unwrap().push(error.to_string())
+    }));
     let projection = Arc::new(Gated {
-        inner: ViewProjection::new(Arc::new(repository)).with_name("values"),
+        inner,
         gate: tokio::sync::Semaphore::new(0),
         calls: AtomicUsize::new(0),
     });
@@ -691,13 +704,13 @@ async fn forty_commands_through_an_ordered_projection(
         results.push(result.unwrap().1);
     }
     assert!(executor.backlog().is_empty());
-    (results, projection)
+    (results, projection, updates, errors)
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn ordered_projection_of_forty_parallel_commands_equals_the_replay() {
     let db = Database::new().await;
-    let (results, projection) = forty_commands_through_an_ordered_projection(&db, 0).await;
+    let (results, projection, _, _) = forty_commands_through_an_ordered_projection(&db, 0).await;
     assert!(results.iter().all(Result::is_ok), "{results:?}");
     assert_eq!(
         projection.calls.load(Ordering::SeqCst),
@@ -721,13 +734,16 @@ async fn ordered_projection_of_forty_parallel_commands_equals_the_replay() {
     assert_eq!(view, replayed);
     assert_eq!(view.sequences, (1..=40).collect::<Vec<_>>());
     assert_eq!(context.version, 3, "one view write per batch");
+    assert_eq!(context.last_sequence, 40);
     db.close().await;
 }
 
+/// After a failed batch the document is behind the journal; under the contiguity rule every later batch of
+/// the aggregate is a gap, refused before any write, until a replay fills the hole.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_view_storage_failure_fails_only_its_batch() {
+async fn a_view_storage_failure_stalls_the_document_at_its_last_applied_event() {
     let db = Database::new().await;
-    let (results, _) = forty_commands_through_an_ordered_projection(&db, 2).await;
+    let (results, _, updates, errors) = forty_commands_through_an_ordered_projection(&db, 2).await;
     let failed: Vec<usize> = results
         .iter()
         .filter_map(|result| match result {
@@ -747,7 +763,23 @@ async fn a_view_storage_failure_fails_only_its_batch() {
         .collect::<std::collections::BTreeSet<_>>()
         .into_iter()
         .collect();
-    assert_eq!(failed, (2..=33).collect::<Vec<_>>(), "the second call held commands 2 to 33");
+    assert_eq!(
+        failed,
+        (2..=40).collect::<Vec<_>>(),
+        "the second call held commands 2 to 33 and failed; the third call is a gap"
+    );
+    assert_eq!(
+        *errors.lock().unwrap(),
+        ["view store down", "sequence gap: expected event 2, found 34"]
+    );
+    assert_eq!(updates.load(Ordering::SeqCst), 2, "no write was attempted for the gap");
+    let (view, context) = PostgresViewRepository::<ValuesView, CappedAggregate>::new("ordered_view", db.pool.clone())
+        .load_with_context("hot")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(view.sequences, [1], "the document is the prefix before the failure");
+    assert_eq!((context.version, context.last_sequence), (1, 1));
     let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
         .get_events::<CappedAggregate>("hot")
         .await

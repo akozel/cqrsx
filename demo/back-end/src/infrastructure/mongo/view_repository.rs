@@ -1,8 +1,11 @@
 //! `ViewRepository` (write side of a projection) and `ReadModelStore` (queries, wipe) over a MongoDB
-//! collection: `{ _id: view_id, version: i64, view: <V as BSON> }`.
+//! collection: `{ _id: view_id, version: i64, last_sequence: i64, view: <V as BSON> }`, where
+//! `last_sequence` is the last event of the aggregate applied to the document (the library's contiguity
+//! rule: the document takes only the next one).
 //! Optimistic locking mirrors the library's `PostgresViewRepository`: `version == 0` inserts (a
-//! duplicate key is a conflict), otherwise `update_one({ _id, version }, { $set: { view, version + 1 } })`
-//! and `matched_count == 0` is a conflict. `ViewProjection` retries conflicts (up to 16 times).
+//! duplicate key is a conflict), otherwise
+//! `update_one({ _id, version }, { $set: { view, version + 1, last_sequence } })` and `matched_count == 0`
+//! is a conflict. `ViewProjection` retries conflicts (up to 16 times).
 use crate::application::{
     StorageError,
     ports::{ReadModelStore, Stored},
@@ -29,15 +32,26 @@ pub struct MongoViewRepository<V, A> {
     phantom: PhantomData<fn() -> (V, A)>,
 }
 
-/// A document before its view is decoded: only the version matters for optimistic locking.
+/// A document before its view is decoded: the version for optimistic locking and the last applied event.
 #[derive(Deserialize)]
 struct RawView {
     version: i64,
+    last_sequence: i64,
     view: Bson,
 }
 
 fn connection_error(error: mongodb::error::Error) -> PersistenceError {
     PersistenceError::ConnectionError(Box::new(error))
+}
+
+/// BSON has no unsigned integers: `last_sequence` is stored as `i64`.
+fn stored_sequence(last_sequence: usize) -> Result<i64, PersistenceError> {
+    i64::try_from(last_sequence).map_err(|e| PersistenceError::UnknownError(Box::new(e)))
+}
+
+/// A negative `last_sequence` can only be a damaged document.
+fn applied_sequence(stored: i64) -> Result<usize, PersistenceError> {
+    usize::try_from(stored).map_err(|e| PersistenceError::DeserializationError(Box::new(e)))
 }
 
 fn is_duplicate_key(error: &mongodb::error::Error) -> bool {
@@ -83,7 +97,11 @@ where
             return Ok(None);
         };
         let view: V = mongodb::bson::from_bson(stored.view).map_err(|e| PersistenceError::DeserializationError(Box::new(e)))?;
-        Ok(Some((view, ViewContext::new(view_id.to_owned(), stored.version))))
+        let last_sequence = applied_sequence(stored.last_sequence)?;
+        Ok(Some((
+            view,
+            ViewContext::new(view_id.to_owned(), stored.version, last_sequence),
+        )))
     }
 
     async fn update_view(&self, view: V, context: ViewContext) -> Result<(), PersistenceError> {
@@ -92,10 +110,16 @@ where
             .version
             .checked_add(1)
             .ok_or_else(|| PersistenceError::UnknownError("view version overflow".into()))?;
+        let last_sequence = stored_sequence(context.last_sequence)?;
         if context.version == 0 {
             let result = self
                 .collection
-                .insert_one(doc! { "_id": &context.view_instance_id, "version": next, "view": view })
+                .insert_one(doc! {
+                    "_id": &context.view_instance_id,
+                    "version": next,
+                    "last_sequence": last_sequence,
+                    "view": view,
+                })
                 .await;
             return match result {
                 Ok(_) => Ok(()),
@@ -107,7 +131,7 @@ where
             .collection
             .update_one(
                 doc! { "_id": &context.view_instance_id, "version": context.version },
-                doc! { "$set": { "view": view, "version": next } },
+                doc! { "$set": { "view": view, "version": next, "last_sequence": last_sequence } },
             )
             .await
             .map_err(connection_error)?;
@@ -175,13 +199,32 @@ where
 
 #[cfg(test)]
 mod tests {
+    use super::*;
     use crate::application::{
         concert::views::concert_hall::{ConcertHallView, ConcertSummary, SeatEntry, SeatState},
         fan::views::fan_wallet::{FanWalletView, TicketEntry, TicketEntryState},
     };
     use crate::domain::shared::venue::Zone;
-    use mongodb::bson::{from_bson, to_bson};
+    use mongodb::bson::{from_bson, from_document, to_bson};
     use std::collections::BTreeMap;
+
+    /// The stored envelope: `version` and `last_sequence` next to the view, both required.
+    #[test]
+    fn the_document_envelope_carries_the_version_and_the_last_applied_event() {
+        let view = to_bson(&ConcertHallView::default()).unwrap();
+        let raw: RawView = from_document(doc! { "_id": "c-1", "version": 3, "last_sequence": 7, "view": view.clone() }).unwrap();
+        assert_eq!((raw.version, raw.last_sequence), (3, 7));
+        assert_eq!(from_bson::<ConcertHallView>(raw.view).unwrap(), ConcertHallView::default());
+        assert!(
+            from_document::<RawView>(doc! { "_id": "c-1", "version": 3, "view": view }).is_err(),
+            "a document without last_sequence is not a read model of this version"
+        );
+        assert_eq!(stored_sequence(7).unwrap(), 7);
+        assert_eq!(applied_sequence(7).unwrap(), 7);
+        assert!(matches!(applied_sequence(-1), Err(PersistenceError::DeserializationError(_))));
+        #[cfg(target_pointer_width = "64")]
+        assert!(matches!(stored_sequence(usize::MAX), Err(PersistenceError::UnknownError(_))));
+    }
 
     /// The views are stored as BSON: seat and ticket keys stay strings, options stay optional.
     #[test]

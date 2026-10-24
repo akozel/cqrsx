@@ -13,7 +13,6 @@ const view: ConcertHallView = {
   revenue: 80,
   sold_out: false,
   last_sequence: 4,
-  incomplete: false,
 }
 
 describe('seatState', () => {
@@ -23,8 +22,6 @@ describe('seatState', () => {
     expect(seatState('A1', { mode: 'live', view, persona: 'panda' })).toBe('free')
     expect(seatState('E8', { mode: 'live', view, persona: 'panda' })).toBe('free')
     expect(seatState('E8', { mode: 'live', view: null, persona: 'panda' })).toBe('unknown')
-    expect(seatState('E8', { mode: 'live', view: { ...view, incomplete: true }, persona: 'panda' })).toBe('unknown')
-    expect(seatState('B4', { mode: 'live', view: { ...view, incomplete: true }, persona: 'fox' })).toBe('mine')
   })
 
   it('never answers unknown in history mode', () => {

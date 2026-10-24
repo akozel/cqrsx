@@ -30,7 +30,6 @@ export const useConcertsStore = defineStore('concerts', () => {
         capacity: session.config.venue.rows.length * session.config.venue.seats_per_row,
         revenue: 0,
         sold_out: false,
-        incomplete: false,
         last_sequence: 0,
         version: 0,
         known: false,

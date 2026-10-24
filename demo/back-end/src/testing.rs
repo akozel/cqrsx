@@ -82,10 +82,12 @@ pub async fn process() -> Process {
 }
 
 /// A read-model collection in memory holding `documents`, ordered by id like the MongoDB one.
+/// Seeded documents serve queries only: they carry no event history (`last_sequence` 0), so a projection
+/// would refuse to continue them.
 pub fn read_model<V: View<A>, A: Aggregate>(documents: impl IntoIterator<Item = Stored<V>>) -> Arc<MemViewRepository<V, A>> {
     let repository = MemViewRepository::default();
     for document in documents {
-        repository.put(&document.id, document.version, &document.view).unwrap();
+        repository.put(&document.id, document.version, 0, &document.view).unwrap();
     }
     Arc::new(repository)
 }

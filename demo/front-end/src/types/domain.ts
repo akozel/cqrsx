@@ -31,7 +31,6 @@ export interface ConcertSummary {
   capacity: number
   revenue: number
   sold_out: boolean
-  incomplete: boolean
   last_sequence: number
   version: number
 }
@@ -55,7 +54,6 @@ export interface ConcertHallView {
   revenue: number
   sold_out: boolean
   last_sequence: number
-  incomplete: boolean
 }
 
 export interface ConcertHallDoc {

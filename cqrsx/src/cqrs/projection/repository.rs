@@ -23,19 +23,25 @@ where
 }
 
 /// A data structure maintaining context when updating views.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewContext {
     /// Unique identifier of the view instance that is being modified.
     pub view_instance_id: String,
     /// The current version of the view instance, used for optimistic locking.
     pub version: i64,
+    /// The last event of the view's aggregate applied to this document; 0 for a new document.
+    /// A document takes only event `last_sequence + 1` (see `ViewProjection`), so a repository
+    /// stores it next to the version and writes it with the same optimistic check.
+    pub last_sequence: usize,
 }
 
 impl ViewContext {
     /// Convenience function to create a new [`ViewContext`].
-    pub fn new(view_instance_id: String, version: i64) -> Self {
+    pub fn new(view_instance_id: String, version: i64, last_sequence: usize) -> Self {
         Self {
             view_instance_id,
             version,
+            last_sequence,
         }
     }
 }

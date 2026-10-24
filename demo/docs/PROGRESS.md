@@ -597,3 +597,15 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   framework and the test executor) that `lib.rs` includes as the crate documentation so it compiles and runs
   with the doctests, a PostgreSQL assembly sketch pointing at the demo's `process.rs` and `bootstrap/`, the
   configuration table with every default, the rules worth knowing, the testing tools and the features.
+- **2026-10-24, contiguous view documents (epic 03/01)** (uncommitted). `ViewContext` gains `last_sequence`;
+  `ViewProjection` applies only the next event of the aggregate, skips older ones and refuses a gap with
+  `PersistenceError::SequenceGap` before any write (a batch that applies nothing writes nothing).
+  `PostgresViewRepository` (column `last_sequence bigint NOT NULL CHECK (last_sequence >= 0)`),
+  `MemViewRepository` (`put(id, version, last_sequence, view)`) and the demo's `MongoViewRepository`
+  (`{ _id, version, last_sequence, view }`) store it next to the version under one optimistic check. Demo:
+  `incomplete` removed from `ConcertHallView`, `/api/concerts` and the front-end (D-15): after 🧨 wipe a booking
+  is accepted with the `projection_failed` warning, the feed names the gap and no document is created until
+  Encore!. No compatibility path: the project is unreleased, databases are recreated (`make reset`). Tests: the
+  contiguity table and a property test in `projection.rs`, `stress_two_writers_of_one_document_converge` and
+  `a_view_storage_failure_stalls_the_document_at_its_last_applied_event` on PostgreSQL,
+  `a_booking_after_a_wipe_is_recorded_but_the_read_model_refuses_the_gap` in `write_side.rs`.

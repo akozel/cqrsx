@@ -1,6 +1,9 @@
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use super::error::PostgresRepositoryError;
+use super::{
+    error::PostgresRepositoryError,
+    event_repository::{decode_usize, encode_bigint},
+};
 use crate::cqrs::{
     aggregate::Aggregate,
     projection::{
@@ -12,7 +15,8 @@ use crate::cqrs::{
 use sqlx::{Pool, Postgres, Row, postgres::PgRow};
 use std::marker::PhantomData;
 
-/// Stores serialized read-model views in a PostgreSQL table with optimistic versions.
+/// Stores serialized read-model views in a PostgreSQL table with optimistic versions and the last applied
+/// event of each document's aggregate.
 pub struct PostgresViewRepository<V, A> {
     insert_sql: String,
     update_sql: String,
@@ -27,8 +31,17 @@ where
     A: Aggregate,
 {
     /// Creates a new `PostgresViewRepository` that will store serialized views in a Postgres table named
-    /// identically to the `table_name` value provided. This table should be created by the user
-    /// before use, with `view_id`, `version` and `payload` columns.
+    /// identically to the `table_name` value provided. The application creates the table before use, with
+    /// this shape (`last_sequence` is the last applied event of the view's aggregate, see `ViewContext`):
+    ///
+    /// ```sql
+    /// CREATE TABLE my_view_table (
+    ///     view_id       text   PRIMARY KEY,
+    ///     version       bigint NOT NULL,
+    ///     last_sequence bigint NOT NULL CHECK (last_sequence >= 0),
+    ///     payload       json   NOT NULL
+    /// );
+    /// ```
     ///
     /// ```
     /// # mod example {
@@ -133,10 +146,11 @@ where
     /// ```
     pub fn new(table_name: &str, pool: Pool<Postgres>) -> Self {
         let insert_sql = format!(
-            "INSERT INTO {table_name} (payload, version, view_id) VALUES ( $1, $2, $3 ) ON CONFLICT (view_id) DO NOTHING"
+            "INSERT INTO {table_name} (payload, version, last_sequence, view_id) VALUES ( $1, $2, $3, $4 ) ON CONFLICT (view_id) DO NOTHING"
         );
-        let update_sql = format!("UPDATE {table_name} SET payload= $1 , version= $2 WHERE view_id= $3 AND version= $4");
-        let select_sql = format!("SELECT version,payload FROM {table_name} WHERE view_id= $1");
+        let update_sql =
+            format!("UPDATE {table_name} SET payload= $1 , version= $2 , last_sequence= $3 WHERE view_id= $4 AND version= $5");
+        let select_sql = format!("SELECT version, last_sequence, payload FROM {table_name} WHERE view_id= $1");
         Self {
             insert_sql,
             update_sql,
@@ -177,8 +191,9 @@ where
             None => Ok(None),
             Some(row) => {
                 let version = row.get("version");
+                let last_sequence = decode_usize(row.get("last_sequence"))?;
                 let view = serde_json::from_value(row.get("payload"))?;
-                let view_context = ViewContext::new(view_id.to_string(), version);
+                let view_context = ViewContext::new(view_id.to_string(), version, last_sequence);
                 Ok(Some((view, view_context)))
             }
         }
@@ -193,10 +208,13 @@ where
             .version
             .checked_add(1)
             .ok_or_else(|| PersistenceError::UnknownError("view version overflow".into()))?;
+        let last_sequence = encode_bigint(context.last_sequence)?;
         let payload = serde_json::to_value(&view).map_err(PostgresRepositoryError::from)?;
+        // The INSERT reads the first four binds, the UPDATE all five.
         let rows_affected = sqlx::query(sql.as_str())
             .bind(payload)
             .bind(version)
+            .bind(last_sequence)
             .bind(context.view_instance_id)
             .bind(context.version)
             .execute(&self.pool)

@@ -15,7 +15,7 @@ export function seatState(seat: string, ctx: SeatContext): SeatUiState {
   }
   if (!ctx.view) return 'unknown' // read model wiped
   const entry = ctx.view.seats[seat]
-  if (!entry) return ctx.view.incomplete ? 'unknown' : 'free'
+  if (!entry) return 'free'
   if (entry.state === 'free') return 'free'
   return entry.fan_id === ctx.persona ? 'mine' : 'booked'
 }

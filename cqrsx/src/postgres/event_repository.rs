@@ -160,11 +160,11 @@ impl PostgresEventRepository {
     }
 }
 
-fn encode_bigint(value: usize) -> Result<i64, PostgresRepositoryError> {
+pub(super) fn encode_bigint(value: usize) -> Result<i64, PostgresRepositoryError> {
     i64::try_from(value).map_err(|error| PostgresRepositoryError::UnknownError(Box::new(error)))
 }
 
-fn decode_usize(value: i64) -> Result<usize, PostgresRepositoryError> {
+pub(super) fn decode_usize(value: i64) -> Result<usize, PostgresRepositoryError> {
     usize::try_from(value).map_err(|error| PostgresRepositoryError::DeserializationError(Box::new(error)))
 }
 

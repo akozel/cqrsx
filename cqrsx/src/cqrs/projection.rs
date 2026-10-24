@@ -8,15 +8,18 @@ use crate::cqrs::{
     event::EventEnvelope,
     event_handler::EventHandler,
     projection::repository::{ViewContext, ViewRepository},
-    store::{PersistenceError, PersistenceErrorObserver},
+    store::{PersistenceError, PersistenceErrorObserver, checked_counter_add},
 };
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
-use std::{fmt::Debug, marker::PhantomData, num::NonZeroUsize, sync::Arc};
+use std::{cmp::Ordering, fmt::Debug, marker::PhantomData, num::NonZeroUsize, sync::Arc};
 
 /// A `View` represents a materialized view, generally serialized for persistence, that is updated by a projection.
 /// This is the data of a CQRS read model.
 ///
+/// `update` must be deterministic and free of side effects: a stored document is the fold of `update` over the
+/// events `1..=last_sequence` of its aggregate, and two writers of one document (two processes, a replay next to
+/// live delivery) meet at the same document only because the fold is the same.
 pub trait View<A: Aggregate>: Debug + Default + Serialize + DeserializeOwned + Send + Sync {
     /// Each implemented view is responsible for updating its state based on events passed via
     /// this method.
@@ -25,6 +28,10 @@ pub trait View<A: Aggregate>: Debug + Default + Serialize + DeserializeOwned + S
 
 /// Builds and persists a materialized read model from committed events.
 /// Also provides read access to the stored view.
+///
+/// A document takes only the next event of its aggregate: events it has applied are skipped, a gap fails the
+/// batch before anything is written (`PersistenceError::SequenceGap`). Delivery may therefore repeat events and
+/// come from several processes without damaging the document.
 pub struct ViewProjection<R, V, A>
 where
     R: ViewRepository<V, A>,
@@ -490,14 +497,17 @@ where
             .view_repository
             .load_with_context(&view_id)
             .await?
-            .unwrap_or_else(|| (Default::default(), ViewContext::new(view_id, 0))))
+            .unwrap_or_else(|| (Default::default(), ViewContext::new(view_id, 0, 0))))
     }
 
+    /// Applies the batch to the stored document under the contiguity rule and writes the document when
+    /// something was applied. A version conflict reloads the document and runs the rule again against what
+    /// the other writer left, up to `max_attempts` times.
     pub(crate) async fn apply_events(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
         for attempt in 1..=self.max_attempts.get() {
-            let (mut view, context) = self.load_or_default(view_id.to_string()).await?;
-            for event in events {
-                view.update(event);
+            let (mut view, mut context) = self.load_or_default(view_id.to_string()).await?;
+            if !apply_contiguous(&mut view, &mut context, events)? {
+                return Ok(());
             }
             match self.view_repository.update_view(view, context).await {
                 Err(PersistenceError::OptimisticLockError) if attempt < self.max_attempts.get() => tokio::task::yield_now().await,
@@ -512,6 +522,37 @@ where
             (handler)(error);
         }
     }
+}
+
+/// The contiguity rule: a document takes only the next event of its aggregate.
+///
+/// An event at or below `context.last_sequence` was applied before and is skipped; the event
+/// `last_sequence + 1` is applied and advances `last_sequence`; an event above it is a gap, and nothing of
+/// the batch may be written. Returns whether any event was applied.
+fn apply_contiguous<V, A>(view: &mut V, context: &mut ViewContext, events: &[EventEnvelope<A>]) -> Result<bool, PersistenceError>
+where
+    V: View<A>,
+    A: Aggregate,
+{
+    let mut applied = false;
+    for event in events {
+        let expected = checked_counter_add(context.last_sequence, 1)?;
+        match event.sequence.cmp(&expected) {
+            Ordering::Less => {}
+            Ordering::Equal => {
+                view.update(event);
+                context.last_sequence = event.sequence;
+                applied = true;
+            }
+            Ordering::Greater => {
+                return Err(PersistenceError::SequenceGap {
+                    expected,
+                    found: event.sequence,
+                });
+            }
+        }
+    }
+    Ok(applied)
 }
 
 #[async_trait]
@@ -537,8 +578,9 @@ mod tests {
     use super::*;
     use crate::cqrs::store::persisted::tests::{TestAggregate, TestEvents};
     use serde::{Deserialize, Serialize};
-    use std::sync::Mutex;
+    use std::{ops::RangeInclusive, sync::Mutex};
 
+    /// The sequences applied, in order: equal to `1..=n` exactly when the document is a contiguous prefix.
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
     struct Projection(Vec<usize>);
     impl View<TestAggregate> for Projection {
@@ -547,11 +589,41 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum Failure {
+        /// Every load fails.
+        Load,
+        /// Every write conflicts.
+        Update,
+        /// The first write conflicts because another writer saved the prefix `1..=winner` meanwhile.
+        ConflictOnce { winner: usize },
+        /// The write lands, then the reply is lost.
+        ReplyLost,
+    }
+
+    /// A repository with the version rules of the real ones, a call log and one scripted failure.
     #[derive(Default)]
     struct Repository {
         saved: Mutex<Option<(Projection, ViewContext)>>,
         calls: Mutex<Vec<String>>,
-        failure: Mutex<Option<&'static str>>,
+        failure: Mutex<Option<Failure>>,
+    }
+    impl Repository {
+        fn seeded(id: &str, view: Projection, version: i64, last_sequence: usize) -> Arc<Self> {
+            let repository = Self::default();
+            *repository.saved.lock().unwrap() = Some((view, ViewContext::new(id.into(), version, last_sequence)));
+            Arc::new(repository)
+        }
+        fn fail(self: &Arc<Self>, failure: Failure) -> Arc<Self> {
+            *self.failure.lock().unwrap() = Some(failure);
+            self.clone()
+        }
+        fn saved(&self) -> (Projection, ViewContext) {
+            self.saved.lock().unwrap().clone().expect("a saved document")
+        }
+        fn calls(&self) -> Vec<String> {
+            self.calls.lock().unwrap().clone()
+        }
     }
     impl ViewRepository<Projection, TestAggregate> for Repository {
         async fn load(&self, _: &str) -> Result<Option<Projection>, PersistenceError> {
@@ -559,35 +631,38 @@ mod tests {
         }
         async fn load_with_context(&self, id: &str) -> Result<Option<(Projection, ViewContext)>, PersistenceError> {
             self.calls.lock().unwrap().push(format!("load:{id}"));
-            if *self.failure.lock().unwrap() == Some("load") {
+            if *self.failure.lock().unwrap() == Some(Failure::Load) {
                 return Err(PersistenceError::ConnectionError("load failed".into()));
             }
-            Ok(self
-                .saved
-                .lock()
-                .unwrap()
-                .as_ref()
-                .map(|(v, c)| (v.clone(), ViewContext::new(c.view_instance_id.clone(), c.version))))
+            Ok(self.saved.lock().unwrap().clone())
         }
         async fn update_view(&self, view: Projection, context: ViewContext) -> Result<(), PersistenceError> {
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("update:{}:{}", context.view_instance_id, context.version));
+            self.calls.lock().unwrap().push(format!(
+                "update:{}:{}:{}",
+                context.view_instance_id, context.version, context.last_sequence
+            ));
             let failure = *self.failure.lock().unwrap();
-            if failure == Some("once") {
-                *self.failure.lock().unwrap() = None;
-                *self.saved.lock().unwrap() = Some((Projection(vec![7]), ViewContext::new(context.view_instance_id, 1)));
-                return Err(PersistenceError::OptimisticLockError);
+            match failure {
+                Some(Failure::ConflictOnce { winner }) => {
+                    *self.failure.lock().unwrap() = None;
+                    *self.saved.lock().unwrap() = Some((
+                        Projection((1..=winner).collect()),
+                        ViewContext::new(context.view_instance_id, context.version + 1, winner),
+                    ));
+                    Err(PersistenceError::OptimisticLockError)
+                }
+                Some(Failure::Update) => Err(PersistenceError::OptimisticLockError),
+                _ => {
+                    *self.saved.lock().unwrap() = Some((
+                        view,
+                        ViewContext::new(context.view_instance_id, context.version + 1, context.last_sequence),
+                    ));
+                    match failure {
+                        Some(Failure::ReplyLost) => Err(PersistenceError::ConnectionError("reply lost after view write".into())),
+                        _ => Ok(()),
+                    }
+                }
             }
-            if failure == Some("update") {
-                return Err(PersistenceError::OptimisticLockError);
-            }
-            *self.saved.lock().unwrap() = Some((view, ViewContext::new(context.view_instance_id, context.version + 1)));
-            if failure == Some("reply") {
-                return Err(PersistenceError::ConnectionError("reply lost after view write".into()));
-            }
-            Ok(())
         }
     }
     fn event(sequence: usize) -> EventEnvelope<TestAggregate> {
@@ -598,6 +673,15 @@ mod tests {
             metadata: Default::default(),
         }
     }
+    fn events(range: RangeInclusive<usize>) -> Vec<EventEnvelope<TestAggregate>> {
+        range.map(event).collect()
+    }
+    fn prefix(range: RangeInclusive<usize>) -> Projection {
+        Projection(range.collect())
+    }
+    fn context(version: i64, last_sequence: usize) -> ViewContext {
+        ViewContext::new("view".into(), version, last_sequence)
+    }
 
     #[test]
     fn a_projection_is_named_after_its_view_unless_named_explicitly() {
@@ -607,57 +691,140 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creates_then_updates_in_batch_order_using_loaded_context() {
+    async fn a_new_document_starts_at_sequence_one_and_grows_in_batch_order() {
         let repo = Arc::new(Repository::default());
         let projection = ViewProjection::new(repo.clone());
         assert_eq!(projection.load("view").await.unwrap(), None);
-        projection.handle("view", &[event(3), event(1), event(2)]).await.unwrap();
-        assert_eq!(projection.load("view").await.unwrap(), Some(Projection(vec![3, 1, 2])));
-        projection.handle("view", &[event(4)]).await.unwrap();
-        let saved = repo.saved.lock().unwrap();
-        let (view, context) = saved.as_ref().unwrap();
-        assert_eq!(view, &Projection(vec![3, 1, 2, 4]));
-        assert_eq!(context.view_instance_id, "view");
-        assert_eq!(context.version, 2);
+        projection.handle("view", &events(1..=3)).await.unwrap();
+        assert_eq!(projection.load("view").await.unwrap(), Some(prefix(1..=3)));
+        projection.handle("view", &events(4..=4)).await.unwrap();
+        assert_eq!(repo.saved(), (prefix(1..=4), context(2, 4)));
         assert_eq!(
-            *repo.calls.lock().unwrap(),
+            repo.calls(),
             [
                 "load:view",
                 "load:view",
-                "update:view:0",
+                "update:view:0:3",
                 "load:view",
                 "load:view",
-                "update:view:1"
+                "update:view:1:4"
             ]
         );
     }
 
     #[tokio::test]
+    async fn a_new_document_refuses_a_batch_that_does_not_start_at_one() {
+        let repo = Arc::new(Repository::default());
+        let projection = ViewProjection::new(repo.clone());
+        assert!(matches!(
+            projection.handle("view", &events(2..=3)).await,
+            Err(PersistenceError::SequenceGap { expected: 1, found: 2 })
+        ));
+        assert!(repo.saved.lock().unwrap().is_none());
+        assert_eq!(repo.calls(), ["load:view"]);
+    }
+
+    #[tokio::test]
+    async fn an_already_applied_batch_writes_nothing() {
+        let repo = Repository::seeded("view", prefix(1..=5), 3, 5);
+        let projection = ViewProjection::new(repo.clone());
+        for batch in [events(1..=5), events(3..=5), events(5..=5), Vec::new()] {
+            projection.handle("view", &batch).await.unwrap();
+        }
+        assert_eq!(repo.saved(), (prefix(1..=5), context(3, 5)));
+        assert_eq!(repo.calls(), ["load:view"; 4]);
+    }
+
+    #[tokio::test]
+    async fn a_batch_overlapping_the_document_applies_only_the_new_tail() {
+        let repo = Repository::seeded("view", prefix(1..=5), 3, 5);
+        let projection = ViewProjection::new(repo.clone());
+        projection.handle("view", &events(3..=7)).await.unwrap();
+        assert_eq!(repo.saved(), (prefix(1..=7), context(4, 7)));
+        assert_eq!(repo.calls(), ["load:view", "update:view:3:7"]);
+    }
+
+    #[tokio::test]
+    async fn a_gap_fails_without_writing() {
+        let repo = Repository::seeded("view", prefix(1..=5), 3, 5);
+        let mut projection = ViewProjection::new(repo.clone());
+        let errors = Arc::new(Mutex::new(Vec::new()));
+        projection.set_error_observer(Box::new({
+            let errors = errors.clone();
+            move |e| errors.lock().unwrap().push(e.to_string())
+        }));
+        assert!(matches!(
+            projection.handle("view", &events(7..=8)).await,
+            Err(PersistenceError::SequenceGap { expected: 6, found: 7 })
+        ));
+        assert_eq!(repo.saved(), (prefix(1..=5), context(3, 5)));
+        assert_eq!(repo.calls(), ["load:view"]);
+        assert_eq!(*errors.lock().unwrap(), ["sequence gap: expected event 6, found 7"]);
+    }
+
+    #[tokio::test]
+    async fn a_gap_inside_the_batch_writes_nothing() {
+        let repo = Repository::seeded("view", prefix(1..=5), 3, 5);
+        let projection = ViewProjection::new(repo.clone());
+        assert!(matches!(
+            projection.handle("view", &[event(6), event(8), event(9)]).await,
+            Err(PersistenceError::SequenceGap { expected: 7, found: 8 })
+        ));
+        assert_eq!(repo.saved(), (prefix(1..=5), context(3, 5)));
+        assert_eq!(repo.calls(), ["load:view"]);
+    }
+
+    #[tokio::test]
+    async fn a_version_conflict_rereads_and_skips_what_the_winner_applied() {
+        // The winner applied part of the batch: the retry writes the tail.
+        let repo = Repository::seeded("view", prefix(1..=7), 1, 7).fail(Failure::ConflictOnce { winner: 8 });
+        ViewProjection::new(repo.clone())
+            .handle("view", &events(8..=9))
+            .await
+            .unwrap();
+        assert_eq!(repo.saved(), (prefix(1..=9), context(3, 9)));
+        assert_eq!(repo.calls(), ["load:view", "update:view:1:9", "load:view", "update:view:2:9"]);
+
+        // The winner applied the whole batch: the retry writes nothing.
+        let repo = Repository::seeded("view", prefix(1..=7), 1, 7).fail(Failure::ConflictOnce { winner: 9 });
+        ViewProjection::new(repo.clone())
+            .handle("view", &events(8..=9))
+            .await
+            .unwrap();
+        assert_eq!(repo.saved(), (prefix(1..=9), context(2, 9)));
+        assert_eq!(repo.calls(), ["load:view", "update:view:1:9", "load:view"]);
+    }
+
+    #[tokio::test]
+    async fn a_document_at_the_sequence_limit_cannot_grow() {
+        let repo = Repository::seeded("view", Projection(vec![]), 1, usize::MAX);
+        assert!(matches!(
+            ViewProjection::new(repo.clone()).handle("view", &events(1..=1)).await,
+            Err(PersistenceError::UnknownError(_))
+        ));
+        assert_eq!(repo.calls(), ["load:view"]);
+    }
+
+    #[tokio::test]
     async fn failures_are_reported_once_and_never_save_partial_views() {
         for handler in [false, true] {
-            for failure in ["load", "update"] {
-                let repo = Arc::new(Repository::default());
-                *repo.saved.lock().unwrap() = Some((Projection(vec![7]), ViewContext::new("stored-context".into(), 9)));
+            for failure in [Failure::Load, Failure::Update] {
+                let repo = Repository::seeded("stored-context", prefix(1..=7), 9, 7).fail(failure);
                 let mut projection = ViewProjection::new(repo.clone()).with_max_attempts(NonZeroUsize::new(3).unwrap());
                 let errors = Arc::new(Mutex::new(Vec::new()));
                 if handler {
                     let errors = errors.clone();
                     projection.set_error_observer(Box::new(move |e| errors.lock().unwrap().push(e.to_string())));
                 }
-                *repo.failure.lock().unwrap() = Some(failure);
-                assert!(projection.handle("requested-view", &[event(8), event(9)]).await.is_err());
-                let saved = repo.saved.lock().unwrap();
-                let (view, context) = saved.as_ref().unwrap();
-                assert_eq!(view, &Projection(vec![7]));
-                assert_eq!(context.version, 9);
-                assert_eq!(context.view_instance_id, "stored-context");
+                assert!(projection.handle("requested-view", &events(8..=9)).await.is_err());
+                assert_eq!(repo.saved(), (prefix(1..=7), ViewContext::new("stored-context".into(), 9, 7)));
                 assert_eq!(errors.lock().unwrap().len(), usize::from(handler));
                 assert_eq!(
-                    *repo.calls.lock().unwrap(),
-                    if failure == "load" {
+                    repo.calls(),
+                    if failure == Failure::Load {
                         vec!["load:requested-view"]
                     } else {
-                        ["load:requested-view", "update:stored-context:9"].repeat(3)
+                        ["load:requested-view", "update:stored-context:9:9"].repeat(3)
                     }
                 );
             }
@@ -667,8 +834,7 @@ mod tests {
     #[tokio::test]
     async fn load_failure_returns_error_with_or_without_handler() {
         for handler in [false, true] {
-            let repo = Arc::new(Repository::default());
-            *repo.failure.lock().unwrap() = Some("load");
+            let repo = Arc::new(Repository::default()).fail(Failure::Load);
             let mut projection = ViewProjection::<_, Projection, TestAggregate>::new(repo);
             let errors = Arc::new(Mutex::new(Vec::new()));
             if handler {
@@ -682,46 +848,112 @@ mod tests {
             assert_eq!(*errors.lock().unwrap(), if handler { vec!["load failed"] } else { vec![] });
         }
     }
-    #[tokio::test]
-    async fn conflict_reloads_fresh_state_and_preserves_batch_order() {
-        let repo = Arc::new(Repository::default());
-        *repo.failure.lock().unwrap() = Some("once");
-        let projection = ViewProjection::new(repo.clone());
-        projection.handle("view", &[event(8), event(9)]).await.unwrap();
-        let saved = repo.saved.lock().unwrap();
-        let (view, context) = saved.as_ref().unwrap();
-        assert_eq!(view.0, [7, 8, 9]);
-        assert_eq!(context.version, 2);
-        assert_eq!(
-            *repo.calls.lock().unwrap(),
-            ["load:view", "update:view:0", "load:view", "update:view:1"]
-        );
-    }
+
     #[tokio::test]
     async fn default_limit_is_sixteen_including_first_attempt() {
-        let repo = Arc::new(Repository::default());
-        *repo.failure.lock().unwrap() = Some("update");
-        let projection = ViewProjection::new(repo.clone());
+        let repo = Arc::new(Repository::default()).fail(Failure::Update);
         assert!(matches!(
-            projection.handle("view", &[event(1)]).await,
+            ViewProjection::new(repo.clone()).handle("view", &events(1..=1)).await,
             Err(PersistenceError::OptimisticLockError)
         ));
-        assert_eq!(*repo.calls.lock().unwrap(), ["load:view", "update:view:0"].repeat(16));
+        assert_eq!(repo.calls(), ["load:view", "update:view:0:1"].repeat(16));
         assert!(repo.saved.lock().unwrap().is_none());
     }
+
     #[tokio::test]
     async fn a_technical_error_after_a_real_view_write_is_never_retried() {
-        let repo = Arc::new(Repository::default());
-        *repo.failure.lock().unwrap() = Some("reply");
-        let projection = ViewProjection::new(repo.clone());
+        let repo = Arc::new(Repository::default()).fail(Failure::ReplyLost);
         assert!(matches!(
-            projection.handle("view", &[event(1), event(2)]).await,
+            ViewProjection::new(repo.clone()).handle("view", &events(1..=2)).await,
             Err(PersistenceError::ConnectionError(_))
         ));
-        let saved = repo.saved.lock().unwrap();
-        let (view, context) = saved.as_ref().unwrap();
-        assert_eq!(view.0, [1, 2]);
-        assert_eq!(context.version, 1);
-        assert_eq!(*repo.calls.lock().unwrap(), ["load:view", "update:view:0"]);
+        assert_eq!(repo.saved(), (prefix(1..=2), context(1, 2)));
+        assert_eq!(repo.calls(), ["load:view", "update:view:0:2"]);
+    }
+
+    mod model {
+        use super::*;
+        use crate::cqrs::store::serialized_event::tests::property_config;
+        use crate::cqrs::testing::mem_view_repository::MemViewRepository;
+        use proptest::prelude::*;
+
+        /// One delivery: `len` consecutive sequences starting `offset` away from the next expected event,
+        /// with the event at index `hole` left out when there is one.
+        #[derive(Clone, Debug)]
+        struct Batch {
+            offset: i64,
+            len: usize,
+            hole: Option<usize>,
+        }
+
+        fn batch() -> impl Strategy<Value = Batch> {
+            (-3i64..=3, 1usize..=4, proptest::option::weighted(0.2, 0usize..4)).prop_map(|(offset, len, hole)| Batch {
+                offset,
+                len,
+                hole,
+            })
+        }
+
+        /// Replays the batches against the model "the applied sequences are `1..=applied`" and checks the
+        /// stored document after every delivery: same prefix, same `last_sequence`, one version per write.
+        async fn check(batches: Vec<Batch>) -> Result<(), TestCaseError> {
+            let repository = MemViewRepository::<Projection, TestAggregate>::default();
+            let projection = ViewProjection::new(Arc::new(repository.clone()));
+            let (mut applied, mut version) = (0usize, 0i64);
+            for batch in batches {
+                let start = usize::try_from((i64::try_from(applied).unwrap() + 1 + batch.offset).max(1)).unwrap();
+                let mut sequences: Vec<usize> = (start..start + batch.len).collect();
+                if let Some(hole) = batch.hole
+                    && sequences.len() > 1
+                    && hole < sequences.len()
+                {
+                    sequences.remove(hole);
+                }
+                let (mut next, mut gap) = (applied, None);
+                for &sequence in &sequences {
+                    if sequence <= next {
+                        continue;
+                    }
+                    if sequence == next + 1 {
+                        next += 1;
+                    } else {
+                        gap = Some((next + 1, sequence));
+                        break;
+                    }
+                }
+                let delivered: Vec<_> = sequences.iter().copied().map(event).collect();
+                let result = projection.handle("view", &delivered).await;
+                match gap {
+                    Some((expected, found)) => prop_assert!(
+                        matches!(result, Err(PersistenceError::SequenceGap { expected: e, found: f }) if e == expected && f == found),
+                        "{sequences:?} after {applied}: {result:?}"
+                    ),
+                    None => {
+                        prop_assert!(result.is_ok(), "{sequences:?} after {applied}: {result:?}");
+                        if next > applied {
+                            version += 1;
+                            applied = next;
+                        }
+                    }
+                }
+                match repository.load_with_context("view").await.unwrap() {
+                    None => prop_assert_eq!((applied, version), (0, 0)),
+                    Some((view, context)) => {
+                        prop_assert_eq!(view.0, (1..=applied).collect::<Vec<_>>());
+                        prop_assert_eq!((context.version, context.last_sequence), (version, applied));
+                    }
+                }
+            }
+            Ok(())
+        }
+
+        proptest! {
+            #![proptest_config(proptest::test_runner::Config { cases: 256, ..property_config() })]
+            #[test]
+            fn property_view_documents_stay_a_contiguous_prefix(batches in proptest::collection::vec(batch(), 1..40)) {
+                let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+                runtime.block_on(check(batches))?;
+            }
+        }
     }
 }

@@ -3,12 +3,12 @@
 | | |
 |---|---|
 | Статус | предложено |
-| Ценность | высокая: без сквозного порядка проекция не может читать журнал сама; попутно replay без сортировки (закрывает 02/14) |
+| Ценность | высокая: без сквозного порядка проекция не может читать журнал сама; попутно список ключей типа для пересборки; 02/14 закрывается — журнал больше не сортируют |
 | Цена | низкая–средняя |
-| cqrsx | `sql/001-event-store.sql`, новый `sql/upgrade-event-position.sql`, `postgres.rs` (ассеты), `postgres/event_repository/{sql_query,read}.rs`, `cqrs/store/repository.rs` (`feed_after`, `head`), новый `cqrs/store/feed.rs` (`Position`, `FeedEntry`), `cqrs/testing/mem_store.rs`, `doc/components.md`; тесты `tests/postgres/event_store/*`, `tests/postgres/compatibility.rs` |
-| demo | нет кода; сценарий обновления базы в README |
+| cqrsx | `sql/001-event-store.sql`, `postgres/event_repository/{sql_query,read}.rs`, `cqrs/store/repository.rs` (`feed_after`, `head`, `aggregate_ids_after`), новый `cqrs/store/feed.rs` (`Position`, `FeedEntry`), `cqrs/testing/mem_store.rs`, `doc/components.md`; тесты `tests/postgres/event_store/*` |
+| demo | нет кода; базы пересоздаются (`make reset`) |
 | Зависимости | нет |
-| Где выигрыш | [03](03_projection_processor.md); rebuild и verify (вместо 02/14) |
+| Где выигрыш | [03](03_projection_processor.md): живая лента и страницы ключей для пересборки |
 
 ## Сейчас
 
@@ -31,15 +31,8 @@ CREATE TABLE IF NOT EXISTS events
 CREATE INDEX IF NOT EXISTS events_feed_idx ON events (aggregate_type, tx, aggregate_id, sequence);
 ```
 
-```sql
--- sql/upgrade-event-position.sql: существующая база.
--- Шаг 1 не переписывает таблицу: умолчание-константа хранится как «missing value». Старая история получает
--- tx = 1 (меньше любого настоящего номера транзакции) и читается первой, в порядке (aggregate_id, sequence).
--- Шаг 3 выполнять вне транзакции (CONCURRENTLY).
-ALTER TABLE events ADD COLUMN IF NOT EXISTS tx xid8 NOT NULL DEFAULT '1';
-ALTER TABLE events ALTER COLUMN tx SET DEFAULT pg_current_xact_id();
-CREATE INDEX CONCURRENTLY IF NOT EXISTS events_feed_idx ON events (aggregate_type, tx, aggregate_id, sequence);
-```
+Ассет обновления для существующих баз не нужен: проект не выпущен, базы пересоздаются (решение 0 в README
+эпика).
 
 Путь записи не меняется: CTE в `outbox/write.rs` и `insert_event` колонку не перечисляют, умолчание заполняет её
 внутри той же транзакции; все события одного коммита получают один номер. Цена — одна запись в индекс на событие,
@@ -61,6 +54,10 @@ pub trait PersistedEventRepository {
         -> impl Future<Output = Result<Vec<FeedEntry>, PersistenceError>> + Send;
     /// Наибольшая позиция среди записанных событий типа `A` (голова журнала); `Position::START` для пустого.
     fn head<A: Aggregate>(&self) -> impl Future<Output = Result<Position, PersistenceError>> + Send;
+    /// Идентификаторы агрегатов типа `A` после `after` в порядке идентификаторов, не больше `limit`:
+    /// страницы ключей для пересборки витрины ([03](03_projection_processor.md)).
+    fn aggregate_ids_after<A: Aggregate>(&self, after: &str, limit: usize)
+        -> impl Future<Output = Result<Vec<String>, PersistenceError>> + Send;
 }
 ```
 
@@ -78,6 +75,11 @@ SELECT ... FROM events
  ORDER BY aggregate_id, sequence;
 -- head (max(xid8) есть с PostgreSQL 15; в compose — 18)
 SELECT coalesce(max(tx), '0')::text FROM events WHERE aggregate_type = $1;
+-- aggregate_ids_after: skip scan по первичному ключу (PostgreSQL 18)
+SELECT DISTINCT aggregate_id FROM events
+ WHERE aggregate_type = $1 AND aggregate_id > $2
+ ORDER BY aggregate_id
+ LIMIT $3;
 ```
 
 Почему горизонт, а не счётчик:
@@ -97,14 +99,13 @@ SELECT coalesce(max(tx), '0')::text FROM events WHERE aggregate_type = $1;
 
 ### `MemStore`
 
-Счётчик коммитов: каждый `commit` получает следующую позицию, все события одного коммита — одну. `feed_after` и
-`head` читают этот журнал. Нужно тестам процессора без PostgreSQL. Горизонта у `MemStore` нет: коммит атомарен.
+Счётчик коммитов: каждый `commit` получает следующую позицию, все события одного коммита — одну. `feed_after`,
+`head` и `aggregate_ids_after` читают этот журнал. Нужно тестам процессора без PostgreSQL. Горизонта у `MemStore` нет: коммит атомарен.
 
 ### Контракт порядка
 
 `feed_after` отдаёт события типа в порядке транзакций; внутри агрегата это порядок `sequence`; между агрегатами —
-порядок выдачи номеров транзакций, один и тот же при каждом чтении. Старая история после обновления базы идёт
-первой, в порядке `(aggregate_id, sequence)`. Контракт записывается в doc-комментарий и `components.md`. 02/14
+порядок выдачи номеров транзакций, один и тот же при каждом чтении. Контракт записывается в doc-комментарий и `components.md`. 02/14
 закрывается этим тикетом: сортировки больше нет, длинной транзакции тоже — каждая страница согласована сама по себе.
 
 ## Пограничные случаи
@@ -117,7 +118,7 @@ SELECT coalesce(max(tx), '0')::text FROM events WHERE aggregate_type = $1;
 | 4 | Пишущая транзакция зависла | страницы пусты, позиция стоит; после `ROLLBACK` — продолжение без пропуска | `an_idle_writing_transaction_holds_the_feed_until_it_ends` |
 | 5 | Страница оборвалась внутри транзакции из 3 событий | дочитана до конца транзакции | `a_page_ends_on_a_transaction_boundary` (`PostgresEventRepository::persist` с тремя событиями) |
 | 6 | Параллельные команды разных агрегатов | внутри каждого порядок `sequence`, ни одного пропуска | `forty_parallel_commands_over_five_aggregates_feed_in_sequence_order` |
-| 7 | Старая база | ассет обновления на схеме без колонки с данными `framework_v0_5.json`: старые строки первыми, новые после, индекс есть, путь записи работает | `the_upgrade_asset_orders_old_history_first` |
+| 7 | Список ключей страницами | идентификаторы типа по порядку, без повторов, `after` исключительно, другой тип не попадает, пустая страница в конце | `aggregate_ids_are_listed_in_order_page_by_page` |
 | 8 | Пустой журнал | `head` = `START`, страница пуста | `an_empty_journal_has_no_head` |
 | 9 | Другой тип агрегата в той же таблице | не читается и не считается головой | `the_feed_filters_by_aggregate_type` |
 | 10 | `with_tables` (свои имена таблиц) | запросы с именами таблицы и индекса репозитория | `custom_table_names_feed_too` |
@@ -126,13 +127,13 @@ SELECT coalesce(max(tx), '0')::text FROM events WHERE aggregate_type = $1;
 ## Как измерить
 
 Горячий ключ `01-hot-key-vus40` в профиле `db`, код до и после колонки с индексом: ожидание — CPU PostgreSQL на
-команду в пределах шума, WAL на команду чуть выше (одна запись в индекс). Replay 1 и 5 млн событий счётчиком, как
-задумано в 02/14: время до первого события и `pg_stat_database.temp_bytes = 0`.
+команду в пределах шума, WAL на команду чуть выше (одна запись в индекс). Полная пересборка ([03](03_projection_processor.md)) на 1 и 5 млн событий:
+время, `pg_stat_database.temp_bytes = 0`, стоимость страницы ключей.
 
 ## Критерии приёмки
 
-- [ ] Колонка, индекс и ассет обновления; ассет проверен тестом на старой схеме с данными.
-- [ ] `Position`, `FeedEntry`, `feed_after`, `head` в трейте, в PostgreSQL и в `MemStore`.
+- [ ] Колонка и индекс в `001-event-store.sql`; ассета обновления нет (решение 0).
+- [ ] `Position`, `FeedEntry`, `feed_after`, `head`, `aggregate_ids_after` в трейте, в PostgreSQL и в `MemStore`.
 - [ ] Тесты таблицы; покрытие ≥ 97 %.
 - [ ] `components.md`: «Event position» в инвентаре, контракт порядка, абзац про горизонт; 02/14 закрыт ссылкой
       сюда.

@@ -162,7 +162,7 @@ fn main() {
 
 Apply the two schemas once, `postgres::EVENT_STORE_SCHEMA` and `postgres::TRANSACTIONAL_OUTBOX_SCHEMA`
 (the compose file in the repository root does it for a local database; a read-model table is the
-application's, see `PostgresViewRepository`). Then assemble the process with the types of the quick
+application's, with the columns documented on `PostgresViewRepository::new`). Then assemble the process with the types of the quick
 start. This is a sketch; the demo back-end in `../demo/back-end/src/process.rs` and
 `../demo/back-end/src/bootstrap/` is the complete, tested version.
 
@@ -274,6 +274,9 @@ The task runtime reads `OUTBOX_WORKER_CONCURRENCY` (128), `OUTBOX_QUEUE_CAPACITY
 - **A failed handler does not undo the commit.** The client gets `CommittedWithEventHandlerFailure` with
   the handler's name; the worker logs the cause once per batch. Rebuild the read model from history
   with `EventReplay`.
+- **A view document takes only the next event of its aggregate.** It remembers `last_sequence`; a repeated
+  event is skipped, a batch that jumps ahead fails with `SequenceGap` and writes nothing, so a document that
+  fell behind stays a correct prefix of its history until a replay fills the gap.
 - **The handlers of one command run side by side.** Inside one handler, a key's events arrive in commit
   order, possibly several commands per call; `max_batch = 1` turns the batches off.
 - **Task handlers are at-least-once.** Make the effect repeat-safe (the task id is a ready idempotency

@@ -232,7 +232,6 @@ describe('PersonaPicker', () => {
           sold: 4,
           revenue: 320,
           sold_out: false,
-          incomplete: false,
         },
       } as never,
     }
@@ -279,7 +278,6 @@ describe('ActionBar race', () => {
             sold: 0,
             revenue: 0,
             sold_out: false,
-            incomplete: false,
           },
         }) as never
       concerts.docs = { [session.concertId]: view({}) }

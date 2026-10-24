@@ -14,16 +14,24 @@ use std::{
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
 
+/// One stored document: its optimistic version, the last applied event of its aggregate and the view as JSON.
+#[derive(Clone, Debug)]
+struct Document {
+    version: i64,
+    last_sequence: usize,
+    payload: Value,
+}
+
 /// Views stored as JSON documents with optimistic versions, like
 /// `postgres::view_repository::PostgresViewRepository`:
 /// version 0 inserts and conflicts with an existing document, a later version updates only the
-/// document stored with exactly that version, and every write stores the next version.
-/// Conflicts are [`PersistenceError::OptimisticLockError`]. Because documents are JSON, `V`
-/// needs no `Clone` and serde failures surface as in a real store.
+/// document stored with exactly that version, and every write stores the next version together with
+/// the document's `last_sequence`. Conflicts are [`PersistenceError::OptimisticLockError`]. Because
+/// documents are JSON, `V` needs no `Clone` and serde failures surface as in a real store.
 ///
 /// Clones share the documents, so a test can seed or inspect the repository a projection uses.
 pub struct MemViewRepository<V, A> {
-    documents: Arc<Mutex<BTreeMap<String, (i64, Value)>>>,
+    documents: Arc<Mutex<BTreeMap<String, Document>>>,
     phantom: PhantomData<fn() -> (V, A)>,
 }
 
@@ -50,10 +58,18 @@ where
     V: View<A>,
     A: Aggregate,
 {
-    /// Store `view` as `view_id` at `version`, replacing any document; for seeding tests.
-    pub fn put(&self, view_id: &str, version: i64, view: &V) -> Result<(), PersistenceError> {
+    /// Store `view` as `view_id` at `version` with `last_sequence` applied, replacing any document; for
+    /// seeding tests.
+    pub fn put(&self, view_id: &str, version: i64, last_sequence: usize, view: &V) -> Result<(), PersistenceError> {
         let payload = serde_json::to_value(view)?;
-        self.documents().insert(view_id.to_owned(), (version, payload));
+        self.documents().insert(
+            view_id.to_owned(),
+            Document {
+                version,
+                last_sequence,
+                payload,
+            },
+        );
         Ok(())
     }
 
@@ -61,7 +77,12 @@ where
     pub fn list_all(&self) -> Result<Vec<(ViewContext, V)>, PersistenceError> {
         self.documents()
             .iter()
-            .map(|(id, (version, payload))| Ok((ViewContext::new(id.clone(), *version), V::deserialize(payload)?)))
+            .map(|(id, document)| {
+                Ok((
+                    ViewContext::new(id.clone(), document.version, document.last_sequence),
+                    V::deserialize(&document.payload)?,
+                ))
+            })
             .collect()
     }
 
@@ -70,7 +91,7 @@ where
         self.documents().clear();
     }
 
-    fn documents(&self) -> MutexGuard<'_, BTreeMap<String, (i64, Value)>> {
+    fn documents(&self) -> MutexGuard<'_, BTreeMap<String, Document>> {
         self.documents.lock().unwrap_or_else(PoisonError::into_inner)
     }
 }
@@ -85,12 +106,12 @@ where
     }
 
     async fn load_with_context(&self, view_id: &str) -> Result<Option<(V, ViewContext)>, PersistenceError> {
-        let Some((version, payload)) = self.documents().get(view_id).cloned() else {
+        let Some(document) = self.documents().get(view_id).cloned() else {
             return Ok(None);
         };
         Ok(Some((
-            V::deserialize(payload)?,
-            ViewContext::new(view_id.to_owned(), version),
+            V::deserialize(document.payload)?,
+            ViewContext::new(view_id.to_owned(), document.version, document.last_sequence),
         )))
     }
 
@@ -101,13 +122,20 @@ where
             .ok_or_else(|| PersistenceError::UnknownError("view version overflow".into()))?;
         let payload = serde_json::to_value(&view)?;
         let mut documents = self.documents();
-        let stored = documents.get(&context.view_instance_id).map(|(version, _)| *version);
+        let stored = documents.get(&context.view_instance_id).map(|document| document.version);
         match (context.version, stored) {
             (0, None) => {}
             (expected, Some(stored)) if expected != 0 && expected == stored => {}
             _ => return Err(PersistenceError::OptimisticLockError),
         }
-        documents.insert(context.view_instance_id, (version, payload));
+        documents.insert(
+            context.view_instance_id,
+            Document {
+                version,
+                last_sequence: context.last_sequence,
+                payload,
+            },
+        );
         Ok(())
     }
 }
@@ -134,12 +162,12 @@ mod tests {
 
     type Repository = MemViewRepository<Sequences, TestAggregate>;
 
-    fn ids_and_versions(repository: &Repository) -> Vec<(String, i64, Sequences)> {
+    fn listed(repository: &Repository) -> Vec<(String, i64, usize, Sequences)> {
         repository
             .list_all()
             .unwrap()
             .into_iter()
-            .map(|(context, view)| (context.view_instance_id, context.version, view))
+            .map(|(context, view)| (context.view_instance_id, context.version, context.last_sequence, view))
             .collect()
     }
 
@@ -148,42 +176,42 @@ mod tests {
         let repository = Repository::default();
         assert_eq!(repository.load("a").await.unwrap(), None);
         repository
-            .update_view(Sequences(vec![1]), ViewContext::new("a".into(), 0))
+            .update_view(Sequences(vec![1]), ViewContext::new("a".into(), 0, 1))
             .await
             .unwrap();
         let (view, context) = repository.load_with_context("a").await.unwrap().unwrap();
-        assert_eq!((view, context.version), (Sequences(vec![1]), 1));
+        assert_eq!((view, context), (Sequences(vec![1]), ViewContext::new("a".into(), 1, 1)));
         for stale in [0, 2] {
             assert!(matches!(
                 repository
-                    .update_view(Sequences(vec![9]), ViewContext::new("a".into(), stale))
+                    .update_view(Sequences(vec![9]), ViewContext::new("a".into(), stale, 9))
                     .await,
                 Err(PersistenceError::OptimisticLockError)
             ));
         }
         assert!(matches!(
             repository
-                .update_view(Sequences(vec![9]), ViewContext::new("b".into(), 1))
+                .update_view(Sequences(vec![9]), ViewContext::new("b".into(), 1, 9))
                 .await,
             Err(PersistenceError::OptimisticLockError)
         ));
         repository
-            .update_view(Sequences(vec![1, 2]), ViewContext::new("a".into(), 1))
+            .update_view(Sequences(vec![1, 2]), ViewContext::new("a".into(), 1, 2))
             .await
             .unwrap();
         assert_eq!(repository.load("a").await.unwrap(), Some(Sequences(vec![1, 2])));
-        assert_eq!(ids_and_versions(&repository), [("a".into(), 2, Sequences(vec![1, 2]))]);
+        assert_eq!(listed(&repository), [("a".into(), 2, 2, Sequences(vec![1, 2]))]);
     }
 
     #[tokio::test]
     async fn seeds_lists_by_id_and_clears_through_shared_clones() {
         let repository = Repository::default();
         let seen_by_projection = repository.clone();
-        repository.put("b", 4, &Sequences(vec![2])).unwrap();
-        repository.put("a", 7, &Sequences(vec![1])).unwrap();
+        repository.put("b", 4, 2, &Sequences(vec![2])).unwrap();
+        repository.put("a", 7, 1, &Sequences(vec![1])).unwrap();
         assert_eq!(
-            ids_and_versions(&seen_by_projection),
-            [("a".into(), 7, Sequences(vec![1])), ("b".into(), 4, Sequences(vec![2]))]
+            listed(&seen_by_projection),
+            [("a".into(), 7, 1, Sequences(vec![1])), ("b".into(), 4, 2, Sequences(vec![2]))]
         );
         let projection = ViewProjection::new(Arc::new(seen_by_projection));
         let event = EventEnvelope {
@@ -193,7 +221,8 @@ mod tests {
             metadata: Default::default(),
         };
         projection.handle("b", &[event]).await.unwrap();
-        assert_eq!(repository.load_with_context("b").await.unwrap().unwrap().1.version, 5);
+        let (view, context) = repository.load_with_context("b").await.unwrap().unwrap();
+        assert_eq!((view, context), (Sequences(vec![2, 3]), ViewContext::new("b".into(), 5, 3)));
         repository.clear();
         assert!(repository.list_all().unwrap().is_empty());
     }
@@ -201,14 +230,19 @@ mod tests {
     #[tokio::test]
     async fn version_overflow_and_serde_failures_are_errors() {
         let repository = Repository::default();
-        repository.put("max", i64::MAX, &Sequences(vec![])).unwrap();
+        repository.put("max", i64::MAX, 0, &Sequences(vec![])).unwrap();
         assert!(matches!(
-            repository.update_view(Sequences(vec![]), ViewContext::new("max".into(), i64::MAX)).await,
+            repository.update_view(Sequences(vec![]), ViewContext::new("max".into(), i64::MAX, 1)).await,
             Err(PersistenceError::UnknownError(error)) if error.to_string() == "view version overflow"
         ));
-        repository
-            .documents()
-            .insert("broken".into(), (1, serde_json::json!("not a list")));
+        repository.documents().insert(
+            "broken".into(),
+            Document {
+                version: 1,
+                last_sequence: 1,
+                payload: serde_json::json!("not a list"),
+            },
+        );
         assert!(matches!(
             repository.load("broken").await,
             Err(PersistenceError::DeserializationError(_))
@@ -229,10 +263,10 @@ mod tests {
             fn update(&mut self, _: &EventEnvelope<TestAggregate>) {}
         }
         let repository = MemViewRepository::<Unserializable, TestAggregate>::default();
-        assert!(repository.put("a", 1, &Unserializable).is_err());
+        assert!(repository.put("a", 1, 0, &Unserializable).is_err());
         assert!(
             repository
-                .update_view(Unserializable, ViewContext::new("a".into(), 0))
+                .update_view(Unserializable, ViewContext::new("a".into(), 0, 1))
                 .await
                 .is_err()
         );

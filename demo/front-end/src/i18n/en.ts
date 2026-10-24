@@ -40,7 +40,6 @@ export default {
     title: 'Concerts',
     sold: '{sold}/{capacity}',
     sold_out: 'SOLD OUT',
-    incomplete: 'incomplete',
     unknown: '?',
     revenue: 'revenue',
   },
@@ -201,7 +200,6 @@ export default {
   states: {
     race: 'Both requests read version N and tried to write N+1. The database accepted only the first; the second was retried on fresh state — and the "seat must be free" rule rejected it.',
     history: "This state isn't stored anywhere — it was computed from events 1…{n}.",
-    incomplete: '⚠️ This read model is incomplete: it is missing the start of the history. Press Encore!',
     wiped: 'Read models are empty. The ledger is intact — press Encore! to restore everything.',
     locked: 'Box office closed for a moment: rebuilding read models.',
     projection_failed:

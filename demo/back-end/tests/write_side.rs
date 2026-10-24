@@ -23,10 +23,11 @@ use cqrsx::{
 use encore_backend::{
     application::{
         activity::ActivityHub,
-        command_service::{CommandMetadata, CommandOutcome, CommandService},
+        command_service::{CommandMetadata, CommandOutcome, CommandService, Warning},
         concert::ConcertApp,
         concert::views::concert_hall::ConcertHallView,
         lock::BoxOfficeLock,
+        projections::notifying::NotifyingHandler,
     },
     domain::{
         ConcertId, FanId,
@@ -321,9 +322,109 @@ async fn parallel_bookings_reach_an_ordered_read_model_in_commit_order() {
     for event in &journal {
         replayed.update(event);
     }
-    let view = halls.load("ordered-2026").await.expect("view").expect("a document");
+    let (view, context) = halls
+        .load_with_context("ordered-2026")
+        .await
+        .expect("view")
+        .expect("a document");
     assert_eq!(view, replayed);
     assert_eq!((view.sold, view.last_sequence), (20, 21));
+    assert_eq!(context.last_sequence, 21, "the document remembers the last applied event");
+
+    pool.close().await;
+    container.stop().await.expect("stop");
+}
+
+/// D-15: after a wipe (here the collection is cleared) a booking is recorded in the ledger, but its document
+/// is not recreated from the middle of the history: the projection refuses the gap, the command answers with
+/// the `projection_failed` warning and the activity feed carries the reason, until Encore! rebuilds the read
+/// model.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_booking_after_a_wipe_is_recorded_but_the_read_model_refuses_the_gap() {
+    let (pool, container) = database().await;
+    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
+    let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
+    let halls = Arc::new(MemViewRepository::<ConcertHallView, Concert>::default());
+    let activity = Arc::new(ActivityHub::new(64, 64));
+    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 }).with_event_handler(
+        Arc::new(NotifyingHandler::new(
+            ViewProjection::new(halls.clone()).with_name("concert_halls"),
+            activity.clone(),
+        )),
+        DeliveryConfig::default(),
+    );
+    let concerts = ConcertApp::new(
+        CommandService::new(executor, activity.clone(), Arc::new(BoxOfficeLock::new())),
+        history_store(pool.clone(), 10),
+        6,
+    );
+    let concert_id = ConcertId::parse("wiped-2026").expect("concert id");
+    let announce = AnnounceConcert {
+        artist: "A".into(),
+        city: "C".into(),
+        date: NaiveDate::from_ymd_opt(2026, 11, 21).expect("date"),
+    };
+    assert!(
+        concerts
+            .announce_concert(&concert_id, announce, CommandMetadata::with_source("seed"))
+            .await
+            .outcome
+            .is_accepted()
+    );
+    let book = |seat: &str, fan: &str| {
+        let metadata = CommandMetadata::ui();
+        let book = BookSeat {
+            seat: seat.into(),
+            fan_id: FanId::parse(fan).expect("fan"),
+            fan_name: "Fan".into(),
+            booking_id: metadata.causation.command_id,
+        };
+        (book, metadata)
+    };
+    let (first, metadata) = book("A1", "fan-1");
+    assert_eq!(
+        concerts.book_seat(&concert_id, first, metadata).await.outcome,
+        CommandOutcome::<ConcertError>::Accepted { warnings: vec![] }
+    );
+    let (_, context) = halls
+        .load_with_context("wiped-2026")
+        .await
+        .expect("view")
+        .expect("a document");
+    assert_eq!(context.last_sequence, 2);
+
+    halls.clear(); // 🧨 wipe
+
+    let (second, metadata) = book("A2", "fan-2");
+    assert_eq!(
+        concerts.book_seat(&concert_id, second, metadata).await.outcome,
+        CommandOutcome::<ConcertError>::Accepted {
+            warnings: vec![Warning {
+                code: "projection_failed",
+                projection: "concert_halls".into(),
+            }]
+        },
+        "the booking is recorded; the read model is not"
+    );
+    assert!(
+        halls.load("wiped-2026").await.expect("view").is_none(),
+        "no document is created without its history"
+    );
+    let (entries, _) = activity.subscribe();
+    let reasons: Vec<&Value> = entries
+        .iter()
+        .filter(|entry| entry.kind == "projection.failed")
+        .filter_map(|entry| entry.fields.get("message"))
+        .collect();
+    assert!(
+        reasons.contains(&&Value::from("sequence gap: expected event 1, found 3")),
+        "the feed names the gap: {reasons:?}"
+    );
+    let journal = PersistedEventStore::<_, Concert>::new_event_store(PostgresEventRepository::new(pool.clone()))
+        .load_events("wiped-2026")
+        .await
+        .expect("journal");
+    assert_eq!(journal.len(), 3, "the announcement and both bookings are in the ledger");
 
     pool.close().await;
     container.stop().await.expect("stop");

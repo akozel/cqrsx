@@ -32,7 +32,7 @@
 
 - Тесты исполнителя с обработчиками переписываются на процессор над `MemStore` (основная часть уже в
   [03](03_projection_processor.md)).
-- Тесты replay — на `request_replay` и `catch_up`.
+- Тесты replay — на `request_rebuild`, `request_rebuild_key` и самолечение процессора.
 - Quick start в `cqrsx/README.md` — через процессор; doc-тесты без `EventReplay`.
 
 ## Критерии приёмки

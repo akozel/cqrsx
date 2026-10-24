@@ -17,11 +17,11 @@
 | Исполнитель регистрирует `ViewProjection` обработчиком; команда ждёт квитанцию | Исполнитель получает `CommitWakeup`; процессор на каждую витрину (`concert_halls`/`Concert`, `fan_wallets`/`Fan`) в `ProjectionRuntime` рядом с task runtime |
 | Ответ команды несёт `warnings: projection_failed` | «Принято» сразу после коммита (D-17); состояние витрины — SSE и `/api/projections/status` |
 | `NotifyingHandler` публикует `projection.updated` / `projection.failed` | `ActivityObserver: ProjectionObserver` публикует `projection.updated` (live), `projection.failed`, `rebuild.started/progress/finished/failed` с прежними полями; `projection.stalled { reason }` при повторных сбоях |
-| Encore!: `BoxOfficeLock`, 423, `wait_idle`, `drained`, wipe, два `EventReplay::replay_all` | `RebuildService::start(pace)` → `request_replay` обеим строкам; статус из строк закладок; касса открыта (D-16) |
-| Verify: scratch-коллекция и `EventReplay` в неё | scratch-коллекция и строка `<name>_verify_<run>`, `ProjectionProcessor::catch_up`, сравнение, удаление строки и коллекции |
+| Encore!: `BoxOfficeLock`, 423, `wait_idle`, `drained`, wipe, два `EventReplay::replay_all` | `RebuildService::start(pace)` → `request_rebuild` обеим строкам; владелец проходит ключи журнала, документы заменяются на месте, wipe не нужен; статус из строк закладок; касса открыта (D-16). `POST /api/concerts/{id}/rebuild` пересобирает один зал (`request_rebuild_key`) |
+| Verify: scratch-коллекция и `EventReplay` в неё | свёртка истории каждого ключа в памяти (`get_events` + `View::update`) против документа; без scratch-коллекций и строк закладок |
 | `speed: slow \| fast` | `pace_ms` (D-18); UI шлёт `ENCORE_REPLAY_SLOW_DELAY_MS` или 0 |
 | `drain_projections` при остановке | процессоры дорабатывают и отпускают аренду сами по `shutdown` |
-| `incomplete: true` после 🧨 wipe | проекция стоит с `SequenceGap`; статус `stalled: history_missing`, UI предлагает Encore! (D-15) |
+| `incomplete: true` после 🧨 wipe | первая же бронь по концерту возвращает `SequenceGap`, и процессор пересобирает его документ из истории (самолечение, 03 F23); нетронутые концерты пусты до Encore! (D-15) |
 
 ### Конфигурация
 
@@ -44,19 +44,20 @@
 
 - `bootstrap/projections.rs`: модуль витрины отдаёт процессор: `ProjectionProcessor::new(name, репозиторий
   журнала на главном пуле, хранилище закладок на главном пуле, ViewProjection::new(repo).with_name(name),
-  reset = wipe коллекции, config)` с `ActivityObserver`; `ReadSideWiring` держит список процессоров и
-  `CommitWakeup` на тип агрегата.
+  config)` с `ActivityObserver`; `ReadSideWiring` держит список процессоров и `CommitWakeup` на тип агрегата.
 - `bootstrap/aggregates/*`: исполнитель без `with_event_handler`, с `with_commit_wakeup`; `CommandService` без
   `BoxOfficeLock`.
 - `process.rs`: `prepare_projection_runtime` на главном пуле; `lifecycle::run(inbound, try_join(task_runtime,
   projection_runtime), ..)`; `PROJECTION_DRAIN_LIMIT` и `drain_projections` удалены. Страницы журнала короткие и
   идут по индексу, поэтому главный пул со `StatementTimeout`; `history_pool` остаётся для `totals` и машины
   времени.
-- `application/operations/rebuild.rs`: `start(pace)`; `status_json` из строк закладок — `state`, `position`,
-  `replayed`, `replay_until`, `owner`, `failures`, `last_error`, `waiting`, отставание как число событий выше
-  позиции (`count(*)` по индексу через `PostgresEventRepository`); `rebuild.*` из observer владельца;
-  `rebuild.finished` — когда обе строки вышли из replay; `total` для `rebuild.started` — `totals()` как сейчас.
-- `application/operations/verify.rs`: по описанию выше; отказ `409 rebuild_in_progress` по строкам закладок.
+- `application/operations/rebuild.rs`: `start(pace)` и `rebuild_concert(id)`; `status_json` из строк закладок —
+  `state`, `position`, `applied`, `rebuild_cursor`, `rebuilt`, `owner`, `failures`, `last_error`, `waiting`,
+  отставание как число событий выше позиции (`count(*)` по индексу через `PostgresEventRepository`); `rebuild.*`
+  из observer владельца; `rebuild.finished` — когда обе строки закрыли курсор; `rebuild.progress` несёт ключи и
+  события; `total` для `rebuild.started` — `totals()` как сейчас.
+- `application/operations/verify.rs`: по описанию выше, ключи — `aggregate_ids_after` страницами; отказ
+  `409 rebuild_in_progress` по строкам закладок.
 - `application/lock.rs`, `CommandPass`, `wait_for_unlock`, исход `Locked`, `423` в HTTP и UI — удалены.
 - `presentation/http/projections/status.rs`: статус обеих проекций в одном ответе.
 - sidecar: X-ray показывает строки `projection_checkpoints` (SELECT роли инспектора в `infra/`); reset
@@ -71,8 +72,10 @@
    отставание, после `unpause` зал догоняет одной страницей. Урок: write side не зависит от read side.
 3. **Убитая нода** (две ноды за nginx, `kill -9` владельца): вторая нода берёт закладку по истечении аренды, ни
    одной потерянной брони; `kill -TERM` — передача сразу.
-4. **Encore! при открытой кассе**: места загораются по истории, брони во время пересборки появляются в конце.
-5. **🧨 wipe → бронь**: витрина не «врёт», а стоит с причиной; Encore! лечит.
+4. **Encore! при открытой кассе**: залы пересобираются один за другим, места загораются по истории, брони во
+   время пересборки видны сразу или в конце; отдельный зал — одной кнопкой.
+5. **🧨 wipe → бронь**: зал этого концерта возвращается сам из истории, остальные пусты до Encore!; документ
+   никогда не «врёт».
 
 ## Тесты
 
@@ -80,14 +83,15 @@
   observer публикует прежние поля; парсер новых переменных; verify.
 - **`write_side.rs`** (PostgreSQL): 20 параллельных броней → `wait_caught_up` → зал равен свёртке журнала, у
   документа `last_sequence`; бронь при остановленном процессоре применяется после его запуска; Encore! под
-  параллельными бронями даёт свёртку.
+  параллельными бронями даёт свёртку; удалённый документ одного концерта чинится первой бронью по нему;
+  пересборка одного зала не трогает соседний.
 - **E2E и хаос на стенде** (`demo/load`, скрипты в `load/chaos/`); критерий везде — verify `ok` и равенство числа
   принятых броней числу занятых мест:
   - `01-hot-key` 40 VU и `docker pause` MongoDB на 10 с посреди окна;
   - две ноды, `kill -9` владельца на 10-й секунде; то же с `kill -TERM`;
   - перезапуск PostgreSQL посреди окна: команды отвечают 503 на время, процессор восстанавливается;
   - Encore! с `pace_ms = 0` и `pace_ms = 80` посреди всплеска, 3 раунда;
-  - 🧨 wipe посреди всплеска → статус `stalled`, Encore! → verify `ok`;
+  - 🧨 wipe посреди всплеска → затронутые концерты чинятся сами, Encore! для остальных → verify `ok`;
   - soak 1 час (02/10) с процессором: отставание ограничено, `projection_checkpoints` не растёт, дырок нет.
 - Сбор метрик стенда: `collect.mjs` снимает `/api/projections/status` раз в секунду → отставание p50/p99 и время
   догона после паузы в `result.json` и в отчёте.

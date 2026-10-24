@@ -127,7 +127,7 @@ fn handlers(
 #[tokio::test]
 async fn projection_failures_preserve_one_command_commit_and_outbox_and_invoke_other_handlers() {
     let db = Database::new().await;
-    sqlx::query("CREATE TABLE command_view (view_id text PRIMARY KEY, version bigint NOT NULL, payload json NOT NULL)")
+    sqlx::query("CREATE TABLE command_view (view_id text PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
         .execute(&db.pool)
         .await
         .unwrap();

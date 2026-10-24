@@ -169,7 +169,7 @@ export default {
     title: 'read database',
     lead: 'MongoDB encore_read: concert_halls (seat map, sold, revenue) and fan_wallets (tickets, refunds).',
     points: [
-      'Each document is a last-writer-wins register keyed by the event sequence: idempotent and order-independent.',
+      'Each document remembers the last event it applied (last_sequence) and takes only the next one: a repeat is skipped, a gap is refused, so delivery may repeat and come from several nodes.',
       'Updated by in-process projections right after a commit; a failure is only a warning, the ledger is already committed.',
       '🧨 Wipe → the seat map shows “?” while the rules still work from the ledger; ⏪ Encore! rebuilds everything from the events.',
       'The time machine computes a past state from events 1…n without storing it anywhere.',

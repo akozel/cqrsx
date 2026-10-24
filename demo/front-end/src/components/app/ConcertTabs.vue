@@ -44,7 +44,6 @@ const session = useSessionStore()
         <span v-if="c.sold_out" class="rounded bg-neon-pink text-black px-1 text-[10px] font-bold">{{
           t('concerts.sold_out')
         }}</span>
-        <span v-if="c.incomplete" class="text-neon-amber" :title="t('states.incomplete')">⚠️</span>
       </div>
     </button>
     <!-- The last card of the row announces a new concert -->
