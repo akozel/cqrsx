@@ -7,6 +7,7 @@ use crate::{
             executor::{CqrsCommandExecutor, FrameworkFactory},
             locks::LockLimits,
             retry::AggregateConflictRetryPolicy,
+            wakeup::CommitWakeup,
         },
         event_handler::{
             EventHandler,
@@ -124,6 +125,13 @@ impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
         }
     }
 
+    /// Wakes `wakeup` after every commit with events, for the projection processors of this aggregate type.
+    pub fn with_commit_wakeup(self, wakeup: CommitWakeup) -> Self {
+        Self {
+            inner: self.inner.with_commit_wakeup(wakeup),
+        }
+    }
+
     /// The hand-overs of this executor not handled yet; empty without handlers. Take it before the
     /// executor is moved away, to wait for the handlers before maintenance or shutdown.
     pub fn backlog(&self) -> DeliveryBacklog {
@@ -207,7 +215,8 @@ mod tests {
         let config = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap();
         let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ())
             .with_event_handler(Arc::new(Ignore), DeliveryConfig::default())
-            .with_event_handler(Arc::new(Ignore), DeliveryConfig::new(1, 1).unwrap());
+            .with_event_handler(Arc::new(Ignore), DeliveryConfig::new(1, 1).unwrap())
+            .with_commit_wakeup(CommitWakeup::new());
         assert!(executor.backlog().is_empty());
         assert_eq!(executor.inner.lock_limits(), LockLimits::default());
     }

@@ -33,6 +33,25 @@ pub(crate) fn log_sqlx_failure(operation: &'static str, error: &sqlx::Error) {
     tracing::error!(component = "postgres", operation, category = sqlx_kind(error), sqlstate = ?sqlstate(error), "storage operation failed");
 }
 
+/// A fixed word for a MongoDB driver error.
+#[cfg(feature = "mongodb")]
+pub(crate) fn mongodb_kind(error: &::mongodb::error::Error) -> &'static str {
+    use ::mongodb::error::ErrorKind;
+    match error.kind.as_ref() {
+        ErrorKind::Io(_) => "io",
+        ErrorKind::ServerSelection { .. } => "server_selection",
+        ErrorKind::Command(_) => "command",
+        ErrorKind::Write(_) => "write",
+        ErrorKind::BsonDeserialization(_) | ErrorKind::BsonSerialization(_) => "bson",
+        _ => "other",
+    }
+}
+
+#[cfg(feature = "mongodb")]
+pub(crate) fn log_mongodb_failure(operation: &'static str, error: &::mongodb::error::Error) {
+    tracing::error!(component = "mongodb", operation, category = mongodb_kind(error), code = ?crate::mongodb::server_code(error), "storage operation failed");
+}
+
 pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, source: &(dyn std::error::Error + 'static)) {
     // These details are inspected before CommandGatewayError intentionally discards
     // technical sources. They never change the outward error or retry policy.
@@ -79,15 +98,17 @@ pub(crate) fn log_lock_refused(aggregate_type: &str, refused: crate::cqrs::comma
 
 /// An ordered event handler failed for a batch of `commands`; logged once for the whole batch.
 /// `handler` is the handler's name: a type or read-model name chosen by the application, never a payload.
+/// `operation` is `deliver` for a live batch and `rebuild` for the rebuild of a key.
 pub(crate) fn log_delivery_failure(
     aggregate_type: &str,
     handler: &str,
+    operation: &'static str,
     commands: usize,
     source: &(dyn std::error::Error + 'static),
 ) {
     #[cfg(feature = "postgres")]
     if let Some(error) = find_sqlx(source) {
-        tracing::error!(component = "event_handler", operation = "deliver", aggregate_type = safe_type(aggregate_type), handler, commands,
+        tracing::error!(component = "event_handler", operation, aggregate_type = safe_type(aggregate_type), handler, commands,
             storage_category = sqlx_kind(error), sqlstate = ?sqlstate(error), "event delivery failed");
         return;
     }
@@ -95,7 +116,7 @@ pub(crate) fn log_delivery_failure(
     let _ = source;
     tracing::error!(
         component = "event_handler",
-        operation = "deliver",
+        operation,
         aggregate_type = safe_type(aggregate_type),
         handler,
         commands,
@@ -103,15 +124,48 @@ pub(crate) fn log_delivery_failure(
     );
 }
 
-/// An ordered event handler panicked while it handled a batch of `commands`.
-pub(crate) fn log_delivery_panic(aggregate_type: &str, handler: &str, commands: usize) {
+/// An ordered event handler panicked while it handled a batch of `commands` (or rebuilt a key).
+pub(crate) fn log_delivery_panic(aggregate_type: &str, handler: &str, operation: &'static str, commands: usize) {
     tracing::error!(
         component = "event_handler",
-        operation = "deliver",
+        operation,
         aggregate_type = safe_type(aggregate_type),
         handler,
         commands,
         "event handler panicked"
+    );
+}
+
+/// A projection processor changed state: a lease acquired, lost or released, a rebuild started, finished
+/// or interrupted, a key healed. `projection` is the projection's name, chosen by the application.
+pub(crate) fn log_projection_event(projection: &str, aggregate_type: &str, event: &'static str) {
+    tracing::info!(
+        component = "projection",
+        projection = safe_type(projection),
+        aggregate_type = safe_type(aggregate_type),
+        event,
+        "projection processor event"
+    );
+}
+
+/// An operation of a projection processor failed: `operation` names it (`page`, `rebuild`, `feed`,
+/// `checkpoints`, `lease`, `head`), `category` the kind of error, `failures` the failed rounds in a row
+/// (0 when the failure does not make the processor back off).
+pub(crate) fn log_projection_failure(
+    projection: &str,
+    aggregate_type: &str,
+    operation: &'static str,
+    category: &'static str,
+    failures: u32,
+) {
+    tracing::warn!(
+        component = "projection",
+        projection = safe_type(projection),
+        aggregate_type = safe_type(aggregate_type),
+        operation,
+        category,
+        failures,
+        "projection processor operation failed"
     );
 }
 
@@ -186,15 +240,19 @@ pub(crate) mod test_support {
             // Prime shared callsites that parallel tests may register without a subscriber.
             super::log_command_failure("prime", "unexpected", &io::Error::other("prime"));
             super::log_lock_refused("prime", crate::cqrs::command::locks::LockRefused::TimedOut);
-            super::log_delivery_failure("prime", "prime", 1, &io::Error::other("prime"));
-            super::log_delivery_panic("prime", "prime", 1);
+            super::log_delivery_failure("prime", "prime", "prime", 1, &io::Error::other("prime"));
+            super::log_delivery_panic("prime", "prime", "prime", 1);
             super::log_delivery_refused("prime");
+            super::log_projection_event("prime", "prime", "prime");
+            super::log_projection_failure("prime", "prime", "prime", "prime", 1);
             #[cfg(feature = "postgres")]
             {
                 super::log_command_failure("prime", "unexpected", &sqlx::Error::RowNotFound);
-                super::log_delivery_failure("prime", "prime", 1, &sqlx::Error::RowNotFound);
+                super::log_delivery_failure("prime", "prime", "prime", 1, &sqlx::Error::RowNotFound);
                 super::log_sqlx_failure("prime", &sqlx::Error::RowNotFound);
             }
+            #[cfg(feature = "mongodb")]
+            super::log_mongodb_failure("prime", &::mongodb::error::Error::custom("prime"));
             tracing::callsite::rebuild_interest_cache();
             writer.0.lock().unwrap().clear();
         });
@@ -409,14 +467,22 @@ mod tests {
     async fn delivery_diagnostics_log_one_safe_event_per_batch_with_the_storage_category() {
         let source = crate::cqrs::store::PersistenceError::UnknownError(Box::new(sqlx::Error::PoolTimedOut));
         let (_, log) = test_support::capture(async {
-            log_delivery_failure("private_type\nmail@example.com", "concert_halls", 3, &source);
-            log_delivery_failure("Account", "fan_wallets", 1, &std::io::Error::other("private_source"));
+            log_delivery_failure("private_type\nmail@example.com", "concert_halls", "deliver", 3, &source);
+            log_delivery_failure(
+                "Account",
+                "fan_wallets",
+                "rebuild",
+                1,
+                &std::io::Error::other("private_source"),
+            );
+            log_delivery_panic("Account", "fan_wallets", "rebuild", 1);
         })
         .await;
         let lines: Vec<&str> = log.lines().collect();
-        assert_eq!(lines.len(), 2, "{log}");
+        assert_eq!(lines.len(), 3, "{log}");
         for field in [
             "event delivery failed",
+            "operation=\"deliver\"",
             "aggregate_type=\"unknown\"",
             "handler=\"concert_halls\"",
             "commands=3",
@@ -426,8 +492,13 @@ mod tests {
         }
         assert!(
             lines[1].contains("handler=\"fan_wallets\"")
+                && lines[1].contains("operation=\"rebuild\"")
                 && lines[1].contains("commands=1")
                 && !lines[1].contains("storage_category"),
+            "{log}"
+        );
+        assert!(
+            lines[2].contains("event handler panicked") && lines[2].contains("operation=\"rebuild\""),
             "{log}"
         );
         assert!(!log.contains("private_") && !log.contains("mail@example.com"), "{log}");
@@ -512,6 +583,41 @@ mod tests {
     }
 }
 
+#[cfg(test)]
+mod projection_tests {
+    use super::{log_projection_event, log_projection_failure, test_support};
+
+    #[tokio::test]
+    async fn projection_diagnostics_name_the_projection_safely_and_carry_fixed_fields_only() {
+        let (_, log) = test_support::capture_at(tracing::Level::INFO, async {
+            log_projection_event("concert_halls", "Concert", "lease acquired");
+            log_projection_event("private\nmail@example.com", "Concert", "rebuild finished");
+            log_projection_failure("concert_halls", "Concert", "page", "connection", 3);
+        })
+        .await;
+        let lines: Vec<&str> = log.lines().collect();
+        assert_eq!(lines.len(), 3, "{log}");
+        assert!(
+            lines[0].contains("INFO")
+                && lines[0].contains("projection processor event")
+                && lines[0].contains("projection=\"concert_halls\"")
+                && lines[0].contains("aggregate_type=\"Concert\"")
+                && lines[0].contains("event=\"lease acquired\""),
+            "{log}"
+        );
+        assert!(lines[1].contains("projection=\"unknown\""), "{log}");
+        assert!(
+            lines[2].contains("WARN")
+                && lines[2].contains("projection processor operation failed")
+                && lines[2].contains("operation=\"page\"")
+                && lines[2].contains("category=\"connection\"")
+                && lines[2].contains("failures=3"),
+            "{log}"
+        );
+        assert!(!log.contains("private") && !log.contains("mail@example.com"), "{log}");
+    }
+}
+
 #[cfg(all(test, feature = "worker"))]
 mod task_failure_tests {
     use super::{log_task_failure, test_support};
@@ -555,5 +661,41 @@ mod task_failure_tests {
         assert!(!log.contains("secret"));
         assert!(!log.contains("alice@example.com"));
         assert!(!log.contains("token"));
+    }
+}
+
+#[cfg(all(test, feature = "mongodb"))]
+mod mongodb_tests {
+    use super::{log_mongodb_failure, mongodb_kind, test_support};
+    use crate::mongodb::test_support::*;
+
+    #[tokio::test]
+    async fn mongodb_failures_log_a_fixed_category_and_the_server_code_without_the_message() {
+        let errors = [io(), command(11000), write(121), write_concern(64), bson(), custom()];
+        assert_eq!(
+            errors.each_ref().map(mongodb_kind),
+            ["io", "command", "write", "write", "bson", "other"]
+        );
+        let (_, log) = test_support::capture(async {
+            for error in &errors {
+                log_mongodb_failure("claim", error);
+            }
+        })
+        .await;
+        assert_eq!(log.matches("storage operation failed").count(), errors.len(), "{log}");
+        assert_eq!(log.matches("component=\"mongodb\"").count(), errors.len(), "{log}");
+        assert_eq!(log.matches("operation=\"claim\"").count(), errors.len(), "{log}");
+        for (category, code) in [
+            ("command", "Some(11000)"),
+            ("write", "Some(121)"),
+            ("write", "Some(64)"),
+            ("io", "None"),
+        ] {
+            assert!(
+                log.contains(&format!("category=\"{category}\" code={code}")),
+                "{category} {code}: {log}"
+            );
+        }
+        assert!(!log.contains("private_"), "{log}");
     }
 }

@@ -7,6 +7,7 @@ pub mod causation;
 pub mod executor;
 pub mod locks;
 pub mod retry;
+pub mod wakeup;
 
 /// Technical command boundary; the application gateway selects the aggregate ID.
 ///

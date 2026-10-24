@@ -337,5 +337,9 @@ async fn unrelated_view_uniqueness_is_technical_and_stale_versions_are_conflicts
     db.close().await;
 }
 
+#[path = "projection/checkpoints.rs"]
+mod checkpoints;
 #[path = "projection/committed.rs"]
 mod committed;
+#[path = "projection/processor.rs"]
+mod processor;

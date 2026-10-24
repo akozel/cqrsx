@@ -31,17 +31,17 @@ impl<A: Aggregate> EventSink<A> {
 }
 
 #[cfg(test)]
-pub(in crate::cqrs) mod tests {
+pub(crate) mod tests {
     use crate::cqrs::{aggregate::Aggregate, event::DomainEvent, event_sink::EventSink};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
-    pub(in crate::cqrs) struct Ledger {
+    pub(crate) struct Ledger {
         pub balance: i64,
         pub history: Vec<i32>,
     }
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-    pub(in crate::cqrs) struct Delta(pub i32);
+    pub(crate) struct Delta(pub i32);
     impl DomainEvent for Delta {
         fn event_type(&self) -> String {
             "delta".into()
@@ -52,7 +52,7 @@ pub(in crate::cqrs) mod tests {
     }
     #[derive(Debug, PartialEq, thiserror::Error)]
     #[error("insufficient balance")]
-    pub(in crate::cqrs) struct Rejected;
+    pub(crate) struct Rejected;
     impl Aggregate for Ledger {
         const TYPE: &'static str = "ledger";
         type Command = ();

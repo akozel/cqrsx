@@ -530,6 +530,7 @@ dependencies = [
  "async-trait",
  "chrono",
  "futures",
+ "mongodb",
  "rand 0.10.3",
  "serde",
  "serde_json",

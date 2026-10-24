@@ -620,3 +620,37 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   `events_feed_idx` and the keys on the primary key, in-memory tests and the snapshot property test over the new
   repository. No upgrade asset: the project is unreleased. The sidecar's X-ray column list now shows `tx xid8`; its
   code is unchanged. The hot-key before/after measurement moved to 03/03.
+- **2026-10-24, projection processor with a checkpoint (epic 03/03)** (uncommitted). cqrsx gains the read side
+  of the epic: `CheckpointStore` (one row per projection and aggregate type with a lease, `PostgresCheckpointStore`
+  over `PROJECTION_CHECKPOINTS_SCHEMA`, `MemCheckpointStore` for tests), `ProjectionProcessor` (claims the row,
+  extends the lease every third of it, reads the journal in pages from the checkpoint with a window of
+  `capacity − 1` pages in flight, hands every key's events to the key's worker of the ordered delivery, moves the
+  checkpoint behind the completed prefix, backs off `retry_base · 2^(n−1)` on a failed round, heals a document that
+  refused a gap in place, rebuilds the whole journal by cursor or one key on request through the same workers and
+  stops cleanly on shutdown), `RebuildableProjection::rebuild(id, history, prefix)` on `ViewProjection` (a document
+  ahead of the history read is refused, so a stale owner never rolls it back), `CommitWakeup` (the executors wake
+  the processors of their aggregate type after a commit), `ProjectionRuntime`, `ProjectionObserver`. Rebuild jobs
+  run inside `OrderedDelivery` as batches of their own (`Done::{Applied, Rebuilt}`); `tokio-util` is a core
+  dependency. Tests: the fault model F1–F24 over in-memory stores behind wrappers with gates and scripted failures
+  (`tests/cqrs/projection/*`, incl. `property_processor_matches_a_model_under_random_faults`), the checkpoint
+  statements, schema checks and six processor scenarios on PostgreSQL (`pg_terminate_backend`, a killed owner, an
+  idle writing transaction, a rebuild under commits, two nodes); coverage 97.56 %. The demo is untouched until
+  04. Measurement (G6, `01-hot-key-vus40`, profile `db`, three passes before/after the `tx` column and
+  `events_feed_idx`, overlay `perf/compose.before-feed.yaml`): accepted/s 705 → 710, CPU PostgreSQL per 1000
+  commands 1755 → 1689 ms (noise), WAL per command 4231 → 4433 B (+5 %, the index entry), `verify ok` in every run.
+- **2026-10-24, MongoDB read side in cqrsx (epic 03/04a)** (uncommitted). cqrsx gains the feature `mongodb`
+  (driver 3.9.1 without default features: `compat-3-0-0`, `rustls-tls`): `mongodb::view_repository::MongoViewRepository`
+  (the demo's document `{ _id, version, last_sequence, view }`, an unreachable server is a `ConnectionError`, a
+  duplicate insert or a stale version a conflict) and `mongodb::projection_checkpoints::MongoCheckpointStore` (one
+  document per projection and aggregate type in `projection_checkpoints`, the requested keys in its
+  `rebuild_keys` array, every operation one atomic statement by the server's `$$NOW`, strings in pipelines as
+  `$literal`, `advance_rebuild` idempotent by equality because the document cannot order the journal's keys).
+  The processor registers its row before every claim, so a dropped checkpoint collection leads to a full
+  self-rebuild; `MemCheckpointStore::clear` models the drop. Driver failures of the store log one `error` with a
+  fixed category and the server's code (`log_mongodb_failure`). Tests: `tests/mongo.rs` on testcontainers
+  `mongo:8.2` (the repository contract and a stress of concurrent writers without a lock, the checkpoint mirror of
+  the PostgreSQL tests plus the document shape and a dropped collection, the processor over an in-memory journal
+  with a rebuild and a wipe of both collections, and the journal in PostgreSQL with the read side in MongoDB); the
+  container fixtures moved to `tests/support/{port_lease,postgres,mongo}.rs`. The demo writes its read models
+  through the library repository (`infrastructure/mongo/read_model.rs`, `MongoReadModel`: queries and wipe of its
+  own); its `view_repository.rs` is gone. CI: the feature matrix and the stress step get `mongodb`.

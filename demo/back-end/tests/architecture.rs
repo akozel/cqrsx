@@ -50,6 +50,7 @@ const LAYERS: &[Layer] = &[
             "crate::bootstrap",
             "crate::config",
             "cqrsx::postgres",
+            "cqrsx::mongodb",
             "cqrsx::task::adapter",
             "cqrsx::task::dispatcher",
             "cqrsx::task::runtime",

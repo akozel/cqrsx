@@ -7,8 +7,8 @@ use crate::{
     },
     domain::fan::Fan,
     infrastructure::mongo::{
+        read_model::MongoReadModel,
         read_side::{FAN_WALLETS, WalletRepository, scratch},
-        view_repository::MongoViewRepository,
     },
 };
 use cqrsx::postgres::event_repository::PostgresEventRepository;
@@ -16,7 +16,7 @@ use mongodb::Database;
 use std::sync::Arc;
 
 pub fn wire(read_db: &Database, history: &HistoryFactory<PostgresEventRepository>) -> ReadModel<WalletRepository> {
-    let repository = Arc::new(MongoViewRepository::new(read_db, FAN_WALLETS));
+    let repository = Arc::new(MongoReadModel::new(read_db, FAN_WALLETS));
     ReadModel {
         maintenance: Arc::new(ProjectionMaintenance::<_, _, FanWalletView, Fan>::new(
             FAN_WALLETS,

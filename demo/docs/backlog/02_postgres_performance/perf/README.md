@@ -71,6 +71,7 @@ The first run that actually starts rebuilds the back-end image; `BUILD=0` skips 
 |---|---|
 | `compose.perf.yaml` | overlay: PostgreSQL with `shared_preload_libraries=pg_stat_statements`, `track_io_timing=on`, and `postgres/00-pg-stat-statements.sql` |
 | `compose.image.yaml` | overlay for `BACKEND_IMAGE`: the back-end service runs that image |
+| `compose.before-feed.yaml` | overlay for the "before" runs of epic 03/03: `postgres/15-before-feed.sql` drops `events.tx` and `events_feed_idx` after the stand's schema (the back-end does not read them), so the write path is measured with and without the feed position |
 | `compose.balancer.yaml` | overlay for `BALANCE`: the `balancer` service (nginx) in front of the node(s), the generator's `BASE_URL` pointed at it |
 | `compose.node2.yaml` | overlay for `NODES=2`: the `backend-2` service, `extends` of the stand's `backend` |
 | `nginx/` | `nginx.conf` (one worker, no access log, keep-alive both ways, `$aggregate_key` from the path, `X-Upstream`) and the upstreams `upstream-{single,round_robin,key}.conf` |

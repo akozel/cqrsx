@@ -201,3 +201,27 @@ async fn queue_indexes_serve_ready_and_expired_queries_with_finished_history() {
     );
     db.close().await;
 }
+
+#[tokio::test]
+async fn the_schemas_apply_again_without_a_change() {
+    let db = Database::new().await;
+    for schema in [EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA, PROJECTION_CHECKPOINTS_SCHEMA] {
+        sqlx::raw_sql(schema).execute(&db.pool).await.unwrap();
+    }
+    let tables: Vec<String> =
+        sqlx::query_scalar("SELECT table_name FROM information_schema.tables WHERE table_schema = 'public' ORDER BY table_name")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        tables,
+        [
+            "events",
+            "projection_checkpoints",
+            "projection_rebuild_keys",
+            "snapshots",
+            "transactional_outbox"
+        ]
+    );
+    db.close().await;
+}

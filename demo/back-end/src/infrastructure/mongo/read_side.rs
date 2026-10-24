@@ -7,7 +7,7 @@ use crate::{
         projections::maintenance::ScratchFactory,
     },
     domain::{concert::Concert, fan::Fan},
-    infrastructure::mongo::view_repository::MongoViewRepository,
+    infrastructure::mongo::read_model::MongoReadModel,
 };
 use mongodb::Database;
 use std::sync::Arc;
@@ -15,16 +15,11 @@ use std::sync::Arc;
 pub const CONCERT_HALLS: &str = "concert_halls";
 pub const FAN_WALLETS: &str = "fan_wallets";
 
-pub type HallRepository = MongoViewRepository<ConcertHallView, Concert>;
-pub type WalletRepository = MongoViewRepository<FanWalletView, Fan>;
+pub type HallRepository = MongoReadModel<ConcertHallView, Concert>;
+pub type WalletRepository = MongoReadModel<FanWalletView, Fan>;
 
 /// A scratch copy of the `live` collection for one verify run: `<live>_verify_<run id>`.
-pub fn scratch<V: 'static, A: 'static>(read_db: &Database, live: &'static str) -> ScratchFactory<MongoViewRepository<V, A>> {
+pub fn scratch<V: 'static, A: 'static>(read_db: &Database, live: &'static str) -> ScratchFactory<MongoReadModel<V, A>> {
     let read_db = read_db.clone();
-    Arc::new(move |run_id| {
-        Arc::new(MongoViewRepository::new(
-            &read_db,
-            &format!("{live}_verify_{}", run_id.simple()),
-        ))
-    })
+    Arc::new(move |run_id| Arc::new(MongoReadModel::new(&read_db, &format!("{live}_verify_{}", run_id.simple()))))
 }

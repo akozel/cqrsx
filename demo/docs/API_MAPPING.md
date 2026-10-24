@@ -254,6 +254,10 @@ export function deriveTaskStatus(row: OutboxRow, dbNow: Date): UiTaskStatus {
 
 ### U8. API `EventReplay` / `ReplayStream`
 
+> 03/03 (2026-10-24): рядом с `EventReplay` появился `cqrs::projection::processor::ProjectionProcessor` — проекция
+> читает журнал сама от закладки (`CheckpointStore`, `PostgresCheckpointStore`), пересборка — `request_rebuild` /
+> `request_rebuild_key` через того же рабочего ключа; `EventReplay` уходит в 03/05.
+
 **Факт.**
 - `cqrs/event_handler/replay.rs:158-390`: `EventReplay::<R: PersistedEventRepository, H: EventHandler<A>, A>::new(repository: R, handler: H)` — оба **по значению**; `with_upcasters(Vec<Box<dyn EventUpcaster>>)`; `set_error_observer(&mut self, Box<PersistenceErrorObserver>)`; `async fn replay(&self, aggregate_id) -> Result<(), PersistenceError>`; `async fn replay_all(&self)`. Каждое событие передаётся **отдельно**: `handler.handle(&event.aggregate_id, &[event])`. Останавливается на первой ошибке открытия/чтения/декодирования/обработчика; применённый префикс остаётся (док: «rebuild into a clean projection»).
 - `postgres/event_repository.rs:61-79` + `sql_query.rs`: `stream_events::<A>(id)` = `SELECT … WHERE aggregate_type=$1 AND aggregate_id=$2 ORDER BY sequence`; `stream_all_events::<A>()` = `… WHERE aggregate_type=$1 ORDER BY sequence` — **сортировка только по `sequence` поперёк агрегатов** (порядок внутри каждого агрегата сохраняется; проверено тестом `replay_isolates_ids_and_types_...`).
@@ -345,6 +349,14 @@ where Inbound: Future<Output = io::Result<()>>, RuntimeFuture: Future<Output = R
 
 ### U15. Глобальная позиция / метка времени в `events`
 
+> 03/03 (2026-10-24): позицию читает `ProjectionProcessor`; строка закладки на пару «проекция + тип» лежит в
+> `projection_checkpoints` (`PROJECTION_CHECKPOINTS_SCHEMA`, PostgreSQL ≥ 18), исполнитель будит процессоры через
+> `CommitWakeup` (`with_commit_wakeup`).
+>
+> 03/04a (2026-10-24): закладка может лежать рядом с витринами — `cqrsx::mongodb::projection_checkpoints::MongoCheckpointStore`
+> (фича `mongodb`, коллекция `projection_checkpoints` в базе витрин, документ на пару «проекция + тип»); позиция в ней —
+> номер транзакции PostgreSQL, поэтому журнал и витрины сбрасываются вместе.
+
 **Факт** (`cqrsx/sql/001-event-store.sql`): `events(aggregate_type text, aggregate_id text, sequence bigint, event_type text, event_version text, payload json, metadata json)`, PK `(aggregate_type, aggregate_id, sequence)`. Ни глобальной позиции, ни `created_at` (с эпика 03/02 есть `tx xid8` — номер записавшей транзакции, индекс `events_feed_idx` и лента `feed_after`; `recorded_at` в метаданных остаётся для X-ray). Вставка — `ON CONFLICT DO NOTHING` + проверка `rows_affected` (или 23505 на `events_pkey`) → `OptimisticLockError`.
 
 **Решение.** При U3 = A: `recorded_at` пишется фиксированной шириной (`to_rfc3339_opts(SecondsFormat::Micros, true)` → `2026-10-17T09:12:03.123456Z`), и sidecar сортирует строкой без приведения типов:
@@ -367,15 +379,15 @@ where Inbound: Future<Output = io::Result<()>>, RuntimeFuture: Future<Output = R
 | D3 | Успешный `execute` → `()`; `last_sequence` только при `CommittedWithEventHandlerFailure` | `committed_sequence` — из декоратора (A) |
 | D4 | `handler_indices` в `CommittedWithEventHandlerFailure` — индексы регистрации (0 = `concert_halls`, 1 = `fan_wallets`); framework вызывает **все** обработчики даже после сбоя первого (`cqrs.rs:545-549`) | `warnings: [{ code: "projection_failed", projection }]` по индексу |
 | D5 | `ViewProjection::set_error_observer(Box<dyn Fn(&PersistenceError)>)` — синхронный наблюдатель ошибок | альтернатива `NotifyingHandler` для `projection.failed`; `projection.updated` — всё равно декоратором |
-| D6 | `ViewRepository` — native async fn с `Send`-фьючами; `update_view(view, ViewContext { view_instance_id, version, last_sequence })`: `version == 0` → insert, иначе update `WHERE version = ctx.version`, новая версия `ctx.version + 1`, `last_sequence` пишется тем же CAS (эпик 03/01) (`view_repository.rs:187-210` как образец) | §6.7 верен; `MongoViewRepository` повторяет контракт, конфликт → `PersistenceError::OptimisticLockError` |
+| D6 | `ViewRepository` — native async fn с `Send`-фьючами; `update_view(view, ViewContext { view_instance_id, version, last_sequence })`: `version == 0` → insert, иначе update `WHERE version = ctx.version`, новая версия `ctx.version + 1`, `last_sequence` пишется тем же CAS (эпик 03/01) (`view_repository.rs:187-210` как образец) | §6.7 верен; `MongoViewRepository` повторяет контракт, конфликт → `PersistenceError::OptimisticLockError`. С 03/04a репозиторий библиотечный (`cqrsx::mongodb::view_repository`, фича `mongodb`); `infrastructure/mongo/read_model.rs` демо (`MongoReadModel`) делегирует ему запись и добавляет запросы и wipe |
 | D7 | `View<A>: Debug + Default + Serialize + DeserializeOwned + Send + Sync`, `update(&mut self, &EventEnvelope<A>)` — синхронно и безошибочно | LWW реализуется в `update`; порядок и однократность применения обеспечивает библиотека (`last_sequence`, эпик 03/01) |
 | D8 | `TestFramework::<A>::with(services).given(vec)/.given_no_previous_events().and(vec).when(cmd)` (sync, свой runtime) или `.when_async(cmd).await`; валидатор: `then_expect_events(vec)`, `then_expect_error(err)` (нужен `PartialEq` у ошибки), `then_expect_error_message(&str)`, `inspect_result()` | `ConcertError: thiserror::Error + PartialEq + Clone`; тесты R1–R8 — по одному на правило |
 | D9 | `Aggregate: Default + Serialize + DeserializeOwned + Send + Sync` (+ `Clone` для framework); `Services: Send + Sync`; `DomainEvent: Clone + PartialEq + Debug + Serialize + DeserializeOwned` | `Concert` сериализуется в снапшот → ключи `BTreeMap<SeatId, _>` должны сериализоваться строкой (newtype над `String`) |
 | D10 | `EventSink::write` применяет событие к рабочей копии сразу (`event_sink.rs:23-26`) | комментарий в §2.6 верен |
 | D11 | `TaskDispatcher::dispatch` неизвестного формата → `Permanent("unsupported task format")`; при `prepare` форматы всех воркеров сверяются | enum-адаптер фиксирует порядок форматов |
 | D12 | Supervisor: один producer, claim по форматам по кругу, recovery просроченных lease на каждом тике (`min(C, 32)` строк), restart воркера с новым диспетчером из фабрики | при poll 300 мс — ~3 лёгких транзакции/с в простое, приемлемо |
-| D13 | `PostgresViewRepository` существует (PG-таблица `view_id text PK, version bigint, payload json`) | не используется (витрины в MongoDB), но это готовый образец для `MongoViewRepository` |
-| D14 | Rule 12.4 vs §2.9 verify P1 («in-memory репозиторий») | предложение: verify пересобирает во временные коллекции `*_verify` тем же `MongoViewRepository` и сравнивает документы — без in-memory фейков в рантайме |
+| D13 | `PostgresViewRepository` существует (PG-таблица `view_id text PK, version bigint, payload json`) | не используется (витрины в MongoDB), но это готовый образец для `MongoViewRepository` (с 03/04a — в cqrsx рядом с ним) |
+| D14 | Rule 12.4 vs §2.9 verify P1 («in-memory репозиторий») | предложение: verify пересобирает во временные коллекции `*_verify` тем же `MongoViewRepository` и сравнивает документы — без in-memory фейков в рантайме (с 03/04a — `MongoReadModel` над библиотечным репозиторием) |
 | D15 | Корневой CI и workspace не задеты: `members = ["cqrsx"]`, демо — отдельный workspace; `exclude = ["demo"]` в корне — единственная правка вне `demo/` (§12.1) | без изменений |
 | D16 | Канал стрима replay держит соединение пула; пул 10 соединений | 2 воркера + poller + HTTP + 1 стрим rebuild — запас есть |
 | D17 | `LEASE_SAFETY_MARGIN = 5 с` публична (`task/queue/lease.rs:8`) | используется в расчёте §7 |

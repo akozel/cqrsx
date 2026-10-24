@@ -8,6 +8,7 @@ use crate::{
             executor::{CqrsCommandExecutor, FrameworkFactory},
             locks::LockLimits,
             retry::AggregateConflictRetryPolicy,
+            wakeup::CommitWakeup,
         },
         event_handler::{
             EventHandler,
@@ -151,6 +152,18 @@ impl<A: Aggregate + 'static, S> TestCommandExecutor<A, S> {
         Arc::get_mut(&mut self.inner)
             .expect("register event handlers before cloning the executor")
             .add_event_handler(handler, config);
+        self
+    }
+
+    /// Wakes `wakeup` after every commit with events, for the projection processors under test.
+    ///
+    /// # Panics
+    ///
+    /// When a clone of the executor exists.
+    pub fn with_commit_wakeup(mut self, wakeup: CommitWakeup) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("register the commit wake-up before cloning the executor")
+            .set_commit_wakeup(wakeup);
         self
     }
 
@@ -376,5 +389,23 @@ mod tests {
         let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1);
         let _use_case = executor.clone();
         let _ = executor.with_event_handler(Arc::new(Broken::default()), DeliveryConfig::default());
+    }
+
+    #[tokio::test]
+    async fn a_commit_wakes_the_registered_wakeup_and_a_late_registration_is_refused() {
+        use std::{future::Future, pin::pin, task::Context, task::Waker};
+        let wakeup = CommitWakeup::new();
+        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 5).with_commit_wakeup(wakeup.clone());
+        let use_case = executor.clone();
+        let mut woken = pin!(wakeup.wait());
+        assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        use_case.execute("s", 1, vec![]).await.unwrap();
+        assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
+        let late = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            TestCommandExecutor::<Stack>::new(MemStore::<Stack>::default(), 1)
+                .clone()
+                .with_commit_wakeup(CommitWakeup::new())
+        }));
+        assert!(late.is_err(), "a wake-up registered after a clone is refused");
     }
 }

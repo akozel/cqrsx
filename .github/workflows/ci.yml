@@ -131,7 +131,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        features: ["", "--features postgres", "--features worker", "--features host", "--features logging"]
+        features: ["", "--features postgres", "--features worker", "--features host", "--features logging", "--features mongodb"]
     steps:
       - uses: actions/checkout@v6
       - run: rustup toolchain install --no-self-update
@@ -159,6 +159,7 @@ jobs:
           printf 'Property test seed: %s\n' "$PROPTEST_RNG_SEED"
           cargo test --locked -p cqrsx --all-features property_
       - run: cargo test --locked -p cqrsx --all-features --test postgres stress_
+      - run: cargo test --locked -p cqrsx --all-features --test mongo stress_
       - name: Upload minimized property regressions
         if: failure()
         uses: actions/upload-artifact@v7

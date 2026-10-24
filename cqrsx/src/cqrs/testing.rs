@@ -146,6 +146,7 @@
 
 pub mod command;
 pub mod executor;
+pub mod mem_checkpoint_store;
 pub mod mem_event_repository;
 pub mod mem_store;
 pub mod mem_view_repository;

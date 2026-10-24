@@ -1,5 +1,9 @@
-//! Materialized read models and their persisted event projection.
+//! Materialized read models, their persisted event projection and the processor that feeds projections from
+//! the journal.
+pub mod checkpoint;
+pub mod processor;
 pub mod repository;
+pub mod runtime;
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
@@ -517,6 +521,40 @@ where
         unreachable!("a nonzero attempt limit always returns from an attempt")
     }
 
+    /// Replaces the stored document with the fold of `history[..prefix]`, written with the version of the
+    /// document as loaded; a conflict reloads and runs again, up to `max_attempts` times. A document that is
+    /// ahead of the history is newer than the read and is refused (see [`RebuildableProjection::rebuild`]).
+    pub(crate) async fn replace(
+        &self,
+        view_id: &str,
+        history: &[EventEnvelope<A>],
+        prefix: usize,
+    ) -> Result<(), PersistenceError> {
+        let Some(last) = history.last() else {
+            return Ok(());
+        };
+        if prefix == 0 || prefix > history.len() {
+            return Err(PersistenceError::UnknownError(
+                "rebuild prefix must lie within the history".into(),
+            ));
+        }
+        let mut attempt = 0;
+        loop {
+            attempt += 1;
+            let (_, stored) = self.load_or_default(view_id.to_string()).await?;
+            if stored.last_sequence > last.sequence {
+                return Err(PersistenceError::OptimisticLockError);
+            }
+            let mut view = V::default();
+            let mut context = ViewContext::new(view_id.to_string(), stored.version, 0);
+            apply_contiguous(&mut view, &mut context, &history[..prefix])?;
+            match self.view_repository.update_view(view, context).await {
+                Err(PersistenceError::OptimisticLockError) if attempt < self.max_attempts.get() => tokio::task::yield_now().await,
+                result => return result,
+            }
+        }
+    }
+
     fn handle_error(&self, error: &PersistenceError) {
         if let Some(handler) = &self.error_observer {
             (handler)(error);
@@ -568,6 +606,47 @@ where
 
     async fn handle(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
         self.apply_events(view_id, events)
+            .await
+            .inspect_err(|error| self.handle_error(error))
+    }
+}
+
+/// A projection that can replace a document with the fold of its aggregate's whole history: what a
+/// projection processor runs for one key on a rebuild of the journal, on a request for that key, and for a
+/// document that refused a live event as a gap.
+#[async_trait]
+pub trait RebuildableProjection<A: Aggregate>: EventHandler<A> {
+    /// Replaces the document of `aggregate_id` with the fold of `history[..prefix]`. `history` is the
+    /// aggregate's complete history from its first event, as it was read; `0 < prefix <= history.len()`:
+    /// the whole history for a rebuild in one write, `1` for a paced rebuild that then applies the rest
+    /// event by event through `handle`. A document that is ahead of `history` (its `last_sequence` is above
+    /// the last event) is newer than the read and is refused with `OptimisticLockError`, so that a reader
+    /// whose history is stale never rolls a document back: the caller re-reads the history. An empty
+    /// history writes nothing.
+    async fn rebuild(&self, aggregate_id: &str, history: &[EventEnvelope<A>], prefix: usize) -> Result<(), PersistenceError>;
+}
+
+/// A shared projection rebuilds like the one instance, as it handles like it.
+#[async_trait]
+impl<A, P> RebuildableProjection<A> for Arc<P>
+where
+    A: Aggregate,
+    P: RebuildableProjection<A> + ?Sized,
+{
+    async fn rebuild(&self, aggregate_id: &str, history: &[EventEnvelope<A>], prefix: usize) -> Result<(), PersistenceError> {
+        (**self).rebuild(aggregate_id, history, prefix).await
+    }
+}
+
+#[async_trait]
+impl<R, V, A> RebuildableProjection<A> for ViewProjection<R, V, A>
+where
+    R: ViewRepository<V, A>,
+    V: View<A>,
+    A: Aggregate,
+{
+    async fn rebuild(&self, view_id: &str, history: &[EventEnvelope<A>], prefix: usize) -> Result<(), PersistenceError> {
+        self.replace(view_id, history, prefix)
             .await
             .inspect_err(|error| self.handle_error(error))
     }
@@ -869,6 +948,116 @@ mod tests {
         ));
         assert_eq!(repo.saved(), (prefix(1..=2), context(1, 2)));
         assert_eq!(repo.calls(), ["load:view", "update:view:0:2"]);
+    }
+
+    mod rebuild {
+        use super::*;
+
+        #[tokio::test]
+        async fn a_rebuild_replaces_a_document_of_any_version_with_the_fold_of_the_history() {
+            let repo = Repository::seeded("view", prefix(1..=3), 7, 3);
+            ViewProjection::new(repo.clone())
+                .rebuild("view", &events(1..=5), 5)
+                .await
+                .unwrap();
+            assert_eq!(repo.saved(), (prefix(1..=5), context(8, 5)));
+            assert_eq!(repo.calls(), ["load:view", "update:view:7:5"]);
+            // A missing document is created from the history.
+            let repo = Arc::new(Repository::default());
+            ViewProjection::new(repo.clone())
+                .rebuild("view", &events(1..=2), 2)
+                .await
+                .unwrap();
+            assert_eq!(repo.saved(), (prefix(1..=2), context(1, 2)));
+        }
+
+        #[tokio::test]
+        async fn a_paced_rebuild_starts_the_document_at_the_first_event() {
+            let repo = Repository::seeded("view", prefix(1..=3), 7, 3);
+            ViewProjection::new(repo.clone())
+                .rebuild("view", &events(1..=5), 1)
+                .await
+                .unwrap();
+            assert_eq!(repo.saved(), (prefix(1..=1), context(8, 1)));
+        }
+
+        #[tokio::test]
+        async fn an_empty_history_rebuilds_nothing_and_a_prefix_outside_the_history_is_refused() {
+            let repo = Repository::seeded("view", prefix(1..=3), 7, 3);
+            let projection = ViewProjection::new(repo.clone());
+            projection.rebuild("view", &[], 1).await.unwrap();
+            for bound in [0, 6] {
+                assert!(matches!(
+                    projection.rebuild("view", &events(1..=5), bound).await,
+                    Err(PersistenceError::UnknownError(_))
+                ));
+            }
+            assert!(repo.calls().is_empty());
+            assert_eq!(repo.saved(), (prefix(1..=3), context(7, 3)));
+        }
+
+        #[tokio::test]
+        async fn a_document_ahead_of_the_history_is_refused_without_a_write() {
+            let repo = Repository::seeded("view", prefix(1..=7), 2, 7);
+            assert!(matches!(
+                ViewProjection::new(repo.clone()).rebuild("view", &events(1..=5), 5).await,
+                Err(PersistenceError::OptimisticLockError)
+            ));
+            assert_eq!(repo.calls(), ["load:view"]);
+            assert_eq!(repo.saved(), (prefix(1..=7), context(2, 7)));
+            // The document moved ahead between the first attempt and the retry of its conflict.
+            let repo = Repository::seeded("view", prefix(1..=3), 1, 3).fail(Failure::ConflictOnce { winner: 6 });
+            assert!(matches!(
+                ViewProjection::new(repo.clone()).rebuild("view", &events(1..=5), 5).await,
+                Err(PersistenceError::OptimisticLockError)
+            ));
+            assert_eq!(repo.calls(), ["load:view", "update:view:1:5", "load:view"]);
+            assert_eq!(repo.saved(), (prefix(1..=6), context(2, 6)), "the winner's document stays");
+        }
+
+        #[tokio::test]
+        async fn a_conflict_with_an_older_document_is_retried_and_a_gap_in_the_history_writes_nothing() {
+            // The winner wrote a shorter prefix: the retry replaces it.
+            let repo = Repository::seeded("view", prefix(1..=3), 1, 3).fail(Failure::ConflictOnce { winner: 4 });
+            ViewProjection::new(repo.clone())
+                .rebuild("view", &events(1..=5), 5)
+                .await
+                .unwrap();
+            assert_eq!(repo.saved(), (prefix(1..=5), context(3, 5)));
+            assert_eq!(repo.calls(), ["load:view", "update:view:1:5", "load:view", "update:view:2:5"]);
+            let repo = Repository::seeded("view", prefix(1..=3), 1, 3).fail(Failure::Update);
+            let mut projection = ViewProjection::new(repo.clone()).with_max_attempts(NonZeroUsize::new(2).unwrap());
+            let errors = Arc::new(Mutex::new(Vec::new()));
+            projection.set_error_observer(Box::new({
+                let errors = errors.clone();
+                move |e| errors.lock().unwrap().push(e.to_string())
+            }));
+            assert!(matches!(
+                projection.rebuild("view", &events(1..=5), 5).await,
+                Err(PersistenceError::OptimisticLockError)
+            ));
+            assert_eq!(repo.calls(), ["load:view", "update:view:1:5"].repeat(2));
+            assert!(matches!(
+                projection.rebuild("view", &[event(1), event(2), event(4)], 3).await,
+                Err(PersistenceError::SequenceGap { expected: 3, found: 4 })
+            ));
+            assert_eq!(
+                *errors.lock().unwrap(),
+                ["optimistic lock error", "sequence gap: expected event 3, found 4"]
+            );
+            assert_eq!(repo.saved(), (prefix(1..=3), context(1, 3)));
+        }
+
+        #[tokio::test]
+        async fn a_shared_projection_rebuilds_like_the_one_instance() {
+            let repo = Repository::seeded("view", prefix(1..=3), 7, 3);
+            let shared: Arc<dyn RebuildableProjection<TestAggregate>> =
+                Arc::new(ViewProjection::new(repo.clone()).with_name("halls"));
+            let boxed: Box<dyn RebuildableProjection<TestAggregate>> = Box::new(shared.clone());
+            assert_eq!(boxed.name(), "halls");
+            boxed.rebuild("view", &events(1..=4), 4).await.unwrap();
+            assert_eq!(repo.saved(), (prefix(1..=4), context(8, 4)));
+        }
     }
 
     mod model {

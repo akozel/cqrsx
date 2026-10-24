@@ -1,5 +1,7 @@
 //! Ordered delivery: committed events reach one handler through a bounded buffer per aggregate key, handled
 //! in delivery order by a worker of that key, in batches, independent of the commands that delivered them.
+//! A projection processor queues rebuild jobs of a key through the same buffer, so a rebuild and the live
+//! events of one key never run at once.
 //!
 //! A command first [reserves](OrderedDelivery::reserve) space in its key's buffer, commits, and then
 //! [delivers](DeliverySlot::deliver) its events without waiting: the hand-over happens in the same poll as
@@ -7,14 +9,15 @@
 //! up to [`max_batch`](DeliveryConfig::max_batch) queued commands, hands their events to the handler
 //! in one call and answers every [`DeliveryReceipt`] of the batch with the call's outcome.
 //!
-//! The buffer keeps the order of [`deliver`](DeliverySlot::deliver) calls per key; it does not order the
-//! callers. Commit order comes from the caller: the executor delivers while it holds the aggregate's lock,
-//! and its registered handlers are the only users of this module.
+//! The buffer keeps the order of [`deliver`](DeliverySlot::deliver) and [`rebuild`](DeliverySlot::rebuild)
+//! calls per key; it does not order the callers. Commit order comes from the caller: the executor delivers
+//! while it holds the aggregate's lock, the projection processor delivers a page in journal order. Those
+//! two are the only users of this module.
 //!
 //! Invariants:
 //! - a key has at most one worker per delivery, so the handler never runs twice at once for one key;
-//! - the jobs of a key are handled in delivery order, each once; a batch is a run of consecutive jobs,
-//!   at most `max_batch` long;
+//! - the jobs of a key are handled in delivery order, each once; a batch is a run of consecutive live jobs,
+//!   at most `max_batch` long, or one rebuild job: a batch never mixes the two;
 //! - a key has an entry exactly while space is reserved, a job is queued or its worker runs, so an idle
 //!   delivery holds no entry;
 //! - reserved, queued and handled jobs of a key never exceed `capacity`;
@@ -22,21 +25,24 @@
 //! - the std mutex guarding the entries is never held across an `.await`.
 use super::{DeliveryBacklog, DeliveryConfig, PendingJob};
 use crate::cqrs::{aggregate::Aggregate, event::EventEnvelope, event_handler::EventHandler, store::PersistenceError};
+use async_trait::async_trait;
 use std::{
     collections::{HashMap, VecDeque},
     future::Future,
     panic::AssertUnwindSafe,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
     task::Poll,
+    time::Duration,
 };
 use thiserror::Error;
 use tokio::sync::{OwnedSemaphorePermit, Semaphore, oneshot};
+use tokio_util::sync::CancellationToken;
 use tracing::instrument::WithSubscriber;
 
-/// Why an ordered handler did not handle a command's events. The events stay committed.
+/// Why an ordered handler did not handle a job. The events stay committed.
 #[derive(Clone, Debug, Error)]
 pub(crate) enum DeliveryError {
-    /// The handler failed for the batch that held these events; the batch shares the one error.
+    /// The handler, or the rebuilder, failed for the batch that held this job; the batch shares the one error.
     #[error("event handler failed: {0}")]
     Failed(Arc<PersistenceError>),
     /// The handler panicked while handling the batch; the key's buffer keeps working.
@@ -47,11 +53,38 @@ pub(crate) enum DeliveryError {
     Stopped,
 }
 
-/// One command's events in a key's buffer, holding the space it reserved and its backlog count until
-/// it is dropped: answered by the worker, or abandoned with it.
+/// Replaces the document of one key with the fold of its history: the rebuild job of a projection
+/// processor. Only a delivery built [`with_rebuilder`](OrderedDelivery::with_rebuilder) takes rebuild jobs.
+#[async_trait]
+pub(crate) trait Rebuilder: Send + Sync {
+    /// Reads, folds and writes the history of `aggregate_id` and returns how many events it had. `pace` is
+    /// the pause before every event after the first; `stop` ends the pauses once the owner is gone.
+    async fn rebuild(&self, aggregate_id: &str, pace: Duration, stop: CancellationToken) -> Result<usize, PersistenceError>;
+}
+
+/// What a job asks the key's worker to do.
+enum Work<A: Aggregate> {
+    /// Hand these events to the handler, joined with the neighbouring `Apply` jobs of the batch.
+    Apply(Arc<[EventEnvelope<A>]>),
+    /// Rebuild the key's document from its history: always a batch of its own.
+    Rebuild { pace: Duration, stop: CancellationToken },
+}
+
+/// What a handled job did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Done {
+    Applied,
+    /// The document was rebuilt from a history of `events` events.
+    Rebuilt {
+        events: usize,
+    },
+}
+
+/// One job in a key's buffer, holding the space it reserved and its backlog count until it is dropped:
+/// answered by the worker, or abandoned with it.
 struct Job<A: Aggregate> {
-    events: Arc<[EventEnvelope<A>]>,
-    receipt: oneshot::Sender<Result<(), DeliveryError>>,
+    work: Work<A>,
+    receipt: oneshot::Sender<Result<Done, DeliveryError>>,
     _space: OwnedSemaphorePermit,
     _pending: PendingJob,
 }
@@ -79,6 +112,7 @@ fn guarded<A: Aggregate>(buffers: &Buffers<A>) -> MutexGuard<'_, HashMap<String,
 
 struct Inner<A: Aggregate> {
     handler: Arc<dyn EventHandler<A>>,
+    rebuilder: Option<Arc<dyn Rebuilder>>,
     config: DeliveryConfig,
     buffers: Buffers<A>,
     backlog: DeliveryBacklog,
@@ -104,11 +138,32 @@ impl<A: Aggregate + 'static> OrderedDelivery<A> {
         Self::with_backlog(handler, config, DeliveryBacklog::default())
     }
 
-    /// A delivery counting its hand-overs in `backlog`, shared with the other deliveries of an executor.
+    /// A delivery counting its hand-overs in `backlog`, shared with the other deliveries of an executor; it
+    /// takes no rebuild jobs.
     pub(crate) fn with_backlog(handler: Arc<dyn EventHandler<A>>, config: DeliveryConfig, backlog: DeliveryBacklog) -> Self {
+        Self::build(handler, None, config, backlog)
+    }
+
+    /// The delivery of a projection processor: live jobs go to `handler`, rebuild jobs to `rebuilder`,
+    /// through the one buffer and worker of each key, so the two never run at once for one key.
+    pub(crate) fn with_rebuilder(
+        handler: Arc<dyn EventHandler<A>>,
+        rebuilder: Arc<dyn Rebuilder>,
+        config: DeliveryConfig,
+    ) -> Self {
+        Self::build(handler, Some(rebuilder), config, DeliveryBacklog::default())
+    }
+
+    fn build(
+        handler: Arc<dyn EventHandler<A>>,
+        rebuilder: Option<Arc<dyn Rebuilder>>,
+        config: DeliveryConfig,
+        backlog: DeliveryBacklog,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 handler,
+                rebuilder,
                 config,
                 buffers: Mutex::default(),
                 backlog,
@@ -198,7 +253,8 @@ impl<A: Aggregate> Drop for BufferRef<A> {
     }
 }
 
-/// Space reserved in one key's buffer; [`deliver`](Self::deliver) fills it, dropping it gives it back.
+/// Space reserved in one key's buffer; [`deliver`](Self::deliver) or [`rebuild`](Self::rebuild) fills it,
+/// dropping it gives it back.
 #[must_use = "dropping the slot gives the reserved space back"]
 pub(crate) struct DeliverySlot<A: Aggregate> {
     buffer: BufferRef<A>,
@@ -210,10 +266,30 @@ impl<A: Aggregate + 'static> DeliverySlot<A> {
     /// runs; never waits. Must be called inside a Tokio runtime. The handler gets the events whether or not
     /// anybody awaits the receipt.
     pub(crate) fn deliver(self, events: Arc<[EventEnvelope<A>]>) -> DeliveryReceipt {
+        self.queue(Work::Apply(events))
+    }
+
+    /// Queues a rebuild of the key's document behind every job delivered before for the key: a live job
+    /// delivered before it applies to the old document and the rebuild folds its events from the history; a
+    /// live job delivered after it applies on top of the rebuilt document, or is skipped by the contiguity
+    /// rule when the history already held its events.
+    ///
+    /// # Panics
+    ///
+    /// On a delivery without a rebuilder.
+    pub(crate) fn rebuild(self, pace: Duration, stop: CancellationToken) -> DeliveryReceipt {
+        assert!(
+            self.buffer.inner.rebuilder.is_some(),
+            "rebuild jobs need a delivery with a rebuilder"
+        );
+        self.queue(Work::Rebuild { pace, stop })
+    }
+
+    fn queue(self, work: Work<A>) -> DeliveryReceipt {
         let Self { buffer, space } = self;
         let (receipt, outcome) = oneshot::channel();
         let job = Job {
-            events,
+            work,
             receipt,
             _space: space,
             _pending: buffer.inner.backlog.pending(),
@@ -240,13 +316,13 @@ impl<A: Aggregate + 'static> DeliverySlot<A> {
     }
 }
 
-/// The outcome of the ordered handler for one command's events. Dropping it does not cancel the handling.
+/// The outcome of the ordered handler for one job. Dropping it does not cancel the handling.
 #[derive(Debug)]
-pub(crate) struct DeliveryReceipt(oneshot::Receiver<Result<(), DeliveryError>>);
+pub(crate) struct DeliveryReceipt(oneshot::Receiver<Result<Done, DeliveryError>>);
 
 impl DeliveryReceipt {
-    /// Waits for the handler call that took these events.
-    pub(crate) async fn outcome(self) -> Result<(), DeliveryError> {
+    /// Waits for the handler call that took this job.
+    pub(crate) async fn outcome(self) -> Result<Done, DeliveryError> {
         self.0.await.unwrap_or(Err(DeliveryError::Stopped))
     }
 }
@@ -272,7 +348,8 @@ impl<A: Aggregate> Worker<A> {
 
     /// The next run of queued jobs, or `None` after the worker has left the empty buffer (and closed it
     /// when nobody reserves space in it). Deciding to leave and queueing a job happen under one mutex, so a
-    /// job is never queued behind a worker that has decided to leave.
+    /// job is never queued behind a worker that has decided to leave. A rebuild job is a batch of its own: a
+    /// run of live jobs ends at `max_batch` or before the next rebuild.
     fn next_batch(&mut self) -> Option<Vec<Job<A>>> {
         let mut buffers = guarded(&self.inner.buffers);
         let buffer = buffers.get_mut(&self.aggregate_id)?;
@@ -284,28 +361,77 @@ impl<A: Aggregate> Worker<A> {
             self.finished = true;
             return None;
         }
-        let take = buffer.jobs.len().min(self.inner.config.max_batch());
+        let take = match buffer.jobs.front().map(|job| &job.work) {
+            Some(Work::Rebuild { .. }) => 1,
+            _ => buffer
+                .jobs
+                .iter()
+                .take(self.inner.config.max_batch())
+                .take_while(|job| matches!(job.work, Work::Apply(_)))
+                .count(),
+        };
         Some(buffer.jobs.drain(..take).collect())
     }
 
-    /// One handler call for the whole batch, isolated from a panic of the handler.
-    async fn handle(&self, batch: &[Job<A>]) -> Result<(), DeliveryError> {
+    /// One handler call for the whole batch, or one rebuild, isolated from a panic of the callee.
+    async fn handle(&self, batch: &[Job<A>]) -> Result<Done, DeliveryError> {
+        let handler = self.inner.handler.name();
+        if let [
+            Job {
+                work: Work::Rebuild { pace, stop },
+                ..
+            },
+        ] = batch
+        {
+            let rebuilder = self
+                .inner
+                .rebuilder
+                .as_ref()
+                .expect("rebuild jobs need a delivery with a rebuilder");
+            return match unwinding(rebuilder.rebuild(&self.aggregate_id, *pace, stop.clone())).await {
+                Ok(Ok(events)) => Ok(Done::Rebuilt { events }),
+                Ok(Err(error)) => {
+                    crate::diagnostics::log_delivery_failure(A::TYPE, &handler, "rebuild", 1, &error);
+                    Err(DeliveryError::Failed(Arc::new(error)))
+                }
+                Err(Panicked) => {
+                    crate::diagnostics::log_delivery_panic(A::TYPE, &handler, "rebuild", 1);
+                    Err(DeliveryError::Panicked)
+                }
+            };
+        }
         let joined: Vec<EventEnvelope<A>>;
         let events: &[EventEnvelope<A>] = match batch {
-            [job] => &job.events,
+            [
+                Job {
+                    work: Work::Apply(events),
+                    ..
+                },
+            ] => events,
             _ => {
-                joined = batch.iter().flat_map(|job| job.events.iter().cloned()).collect();
+                joined = batch
+                    .iter()
+                    .filter_map(|job| {
+                        if let Work::Apply(events) = &job.work {
+                            Some(events.iter())
+                        } else {
+                            None
+                        }
+                    })
+                    .flatten()
+                    .cloned()
+                    .collect();
                 &joined
             }
         };
         match unwinding(self.inner.handler.handle(&self.aggregate_id, events)).await {
-            Ok(Ok(())) => Ok(()),
+            Ok(Ok(())) => Ok(Done::Applied),
             Ok(Err(error)) => {
-                crate::diagnostics::log_delivery_failure(A::TYPE, &self.inner.handler.name(), batch.len(), &error);
+                crate::diagnostics::log_delivery_failure(A::TYPE, &handler, "deliver", batch.len(), &error);
                 Err(DeliveryError::Failed(Arc::new(error)))
             }
             Err(Panicked) => {
-                crate::diagnostics::log_delivery_panic(A::TYPE, &self.inner.handler.name(), batch.len());
+                crate::diagnostics::log_delivery_panic(A::TYPE, &handler, "deliver", batch.len());
                 Err(DeliveryError::Panicked)
             }
         }
@@ -386,12 +512,13 @@ mod tests {
         Panic,
     }
 
-    /// Records every call (key and sequences) and notices two calls of one key at once. A gated probe
-    /// keeps each call open until the test finishes it.
+    /// Records every call (key and sequences) and every rebuild (key, pace, stop) and notices two calls of
+    /// one key at once. A gated probe keeps each call open until the test finishes it.
     #[derive(Default)]
     struct Probe {
         gated: bool,
         calls: Mutex<Vec<(String, Vec<usize>)>>,
+        rebuilds: Mutex<Vec<(String, Duration, CancellationToken)>>,
         open: Mutex<HashMap<String, oneshot::Sender<Finish>>>,
         inside: Mutex<HashSet<String>>,
         overlapped: AtomicBool,
@@ -414,6 +541,32 @@ mod tests {
                 .collect()
         }
 
+        fn rebuilds_of(&self, aggregate_id: &str) -> Vec<(Duration, CancellationToken)> {
+            let rebuilds = self.rebuilds.lock().unwrap();
+            rebuilds
+                .iter()
+                .filter(|(id, ..)| id == aggregate_id)
+                .map(|(_, pace, stop)| (*pace, stop.clone()))
+                .collect()
+        }
+
+        /// Enters a call of the key (noticing an overlap) and, when gated, waits for the test to finish it.
+        async fn call(&self, aggregate_id: &str) -> Finish {
+            if !self.inside.lock().unwrap().insert(aggregate_id.to_owned()) {
+                self.overlapped.store(true, Ordering::SeqCst);
+            }
+            let how = if self.gated {
+                let (sender, finished) = oneshot::channel();
+                self.open.lock().unwrap().insert(aggregate_id.to_owned(), sender);
+                finished.await.unwrap_or(Finish::Ok)
+            } else {
+                tokio::task::yield_now().await;
+                Finish::Ok
+            };
+            self.inside.lock().unwrap().remove(aggregate_id);
+            how
+        }
+
         /// Ends the open call of the key; `false` when none is open.
         fn finish(&self, aggregate_id: &str, how: Finish) -> bool {
             let sender = self.open.lock().unwrap().remove(aggregate_id);
@@ -428,22 +581,22 @@ mod tests {
         }
 
         async fn handle(&self, aggregate_id: &str, events: &[Envelope]) -> Result<(), PersistenceError> {
-            if !self.inside.lock().unwrap().insert(aggregate_id.to_owned()) {
-                self.overlapped.store(true, Ordering::SeqCst);
-            }
             let sequences = events.iter().map(|e| e.sequence).collect();
             self.calls.lock().unwrap().push((aggregate_id.to_owned(), sequences));
-            let how = if self.gated {
-                let (sender, finished) = oneshot::channel();
-                self.open.lock().unwrap().insert(aggregate_id.to_owned(), sender);
-                finished.await.unwrap_or(Finish::Ok)
-            } else {
-                tokio::task::yield_now().await;
-                Finish::Ok
-            };
-            self.inside.lock().unwrap().remove(aggregate_id);
-            match how {
+            match self.call(aggregate_id).await {
                 Finish::Ok => Ok(()),
+                Finish::Fail => Err(PersistenceError::OptimisticLockError),
+                Finish::Panic => panic!("the probe panicked as asked"),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl Rebuilder for Probe {
+        async fn rebuild(&self, aggregate_id: &str, pace: Duration, stop: CancellationToken) -> Result<usize, PersistenceError> {
+            self.rebuilds.lock().unwrap().push((aggregate_id.to_owned(), pace, stop));
+            match self.call(aggregate_id).await {
+                Finish::Ok => Ok(3),
                 Finish::Fail => Err(PersistenceError::OptimisticLockError),
                 Finish::Panic => panic!("the probe panicked as asked"),
             }
@@ -452,6 +605,15 @@ mod tests {
 
     fn delivery(probe: &Arc<Probe>, capacity: usize, max_batch: usize) -> OrderedDelivery<TestAggregate> {
         OrderedDelivery::new(probe.clone(), DeliveryConfig::new(capacity, max_batch).unwrap())
+    }
+
+    /// A processor's delivery: the probe is the handler and the rebuilder.
+    fn rebuilding(probe: &Arc<Probe>, capacity: usize, max_batch: usize) -> OrderedDelivery<TestAggregate> {
+        OrderedDelivery::with_rebuilder(
+            probe.clone(),
+            probe.clone(),
+            DeliveryConfig::new(capacity, max_batch).unwrap(),
+        )
     }
 
     /// Lets the spawned workers of a current-thread runtime run until they wait again.
@@ -490,7 +652,7 @@ mod tests {
         delivery.reserve(id).await.deliver(events(id, sequences))
     }
 
-    fn outcome_of(receipt: &mut Polled<impl Future<Output = Result<(), DeliveryError>>>) -> Option<Result<(), String>> {
+    fn outcome_of(receipt: &mut Polled<impl Future<Output = Result<Done, DeliveryError>>>) -> Option<Result<Done, String>> {
         receipt.poll().map(|outcome| outcome.map_err(|error| error.to_string()))
     }
 
@@ -592,7 +754,7 @@ mod tests {
         assert_eq!(delivery.busy_keys(), 1);
         assert!(probe.finish("a", Finish::Ok));
         settle().await;
-        assert_eq!(outcome_of(&mut blocked), Some(Ok(())));
+        assert_eq!(outcome_of(&mut blocked), Some(Ok(Done::Applied)));
         assert_eq!(delivery.busy_keys(), 0);
     }
 
@@ -686,11 +848,13 @@ mod tests {
         })
         .await;
         let failed = Err("event handler failed: optimistic lock error".to_owned());
-        assert_eq!(outcomes, [Ok(()), failed.clone(), failed.clone(), failed]);
-        assert_eq!(next, Ok(()), "the buffer keeps working after a failure");
+        assert_eq!(outcomes, [Ok(Done::Applied), failed.clone(), failed.clone(), failed]);
+        assert_eq!(next, Ok(Done::Applied), "the buffer keeps working after a failure");
         assert_eq!(log.matches("event delivery failed").count(), 1, "{log}");
         assert!(
-            log.contains("commands=3") && log.contains("aggregate_type=\"TestAggregate\""),
+            log.contains("commands=3")
+                && log.contains("operation=\"deliver\"")
+                && log.contains("aggregate_type=\"TestAggregate\""),
             "{log}"
         );
         assert!(!log.contains("private_"), "{log}");
@@ -731,7 +895,9 @@ mod tests {
                 for sequence in 1..=500 {
                     let receipt = deliver(&delivery, &id, [sequence]).await;
                     match sequence % 3 {
-                        0 => receipt.outcome().await.unwrap(),
+                        0 => {
+                            receipt.outcome().await.unwrap();
+                        }
                         1 => tokio::task::yield_now().await,
                         _ => {}
                     }
@@ -787,6 +953,112 @@ mod tests {
         assert_eq!(probe.calls_of("k"), [vec![1], vec![4]]);
     }
 
+    #[tokio::test]
+    async fn a_rebuild_job_runs_after_the_live_jobs_before_it_and_before_the_ones_after() {
+        let probe = Probe::gated();
+        let delivery = rebuilding(&probe, 64, 32);
+        let stop = CancellationToken::new();
+        let before = deliver(&delivery, "k", [1]).await;
+        let rebuild = delivery.reserve("k").await.rebuild(Duration::from_millis(5), stop.clone());
+        let after = deliver(&delivery, "k", [2]).await;
+        settle().await;
+        assert_eq!((probe.calls_of("k"), probe.rebuilds_of("k").len()), (vec![vec![1]], 0));
+        assert!(probe.finish("k", Finish::Ok));
+        settle().await;
+        assert_eq!(probe.calls_of("k"), [vec![1]], "the live job after the rebuild waits");
+        let (pace, received) = probe.rebuilds_of("k").remove(0);
+        assert_eq!(pace, Duration::from_millis(5));
+        stop.cancel();
+        assert!(received.is_cancelled(), "the rebuilder gets the owner's stop token");
+        assert!(probe.finish("k", Finish::Ok));
+        settle().await;
+        assert_eq!(probe.calls_of("k"), [vec![1], vec![2]]);
+        assert!(probe.finish("k", Finish::Ok));
+        assert_eq!(before.outcome().await.unwrap(), Done::Applied);
+        assert_eq!(rebuild.outcome().await.unwrap(), Done::Rebuilt { events: 3 });
+        assert_eq!(after.outcome().await.unwrap(), Done::Applied);
+        assert!(!probe.overlapped.load(Ordering::SeqCst));
+        assert_eq!((delivery.backlog().len(), delivery.busy_keys()), (0, 0));
+    }
+
+    #[tokio::test]
+    async fn a_batch_of_live_jobs_ends_before_a_rebuild_and_the_rebuild_is_a_batch_of_its_own() {
+        let probe = Probe::gated();
+        let delivery = rebuilding(&probe, 64, 32);
+        let first = deliver(&delivery, "k", [1]).await;
+        settle().await;
+        let mut receipts = futures_join(&delivery, "k", 2..=3).await;
+        receipts.push(delivery.reserve("k").await.rebuild(Duration::ZERO, CancellationToken::new()));
+        receipts.extend(futures_join(&delivery, "k", 4..=5).await);
+        for _ in 0..4 {
+            assert!(probe.finish("k", Finish::Ok));
+            settle().await;
+        }
+        first.outcome().await.unwrap();
+        let outcomes: Vec<Done> = {
+            let mut outcomes = Vec::new();
+            for receipt in receipts {
+                outcomes.push(receipt.outcome().await.unwrap());
+            }
+            outcomes
+        };
+        assert_eq!(probe.calls_of("k"), [vec![1], vec![2, 3], vec![4, 5]]);
+        assert_eq!(probe.rebuilds_of("k").len(), 1);
+        assert_eq!(
+            outcomes,
+            [
+                Done::Applied,
+                Done::Applied,
+                Done::Rebuilt { events: 3 },
+                Done::Applied,
+                Done::Applied
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn a_failing_or_panicking_rebuild_answers_its_receipt_and_the_worker_keeps_working() {
+        let probe = Probe::gated();
+        let delivery = rebuilding(&probe, 64, 32);
+        let ((failed, panicked, next), log) = crate::diagnostics::test_support::capture(async {
+            let failed = delivery
+                .reserve("private_id")
+                .await
+                .rebuild(Duration::ZERO, CancellationToken::new());
+            settle().await;
+            assert!(probe.finish("private_id", Finish::Fail));
+            let failed = failed.outcome().await.map_err(|e| e.to_string());
+            let panicked = delivery
+                .reserve("private_id")
+                .await
+                .rebuild(Duration::ZERO, CancellationToken::new());
+            settle().await;
+            assert!(probe.finish("private_id", Finish::Panic));
+            let panicked = panicked.outcome().await.map_err(|e| e.to_string());
+            let next = deliver(&delivery, "private_id", [1]).await;
+            settle().await;
+            assert!(probe.finish("private_id", Finish::Ok));
+            (failed, panicked, next.outcome().await)
+        })
+        .await;
+        assert_eq!(failed, Err("event handler failed: optimistic lock error".to_owned()));
+        assert_eq!(panicked, Err("event handler panicked".to_owned()));
+        assert_eq!(next.unwrap(), Done::Applied);
+        assert_eq!(log.matches("event delivery failed").count(), 1, "{log}");
+        assert_eq!(log.matches("event handler panicked").count(), 1, "{log}");
+        assert_eq!(log.matches("operation=\"rebuild\"").count(), 2, "{log}");
+        assert!(log.contains("commands=1") && !log.contains("private_"), "{log}");
+        assert_eq!((delivery.backlog().len(), delivery.busy_keys()), (0, 0));
+    }
+
+    #[tokio::test]
+    #[should_panic(expected = "rebuild jobs need a delivery with a rebuilder")]
+    async fn a_delivery_without_a_rebuilder_refuses_rebuild_jobs() {
+        let probe = Probe::gated();
+        let delivery = delivery(&probe, 64, 32);
+        let _ = delivery.reserve("k").await.rebuild(Duration::ZERO, CancellationToken::new());
+    }
+
     #[test]
     fn errors_and_handles_describe_themselves() {
         let probe = Probe::gated();
@@ -813,6 +1085,7 @@ mod tests {
         #[derive(Clone, Debug)]
         enum Op {
             Deliver(usize),
+            Rebuild(usize),
             Finish(usize, bool),
             CancelReservation(usize),
             DropReceipt(usize),
@@ -821,19 +1094,43 @@ mod tests {
         fn op() -> impl Strategy<Value = Op> {
             prop_oneof![
                 5 => (0..KEYS).prop_map(Op::Deliver),
+                1 => (0..KEYS).prop_map(Op::Rebuild),
                 4 => (0..KEYS, any::<bool>()).prop_map(|(k, ok)| Op::Finish(k, ok)),
                 1 => (0..KEYS).prop_map(Op::CancelReservation),
                 1 => any::<usize>().prop_map(Op::DropReceipt),
             ]
         }
 
-        /// One key as the model sees it: queued jobs (their sequences), the batch in the handler, the calls
-        /// so far and whether a reservation waits for space.
+        /// A job as the model sees it: a live job with its sequence, or a rebuild; both numbered per key.
+        #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+        enum Item {
+            Apply(usize),
+            Rebuild(usize),
+        }
+
+        impl Item {
+            fn id(self) -> usize {
+                match self {
+                    Item::Apply(id) | Item::Rebuild(id) => id,
+                }
+            }
+
+            fn done(self) -> Done {
+                match self {
+                    Item::Apply(_) => Done::Applied,
+                    Item::Rebuild(_) => Done::Rebuilt { events: 3 },
+                }
+            }
+        }
+
+        /// One key as the model sees it: queued jobs, the batch in the handler, the live calls and the
+        /// rebuilds so far, and the next job number.
         #[derive(Default)]
         struct ModelKey {
-            queued: VecDeque<usize>,
-            in_call: Vec<usize>,
+            queued: VecDeque<Item>,
+            in_call: Vec<Item>,
             calls: Vec<Vec<usize>>,
+            rebuilds: usize,
             next: usize,
         }
 
@@ -842,36 +1139,49 @@ mod tests {
                 self.queued.len() + self.in_call.len()
             }
 
-            /// What the key's worker does when it is free: take the next run of queued jobs.
+            /// What the key's worker does when it is free: a run of live jobs up to `MAX_BATCH`, or one rebuild.
             fn start_call(&mut self) {
                 if self.in_call.is_empty() && !self.queued.is_empty() {
-                    let take = self.queued.len().min(MAX_BATCH);
+                    let take = match self.queued.front() {
+                        Some(Item::Rebuild(_)) => 1,
+                        _ => self
+                            .queued
+                            .iter()
+                            .take(MAX_BATCH)
+                            .take_while(|item| matches!(item, Item::Apply(_)))
+                            .count(),
+                    };
                     self.in_call = self.queued.drain(..take).collect();
-                    self.calls.push(self.in_call.clone());
+                    match self.in_call[0] {
+                        Item::Rebuild(_) => self.rebuilds += 1,
+                        Item::Apply(_) => self.calls.push(self.in_call.iter().map(|item| item.id()).collect()),
+                    }
                 }
             }
         }
 
         type Reserving<'a> = Polled<Pin<Box<dyn Future<Output = DeliverySlot<TestAggregate>> + 'a>>>;
-        type Receipt = Polled<Pin<Box<dyn Future<Output = Result<(), DeliveryError>>>>>;
+        type Receipt = Polled<Pin<Box<dyn Future<Output = Result<Done, DeliveryError>>>>>;
 
-        /// Runs `ops` against a real delivery and a plain model of one FIFO buffer and one handler call per key.
+        /// Runs `ops` against a real delivery and a plain model of one FIFO buffer and one call per key.
         async fn check(ops: Vec<Op>) -> Result<(), TestCaseError> {
             let probe = Probe::gated();
-            let delivery = delivery(&probe, CAPACITY, MAX_BATCH);
+            let delivery = rebuilding(&probe, CAPACITY, MAX_BATCH);
             let keys: Vec<String> = (0..KEYS).map(|k| k.to_string()).collect();
             let mut model: Vec<ModelKey> = (0..KEYS).map(|_| ModelKey::default()).collect();
-            let mut reserving: Vec<Option<Reserving<'_>>> = (0..KEYS).map(|_| None).collect();
-            // Receipts by key and sequence, with the outcome the model expects once the job is handled.
+            // A pending reservation per key and whether it will deliver a rebuild.
+            let mut reserving: Vec<Option<(Reserving<'_>, bool)>> = (0..KEYS).map(|_| None).collect();
+            // Receipts by key and job number, with the outcome the model expects once the job is handled.
             let mut receipts: Vec<(usize, usize, Receipt)> = Vec::new();
-            let mut outcomes: HashMap<(usize, usize), bool> = HashMap::new();
+            let mut outcomes: HashMap<(usize, usize), (bool, Item)> = HashMap::new();
             for op in ops {
+                let rebuild = matches!(op, Op::Rebuild(_));
                 match op {
-                    Op::Deliver(k) => {
+                    Op::Deliver(k) | Op::Rebuild(k) => {
                         if reserving[k].is_some() {
-                            continue; // one command of a key at a time, as under its lock
+                            continue; // one job of a key at a time, as under its lock or in a page
                         }
-                        reserving[k] = Some(Polled::new(Box::pin(delivery.reserve(&keys[k]))));
+                        reserving[k] = Some((Polled::new(Box::pin(delivery.reserve(&keys[k]))), rebuild));
                     }
                     Op::Finish(k, ok) => {
                         let m = &mut model[k];
@@ -880,8 +1190,8 @@ mod tests {
                         }
                         let how = if ok { Finish::Ok } else { Finish::Fail };
                         prop_assert!(probe.finish(&keys[k], how));
-                        for sequence in m.in_call.drain(..) {
-                            outcomes.insert((k, sequence), ok);
+                        for item in m.in_call.drain(..) {
+                            outcomes.insert((k, item.id()), (ok, item));
                         }
                     }
                     Op::CancelReservation(k) => reserving[k] = None,
@@ -896,7 +1206,7 @@ mod tests {
                     settle().await;
                     for k in 0..KEYS {
                         model[k].start_call();
-                        let Some(reservation) = reserving[k].as_mut() else {
+                        let Some((reservation, rebuild)) = reserving[k].as_mut() else {
                             continue;
                         };
                         let m = &mut model[k];
@@ -904,9 +1214,17 @@ mod tests {
                             Some(slot) => {
                                 prop_assert!(m.used() < CAPACITY, "space reserved past capacity");
                                 m.next += 1;
-                                let receipt = slot.deliver(events(&keys[k], [m.next]));
+                                let item = if *rebuild {
+                                    Item::Rebuild(m.next)
+                                } else {
+                                    Item::Apply(m.next)
+                                };
+                                let receipt = match item {
+                                    Item::Rebuild(_) => slot.rebuild(Duration::ZERO, CancellationToken::new()),
+                                    Item::Apply(sequence) => slot.deliver(events(&keys[k], [sequence])),
+                                };
                                 receipts.push((k, m.next, Polled::new(Box::pin(receipt.outcome()))));
-                                m.queued.push_back(m.next);
+                                m.queued.push_back(item);
                                 reserving[k] = None;
                             }
                             None => prop_assert_eq!(m.used(), CAPACITY, "a reservation waits only for a full buffer"),
@@ -915,16 +1233,22 @@ mod tests {
                 }
                 for (k, m) in model.iter().enumerate() {
                     prop_assert_eq!(&probe.calls_of(&keys[k]), &m.calls);
+                    prop_assert_eq!(probe.rebuilds_of(&keys[k]).len(), m.rebuilds);
                     prop_assert_eq!(delivery.queued(&keys[k]), m.queued.len());
                 }
                 let mut still = Vec::new();
-                for (k, sequence, mut receipt) in receipts.drain(..) {
-                    match (receipt.poll(), outcomes.get(&(k, sequence))) {
-                        (None, None) => still.push((k, sequence, receipt)),
-                        (Some(outcome), Some(&ok)) => prop_assert_eq!(outcome.is_ok(), ok),
+                for (k, id, mut receipt) in receipts.drain(..) {
+                    match (receipt.poll(), outcomes.get(&(k, id))) {
+                        (None, None) => still.push((k, id, receipt)),
+                        (Some(outcome), Some(&(ok, item))) => {
+                            prop_assert_eq!(outcome.is_ok(), ok);
+                            if let Ok(done) = outcome {
+                                prop_assert_eq!(done, item.done());
+                            }
+                        }
                         (outcome, expected) => {
                             return Err(TestCaseError::fail(format!(
-                                "job {k}/{sequence}: got {outcome:?}, expected {expected:?}"
+                                "job {k}/{id}: got {outcome:?}, expected {expected:?}"
                             )));
                         }
                     }

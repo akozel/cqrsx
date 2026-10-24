@@ -7,7 +7,7 @@ use crate::{
     cqrs::{
         AggregateError, CqrsFramework,
         aggregate::{Aggregate, AggregateKey},
-        command::retry::AggregateConflictRetryPolicy,
+        command::{retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
         event::EventEnvelope,
         event_handler::{
             EventHandler,
@@ -59,12 +59,15 @@ where
 /// The committed events go to the executor's handlers ([`with_event_handler`](Self::with_event_handler)),
 /// each through an ordered buffer per aggregate key, numbered by registration in post-commit failures. An
 /// event handler never executes a command (see [`EventHandler`]): it would wait for its own receipt
-/// forever, and handlers of two aggregates could wait for each other.
+/// forever, and handlers of two aggregates could wait for each other. A commit with events also wakes the
+/// aggregate type's projection processors ([`with_commit_wakeup`](Self::with_commit_wakeup)), which read
+/// the journal themselves.
 pub struct CqrsCommandExecutor<A: Aggregate, F> {
     factory: F,
     retry_policy: AggregateConflictRetryPolicy,
     locks: AggregateLocks,
     handlers: RegisteredHandlers<A>,
+    wakeup: Option<CommitWakeup>,
 }
 
 impl<A: Aggregate + 'static, F> CqrsCommandExecutor<A, F> {
@@ -75,7 +78,19 @@ impl<A: Aggregate + 'static, F> CqrsCommandExecutor<A, F> {
             retry_policy,
             locks: AggregateLocks::new(lock_limits),
             handlers: RegisteredHandlers::default(),
+            wakeup: None,
         }
+    }
+
+    /// Wakes `wakeup` after every commit with events, before the client gets its answer: the projection
+    /// processors of this aggregate type then read the journal at once instead of at their next poll.
+    pub fn with_commit_wakeup(mut self, wakeup: CommitWakeup) -> Self {
+        self.set_commit_wakeup(wakeup);
+        self
+    }
+
+    pub(crate) fn set_commit_wakeup(&mut self, wakeup: CommitWakeup) {
+        self.wakeup = Some(wakeup);
     }
 
     /// Registers a handler after the handlers registered before it; it gets the committed events through
@@ -160,8 +175,11 @@ where
         .inspect_err(|error| log_aggregate_error(A::TYPE, error))
         .map_err(map_aggregate_error)?;
         let Some(last_sequence) = committed.last().map(|event| event.sequence) else {
-            return Ok(()); // no events: nothing to hand over, the reserved space goes back
+            return Ok(()); // no events: nothing to hand over, nobody to wake, the reserved space goes back
         };
+        if let Some(wakeup) = &self.wakeup {
+            wakeup.wake(); // the journal has the events: the processors may read them now
+        }
         let events: Arc<[EventEnvelope<A>]> = committed.into();
         // In the same poll as the commit's completion: a caller gone from here on does not lose it.
         let receipts = reserved.deliver(&events);
@@ -1196,6 +1214,42 @@ mod tests {
             *store.calls.lock().unwrap(),
             ["load", "conflict a", "load", "conflict a", "load", "commit a"]
         );
+    }
+
+    #[tokio::test]
+    async fn the_commit_wakeup_fires_after_a_commit_with_events_and_not_otherwise() {
+        use std::{future::Future, pin::pin, task::Context, task::Waker};
+        let wakeup = CommitWakeup::new();
+        let store = VersionedStore::default();
+        let executor = versioned_executor(&store, 1).with_commit_wakeup(wakeup.clone());
+        let mut woken = pin!(wakeup.wait());
+        assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        executor.execute("aggregate", record("a"), vec![]).await.unwrap();
+        assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
+        // Neither a rejected command nor one without events wakes anybody.
+        let quiet = CqrsCommandExecutor::<DummyAggregate, _>::new(
+            |_| {
+                CqrsFramework::new(
+                    DummyStore {
+                        commits: Arc::default(),
+                        conflicts: 0,
+                        load_error: None,
+                    },
+                    Arc::default(),
+                )
+            },
+            no_delay_policy(1),
+            LockLimits::default(),
+        )
+        .with_commit_wakeup(wakeup.clone());
+        let mut silent = pin!(wakeup.wait());
+        assert!(silent.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        assert_eq!(
+            quiet.execute("aggregate", DummyCommand::Reject, vec![]).await,
+            Err(CommandGatewayError::Domain(DummyError))
+        );
+        assert_eq!(quiet.execute("aggregate", record("a"), vec![]).await, Ok(()));
+        assert!(silent.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
     }
 
     #[tokio::test]

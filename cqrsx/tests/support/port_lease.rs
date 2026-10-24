@@ -7,8 +7,8 @@ use std::{
 const FIRST_PORT: u16 = 20_000;
 const PORT_COUNT: u16 = 10_000;
 
-// Shared by the runtime and service integration suites through #[path]. This
-// stays test-owned; no fixture API or dependency is added to either library.
+// Shared by the container fixtures of the PostgreSQL and MongoDB suites through
+// #[path]. This stays test-owned; no fixture API is added to the library.
 pub(super) struct PortLease {
     port: u16,
     _lock: File,
@@ -23,8 +23,8 @@ impl PortLease {
             .unwrap_or_else(|| manifest.parent().unwrap());
         let directory = std::env::var_os("CQRS_TEST_PORT_LEASE_DIR")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| root.join("target/stage4/postgres-ports"));
-        std::fs::create_dir_all(&directory).expect("PostgreSQL fixture port lease directory");
+            .unwrap_or_else(|| root.join("target/stage4/container-ports"));
+        std::fs::create_dir_all(&directory).expect("container fixture port lease directory");
         // Avoid the default client ephemeral range and coordinate parallel test
         // processes without serializing container startup or database work.
         let initial_port = (uuid::Uuid::new_v4().as_u128() % u128::from(PORT_COUNT)) as u16;
@@ -32,7 +32,7 @@ impl PortLease {
             &directory,
             (0..PORT_COUNT).map(|offset| FIRST_PORT + (initial_port + offset) % PORT_COUNT),
         )
-        .expect("free leased PostgreSQL fixture port outside default ephemeral range")
+        .expect("free leased container fixture port outside default ephemeral range")
     }
 
     fn acquire_from(directory: &Path, ports: impl IntoIterator<Item = u16>) -> Option<Self> {
@@ -43,11 +43,11 @@ impl PortLease {
                 .create(true)
                 .truncate(false)
                 .open(directory.join(format!("{port}.lock")))
-                .expect("PostgreSQL fixture port lease file");
+                .expect("container fixture port lease file");
             match lock.try_lock() {
                 Ok(()) => {}
                 Err(TryLockError::WouldBlock) => return None,
-                Err(error) => panic!("cannot lease PostgreSQL test port: {error}"),
+                Err(error) => panic!("cannot lease a container test port: {error}"),
             }
             let reservation = TcpListener::bind((Ipv4Addr::UNSPECIFIED, port)).ok()?;
             drop(reservation);

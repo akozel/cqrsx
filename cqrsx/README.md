@@ -13,6 +13,12 @@ consistency, ordering and retries.
 - **Projections in commit order, off the lock.** Committed events reach every event handler through a
   bounded buffer per aggregate key. The command releases its lock first and then waits for the handler's
   receipt, so a read model is up to date when the client gets its answer.
+- **Projections from the journal, with a checkpoint.** A projection processor reads the journal of its
+  aggregate type page by page from a checkpoint row it holds under a lease, applies the events through a
+  worker per key and moves the checkpoint behind what is applied; a commit wakes it. Nothing is lost on the
+  way to the read model, two nodes never apply at once, and a rebuild (the whole journal, one key, or a
+  document that refused a gap) runs through the same workers without stopping the writes. The views and the
+  checkpoint may live in MongoDB, next to each other (feature `mongodb`).
 - **Durable follow-ups.** Anything that must survive a crash is an outbox task: claimed under a lease,
   retried with backoff, run by a worker pool that drains on shutdown.
 - **Testable without a database.** A given/when/then framework for aggregates, an in-memory store and a
@@ -23,6 +29,9 @@ command ─► CommandExecutor ─► CqrsFramework ─► Aggregate ─► Even
                │  aggregate lock                                         ├─ event, snapshot,
                │                                                         └─ outbox tasks
                └─► ordered delivery per aggregate key ─► EventHandler ─► ViewProjection ─► read model
+
+events (tx) ─► ProjectionProcessor (checkpoint, lease) ─► worker per key ─► ViewProjection ─► read model
+                       ▲ CommitWakeup after a commit, or the poll
 
 transactional_outbox ─► TaskRuntime ─► Worker ─► TaskDispatcher ─► TaskHandler ─► e-mail, next command, …
 ```
@@ -160,9 +169,10 @@ fn main() {
 
 ## Running on PostgreSQL
 
-Apply the two schemas once, `postgres::EVENT_STORE_SCHEMA` and `postgres::TRANSACTIONAL_OUTBOX_SCHEMA`
-(the compose file in the repository root does it for a local database; a read-model table is the
-application's, with the columns documented on `PostgresViewRepository::new`). Then assemble the process with the types of the quick
+Apply the three schemas once, `postgres::EVENT_STORE_SCHEMA`, `postgres::TRANSACTIONAL_OUTBOX_SCHEMA` and
+`postgres::PROJECTION_CHECKPOINTS_SCHEMA` (the compose file in the repository root does it for a local
+database; a read-model table is the application's, with the columns documented on
+`PostgresViewRepository::new`). Then assemble the process with the types of the quick
 start. This is a sketch; the demo back-end in `../demo/back-end/src/process.rs` and
 `../demo/back-end/src/bootstrap/` is the complete, tested version.
 
@@ -244,6 +254,62 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 }
 ```
 
+## Projections from the journal
+
+A projection need not get its events from the command. A `ProjectionProcessor` reads the journal of its
+aggregate type page by page from a checkpoint row (`projection_checkpoints`) that it holds under a lease, hands
+every key's events to a worker of that key and moves the checkpoint behind what is applied; a commit wakes the
+processors of its type, and on another node the poll finds it. Nothing is lost between the commit and the read
+model, two nodes never apply at once, and a rebuild runs through the same workers: the whole journal key by key
+(`request_rebuild`, with a pace between the events of a key for people to watch), one key
+(`request_rebuild_key`), or a document that refused a live event as a gap, healed on the spot.
+
+```rust,ignore
+use cqrsx::cqrs::{command::wakeup::CommitWakeup, projection::{ViewProjection, processor::{ProjectionProcessor, config::ProcessorConfig}, runtime::ProjectionRuntime}};
+use cqrsx::postgres::{event_repository::PostgresEventRepository, projection_checkpoints::PostgresCheckpointStore};
+
+let wakeup = CommitWakeup::new(); // one per aggregate type
+let ledgers = PostgresCommandExecutor::<Ledger>::new(pool.clone(), config, Rules { limit: 4 }).with_commit_wakeup(wakeup.clone());
+let processor = ProjectionProcessor::new(
+    "wallets",                                            // the row: projection name + aggregate type
+    Arc::new(PostgresEventRepository::new(pool.clone())),
+    Arc::new(PostgresCheckpointStore::new(pool.clone())), // PROJECTION_CHECKPOINTS_SCHEMA
+    Arc::new(ViewProjection::new(wallets.clone()).with_name("wallets")),
+    ProcessorConfig::default(),                           // or ::new(poll, page, lease, delivery)?.with_retry(..)?
+)
+.with_wakeup(wakeup);
+let read_side = ProjectionRuntime::new().with_processor(processor);
+tokio::spawn(read_side.run(shutdown.clone()));            // next to the task runtime; stops with the token
+```
+
+`CheckpointStore::status` shows where a projection stands: the position, the owner and its lease, the failed
+rounds in a row with the last error, and the state of a rebuild. The processor's observer reports every applied
+batch, every move of the checkpoint, every failure and rebuild, for an event feed or a status page.
+
+### Read models in MongoDB
+
+With the `mongodb` feature the checkpoint moves next to the read models: the journal stays in PostgreSQL, the
+views and the checkpoint live in one MongoDB database. The application builds the client with its own options.
+
+```rust,ignore
+use cqrsx::mongodb::{projection_checkpoints::MongoCheckpointStore, view_repository::MongoViewRepository};
+
+let read_db = mongodb::Client::with_options(options)?.database("read");
+let wallets = Arc::new(MongoViewRepository::<WalletView, Ledger>::new(&read_db, "wallets"));
+let processor = ProjectionProcessor::new(
+    "wallets",
+    Arc::new(PostgresEventRepository::new(pool.clone())), // the journal
+    Arc::new(MongoCheckpointStore::new(&read_db)),       // collection `projection_checkpoints`
+    Arc::new(ViewProjection::new(wallets).with_name("wallets")),
+    ProcessorConfig::default(),
+)
+.with_wakeup(wakeup);
+```
+
+A view is one document `{ _id: view id, version, last_sequence, view }`; the repository writes and loads by id,
+and the application queries the collection by that shape. Each checkpoint is one document, and every operation on
+it is one atomic statement by the server's clock (MongoDB 4.2 or later).
+
 ## Configuration
 
 Every tunable is a checked value with a default. Only two helpers read the environment, and they say so
@@ -255,6 +321,7 @@ in their names.
 | Commands buffered per aggregate key for one handler, and per handler call | `DeliveryConfig::new(capacity, max_batch)` | 64, 32 |
 | Conflict retry: attempts, base and maximum backoff, jitter | `AggregateConflictRetryPolicy::new(..)` | 3, 5 ms, 50 ms, 0.2 |
 | Snapshot interval, conflict retry and lock limits of a PostgreSQL executor | `PostgresCommandConfig::new(..)` | your interval, the defaults above |
+| Projection processor: poll interval, page size, lease, key buffer; retry pauses, keys per rebuild page, documents written at once | `ProcessorConfig::new(poll, page, lease, delivery)?`, `.with_retry(base, max)?`, `.with_rebuild_page(n)?`, `.with_concurrency(n)?` | 250 ms, 1000, 10 s, the delivery defaults; 500 ms / 10 s, 100, 16 |
 | Server-side cap on every statement of a pool | `StatementTimeout::{Default, Custom, Unlimited}` | 4 s |
 | Connection check before hand-out | `ConnectionPingPolicy::{Default, Idle(d)}` | SQLx's; `Idle(100 ms)` recommended |
 | Task runtime | `TaskRuntimeConfig::from_env()` | see below |
@@ -272,8 +339,15 @@ The task runtime reads `OUTBOX_WORKER_CONCURRENCY` (128), `OUTBOX_QUEUE_CAPACITY
   would wait for its own receipt. Pass a `NewTask` with the command instead and let a task handler run
   the follow-up.
 - **A failed handler does not undo the commit.** The client gets `CommittedWithEventHandlerFailure` with
-  the handler's name; the worker logs the cause once per batch. Rebuild the read model from history
-  with `EventReplay`.
+  the handler's name; the worker logs the cause once per batch. Rebuild the read model from history with a
+  processor's `request_rebuild` (or `EventReplay`, until the processor replaces it everywhere).
+- **A projection processor never skips an event.** A failed key stops the checkpoint before it, visibly
+  (`failures`, `last_error`, the observer), and the round is retried after a growing pause; only a document
+  that refused an event as a gap is rebuilt from its history on the spot.
+- **A checkpoint belongs to its journal.** It holds a position of the PostgreSQL journal: recreate the journal
+  and the checkpoints together, or the new events stay below the old checkpoint. The read side alone may be
+  dropped, documents first and checkpoints second: the processors register their rows again and rebuild every
+  document from the start of the journal.
 - **A view document takes only the next event of its aggregate.** It remembers `last_sequence`; a repeated
   event is skipped, a batch that jumps ahead fails with `SequenceGap` and writes nothing, so a document that
   fell behind stays a correct prefix of its history until a replay fills the gap.
@@ -294,6 +368,7 @@ The task runtime reads `OUTBOX_WORKER_CONCURRENCY` (128), `OUTBOX_QUEUE_CAPACITY
 | `cqrs::testing::TestFramework` | An aggregate's rules: `with(services).given(events).when(command).then_expect_events(..)` or `then_expect_error_message(..)` |
 | `cqrs::testing::command::TestCommandExecutor` | A use case: the production command path over `MemStore`, with locks, retry and ordered handlers; `take_bound_tasks()` and `take_published_tasks()` show what it carried and what committed |
 | `cqrs::testing::mem_view_repository::MemViewRepository` | A projection and the queries over it |
+| `cqrs::testing::mem_checkpoint_store::MemCheckpointStore` | A projection processor without a database, next to `MemEventRepository` and `MemViewRepository` (leases follow the Tokio clock, so a paused test clock drives them) |
 | `cqrs::testing::unavailable_store::UnavailableStore` | The storage-down path |
 | `task::attempt::TaskAttempt::first(..)` | A task handler, called directly with a first claim |
 
@@ -305,9 +380,10 @@ The task runtime reads `OUTBOX_WORKER_CONCURRENCY` (128), `OUTBOX_QUEUE_CAPACITY
 | `worker` | the task runtime: worker pool, polling, supervision, graceful drain | yes |
 | `host` | process signals and the coordinated shutdown of inbound server and task runtime | no |
 | `logging` | `LoggingConfig`: an explicit `tracing` subscriber from `RUST_LOG` | no |
+| `mongodb` | the MongoDB read side: a view repository and the checkpoint store of projection processors | no |
 
-Without PostgreSQL the core still compiles and tests: aggregates, the framework, the in-memory store,
-projections, replay and the task contracts.
+Without PostgreSQL the core still compiles and tests: aggregates, the framework, the in-memory stores,
+projections, the projection processor with its checkpoints, replay and the task contracts.
 
 ## Further reading
 

@@ -10,7 +10,8 @@
 mod ordered;
 
 use crate::cqrs::{aggregate::Aggregate, event::EventEnvelope, event_handler::EventHandler};
-use ordered::{DeliveryReceipt, DeliverySlot, OrderedDelivery};
+#[allow(unused_imports)] // the projection processor uses the whole set
+pub(crate) use ordered::{DeliveryError, DeliveryReceipt, DeliverySlot, Done, OrderedDelivery, Rebuilder};
 use std::{
     num::NonZeroUsize,
     sync::{

@@ -19,8 +19,10 @@
 - `EventReplay`, `ReplayProgress`, `ReplayProgressObserver`; `PersistedEventRepository::stream_events` и
   `stream_all_events`, `ReplayStream`, `ReplayFeed`, модуль `postgres/event_repository/stream.rs`,
   `with_streaming_channel_size`, `DEFAULT_STREAMING_CHANNEL_SIZE`.
-- `DeliveryBacklog` наружу: остаётся внутренним для `drain` процессора; `DeliveryConfig` остаётся в
-  `ProcessorConfig`.
+- `DeliveryBacklog` наружу (процессор ждёт свои квитанции сам); `DeliveryConfig` остаётся в `ProcessorConfig`,
+  `Done` и `Rebuilder` — у `OrderedDelivery`.
+- Модель `ordered_delivery_matches_a_fifo_batch_model` переименовать с префиксом `property_`, чтобы CI гонял её
+  с сидом коммита (заодно с переписыванием тестов доставки).
 
 ## Что остаётся
 

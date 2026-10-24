@@ -82,7 +82,8 @@ RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-f
 ```
 
 The test parallelism and seed match the CI settings. Integration tests automatically
-create their own PostgreSQL `18.6-alpine` containers and apply the schemas;
+create their own PostgreSQL `18.6-alpine` containers and apply the schemas, and their
+own MongoDB `8.2` containers for the `mongodb` feature;
 they do not require the Compose database. The first run needs access to the image
 registry.
 
