@@ -5,7 +5,6 @@
 
 | Эпик | Тема | Задач | Статус |
 |---|---|---|---|
-| [01_cqrsx_extractions](01_cqrsx_extractions/README.md) | Перенос кода из demo в `cqrsx` | 10 | 7 сделано, 07, 09, 10 предложены |
 | [02_postgres_performance](02_postgres_performance/README.md) | Пропускная способность PostgreSQL-хранилища | 22 | в работе: 01–04, 06, 08 (08a–08e), 17 сделаны, 05 отклонена по замеру, 07 отложена |
 | [03_durable_projections](03_durable_projections/README.md) | Надёжные проекции: закладка в журнале вместо доставки из команды, replay тем же циклом | 5 | предложено 2026-10-24 |
 

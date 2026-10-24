@@ -274,7 +274,7 @@ Branch `refactor/clean-architecture`, one commit per step; plan and rationale in
 ## cqrsx extractions — backlog 01–06 (2026-10-17)
 
 Branch `feat/cqrsx-extractions` from `refactor/clean-architecture`; plan in
-`docs/backlog/01_cqrsx_extractions/IMPLEMENTATION_PLAN_01-06.md`, one commit per ticket (cqrsx change, tests, `components.md`, demo
+`docs/backlog/01_cqrsx_extractions/IMPLEMENTATION_PLAN_01-06.md` (epic 01 removed 2026-10-23), one commit per ticket (cqrsx change, tests, `components.md`, demo
 adoption). Wire formats of the demo are unchanged in every step.
 
 Baseline before step 01 (commit `f0e7d32`, all green):

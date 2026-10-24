@@ -6,8 +6,6 @@ back-end ↔ sidecar ↔ cqrsx ([`../BOUNDARY_AUDIT.md`](../BOUNDARY_AUDIT.md), 
 
 | # | Тема | Откуда | Кто решает |
 |---|---|---|---|
-| 01 | [Обслуживание витрин (wipe, rebuild, verify) в `cqrsx`](01_projection_maintenance_in_cqrsx.md) | аудит C-2, тикет 07 бэклога | владелец `cqrsx` |
-| 02 | [Репозиторий витрин для MongoDB в `cqrsx`](02_mongodb_view_repository_in_cqrsx.md) | аудит C-3, тикет 01/09 бэклога | владелец `cqrsx`, планы будущих проектов |
 | 03 | [Rebuild-lock: касса закрыта во время Encore!](03_rebuild_lock.md) | аудит K-1 | владелец демо |
 | 04 | [Замедленный replay: `speed` в контракте](04_replay_pace.md) | аудит K-2 | владелец демо |
 | 05 | [Пропускная способность outbox: правила реализации задач](05_outbox_task_throughput.md) | нагрузочные тесты 2026-10-18 | владелец `cqrsx` и владелец демо |

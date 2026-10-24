@@ -36,8 +36,8 @@ production-сервис кассы. Sidecar — вспомогательный �
 | S-3 | `/api/config`: персонажи демо и неиспользуемые демо-параметры | `presentation/http/config.rs::PERSONAS`, поля `task_failure_rate`, `task_max_attempts` | персонажи → sidecar `GET /inspect/demo`; два поля удалить | ●●○ | низкая | да (1 поле) | §3.3 | ✅ сделано: `PERSONAS` в `sidecar/src/demo.rs`, UI `session.demo.personas`; reset работает как прежде |
 | S-4 | Имитация почтового сервиса: кубик, задержка, причины, запись в `mail_service.inbox` | `infrastructure/mail/{chaos, flaky_mail_server}.rs`, `infrastructure/mongo/inbox.rs`, `ENCORE_TASK_FAILURE_RATE`, `_LATENCY_*`, `_CHAOS_SEED`, `ENCORE_MAIL_DB` | внешний мир: модуль sidecar (решение владельца); в back-end остаётся `HttpMailer` | ●●○ | высокая | нет | §3.4 | ✅ сделано: `sidecar/src/mail.rs` + `mail/{chaos, inbox}.rs` (`POST /mail`, `SIDECAR_MAIL_*`); back-end `infrastructure/mail/http_mailer.rs`, `ENCORE_MAIL_SERVICE_URL`; к базе `mail_service` back-end не подключается |
 | C-1 | Счётчики журнала raw SQL по таблице библиотеки | `infrastructure/postgres.rs::PostgresLedger`, `ports::EventLedgerStats` | cqrsx (тикет 08) — вариант A по решению владельца | ●●● | низкая | нет | §3.5, тикет 08 | ✅ сделано: `PostgresEventRepository::totals::<A>()`, `LedgerTotals`, тест `event_store::totals`, `components.md`; `PostgresLedger` без SQL |
-| C-2 | Обобщённая часть wipe/rebuild/verify | `application/projections/maintenance.rs`, `ports::ReadModelStore::{list, wipe}` | cqrsx (тикет 07) | ●●○ | средняя | нет | тикет 07 | ⏸ обсуждение: [`discussions/01`](discussions/01_projection_maintenance_in_cqrsx.md) |
-| C-3 | Репозиторий витрин для MongoDB | `infrastructure/mongo/view_repository.rs` | cqrsx (тикет 09), условно | ●○○ | высокая | нет | тикет 09 | ⏸ обсуждение: [`discussions/02`](discussions/02_mongodb_view_repository_in_cqrsx.md) |
+| C-2 | Обобщённая часть wipe/rebuild/verify | `application/projections/maintenance.rs`, `ports::ReadModelStore::{list, wipe}` | cqrsx (тикет 07) | ●●○ | средняя | нет | тикет 07 | ✖ закрыто 2026-10-23: не переносить, пока нет проекта, которому это нужно (§3.6) |
+| C-3 | Репозиторий витрин для MongoDB | `infrastructure/mongo/view_repository.rs` | cqrsx (тикет 09), условно | ●○○ | высокая | нет | тикет 09 | ✖ закрыто 2026-10-23: не переносить, пока нет проекта, которому это нужно (§3.6) |
 | K-1 | Rebuild-lock: касса закрыта на время пересборки | `application/lock.rs` + 12 файлов, где он проверяется; `ENCORE_CHAIN_MAX_ATTEMPTS` | не переносить: либо убрать («живой» rebuild, PLAN P2), либо оставить как осознанное упрощение | ●○○ | средняя | да | §4.1 | ⏸ обсуждение: [`discussions/03`](discussions/03_rebuild_lock.md) |
 | K-2 | Замедленный replay `speed: slow` | `operations/rebuild.rs::Speed`, `ENCORE_REPLAY_SLOW_DELAY_MS` | остаётся как `pace` (библиотечный `with_pace`) | — | — | нет | §4.2 | ⏸ обсуждение: [`discussions/04`](discussions/04_replay_pace.md) |
 | K-3 | Неиспользуемые зависимости `sha2`, `hex` | `back-end/Cargo.toml` | удалить | ●●● | нулевая | нет | §4.3 | ✅ сделано (вместе с `rand`, который ушёл с имитацией почты) |
@@ -339,9 +339,9 @@ Sidecar при этом каждые 400 мс считает `events_total` и `
 
 ### 3.6 C-2, C-3. Обобщённый код витрин → cqrsx (тикеты 07, 09)
 
-Решение отложено: владелец счёл информацию недостаточной. Развёрнутые варианты, цена и критерии — в
-[`discussions/01`](discussions/01_projection_maintenance_in_cqrsx.md) и
-[`discussions/02`](discussions/02_mongodb_view_repository_in_cqrsx.md). Кратко, как в бэклоге: `ProjectionMaintenance::verify` и `ReadModelStore::{list, wipe}`
+Закрыто 2026-10-23 вместе с эпиком 01 бэклога: потребителя нет, код остаётся в demo. Вернуться, когда появится
+проект с витринами в PostgreSQL (у `PostgresViewRepository` нет `list`/`clear`; хватит двух методов контракта,
+`verify` можно оставить в приложении) или в MongoDB. Суть: `ProjectionMaintenance::verify` и `ReadModelStore::{list, wipe}`
 не знают о концертах и повторятся в любом проекте (тикет 07, ●●○); `MongoViewRepository` — условно,
 если следующие проекты тоже хранят витрины в MongoDB (тикет 09, ●○○). После S-1 у `ReadModelStore::wipe`
 остаётся один потребитель — rebuild, что упрощает перенос в `ViewStore::clear`.
@@ -394,7 +394,7 @@ verify через хэш канонического JSON). Удалить.
 | `POST /api/concerts/{id}/commands`, `GET /api/concerts[/{id}]`, `GET /api/fans/{id}/wallet` | команды и запросы кассы |
 | `GET /api/concerts/{id}/timeline`, `state-at/{sequence}` (`operations/time_travel`) | временной запрос по журналу — штатная возможность ES (аудит, разбор инцидентов); нужны `Concert::apply` и `EventStore`, т. е. домен |
 | `POST /api/projections/rebuild`, `GET /api/projections/status` (`operations/rebuild`) | пересборка витрин из журнала — штатная эксплуатационная операция; нужны те же `View`/`ViewProjection`, что в live |
-| `GET /api/projections/verify` (`operations/verify`) | проверка дрейфа витрин — эксплуатационная диагностика; обобщённая часть → cqrsx (тикет 07) |
+| `GET /api/projections/verify` (`operations/verify`) | проверка дрейфа витрин — эксплуатационная диагностика; обобщённая часть остаётся в demo (C-2 закрыт) |
 | `GET /api/activity` (`ActivityHub`), `NotifyingHandler` | живой поток событий сервиса для UI/операторов; ничего не хранит |
 | `application::{command_service, concert, fan, workflows, tasks}` | ядро: причинность, outbox-цепочки, маппинг исходов |
 | `infrastructure::{postgres, mongo::{view_repository, read_side}, task_runtime}` | адаптеры production-хранилищ и wiring runtime |
@@ -425,5 +425,5 @@ sidecar знает ключ метаданных `recorded_at` и опирает
 Сделано 2026-10-17 (коммиты `3c1b771` cqrsx, `790ec18` demo): **S-1, S-2, S-3, S-4, C-1, K-3**; документация — PLAN.md (§2.7, §2.9, §3.5,
 §5.4, §6.2, §6.4, §7, D-13), README, `.env.example`, `compose.yaml`, бэклог (08 закрыт), PROGRESS.md.
 
-Осталось решить (каталог [`discussions/`](discussions/README.md)): **C-2** (тикет 07), **C-3** (тикет 09),
+C-2 и C-3 закрыты 2026-10-23 без переноса (§3.6). Осталось решить (каталог [`discussions/`](discussions/README.md)):
 **K-1** (rebuild-lock), **K-2** (`speed` в контракте rebuild).
