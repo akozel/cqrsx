@@ -147,6 +147,7 @@
 - `EventEnvelope.metadata: HashMap<String, String>` (`cqrs/event.rs:189`) — только строковые значения; `recorded_at` — строка RFC 3339.
 - Метаданные одинаковы для всех событий одного коммита (`persisted.rs:509-525` клонирует `base_metadata`).
 - Успешный `execute` возвращает `()`; `last_sequence` доступен только в `CommandGatewayError::CommittedWithEventHandlerFailure { last_sequence, handler_indices }`. Поэтому `committed_sequence` из §6.4 без декоратора (A) или прямого вызова framework (B) получить нельзя.
+  > 03/05 (2026-10-25): обработчиков у исполнителя больше нет, вариант `CommittedWithEventHandlerFailure` и `FailedHandler` удалены; у `CommandGatewayError` остались `Domain`, `Conflict`, `Unavailable`.
 
 Эскиз декоратора для варианта A (документация, не код демо):
 
@@ -254,6 +255,10 @@ export function deriveTaskStatus(row: OutboxRow, dbNow: Date): UiTaskStatus {
 
 ### U8. API `EventReplay` / `ReplayStream`
 
+> 03/05 (2026-10-25): `EventReplay`, `ReplayProgress`, `ReplayStream`, `ReplayFeed`,
+> `PersistedEventRepository::{stream_events, stream_all_events}` и `with_streaming_channel_size` удалены из cqrsx;
+> пересборку ведёт только процессор. Ниже — история.
+>
 > 04 (2026-10-25): демо больше не использует `EventReplay`: Encore! — `request_rebuild` обеим строкам закладок, владелец
 > заменяет документы свёрткой истории на месте (см. §2.9 PLAN.md); ниже — факты о самом API для истории.
 >
@@ -379,8 +384,8 @@ where Inbound: Future<Output = io::Result<()>>, RuntimeFuture: Future<Output = R
 |---|---|---|
 | D1 | `postgres::pool::connect_pool(options: PgConnectOptions) -> Result<PgPool, sqlx::Error>` (`pool.rs:9`) — не URL; 10 соединений; без ожидания готовности. **2026-10-18:** добавлен `connect_pool_with_size(options, NonZeroU32)`, демо берёт размер из `ENCORE_DATABASE_POOL_SIZE` (нагрузочные тесты показали пул как потолок пути записи) | `config.database_url.parse::<PgConnectOptions>()?` (+ `.application_name("encore-backend")`); готовность БД — `scripts/wait-db.sh` |
 | D2 | `postgres::command::command_executor` / `PostgresCommandExecutor` требуют `Aggregate<Services = ()>` и не регистрируют обработчиков (`command.rs:68-75`, док-комментарий отсылает к `CommandExecutorCore::new`) | §6.3 п.7: использовать `CommandExecutorCore::new` с фабрикой; `PostgresCommandConfig` остаётся держателем интервала и политики |
-| D3 | Успешный `execute` → `()`; `last_sequence` только при `CommittedWithEventHandlerFailure` | `committed_sequence` — из декоратора (A) |
-| D4 | `handler_indices` в `CommittedWithEventHandlerFailure` — индексы регистрации (0 = `concert_halls`, 1 = `fan_wallets`); framework вызывает **все** обработчики даже после сбоя первого (`cqrs.rs:545-549`) | `warnings: [{ code: "projection_failed", projection }]` по индексу |
+| D3 | Успешный `execute` → `()`; `last_sequence` только при `CommittedWithEventHandlerFailure` (вариант удалён в 03/05) | `committed_sequence` — из декоратора (A) |
+| D4 | (удалено в 03/05) `handler_indices` в `CommittedWithEventHandlerFailure` — индексы регистрации (0 = `concert_halls`, 1 = `fan_wallets`); framework вызывает **все** обработчики даже после сбоя первого (`cqrs.rs:545-549`) | `warnings: [{ code: "projection_failed", projection }]` по индексу |
 | D5 | `ViewProjection::set_error_observer(Box<dyn Fn(&PersistenceError)>)` — синхронный наблюдатель ошибок | альтернатива `NotifyingHandler` для `projection.failed`; `projection.updated` — всё равно декоратором |
 | D6 | `ViewRepository` — native async fn с `Send`-фьючами; `update_view(view, ViewContext { view_instance_id, version, last_sequence })`: `version == 0` → insert, иначе update `WHERE version = ctx.version`, новая версия `ctx.version + 1`, `last_sequence` пишется тем же CAS (эпик 03/01) (`view_repository.rs:187-210` как образец) | §6.7 верен; `MongoViewRepository` повторяет контракт, конфликт → `PersistenceError::OptimisticLockError`. С 03/04a репозиторий библиотечный (`cqrsx::mongodb::view_repository`, фича `mongodb`); `infrastructure/mongo/read_model.rs` демо (`MongoReadModel`) делегирует ему запись и добавляет запросы и wipe |
 | D7 | `View<A>: Debug + Default + Serialize + DeserializeOwned + Send + Sync`, `update(&mut self, &EventEnvelope<A>)` — синхронно и безошибочно | LWW реализуется в `update`; порядок и однократность применения обеспечивает библиотека (`last_sequence`, эпик 03/01) |

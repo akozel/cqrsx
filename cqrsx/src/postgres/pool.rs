@@ -24,8 +24,8 @@ pub const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_secs(4);
 /// with an unknown outcome or as `TaskProcessingError::Unavailable`, instead of a connection held for as
 /// long as it takes. Without snapshots, though, a command reads its aggregate's whole history: an
 /// aggregate with a long history and no snapshots can reach the cap, so give such aggregates snapshots.
-/// Long reads (replaying the whole store into a projection, counting it) belong to a pool of their own
-/// with `Unlimited`.
+/// Long reads (counting a whole journal with `totals`, reading many whole histories at once) belong to a
+/// pool of their own with `Unlimited`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StatementTimeout {
     /// `DEFAULT_STATEMENT_TIMEOUT`, 4 s.

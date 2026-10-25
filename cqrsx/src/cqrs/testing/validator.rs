@@ -27,7 +27,6 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -133,7 +132,6 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -238,7 +236,6 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -351,7 +348,6 @@ where
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -455,11 +451,30 @@ mod contract_tests {
     fn typed_error_validator_rejects_success() {
         AggregateResultValidator::<Ledger>::new(Ok(vec![])).then_expect_error(Rejected);
     }
+    /// An aggregate whose errors carry a message, so two errors can differ.
+    #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
+    struct Messaged;
+
+    #[derive(Debug, PartialEq, thiserror::Error)]
+    #[error("{0}")]
+    struct Message(&'static str);
+
+    impl Aggregate for Messaged {
+        const TYPE: &'static str = "messaged";
+        type Command = ();
+        type Event = Delta;
+        type Error = Message;
+        type Services = ();
+        async fn handle(&mut self, _: (), _: &(), _: &crate::cqrs::event_sink::EventSink<Self>) -> Result<(), Message> {
+            Ok(())
+        }
+        fn apply(&mut self, _: Delta) {}
+    }
+
     #[test]
     #[should_panic(expected = "assertion `left == right` failed")]
     fn typed_error_validator_checks_expected_payload() {
-        use crate::cqrs::store::stream::tests::MyAggregate;
-        AggregateResultValidator::<MyAggregate>::new(Err("actual error".into())).then_expect_error("expected error".into());
+        AggregateResultValidator::<Messaged>::new(Err(Message("actual error"))).then_expect_error(Message("expected error"));
     }
     #[test]
     #[should_panic(expected = "assertion `left == right` failed")]

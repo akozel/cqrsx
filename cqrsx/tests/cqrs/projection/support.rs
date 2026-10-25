@@ -28,7 +28,6 @@ use cqrsx::cqrs::{
         repository::PersistedEventRepository,
         serialized_event::SerializedEvent,
         snapshot::{SerializedSnapshot, SnapshotUpdate},
-        stream::ReplayStream,
     },
     testing::{
         mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
@@ -509,14 +508,6 @@ impl PersistedEventRepository for Journal {
         self.inner.persist::<A>(events, snapshot_update).await
     }
 
-    async fn stream_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<ReplayStream, PersistenceError> {
-        self.inner.stream_events::<A>(aggregate_id).await
-    }
-
-    async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-        self.inner.stream_all_events::<A>().await
-    }
-
     async fn feed_after<A: Aggregate>(&self, after: Position, limit: usize) -> Result<Vec<FeedEntry>, PersistenceError> {
         self.feeds.fetch_add(1, Ordering::SeqCst);
         self.fault("feed").await?;
@@ -640,7 +631,7 @@ pub(crate) fn config() -> ProcessorConfig {
         POLL,
         1000,
         LEASE,
-        cqrsx::cqrs::event_handler::delivery::DeliveryConfig::default(),
+        cqrsx::cqrs::projection::processor::config::DeliveryLimits::default(),
     )
     .unwrap()
     .with_retry(RETRY_BASE, Duration::from_secs(10))
@@ -728,6 +719,14 @@ impl Harness {
         self.executor.execute(key, command, vec![]).await.unwrap();
     }
 
+    /// Commits `command` of `key` with `metadata` on every event, through the command path.
+    pub(crate) async fn execute_with_metadata(&self, key: &str, command: Command, metadata: HashMap<String, String>) {
+        self.executor
+            .execute_with_metadata(key, command, metadata, vec![])
+            .await
+            .unwrap();
+    }
+
     /// The fold of the key's whole history, `None` without a history.
     pub(crate) async fn fold(&self, key: &str) -> Option<Balance> {
         let store = PersistedEventStore::<_, Ledger>::new_event_store(self.journal.inner.clone());
@@ -803,6 +802,29 @@ impl Harness {
             tokio::time::sleep(Duration::from_millis(5)).await;
         }
     }
+}
+
+/// Turns a version-0 delta nobody can read into a zero delta of the current version.
+pub(crate) struct Heal;
+
+impl cqrsx::cqrs::store::upcaster::EventUpcaster for Heal {
+    fn can_upcast(&self, event_type: &str, event_version: &str) -> bool {
+        event_type == "delta" && event_version == "0"
+    }
+
+    fn upcast(&self, mut event: SerializedEvent) -> SerializedEvent {
+        event.payload = serde_json::json!(0);
+        event.event_version = "1".into();
+        event
+    }
+}
+
+/// A delta of `key` at `sequence` in the version-0 format only [`Heal`] reads.
+pub(crate) fn old_delta(key: &str, sequence: usize) -> SerializedEvent {
+    let mut event = delta(key, sequence, 0);
+    event.event_version = "0".into();
+    event.payload = serde_json::json!({"unknown": true});
+    event
 }
 
 pub(crate) fn delta(key: &str, sequence: usize, value: i32) -> SerializedEvent {

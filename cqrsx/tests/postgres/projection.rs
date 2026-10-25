@@ -57,21 +57,6 @@ async fn test_valid_view_repository() {
 }
 
 #[tokio::test]
-async fn test_valid_cqrs_framework() {
-    let db = Database::new().await;
-    let pool = db.pool.clone();
-    create_view(&pool).await;
-    let repo = PostgresViewRepository::<TestView, TestAggregate>::new("test_view", pool.clone());
-    let projection = TestProjection::new(Arc::new(repo));
-    let config = cqrsx::postgres::command::PostgresCommandConfig::new(1, Default::default(), Default::default()).unwrap();
-    let executor = cqrsx::postgres::command::PostgresCommandExecutor::<TestAggregate>::new(pool, config, TestServices)
-        .with_event_handler(Arc::new(projection), Default::default());
-    assert!(executor.backlog().is_empty());
-
-    db.close().await;
-}
-
-#[tokio::test]
 async fn stress_optimistic_view_create_and_update_has_one_winner() {
     use super::support::repository::{finish_writers, wait_for_writers};
     use cqrsx::cqrs::store::PersistenceError;
@@ -339,7 +324,5 @@ async fn unrelated_view_uniqueness_is_technical_and_stale_versions_are_conflicts
 
 #[path = "projection/checkpoints.rs"]
 mod checkpoints;
-#[path = "projection/committed.rs"]
-mod committed;
 #[path = "projection/processor.rs"]
 mod processor;

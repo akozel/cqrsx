@@ -10,11 +10,13 @@ use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
         command::{locks::LockLimits, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
-        event_handler::delivery::DeliveryConfig,
         projection::{
             View, ViewProjection,
             checkpoint::{CheckpointKey, CheckpointStore},
-            processor::{ProjectionProcessor, config::ProcessorConfig},
+            processor::{
+                ProjectionProcessor,
+                config::{DeliveryLimits, ProcessorConfig},
+            },
             repository::ViewRepository,
         },
         store::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
@@ -297,7 +299,7 @@ impl ReadSide {
     /// Starts the processor; cancel the token to stop it.
     fn start(&self) -> (CancellationToken, tokio::task::JoinHandle<()>) {
         let config =
-            ProcessorConfig::new(POLL, 100, Duration::from_secs(1), DeliveryConfig::default()).expect("processor config");
+            ProcessorConfig::new(POLL, 100, Duration::from_secs(1), DeliveryLimits::default()).expect("processor config");
         let processor = ProjectionProcessor::new(
             HALLS,
             Arc::new(PostgresEventRepository::new(self.pool.clone())),

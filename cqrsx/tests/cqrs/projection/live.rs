@@ -1,29 +1,25 @@
 //! Live delivery: pages, the window, failures of one key, poison events, concurrency.
-use crate::projection::support::{Balance, Harness, POLL, RETRY_BASE, config, delta};
+use crate::projection::support::{Balance, Harness, Heal, POLL, RETRY_BASE, config, delta, old_delta};
 use crate::support::ledger::{Command, Ledger};
 use cqrsx::cqrs::{
-    event_handler::delivery::DeliveryConfig,
-    projection::{checkpoint::CheckpointStore, processor::config::ProcessorConfig},
-    store::{feed::Position, repository::PersistedEventRepository, serialized_event::SerializedEvent, upcaster::EventUpcaster},
+    event::EventEnvelope,
+    projection::{
+        View, ViewProjection,
+        checkpoint::CheckpointStore,
+        processor::{
+            ProjectionProcessor,
+            config::{DeliveryLimits, ProcessorConfig},
+        },
+        repository::ViewRepository,
+    },
+    store::{feed::Position, repository::PersistedEventRepository, upcaster::EventUpcaster},
+    testing::mem_view_repository::MemViewRepository,
 };
-use std::time::Duration;
+use serde::{Deserialize, Serialize};
+use std::{collections::HashMap, sync::Arc, time::Duration};
+use tokio_util::sync::CancellationToken;
 
 const SHORT: Duration = Duration::from_millis(20);
-
-/// Turns the version-0 delta nobody can read into a zero delta of the current version.
-struct Heal;
-
-impl EventUpcaster for Heal {
-    fn can_upcast(&self, event_type: &str, event_version: &str) -> bool {
-        event_type == "delta" && event_version == "0"
-    }
-
-    fn upcast(&self, mut event: SerializedEvent) -> SerializedEvent {
-        event.payload = serde_json::json!(0);
-        event.event_version = "1".into();
-        event
-    }
-}
 
 #[tokio::test(start_paused = true)]
 async fn an_event_committed_before_the_processor_started_is_applied() {
@@ -172,9 +168,7 @@ async fn a_failure_of_one_key_moves_the_checkpoint_up_to_the_event_before_it() {
 async fn a_poison_event_stalls_only_its_projection_until_an_upcaster_arrives() {
     let h = Harness::new();
     h.commit("a", 1).await;
-    let mut poison = delta("p", 1, 0);
-    poison.event_version = "0".into();
-    poison.payload = serde_json::json!({"unknown": true});
+    let poison = old_delta("p", 1);
     h.journal
         .inner
         .persist::<Ledger>(std::slice::from_ref(&poison), None)
@@ -259,7 +253,7 @@ async fn concurrency_bounds_the_keys_in_flight() {
 #[tokio::test(start_paused = true)]
 async fn a_page_smaller_than_a_transaction_is_delivered_whole() {
     let h = Harness::with_config(
-        ProcessorConfig::new(POLL, 1, crate::projection::support::LEASE, DeliveryConfig::default()).unwrap(),
+        ProcessorConfig::new(POLL, 1, crate::projection::support::LEASE, DeliveryLimits::default()).unwrap(),
     );
     h.journal
         .inner
@@ -300,7 +294,7 @@ async fn the_window_is_bounded_by_the_buffer_capacity() {
             POLL,
             1000,
             crate::projection::support::LEASE,
-            DeliveryConfig::new(3, 32).unwrap(),
+            DeliveryLimits::new(3, 32).unwrap(),
         )
         .unwrap(),
     );
@@ -395,7 +389,7 @@ async fn a_commit_costs_one_read_and_neither_the_end_of_the_page_nor_its_receipt
 
 #[tokio::test(start_paused = true)]
 async fn a_full_page_is_followed_at_once_by_the_next_read_and_the_last_short_page_ends_them() {
-    let config = ProcessorConfig::new(POLL, 2, Duration::from_secs(1), DeliveryConfig::default()).unwrap();
+    let config = ProcessorConfig::new(POLL, 2, Duration::from_secs(1), DeliveryLimits::default()).unwrap();
     let h = Harness::with_config(config);
     for delta in 1..=5 {
         h.commit("a", delta).await;
@@ -457,4 +451,38 @@ async fn a_settling_owner_stops_on_shutdown_and_still_sees_a_commit_made_while_i
     tokio::time::sleep(SHORT).await;
     node.stop().await; // the stop interrupts the settle and releases the row
     assert_eq!(h.status().await.owner, None);
+}
+
+/// The `source` of every event a document saw, in order: what the events carried next to their payload.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Sources(Vec<String>);
+
+impl View<Ledger> for Sources {
+    fn update(&mut self, event: &EventEnvelope<Ledger>) {
+        self.0.push(event.metadata.get("source").cloned().unwrap_or_default());
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn the_metadata_of_an_event_reaches_the_projection() {
+    let h = Harness::new();
+    let sources = Arc::new(MemViewRepository::<Sources, Ledger>::default());
+    let processor = ProjectionProcessor::new(
+        "sources",
+        h.journal.clone(),
+        h.checkpoints.clone(),
+        Arc::new(ViewProjection::new(sources.clone())),
+        config(),
+    )
+    .with_wakeup(h.wakeup.clone());
+    let shutdown = CancellationToken::new();
+    let running = tokio::spawn(processor.run(shutdown.clone()));
+    let metadata = HashMap::from([("source".to_owned(), "box office".to_owned())]);
+    h.execute_with_metadata("a", Command::Adjust(vec![1, 2]), metadata).await;
+    h.commit("a", 3).await;
+    h.until(async || sources.load("a").await.unwrap().is_some_and(|seen| seen.0.len() == 3))
+        .await;
+    assert_eq!(sources.load("a").await.unwrap().unwrap().0, ["box office", "box office", ""]);
+    shutdown.cancel();
+    running.await.unwrap();
 }

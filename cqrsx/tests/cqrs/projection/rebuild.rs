@@ -1,11 +1,10 @@
 //! Rebuilds: the whole journal by cursor, one key on request, a document healed after a gap, next to live delivery.
-use crate::projection::support::{Harness, POLL, RETRY_BASE, config, delta, key};
+use crate::projection::support::{Harness, Heal, NAME, POLL, RETRY_BASE, config, delta, key, old_delta};
 use crate::support::ledger::Ledger;
 use cqrsx::cqrs::{
-    event_handler::delivery::DeliveryConfig,
     projection::{
         checkpoint::{CheckpointStore, RebuildRequest},
-        processor::config::ProcessorConfig,
+        processor::config::{DeliveryLimits, ProcessorConfig},
     },
     store::repository::PersistedEventRepository,
 };
@@ -324,7 +323,7 @@ async fn a_paced_rebuild_of_one_key_does_not_hold_the_other_keys_back() {
             POLL,
             1000,
             crate::projection::support::LEASE,
-            DeliveryConfig::new(3, 32).unwrap(),
+            DeliveryLimits::new(3, 32).unwrap(),
         )
         .unwrap(),
     );
@@ -378,5 +377,50 @@ async fn a_requested_key_without_history_is_dropped_without_a_write() {
     assert_eq!(h.views.writes(), 0);
     assert!(h.view("ghost").await.is_none());
     assert_eq!((h.status().await.failures, h.observer.count("failed:")), (0, 0));
+    node.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_rebuild_reads_old_events_through_the_upcasters() {
+    let h = Harness::new();
+    // Written straight to the journal: the command path cannot load the old event either.
+    for event in [old_delta("a", 1), delta("a", 2, 5)] {
+        h.journal.inner.persist::<Ledger>(&[event], None).await.unwrap();
+    }
+    let node = h.node_with(NAME, "n1", config(), vec![Box::new(Heal)]);
+    h.until(async || h.view("a").await.is_some_and(|(view, _)| view.history.len() == 2))
+        .await;
+    let (_, before) = h.view("a").await.unwrap();
+    h.checkpoints.request_rebuild_key(&key(), "a").await.unwrap();
+    h.until(async || h.observer.count("rebuilt:a:Requested:2") == 1).await;
+    let (view, after) = h.view("a").await.unwrap();
+    assert_eq!(view.history, [(1, 0), (2, 5)], "the old event folds as the upcaster reads it");
+    assert_eq!((after.version, h.observer.count("failed:")), (before.version + 1, 0));
+    node.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_history_read_is_retried_and_the_rebuild_finishes() {
+    let h = Harness::new();
+    h.commit("a", 1).await;
+    h.commit("a", 2).await;
+    let node = h.node("n1");
+    h.caught_up(&["a"]).await;
+    h.journal.fail("history", 1);
+    h.checkpoints.request_rebuild_key(&key(), "a").await.unwrap();
+    h.until(async || h.observer.count("rebuilt:a:Requested:2") == 1).await;
+    assert_eq!(h.observer.count("failed:"), 1, "{:?}", h.observer.events());
+    assert!(
+        h.observer
+            .events()
+            .iter()
+            .any(|event| event.starts_with("failed:") && event.contains(":connection:a:")),
+        "{:?}",
+        h.observer.events()
+    );
+    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2)]);
+    assert_eq!(h.status().await.failures, 1, "until the checkpoint moves again");
+    h.commit("a", 3).await;
+    assert_eq!(h.caught_up(&["a"]).await.failures, 0);
     node.stop().await;
 }

@@ -67,31 +67,15 @@ where
     ) -> impl Future<Output = Result<(), CommandGatewayError<A::Error>>> + Send;
 }
 
-/// Domain rejection, exhausted conflict retry, a command that was not run or whose outcome is unknown, or a
-/// confirmed commit with event-handler failures.
+/// Domain rejection, exhausted conflict retry, or a command that was not run or whose outcome is unknown.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
 pub enum CommandGatewayError<D> {
     #[error("domain command failed a domain rule: {0}")]
     Domain(D),
     #[error("domain command conflicted with a concurrent change")]
     Conflict,
-    /// Not run, or outcome unknown: the storage failed or timed out, the aggregate's lock was not acquired
-    /// within its `max_wait`, or a handler's buffer had no space before that deadline. The reason is logged.
+    /// Not run, or outcome unknown: the storage failed or timed out, or the aggregate's lock was not acquired
+    /// within its `max_wait`. The reason is logged.
     #[error("command gateway is temporarily unavailable")]
     Unavailable,
-    /// The event commit succeeded. Repair the event-handler failure without repeating the command.
-    #[error("command committed through sequence {last_sequence}; event handlers failed")]
-    CommittedWithEventHandlerFailure {
-        last_sequence: usize,
-        /// The failed handlers in registration order.
-        handlers: Vec<FailedHandler>,
-    },
-}
-
-/// An event handler that failed after a commit: its registration index and its
-/// [`name`](crate::cqrs::event_handler::EventHandler::name).
-#[derive(Clone, Debug, Eq, PartialEq)]
-pub struct FailedHandler {
-    pub index: usize,
-    pub name: String,
 }

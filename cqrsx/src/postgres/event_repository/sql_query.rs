@@ -4,7 +4,6 @@ pub(crate) struct SqlQueryFactory {
     select_events: String,
     select_events_after: String,
     insert_event: String,
-    all_events: String,
     count_events: String,
     count_after: String,
     feed_page: String,
@@ -39,13 +38,6 @@ SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payloa
                 "
 INSERT INTO {event_table} (aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata)
 VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (aggregate_type, aggregate_id, sequence) DO NOTHING"
-            ),
-            all_events: format!(
-                "
-SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata
-  FROM {event_table}
-  WHERE aggregate_type = $1
-  ORDER BY sequence"
             ),
             count_events: format!(
                 "
@@ -130,9 +122,6 @@ SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
     pub fn select_snapshot(&self) -> &str {
         &self.select_snapshot
     }
-    pub fn all_events(&self) -> &str {
-        &self.all_events
-    }
     pub fn count_events(&self) -> &str {
         &self.count_events
     }
@@ -175,14 +164,6 @@ SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payloa
             "
 INSERT INTO my_events (aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata)
 VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (aggregate_type, aggregate_id, sequence) DO NOTHING"
-        );
-        assert_eq!(
-            query_factory.all_events(),
-            "
-SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata
-  FROM my_events
-  WHERE aggregate_type = $1
-  ORDER BY sequence"
         );
         assert_eq!(
             query_factory.insert_snapshot(),

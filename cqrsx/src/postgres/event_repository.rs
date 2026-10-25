@@ -2,7 +2,6 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 mod read;
 mod sql_query;
-mod stream;
 mod write;
 
 use self::sql_query::SqlQueryFactory;
@@ -15,7 +14,6 @@ use crate::{
             repository::PersistedEventRepository,
             serialized_event::SerializedEvent,
             snapshot::SerializedSnapshot,
-            stream::ReplayStream,
         },
     },
     postgres::error::PostgresRepositoryError,
@@ -25,11 +23,9 @@ use sqlx::{Pool, Postgres};
 const DEFAULT_EVENT_TABLE: &str = "events";
 const DEFAULT_SNAPSHOT_TABLE: &str = "snapshots";
 
-const DEFAULT_STREAMING_CHANNEL_SIZE: usize = 200;
-
 /// Size of the saved history of one aggregate type: the events and the distinct aggregates that
-/// hold them. Counted in one round trip by [`PostgresEventRepository::totals`]; meant for progress
-/// reporting (a replay knows its denominator) and operator dashboards.
+/// hold them. Counted in one round trip by [`PostgresEventRepository::totals`]; meant for operator
+/// dashboards. It reads the whole journal of the type: give it a pool without a statement timeout.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LedgerTotals {
     pub events: u64,
@@ -44,7 +40,6 @@ pub const DEFAULT_COUNT_AFTER_CAP: u64 = 100_000;
 pub struct PostgresEventRepository {
     pool: Pool<Postgres>,
     query_factory: SqlQueryFactory,
-    stream_channel_size: usize,
 }
 
 impl PersistedEventRepository for PostgresEventRepository {
@@ -81,26 +76,6 @@ impl PersistedEventRepository for PostgresEventRepository {
         self.persist_batch::<A>(events, snapshot_update).await
     }
 
-    async fn stream_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<ReplayStream, PersistenceError> {
-        Ok(stream::spawn_stream(
-            self.query_factory.select_events().to_string(),
-            A::TYPE.to_string(),
-            Some(aggregate_id.to_string()),
-            self.pool.clone(),
-            self.stream_channel_size,
-        ))
-    }
-
-    async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-        Ok(stream::spawn_stream(
-            self.query_factory.all_events().to_string(),
-            A::TYPE.to_string(),
-            None,
-            self.pool.clone(),
-            self.stream_channel_size,
-        ))
-    }
-
     async fn feed_after<A: Aggregate>(&self, after: Position, limit: usize) -> Result<Vec<FeedEntry>, PersistenceError> {
         self.feed_page::<A>(after, limit).await
     }
@@ -131,27 +106,6 @@ impl PostgresEventRepository {
         Self::use_tables(pool, DEFAULT_EVENT_TABLE, DEFAULT_SNAPSHOT_TABLE)
     }
 
-    /// Configures a `PostgresEventRepository` to use a streaming queue of the provided size.
-    ///
-    /// _Example: configure the repository to stream with a 1000 event buffer._
-    /// ```
-    /// use sqlx::Pool;
-    /// use sqlx::Postgres;
-    /// use cqrsx::postgres::event_repository::PostgresEventRepository;
-    ///
-    /// fn configure_repo(pool: Pool<Postgres>) -> PostgresEventRepository {
-    ///     let store = PostgresEventRepository::new(pool);
-    ///     store.with_streaming_channel_size(1000)
-    /// }
-    /// ```
-    pub fn with_streaming_channel_size(self, stream_channel_size: usize) -> Self {
-        Self {
-            pool: self.pool,
-            query_factory: self.query_factory,
-            stream_channel_size,
-        }
-    }
-
     /// Configures a `PostgresEventRepository` to use the provided table names.
     ///
     /// _Example: configure the repository to use "my_event_table" and "my_snapshot_table"
@@ -175,7 +129,6 @@ impl PostgresEventRepository {
         Self {
             pool,
             query_factory: SqlQueryFactory::new(events_table, snapshots_table),
-            stream_channel_size: DEFAULT_STREAMING_CHANNEL_SIZE,
         }
     }
 }
@@ -229,24 +182,15 @@ mod configuration_tests {
     use super::*;
 
     #[tokio::test]
-    async fn table_and_stream_buffer_configuration_are_independent_of_call_order() {
+    async fn custom_tables_reach_every_query() {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://localhost/unused")
             .unwrap();
-        for repository in [
-            PostgresEventRepository::new(pool.clone())
-                .with_streaming_channel_size(1)
-                .with_tables("custom_events", "custom_snapshots"),
-            PostgresEventRepository::new(pool.clone())
-                .with_tables("custom_events", "custom_snapshots")
-                .with_streaming_channel_size(1),
-        ] {
-            assert_eq!(repository.stream_channel_size, 1);
-            assert!(repository.query_factory.select_events().contains("FROM custom_events"));
-            assert!(repository.query_factory.count_events().contains("FROM custom_events"));
-            assert!(repository.query_factory.count_after().contains("FROM custom_events"));
-            assert!(repository.query_factory.select_snapshot().contains("FROM custom_snapshots"));
-        }
+        let repository = PostgresEventRepository::new(pool.clone()).with_tables("custom_events", "custom_snapshots");
+        assert!(repository.query_factory.select_events().contains("FROM custom_events"));
+        assert!(repository.query_factory.count_events().contains("FROM custom_events"));
+        assert!(repository.query_factory.count_after().contains("FROM custom_events"));
+        assert!(repository.query_factory.select_snapshot().contains("FROM custom_snapshots"));
         pool.close().await;
     }
 }

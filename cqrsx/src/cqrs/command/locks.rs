@@ -58,9 +58,7 @@ impl LockLimits {
         })
     }
 
-    /// How long a command waits for the lock before it is refused. The command executor counts the same
-    /// deadline from the command's arrival for the space in its handlers' buffers too: a command that got
-    /// the lock late has that much less time for the space.
+    /// How long a command waits for the lock before it is refused.
     pub fn max_wait(&self) -> Duration {
         self.max_wait
     }
@@ -149,6 +147,7 @@ impl AggregateLockRegistry {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn limits(&self) -> LockLimits {
         self.limits
     }
@@ -720,7 +719,7 @@ mod tests {
         proptest! {
             #![proptest_config(proptest::test_runner::Config { cases: 256, ..property_config() })]
             #[test]
-            fn locks_match_a_fifo_model(ops in proptest::collection::vec(op(), 1..60)) {
+            fn property_locks_match_a_fifo_model(ops in proptest::collection::vec(op(), 1..60)) {
                 let runtime = tokio::runtime::Builder::new_current_thread().enable_time().start_paused(true).build().unwrap();
                 runtime.block_on(check(ops))?;
             }

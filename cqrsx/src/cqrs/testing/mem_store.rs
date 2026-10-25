@@ -28,7 +28,6 @@ use std::{
 /// # use cqrsx::cqrs::event_sink::EventSink;
 /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
 /// # use cqrsx::cqrs::store::PersistenceError;
-/// # use cqrsx::cqrs::store::stream::ReplayStream;
 /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
 /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
 /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -137,7 +136,6 @@ impl<A: Aggregate> MemStore<A> {
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;

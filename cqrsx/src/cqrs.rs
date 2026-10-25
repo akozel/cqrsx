@@ -1,10 +1,10 @@
-//! CQRS composition: load an aggregate, decide a command, commit events. Event handlers belong to
-//! the command executors ([`command`]), which hand them the committed events.
+//! CQRS composition: load an aggregate, decide a command, commit events. The read side follows the
+//! journal: projection processors ([`projection`]) read the committed events themselves.
 //!
 //! [`command`] adds command gateways and conflict retry, [`store`] implements event
-//! persistence, [`event_handler`] owns committed-event reactions and replay, and
-//! [`projection`] owns materialized read models. [`testing`] is the public
-//! downstream testing toolkit.
+//! persistence, [`event_handler`] holds the contract of a committed-event reaction, and
+//! [`projection`] owns materialized read models and the processors that feed them. [`testing`] is
+//! the public downstream testing toolkit.
 pub mod aggregate;
 pub mod command;
 pub mod event;
@@ -37,9 +37,9 @@ use std::{collections::HashMap, error};
 /// 1. Persisting any generated events or roll back in the event of an error.
 ///
 /// To manage these tasks we use a `CqrsFramework`. It returns the committed events and hands them to
-/// nobody: event handlers are registered with a command executor
-/// ([`CommandExecutorCore`](crate::cqrs::command::executor::CommandExecutorCore)), which builds a
-/// framework per command through its factory and delivers the events itself.
+/// nobody: a command executor
+/// ([`CommandExecutorCore`](crate::cqrs::command::executor::CommandExecutorCore)) builds a framework per
+/// command through its factory, and the projection processors read the events from the journal.
 ///
 pub struct CqrsFramework<A, ES>
 where
@@ -76,7 +76,6 @@ where
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -190,7 +189,6 @@ where
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -321,7 +319,6 @@ where
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;

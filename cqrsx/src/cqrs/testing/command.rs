@@ -1,4 +1,4 @@
-//! A command executor over a test event store, for use-case tests.
+//! A command executor over a test event store or an in-memory journal, for use-case tests.
 use crate::{
     cqrs::{
         CqrsFramework,
@@ -10,12 +10,8 @@ use crate::{
             retry::AggregateConflictRetryPolicy,
             wakeup::CommitWakeup,
         },
-        event_handler::{
-            EventHandler,
-            delivery::{DeliveryBacklog, DeliveryConfig},
-        },
-        store::EventStore,
-        testing::mem_store::MemStore,
+        store::{EventStore, persisted::PersistedEventStore},
+        testing::{mem_event_repository::MemEventRepository, mem_store::MemStore},
     },
     task::NewTask,
 };
@@ -45,19 +41,18 @@ where
 }
 
 /// The production command path behind [`CommandExecutor`] over a test store: one [`CommandExecutorCore`]
-/// with aggregate locks, the default conflict retry and post-commit event handlers, plus a record of the
+/// with aggregate locks, the default conflict retry and an optional commit wake-up, plus a record of the
 /// tasks every call carries.
 ///
 /// *Bound* tasks are everything handed to the executor, whatever the outcome. *Published* tasks
-/// are only those of calls that committed (`Ok` or `CommittedWithEventHandlerFailure`), i.e.
-/// what a transactional outbox would hold. Clones share the store, the handlers, the locks and
-/// both records, so a use case can own one clone while the test inspects another; register the
-/// handlers before cloning.
+/// are only those of calls that committed (`Ok`), i.e. what a transactional outbox would hold. Clones share
+/// the store, the locks, the wake-up and both records, so a use case can own one clone while the test
+/// inspects another; register the wake-up before cloning.
 ///
-/// Handlers get the committed events the way production handlers do: through an ordered buffer per
-/// aggregate key, in a worker task of their own, so the test needs a Tokio runtime. A command returns
-/// only after its handlers' receipts; a failing or panicking handler shows as
-/// `CommittedWithEventHandlerFailure`.
+/// Over a [`MemStore`] ([`new`](Self::new)) the commands only change the aggregates. Over a
+/// [`MemEventRepository`] ([`over_journal`](Self::over_journal)) they append to a journal that projection
+/// processors read, so a use-case test can follow the commands to its read models: give the processors the
+/// same journal and the executor their [`CommitWakeup`].
 ///
 /// The store does not model the outbox: a call that commits no event still counts as
 /// published, while the PostgreSQL outbox rejects tasks without an event.
@@ -127,8 +122,7 @@ pub struct TestCommandExecutor<A: Aggregate, S = MemStore<A>> {
 }
 
 impl<A: Aggregate + 'static, S> TestCommandExecutor<A, S> {
-    /// Execute against `store` with `services`, no event handlers, the default conflict retry and
-    /// the default lock limits.
+    /// Execute against `store` with `services`, the default conflict retry and the default lock limits.
     pub fn new(store: S, services: A::Services) -> Self {
         let factory = TestFrameworkFactory { store, services };
         Self {
@@ -142,19 +136,6 @@ impl<A: Aggregate + 'static, S> TestCommandExecutor<A, S> {
         }
     }
 
-    /// Register a handler after the handlers registered before it; it gets the committed events through
-    /// a buffer per aggregate key bounded by `config`.
-    ///
-    /// # Panics
-    ///
-    /// When a clone of the executor exists: the handler would serve one clone and not the other.
-    pub fn with_event_handler(mut self, handler: Arc<dyn EventHandler<A>>, config: DeliveryConfig) -> Self {
-        Arc::get_mut(&mut self.inner)
-            .expect("register event handlers before cloning the executor")
-            .add_event_handler(handler, config);
-        self
-    }
-
     /// Wakes `wakeup` after every commit with events, for the projection processors under test.
     ///
     /// # Panics
@@ -165,11 +146,6 @@ impl<A: Aggregate + 'static, S> TestCommandExecutor<A, S> {
             .expect("register the commit wake-up before cloning the executor")
             .set_commit_wakeup(wakeup);
         self
-    }
-
-    /// The hand-overs not handled yet, shared by every clone.
-    pub fn backlog(&self) -> DeliveryBacklog {
-        self.inner.backlog()
     }
 
     /// The store the commands run against.
@@ -186,6 +162,14 @@ impl<A: Aggregate + 'static, S> TestCommandExecutor<A, S> {
     /// The tasks of the calls that committed since the last call, in call order; clears the record.
     pub fn take_published_tasks(&self) -> Vec<NewTask> {
         take(&self.published)
+    }
+}
+
+impl<A: Aggregate + 'static> TestCommandExecutor<A, PersistedEventStore<MemEventRepository, A>> {
+    /// Execute against `journal` with `services`: every command loads its aggregate from the journal and
+    /// appends its events there, where projection processors over the same journal read them.
+    pub fn over_journal(journal: MemEventRepository, services: A::Services) -> Self {
+        Self::new(PersistedEventStore::new_event_store(journal), services)
     }
 }
 
@@ -225,10 +209,7 @@ where
             .extend(tasks.iter().cloned());
         let candidates = tasks.clone();
         let result = self.inner.execute_with_metadata(aggregate_id, command, metadata, tasks).await;
-        if matches!(
-            result,
-            Ok(()) | Err(CommandGatewayError::CommittedWithEventHandlerFailure { .. })
-        ) {
+        if result.is_ok() {
             self.published
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
@@ -243,15 +224,11 @@ mod tests {
     use super::*;
     use crate::{
         cqrs::{
-            command::FailedHandler,
-            event::{DomainEvent, EventEnvelope},
-            event_sink::EventSink,
-            store::PersistenceError,
+            event::DomainEvent, event_sink::EventSink, store::repository::PersistedEventRepository,
             testing::unavailable_store::UnavailableStore,
         },
         task::format::TaskPayload,
     };
-    use async_trait::async_trait;
     use serde::{Deserialize, Serialize};
 
     /// Accepts values up to the cap in its services; `Conflict` in the store forces retries.
@@ -310,27 +287,12 @@ mod tests {
         .unwrap()
     }
 
-    /// Fails every call after recording the sequences it saw.
-    #[derive(Default)]
-    struct Broken(Mutex<Vec<usize>>);
-
-    #[async_trait]
-    impl EventHandler<Stack> for Broken {
-        fn name(&self) -> String {
-            "broken".into()
-        }
-
-        async fn handle(&self, _: &str, events: &[EventEnvelope<Stack>]) -> Result<(), PersistenceError> {
-            self.0.lock().unwrap().extend(events.iter().map(|e| e.sequence));
-            Err(PersistenceError::OptimisticLockError)
-        }
-    }
-
     #[tokio::test]
     async fn bound_and_published_tasks_differ_for_a_rejected_command() {
         let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1);
         let use_case = executor.clone();
-        assert_eq!(use_case.execute("s", 1, vec![task(1)]).await, Ok(()));
+        let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
+        assert_eq!(use_case.execute_with_metadata("s", 1, metadata, vec![task(1)]).await, Ok(()));
         assert_eq!(
             use_case.execute("s", 2, vec![task(2)]).await,
             Err(CommandGatewayError::Domain(Full))
@@ -342,33 +304,7 @@ mod tests {
         assert!(executor.take_bound_tasks().is_empty(), "taking clears the record");
         assert!(executor.take_published_tasks().is_empty());
         let events = executor.store().load_events("s").await.unwrap();
-        assert_eq!(events.len(), 1);
-    }
-
-    #[tokio::test]
-    async fn committed_handler_failures_publish_and_report_the_handler() {
-        let broken = Arc::new(Broken::default());
-        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 5)
-            .with_event_handler(broken.clone(), DeliveryConfig::default());
-        let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
-        assert_eq!(
-            executor.execute_with_metadata("s", 7, metadata, vec![task(7)]).await,
-            Err(CommandGatewayError::CommittedWithEventHandlerFailure {
-                last_sequence: 1,
-                handlers: vec![FailedHandler {
-                    index: 0,
-                    name: "broken".into()
-                }]
-            })
-        );
-        assert_eq!(*broken.0.lock().unwrap(), [1]);
-        assert!(
-            executor.clone().backlog().is_empty(),
-            "the command returned after its receipt"
-        );
-        assert_eq!(executor.take_published_tasks().len(), 1);
-        let events = executor.store().load_events("s").await.unwrap();
-        assert_eq!(events[0].metadata["source"], "test");
+        assert_eq!((events.len(), events[0].metadata["source"].as_str()), (1, "test"));
     }
 
     #[tokio::test]
@@ -383,12 +319,25 @@ mod tests {
         let _: &UnavailableStore = executor.store();
     }
 
-    #[test]
-    #[should_panic(expected = "register event handlers before cloning the executor")]
-    fn a_handler_registered_after_a_clone_is_refused() {
-        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1);
-        let _use_case = executor.clone();
-        let _ = executor.with_event_handler(Arc::new(Broken::default()), DeliveryConfig::default());
+    #[tokio::test]
+    async fn a_journal_executor_appends_to_the_journal_and_wakes_its_processors() {
+        use std::{future::Future, pin::pin, task::Context, task::Waker};
+        let (journal, wakeup) = (MemEventRepository::default(), CommitWakeup::new());
+        let executor = TestCommandExecutor::<Stack, _>::over_journal(journal.clone(), 2).with_commit_wakeup(wakeup.clone());
+        let mut woken = pin!(wakeup.wait());
+        assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
+        for value in 1..=2 {
+            assert_eq!(executor.execute("s", value, vec![task(value)]).await, Ok(()));
+        }
+        assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
+        assert_eq!(
+            executor.execute("s", 3, vec![task(3)]).await,
+            Err(CommandGatewayError::Domain(Full)),
+            "the second load came from the journal"
+        );
+        let journaled = journal.get_events::<Stack>("s").await.unwrap();
+        assert_eq!(journaled.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1, 2]);
+        assert_eq!(executor.take_published_tasks().len(), 2);
     }
 
     #[tokio::test]

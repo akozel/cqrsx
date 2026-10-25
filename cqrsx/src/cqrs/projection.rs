@@ -22,7 +22,7 @@ use std::{cmp::Ordering, fmt::Debug, marker::PhantomData, num::NonZeroUsize, syn
 /// This is the data of a CQRS read model.
 ///
 /// `update` must be deterministic and free of side effects: a stored document is the fold of `update` over the
-/// events `1..=last_sequence` of its aggregate, and two writers of one document (two processes, a replay next to
+/// events `1..=last_sequence` of its aggregate, and two writers of one document (two processes, a rebuild next to
 /// live delivery) meet at the same document only because the fold is the same.
 pub trait View<A: Aggregate>: Debug + Default + Serialize + DeserializeOwned + Send + Sync {
     /// Each implemented view is responsible for updating its state based on events passed via
@@ -71,7 +71,6 @@ where
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -223,7 +222,6 @@ where
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -360,7 +358,6 @@ where
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -490,7 +487,7 @@ where
         self
     }
 
-    /// Name reported in post-commit failures (default: the type name of `V`).
+    /// Name reported in the processor's failure reports (default: the type name of `V`).
     pub fn with_name(mut self, name: impl Into<String>) -> Self {
         self.name = Some(name.into());
         self

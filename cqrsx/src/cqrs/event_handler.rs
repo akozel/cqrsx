@@ -1,7 +1,4 @@
-//! Reactions to committed domain events, their ordered delivery per aggregate key and replay of saved
-//! history.
-pub mod delivery;
-pub mod replay;
+//! Reactions to committed domain events.
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
@@ -11,34 +8,30 @@ use std::sync::Arc;
 
 /// Reacts to events after they have been committed to the event store.
 ///
-/// A handler may update a read-model projection or perform another event reaction.
-/// Invocation is outside the event transaction and has no durable redelivery guarantee.
-/// Use transactional outbox tasks when a reaction requires durable delivery. An executor
-/// hands it the events through an ordered per-key buffer ([`delivery`]), possibly the events
-/// of several commands of one aggregate in one call; the handlers of one command run side by
-/// side, not one after another.
+/// A projection is the handler a projection processor calls: the processor reads the journal and hands it
+/// the events of one aggregate key at a time, in journal order, possibly the events of several commands in
+/// one call. Invocation is outside the event transaction; the processor's checkpoint makes it durable. Use
+/// transactional outbox tasks for any other reaction that must happen.
 ///
-/// A handler never executes a command, not even from a task it spawns: the follow-up would
-/// be recorded nowhere and lost by a crash, its failure would reach the client of a command
-/// that succeeded, and the handler would wait for its own receipt forever. Publish
-/// the follow-up as an outbox task with the command instead; the framework does not detect
-/// the mistake (see the naming and integration rules in `doc/components.md`).
+/// A handler never executes a command, not even from a task it spawns: it writes its read model and
+/// nothing else, and a follow-up started there would be recorded nowhere, repeated by every replay of the
+/// journal and lost by a crash. Publish the follow-up as an outbox task with the command instead; the
+/// framework does not detect the mistake (see the naming and integration rules in `doc/components.md`).
 #[async_trait]
 pub trait EventHandler<A: Aggregate>: Send + Sync {
-    /// Identifies the handler in post-commit failures
-    /// ([`FailedHandler`](crate::cqrs::command::FailedHandler)); defaults to the type name.
-    /// Decorators should report the name of the handler they wrap.
+    /// Identifies the handler in the processor's failure reports; defaults to the type name. Decorators
+    /// should report the name of the handler they wrap.
     fn name(&self) -> String {
         std::any::type_name::<Self>().to_owned()
     }
 
-    /// Dispatch committed events. An error does not roll back the event commit.
-    /// Framework dispatches every registered event handler and reports failures separately.
+    /// Handle committed events. An error does not roll back the event commit: the processor retries the
+    /// page.
     async fn handle(&self, aggregate_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError>;
 }
 
-/// A shared handler: `Arc<H>` handles like `H`, so one instance can serve a decorator and the executor's
-/// registration alike. Name and handling are those of the shared handler.
+/// A shared handler: `Arc<H>` handles like `H`, so one instance can serve a decorator and a processor alike.
+/// Name and handling are those of the shared handler.
 #[async_trait]
 impl<A, H> EventHandler<A> for Arc<H>
 where

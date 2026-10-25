@@ -8,7 +8,6 @@ use crate::cqrs::{
         repository::PersistedEventRepository,
         serialized_event::SerializedEvent,
         snapshot::{SerializedSnapshot, SnapshotUpdate},
-        stream::ReplayStream,
     },
 };
 use serde_json::Value;
@@ -128,14 +127,6 @@ fn page_limit(limit: usize) -> Result<(), PersistenceError> {
     Ok(())
 }
 
-async fn stream_of(events: Vec<SerializedEvent>) -> Result<ReplayStream, PersistenceError> {
-    let (mut feed, stream) = ReplayStream::new(events.len().max(1));
-    for event in events {
-        feed.push(Ok(event)).await?;
-    }
-    Ok(stream)
-}
-
 impl PersistedEventRepository for MemEventRepository {
     async fn get_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
         self.get_events_after::<A>(aggregate_id, 0).await
@@ -226,19 +217,6 @@ impl PersistedEventRepository for MemEventRepository {
             );
         }
         Ok(())
-    }
-
-    async fn stream_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<ReplayStream, PersistenceError> {
-        let events = self.get_events::<A>(aggregate_id).await?;
-        stream_of(events).await
-    }
-
-    async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-        let events = Self::ordered::<A>(&self.journal())
-            .into_iter()
-            .map(|(_, event)| event)
-            .collect();
-        stream_of(events).await
     }
 
     async fn feed_after<A: Aggregate>(&self, after: Position, limit: usize) -> Result<Vec<FeedEntry>, PersistenceError> {
@@ -466,38 +444,6 @@ mod tests {
             "a snapshot alone takes no position"
         );
         assert!(journal.get_snapshot::<TestAggregate>("a").await.unwrap().is_none());
-    }
-
-    #[tokio::test]
-    async fn streams_replay_the_history_in_journal_order_and_end() {
-        let journal = MemEventRepository::default();
-        journal.persist::<Ledger>(&[delta("b", 1, 1)], None).await.unwrap();
-        journal
-            .persist::<Ledger>(&[delta("a", 1, 1), delta("a", 2, 2)], None)
-            .await
-            .unwrap();
-        let mut one = journal.stream_events::<Ledger>("a").await.unwrap();
-        let mut sequences = Vec::new();
-        while let Some(event) = one.next::<Ledger>(&[]).await {
-            sequences.push(event.unwrap().sequence);
-        }
-        assert_eq!(sequences, [1, 2]);
-        let mut all = journal.stream_all_events::<Ledger>().await.unwrap();
-        let mut ids = Vec::new();
-        while let Some(event) = all.next::<Ledger>(&[]).await {
-            let event = event.unwrap();
-            ids.push((event.aggregate_id, event.sequence));
-        }
-        assert_eq!(ids, [("b".to_owned(), 1), ("a".to_owned(), 1), ("a".to_owned(), 2)]);
-        assert!(
-            journal
-                .stream_events::<Ledger>("missing")
-                .await
-                .unwrap()
-                .next::<Ledger>(&[])
-                .await
-                .is_none()
-        );
     }
 
     #[tokio::test]

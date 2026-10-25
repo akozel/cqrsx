@@ -1,0 +1,758 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>От коммита до витрины</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column (~72ch) for prose; figures and tables break out to 1120px and scroll sideways on phones. */
+:root {
+  --bg: #f3f5f7;
+  --surface: #ffffff;
+  --frame: #eef2f6;
+  --ink: #131920;
+  --ink-2: #465263;
+  --muted: #6c7787;
+  --rule: #d4dbe3;
+  --grid: #e3e7ec;
+  --axis: #b9c2cd;
+  --accent: #0a6e8a;
+  --accent-soft: #e0eff4;
+  --warn: #8f5400;
+  --warn-soft: #fbf0de;
+  --crit: #b42f2f;
+  --crit-soft: #fbe7e7;
+  --band-a: #f1f4f8;
+  --band-b: #ecf5f7;
+  --code-bg: #edf1f5;
+  --s1: #2a78d6;
+  --s2: #eb6834;
+  --s3: #1baf7a;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --text-col: 72ch;
+  --wide: 1120px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+    --rule: #2c343e; --grid: #232a33; --axis: #3a4552; --accent: #4cb6d4; --accent-soft: #15303a;
+    --warn: #e3a23b; --warn-soft: #2e2413; --crit: #ef6b6b; --crit-soft: #331b1d; --band-a: #141a21; --band-b: #12212a;
+    --code-bg: #1d242d; --s1: #3987e5; --s2: #d95926; --s3: #199e70; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+  --rule: #2c343e; --grid: #232a33; --axis: #3a4552; --accent: #4cb6d4; --accent-soft: #15303a;
+  --warn: #e3a23b; --warn-soft: #2e2413; --crit: #ef6b6b; --crit-soft: #331b1d; --band-a: #141a21; --band-b: #12212a;
+  --code-bg: #1d242d; --s1: #3987e5; --s2: #d95926; --s3: #199e70; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font: 16px/1.6 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px));
+  padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+.page { max-width: var(--wide); margin: 0 auto; display: grid; gap: 56px; }
+.prose { max-width: var(--text-col); }
+h1, h2, h3, h4 { font-family: var(--font-display); text-wrap: balance; margin: 0; color: var(--ink); }
+h1 { font-size: clamp(2.1rem, 5vw, 3rem); line-height: 1.05; font-weight: 600; letter-spacing: -0.01em; }
+h2 { font-size: 1.75rem; line-height: 1.15; font-weight: 600; }
+h3 { font-size: 1.2rem; line-height: 1.25; font-weight: 600; margin-top: 8px; }
+h4 { font-size: 1.05rem; font-weight: 600; }
+p { margin: 0; }
+section { display: grid; gap: 18px; min-width: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.9em; }
+code { background: var(--code-bg); padding: 0.05em 0.35em; border-radius: 4px; }
+a { color: var(--accent); }
+a:focus-visible, [tabindex]:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+/* Header */
+.hero { display: grid; gap: 18px; padding-top: 48px; }
+.lede { font-size: 1.12rem; color: var(--ink-2); max-width: var(--text-col); }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0; margin: 8px 0 0;
+  border-top: 2px solid var(--ink); }
+.facts > div { padding: 14px 18px 4px 0; display: grid; gap: 6px; align-content: start; }
+.facts > div + div { padding-left: 18px; border-left: 1px solid var(--rule); }
+.facts dt { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.facts dd { margin: 0; font-size: 0.97rem; }
+@media (max-width: 760px) { .facts > div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--rule); } }
+.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.92rem; }
+.toc a { text-decoration: none; border-bottom: 1px solid var(--rule); color: var(--ink-2); }
+.toc a:hover { color: var(--accent); border-color: var(--accent); }
+
+/* Figures */
+figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.diagram { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px; }
+.diagram svg { display: block; width: 100%; height: auto; }
+figcaption { font-size: 0.9rem; color: var(--ink-2); max-width: var(--text-col); }
+svg text { font-family: var(--font-body); fill: var(--ink); }
+.t-title { font-size: 13.5px; font-weight: 600; }
+.t-sub { font-size: 12px; fill: var(--ink-2); }
+.t-mono { font-family: var(--font-mono); font-size: 12.5px; }
+.t-label { font-size: 11.5px; fill: var(--ink-2); }
+.t-cap { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; fill: var(--muted); }
+.t-acc { fill: var(--accent); }
+.t-crit { fill: var(--crit); }
+.t-warn { fill: var(--warn); }
+.frame { fill: var(--frame); stroke: var(--rule); }
+.box { fill: var(--surface); stroke: var(--axis); stroke-width: 1; }
+.box-acc { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.note { fill: var(--surface); stroke: var(--axis); stroke-dasharray: 3 3; }
+.ln { stroke: var(--ink-2); stroke-width: 1.5; fill: none; }
+.ln-acc { stroke: var(--accent); stroke-width: 2; fill: none; }
+.ln-mut { stroke: var(--muted); stroke-width: 1.25; fill: none; }
+.dash { stroke-dasharray: 5 4; }
+.life { stroke: var(--axis); stroke-width: 1; }
+.band-a { fill: var(--band-a); }
+.band-b { fill: var(--band-b); }
+.m-ink { fill: var(--ink-2); }
+.m-acc { fill: var(--accent); }
+.m-mut { fill: var(--muted); }
+.tx-done { fill: var(--frame); stroke: var(--ink-2); stroke-width: 1.25; }
+.tx-open { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.tx-lost { fill: var(--crit-soft); stroke: var(--crit); stroke-width: 1.5; }
+.tx-head { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.wait-zone { fill: var(--band-a); stroke: var(--rule); stroke-dasharray: 3 3; }
+
+/* Lists of parts and guarantees */
+.parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px 28px; margin: 0; }
+.parts > div { display: grid; gap: 4px; align-content: start; border-top: 1px solid var(--rule); padding-top: 10px; }
+.parts dt { font-weight: 600; }
+.parts dd { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 28px; }
+.two > div { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.verdict { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+.verdict::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--accent); }
+.verdict.no::before { background: var(--warn); }
+.claims { display: grid; gap: 12px; margin: 0; }
+.claims > div { display: grid; gap: 2px; }
+.claims dt { font-weight: 600; }
+.claims dd { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+
+/* Tables */
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; border-bottom: 1.5px solid var(--ink-2); }
+td:first-child { font-weight: 600; white-space: nowrap; }
+.steps td:first-child { white-space: normal; min-width: 9em; }
+.steps td:nth-child(3) { font-family: var(--font-mono); font-size: 0.82rem; color: var(--ink-2); min-width: 15em; }
+.steps, .weak { min-width: 860px; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+.tablewrap table tr:last-child td { border-bottom: 0; }
+
+/* Scale section */
+.math { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.math > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
+.math .k { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.math .v { font-size: 1.35rem; font-weight: 600; font-family: var(--font-display); }
+.math .d { font-size: 0.9rem; color: var(--ink-2); }
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; }
+
+/* CPU charts */
+.legend { display: flex; flex-wrap: wrap; gap: 8px 22px; font-size: 0.92rem; color: var(--ink-2); }
+.legend span { display: inline-flex; align-items: center; gap: 8px; }
+.legend i { width: 14px; height: 10px; border-radius: 2px; display: inline-block; }
+.panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 18px; }
+@media (max-width: 520px) { .panels { grid-template-columns: 1fr; } }
+.panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px 14px 8px; display: grid; gap: 6px; min-width: 0; }
+.panel .sub { font-size: 0.85rem; color: var(--ink-2); }
+.panel svg { width: 100%; height: auto; display: block; overflow: visible; }
+.panel svg text { font-size: 12px; }
+.bar-hit { fill: transparent; cursor: default; }
+.bar-g:focus-visible .bar-hit { fill: var(--accent-soft); }
+.bar-g:hover path { filter: brightness(1.12); }
+.tick { fill: var(--muted); font-family: var(--font-mono); font-size: 10.5px !important; }
+.val { fill: var(--ink); font-variant-numeric: tabular-nums; font-size: 11.5px !important; }
+.comp { font-weight: 600; }
+.compsub { fill: var(--muted); font-size: 11px !important; }
+.tip { position: fixed; z-index: 20; pointer-events: none; background: var(--surface); color: var(--ink); border: 1px solid var(--rule);
+  border-radius: 8px; padding: 8px 10px; font-size: 0.85rem; box-shadow: 0 6px 20px rgb(0 0 0 / 0.14); max-width: 280px; display: grid; gap: 2px; }
+.tip b { font-size: 1rem; }
+.tip .k { color: var(--ink-2); }
+.tip .line { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 6px; }
+details.tableview { display: grid; gap: 12px; }
+details.tableview summary { cursor: pointer; color: var(--ink-2); font-size: 0.95rem; }
+.cpu-table { min-width: 820px; font-variant-numeric: tabular-nums; }
+.cpu-table td { white-space: nowrap; }
+.cpu-table td small { display: block; color: var(--muted); font-size: 0.8rem; }
+.cpu-table .chip { display: inline-block; width: 10px; height: 10px; border-radius: 2px; margin-right: 8px; vertical-align: 0; }
+.cpu-table caption { text-align: left; font-family: var(--font-display); font-weight: 600; font-size: 1.05rem; padding: 12px 12px 4px; }
+.hot { color: var(--warn); font-weight: 600; }
+.foot { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; max-width: var(--text-col); }
+@media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+</style>
+
+<div class="page">
+<header class="hero">
+  <p class="eyebrow">Encore · cqrsx · эпик 03, тикет 04</p>
+  <h1>От коммита до витрины</h1>
+  <p class="lede">Что происходит с событием после того, как агрегат принял команду, и до того, как документ в MongoDB обновлён. Что из этого гарантировано, где слабые места, что упирается в процессор и как схема ведёт себя при росте нагрузки. Цифры: медианы трёх прогонов на нагрузочном стенде 25 октября 2026 года.</p>
+  <dl class="facts">
+    <div><dt>Гарантия</dt><dd>Принятая команда уже лежит в PostgreSQL. Витрина догоняет сама: событие не теряется и не применяется дважды, даже если падает нода или MongoDB.</dd></div>
+    <div><dt>Горячий концерт</dt><dd>Упор не в процессор, а в очередь к одному концерту: команда держит его замок около 1,4&nbsp;мс, отсюда около 700 команд в секунду.</dd></div>
+    <div><dt>Много концертов</dt><dd>Упор в процессор PostgreSQL: 95&nbsp;% из 2 ядер. Процессор витрин с паузой 10&nbsp;мс тратит меньше старой схемы, и команд в секунду стало на 11&nbsp;% больше.</dd></div>
+  </dl>
+  <nav class="toc" aria-label="Разделы">
+    <a href="#flow">Общая схема</a><a href="#steps">Одна бронь по шагам</a><a href="#horizon">Горизонт журнала</a><a href="#guarantees">Гарантии</a><a href="#weak">Слабые места</a><a href="#scale">Узкие места и масштабирование</a><a href="#cpu">CPU в абсолютных числах</a><a href="#open">Что осталось открытым</a>
+  </nav>
+</header>
+
+<section id="flow">
+  <h2>Общая схема</h2>
+  <p class="prose">Запись и витрина разделены. Исполнитель команд отвечает клиенту, как только событие закоммичено в PostgreSQL. Витрину обновляет отдельная фоновая задача, процессор проекции: она читает журнал от своей закладки и пишет документы в MongoDB. На схеме одна витрина, <code>concert_halls</code>; у <code>fan_wallets</code> такой же процессор над событиями агрегата <code>Fan</code>.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 1000 590" role="img" aria-label="Схема: команда пишет событие в PostgreSQL одной транзакцией и будит процессор своей ноды; процессор читает страницу журнала, раздаёт события рабочим по документам, те пишут документы в MongoDB, затем процессор сдвигает закладку и сообщает браузеру через SSE. Процессор второй ноды ждёт аренду." style="min-width:820px">
+        <defs>
+          <marker id="d1-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-ink" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="d1-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-acc" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="d1-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-mut" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <!-- frames -->
+        <rect class="frame" x="200" y="16" width="290" height="558" rx="12"/>
+        <text class="t-cap" x="216" y="40">НОДА A · БЭКЕНД</text>
+        <rect class="frame" x="578" y="16" width="226" height="316" rx="12"/>
+        <text class="t-cap" x="594" y="40">POSTGRESQL</text>
+        <rect class="frame" x="578" y="356" width="226" height="218" rx="12"/>
+        <text class="t-cap" x="594" y="380">MONGODB · ENCORE_READ</text>
+        <rect class="frame" x="834" y="16" width="150" height="558" rx="12"/>
+        <text class="t-cap" x="850" y="40">НОДА B</text>
+        <!-- actors -->
+        <rect class="box" x="16" y="56" width="120" height="64" rx="8"/>
+        <text class="t-title" x="76" y="84" text-anchor="middle">Клиент</text>
+        <text class="t-sub" x="76" y="103" text-anchor="middle">POST команда</text>
+        <rect class="box" x="16" y="240" width="120" height="64" rx="8"/>
+        <text class="t-title" x="76" y="268" text-anchor="middle">Браузер</text>
+        <text class="t-sub" x="76" y="287" text-anchor="middle">экран кассы</text>
+        <!-- node A -->
+        <rect class="box" x="220" y="56" width="250" height="64" rx="8"/>
+        <text class="t-title" x="345" y="83" text-anchor="middle">Исполнитель команд</text>
+        <text class="t-sub" x="345" y="102" text-anchor="middle">замок концерта, правила</text>
+        <rect class="box-acc" x="220" y="230" width="250" height="88" rx="8"/>
+        <text class="t-title" x="345" y="256" text-anchor="middle">Процессор витрины</text>
+        <text class="t-sub" x="345" y="276" text-anchor="middle">владелец закладки</text>
+        <text class="t-sub" x="345" y="295" text-anchor="middle">пауза 10 мс, окно 63 страницы</text>
+        <rect class="box-acc" x="220" y="470" width="250" height="64" rx="8"/>
+        <text class="t-title" x="345" y="497" text-anchor="middle">Рабочие по документам</text>
+        <text class="t-sub" x="345" y="516" text-anchor="middle">до 16 документов одновременно</text>
+        <!-- postgres -->
+        <rect class="box" x="600" y="56" width="188" height="40" rx="6"/>
+        <text class="t-mono" x="694" y="81" text-anchor="middle">snapshots</text>
+        <rect class="box" x="600" y="104" width="188" height="40" rx="6"/>
+        <text class="t-mono" x="694" y="129" text-anchor="middle">transactional_outbox</text>
+        <rect class="box-acc" x="600" y="230" width="188" height="88" rx="6"/>
+        <text class="t-mono" x="694" y="255" text-anchor="middle" style="font-weight:500">events</text>
+        <text class="t-sub" x="694" y="275" text-anchor="middle">tx = номер транзакции</text>
+        <text class="t-sub" x="694" y="294" text-anchor="middle">индекс (aggregate_type, tx)</text>
+        <line class="ln" x1="590" y1="66" x2="590" y2="244"/>
+        <line class="ln" x1="590" y1="76" x2="600" y2="76"/>
+        <line class="ln" x1="590" y1="124" x2="600" y2="124"/>
+        <line class="ln" x1="590" y1="244" x2="600" y2="244"/>
+        <!-- mongo -->
+        <rect class="box-acc" x="600" y="396" width="188" height="60" rx="6"/>
+        <text class="t-mono" x="694" y="421" text-anchor="middle">projection_checkpoints</text>
+        <text class="t-sub" x="694" y="440" text-anchor="middle">позиция, владелец, аренда</text>
+        <rect class="box-acc" x="600" y="480" width="188" height="72" rx="6"/>
+        <text class="t-mono" x="694" y="504" text-anchor="middle">concert_halls</text>
+        <text class="t-sub" x="694" y="523" text-anchor="middle">version, last_sequence</text>
+        <text class="t-sub" x="694" y="541" text-anchor="middle">документ на концерт</text>
+        <!-- node B -->
+        <rect class="box" x="846" y="56" width="126" height="64" rx="8"/>
+        <text class="t-title" x="909" y="83" text-anchor="middle">Исполнитель</text>
+        <text class="t-sub" x="909" y="102" text-anchor="middle">свои команды</text>
+        <rect class="box" x="846" y="400" width="126" height="76" rx="8"/>
+        <text class="t-title" x="909" y="426" text-anchor="middle">Процессор</text>
+        <text class="t-sub" x="909" y="445" text-anchor="middle">не владелец</text>
+        <text class="t-sub" x="909" y="463" text-anchor="middle">ждёт аренду</text>
+        <!-- command path -->
+        <line class="ln" x1="136" y1="76" x2="216" y2="76" marker-end="url(#d1-ink)"/>
+        <text class="t-label" x="177" y="68" text-anchor="middle">команда</text>
+        <line class="ln dash" x1="220" y1="102" x2="140" y2="102" marker-end="url(#d1-ink)"/>
+        <text class="t-label" x="177" y="120" text-anchor="middle">200 принято</text>
+        <line class="ln" x1="470" y1="88" x2="586" y2="88" marker-end="url(#d1-ink)"/>
+        <text class="t-label" x="529" y="80" text-anchor="middle">1 транзакция</text>
+        <text class="t-label" x="529" y="106" text-anchor="middle">INSERT, COMMIT</text>
+        <!-- read path -->
+        <line class="ln-acc dash" x1="345" y1="120" x2="345" y2="226" marker-end="url(#d1-acc)"/>
+        <text class="t-label t-acc" x="355" y="168">пробуждение</text>
+        <text class="t-label t-acc" x="355" y="184">в памяти</text>
+        <line class="ln-acc" x1="470" y1="256" x2="596" y2="256" marker-end="url(#d1-acc)"/>
+        <text class="t-label" x="534" y="248" text-anchor="middle">SELECT страница</text>
+        <line class="ln-acc" x1="598" y1="292" x2="474" y2="292" marker-end="url(#d1-acc)"/>
+        <text class="t-label" x="534" y="310" text-anchor="middle">события</text>
+        <line class="ln-acc dash" x1="220" y1="272" x2="140" y2="272" marker-end="url(#d1-acc)"/>
+        <text class="t-label" x="177" y="264" text-anchor="middle">SSE:</text>
+        <text class="t-label" x="177" y="290" text-anchor="middle">обновлён</text>
+        <line class="ln-acc" x1="345" y1="318" x2="345" y2="466" marker-end="url(#d1-acc)"/>
+        <text class="t-label t-acc" x="355" y="388">события</text>
+        <text class="t-label t-acc" x="355" y="404">по документам</text>
+        <line class="ln-acc" x1="470" y1="502" x2="596" y2="502" marker-end="url(#d1-acc)"/>
+        <text class="t-label" x="534" y="494" text-anchor="middle">find_one,</text>
+        <text class="t-label" x="534" y="520" text-anchor="middle">update_one</text>
+        <polyline class="ln-acc" points="470,306 540,306 540,426 596,426" marker-end="url(#d1-acc)"/>
+        <text class="t-label" x="532" y="362" text-anchor="end">закладка</text>
+        <text class="t-label" x="532" y="378" text-anchor="end">и аренда</text>
+        <!-- node B paths -->
+        <line class="ln" x1="846" y1="88" x2="808" y2="88" marker-end="url(#d1-ink)"/>
+        <line class="ln-mut dash" x1="878" y1="120" x2="878" y2="396" marker-end="url(#d1-mut)"/>
+        <text class="t-label" x="886" y="236">пробуждение</text>
+        <text class="t-label" x="886" y="252">только для</text>
+        <text class="t-label" x="886" y="268">своей ноды</text>
+        <line class="ln-mut dash" x1="846" y1="426" x2="792" y2="426" marker-end="url(#d1-mut)"/>
+        <text class="t-label" x="909" y="500" text-anchor="middle">раз в 250 мс</text>
+        <text class="t-label" x="909" y="516" text-anchor="middle">пробует занять</text>
+      </svg>
+    </div>
+    <figcaption>Цветные стрелки показывают путь витрины, серые путь команды. Одна транзакция пишет событие, задачу outbox и раз в 10 событий снимок агрегата. Процессор на ноде B не владеет закладкой и ждёт. Коммиты ноды B будят только её процессор, поэтому владелец на ноде A замечает их по опросу, раз в 250&nbsp;мс.</figcaption>
+  </figure>
+  <dl class="parts">
+    <div><dt>Исполнитель команд</dt><dd>Держит замок на концерт внутри процесса, загружает агрегат, проверяет правила и пишет одной транзакцией. После коммита будит процессоры своей ноды. В коде это <code>PostgresCommandExecutor</code>.</dd></div>
+    <div><dt>Журнал <code>events</code></dt><dd>У каждого события есть номер транзакции <code>tx</code>. Индекс <code>(aggregate_type, tx)</code> даёт ленту событий одного типа в порядке номеров.</dd></div>
+    <div><dt>Пробуждение</dt><dd>Сигнал в памяти процесса, без данных (<code>CommitWakeup</code>). На другую ноду он не доходит.</dd></div>
+    <div><dt>Процессор витрины</dt><dd>По одному на витрину на каждой ноде, работает только владелец закладки. Журнал читает через свой пул из 4 соединений.</dd></div>
+    <div><dt>Рабочие по документам</dt><dd>У каждого занятого документа свой рабочий, события документа применяются строго по порядку. Одновременно пишется до 16 документов.</dd></div>
+    <div><dt>Закладка</dt><dd>Документ в <code>projection_checkpoints</code>: позиция в журнале, владелец, срок аренды, число сбоев подряд, запросы на пересборку.</dd></div>
+  </dl>
+</section>
+
+<section id="steps">
+  <h2>Одна бронь по шагам</h2>
+  <p class="prose">Так проходит одна бронь на горячем концерте при 40 пользователях. Времена взяты из замера: ответ клиенту приходит после очереди к замку и примерно 1,4&nbsp;мс работы под замком, витрина отстаёт от ответа на 10 событий в медиане.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 1100 650" role="img" aria-label="Последовательность: клиент отправляет команду, исполнитель ждёт замок, читает агрегат, пишет событие и коммитит, будит процессор и отвечает 200. Процессор ждёт 10 мс, читает страницу журнала, отдаёт события рабочему документа, рабочий читает и пишет документ в MongoDB, процессор сдвигает закладку и сообщает браузеру." style="min-width:900px">
+        <defs>
+          <marker id="d2-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-ink" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="d2-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-acc" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <rect class="band-a" x="0" y="70" width="1100" height="212"/>
+        <rect class="band-b" x="0" y="290" width="1100" height="352"/>
+        <text class="t-title" x="12" y="96">Ответ на команду</text>
+        <text class="t-label" x="12" y="114">≈1,4 мс под замком</text>
+        <text class="t-label" x="12" y="130">плюс очередь к замку:</text>
+        <text class="t-label" x="12" y="146">при 40 людях ≈57 мс</text>
+        <text class="t-title" x="12" y="316">Витрина догоняет</text>
+        <text class="t-label" x="12" y="334">медиана ≈14 мс,</text>
+        <text class="t-label" x="12" y="350">99 % не дольше 20 мс</text>
+        <text class="t-label" x="12" y="366">после ответа</text>
+        <g>
+          <rect class="box" x="152" y="16" width="116" height="40" rx="6"/><text class="t-title" x="210" y="41" text-anchor="middle">Клиент</text>
+          <rect class="box" x="282" y="16" width="116" height="40" rx="6"/><text class="t-title" x="340" y="41" text-anchor="middle">Исполнитель</text>
+          <rect class="box" x="412" y="16" width="116" height="40" rx="6"/><text class="t-title" x="470" y="41" text-anchor="middle">PostgreSQL</text>
+          <rect class="box-acc" x="542" y="16" width="116" height="40" rx="6"/><text class="t-title" x="600" y="41" text-anchor="middle">Процессор</text>
+          <rect class="box-acc" x="672" y="16" width="116" height="40" rx="6"/><text class="t-title" x="730" y="41" text-anchor="middle">Рабочий</text>
+          <rect class="box" x="802" y="16" width="116" height="40" rx="6"/><text class="t-title" x="860" y="41" text-anchor="middle">MongoDB</text>
+          <rect class="box" x="932" y="16" width="116" height="40" rx="6"/><text class="t-title" x="990" y="41" text-anchor="middle">Браузер</text>
+        </g>
+        <line class="life" x1="210" y1="56" x2="210" y2="632"/>
+        <line class="life" x1="340" y1="56" x2="340" y2="632"/>
+        <line class="life" x1="470" y1="56" x2="470" y2="632"/>
+        <line class="life" x1="600" y1="56" x2="600" y2="632"/>
+        <line class="life" x1="730" y1="56" x2="730" y2="632"/>
+        <line class="life" x1="860" y1="56" x2="860" y2="632"/>
+        <line class="life" x1="990" y1="56" x2="990" y2="632"/>
+        <!-- command -->
+        <line class="ln" x1="210" y1="100" x2="336" y2="100" marker-end="url(#d2-ink)"/><text class="t-label" x="275" y="93" text-anchor="middle">POST BookSeat</text>
+        <rect class="note" x="265" y="114" width="150" height="26" rx="4"/><text class="t-label" x="340" y="131" text-anchor="middle">ждёт замок концерта</text>
+        <line class="ln" x1="340" y1="168" x2="466" y2="168" marker-end="url(#d2-ink)"/><text class="t-label" x="405" y="161" text-anchor="middle">SELECT агрегата</text>
+        <line class="ln" x1="340" y1="200" x2="466" y2="200" marker-end="url(#d2-ink)"/><text class="t-label" x="405" y="193" text-anchor="middle">INSERT, COMMIT</text>
+        <line class="ln-acc dash" x1="340" y1="232" x2="596" y2="232" marker-end="url(#d2-acc)"/><text class="t-label t-acc" x="405" y="225" text-anchor="middle">пробуждение</text>
+        <line class="ln dash" x1="340" y1="264" x2="214" y2="264" marker-end="url(#d2-ink)"/><text class="t-label" x="275" y="257" text-anchor="middle">200 принято</text>
+        <!-- read side -->
+        <rect class="note" x="525" y="302" width="150" height="26" rx="4"/><text class="t-label" x="600" y="319" text-anchor="middle">пауза 10 мс</text>
+        <line class="ln-acc" x1="600" y1="356" x2="474" y2="356" marker-end="url(#d2-acc)"/><text class="t-label" x="535" y="349" text-anchor="middle">SELECT страница</text>
+        <line class="ln-acc" x1="470" y1="388" x2="596" y2="388" marker-end="url(#d2-acc)"/><text class="t-label" x="535" y="381" text-anchor="middle">события</text>
+        <line class="ln-acc" x1="600" y1="420" x2="726" y2="420" marker-end="url(#d2-acc)"/><text class="t-label" x="665" y="413" text-anchor="middle">события зала</text>
+        <line class="ln-acc" x1="730" y1="452" x2="856" y2="452" marker-end="url(#d2-acc)"/><text class="t-label" x="795" y="445" text-anchor="middle">find_one</text>
+        <line class="ln-acc" x1="730" y1="484" x2="856" y2="484" marker-end="url(#d2-acc)"/><text class="t-label" x="795" y="477" text-anchor="middle">update_one</text>
+        <line class="ln-acc dash" x1="730" y1="516" x2="604" y2="516" marker-end="url(#d2-acc)"/><text class="t-label" x="665" y="509" text-anchor="middle">готово</text>
+        <line class="ln-acc" x1="600" y1="548" x2="856" y2="548" marker-end="url(#d2-acc)"/><text class="t-label" x="665" y="541" text-anchor="middle">сдвиг закладки</text>
+        <line class="ln-acc dash" x1="600" y1="580" x2="986" y2="580" marker-end="url(#d2-acc)"/><text class="t-label" x="795" y="573" text-anchor="middle">SSE: обновлён</text>
+        <rect class="note" x="915" y="596" width="150" height="26" rx="4"/><text class="t-label" x="990" y="613" text-anchor="middle">перечитывает зал</text>
+      </svg>
+    </div>
+    <figcaption>Верхняя полоса происходит до ответа клиенту, нижняя после. Витрина не держит команду: клиент получает 200, когда событие закоммичено, а документ обновляется в фоне.</figcaption>
+  </figure>
+  <div class="tablewrap">
+    <table class="steps">
+      <thead><tr><th>Шаг</th><th>Что происходит</th><th>Обращение к базе</th><th>Если здесь сбой</th></tr></thead>
+      <tbody>
+        <tr><td>1. Очередь к концерту</td><td>Команды одного концерта выполняются по одной: внутри процесса их разводит замок агрегата.</td><td>нет</td><td>Ожидание дольше лимита даёт ответ 503, ничего не записано.</td></tr>
+        <tr><td>2. Загрузка и правила</td><td>Агрегат восстанавливается из снимка и событий после него и проверяет правила.</td><td>PostgreSQL: SELECT снимка, SELECT событий после него</td><td>Ошибка базы даёт 503. Нарушенное правило даёт 422, ничего не записано.</td></tr>
+        <tr><td>3. Запись</td><td>Событие, задача outbox и раз в 10 событий снимок пишутся одной транзакцией. Событие получает <code>tx</code>, номер своей транзакции.</td><td>PostgreSQL: INSERT, COMMIT</td><td>Конфликт версии: команда повторяется на свежем состоянии. Обрыв связи во время COMMIT даёт 503, событие при этом могло записаться.</td></tr>
+        <tr><td>4. Ответ и пробуждение</td><td>Исполнитель будит процессоры своей ноды, отпускает замок и отвечает 200.</td><td>нет</td><td>Нода упала сразу после COMMIT: событие уже в журнале, процессор найдёт его по закладке.</td></tr>
+        <tr><td>5. Пауза</td><td>Процессор ждёт 10&nbsp;мс, чтобы соседние коммиты попали в одну страницу.</td><td>нет</td><td>Остановка ноды или потеря аренды прерывают паузу.</td></tr>
+        <tr><td>6. Чтение страницы</td><td>До 1000 событий выше закладки и ниже горизонта, в порядке <code>tx</code>. Страница короче 1000 значит, что журнал вычитан, и следующее чтение будет только по пробуждению или опросу.</td><td>PostgreSQL: SELECT … WHERE aggregate_type = $1 AND tx &gt; закладка AND tx &lt; горизонт ORDER BY tx LIMIT 1000</td><td>Ошибка: пауза 0,5&nbsp;с, после каждого следующего сбоя вдвое дольше, до 10&nbsp;с. Затем чтение снова от закладки.</td></tr>
+        <tr><td>7. Применение к документу</td><td>События раскладываются по документам. Рабочий документа читает его, пропускает уже применённые события и записывает новую версию.</td><td>MongoDB: find_one по _id, затем update_one с условием на version (для нового документа insert)</td><td>Конфликт версии: перечитать и повторить. Дыра в событиях: документ пересобирается по истории. Другая ошибка: закладка встанет перед этой транзакцией, пауза, повтор.</td></tr>
+        <tr><td>8. Сдвиг закладки</td><td>Когда страница и все страницы до неё применены, закладка переходит на её последний <code>tx</code>.</td><td>MongoDB: update_one с токеном аренды</td><td>Нода упала до сдвига: новый владелец прочитает страницу снова, документы пропустят повторы.</td></tr>
+        <tr><td>9. Экран</td><td>Лента сообщает об обновлении, экран перечитывает зал.</td><td>SSE, затем GET /api/concerts/{id}</td><td>Если лента молчит, экран перечитает зал через 1&nbsp;с и потом каждые 5&nbsp;с.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="prose">В фоне владелец продлевает аренду раз в треть её срока, то есть каждые 3,3&nbsp;с при аренде 10&nbsp;с, и раз в 250&nbsp;мс забирает запросы на пересборку из своей закладки. Ноды без аренды раз в 250&nbsp;мс пробуют её занять; получится это только после того, как аренда владельца истечёт.</p>
+</section>
+
+<section id="horizon">
+  <h2>Горизонт журнала</h2>
+  <p class="prose">Номер <code>tx</code> транзакция получает при первой записи, а коммитятся транзакции в любом порядке. Если читать всё, что уже видно, можно сдвинуть закладку за событие транзакции, которая ещё не закончилась. Когда она закоммитится, её событие окажется позади закладки, и процессор его никогда не прочитает. Поэтому страница ограничена горизонтом: самой старой ещё не завершённой транзакцией, <code>pg_snapshot_xmin(pg_current_snapshot())</code>. Всё, что ниже горизонта, уже завершено, и дыр там нет. <code>LIMIT</code> решает другую задачу: ограничивает размер страницы.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 900 320" role="img" aria-label="Транзакции 101–106; 103 и 106 ещё идут. С горизонтом процессор читает только номера меньше 103 и ждёт. Без горизонта он прочитал бы 104 и 105, сдвинул закладку на 105, и событие транзакции 103, закоммиченной позже, было бы потеряно." style="min-width:760px">
+        <text class="t-title" x="16" y="78">Как сейчас</text>
+        <text class="t-label" x="16" y="96">читать до горизонта</text>
+        <rect class="wait-zone" x="384" y="50" width="192" height="62" rx="6"/>
+        <text class="t-label" x="480" y="44" text-anchor="middle">ждут, пока 103 не закончится</text>
+        <rect class="tx-done" x="178" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="200" y="78" text-anchor="middle">101</text><text class="t-label" x="200" y="95" text-anchor="middle">готова</text>
+        <rect class="tx-done" x="248" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="270" y="78" text-anchor="middle">102</text><text class="t-label" x="270" y="95" text-anchor="middle">готова</text>
+        <rect class="tx-head" x="318" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="340" y="78" text-anchor="middle">103</text><text class="t-label" x="340" y="95" text-anchor="middle">идёт</text>
+        <rect class="tx-done" x="388" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="410" y="78" text-anchor="middle">104</text><text class="t-label" x="410" y="95" text-anchor="middle">готова</text>
+        <rect class="tx-done" x="458" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="480" y="78" text-anchor="middle">105</text><text class="t-label" x="480" y="95" text-anchor="middle">готова</text>
+        <rect class="tx-open" x="528" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="550" y="78" text-anchor="middle">106</text><text class="t-label" x="550" y="95" text-anchor="middle">идёт</text>
+        <line class="ln" x1="305" y1="40" x2="305" y2="114" style="stroke-width:2"/>
+        <text class="t-label" x="305" y="128" text-anchor="middle">закладка</text>
+        <text class="t-label t-acc" x="340" y="144" text-anchor="middle">горизонт = 103</text>
+        <text class="t-label" x="620" y="70">Страница: tx &gt; 102 и tx &lt; 103,</text>
+        <text class="t-label" x="620" y="87">то есть пока пусто. 104 и 105</text>
+        <text class="t-label" x="620" y="104">ждут, закладка стоит на 102.</text>
+        <line class="life" x1="16" y1="170" x2="884" y2="170"/>
+        <text class="t-title" x="16" y="238">Без горизонта</text>
+        <text class="t-label" x="16" y="256">читать всё видимое</text>
+        <rect class="tx-done" x="178" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="200" y="238" text-anchor="middle">101</text><text class="t-label" x="200" y="255" text-anchor="middle">готова</text>
+        <rect class="tx-done" x="248" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="270" y="238" text-anchor="middle">102</text><text class="t-label" x="270" y="255" text-anchor="middle">готова</text>
+        <rect class="tx-lost" x="318" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="340" y="238" text-anchor="middle">103</text><text class="t-label" x="340" y="255" text-anchor="middle">позже</text>
+        <rect class="tx-done" x="388" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="410" y="238" text-anchor="middle">104</text><text class="t-label" x="410" y="255" text-anchor="middle">готова</text>
+        <rect class="tx-done" x="458" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="480" y="238" text-anchor="middle">105</text><text class="t-label" x="480" y="255" text-anchor="middle">готова</text>
+        <rect class="tx-open" x="528" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="550" y="238" text-anchor="middle">106</text><text class="t-label" x="550" y="255" text-anchor="middle">идёт</text>
+        <line class="ln" x1="515" y1="200" x2="515" y2="274" style="stroke-width:2"/>
+        <text class="t-label" x="515" y="194" text-anchor="middle">закладка</text>
+        <text class="t-label t-crit" x="340" y="288" text-anchor="middle">закоммичена позже,</text>
+        <text class="t-label t-crit" x="340" y="304" text-anchor="middle">осталась позади закладки</text>
+        <text class="t-label" x="620" y="230">Прочитали 104 и 105,</text>
+        <text class="t-label" x="620" y="247">закладка ушла на 105.</text>
+        <text class="t-label t-crit" x="620" y="264">Событие 103 процессор</text>
+        <text class="t-label t-crit" x="620" y="281">уже не прочитает никогда.</text>
+      </svg>
+    </div>
+    <figcaption>Пунктирная рамка: транзакция ещё идёт. С горизонтом процессор ждёт самую старую незавершённую транзакцию. Без него событие медленной транзакции теряется.</figcaption>
+  </figure>
+  <p class="prose">Цена горизонта: свежие события ждут самую медленную пишущую транзакцию в базе, даже чужую. Транзакция, зависшая в состоянии <code>idle in transaction</code>, останавливает все ленты, пока PostgreSQL её не оборвёт. В compose демо это происходит через 30 секунд, <code>idle_in_transaction_session_timeout=30s</code>.</p>
+</section>
+
+<section id="guarantees">
+  <h2>Гарантии</h2>
+  <div class="two">
+    <div>
+      <p class="verdict">Гарантируется</p>
+      <dl class="claims">
+        <div><dt>Атомарная запись</dt><dd>Событие и задача outbox пишутся одной транзакцией: либо оба, либо ничего.</dd></div>
+        <div><dt>Без потерь</dt><dd>Закладка сдвигается только за непрерывным началом полностью применённых страниц. Горизонт не даёт перепрыгнуть незавершённую транзакцию. После любого сбоя чтение начинается заново от закладки.</dd></div>
+        <div><dt>Без повторного применения</dt><dd>Документ помнит последнее применённое событие, <code>last_sequence</code>, и принимает только следующее. Повтор после сбоя пропускается.</dd></div>
+        <div><dt>Порядок внутри концерта</dt><dd>События одного агрегата применяются строго по номеру. Дыру документ не принимает, и процессор пересобирает его по истории.</dd></div>
+        <div><dt>Один писатель закладки</dt><dd>Аренда с токеном: бывший владелец не может сдвинуть закладку. Документы защищены версией, и две записи одной версии не пройдут обе.</dd></div>
+        <div><dt>Касса не зависит от MongoDB</dt><dd>Пока MongoDB стоит, брони принимаются. Витрина догонит, когда MongoDB вернётся.</dd></div>
+      </dl>
+    </div>
+    <div>
+      <p class="verdict no">Не гарантируется</p>
+      <dl class="claims">
+        <div><dt>Чтение своей записи</dt><dd>Сразу после ответа 200 документ ещё старый. Экран поэтому ждёт <code>projection.updated</code> для своего документа.</dd></div>
+        <div><dt>Согласованность между витринами</dt><dd>Зал и кошелёк обновляются независимо. Кошелёк ещё и позже, потому что его события рождаются в цепочке outbox.</dd></div>
+        <div><dt>Предел отставания</dt><dd>Если процессор не успевает, отставание растёт без предела: команды не притормаживают. Отставание видно в статусе, счёт идёт до 100&nbsp;000 событий.</dd></div>
+        <div><dt>Общий порядок между концертами</dt><dd>Документы разных концертов обновляются параллельно и независимо.</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section id="weak">
+  <h2>Слабые места</h2>
+  <div class="tablewrap">
+    <table class="weak">
+      <thead><tr><th>Место</th><th>Что происходит</th><th>Как реагирует система</th><th>Что видно в статусе</th></tr></thead>
+      <tbody>
+        <tr><td>Долгая пишущая транзакция</td><td>Горизонт не двигается.</td><td>Все ленты стоят, команды работают. Compose демо обрывает зависшую транзакцию через 30&nbsp;с.</td><td>Растёт <code>lag</code>, процессор ждёт горизонта.</td></tr>
+        <tr><td>Событие, которое не читается</td><td>Закладка не может пройти мимо него. То же с документом, запись которого всё время падает.</td><td>Вся витрина стоит на этом месте и повторяет с паузой до 10&nbsp;с. Отдельной очереди для плохих событий нет.</td><td><code>stalled</code>, <code>failures</code>, <code>last_error</code>.</td></tr>
+        <tr><td>MongoDB остановлена</td><td>Нельзя писать документы и закладку.</td><td>Владелец теряет аренду и ждёт; брони принимаются. Замер: за 10&nbsp;с паузы отставание дошло до нескольких тысяч событий, догон занял секунды.</td><td><code>stale: true</code>, растёт <code>lag</code>.</td></tr>
+        <tr><td>Нода-владелец убита</td><td>Аренда истекает не позже чем через 10&nbsp;с.</td><td>Другая нода занимает закладку и читает от неё, повторы пропускаются. Замер: пик отставания 6&nbsp;357 событий.</td><td>Меняется <code>owner</code>.</td></tr>
+        <tr><td>Команда пришла на другую ноду</td><td>Пробуждение не пересекает ноды.</td><td>Владелец увидит событие по опросу, до 250&nbsp;мс.</td><td><code>lag</code> 80–130 событий при <code>BALANCE=key</code>.</td></tr>
+        <tr><td>Растёт нагрузка на витрину</td><td>У витрины один владелец.</td><td>Добавление нод витрину не ускоряет.</td><td>CPU ноды-владельца и <code>lag</code>.</td></tr>
+        <tr><td>wipe под нагрузкой на двух нодах</td><td>Бывший владелец может дописать документ, который только что удалили.</td><td>Принятое ограничение: wipe существует только в демо.</td><td>Расхождение в verify.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="scale">
+  <h2>Узкие места и масштабирование</h2>
+  <h3>Горячий концерт: очередь, а не процессор</h3>
+  <p class="prose">Команды одного концерта выполняются строго по одной: внутри ноды их разводит замок агрегата, между нодами проверка версии. Поэтому команд в секунду ровно столько, сколько раз за секунду помещается одна команда под замком.</p>
+  <div class="math">
+    <div><span class="k">Старая схема</span><span class="v">758 команд/с</span><span class="d">1 / 758 = 1,32 мс под замком</span></div>
+    <div><span class="k">Процессор, пауза 10 мс</span><span class="v">695 команд/с</span><span class="d">1 / 695 = 1,44 мс под замком</span></div>
+    <div><span class="k">Ответ при 40 людях</span><span class="v">≈57 мс</span><span class="d">40 × 1,44 мс; медиана замера 57,4 мс</span></div>
+  </div>
+  <p class="prose">Процессор здесь не упор: PostgreSQL занят на 56&nbsp;% своих 2 ядер, бэкенд на 20&nbsp;% из 4. Добавление ядер команды одного концерта не ускорит, ускорит только более короткое время под замком. Сами запросы команды выполняются в PostgreSQL за 0,17&nbsp;мс и в старой схеме, и с процессором. Остальное время под замком тратится вне выполнения запросов: на сетевые обмены, COMMIT с записью журнала на диск и работу бэкенда. Раскладку этого времени мы не замеряли.</p>
+  <h3>Много концертов: упор в процессор PostgreSQL</h3>
+  <p class="prose">Брони по разным концертам не ждут друг друга, и PostgreSQL занят на 93–95&nbsp;% своих 2 ядер во всех вариантах. Значит, команд в секунду столько, сколько их помещается в эти ядра. Процессор с паузой 10&nbsp;мс снизил цену команды в PostgreSQL с 548 до 504&nbsp;мкс, и в те же ядра поместилось на 11&nbsp;% больше команд: 4&nbsp;101 в секунду вместо 3&nbsp;692.</p>
+  <h3>Если добавить ноды</h3>
+  <ul class="plain prose">
+    <li>Команды масштабируются, пока хватает PostgreSQL. Но замок концерта живёт внутри одной ноды. Если команды одного концерта приходят на две ноды, они сталкиваются на проверке версии: при раздаче по кругу 4&nbsp;% ответов были 409. Раздача по ключу, <code>BALANCE=key</code>, отправляет концерт на одну ноду.</li>
+    <li>Витрина вширь не масштабируется: у неё один владелец, остальные ноды ждут. Масштабируется только внутри ноды: 16 документов одновременно и окно до 63 страниц. Разбить витрину на диапазоны ключей с отдельными закладками можно, но это не сделано.</li>
+    <li>Пробуждение не пересекает ноды: коммит на ноде без закладки владелец увидит по опросу, до 250&nbsp;мс.</li>
+    <li>MongoDB далеко от потолка, не больше 47&nbsp;% из 3 ядер. С паузой нагрузка на неё растёт медленнее потока: чем больше событий приходит за 10&nbsp;мс, тем больше их уходит одной записью документа. При 4&nbsp;227 командах в секунду и паузе 50&nbsp;мс MongoDB тратила 0,43 ядра.</li>
+  </ul>
+</section>
+
+<section id="cpu">
+  <h2>CPU в абсолютных числах</h2>
+  <p class="prose">Каждый контейнер стенда ограничен квотой процессора через cgroup. В профиле <code>db</code> у PostgreSQL 2 ядра, у бэкенда 4, у MongoDB 3. В профиле <code>app</code> у бэкенда 2 ядра, у PostgreSQL 4, у MongoDB 3. Загрузка на графиках: процессорное время контейнера за прогон, делённое на длительность прогона (около 14&nbsp;с вместе с разогревом) и на квоту. 100&nbsp;% значит, что квота занята целиком. Каждое значение — медиана трёх прогонов.</p>
+  <p class="prose">У горячего концерта ни одна полоса не доходит до квоты: упор в очередь к концерту. У разных концертов PostgreSQL стоит у квоты, остальные компоненты нет. Рост цены команды на 73&nbsp;% у MongoDB в процессоре без оптимизаций выглядит большим, но в квоте это 14&nbsp;% против 23&nbsp;%.</p>
+  <div class="legend" id="legend"></div>
+  <div class="panels" id="panels"></div>
+  <details class="tableview" open>
+    <summary>Таблица: все пять вариантов, ядра, доля квоты и микросекунды CPU на команду</summary>
+    <div id="tables" style="display:grid;gap:18px"></div>
+  </details>
+</section>
+
+<section id="open">
+  <h2>Что осталось открытым</h2>
+  <p class="prose">На горячем концерте процессор, даже с паузой, делает команду медленнее на 0,12&nbsp;мс: 695 команд в секунду против 758. Внутри PostgreSQL запросы команды выполняются так же быстро, значит, время теряется вне их. Кандидаты, ни один не проверен:</p>
+  <ul class="plain prose">
+    <li>PostgreSQL под квотой: процессов стало больше, короткие всплески упираются в квоту и ждут следующего окна. Cgroup отмеряет время окнами по 100&nbsp;мс.</li>
+    <li>COMMIT дольше пишет журнал: WAL на команду вырос на 7–10&nbsp;%. Если это полные образы страниц из-за hint bits при включённых контрольных суммах, а в PostgreSQL 18 они включены по умолчанию, то запись на диск при каждом COMMIT длиннее.</li>
+    <li>Бэкенд: задачи процессора и команды делят одни и те же потоки tokio.</li>
+  </ul>
+  <p class="prose">Проверить можно на тех же прогонах: счётчик <code>wal_fpi</code> из <code>pg_stat_wal</code>, <code>nr_throttled</code> из <code>cpu.stat</code> контейнера, время ожидания соединения из пула. Это отдельная работа.</p>
+</section>
+
+<p class="foot">Источник: <code>demo/load/results</code>, серии <code>perf-04-before-</code> (обработчик в команде, коммит 6515268), <code>perf-04-after-</code> (процессор без оптимизаций), <code>perf-04b-s0-</code>, <code>perf-04b-s10-</code>, <code>perf-04b-s50-</code>. Стенд под квотой CPU, пул PostgreSQL 20 соединений, 3&nbsp;с разогрева и 10&nbsp;с замера, по три прогона на точку. Время выполнения запросов: <code>pg_stat_statements</code> тех же прогонов.</p>
+</div>
+
+<div class="tip" id="tip" hidden></div>
+
+<script>
+(() => {
+  const VARIANTS = {
+    before: { name: 'Обработчик в команде', note: 'старая схема', color: 'var(--s1)' },
+    after: { name: 'Процессор без оптимизаций', color: 'var(--s2)' },
+    s0: { name: 'Чтение по поводу, без паузы' },
+    s10: { name: 'Процессор, пауза 10 мс', color: 'var(--s3)' },
+    s50: { name: 'Процессор, пауза 50 мс' },
+  };
+  const CHART = ['before', 'after', 's10'];
+  const ORDER = ['before', 'after', 's0', 's10', 's50'];
+  const COMPONENTS = [
+    { key: 'pg', name: 'PostgreSQL' },
+    { key: 'be', name: 'Бэкенд' },
+    { key: 'mg', name: 'MongoDB' },
+  ];
+  // acc: accepted commands per second (measured window); be/pg/mg: [cores used over the run, quota cores, CPU µs per command];
+  // lag: projection lag in events, p50 / p99. Medians of three runs each.
+  const SCENARIOS = [
+    { key: 'hot40db', title: 'Горячий концерт, 40 пользователей', profile: 'Профиль db: PostgreSQL 2 ядра, бэкенд 4, MongoDB 3',
+      data: {
+        before: { acc: 758, be: [0.99, 4, 1377], pg: [1.06, 2, 1511], mg: [0.42, 3, 595], lag: null },
+        after: { acc: 713, be: [1.27, 4, 1891], pg: [1.44, 2, 2140], mg: [0.69, 3, 1027], lag: [1, 2] },
+        s0: { acc: 681, be: [1.18, 4, 1865], pg: [1.3, 2, 2052], mg: [0.69, 3, 1087], lag: [1, 2] },
+        s10: { acc: 695, be: [0.82, 4, 1221], pg: [1.13, 2, 1682], mg: [0.34, 3, 550], lag: [10, 14] },
+        s50: { acc: 694, be: [0.73, 4, 1118], pg: [1.15, 2, 1762], mg: [0.28, 3, 427], lag: [50, 73] },
+      } },
+    { key: 'hot40app', title: 'Горячий концерт, 40 пользователей', profile: 'Профиль app: бэкенд 2 ядра, PostgreSQL 4, MongoDB 3',
+      data: {
+        before: { acc: 749, be: [0.84, 2, 1234], pg: [1.05, 4, 1502], mg: [0.41, 3, 606], lag: null },
+        after: { acc: 724, be: [1.0, 2, 1482], pg: [1.38, 4, 2028], mg: [0.66, 3, 948], lag: [1, 2] },
+        s0: { acc: 693, be: [0.99, 2, 1532], pg: [1.25, 4, 1950], mg: [0.63, 3, 988], lag: [1, 2] },
+        s10: { acc: 674, be: [0.7, 2, 1061], pg: [1.09, 4, 1676], mg: [0.35, 3, 531], lag: [9, 17] },
+        s50: { acc: 679, be: [0.63, 2, 965], pg: [1.12, 4, 1743], mg: [0.25, 3, 399], lag: [49, 69] },
+      } },
+    { key: 'hot10db', title: 'Горячий концерт, 10 пользователей', profile: 'Профиль db: PostgreSQL 2 ядра, бэкенд 4, MongoDB 3',
+      data: {
+        before: { acc: 805, be: [1.07, 4, 1429], pg: [1.0, 2, 1346], mg: [0.42, 3, 559], lag: null },
+        after: { acc: 554, be: [1.12, 4, 2036], pg: [1.12, 2, 2084], mg: [0.55, 3, 1059], lag: [1, 2] },
+        s0: { acc: 699, be: [1.4, 4, 2072], pg: [1.24, 2, 1967], mg: [0.67, 3, 1085], lag: [1, 2] },
+        s10: { acc: 661, be: [1.09, 4, 1734], pg: [1.12, 2, 1786], mg: [0.37, 3, 578], lag: [10, 14] },
+        s50: { acc: 674, be: [0.86, 4, 1362], pg: [1.1, 2, 1730], mg: [0.23, 3, 362], lag: [40, 74] },
+      } },
+    { key: 'spread50db', title: 'Разные концерты, 50 пользователей', profile: 'Профиль db: PostgreSQL 2 ядра, бэкенд 4, MongoDB 3',
+      data: {
+        before: { acc: 3692, be: [2.22, 4, 647], pg: [1.86, 2, 548], mg: [1.32, 3, 382], lag: null },
+        after: { acc: 3569, be: [2.12, 4, 644], pg: [1.9, 2, 580], mg: [1.36, 3, 399], lag: [122, 310] },
+        s0: { acc: 3545, be: [2.18, 4, 670], pg: [1.91, 2, 584], mg: [1.41, 3, 435], lag: [53, 96] },
+        s10: { acc: 4101, be: [1.93, 4, 513], pg: [1.9, 2, 504], mg: [1.01, 3, 268], lag: [113, 177] },
+        s50: { acc: 4227, be: [1.42, 4, 366], pg: [1.91, 2, 493], mg: [0.43, 3, 111], lag: [331, 522] },
+      } },
+  ];
+
+  const nf2 = new Intl.NumberFormat('ru-RU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+  const nf0 = new Intl.NumberFormat('ru-RU', { maximumFractionDigits: 0 });
+  const pct = (c) => Math.round((100 * c[0]) / c[1]);
+  const NS = 'http://www.w3.org/2000/svg';
+  const el = (name, attrs = {}, text) => {
+    const node = document.createElementNS(NS, name);
+    for (const [k, v] of Object.entries(attrs)) node.setAttribute(k, v);
+    if (text !== undefined) node.textContent = text;
+    return node;
+  };
+
+  // Legend
+  const legend = document.getElementById('legend');
+  for (const v of CHART) {
+    const item = document.createElement('span');
+    const sw = document.createElement('i');
+    sw.style.background = VARIANTS[v].color;
+    item.append(sw, document.createTextNode(VARIANTS[v].name + (VARIANTS[v].note ? ` (${VARIANTS[v].note})` : '')));
+    legend.append(item);
+  }
+
+  // Tooltip
+  const tip = document.getElementById('tip');
+  const showTip = (event, lines, color) => {
+    tip.replaceChildren();
+    const head = document.createElement('b');
+    head.textContent = lines[0];
+    tip.append(head);
+    lines.slice(1).forEach((line, i) => {
+      const row = document.createElement('span');
+      if (i === 0) {
+        const key = document.createElement('i');
+        key.className = 'line';
+        key.style.background = color;
+        row.append(key);
+      }
+      row.append(document.createTextNode(line));
+      row.className = i === 0 ? '' : 'k';
+      tip.append(row);
+    });
+    tip.hidden = false;
+    let x, y;
+    if (event.type === 'focus') {
+      const r = event.currentTarget.getBoundingClientRect();
+      x = r.left + 20; y = r.bottom + 8;
+    } else { x = event.clientX + 14; y = event.clientY + 14; }
+    const w = tip.offsetWidth, h = tip.offsetHeight;
+    x = Math.min(x, window.innerWidth - w - 12);
+    y = Math.min(y, window.innerHeight - h - 12);
+    tip.style.left = Math.max(8, x) + 'px';
+    tip.style.top = Math.max(8, y) + 'px';
+  };
+  const hideTip = () => { tip.hidden = true; };
+
+  // Small multiples: share of quota per component and variant
+  const W = 480, X0 = 132, X1 = 430, BAR = 11, GAP = 3, GROUP_GAP = 18, TOP = 10;
+  const groupH = CHART.length * BAR + (CHART.length - 1) * GAP;
+  const H = TOP + COMPONENTS.length * groupH + (COMPONENTS.length - 1) * GROUP_GAP + 34;
+  const xs = (p) => X0 + ((X1 - X0) * Math.min(p, 100)) / 100;
+  const panels = document.getElementById('panels');
+  for (const sc of SCENARIOS) {
+    const fig = document.createElement('figure');
+    fig.className = 'panel';
+    const cap = document.createElement('figcaption');
+    const h = document.createElement('h4');
+    h.textContent = sc.title;
+    const sub = document.createElement('p');
+    sub.className = 'sub';
+    sub.textContent = sc.profile;
+    const thr = document.createElement('p');
+    thr.className = 'sub';
+    thr.textContent = 'Команд в секунду по вариантам легенды: ' + CHART.map((v) => nf0.format(sc.data[v].acc)).join(', ');
+    cap.append(h, sub, thr);
+    const svg = el('svg', { viewBox: `0 0 ${W} ${H}`, role: 'img',
+      'aria-label': `${sc.title}. Доля квоты CPU: ` + COMPONENTS.map((c) => `${c.name} ` + CHART.map((v) => pct(sc.data[v][c.key]) + ' %').join(', ')).join('; ') });
+    const plotBottom = H - 26;
+    for (const t of [0, 25, 50, 75, 100]) {
+      svg.append(el('line', { x1: xs(t), x2: xs(t), y1: TOP - 4, y2: plotBottom, stroke: t === 100 ? 'var(--axis)' : 'var(--grid)', 'stroke-width': t === 100 ? 1.5 : 1 }));
+      svg.append(el('text', { x: xs(t), y: plotBottom + 16, 'text-anchor': 'middle', class: 'tick' }, t === 100 ? 'квота 100 %' : String(t)));
+    }
+    COMPONENTS.forEach((c, gi) => {
+      const gy = TOP + gi * (groupH + GROUP_GAP);
+      const cores = sc.data.before[c.key][1];
+      svg.append(el('text', { x: 0, y: gy + groupH / 2 - 3, class: 'comp' }, c.name));
+      svg.append(el('text', { x: 0, y: gy + groupH / 2 + 13, class: 'compsub' }, `квота ${nf0.format(cores)} ${cores === 1 ? 'ядро' : cores < 5 ? 'ядра' : 'ядер'}`));
+      CHART.forEach((v, bi) => {
+        const d = sc.data[v][c.key];
+        const p = (100 * d[0]) / d[1];
+        const y = gy + bi * (BAR + GAP);
+        const w = Math.max(2, xs(p) - X0);
+        const r = Math.min(4, BAR / 2, w);
+        const g = el('g', { class: 'bar-g', tabindex: '0', role: 'img',
+          'aria-label': `${c.name}, ${VARIANTS[v].name}: ${nf2.format(d[0])} ядра из ${d[1]}, ${Math.round(p)} % квоты, ${nf0.format(d[2])} мкс на команду` });
+        g.append(el('rect', { class: 'bar-hit', x: X0 - 4, y: y - 2, width: X1 - X0 + 46, height: BAR + 4 }));
+        g.append(el('path', { fill: VARIANTS[v].color,
+          d: `M${X0},${y} h${w - r} a${r},${r} 0 0 1 ${r},${r} v${BAR - 2 * r} a${r},${r} 0 0 1 ${-r},${r} h${-(w - r)} z` }));
+        g.append(el('text', { x: X0 + w + 6, y: y + BAR - 1.5, class: 'val' }, `${Math.round(p)} %`));
+        const lines = [`${Math.round(p)} % квоты`, `${c.name} · ${VARIANTS[v].name}`, `${nf2.format(d[0])} ядра из ${d[1]}`, `${nf0.format(d[2])} мкс CPU на команду`];
+        g.addEventListener('pointermove', (e) => showTip(e, lines, VARIANTS[v].color));
+        g.addEventListener('pointerleave', hideTip);
+        g.addEventListener('focus', (e) => showTip(e, lines, VARIANTS[v].color));
+        g.addEventListener('blur', hideTip);
+        svg.append(g);
+      });
+    });
+    fig.append(cap, svg);
+    panels.append(fig);
+  }
+
+  // Table view: all five variants
+  const tables = document.getElementById('tables');
+  const cell = (d) => {
+    const td = document.createElement('td');
+    const main = document.createTextNode(`${nf2.format(d[0])} из ${d[1]} · ${pct(d)} %`);
+    const small = document.createElement('small');
+    small.textContent = `${nf0.format(d[2])} мкс на команду`;
+    td.append(main, small);
+    if (pct(d) >= 90) td.classList.add('hot');
+    return td;
+  };
+  for (const sc of SCENARIOS) {
+    const wrap = document.createElement('div');
+    wrap.className = 'tablewrap';
+    const table = document.createElement('table');
+    table.className = 'cpu-table';
+    const caption = document.createElement('caption');
+    caption.textContent = `${sc.title}. ${sc.profile}`;
+    const thead = document.createElement('thead');
+    const hr = document.createElement('tr');
+    for (const t of ['Вариант', 'Команд/с', 'PostgreSQL, ядер · % квоты', 'Бэкенд, ядер · % квоты', 'MongoDB, ядер · % квоты', 'Отставание p50 / p99']) {
+      const th = document.createElement('th');
+      th.textContent = t;
+      hr.append(th);
+    }
+    thead.append(hr);
+    const tbody = document.createElement('tbody');
+    for (const v of ORDER) {
+      const d = sc.data[v];
+      const tr = document.createElement('tr');
+      const name = document.createElement('td');
+      if (VARIANTS[v].color) {
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        chip.style.background = VARIANTS[v].color;
+        name.append(chip);
+      }
+      name.append(document.createTextNode(VARIANTS[v].name));
+      const acc = document.createElement('td');
+      acc.textContent = nf0.format(d.acc);
+      const lag = document.createElement('td');
+      lag.textContent = d.lag ? `${d.lag[0]} / ${d.lag[1]} событий` : 'нет, витрина в команде';
+      tr.append(name, acc, cell(d.pg), cell(d.be), cell(d.mg), lag);
+      tbody.append(tr);
+    }
+    table.append(caption, thead, tbody);
+    wrap.append(table);
+    tables.append(wrap);
+  }
+})();
+</script>
+
+</html>

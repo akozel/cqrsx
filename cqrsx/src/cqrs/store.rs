@@ -4,12 +4,11 @@ pub mod persisted;
 pub mod repository;
 pub mod serialized_event;
 pub mod snapshot;
-pub mod stream;
 pub mod upcaster;
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{AggregateError, aggregate::Aggregate, event::EventEnvelope, store::serialized_event::SerializedEvent};
+use crate::cqrs::{AggregateError, aggregate::Aggregate, event::EventEnvelope};
 use std::{collections::HashMap, error, future::Future};
 
 /// The abstract central source for loading past events and committing new events.
@@ -74,7 +73,7 @@ pub enum PersistenceError {
     UnknownError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     /// A view document is behind the delivered events: it has applied `expected - 1` of its
     /// aggregate and the batch continues at `found`. Nothing of the batch is written; the document
-    /// stays a correct prefix of its aggregate's history until a replay fills the gap.
+    /// stays a correct prefix of its aggregate's history until a rebuild of the key fills the gap.
     #[error("sequence gap: expected event {expected}, found {found}")]
     SequenceGap {
         /// The next event the document can apply (`last_sequence + 1`).
@@ -105,12 +104,6 @@ impl From<serde_json::Error> for PersistenceError {
     }
 }
 
-impl From<tokio::sync::mpsc::error::SendError<Result<SerializedEvent, Self>>> for PersistenceError {
-    fn from(err: tokio::sync::mpsc::error::SendError<Result<SerializedEvent, Self>>) -> Self {
-        Self::UnknownError(Box::new(err))
-    }
-}
-
 impl<T: error::Error> From<serde_json::error::Error> for AggregateError<T> {
     fn from(err: serde_json::error::Error) -> Self {
         match err.classify() {
@@ -120,7 +113,7 @@ impl<T: error::Error> From<serde_json::error::Error> for AggregateError<T> {
     }
 }
 
-/// Observes persistence errors from projection reads, event handling and replay.
+/// Observes persistence errors from projection reads and event handling.
 ///
 /// Borrows the original error while preserving ownership and the result for its caller.
 ///

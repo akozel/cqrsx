@@ -172,24 +172,6 @@ async fn persists_events_and_snapshot_without_implicit_outbox() {
         })
     );
 
-    let mut aggregate_stream = repository
-        .stream_events::<StreamAggregate>(AGGREGATE_ID)
-        .await
-        .expect("aggregate event stream must start");
-    assert_eq!(
-        stream_values(collect_stream(&mut aggregate_stream).await),
-        expected_stream_values(&events)
-    );
-
-    let mut all_events_stream = repository
-        .stream_all_events::<StreamAggregate>()
-        .await
-        .expect("all-events stream must start");
-    assert_eq!(
-        stream_values(collect_stream(&mut all_events_stream).await),
-        expected_stream_values(&events)
-    );
-
     database.close().await;
 }
 

@@ -1,5 +1,5 @@
 use super::{
-    CommandExecutor, CommandGatewayError, FailedHandler,
+    CommandExecutor, CommandGatewayError,
     locks::{AggregateLockRegistry, LockLimits, LockRefused},
     retry::retry_on_aggregate_conflict,
 };
@@ -8,16 +8,11 @@ use crate::{
         AggregateError, CqrsFramework,
         aggregate::{Aggregate, AggregateKey},
         command::{retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
-        event::EventEnvelope,
-        event_handler::{
-            EventHandler,
-            delivery::{DeliveryBacklog, DeliveryConfig, RegisteredHandlers},
-        },
         store::EventStore,
     },
     task::NewTask,
 };
-use std::{collections::HashMap, error::Error, sync::Arc};
+use std::{collections::HashMap, error::Error, marker::PhantomData};
 
 /// Builds the framework one command runs through: the event store, bound to the command's outbox tasks
 /// where the store publishes them, and the aggregate's services. Called once per command, before its first
@@ -51,38 +46,32 @@ where
 /// that issues its commands: a second executor of the same type, whether a core or a preset, has locks of its
 /// own.
 ///
-/// A command first waits for its aggregate's lock, so the executor's commands to one aggregate run one at
-/// a time, in arrival order; two executors of one aggregate type are like two processes, which meet only in
-/// the store's optimistic check. Holding the lock the command reserves space in the handlers' buffers,
-/// builds its framework through the [`FrameworkFactory`], commits with bounded conflict retry (every
+/// A command first waits for its aggregate's lock, at most the lock's `max_wait`, so the executor's commands
+/// to one aggregate run one at a time, in arrival order; past the wait the command is
+/// [`CommandGatewayError::Unavailable`] and nothing is built or written. Two executors of one aggregate type
+/// are like two processes, which meet only in the store's optimistic check. Holding the lock the command
+/// builds its framework through the [`FrameworkFactory`] and commits with bounded conflict retry (every
 /// attempt reloads the aggregate through that framework and repeats clones of the command and of its
-/// metadata) and hands its events over; then it releases the lock and waits for the handlers' receipts.
-/// The lock and the space share one deadline, the lock's `max_wait` from the command's arrival; past it
-/// the command is [`CommandGatewayError::Unavailable`] and nothing is built or written.
-///
-/// The committed events go to the executor's handlers ([`with_event_handler`](Self::with_event_handler)),
-/// each through an ordered buffer per aggregate key, numbered by registration in post-commit failures. An
-/// event handler never executes a command (see [`EventHandler`]): it would wait for its own receipt
-/// forever, and handlers of two aggregates could wait for each other. A commit with events also wakes the
-/// aggregate type's projection processors ([`with_commit_wakeup`](Self::with_commit_wakeup)), which read
-/// the journal themselves.
+/// metadata). A commit with events wakes the aggregate type's projection processors
+/// ([`with_commit_wakeup`](Self::with_commit_wakeup)), which read the journal themselves; then the command
+/// releases the lock and answers.
 pub struct CommandExecutorCore<A: Aggregate, F> {
     factory: F,
     retry_policy: AggregateConflictRetryPolicy,
     locks: AggregateLockRegistry,
-    handlers: RegisteredHandlers<A>,
     wakeup: Option<CommitWakeup>,
+    _aggregate: PhantomData<fn() -> A>,
 }
 
 impl<A: Aggregate + 'static, F> CommandExecutorCore<A, F> {
-    /// An executor with a lock registry of its own, bounded by `lock_limits`, and no event handlers.
+    /// An executor with a lock registry of its own, bounded by `lock_limits`, that wakes nobody.
     pub fn new(factory: F, retry_policy: AggregateConflictRetryPolicy, lock_limits: LockLimits) -> Self {
         Self {
             factory,
             retry_policy,
             locks: AggregateLockRegistry::new(lock_limits),
-            handlers: RegisteredHandlers::default(),
             wakeup: None,
+            _aggregate: PhantomData,
         }
     }
 
@@ -95,22 +84,6 @@ impl<A: Aggregate + 'static, F> CommandExecutorCore<A, F> {
 
     pub(crate) fn set_commit_wakeup(&mut self, wakeup: CommitWakeup) {
         self.wakeup = Some(wakeup);
-    }
-
-    /// Registers a handler after the handlers registered before it; it gets the committed events through
-    /// a buffer per aggregate key bounded by `config`. Register every handler before the executor is shared.
-    pub fn with_event_handler(mut self, handler: Arc<dyn EventHandler<A>>, config: DeliveryConfig) -> Self {
-        self.add_event_handler(handler, config);
-        self
-    }
-
-    /// The executor's hand-overs not handled yet; empty without handlers.
-    pub fn backlog(&self) -> DeliveryBacklog {
-        self.handlers.backlog()
-    }
-
-    pub(crate) fn add_event_handler(&mut self, handler: Arc<dyn EventHandler<A>>, config: DeliveryConfig) {
-        self.handlers.push(handler, config);
     }
 
     pub(crate) fn factory(&self) -> &F {
@@ -141,9 +114,9 @@ where
         self.execute_with_metadata(aggregate_id, command, HashMap::new(), tasks).await
     }
 
-    /// Waits for the aggregate's lock and the handlers' space, builds one framework for `tasks`,
-    /// then runs the command with bounded conflict retry. Each attempt receives a
-    /// clone of `metadata`, so a retried command commits exactly the metadata of its first attempt.
+    /// Waits for the aggregate's lock, builds one framework for `tasks`, then runs the command with bounded
+    /// conflict retry. Each attempt receives a clone of `metadata`, so a retried command commits exactly the
+    /// metadata of its first attempt.
     pub async fn execute_with_metadata(
         &self,
         aggregate_id: &str,
@@ -151,24 +124,12 @@ where
         metadata: HashMap<String, String>,
         tasks: Vec<NewTask>,
     ) -> Result<(), CommandGatewayError<A::Error>> {
-        let arrived = tokio::time::Instant::now();
-        // Held through every attempt and the hand-over to the handlers.
-        let lock = self
+        // Held through every attempt and the wake-up.
+        let _lock = self
             .locks
             .acquire(AggregateKey::of::<A>(aggregate_id))
             .await
             .map_err(lock_refused::<A::Error>(A::TYPE))?;
-        // Space first, commit second: once committed, the hand-over below cannot wait or be lost.
-        let reserved = if !self.handlers.is_empty() {
-            tokio::time::timeout_at(arrived + self.locks.limits().max_wait(), self.handlers.reserve(aggregate_id))
-                .await
-                .map_err(|_| {
-                    crate::diagnostics::log_delivery_refused(A::TYPE);
-                    CommandGatewayError::Unavailable
-                })?
-        } else {
-            self.handlers.reserve(aggregate_id).await // no handlers: ready at once
-        };
         let framework = self.factory.framework(tasks);
         let framework_ref = &framework;
         let metadata_ref = &metadata;
@@ -178,33 +139,12 @@ where
         .await
         .inspect_err(|error| log_aggregate_error(A::TYPE, error))
         .map_err(map_aggregate_error)?;
-        let Some(last_sequence) = committed.last().map(|event| event.sequence) else {
-            return Ok(()); // no events: nothing to hand over, nobody to wake, the reserved space goes back
-        };
-        if let Some(wakeup) = &self.wakeup {
+        if !committed.is_empty()
+            && let Some(wakeup) = &self.wakeup
+        {
             wakeup.wake(); // the journal has the events: the processors may read them now
         }
-        let events: Arc<[EventEnvelope<A>]> = committed.into();
-        // In the same poll as the commit's completion: a caller gone from here on does not lose it.
-        let receipts = reserved.deliver(&events);
-        drop(lock); // the next command of the aggregate may start while the handlers work
-        let mut failed = Vec::new();
-        for (position, receipt) in receipts {
-            // The worker has logged a failure once for its whole batch.
-            if receipt.outcome().await.is_err() {
-                failed.push(FailedHandler {
-                    index: position,
-                    name: self.handlers.name(position),
-                });
-            }
-        }
-        if failed.is_empty() {
-            return Ok(());
-        }
-        Err(CommandGatewayError::CommittedWithEventHandlerFailure {
-            last_sequence,
-            handlers: failed,
-        })
+        Ok(())
     }
 }
 
@@ -215,8 +155,7 @@ fn lock_refused<D>(aggregate_type: &'static str) -> impl FnOnce(LockRefused) -> 
     }
 }
 
-/// Logs the technical failures of a load or commit; domain rejections and conflicts are outcomes, and
-/// handler failures are logged by the delivery worker.
+/// Logs the technical failures of a load or commit; domain rejections and conflicts are outcomes.
 fn log_aggregate_error<D: Error>(aggregate_type: &str, error: &AggregateError<D>) {
     let (category, source) = match error {
         AggregateError::DatabaseConnectionError(source) => ("connection", source),
@@ -279,9 +218,7 @@ mod tests {
     use crate::cqrs::CqrsFramework;
     use crate::cqrs::aggregate::Aggregate;
     use crate::cqrs::command::locks::LockLimits;
-    use crate::cqrs::event_handler::EventHandler;
-    use crate::cqrs::event_handler::delivery::DeliveryConfig;
-    use crate::cqrs::store::{EventStore, PersistenceError};
+    use crate::cqrs::store::EventStore;
     use crate::task::{NewTask, format::TaskPayload};
     use std::time::Duration;
     use thiserror::Error;
@@ -1000,57 +937,8 @@ mod tests {
         require_send(executor.execute("aggregate", record("a"), vec![]));
     }
 
-    /// Logs `"{name} {sequence}"` into `log` for every event it is handed, after taking a permit of
-    /// `gate`; fails every call when told to.
-    struct Recorder {
-        name: &'static str,
-        log: Arc<Mutex<Vec<String>>>,
-        gate: Arc<tokio::sync::Semaphore>,
-        fail: bool,
-    }
-
-    #[async_trait::async_trait]
-    impl EventHandler<DummyAggregate> for Recorder {
-        fn name(&self) -> String {
-            self.name.to_owned()
-        }
-
-        async fn handle(&self, _: &str, events: &[EventEnvelope<DummyAggregate>]) -> Result<(), PersistenceError> {
-            self.gate.acquire().await.unwrap().forget();
-            let mut log = self.log.lock().unwrap();
-            log.extend(events.iter().map(|event| format!("{} {}", self.name, event.sequence)));
-            if self.fail {
-                Err(PersistenceError::OptimisticLockError)
-            } else {
-                Ok(())
-            }
-        }
-    }
-
-    fn recorder(
-        name: &'static str,
-        log: &Arc<Mutex<Vec<String>>>,
-        gate: &Arc<tokio::sync::Semaphore>,
-        fail: bool,
-    ) -> Arc<dyn EventHandler<DummyAggregate>> {
-        Arc::new(Recorder {
-            name,
-            log: log.clone(),
-            gate: gate.clone(),
-            fail,
-        })
-    }
-
-    fn open_gate() -> Arc<tokio::sync::Semaphore> {
-        Arc::new(tokio::sync::Semaphore::new(tokio::sync::Semaphore::MAX_PERMITS))
-    }
-
     fn closed_gate() -> Arc<tokio::sync::Semaphore> {
         Arc::new(tokio::sync::Semaphore::new(0))
-    }
-
-    fn ordered(capacity: usize) -> DeliveryConfig {
-        DeliveryConfig::new(capacity, 32).unwrap()
     }
 
     async fn until(mut done: impl FnMut() -> bool) {
@@ -1061,163 +949,6 @@ mod tests {
             tokio::task::yield_now().await;
         }
         panic!("the condition never came true");
-    }
-
-    #[tokio::test]
-    async fn the_lock_is_released_before_an_ordered_handler_finishes() {
-        let store = VersionedStore::default();
-        let (log, gate) = (Arc::default(), closed_gate());
-        let executor =
-            Arc::new(versioned_executor(&store, 1).with_event_handler(recorder("ordered", &log, &gate, false), ordered(64)));
-        let spawn = |value: &'static str| {
-            let executor = executor.clone();
-            tokio::spawn(async move { executor.execute("aggregate", record(value), vec![]).await })
-        };
-        let (first, second) = (spawn("a"), spawn("b"));
-        until(|| store.journal.lock().unwrap().len() == 2).await;
-        assert!(
-            !first.is_finished() && !second.is_finished(),
-            "both committed, both wait for their receipts"
-        );
-        assert!(log.lock().unwrap().is_empty());
-        gate.add_permits(2);
-        assert_eq!((first.await.unwrap(), second.await.unwrap()), (Ok(()), Ok(())));
-        assert_eq!(*log.lock().unwrap(), ["ordered 1", "ordered 2"]);
-        assert!(executor.backlog().is_empty());
-    }
-
-    #[tokio::test]
-    async fn handlers_report_their_registration_indices_and_each_sees_every_event_in_order() {
-        use tracing::instrument::WithSubscriber;
-        let store = VersionedStore::default();
-        let (log, gate) = (Arc::default(), open_gate());
-        let executor = Arc::new(
-            versioned_executor(&store, 1)
-                .with_event_handler(recorder("a", &log, &gate, false), ordered(64))
-                .with_event_handler(recorder("b", &log, &gate, true), ordered(64))
-                .with_event_handler(recorder("c", &log, &gate, true), ordered(64)),
-        );
-        let ((first, second), text) = crate::diagnostics::test_support::capture(async {
-            let first = tokio::spawn(
-                {
-                    let executor = executor.clone();
-                    async move { executor.execute("aggregate", record("a"), vec![]).await }
-                }
-                .with_current_subscriber(),
-            );
-            let second = executor.execute("aggregate", record("b"), vec![]).await;
-            (first.await.unwrap(), second)
-        })
-        .await;
-        let failed = |last_sequence| {
-            Err(CommandGatewayError::CommittedWithEventHandlerFailure {
-                last_sequence,
-                handlers: [(1, "b"), (2, "c")]
-                    .map(|(index, name)| FailedHandler {
-                        index,
-                        name: name.to_owned(),
-                    })
-                    .to_vec(),
-            })
-        };
-        let mut outcomes = [first, second];
-        outcomes.sort_by_key(|outcome| format!("{outcome:?}"));
-        assert_eq!(outcomes, [failed(1), failed(2)]);
-        let calls = log.lock().unwrap().clone();
-        for name in ["a", "b", "c"] {
-            let seen: Vec<_> = calls.iter().filter(|call| call.starts_with(name)).collect();
-            assert_eq!(seen, [&format!("{name} 1"), &format!("{name} 2")], "{calls:?}");
-        }
-        assert!(text.contains("event delivery failed"), "{text}");
-        assert!(!text.contains("category=\"event_handler\""), "{text}");
-        assert!(executor.backlog().is_empty());
-    }
-
-    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-    async fn twenty_parallel_commands_reach_an_ordered_projection_in_commit_order() {
-        let store = VersionedStore::default();
-        let (log, gate) = (Arc::default(), open_gate());
-        let executor =
-            Arc::new(versioned_executor(&store, 1).with_event_handler(recorder("ordered", &log, &gate, false), ordered(4)));
-        let mut commands = tokio::task::JoinSet::new();
-        for index in 0..20 {
-            let executor = executor.clone();
-            commands.spawn(async move { executor.execute("aggregate", record(&index.to_string()), vec![]).await });
-        }
-        while let Some(result) = commands.join_next().await {
-            assert_eq!(result.unwrap(), Ok(()));
-        }
-        assert_eq!(
-            *log.lock().unwrap(),
-            (1..=20).map(|s| format!("ordered {s}")).collect::<Vec<_>>()
-        );
-        assert!(executor.backlog().is_empty());
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn a_full_buffer_refuses_before_the_commit_within_max_wait() {
-        let store = VersionedStore::default();
-        let (log, gate) = (Arc::default(), closed_gate());
-        let limits = LockLimits::new(Duration::from_millis(100), 8).unwrap();
-        let executor = Arc::new(
-            versioned_executor_with(&store, 1, limits).with_event_handler(recorder("ordered", &log, &gate, false), ordered(1)),
-        );
-        let first = tokio::spawn({
-            let executor = executor.clone();
-            async move { executor.execute("private_id", record("a"), vec![]).await }
-        });
-        until(|| store.journal.lock().unwrap().len() == 1).await;
-        let (refused, text) = crate::diagnostics::test_support::capture_at(tracing::Level::WARN, async {
-            let arrived = tokio::time::Instant::now();
-            let refused = executor.execute("private_id", record("private_b"), vec![]).await;
-            (refused, arrived.elapsed())
-        })
-        .await;
-        assert_eq!(refused, (Err(CommandGatewayError::Unavailable), Duration::from_millis(100)));
-        assert_eq!(*store.journal.lock().unwrap(), ["a"], "the refused command wrote nothing");
-        assert!(
-            text.contains("reason=\"buffer_full\"") && text.contains("aggregate_type=\"dummy\""),
-            "{text}"
-        );
-        assert!(!text.contains("private_"), "{text}");
-        gate.add_permits(1);
-        assert_eq!(first.await.unwrap(), Ok(()));
-    }
-
-    #[tokio::test]
-    async fn a_caller_dropped_right_after_the_commit_still_reaches_the_ordered_handler() {
-        let store = VersionedStore::default();
-        let (log, gate) = (Arc::default(), closed_gate());
-        let executor = versioned_executor(&store, 1).with_event_handler(recorder("ordered", &log, &gate, false), ordered(64));
-        let mut command = Box::pin(executor.execute("aggregate", record("a"), vec![]));
-        for _ in 0..10 {
-            if store.journal.lock().unwrap().len() == 1 {
-                break;
-            }
-            let poll = std::future::poll_fn(|cx| std::task::Poll::Ready(command.as_mut().poll(cx))).await;
-            assert!(poll.is_pending(), "the command waits for its receipt");
-        }
-        assert_eq!(*store.journal.lock().unwrap(), ["a"]);
-        drop(command); // the client went away after the commit
-        assert_eq!(executor.backlog().len(), 1);
-        gate.add_permits(1);
-        executor.backlog().drained().await;
-        assert_eq!(*log.lock().unwrap(), ["ordered 1"]);
-    }
-
-    #[tokio::test]
-    async fn a_conflict_retry_reserves_once_and_delivers_once() {
-        let store = VersionedStore::default();
-        store.external_conflicts.store(2, Ordering::SeqCst);
-        let (log, gate) = (Arc::default(), open_gate());
-        // Room for one command: a second reservation by the same command would never get space.
-        let executor = versioned_executor(&store, 3).with_event_handler(recorder("ordered", &log, &gate, false), ordered(1));
-        assert_eq!(executor.execute("aggregate", record("a"), vec![]).await, Ok(()));
-        assert_eq!(*log.lock().unwrap(), ["ordered 1"]);
-        assert_eq!(
-            *store.calls.lock().unwrap(),
-            ["load", "conflict a", "load", "conflict a", "load", "commit a"]
-        );
     }
 
     #[tokio::test]
@@ -1256,53 +987,8 @@ mod tests {
         assert!(silent.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
     }
 
-    #[tokio::test]
-    async fn a_command_without_events_hands_nothing_over() {
-        let (log, gate) = (Arc::default(), open_gate());
-        let executor = CommandExecutorCore::<DummyAggregate, _>::new(
-            |_| {
-                CqrsFramework::new(
-                    DummyStore {
-                        commits: Arc::default(),
-                        conflicts: 0,
-                        load_error: None,
-                    },
-                    Arc::default(),
-                )
-            },
-            no_delay_policy(1),
-            LockLimits::default(),
-        )
-        .with_event_handler(recorder("ordered", &log, &gate, false), ordered(1));
-        for _ in 0..3 {
-            assert_eq!(executor.execute("aggregate", record("a"), vec![]).await, Ok(()));
-        }
-        assert!(log.lock().unwrap().is_empty() && executor.backlog().is_empty());
-    }
-
-    #[test]
-    fn the_command_future_with_ordered_handlers_is_send() {
-        fn require_send<F: std::future::Future + Send>(_: F) {}
-        let (log, gate) = (Arc::default(), open_gate());
-        let executor = versioned_executor(&VersionedStore::default(), 1)
-            .with_event_handler(recorder("first", &log, &gate, false), ordered(1))
-            .with_event_handler(recorder("second", &log, &gate, false), ordered(64));
-        require_send(executor.execute("aggregate", record("a"), vec![]));
-    }
-
     #[test]
     fn maps_every_framework_error_category() {
-        assert_eq!(
-            CommandGatewayError::<DummyError>::CommittedWithEventHandlerFailure {
-                last_sequence: 42,
-                handlers: vec![FailedHandler {
-                    index: 2,
-                    name: "halls".into()
-                }]
-            }
-            .to_string(),
-            "command committed through sequence 42; event handlers failed"
-        );
         assert_eq!(
             map_aggregate_error(AggregateError::Domain(DummyError)),
             CommandGatewayError::Domain(DummyError)

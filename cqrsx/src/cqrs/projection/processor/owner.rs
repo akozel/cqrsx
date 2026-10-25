@@ -10,6 +10,7 @@
 //! and the page waits for the rebuild's receipt as for the job's.
 use super::{
     Context,
+    delivery::{DeliveryError, DeliverySlot, Done},
     lease::LeaseKeeper,
     observer::{Advanced, Applied, Failed, RebuildEvent, RebuildReason, Rebuilt, Waiting},
 };
@@ -17,7 +18,6 @@ use crate::{
     cqrs::{
         aggregate::Aggregate,
         event::EventEnvelope,
-        event_handler::delivery::{DeliveryError, DeliverySlot, Done},
         projection::checkpoint::{CheckpointStore, Claimed, LeaseToken},
         store::{PersistenceError, feed::Position, repository::PersistedEventRepository},
     },

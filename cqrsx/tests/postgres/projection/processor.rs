@@ -7,15 +7,17 @@ use cqrsx::{
     cqrs::{
         CqrsFramework,
         aggregate::Aggregate,
-        command::{executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
+        command::{
+            CommandExecutor, executor::CommandExecutorCore, locks::LockLimits, retry::AggregateConflictRetryPolicy,
+            wakeup::CommitWakeup,
+        },
         event::EventEnvelope,
-        event_handler::delivery::DeliveryConfig,
         projection::{
             View, ViewProjection,
             checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
             processor::{
                 ProjectionProcessor,
-                config::ProcessorConfig,
+                config::{DeliveryLimits, ProcessorConfig},
                 observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
             },
             repository::ViewRepository,
@@ -23,8 +25,11 @@ use cqrsx::{
         store::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
     },
     postgres::{
-        event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox,
-        projection_checkpoints::PostgresCheckpointStore, view_repository::PostgresViewRepository,
+        command::{PostgresCommandConfig, PostgresCommandExecutor},
+        event_repository::PostgresEventRepository,
+        outbox::PostgresEventRepositoryWithOutbox,
+        projection_checkpoints::PostgresCheckpointStore,
+        view_repository::PostgresViewRepository,
     },
     task::NewTask,
 };
@@ -115,7 +120,7 @@ fn config() -> ProcessorConfig {
         Duration::from_millis(50),
         100,
         Duration::from_secs(1),
-        DeliveryConfig::default(),
+        DeliveryLimits::default(),
     )
     .unwrap()
     .with_retry(Duration::from_millis(50), Duration::from_millis(200))
@@ -232,6 +237,42 @@ async fn forty_commands_over_five_ledgers_reach_the_checkpointed_view_in_order()
     assert_eq!((after.owner, after.position), (None, status.position), "released on stop");
     assert_eq!((observer.count("lease:Acquired"), observer.count("lease:Released")), (1, 1));
     assert!(observer.count("advanced:") >= 1 && observer.count("applied:") >= 5);
+    db.close().await;
+}
+
+/// Forty parallel commands to one hot key through the PostgreSQL executor, which wakes the processor: the lock
+/// orders them, so the view takes them in commit order. (A wake-up cannot be timed here: the snapshot horizon
+/// is the cluster's, and a test that holds a transaction open next to this one delays the feed until a poll.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn forty_parallel_commands_to_one_key_reach_the_view_in_commit_order() {
+    let db = Database::new().await;
+    create_views(&db.pool).await;
+    let (observer, wakeup, shutdown) = (Arc::new(Recording::default()), CommitWakeup::new(), CancellationToken::new());
+    let running = tokio::spawn(processor(&db.pool, "node-a", &observer, &wakeup).run(shutdown.clone()));
+    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
+    let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).unwrap();
+    let executor = Arc::new(PostgresCommandExecutor::<Ledger>::new(db.pool.clone(), config, ()).with_commit_wakeup(wakeup));
+    let mut commands = JoinSet::new();
+    for value in 1..=40 {
+        let executor = executor.clone();
+        commands.spawn(async move { executor.execute("hot", vec![value], vec![]).await });
+    }
+    while let Some(result) = commands.join_next().await {
+        assert!(result.unwrap().is_ok(), "the lock orders the commands: nothing conflicts");
+    }
+    let status = caught_up(&db.pool, &["hot"]).await;
+    assert_eq!((status.applied, status.failures), (40, 0));
+    let balance = PostgresViewRepository::<Balance, Ledger>::new("ledger_view", db.pool.clone())
+        .load("hot")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        balance.history.iter().map(|(sequence, _)| *sequence).collect::<Vec<_>>(),
+        (1..=40).collect::<Vec<_>>()
+    );
+    shutdown.cancel();
+    running.await.unwrap();
     db.close().await;
 }
 

@@ -98,6 +98,7 @@
 //! # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(example()).unwrap();
 //! ```
 pub mod config;
+mod delivery;
 mod lease;
 pub mod observer;
 mod owner;
@@ -107,12 +108,13 @@ use crate::{
     cqrs::{
         aggregate::Aggregate,
         command::wakeup::CommitWakeup,
-        event_handler::{EventHandler, delivery::OrderedDelivery},
+        event_handler::EventHandler,
         projection::{
             RebuildableProjection,
             checkpoint::{CheckpointError, CheckpointKey, CheckpointStore, Claimed},
             processor::{
                 config::ProcessorConfig,
+                delivery::OrderedDelivery,
                 observer::{LeaseEvent, ProjectionObserver},
                 owner::{Exit, Owner},
                 rebuild::{Bounded, HistoryRebuilder},
@@ -222,6 +224,7 @@ where
             permits.clone(),
         ));
         let handler: Arc<dyn EventHandler<A>> = Arc::new(Bounded::new(self.projection.clone(), permits));
+        let delivery = OrderedDelivery::new(&self.name, handler, rebuilder, self.config.delivery_limits());
         let context = Context {
             key: CheckpointKey::new(self.name, A::TYPE),
             owner: self.owner,
@@ -231,7 +234,7 @@ where
             config: self.config,
             observer: self.observer,
             upcasters,
-            delivery: OrderedDelivery::with_rebuilder(handler, rebuilder, self.config.delivery()),
+            delivery,
             wakeup: self.wakeup,
             shutdown,
         };

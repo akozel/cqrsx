@@ -470,7 +470,8 @@ src/
    *Сделано: `cqrsx::task::adapter::boxed::BoxedTaskAdapter` (бэклог, тикет 01).*
 3. **Имена обработчиков в `CommittedWithEventHandlerFailure`** вместо индексов — `NamedHandler`
    перестал бы быть нужен. *Сделано: `EventHandler::name()`, `FailedHandler { index, name }` (бэклог,
-   тикет 02); `NamedHandler` удалён.*
+   тикет 02); `NamedHandler` удалён. Позже вариант и `FailedHandler` удалены вместе с обработчиками
+   исполнителя (эпик 03, тикет 05): витрины ведут процессоры.*
 4. **Трейт `Decide`** (`fn decide(self, &A, &A::Services) -> Result<A::Event, A::Error>`) и
    blanket-реализация `handle` для enum'ов команд — тогда `aggregate.rs` сводится к `apply`.
 
@@ -646,7 +647,8 @@ application/
 5. **`infrastructure::postgres::Executors`** сохранил имя и стал фабрикой (`executor()`, `history()`);
    рядом `event_history()`, `history_repositories()` и `PostgresLedger`. *Позже `Executors` удалён: его заменил
    библиотечный `PostgresCommandExecutor::new(pool, config, services).with_event_handler(…)` (бэклог, тикет 03),
-   а `history()` стал функцией `history_store(pool, snapshot_every)`.*
+   а `history()` стал функцией `history_store(pool, snapshot_every)`. С эпика 03 вместо `with_event_handler` —
+   `with_commit_wakeup`: обработчиков у исполнителя нет.*
 6. **Тестовые фикстуры** — модули `test_support` (в `domain::{concert, fan}`, `application`,
    `application::{concert, workflows}`), сборка `Config` для тестов — `testing::config()`. *Позже
    `application::test_support` удалён: исполнитель use cases, недоступный журнал, витрины в памяти и первая

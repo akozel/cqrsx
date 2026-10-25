@@ -8,7 +8,7 @@ use crate::{
         aggregate::Aggregate,
         store::{
             PersistenceError, repository::PersistedEventRepository, serialized_event::SerializedEvent,
-            snapshot::SerializedSnapshot, stream::ReplayStream,
+            snapshot::SerializedSnapshot,
         },
     },
     postgres::event_repository::PostgresEventRepository,
@@ -19,8 +19,7 @@ use sqlx::PgPool;
 ///
 /// Multi-event batches, snapshot-only writes, and tasks without an event are
 /// rejected. Bind a fresh repository/task list per command; share the pool.
-/// Reads/replay delegate to the local PostgreSQL repository; SQL and row decoding
-/// failures are forwarded as terminal stream errors.
+/// Reads delegate to a plain PostgreSQL repository on the same pool.
 pub struct PostgresEventRepositoryWithOutbox {
     pool: PgPool,
     reader: PostgresEventRepository,
@@ -39,12 +38,6 @@ impl PostgresEventRepositoryWithOutbox {
     /// Bind work to one command execution, never to a shared mutable repository.
     pub fn with_outbox(mut self, tasks: Vec<NewTask>) -> Self {
         self.tasks = tasks;
-        self
-    }
-
-    /// Configure the bounded replay channel (default: 200).
-    pub fn with_streaming_channel_size(mut self, capacity: usize) -> Self {
-        self.reader = self.reader.with_streaming_channel_size(capacity);
         self
     }
 
@@ -87,14 +80,6 @@ impl PersistedEventRepository for PostgresEventRepositoryWithOutbox {
         snapshot_update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
     ) -> Result<(), PersistenceError> {
         self.persist_command::<A>(events, snapshot_update).await
-    }
-
-    async fn stream_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<ReplayStream, PersistenceError> {
-        self.reader.stream_events::<A>(aggregate_id).await
-    }
-
-    async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-        self.reader.stream_all_events::<A>().await
     }
 
     async fn feed_after<A: Aggregate>(

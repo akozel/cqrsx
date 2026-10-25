@@ -379,7 +379,7 @@ keeps a demo rebuild simple and deterministic». LWW-витрины делают
 ### 4.2 K-2. Замедленный replay —
 
 `speed: slow` и `ENCORE_REPLAY_SLOW_DELAY_MS` — демо-театр («места загораются по одному»), но реализован он
-через библиотечный `EventReplay::with_pace`, а темп пересборки — честная production-настройка (не
+через библиотечный `EventReplay::with_pace` (с эпика 03 — `pace` в `request_rebuild` процессора; `EventReplay` удалён в 03/05), а темп пересборки — честная production-настройка (не
 перегружать read DB). Оставить; при желании переименовать `speed: slow|fast` в `pace_ms` в контракте.
 
 ### 4.3 K-3. Неиспользуемые зависимости ●●●

@@ -711,3 +711,16 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   (uncommitted, user's decision). The two names differed by one letter while one is the executor's registry of locks
   and the other the lock one command holds until it drops it. Both are private: `locks.rs`, `executor.rs` and
   `components.md` use the new names; older entries of this log and finished tickets keep the names of their time.
+- **2026-10-25, epic 03 ticket 05: executor handlers and the old replay removed** (uncommitted). The command path
+  is lock → framework → commit with retries → wake-up → answer; `max_wait` covers the lock only.
+  `with_event_handler`, `backlog`, `CommittedWithEventHandlerFailure`, `FailedHandler`, `EventReplay`,
+  `ReplayStream`, `stream_events`/`stream_all_events` and `with_streaming_channel_size` are gone. The ordered
+  delivery became the processor's private `processor/delivery.rs`; `DeliveryConfig` became `DeliveryLimits` in
+  `processor/config.rs` (with `MIN_DELIVERY_CAPACITY`, field `delivery_limits`), and `components.md` gained the
+  `Config` / `Policy` / `Limits` naming rule with its known deviations. `DeliveryBacklog` is gone, the rebuilder is
+  required, the batch logs carry the processor's name. `TestCommandExecutor::over_journal` runs a use case over a
+  `MemEventRepository` that processors read (`PersistedEventStore` is now `Clone`); the README quick start uses
+  it. New tests cover what the removed ones did: a hot key on PostgreSQL through `PostgresCommandExecutor`, event
+  metadata in a projection, upcasters and a failed history read on the rebuild path, a core executor with
+  services that are not `Clone`. Both models carry the `property_` prefix for the CI commit seed. Coverage 97.85 %
+  (workspace and `cqrsx`).

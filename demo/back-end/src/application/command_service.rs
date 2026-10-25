@@ -83,12 +83,10 @@ impl<E> CommandOutcome<E> {
     }
 }
 
-/// Maps the library outcome to the demo outcome. The executors have no event handlers (the projection
-/// processors read the journal), so a commit with a failed handler cannot happen; it would still be a
-/// commit. The variant leaves the library in epic 03/05.
+/// Maps the library outcome to the demo outcome.
 pub fn map_gateway_result<E>(result: Result<(), CommandGatewayError<E>>) -> CommandOutcome<E> {
     match result {
-        Ok(()) | Err(CommandGatewayError::CommittedWithEventHandlerFailure { .. }) => CommandOutcome::Accepted,
+        Ok(()) => CommandOutcome::Accepted,
         Err(CommandGatewayError::Domain(error)) => CommandOutcome::Rejected(error),
         Err(CommandGatewayError::Conflict) => CommandOutcome::Conflict,
         Err(CommandGatewayError::Unavailable) => CommandOutcome::Unavailable,
@@ -220,7 +218,7 @@ fn publish_outcome<E: Rejection>(
 mod tests {
     use super::*;
     use crate::domain::concert::{Concert, ConcertCommand, ConcertError, commands::AnnounceConcert};
-    use cqrsx::{cqrs::command::FailedHandler, task::format::TaskFormat};
+    use cqrsx::task::format::TaskFormat;
     use std::collections::BTreeSet;
     use uuid::Uuid;
 
@@ -317,18 +315,6 @@ mod tests {
         assert_eq!(
             map_gateway_result::<ConcertError>(Err(CommandGatewayError::Unavailable)),
             CommandOutcome::Unavailable
-        );
-        let failed = FailedHandler {
-            index: 0,
-            name: "concert_halls".into(),
-        };
-        assert_eq!(
-            map_gateway_result::<ConcertError>(Err(CommandGatewayError::CommittedWithEventHandlerFailure {
-                last_sequence: 7,
-                handlers: vec![failed]
-            })),
-            CommandOutcome::Accepted,
-            "a commit is a commit"
         );
     }
 }

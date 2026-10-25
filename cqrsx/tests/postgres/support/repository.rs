@@ -6,10 +6,8 @@ use cqrsx::cqrs::event::DomainEvent;
 use cqrsx::cqrs::event::EventEnvelope;
 use cqrsx::cqrs::event_sink::EventSink;
 use cqrsx::cqrs::projection::View;
-use cqrsx::cqrs::projection::ViewProjection;
 use cqrsx::cqrs::store::serialized_event::SerializedEvent;
 use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
-use cqrsx::postgres::view_repository::PostgresViewRepository;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -93,8 +91,6 @@ impl Display for TestError {
 impl std::error::Error for TestError {}
 
 pub(crate) enum TestCommand {}
-
-pub(crate) type TestProjection = ViewProjection<PostgresViewRepository<TestView, TestAggregate>, TestView, TestAggregate>;
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
 pub(crate) struct TestView {

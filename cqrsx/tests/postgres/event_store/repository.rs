@@ -65,7 +65,7 @@ use cqrsx::cqrs::store::repository::PersistedEventRepository;
 use cqrsx::postgres::event_repository::PostgresEventRepository;
 
 #[tokio::test]
-async fn custom_tables_keep_event_snapshot_and_stream_contracts() {
+async fn custom_tables_keep_the_event_and_snapshot_contracts() {
     let db = Database::new().await;
     sqlx::raw_sql(
         "CREATE TABLE custom_events (LIKE events INCLUDING ALL); CREATE TABLE custom_snapshots (LIKE snapshots INCLUDING ALL)",
@@ -73,9 +73,7 @@ async fn custom_tables_keep_event_snapshot_and_stream_contracts() {
     .execute(&db.pool)
     .await
     .unwrap();
-    let repository = PostgresEventRepository::new(db.pool.clone())
-        .with_tables("custom_events", "custom_snapshots")
-        .with_streaming_channel_size(1);
+    let repository = PostgresEventRepository::new(db.pool.clone()).with_tables("custom_events", "custom_snapshots");
     let mut event = test_serialized_event("custom", 1, TestEvent::Created(Created { id: "custom".into() }));
     event.metadata = serde_json::json!({});
     let aggregate = serde_json::json!({"id": "custom", "description": "", "tests": []});
@@ -106,10 +104,6 @@ async fn custom_tables_keep_event_snapshot_and_stream_contracts() {
         repository.get_snapshot::<TestAggregate>("custom").await.unwrap(),
         Some(serialized_snapshot("custom".into(), 1, 1, aggregate))
     );
-    let mut stream = repository.stream_events::<TestAggregate>("custom").await.unwrap();
-    let found = stream.next::<TestAggregate>(&[]).await.unwrap().unwrap();
-    assert_eq!(found.payload, serde_json::from_value::<TestEvent>(event.payload).unwrap());
-    assert!(stream.next::<TestAggregate>(&[]).await.is_none());
     let default = PostgresEventRepository::new(db.pool.clone());
     assert!(default.get_events::<TestAggregate>("custom").await.unwrap().is_empty());
     db.close().await;
@@ -120,7 +114,7 @@ async fn event_repositories() {
     let db = Database::new().await;
     let pool = db.pool.clone();
     let id = uuid::Uuid::new_v4().to_string();
-    let event_repo: PostgresEventRepository = PostgresEventRepository::new(pool.clone()).with_streaming_channel_size(1);
+    let event_repo: PostgresEventRepository = PostgresEventRepository::new(pool.clone());
     let events = event_repo.get_events::<TestAggregate>(&id).await.unwrap();
     assert!(events.is_empty());
 
@@ -174,8 +168,6 @@ async fn event_repositories() {
 
     let events = event_repo.get_events::<TestAggregate>(&id).await.unwrap();
     assert_eq!(2, events.len());
-
-    verify_replay_stream(&id, event_repo).await;
 
     db.close().await;
 }
@@ -344,23 +336,6 @@ async fn snapshot_repositories() {
 
     db.close().await;
 }
-async fn verify_replay_stream(id: &str, event_repo: PostgresEventRepository) {
-    let expected = event_repo.get_events::<TestAggregate>(id).await.unwrap();
-    assert_eq!(expected.len(), 2);
-    let mut stream = event_repo.stream_events::<TestAggregate>(id).await.unwrap();
-    let mut found = Vec::new();
-    while let Some(item) = stream.next::<TestAggregate>(&[]).await {
-        found.push(cqrsx::cqrs::store::serialized_event::SerializedEvent::try_from(&item.unwrap()).unwrap());
-    }
-    assert_eq!(found, expected);
-    let mut stream = event_repo.stream_all_events::<TestAggregate>().await.unwrap();
-    let mut found = Vec::new();
-    while let Some(item) = stream.next::<TestAggregate>(&[]).await {
-        found.push(cqrsx::cqrs::store::serialized_event::SerializedEvent::try_from(&item.unwrap()).unwrap());
-    }
-    assert_eq!(found, expected);
-}
-
 use super::support::repository::customer::Customer;
 use super::support::repository::customer::CustomerEvent;
 use cqrsx::cqrs::store::EventStore;

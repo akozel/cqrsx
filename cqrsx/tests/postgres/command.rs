@@ -2,20 +2,12 @@ use super::*;
 use cqrsx::cqrs::store::EventStore;
 use cqrsx::cqrs::store::persisted::PersistedEventStore;
 use cqrsx::{
-    cqrs::{
-        command::{CommandExecutor, CommandGatewayError, FailedHandler, locks::LockLimits, retry::AggregateConflictRetryPolicy},
-        event_handler::{EventHandler, delivery::DeliveryConfig},
-        projection::{
-            View, ViewProjection,
-            repository::{ViewContext, ViewRepository},
-        },
+    cqrs::command::{
+        CommandExecutor, CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits,
+        retry::AggregateConflictRetryPolicy,
     },
-    postgres::{
-        command::{PostgresCommandConfig, PostgresCommandExecutor},
-        view_repository::PostgresViewRepository,
-    },
+    postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
 };
-use std::sync::Mutex;
 use thiserror::Error;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -386,41 +378,10 @@ impl Aggregate for CappedAggregate {
     }
 }
 
-/// Records every committed batch it sees; fails after recording when `fail` is set.
-#[derive(Default)]
-struct Recorder {
-    name: &'static str,
-    fail: bool,
-    seen: Mutex<Vec<(String, usize, Option<String>)>>,
-}
-
-#[async_trait::async_trait]
-impl EventHandler<CappedAggregate> for Recorder {
-    fn name(&self) -> String {
-        self.name.to_owned()
-    }
-
-    async fn handle(&self, id: &str, events: &[EventEnvelope<CappedAggregate>]) -> Result<(), PersistenceError> {
-        for event in events {
-            let source = event.metadata.get("source").cloned();
-            self.seen.lock().unwrap().push((id.to_owned(), event.sequence, source));
-        }
-        if self.fail {
-            return Err(PersistenceError::OptimisticLockError);
-        }
-        Ok(())
-    }
-}
-
 #[tokio::test]
-async fn services_decide_and_one_shared_handler_sees_every_committed_event() {
+async fn services_decide_and_the_metadata_is_stored_with_every_event() {
     let db = Database::new().await;
-    let recorder = Arc::new(Recorder {
-        name: "recorder",
-        ..Recorder::default()
-    });
-    let executor = PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(2))
-        .with_event_handler(recorder.clone(), DeliveryConfig::default());
+    let executor = PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(2));
     let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
     for value in ["first", "second"] {
         executor
@@ -436,33 +397,30 @@ async fn services_decide_and_one_shared_handler_sees_every_committed_event() {
     CommandExecutor::execute(&executor, "other", "first".into(), vec![])
         .await
         .unwrap();
-    let source = Some("test".to_owned());
-    assert_eq!(
-        *recorder.seen.lock().unwrap(),
-        [
-            ("capped".to_owned(), 1, source.clone()),
-            ("capped".to_owned(), 2, source),
-            ("other".to_owned(), 1, None),
-        ]
-    );
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    assert_eq!(repository.get_events::<CappedAggregate>("capped").await.unwrap().len(), 2);
+    let capped = repository.get_events::<CappedAggregate>("capped").await.unwrap();
+    assert_eq!(
+        capped
+            .iter()
+            .map(|event| event.metadata["source"].as_str())
+            .collect::<Vec<_>>(),
+        [Some("test"), Some("test")]
+    );
+    let other = repository.get_events::<CappedAggregate>("other").await.unwrap();
+    assert_eq!(other[0].metadata, json!({}));
     db.close().await;
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn aggregate_locks_accept_forty_parallel_commands_without_conflicts() {
     let db = Database::new().await;
-    let recorder = Arc::new(Recorder {
-        name: "recorder",
-        ..Recorder::default()
-    });
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
     let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).unwrap();
-    let executor = Arc::new(
-        PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config, Cap(40))
-            .with_event_handler(recorder.clone(), DeliveryConfig::default()),
-    );
+    let executor = Arc::new(PostgresCommandExecutor::<CappedAggregate>::new(
+        db.pool.clone(),
+        config,
+        Cap(40),
+    ));
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..40 {
         let executor = executor.clone();
@@ -479,15 +437,6 @@ async fn aggregate_locks_accept_forty_parallel_commands_without_conflicts() {
         events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
         (1..=40).collect::<Vec<_>>()
     );
-    // The lock hands the events over in commit order, so the handler sees one aggregate's events in it.
-    let seen: Vec<usize> = recorder
-        .seen
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(_, sequence, _)| *sequence)
-        .collect();
-    assert_eq!(seen, (1..=40).collect::<Vec<_>>());
     db.close().await;
 }
 
@@ -539,256 +488,73 @@ async fn two_executors_with_their_own_locks_meet_only_in_the_database() {
     db.close().await;
 }
 
+/// An aggregate whose services cannot be cloned: only a factory of one's own can build its frameworks.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Counted(Vec<String>);
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+struct Counted1(String);
+
+impl DomainEvent for Counted1 {
+    fn event_type(&self) -> String {
+        "counted".into()
+    }
+
+    fn event_version(&self) -> String {
+        "1".into()
+    }
+}
+
+/// Counts the commands it decided; deliberately not `Clone`.
+struct Counter(Arc<AtomicUsize>);
+
+impl Aggregate for Counted {
+    const TYPE: &'static str = "core_command_test";
+    type Command = String;
+    type Event = Counted1;
+    type Error = std::convert::Infallible;
+    type Services = Counter;
+
+    async fn handle(&mut self, value: String, counter: &Counter, sink: &EventSink<Self>) -> Result<(), Self::Error> {
+        counter.0.fetch_add(1, Ordering::SeqCst);
+        sink.write(Counted1(value), self).await;
+        Ok(())
+    }
+
+    fn apply(&mut self, event: Counted1) {
+        self.0.push(event.0);
+    }
+}
+
 #[tokio::test]
-async fn a_failed_handler_is_reported_by_name_after_the_event_and_its_tasks_are_committed() {
+async fn a_core_executor_takes_services_that_are_not_clone_and_commits_event_snapshot_and_task_at_once() {
     let db = Database::new().await;
-    let audit = Arc::new(Recorder {
-        name: "audit",
-        fail: true,
-        ..Recorder::default()
-    });
-    let executor = PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(5))
-        .with_event_handler(
-            Arc::new(Recorder {
-                name: "first",
-                ..Recorder::default()
-            }),
-            DeliveryConfig::default(),
-        )
-        .with_event_handler(audit.clone(), DeliveryConfig::default());
-    let task = new_task();
-    assert_eq!(
-        executor.execute("audited", "value".into(), vec![task.clone()]).await,
-        Err(CommandGatewayError::CommittedWithEventHandlerFailure {
-            last_sequence: 1,
-            handlers: vec![FailedHandler {
-                index: 1,
-                name: "audit".into()
-            }]
-        })
-    );
-    assert_eq!(*audit.seen.lock().unwrap(), [("audited".to_owned(), 1, None)]);
-    let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
-        .get_events::<CappedAggregate>("audited")
-        .await
-        .unwrap();
-    assert_eq!(events.len(), 1);
-    let saved = row(&db.pool, task.id()).await;
-    assert_eq!(saved.get::<String, _>("aggregate_id"), "audited");
-    assert_eq!(saved.get::<i64, _>("aggregate_sequence"), 1);
-    db.close().await;
-}
-
-/// The sequences and the last values of one capped aggregate, as an ordered projection builds them.
-#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
-struct ValuesView {
-    sequences: Vec<usize>,
-    values: Vec<String>,
-}
-
-impl View<CappedAggregate> for ValuesView {
-    fn update(&mut self, event: &EventEnvelope<CappedAggregate>) {
-        let CommandEvent::Recorded { values } = &event.payload;
-        self.sequences.push(event.sequence);
-        self.values = values.clone();
-    }
-}
-
-/// The PostgreSQL view repository, failing the update of one chosen call and counting the writes attempted.
-struct FailingUpdate {
-    inner: PostgresViewRepository<ValuesView, CappedAggregate>,
-    fail_on: usize,
-    updates: Arc<AtomicUsize>,
-}
-
-impl ViewRepository<ValuesView, CappedAggregate> for FailingUpdate {
-    async fn load(&self, id: &str) -> Result<Option<ValuesView>, PersistenceError> {
-        self.inner.load(id).await
-    }
-
-    async fn load_with_context(&self, id: &str) -> Result<Option<(ValuesView, ViewContext)>, PersistenceError> {
-        self.inner.load_with_context(id).await
-    }
-
-    async fn update_view(&self, view: ValuesView, context: ViewContext) -> Result<(), PersistenceError> {
-        if self.updates.fetch_add(1, Ordering::SeqCst) + 1 == self.fail_on {
-            return Err(PersistenceError::ConnectionError(
-                std::io::Error::other("view store down").into(),
-            ));
-        }
-        self.inner.update_view(view, context).await
-    }
-}
-
-/// Holds its first call until the test opens the gate, so the commands behind it gather into batches.
-struct Gated<H> {
-    inner: H,
-    gate: tokio::sync::Semaphore,
-    calls: AtomicUsize,
-}
-
-#[async_trait::async_trait]
-impl<H: EventHandler<CappedAggregate>> EventHandler<CappedAggregate> for Gated<H> {
-    fn name(&self) -> String {
-        self.inner.name()
-    }
-
-    async fn handle(&self, id: &str, events: &[EventEnvelope<CappedAggregate>]) -> Result<(), PersistenceError> {
-        self.calls.fetch_add(1, Ordering::SeqCst);
-        drop(self.gate.acquire().await.unwrap());
-        self.inner.handle(id, events).await
-    }
-}
-
-type OrderedProjection = Gated<ViewProjection<FailingUpdate, ValuesView, CappedAggregate>>;
-
-/// 40 parallel commands to one aggregate with an ordered projection held on its first call until all 40
-/// have committed: the results, the projection (its calls), the view writes attempted and the errors the
-/// projection observed.
-async fn forty_commands_through_an_ordered_projection(
-    db: &Database,
-    fail_on: usize,
-) -> (
-    Vec<Result<(), CommandGatewayError<Rejected>>>,
-    Arc<OrderedProjection>,
-    Arc<AtomicUsize>,
-    Arc<std::sync::Mutex<Vec<String>>>,
-) {
-    sqlx::query("CREATE TABLE ordered_view (view_id text PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
-        .execute(&db.pool)
-        .await
-        .unwrap();
-    let updates = Arc::new(AtomicUsize::new(0));
-    let repository = FailingUpdate {
-        inner: PostgresViewRepository::new("ordered_view", db.pool.clone()),
-        fail_on,
-        updates: updates.clone(),
-    };
-    let errors = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut inner = ViewProjection::new(Arc::new(repository)).with_name("values");
-    inner.set_error_observer(Box::new({
-        let errors = errors.clone();
-        move |error| errors.lock().unwrap().push(error.to_string())
-    }));
-    let projection = Arc::new(Gated {
-        inner,
-        gate: tokio::sync::Semaphore::new(0),
-        calls: AtomicUsize::new(0),
-    });
-    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-    let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).unwrap();
-    let executor = Arc::new(
-        PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config, Cap(40))
-            .with_event_handler(projection.clone(), DeliveryConfig::new(64, 32).unwrap()),
-    );
-    let mut commands = JoinSet::new();
-    for index in 0..40 {
-        let executor = executor.clone();
-        commands.spawn(async move { (index, executor.execute("hot", format!("v{index}"), vec![]).await) });
-    }
-    let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    for _ in 0..500 {
-        if repository.get_events::<CappedAggregate>("hot").await.unwrap().len() == 40 {
-            break;
-        }
-        tokio::time::sleep(Duration::from_millis(10)).await;
-    }
-    assert_eq!(
-        executor.backlog().len(),
-        40,
-        "every command committed and handed over, none handled yet"
-    );
-    projection.gate.add_permits(tokio::sync::Semaphore::MAX_PERMITS);
-    let mut results = Vec::new();
-    while let Some(result) = commands.join_next().await {
-        results.push(result.unwrap().1);
-    }
-    assert!(executor.backlog().is_empty());
-    (results, projection, updates, errors)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn ordered_projection_of_forty_parallel_commands_equals_the_replay() {
-    let db = Database::new().await;
-    let (results, projection, _, _) = forty_commands_through_an_ordered_projection(&db, 0).await;
-    assert!(results.iter().all(Result::is_ok), "{results:?}");
-    assert_eq!(
-        projection.calls.load(Ordering::SeqCst),
-        3,
-        "the first command alone, then batches of 32 and 7"
-    );
-    let journal =
-        PersistedEventStore::<_, CappedAggregate>::new_event_store(PostgresEventRepositoryWithOutbox::new(db.pool.clone()))
-            .load_events("hot")
-            .await
-            .unwrap();
-    let mut replayed = ValuesView::default();
-    for event in &journal {
-        replayed.update(event);
-    }
-    let (view, context) = PostgresViewRepository::<ValuesView, CappedAggregate>::new("ordered_view", db.pool.clone())
-        .load_with_context("hot")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(view, replayed);
-    assert_eq!(view.sequences, (1..=40).collect::<Vec<_>>());
-    assert_eq!(context.version, 3, "one view write per batch");
-    assert_eq!(context.last_sequence, 40);
-    db.close().await;
-}
-
-/// After a failed batch the document is behind the journal; under the contiguity rule every later batch of
-/// the aggregate is a gap, refused before any write, until a replay fills the hole.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_view_storage_failure_stalls_the_document_at_its_last_applied_event() {
-    let db = Database::new().await;
-    let (results, _, updates, errors) = forty_commands_through_an_ordered_projection(&db, 2).await;
-    let failed: Vec<usize> = results
-        .iter()
-        .filter_map(|result| match result {
-            Ok(()) => None,
-            Err(CommandGatewayError::CommittedWithEventHandlerFailure { last_sequence, handlers }) => {
-                assert_eq!(
-                    handlers,
-                    &[FailedHandler {
-                        index: 0,
-                        name: "values".into()
-                    }]
-                );
-                Some(*last_sequence)
+    let decided = Arc::new(AtomicUsize::new(0));
+    let executor = CommandExecutorCore::<Counted, _>::new(
+        {
+            let (pool, decided) = (db.pool.clone(), decided.clone());
+            move |tasks| {
+                let repository = PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks);
+                CqrsFramework::new(
+                    PersistedEventStore::new_snapshot_store(repository, 1),
+                    Counter(decided.clone()),
+                )
             }
-            other => panic!("unexpected result {other:?}"),
-        })
-        .collect::<std::collections::BTreeSet<_>>()
-        .into_iter()
-        .collect();
-    assert_eq!(
-        failed,
-        (2..=40).collect::<Vec<_>>(),
-        "the second call held commands 2 to 33 and failed; the third call is a gap"
+        },
+        AggregateConflictRetryPolicy::default(),
+        LockLimits::default(),
     );
-    assert_eq!(
-        *errors.lock().unwrap(),
-        ["view store down", "sequence gap: expected event 2, found 34"]
-    );
-    assert_eq!(updates.load(Ordering::SeqCst), 2, "no write was attempted for the gap");
-    let (view, context) = PostgresViewRepository::<ValuesView, CappedAggregate>::new("ordered_view", db.pool.clone())
-        .load_with_context("hot")
-        .await
-        .unwrap()
-        .unwrap();
-    assert_eq!(view.sequences, [1], "the document is the prefix before the failure");
-    assert_eq!((context.version, context.last_sequence), (1, 1));
-    let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
-        .get_events::<CappedAggregate>("hot")
-        .await
-        .unwrap();
-    assert_eq!(
-        events.iter().map(|e| e.sequence).collect::<Vec<_>>(),
-        (1..=40).collect::<Vec<_>>(),
-        "the journal keeps every committed event"
-    );
+    let task = new_task();
+    assert_eq!(executor.execute("core", "accepted".into(), vec![task.clone()]).await, Ok(()));
+    assert_eq!(decided.load(Ordering::SeqCst), 1);
+    let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    let events = repository.get_events::<Counted>("core").await.unwrap();
+    assert_eq!(events.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1]);
+    let snapshot = repository.get_snapshot::<Counted>("core").await.unwrap().unwrap();
+    assert_eq!((snapshot.aggregate, snapshot.last_sequence), (json!(["accepted"]), 1));
+    let saved = row(&db.pool, task.id()).await;
+    assert_eq!(saved.get::<String, _>("aggregate_id"), "core");
+    assert_eq!(saved.get::<i64, _>("aggregate_sequence"), 1);
     db.close().await;
 }
 

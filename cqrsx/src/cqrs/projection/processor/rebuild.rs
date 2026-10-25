@@ -2,8 +2,8 @@
 use crate::cqrs::{
     aggregate::Aggregate,
     event::EventEnvelope,
-    event_handler::{EventHandler, delivery::Rebuilder},
-    projection::RebuildableProjection,
+    event_handler::EventHandler,
+    projection::{RebuildableProjection, processor::delivery::Rebuilder},
     store::{
         PersistenceError, repository::PersistedEventRepository, serialized_event::deserialize_events, upcaster::EventUpcaster,
     },

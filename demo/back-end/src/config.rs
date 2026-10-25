@@ -6,10 +6,10 @@ use crate::application::operations::rebuild::{DEFAULT_MAX_PACE, DEFAULT_SLOW_PAC
 use cqrsx::{
     cqrs::{
         command::locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits, LockLimitsError},
-        event_handler::delivery::{DEFAULT_DELIVERY_CAPACITY, DEFAULT_DELIVERY_MAX_BATCH, DeliveryConfig, DeliveryConfigError},
         projection::processor::config::{
-            DEFAULT_PROCESSOR_CONCURRENCY, DEFAULT_PROCESSOR_LEASE, DEFAULT_PROCESSOR_PAGE_SIZE, DEFAULT_PROCESSOR_POLL_INTERVAL,
-            DEFAULT_PROCESSOR_REBUILD_PAGE, DEFAULT_PROCESSOR_RETRY_BASE, DEFAULT_PROCESSOR_RETRY_MAX, ProcessorConfig,
+            DEFAULT_DELIVERY_CAPACITY, DEFAULT_DELIVERY_MAX_BATCH, DEFAULT_PROCESSOR_CONCURRENCY, DEFAULT_PROCESSOR_LEASE,
+            DEFAULT_PROCESSOR_PAGE_SIZE, DEFAULT_PROCESSOR_POLL_INTERVAL, DEFAULT_PROCESSOR_REBUILD_PAGE,
+            DEFAULT_PROCESSOR_RETRY_BASE, DEFAULT_PROCESSOR_RETRY_MAX, DeliveryLimits, DeliveryLimitsError, ProcessorConfig,
             ProcessorConfigError,
         },
     },
@@ -196,11 +196,11 @@ fn projection_config(lookup: impl Fn(&'static str) -> Option<String>) -> Result<
     let concurrency = number(&lookup, PROJECTION_CONCURRENCY, DEFAULT_PROCESSOR_CONCURRENCY)?;
     let rebuild_page = number(&lookup, PROJECTION_REBUILD_PAGE, DEFAULT_PROCESSOR_REBUILD_PAGE)?;
     let settle = millis(&lookup, PROJECTION_SETTLE, DEFAULT_PROJECTION_SETTLE)?;
-    let capacity = number(&lookup, PROJECTION_BUFFER, DEFAULT_DELIVERY_CAPACITY.get())?;
-    let max_batch = number(&lookup, PROJECTION_MAX_BATCH, DEFAULT_DELIVERY_MAX_BATCH.get())?;
-    let delivery = DeliveryConfig::new(capacity, max_batch).map_err(|error| match error {
-        DeliveryConfigError::ZeroCapacity => invalid(PROJECTION_BUFFER, "must be at least 2"),
-        DeliveryConfigError::ZeroMaxBatch => invalid(PROJECTION_MAX_BATCH, "must be positive"),
+    let capacity = number(&lookup, PROJECTION_BUFFER, DEFAULT_DELIVERY_CAPACITY)?;
+    let max_batch = number(&lookup, PROJECTION_MAX_BATCH, DEFAULT_DELIVERY_MAX_BATCH)?;
+    let delivery_limits = DeliveryLimits::new(capacity, max_batch).map_err(|error| match error {
+        DeliveryLimitsError::CapacityTooSmall { min } => invalid(PROJECTION_BUFFER, format!("must be at least {min}")),
+        DeliveryLimitsError::ZeroMaxBatch => invalid(PROJECTION_MAX_BATCH, "must be positive"),
     })?;
     let named = |error: ProcessorConfigError| match error {
         ProcessorConfigError::ZeroPollInterval => invalid(PROJECTION_POLL, "must be positive"),
@@ -213,9 +213,8 @@ fn projection_config(lookup: impl Fn(&'static str) -> Option<String>) -> Result<
         ProcessorConfigError::InvalidRetry => invalid(PROJECTION_RETRY_BASE, "must not exceed ENCORE_PROJECTION_RETRY_MAX_MS"),
         ProcessorConfigError::ZeroConcurrency => invalid(PROJECTION_CONCURRENCY, "must be positive"),
         ProcessorConfigError::SettleTooLong { .. } => invalid(PROJECTION_SETTLE, "must not exceed ENCORE_PROJECTION_POLL_MS"),
-        ProcessorConfigError::DeliveryCapacityTooSmall => invalid(PROJECTION_BUFFER, "must be at least 2"),
     };
-    ProcessorConfig::new(poll, page, lease, delivery)
+    ProcessorConfig::new(poll, page, lease, delivery_limits)
         .and_then(|config| config.with_retry(retry_base, retry_max))
         .and_then(|config| config.with_rebuild_page(rebuild_page))
         .and_then(|config| config.with_concurrency(concurrency))
@@ -464,7 +463,7 @@ mod tests {
                 Duration::from_millis(30)
             )
         );
-        assert_eq!(config.delivery(), DeliveryConfig::new(8, 2).unwrap());
+        assert_eq!(config.delivery_limits(), DeliveryLimits::new(8, 2).unwrap());
     }
 
     #[test]

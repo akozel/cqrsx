@@ -12,9 +12,9 @@ use crate::cqrs::{
         upcaster::EventUpcaster,
     },
 };
-use std::{collections::HashMap, marker::PhantomData};
+use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
-#[derive(PartialEq)]
+#[derive(Clone, Copy, PartialEq)]
 enum SnapshotPolicy {
     Disabled,
     Every(usize),
@@ -42,7 +42,8 @@ impl SnapshotPolicy {
 /// Storage engine using a database backing.
 ///
 /// This defaults to an event-sourced store (i.e., events are the single source of truth),
-/// and can use snapshots when a large number of events belong to one aggregate instance.
+/// and can use snapshots when a large number of events belong to one aggregate instance. A clone shares the
+/// upcasters and clones the repository.
 pub struct PersistedEventStore<R, A>
 where
     R: PersistedEventRepository,
@@ -50,8 +51,23 @@ where
 {
     repo: R,
     snapshot_policy: SnapshotPolicy,
-    event_upcasters: Vec<Box<dyn EventUpcaster>>,
+    event_upcasters: Arc<[Box<dyn EventUpcaster>]>,
     _phantom: PhantomData<A>,
+}
+
+impl<R, A> Clone for PersistedEventStore<R, A>
+where
+    R: PersistedEventRepository + Clone,
+    A: Aggregate + Send + Sync,
+{
+    fn clone(&self) -> Self {
+        Self {
+            repo: self.repo.clone(),
+            snapshot_policy: self.snapshot_policy,
+            event_upcasters: self.event_upcasters.clone(),
+            _phantom: PhantomData,
+        }
+    }
 }
 
 impl<R, A> PersistedEventStore<R, A>
@@ -76,7 +92,6 @@ where
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -182,17 +197,6 @@ where
     /// #         _events: &[SerializedEvent],
     /// #         _snapshot_update: Option<cqrsx::cqrs::store::snapshot::SnapshotUpdate>,
     /// #     ) -> Result<(), PersistenceError> {
-    /// #         todo!()
-    /// #     }
-    /// #
-    /// #     async fn stream_events<A: Aggregate>(
-    /// #         &self,
-    /// #         _aggregate_id: &str,
-    /// #     ) -> Result<ReplayStream, PersistenceError> {
-    /// #         todo!()
-    /// #     }
-    /// #
-    /// #     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
@@ -234,7 +238,7 @@ where
         Self {
             repo,
             snapshot_policy: SnapshotPolicy::Disabled,
-            event_upcasters: vec![],
+            event_upcasters: Arc::new([]),
             _phantom: PhantomData,
         }
     }
@@ -256,7 +260,6 @@ where
     /// # use cqrsx::cqrs::event_sink::EventSink;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::stream::ReplayStream;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
@@ -365,17 +368,6 @@ where
     /// #         todo!()
     /// #     }
     /// #
-    /// #     async fn stream_events<A: Aggregate>(
-    /// #         &self,
-    /// #         _aggregate_id: &str,
-    /// #     ) -> Result<ReplayStream, PersistenceError> {
-    /// #         todo!()
-    /// #     }
-    /// #
-    /// #     async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-    /// #         todo!()
-    /// #     }
-    /// #
     /// #     async fn feed_after<A: Aggregate>(
     /// #         &self,
     /// #         _after: cqrsx::cqrs::store::feed::Position,
@@ -413,7 +405,7 @@ where
         Self {
             repo,
             snapshot_policy: SnapshotPolicy::Every(snapshot_interval),
-            event_upcasters: vec![],
+            event_upcasters: Arc::new([]),
             _phantom: PhantomData,
         }
     }
@@ -427,7 +419,7 @@ where
         Self {
             repo: self.repo,
             snapshot_policy: self.snapshot_policy,
-            event_upcasters,
+            event_upcasters: event_upcasters.into(),
             _phantom: PhantomData,
         }
     }
@@ -618,7 +610,7 @@ pub(in crate::cqrs) mod tests {
         event_sink::EventSink,
         store::{
             PersistenceError, repository::PersistedEventRepository, serialized_event::SerializedEvent,
-            snapshot::SerializedSnapshot, stream::ReplayStream,
+            snapshot::SerializedSnapshot,
         },
     };
     use serde::{Deserialize, Serialize};
@@ -780,19 +772,6 @@ pub(in crate::cqrs) mod tests {
             let test = self.persist_check.lock().unwrap().take().unwrap();
             test(events, snapshot_update);
             Ok(())
-        }
-
-        async fn stream_events<A: Aggregate>(&self, _aggregate_id: &str) -> Result<ReplayStream, PersistenceError> {
-            self.stream_all_events::<A>().await
-        }
-
-        async fn stream_all_events<A: Aggregate>(&self) -> Result<ReplayStream, PersistenceError> {
-            let events = self.events_result.lock().unwrap().take().unwrap()?;
-            let (mut feed, stream) = ReplayStream::new(events.len().max(1));
-            for event in events {
-                feed.push(Ok(event)).await?;
-            }
-            Ok(stream)
         }
 
         async fn feed_after<A: Aggregate>(

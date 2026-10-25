@@ -96,43 +96,44 @@ pub(crate) fn log_lock_refused(aggregate_type: &str, refused: crate::cqrs::comma
     );
 }
 
-/// An ordered event handler failed for a batch of `commands`; logged once for the whole batch.
-/// `handler` is the handler's name: a type or read-model name chosen by the application, never a payload.
-/// `operation` is `deliver` for a live batch and `rebuild` for the rebuild of a key.
-pub(crate) fn log_delivery_failure(
+/// A projection failed for a batch of `jobs` of one key; logged once for the whole batch. `projection` is the
+/// processor's name, chosen by the application, never a payload. `operation` is `deliver` for a batch of
+/// live jobs and `rebuild` for the rebuild of a key.
+pub(crate) fn log_projection_batch_failure(
+    projection: &str,
     aggregate_type: &str,
-    handler: &str,
     operation: &'static str,
-    commands: usize,
+    jobs: usize,
     source: &(dyn std::error::Error + 'static),
 ) {
     #[cfg(feature = "postgres")]
     if let Some(error) = find_sqlx(source) {
-        tracing::error!(component = "event_handler", operation, aggregate_type = safe_type(aggregate_type), handler, commands,
-            storage_category = sqlx_kind(error), sqlstate = ?sqlstate(error), "event delivery failed");
+        tracing::error!(component = "projection", operation, projection = safe_type(projection),
+            aggregate_type = safe_type(aggregate_type), jobs, storage_category = sqlx_kind(error),
+            sqlstate = ?sqlstate(error), "projection batch failed");
         return;
     }
     #[cfg(not(feature = "postgres"))]
     let _ = source;
     tracing::error!(
-        component = "event_handler",
+        component = "projection",
         operation,
+        projection = safe_type(projection),
         aggregate_type = safe_type(aggregate_type),
-        handler,
-        commands,
-        "event delivery failed"
+        jobs,
+        "projection batch failed"
     );
 }
 
-/// An ordered event handler panicked while it handled a batch of `commands` (or rebuilt a key).
-pub(crate) fn log_delivery_panic(aggregate_type: &str, handler: &str, operation: &'static str, commands: usize) {
+/// A projection panicked while it handled a batch of `jobs` of one key (or rebuilt a key).
+pub(crate) fn log_projection_batch_panic(projection: &str, aggregate_type: &str, operation: &'static str, jobs: usize) {
     tracing::error!(
-        component = "event_handler",
+        component = "projection",
         operation,
+        projection = safe_type(projection),
         aggregate_type = safe_type(aggregate_type),
-        handler,
-        commands,
-        "event handler panicked"
+        jobs,
+        "projection batch panicked"
     );
 }
 
@@ -166,18 +167,6 @@ pub(crate) fn log_projection_failure(
         category,
         failures,
         "projection processor operation failed"
-    );
-}
-
-/// A command refused before it ran: an ordered handler's buffer for its aggregate stayed full until the
-/// command's deadline. Expected under overload, hence `warn`.
-pub(crate) fn log_delivery_refused(aggregate_type: &str) {
-    tracing::warn!(
-        component = "command",
-        operation = "deliver",
-        aggregate_type = safe_type(aggregate_type),
-        reason = "buffer_full",
-        "command refused before it ran"
     );
 }
 
@@ -240,15 +229,14 @@ pub(crate) mod test_support {
             // Prime shared callsites that parallel tests may register without a subscriber.
             super::log_command_failure("prime", "unexpected", &io::Error::other("prime"));
             super::log_lock_refused("prime", crate::cqrs::command::locks::LockRefused::TimedOut);
-            super::log_delivery_failure("prime", "prime", "prime", 1, &io::Error::other("prime"));
-            super::log_delivery_panic("prime", "prime", "prime", 1);
-            super::log_delivery_refused("prime");
+            super::log_projection_batch_failure("prime", "prime", "prime", 1, &io::Error::other("prime"));
+            super::log_projection_batch_panic("prime", "prime", "prime", 1);
             super::log_projection_event("prime", "prime", "prime");
             super::log_projection_failure("prime", "prime", "prime", "prime", 1);
             #[cfg(feature = "postgres")]
             {
                 super::log_command_failure("prime", "unexpected", &sqlx::Error::RowNotFound);
-                super::log_delivery_failure("prime", "prime", "prime", 1, &sqlx::Error::RowNotFound);
+                super::log_projection_batch_failure("prime", "prime", "prime", 1, &sqlx::Error::RowNotFound);
                 super::log_sqlx_failure("prime", &sqlx::Error::RowNotFound);
             }
             #[cfg(feature = "mongodb")]
@@ -436,7 +424,7 @@ mod tests {
             code: Some("23505"),
         }))))));
         let (_, log) = test_support::capture(async {
-            log_command_failure("private_type\nmail@example.com", "event_handler", &source);
+            log_command_failure("private_type\nmail@example.com", "deserialization", &source);
         })
         .await;
         assert_eq!(log.lines().count(), 1);
@@ -444,7 +432,7 @@ mod tests {
             "component=\"command\"",
             "operation=\"execute\"",
             "aggregate_type=\"unknown\"",
-            "category=\"event_handler\"",
+            "category=\"deserialization\"",
             "storage_category=\"database\"",
             "sqlstate=Some(\"23505\")",
         ] {
@@ -464,41 +452,42 @@ mod tests {
 
     #[cfg(feature = "postgres")]
     #[tokio::test]
-    async fn delivery_diagnostics_log_one_safe_event_per_batch_with_the_storage_category() {
+    async fn projection_batch_diagnostics_log_one_safe_event_per_batch_with_the_storage_category() {
         let source = crate::cqrs::store::PersistenceError::UnknownError(Box::new(sqlx::Error::PoolTimedOut));
         let (_, log) = test_support::capture(async {
-            log_delivery_failure("private_type\nmail@example.com", "concert_halls", "deliver", 3, &source);
-            log_delivery_failure(
+            log_projection_batch_failure("concert_halls", "private_type\nmail@example.com", "deliver", 3, &source);
+            log_projection_batch_failure(
+                "private_projection\n",
                 "Account",
-                "fan_wallets",
                 "rebuild",
                 1,
                 &std::io::Error::other("private_source"),
             );
-            log_delivery_panic("Account", "fan_wallets", "rebuild", 1);
+            log_projection_batch_panic("fan_wallets", "Account", "rebuild", 1);
         })
         .await;
         let lines: Vec<&str> = log.lines().collect();
         assert_eq!(lines.len(), 3, "{log}");
         for field in [
-            "event delivery failed",
+            "projection batch failed",
+            "component=\"projection\"",
             "operation=\"deliver\"",
+            "projection=\"concert_halls\"",
             "aggregate_type=\"unknown\"",
-            "handler=\"concert_halls\"",
-            "commands=3",
+            "jobs=3",
             "storage_category=\"pool_timeout\"",
         ] {
             assert!(lines[0].contains(field), "missing {field}: {log}");
         }
         assert!(
-            lines[1].contains("handler=\"fan_wallets\"")
+            lines[1].contains("projection=\"unknown\"")
                 && lines[1].contains("operation=\"rebuild\"")
-                && lines[1].contains("commands=1")
+                && lines[1].contains("jobs=1")
                 && !lines[1].contains("storage_category"),
             "{log}"
         );
         assert!(
-            lines[2].contains("event handler panicked") && lines[2].contains("operation=\"rebuild\""),
+            lines[2].contains("projection batch panicked") && lines[2].contains("projection=\"fan_wallets\""),
             "{log}"
         );
         assert!(!log.contains("private_") && !log.contains("mail@example.com"), "{log}");

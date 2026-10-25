@@ -153,7 +153,7 @@ jobs:
     steps:
       - uses: actions/checkout@v6
       - run: rustup toolchain install --no-self-update
-      - name: Properties with the commit seed (1024 cases each)
+      - name: Properties with the commit seed
         run: |
           export PROPTEST_RNG_SEED=$(printf '%u' "0x${GITHUB_SHA:0:16}")
           printf 'Property test seed: %s\n' "$PROPTEST_RNG_SEED"

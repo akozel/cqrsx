@@ -375,7 +375,6 @@ CTE-оператором. Список неизменяем между попы�
 | `Domain(AlreadyRecorded \| AlreadyCancelled)` (R9, R11) | `Ok(())` — повторная доставка |
 | `Domain(UnknownTicket)` (R10) | `Retry { reason: "unknown_ticket", retry_after: Some(1 с) }` — отмена обогнала запись |
 | `Conflict`, `Unavailable` | `Retry { retry_after: Some(1 с) }` |
-| `CommittedWithEventHandlerFailure` | `Ok(())` — событие записано, витрину ведёт процессор |
 | прочие `Domain` | `Permanent { reason: code }` |
 
 > **Перенесено в sidecar (2026-10-17, аудит границы, пункт S-4 в `docs/BOUNDARY_AUDIT.md`).** Имитация
@@ -979,7 +978,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
    (`ENCORE_DATABASE_PROJECTION_POOL_SIZE`), отчёты идут в `ActivityObserver` (activity). Их рантайм (`ProjectionRuntime`)
    запускается отдельной задачей после `bind`, на общем токене остановки.
 7. Два долгоживущих `PostgresCommandExecutor::new(pool, command_config, services)`, по одному на агрегат, с
-   `.with_commit_wakeup(wakeup)` (коммит будит процессор своей витрины); обработчиков событий у исполнителя нет.
+   `.with_commit_wakeup(wakeup)` (коммит будит процессор своей витрины).
    Исполнитель на каждую команду строит `CqrsFramework` над `PostgresEventRepositoryWithOutbox::with_outbox(tasks)`
    со снапшотами и клоном services. `PostgresCommandConfig::new(ENCORE_SNAPSHOT_EVERY,
    AggregateConflictRetryPolicy::default())` — держатель настроек. Вызов:
@@ -1113,7 +1112,6 @@ Activity хранится только в памяти — это лог, а н�
 | `CommandGatewayError`: domain (`ConcertError`) | 422 | `rejected` | `command.rejected` |
 | conflict (после retry-политики) | 409 | `conflict` | `command.failed` |
 | unavailable | 503 | `unavailable` | `command.failed` |
-| committed (обработчиков событий у исполнителя нет, витрины ведут процессоры; вариант `CommittedWithEventHandlerFailure` остаётся в библиотеке и для демо значит то же) | 200 | `accepted` | `command.accepted` |
 | битый JSON / неизвестный `type` (в том числе внутренние `RecordTicket`/`RecordCancellation` через HTTP) | 400 | `invalid` | — |
 
 Для внутренних команд `Fan` те же исходы маппятся не в HTTP, а в результат `TaskHandler` (§2.7); activity получает
@@ -1712,7 +1710,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | U5 | Схема outbox: имя таблицы, колонки (id, формат, версия, payload, metadata, статус, счётчик попыток, лимит, время доступности, lease, ошибка, метки времени), значения статусов; удаляются ли завершённые строки | `TRANSACTIONAL_OUTBOX_SCHEMA`, `postgres/task_queue/*` | константы sidecar и `outboxStatus.ts`; «призрачные» строки, если удаляются |
 | U6 | Настраивается ли backoff (`redelivery_backoff`)? | `task/queue/retry.rs`, `PostgresTaskQueueConfig` | дефолт; UI показывает реальное время по БД; упомянуть в README |
 | U7 | API `TaskHandlerError` (retry / permanent), `TaskAttempt` (`task_id`, `number`), требования `TaskDispatcherFactory` | `task/handler.rs`, `task/attempt.rs`, `task/runtime/dispatcher_factory.rs` | — (разобраться обязательно) |
-| U8 | API `EventReplay` / `ReplayStream` (все id и один id), поведение при ошибке обработчика | `cqrs/event_handler/replay.rs`, `cqrs/store/stream.rs`, `postgres/event_repository/stream.rs` | — (обязательно) |
+| U8 | API `EventReplay` / `ReplayStream` (все id и один id), поведение при ошибке обработчика. *Снято в 03/05 (2026-10-25): replay и потоки удалены, пересборку ведёт процессор (`request_rebuild`, `request_rebuild_key`).* | `cqrs/event_handler/replay.rs`, `cqrs/store/stream.rs`, `postgres/event_repository/stream.rs` | — |
 | U9 | Где SQL-файлы схем для корневого compose; путь тома PG 18; флаги SELinux | корневой `compose.yaml`, `postgres.rs` (`include_str!`) | применять константы при старте back-end (§5.2) |
 | U10 | Какие env-ключи читает `cqrsx` (`OUTBOX_QUEUE_CAPACITY` и др.), дефолты, кросс-валидация бюджетов (lease vs задержка) | `task/runtime/config.rs`, `env.rs`, `postgres/task_runtime.rs` | задать значения кодом |
 | U11 | Feature-флаги `cqrsx`, версия `sqlx` | `cqrsx/Cargo.toml` | — |
@@ -1756,7 +1754,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | **D-08** | **Backoff почтовых задач — через `retry_after`** (1, 2, 4, 8, 8 с); задачи цепочки без хаоса; `reason` = код причины (виден в `last_error`). | §2.7, §5.4, §8.5 | ☐ `ENCORE_TASK_RETRY_BASE_MS` / `_MAX_MS` ☐ `outboxStatus.ts` по колонке `status` |
 | **D-09** | **Инфраструктура:** `connect_pool(PgConnectOptions)`; `cqrsx` с `features = ["host", "logging"]` + `async-trait`; `sqlx 0.8`; `rand 0.10`; compose монтирует `../cqrsx/sql/*.sql` с `:ro,z`; `demo/.gitignore`. | §4, §5.1, §5.2, §6.1, §6.3 п.3 | ☐ Фаза 1 |
 | **D-10** | **Graceful shutdown:** SSE-потоки завершаются по `CancellationToken`; после `host::lifecycle::run` — `pool.close()`. | §6.3 п.11, §10 Фаза 4 | ☐ приёмка «Ctrl+C при открытой вкладке» |
-| **D-11** | **Replay:** два `replay_all` (по типу агрегата), порядок событий по `sequence` поперёк агрегатов; `rebuild.started` несёт `total`; verify P1 — во временные коллекции, без in-memory фейков. | §2.9, §6.8 | ☐ Фаза 6 / 9 |
+| **D-11** | **Replay:** два `replay_all` (по типу агрегата), порядок событий по `sequence` поперёк агрегатов; `rebuild.started` несёт `total`; verify P1 — во временные коллекции, без in-memory фейков. *Заменено D-16…D-20 (03/04): пересборку ведёт процессор; `EventReplay` удалён в 03/05.* | §2.9, §6.8 | ☒ заменено |
 | **D-12** | **Sidecar:** сортировка `events` по `metadata->>'recorded_at'` (строка фиксированной ширины), outbox по `created_at`, строки outbox не удаляются, `last_error` показывается. Запросы — AM §6. | §7.3, §8.5 | ☐ Фаза 7 |
 | **D-13** | **Граница back-end ↔ sidecar (аудит 2026-10-17, `docs/BOUNDARY_AUDIT.md`).** Back-end — production-подобный сервис кассы; всё demo-only и удаляющее данные — у sidecar: 🧨 wipe (`POST /inspect/projections/wipe`), письма фаната (`GET /inspect/mail/{fan_id}`), персонажи (`GET /inspect/demo`), имитация почтового сервиса (`POST /mail`). Back-end зовёт почту по HTTP (`HttpMailer`) и к базе `mail_service` не подключается. Счётчики журнала — в `cqrsx` (`PostgresEventRepository::totals`, тикет 08). Ограничения «sidecar без `cqrsx`» и «только read-only» сняты. Открытые вопросы — `docs/discussions/`. | §2.7, §2.9, §3.5, §5.4, §6.2, §6.4, §7 | ☑ реализовано 2026-10-17 |
 | **D-14** | **Журнал `Fan` — на пару «фанат + концерт»:** `aggregate_id = <fan_id>:<concert_id>`, `fan_wallets._id` тот же; домен `Fan`, wire-форматы событий и снапшота, `ViewProjection`, rebuild и verify не меняются. Кошелёк фаната собирается при чтении из диапазона `_id` `[<fan>:, <fan>;)` и отвечает `{ fan_id, ledgers, view }`. Причина: нагрузочный прогон 03b 2026-10-18 — состояние, снапшот и документ кошелька одного фаната росли без границы, стоимость задачи O(n), слив outbox 120 → 12 задач/с, потери проекции (`docs/discussions/06_fan_ledger_growth.md`). Данные демо пересоздаются (`make reset`). | §2.1, §2.3, §2.8, §3.2, §6.4 | ☑ реализовано 2026-10-18 |

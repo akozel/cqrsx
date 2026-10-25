@@ -7,7 +7,6 @@ use crate::cqrs::{
         feed::{FeedEntry, Position},
         serialized_event::SerializedEvent,
         snapshot::SerializedSnapshot,
-        stream::ReplayStream,
     },
 };
 use std::future::Future;
@@ -41,15 +40,6 @@ pub trait PersistedEventRepository: Send + Sync {
         events: &[SerializedEvent],
         snapshot_update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
     ) -> impl Future<Output = Result<(), PersistenceError>> + Send;
-
-    /// Streams all events for an aggregate instance.
-    fn stream_events<A: Aggregate>(
-        &self,
-        aggregate_id: &str,
-    ) -> impl Future<Output = Result<ReplayStream, PersistenceError>> + Send;
-
-    /// Streams all events for an aggregate type.
-    fn stream_all_events<A: Aggregate>(&self) -> impl Future<Output = Result<ReplayStream, PersistenceError>> + Send;
 
     /// The events of aggregate type `A` after `after` in the order of [`Position`], taken from the
     /// transactions that had finished when the read began: at least `limit` events when that many

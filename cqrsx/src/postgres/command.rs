@@ -9,17 +9,13 @@ use crate::{
             retry::AggregateConflictRetryPolicy,
             wakeup::CommitWakeup,
         },
-        event_handler::{
-            EventHandler,
-            delivery::{DeliveryBacklog, DeliveryConfig},
-        },
         store::persisted::PersistedEventStore,
     },
     postgres::outbox::PostgresEventRepositoryWithOutbox,
     task::NewTask,
 };
 use sqlx::PgPool;
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashMap, num::NonZeroUsize};
 use thiserror::Error;
 
 /// Checked snapshot interval, optimistic-conflict policy and aggregate lock limits. Does not read env.
@@ -88,9 +84,9 @@ where
 
 /// The command executor over PostgreSQL: the [`CommandExecutorCore`] with a factory that binds every
 /// command's outbox tasks to a fresh repository on the shared pool, with a snapshot-backed store and a clone
-/// of the services. One per aggregate type and process: it owns the aggregate locks and the handlers'
-/// buffers, so share it (e.g. in an `Arc`) instead of building a second one, and never build a core of your
-/// own next to it for the same aggregate type. Commands run through [`CommandExecutor`].
+/// of the services. One per aggregate type and process: it owns the aggregate locks, so share it (e.g. in an
+/// `Arc`) instead of building a second one, and never build a core of your own next to it for the same
+/// aggregate type. Commands run through [`CommandExecutor`].
 ///
 /// Construction performs no I/O. Accepted event, optional snapshot and explicit tasks commit atomically; at
 /// most one event is supported per command. Connection/timeout failures may have unknown commit outcomes
@@ -117,26 +113,11 @@ impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
         }
     }
 
-    /// Registers a handler after the handlers registered before it; it gets the committed events through
-    /// a buffer per aggregate key bounded by `config`. One instance serves every command; its index in
-    /// post-commit failures is its position. Register every handler before the executor is shared.
-    pub fn with_event_handler(self, handler: Arc<dyn EventHandler<A>>, config: DeliveryConfig) -> Self {
-        Self {
-            inner: self.inner.with_event_handler(handler, config),
-        }
-    }
-
     /// Wakes `wakeup` after every commit with events, for the projection processors of this aggregate type.
     pub fn with_commit_wakeup(self, wakeup: CommitWakeup) -> Self {
         Self {
             inner: self.inner.with_commit_wakeup(wakeup),
         }
-    }
-
-    /// The hand-overs of this executor not handled yet; empty without handlers. Take it before the
-    /// executor is moved away, to wait for the handlers before maintenance or shutdown.
-    pub fn backlog(&self) -> DeliveryBacklog {
-        self.inner.backlog()
     }
 }
 
@@ -147,8 +128,8 @@ where
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
 {
-    /// Runs the command under the aggregate's lock with conflict retry (a refused lock, or no space for a
-    /// handler before the lock's deadline, is `Unavailable`); `metadata` is stored with the committed event.
+    /// Runs the command under the aggregate's lock with conflict retry (a refused lock is `Unavailable`);
+    /// `metadata` is stored with the committed event.
     async fn execute_with_metadata(
         &self,
         aggregate_id: &str,
@@ -195,31 +176,15 @@ mod tests {
         fn apply(&mut self, _: Said) {}
     }
 
-    struct Ignore;
-
-    #[async_trait::async_trait]
-    impl EventHandler<Quiet> for Ignore {
-        async fn handle(
-            &self,
-            _: &str,
-            _: &[crate::cqrs::event::EventEnvelope<Quiet>],
-        ) -> Result<(), crate::cqrs::store::PersistenceError> {
-            Ok(())
-        }
-    }
-
     #[tokio::test]
-    async fn handlers_register_and_share_one_backlog() {
+    async fn the_core_takes_the_lock_limits_of_the_config() {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://nobody@localhost/none")
             .unwrap();
-        let config = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap();
-        let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ())
-            .with_event_handler(Arc::new(Ignore), DeliveryConfig::default())
-            .with_event_handler(Arc::new(Ignore), DeliveryConfig::new(1, 1).unwrap())
-            .with_commit_wakeup(CommitWakeup::new());
-        assert!(executor.backlog().is_empty());
-        assert_eq!(executor.inner.lock_limits(), LockLimits::default());
+        let limits = LockLimits::new(Duration::from_millis(5), 2).unwrap();
+        let config = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), limits).unwrap();
+        let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ()).with_commit_wakeup(CommitWakeup::new());
+        assert_eq!(executor.inner.lock_limits(), limits);
     }
 
     #[test]

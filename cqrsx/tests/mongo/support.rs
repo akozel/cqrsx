@@ -6,14 +6,13 @@ use cqrsx::{
         aggregate::Aggregate,
         command::{executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
         event::{DomainEvent, EventEnvelope},
-        event_handler::delivery::DeliveryConfig,
         event_sink::EventSink,
         projection::{
             View, ViewProjection,
             checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore},
             processor::{
                 ProjectionProcessor,
-                config::ProcessorConfig,
+                config::{DeliveryLimits, ProcessorConfig},
                 observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt},
             },
             repository::ViewRepository,
@@ -150,7 +149,7 @@ fn config() -> ProcessorConfig {
         Duration::from_millis(50),
         100,
         Duration::from_secs(1),
-        DeliveryConfig::default(),
+        DeliveryLimits::default(),
     )
     .unwrap()
     .with_retry(Duration::from_millis(50), Duration::from_millis(200))

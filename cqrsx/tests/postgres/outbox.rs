@@ -7,9 +7,7 @@ mod publication;
 #[path = "outbox/rollback.rs"]
 mod rollback;
 
-use cqrsx::cqrs::event::EventEnvelope;
 use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
-use cqrsx::cqrs::store::stream::ReplayStream;
 
 const AGGREGATE_ID: &str = "outbox-test-aggregate";
 
@@ -62,34 +60,6 @@ fn serialized_event(sequence: usize, value: &str) -> SerializedEvent {
         serde_json::to_value(event).expect("test event must serialize"),
         json!({ "correlation_id": format!("correlation-{sequence}") }),
     )
-}
-
-async fn collect_stream(stream: &mut ReplayStream) -> Vec<EventEnvelope<StreamAggregate>> {
-    let mut events = Vec::new();
-    while let Some(event) = stream.next::<StreamAggregate>(&[]).await {
-        events.push(event.expect("event stream must not fail"));
-    }
-    events
-}
-
-fn stream_values(events: Vec<EventEnvelope<StreamAggregate>>) -> Vec<(String, usize, TestEvent)> {
-    events
-        .into_iter()
-        .map(|event| (event.aggregate_id, event.sequence, event.payload))
-        .collect()
-}
-
-fn expected_stream_values(events: &[SerializedEvent]) -> Vec<(String, usize, TestEvent)> {
-    events
-        .iter()
-        .map(|event| {
-            (
-                event.aggregate_id.clone(),
-                event.sequence,
-                serde_json::from_value(event.payload.clone()).expect("test event must deserialize"),
-            )
-        })
-        .collect()
 }
 
 async fn row_count(pool: &PgPool, table: &str) -> i64 {
