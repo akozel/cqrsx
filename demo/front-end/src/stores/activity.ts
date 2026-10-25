@@ -4,7 +4,9 @@ import type { ActivityEntry, ActivityHello } from '@/types/activity'
 import { subscribe, type SseHandle } from '@/api/sse'
 import { useConcertsStore } from './concerts'
 import { useRebuildStore } from './rebuild'
+import { useSessionStore } from './session'
 import { useWalletStore } from './wallet'
+import { isLedgerOf } from '@/lib/ledger'
 
 const MAX_ENTRIES = 300
 
@@ -12,6 +14,7 @@ export const useActivityStore = defineStore('activity', () => {
   const concerts = useConcertsStore()
   const rebuild = useRebuildStore()
   const wallet = useWalletStore()
+  const session = useSessionStore()
   const entries = ref<ActivityEntry[]>([])
   const connected = ref(false)
   /** Last task-level signal for the PipelineStrip (worker animations). */
@@ -30,12 +33,16 @@ export const useActivityStore = defineStore('activity', () => {
     if (type.startsWith('task.')) taskSignal.value = { type, entry, seq: ++seq }
     if (type.startsWith('command.')) commandSignal.value = { type, entry, seq: ++seq }
     if (type.startsWith('rebuild.')) rebuild.onActivity(type, entry)
-    if (type === 'projection.updated' || type === 'projection.failed') {
-      // Possibly from another tab or from the task chain: refresh with a small debounce.
-      concerts.refreshDebounced()
-      void wallet.refresh()
+    if (type === 'projection.updated' || type === 'projection.rebuilt') {
+      // A document moved: the screen follows the read models through the feed (D-17), whoever sent the command.
+      if (entry.projection === 'concert_halls') concerts.refreshDebounced()
+      else if (entry.projection === 'fan_wallets' && isLedgerOf(String(entry.view_id ?? ''), session.persona))
+        wallet.refreshDebounced()
     }
-    if (type === 'task.attempt.succeeded') void wallet.refresh()
+    if (type === 'projection.rebuilt') rebuild.onRebuilt(entry)
+    // A failing round or a new owner changes the status the Encore! panel shows.
+    if (type === 'projection.failed' || type === 'projection.lease') void rebuild.refreshStatus()
+    if (type === 'task.attempt.succeeded') wallet.refreshDebounced()
   }
 
   function connect() {

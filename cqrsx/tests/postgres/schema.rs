@@ -82,7 +82,7 @@ async fn schema_rejects_inconsistent_direct_writes_and_accepts_valid_lifecycle_s
     db.close().await;
 }
 
-/// The journal reads stay on indexes: feed pages and the head on `events_feed_idx`, the aggregate ids
+/// The journal reads stay on indexes: feed pages, the head and the lag count on `events_feed_idx`, the aggregate ids
 /// on the primary key. 200 commits of two interleaved aggregate types give `tx` 200 distinct values,
 /// so the page comes from the middle of a real journal, not from one transaction.
 #[tokio::test]
@@ -116,11 +116,23 @@ async fn feed_pages_use_the_feed_index_and_key_pages_use_the_primary_key() {
         "EXPLAIN (FORMAT JSON) SELECT aggregate_id FROM events WHERE aggregate_type = 'contract_ledger' AND tx = '{middle}'::xid8 \
          AND (aggregate_id, sequence) > ('ledger-050', 40) ORDER BY aggregate_id, sequence"
     );
+    // A reader near the head: the lag a status page counts every second.
+    let near_head: String = sqlx::query_scalar(
+        "SELECT tx::text FROM (SELECT DISTINCT tx FROM events WHERE aggregate_type = 'contract_ledger' ORDER BY tx OFFSET 95 LIMIT 1) t",
+    )
+    .fetch_one(&db.pool)
+    .await
+    .unwrap();
+    let count = format!(
+        "EXPLAIN (FORMAT JSON) SELECT count(*) AS events FROM (SELECT 1 FROM events WHERE aggregate_type = 'contract_ledger' \
+         AND tx > '{near_head}'::xid8 LIMIT 100000) AS capped"
+    );
     // The tail of one transaction is small: a bitmap scan of the index plus a sort of its rows is fine
     // there; a page, the head and the keys must come out of an index in order.
     for (query, index, sort_allowed) in [
         (feed.as_str(), "events_feed_idx", false),
         (tail.as_str(), "events_feed_idx", true),
+        (count.as_str(), "events_feed_idx", false),
         (
             // `AS position` matters: a bare `tx::text` would be named `tx` and ORDER BY would sort the text.
             "EXPLAIN (FORMAT JSON) SELECT tx::text AS position FROM events WHERE aggregate_type = 'contract_ledger' ORDER BY tx DESC LIMIT 1",

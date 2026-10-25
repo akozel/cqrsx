@@ -2,5 +2,6 @@
 pub mod execute_command;
 pub mod get;
 pub mod list;
+pub mod rebuild;
 pub mod state_at;
 pub mod timeline;

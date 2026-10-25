@@ -36,9 +36,10 @@ The stand's own parameters pass through unchanged. Tickets 08a–08d added the b
 Runs before 08c also had `ORDERING=per_aggregate|concurrent` (`meta.command_ordering` in `result.json`), runs
 before 08d `DELIVERY=ordered|inline` (`meta.projection_delivery`). They
 live in the stand's `compose.yaml`, not in an overlay here, so the second node inherits them through `extends`.
-`tools/compare.mjs` shows accepted commands per second and the 409 and 503 shares next to req/s, the share of
-commands answered with a `projection_failed` warning and, for runs with `VERIFY=1`, whether the read models
-matched a rebuild afterwards (`verify ok`: 1 or 0).
+`tools/compare.mjs` shows accepted commands per second and the 409 and 503 shares next to req/s, how far the
+projections trailed the journal (`lag p50/p99 events`, the status sampled once a second, and `caught up s`
+after the burst) and, for runs with `VERIFY=1`, whether the read models matched the journal afterwards
+(`verify ok`: 1 or 0, with no document behind).
 
 The epic README lists the point, profile and generator per ticket ("Что мерить") and how to build the
 "before" image.

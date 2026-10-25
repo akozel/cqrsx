@@ -38,15 +38,16 @@ export function summarize(data, info) {
     status: {},
     outcomes: {
       accepted: count(m, 'cmd_accepted{phase:measured}'),
-      projection_warning: count(m, 'cmd_projection_warning{phase:measured}'),
       conflict: count(m, 'cmd_conflict{phase:measured}'),
-      locked: count(m, 'cmd_locked{phase:measured}'),
       unavailable: count(m, 'cmd_unavailable{phase:measured}'),
       other: count(m, 'cmd_other{phase:measured}'),
       rejected_total: count(m, 'cmd_rejected{phase:measured}'),
       rejected: {},
     },
     accepted_total_all_phases: count(m, 'cmd_accepted'),
+    // Every phase, for the chaos criteria: a command whose answer was lost may still be in the ledger.
+    unavailable_total_all_phases: count(m, 'cmd_unavailable'),
+    other_total_all_phases: count(m, 'cmd_other'),
   };
   for (const key of Object.keys(info)) {
     if (key !== 'test' && key !== 'commands') {
@@ -105,9 +106,11 @@ function text(r) {
   const o = r.outcomes;
   const rejected = Object.keys(o.rejected).length > 0 ? ` (${kv(o.rejected)})` : '';
   lines.push(
-    `outcomes  accepted=${o.accepted} conflict=${o.conflict} rejected=${o.rejected_total}${rejected} unavailable=${o.unavailable} locked=${o.locked} other=${o.other} projection_warning=${o.projection_warning}`,
+    `outcomes  accepted=${o.accepted} conflict=${o.conflict} rejected=${o.rejected_total}${rejected} unavailable=${o.unavailable} other=${o.other}`,
   );
-  lines.push(`accepted in all phases (source of outbox tasks): ${r.accepted_total_all_phases}`);
+  lines.push(
+    `all phases: accepted=${r.accepted_total_all_phases} (source of outbox tasks) unavailable=${r.unavailable_total_all_phases} other=${r.other_total_all_phases}`,
+  );
   lines.push('');
   return lines.join('\n');
 }

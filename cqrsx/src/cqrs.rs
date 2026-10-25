@@ -38,7 +38,7 @@ use std::{collections::HashMap, error};
 ///
 /// To manage these tasks we use a `CqrsFramework`. It returns the committed events and hands them to
 /// nobody: event handlers are registered with a command executor
-/// ([`CqrsCommandExecutor`](crate::cqrs::command::executor::CqrsCommandExecutor)), which builds a
+/// ([`CommandExecutorCore`](crate::cqrs::command::executor::CommandExecutorCore)), which builds a
 /// framework per command through its factory and delivers the events itself.
 ///
 pub struct CqrsFramework<A, ES>

@@ -1,6 +1,6 @@
 use super::{
     CommandExecutor, CommandGatewayError, FailedHandler,
-    locks::{AggregateLocks, LockLimits, LockRefused},
+    locks::{AggregateLockRegistry, LockLimits, LockRefused},
     retry::retry_on_aggregate_conflict,
 };
 use crate::{
@@ -44,8 +44,12 @@ where
     }
 }
 
-/// Executes the commands of one aggregate type: one long-lived executor per aggregate type and process,
-/// shared (e.g. in an `Arc`) by everything that issues its commands.
+/// The core of command execution for one aggregate type, independent of the store: the store comes from
+/// the [`FrameworkFactory`] `F`. `postgres::command::PostgresCommandExecutor` and the test executor are this
+/// core with a factory of their own, not other kinds of executor; build the core yourself only for a store of
+/// your own. One long-lived executor per aggregate type and process, shared (e.g. in an `Arc`) by everything
+/// that issues its commands: a second executor of the same type, whether a core or a preset, has locks of its
+/// own.
 ///
 /// A command first waits for its aggregate's lock, so the executor's commands to one aggregate run one at
 /// a time, in arrival order; two executors of one aggregate type are like two processes, which meet only in
@@ -62,21 +66,21 @@ where
 /// forever, and handlers of two aggregates could wait for each other. A commit with events also wakes the
 /// aggregate type's projection processors ([`with_commit_wakeup`](Self::with_commit_wakeup)), which read
 /// the journal themselves.
-pub struct CqrsCommandExecutor<A: Aggregate, F> {
+pub struct CommandExecutorCore<A: Aggregate, F> {
     factory: F,
     retry_policy: AggregateConflictRetryPolicy,
-    locks: AggregateLocks,
+    locks: AggregateLockRegistry,
     handlers: RegisteredHandlers<A>,
     wakeup: Option<CommitWakeup>,
 }
 
-impl<A: Aggregate + 'static, F> CqrsCommandExecutor<A, F> {
+impl<A: Aggregate + 'static, F> CommandExecutorCore<A, F> {
     /// An executor with a lock registry of its own, bounded by `lock_limits`, and no event handlers.
     pub fn new(factory: F, retry_policy: AggregateConflictRetryPolicy, lock_limits: LockLimits) -> Self {
         Self {
             factory,
             retry_policy,
-            locks: AggregateLocks::new(lock_limits),
+            locks: AggregateLockRegistry::new(lock_limits),
             handlers: RegisteredHandlers::default(),
             wakeup: None,
         }
@@ -119,7 +123,7 @@ impl<A: Aggregate + 'static, F> CqrsCommandExecutor<A, F> {
     }
 }
 
-impl<A, F> CqrsCommandExecutor<A, F>
+impl<A, F> CommandExecutorCore<A, F>
 where
     A: Aggregate + Clone + 'static,
     A::Command: Clone + Send,
@@ -223,7 +227,7 @@ fn log_aggregate_error<D: Error>(aggregate_type: &str, error: &AggregateError<D>
     crate::diagnostics::log_command_failure(aggregate_type, category, source.as_ref());
 }
 
-impl<A, F> CommandExecutor<A> for CqrsCommandExecutor<A, F>
+impl<A, F> CommandExecutor<A> for CommandExecutorCore<A, F>
 where
     A: Aggregate + Clone + 'static,
     A::Command: Clone + Send + 'static,
@@ -239,7 +243,7 @@ where
         metadata: HashMap<String, String>,
         tasks: Vec<NewTask>,
     ) -> Result<(), CommandGatewayError<A::Error>> {
-        CqrsCommandExecutor::execute_with_metadata(self, aggregate_id, command, metadata, tasks).await
+        CommandExecutorCore::execute_with_metadata(self, aggregate_id, command, metadata, tasks).await
     }
 }
 
@@ -418,7 +422,7 @@ mod tests {
 
     #[tokio::test]
     async fn executor_accepts_send_commands_without_requiring_sync() {
-        let executor = Arc::new(CqrsCommandExecutor::new(
+        let executor = Arc::new(CommandExecutorCore::new(
             |_| CqrsFramework::new(crate::cqrs::testing::mem_store::MemStore::<SendOnlyAggregate>::default(), ()),
             no_delay_policy(1),
             LockLimits::default(),
@@ -503,7 +507,7 @@ mod tests {
         commits: &Arc<Mutex<Vec<HashMap<String, String>>>>,
     ) -> impl CommandExecutor<DummyAggregate> {
         let commits = commits.clone();
-        CqrsCommandExecutor::<DummyAggregate, _>::new(
+        CommandExecutorCore::<DummyAggregate, _>::new(
             move |_| {
                 CqrsFramework::new(
                     MetadataStore {
@@ -546,7 +550,7 @@ mod tests {
             .await
             .unwrap();
         let commits_inherent = Arc::new(Mutex::new(Vec::new()));
-        let inherent = CqrsCommandExecutor::<DummyAggregate, _>::new(
+        let inherent = CommandExecutorCore::<DummyAggregate, _>::new(
             {
                 let commits = commits_inherent.clone();
                 move |_| {
@@ -576,7 +580,7 @@ mod tests {
         let commits = Arc::new(AtomicUsize::new(0));
         let commands = Arc::new(Mutex::new(Vec::new()));
         let captured_tasks = Arc::new(Mutex::new(Vec::new()));
-        let executor = Arc::new(CqrsCommandExecutor::<DummyAggregate, _>::new(
+        let executor = Arc::new(CommandExecutorCore::<DummyAggregate, _>::new(
             {
                 let builds = builds.clone();
                 let commits = commits.clone();
@@ -624,7 +628,7 @@ mod tests {
 
     #[tokio::test]
     async fn executor_maps_domain_conflict_and_technical_errors_without_wrong_retries() {
-        let domain_executor = Arc::new(CqrsCommandExecutor::<DummyAggregate, _>::new(
+        let domain_executor = Arc::new(CommandExecutorCore::<DummyAggregate, _>::new(
             |_| {
                 CqrsFramework::new(
                     DummyStore {
@@ -644,7 +648,7 @@ mod tests {
         );
 
         let commits = Arc::new(AtomicUsize::new(0));
-        let conflict_executor = Arc::new(CqrsCommandExecutor::<DummyAggregate, _>::new(
+        let conflict_executor = Arc::new(CommandExecutorCore::<DummyAggregate, _>::new(
             {
                 let commits = commits.clone();
                 move |_| {
@@ -678,7 +682,7 @@ mod tests {
             || AggregateError::DeserializationError(Box::new(io::Error::other("json"))),
             || AggregateError::UnexpectedError(Box::new(io::Error::other("unexpected"))),
         ] {
-            let executor = Arc::new(CqrsCommandExecutor::<DummyAggregate, _>::new(
+            let executor = Arc::new(CommandExecutorCore::<DummyAggregate, _>::new(
                 move |_| {
                     CqrsFramework::new(
                         DummyStore {
@@ -713,7 +717,7 @@ mod tests {
                 || AggregateError::DeserializationError(Box::new(io::Error::other("private_json"))),
                 || AggregateError::UnexpectedError(Box::new(io::Error::other("private_unexpected"))),
             ] {
-                let executor = CqrsCommandExecutor::<DummyAggregate, _>::new(
+                let executor = CommandExecutorCore::<DummyAggregate, _>::new(
                     move |_| {
                         CqrsFramework::new(
                             DummyStore {
@@ -740,7 +744,7 @@ mod tests {
             }
             let commits = Arc::new(AtomicUsize::new(0));
             let count = commits.clone();
-            let executor = CqrsCommandExecutor::<DummyAggregate, _>::new(
+            let executor = CommandExecutorCore::<DummyAggregate, _>::new(
                 move |_| {
                     CqrsFramework::new(
                         DummyStore {
@@ -845,7 +849,7 @@ mod tests {
     fn versioned_executor(
         store: &VersionedStore,
         attempts: usize,
-    ) -> CqrsCommandExecutor<DummyAggregate, impl Fn(Vec<NewTask>) -> VersionedFramework + Send + Sync + use<>> {
+    ) -> CommandExecutorCore<DummyAggregate, impl Fn(Vec<NewTask>) -> VersionedFramework + Send + Sync + use<>> {
         versioned_executor_with(store, attempts, LockLimits::default())
     }
 
@@ -853,9 +857,9 @@ mod tests {
         store: &VersionedStore,
         attempts: usize,
         limits: LockLimits,
-    ) -> CqrsCommandExecutor<DummyAggregate, impl Fn(Vec<NewTask>) -> VersionedFramework + Send + Sync + use<>> {
+    ) -> CommandExecutorCore<DummyAggregate, impl Fn(Vec<NewTask>) -> VersionedFramework + Send + Sync + use<>> {
         let store = store.clone();
-        CqrsCommandExecutor::new(
+        CommandExecutorCore::new(
             move |_| CqrsFramework::new(store.clone(), Arc::default()),
             no_delay_policy(attempts),
             limits,
@@ -940,7 +944,7 @@ mod tests {
             load_gate: Some(load_gate.clone()),
             ..VersionedStore::default()
         };
-        let executor = Arc::new(CqrsCommandExecutor::<DummyAggregate, _>::new(
+        let executor = Arc::new(CommandExecutorCore::<DummyAggregate, _>::new(
             {
                 let builds = builds.clone();
                 move |_| {
@@ -1227,7 +1231,7 @@ mod tests {
         executor.execute("aggregate", record("a"), vec![]).await.unwrap();
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
         // Neither a rejected command nor one without events wakes anybody.
-        let quiet = CqrsCommandExecutor::<DummyAggregate, _>::new(
+        let quiet = CommandExecutorCore::<DummyAggregate, _>::new(
             |_| {
                 CqrsFramework::new(
                     DummyStore {
@@ -1255,7 +1259,7 @@ mod tests {
     #[tokio::test]
     async fn a_command_without_events_hands_nothing_over() {
         let (log, gate) = (Arc::default(), open_gate());
-        let executor = CqrsCommandExecutor::<DummyAggregate, _>::new(
+        let executor = CommandExecutorCore::<DummyAggregate, _>::new(
             |_| {
                 CqrsFramework::new(
                     DummyStore {

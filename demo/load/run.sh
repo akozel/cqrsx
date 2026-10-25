@@ -14,10 +14,16 @@
 #   DRAIN_TIMEOUT=… seconds to wait for the drain (default 900)
 #   SNAPSHOT_EVERY=… ENCORE_SNAPSHOT_EVERY (default 10);  RUST_LOG=… back-end log level (default warn)
 #   LOCK_MAX_WAIT_MS=… LOCK_MAX_WAITERS=…  the aggregate lock's limits, ENCORE_COMMAND_LOCK_* (default: the back-end's)
-#   PROJECTION_BUFFER=… PROJECTION_MAX_BATCH=…  its buffer bounds, ENCORE_PROJECTION_* (default: the back-end's)
-#   VERIFY=1        after the burst (and the drain): wait until no chain task is open, then compare the read
-#                   models with a rebuild from the journal (GET /api/projections/verify) → verify.json
-#   VERIFY_TIMEOUT=… seconds to wait for the chain tasks first (default 300)
+#   PROJECTION_BUFFER=… PROJECTION_MAX_BATCH=… PROJECTION_SETTLE_MS=…  its buffer bounds and the pause after a
+#                   commit's wake-up, ENCORE_PROJECTION_* (default: the back-end's)
+#   VERIFY=1        after the burst (and the drain): wait until no chain task is open and the projections have
+#                   caught up with the journal, then compare every document with the history of its aggregate
+#                   (GET /api/projections/verify) → verify.json; the run passes with no difference and no
+#                   document behind
+#   VERIFY_TIMEOUT=… seconds to wait for the chain tasks and the projections first (default 300)
+#   VERIFY_SERVICE=… the back-end service verify and the catch-up wait ask (default: the first one running)
+#   LOAD_CHAOS=…    a bash file with `chaos` (run in the background when k6 starts), see chaos/ and its
+#                   helpers below; its steps are written to chaos.tsv
 #   POOL=…          PostgreSQL pool size of the back-end, ENCORE_DATABASE_POOL_SIZE (default 10)
 #   PIN=auto|cpuset|quota|0   CPU isolation: pin cores (compose.pin.yaml), quota (compose.quota.yaml)
 #                   or none; auto (default) pins when the cpuset controller is available, else quota
@@ -34,7 +40,11 @@
 # Tooling: docker or podman with compose (auto-detected; override with CTR=… COMPOSE=…) and node.
 #   LOAD_HOST_DIR=… the host path of this directory when the container engine runs on another machine
 #   than this script (a sandbox over the host's podman socket); bind mounts are resolved against it.
-# Results: results/<timestamp>-<PREFIX><NAME>/ (result.json, k6.log, stats.tsv, outbox.tsv, backend.log).
+# The chaos file may use: chaos_at SECONDS (sleep until that many seconds after k6 started), chaos_step TEXT
+# (a line in chaos.tsv), api_call CURL_ARGS… (curl inside the first running back-end), compose, log, RUN_DIR,
+# WARMUP_S, DURATION_S, and may define chaos_cleanup (called before the stand goes down: undo pauses).
+# Results: results/<timestamp>-<PREFIX><NAME>/ (result.json, k6.log, stats.tsv, outbox.tsv, projections.jsonl,
+# chaos.tsv, ledger.tsv, backend.log).
 # Exit codes: k6's own, 2 = usage or tooling, 3 = the stand did not start.
 set -euo pipefail
 
@@ -151,6 +161,7 @@ export LOAD_RUST_LOG="${RUST_LOG:-warn}"
 # Empty = the back-end's own default; an image older than these settings ignores them.
 export LOAD_LOCK_MAX_WAIT_MS="${LOCK_MAX_WAIT_MS:-}" LOAD_LOCK_MAX_WAITERS="${LOCK_MAX_WAITERS:-}"
 export LOAD_PROJECTION_BUFFER="${PROJECTION_BUFFER:-}" LOAD_PROJECTION_MAX_BATCH="${PROJECTION_MAX_BATCH:-}"
+export LOAD_PROJECTION_SETTLE_MS="${PROJECTION_SETTLE_MS:-}"
 
 RUN_ID="$(date +%Y%m%d-%H%M%S)-${PREFIX:-}${NAME:-$SCRIPT}"
 RUN_DIR="$HERE/results/$RUN_ID"
@@ -167,7 +178,7 @@ if [[ -n "${LOAD_HOOKS:-}" ]]; then
 fi
 
 # --- stand ----------------------------------------------------------------------------------------
-SAMPLER_PID=
+SAMPLER_PID= STATUS_PID= CHAOS_PID=
 K6_NAME="${PROJECT}-k6"
 stop_sampler() {
   if [[ -n "$SAMPLER_PID" ]]; then
@@ -175,13 +186,28 @@ stop_sampler() {
     kill "$SAMPLER_PID" 2>/dev/null || true
     SAMPLER_PID=
   fi
+  if [[ -n "$STATUS_PID" ]]; then
+    pkill -P "$STATUS_PID" 2>/dev/null || true
+    kill "$STATUS_PID" 2>/dev/null || true
+    STATUS_PID=
+  fi
+}
+stop_chaos() {
+  if [[ -n "$CHAOS_PID" ]]; then
+    pkill -P "$CHAOS_PID" 2>/dev/null || true
+    kill "$CHAOS_PID" 2>/dev/null || true
+    CHAOS_PID=
+  fi
+  if declare -F chaos_cleanup >/dev/null; then chaos_cleanup || true; fi
 }
 cleanup() {
   stop_sampler
+  stop_chaos
   $CTR rm -f "$K6_NAME" >/dev/null 2>&1 || true
   compose down -v --remove-orphans >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
+trap 'exit 143' TERM INT # a `timeout` around a run still tears the stand down
 
 health_of() { # container id → healthy | starting | unhealthy | ""
   $CTR inspect -f '{{with .State.Health}}{{.Status}}{{end}}' "$1" 2>/dev/null || true
@@ -239,7 +265,78 @@ sample_stats() {
   done
 }
 
-log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, pg pool $LOAD_PG_POOL, snapshot every $LOAD_SNAPSHOT_EVERY${LOAD_PROJECTION_MAX_BATCH:+, projection batch $LOAD_PROJECTION_MAX_BATCH}${LOAD_SERVICES_EXTRA:+, also $LOAD_SERVICES_EXTRA}"
+# --- the back-end nodes and the projections' status ------------------------------------------------------
+# The back-end services of this stand, the first one first: `backend`, and `backend-2` of a two-node stand.
+BACKENDS=(backend)
+for service in ${SERVICES_EXTRA[@]+"${SERVICES_EXTRA[@]}"}; do
+  if [[ "$service" == backend-* ]]; then BACKENDS+=("$service"); fi
+done
+running() { # service → 0 when its container is running
+  local id
+  id="$(compose ps -q "$1" 2>/dev/null | head -n1 || true)"
+  [[ -n "$id" && "$($CTR inspect -f '{{.State.Running}}' "$id" 2>/dev/null || true)" == true ]]
+}
+live_service() { # the service verify and the catch-up wait ask
+  if [[ -n "${VERIFY_SERVICE:-}" ]]; then printf '%s' "$VERIFY_SERVICE"; return; fi
+  local service
+  for service in "${BACKENDS[@]}"; do
+    if running "$service"; then printf '%s' "$service"; return; fi
+  done
+  printf '%s' "${BACKENDS[0]}"
+}
+api_call() { compose exec -T "$(live_service)" curl -sS --max-time "${API_MAX_TIME:-10}" "$@"; }
+
+# One line per second in projections.jsonl: {"t": epoch, "status": GET /api/projections/status}, or without
+# `status` for a second it did not answer. One long-lived `exec` per node (a curl loop inside the container):
+# an exec per second would add CPU to the back-end's cgroup only on the side being measured. When the node dies
+# (a killed owner), the next node takes over. An image from before ticket 04 answers without `projections`;
+# the collector ignores those lines.
+STATUS_LOOP='while true; do curl -s --max-time 2 http://127.0.0.1:8080/api/projections/status || true; echo; sleep 1; done'
+sample_status() {
+  local i=0 service
+  while true; do
+    service="${BACKENDS[$((i % ${#BACKENDS[@]}))]}"
+    compose exec -T "$service" sh -c "$STATUS_LOOP" 2>/dev/null \
+      | node -e '
+        const rl = require("node:readline").createInterface({ input: process.stdin });
+        rl.on("line", (line) => {
+          let status = null;
+          try { status = JSON.parse(line); } catch { /* a second without an answer */ }
+          console.log(JSON.stringify({ t: Math.floor(Date.now() / 1000), status }));
+        });' >> "$RUN_DIR/projections.jsonl" || true
+    i=$((i + 1))
+    sleep 1
+  done
+}
+projections_caught_up() { # 0 when every projection has no lag and is live; also 0 for an image without projections
+  api_call http://127.0.0.1:8080/api/projections/status 2>/dev/null | node -e '
+    let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      try {
+        const projections = JSON.parse(s).projections;
+        if (!Array.isArray(projections)) process.exit(0);
+        process.exit(projections.every((p) => (p.lag ?? 0) === 0 && p.state === "live") ? 0 : 1);
+      } catch { process.exit(1); }
+    });'
+}
+
+# --- chaos ------------------------------------------------------------------------------------------
+WARMUP_S="${WARMUP:-3s}"; WARMUP_S="${WARMUP_S%s}"
+DURATION_S="${DURATION:-10s}"; DURATION_S="${DURATION_S%s}"
+K6_STARTED=0
+chaos_at() { # seconds after k6 started
+  local now wait
+  now=$(date +%s)
+  wait=$((K6_STARTED + $1 - now))
+  if (( wait > 0 )); then sleep "$wait"; fi
+}
+chaos_step() { printf '%s\t%s\n' "$(date +%s)" "$*" >> "$RUN_DIR/chaos.tsv"; log "chaos: $*"; }
+if [[ -n "${LOAD_CHAOS:-}" ]]; then
+  # shellcheck source=/dev/null
+  source "$LOAD_CHAOS"
+  if ! declare -F chaos >/dev/null; then log "LOAD_CHAOS=$LOAD_CHAOS defines no function 'chaos'"; exit 2; fi
+fi
+
+log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, pg pool $LOAD_PG_POOL, snapshot every $LOAD_SNAPSHOT_EVERY${LOAD_PROJECTION_MAX_BATCH:+, projection batch $LOAD_PROJECTION_MAX_BATCH}${LOAD_PROJECTION_SETTLE_MS:+, settle $LOAD_PROJECTION_SETTLE_MS ms}${LOAD_SERVICES_EXTRA:+, also $LOAD_SERVICES_EXTRA}"
 compose down -v --remove-orphans >/dev/null 2>&1 || true
 $CTR rm -f "$K6_NAME" >/dev/null 2>&1 || true
 if [[ "${BUILD:-0}" != 0 ]]; then
@@ -253,6 +350,9 @@ done
 : > "$RUN_DIR/stats.tsv"
 sample_stats &
 SAMPLER_PID=$!
+: > "$RUN_DIR/projections.jsonl"
+sample_status &
+STATUS_PID=$!
 sleep 3 # a baseline sample of the idle stand
 hook before_k6
 
@@ -260,12 +360,23 @@ hook before_k6
 RUN_SLUG="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-24)"
 log "k6 $SCRIPT: VUS=${VUS:-10} DURATION=${DURATION:-10s} WARMUP=${WARMUP:-3s} FAN_MODE=${FAN_MODE:-spread}"
 BURST_START=$(date +%s)
+K6_STARTED=$BURST_START
+if declare -F chaos >/dev/null; then
+  chaos &
+  CHAOS_PID=$!
+fi
 set +e
 compose run --name "$K6_NAME" --no-deps ${K6_ENV[@]+"${K6_ENV[@]}"} -e "RUN=$RUN_SLUG" \
   k6 run /scripts/"$SCRIPT".js 2>&1 | tee "$RUN_DIR/k6.log"
 K6_EXIT=${PIPESTATUS[0]}
 set -e
 BURST_END=$(date +%s)
+CHAOS_EXIT=0
+if [[ -n "$CHAOS_PID" ]]; then
+  wait "$CHAOS_PID" || CHAOS_EXIT=$?
+  CHAOS_PID=
+  if (( CHAOS_EXIT != 0 )); then log "chaos exited with $CHAOS_EXIT"; fi
+fi
 hook after_k6
 for f in result.json summary.json; do
   $CTR cp "$K6_NAME:/home/k6/$f" "$RUN_DIR/$f" 2>/dev/null || log "k6 did not produce $f"
@@ -314,8 +425,9 @@ if [[ "${DRAIN:-0}" != 0 ]]; then
 fi
 
 # --- verify ---------------------------------------------------------------------------------------
-# The read models against a rebuild from the journal. Chain tasks keep changing fan ledgers after the
-# burst and verify does not lock the box office, so it waits for them first; mail tasks touch no ledger.
+# Every document against the history of its aggregate. Chain tasks keep changing fan ledgers after the burst and
+# the processors trail the journal, so verify waits for both first (a document behind the journal is counted apart
+# and does not fail the run, but at the end of a run none should be); mail tasks touch no ledger.
 VERIFY_SECONDS=""
 if [[ "${VERIFY:-0}" != 0 ]]; then
   chain_open() {
@@ -330,8 +442,15 @@ if [[ "${VERIFY:-0}" != 0 ]]; then
     fi
     sleep 1
   done
+  until projections_caught_up; do
+    if (( SECONDS >= deadline )); then
+      log "verify: the projections still trail the journal after ${VERIFY_TIMEOUT:-300}s, verifying anyway"
+      break
+    fi
+    sleep 1
+  done
   verify_start=$SECONDS
-  if compose exec -T backend curl -sS --max-time 600 http://127.0.0.1:8080/api/projections/verify > "$RUN_DIR/verify.json" 2>>"$RUN_DIR/run.log"; then
+  if API_MAX_TIME=600 api_call http://127.0.0.1:8080/api/projections/verify > "$RUN_DIR/verify.json" 2>>"$RUN_DIR/run.log"; then
     VERIFY_SECONDS=$((SECONDS - verify_start))
     log "verify: $(head -c 300 "$RUN_DIR/verify.json") (${VERIFY_SECONDS} s)"
   else
@@ -339,6 +458,15 @@ if [[ "${VERIFY:-0}" != 0 ]]; then
     rm -f "$RUN_DIR/verify.json"
   fi
 fi
+
+# --- ledger ---------------------------------------------------------------------------------------
+# Events per aggregate type, for the chaos criteria (accepted commands against events written).
+for _ in 1 2 3 4 5; do
+  if compose exec -T postgres psql -U cqrsx -d encore -Atc \
+    "select aggregate_type, count(*) from events group by 1 order by 1" 2>/dev/null | tr '|' '\t' > "$RUN_DIR/ledger.tsv" \
+    && [[ -s "$RUN_DIR/ledger.tsv" ]]; then break; fi
+  sleep 1
+done
 
 # --- collect --------------------------------------------------------------------------------------
 stop_sampler
@@ -392,7 +520,7 @@ LOADC_RUN="$RUN_ID" LOADC_SCRIPT="$SCRIPT" LOADC_PARAMS="$*" LOADC_CTR="$CTR" LO
   LOADC_BUDGET_BACKEND="$(budget_of backend)" LOADC_BUDGET_POSTGRES="$(budget_of postgres)" LOADC_BUDGET_MONGO="$(budget_of mongo)" LOADC_BUDGET_K6="$(budget_of k6)" \
   LOADC_GIT="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
   LOADC_WORKERS="$LOAD_OUTBOX_WORKERS" LOADC_SNAPSHOT="$LOAD_SNAPSHOT_EVERY" LOADC_POOL="$LOAD_PG_POOL" LOADC_K6_EXIT="$K6_EXIT" \
-  LOADC_MAX_BATCH="${LOAD_PROJECTION_MAX_BATCH:-default}" LOADC_VERIFY_SECONDS="$VERIFY_SECONDS" \
+  LOADC_MAX_BATCH="${LOAD_PROJECTION_MAX_BATCH:-default}" LOADC_SETTLE="${LOAD_PROJECTION_SETTLE_MS:-default}" LOADC_VERIFY_SECONDS="$VERIFY_SECONDS" \
   LOADC_BURST_START="$BURST_START" LOADC_BURST_END="$BURST_END" \
   LOADC_PEAK_BACKEND="$(peak_of backend)" LOADC_PEAK_POSTGRES="$(peak_of postgres)" LOADC_PEAK_MONGO="$(peak_of mongo)" \
   LOADC_DRAIN_FIRST="$DRAIN_FIRST" LOADC_DRAIN_LAST="$DRAIN_LAST" LOADC_DRAIN_SECONDS="$DRAIN_SECONDS" \

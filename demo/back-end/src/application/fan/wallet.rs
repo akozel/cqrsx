@@ -50,6 +50,7 @@ pub fn assemble(fan_id: &FanId, ledgers: Vec<Stored<FanWalletView>>) -> Option<F
         id,
         version,
         view: ledger,
+        ..
     } in ledgers
     {
         let concert_id = FanLedgerId::parse(&id)
@@ -110,6 +111,7 @@ mod tests {
         Stored {
             id: id.into(),
             version,
+            last_sequence: sequence as usize,
             view: FanWalletView {
                 fan_id: "fox".into(),
                 fan_name: "Fox".into(),

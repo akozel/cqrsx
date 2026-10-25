@@ -43,7 +43,11 @@ const metrics = [
   ['p99 ms', (r) => r.latency_ms?.all?.p99],
   ['409 %', sharePct('conflict')],
   ['503 %', sharePct('unavailable')],
-  ['projection_failed %', sharePct('projection_warning')],
+  // How far the projections trailed the journal, in events (the status sampled once a second over the burst),
+  // and the seconds after the burst until both had caught up (ticket 03/04).
+  ['lag p50 events', (r) => r.projections?.lag?.p50],
+  ['lag p99 events', (r) => r.projections?.lag?.p99],
+  ['caught up s', (r) => r.projections?.caught_up_s],
   // 1 when the read models matched a rebuild after the run (run.sh VERIFY=1), 0 when they differed.
   ['verify ok', (r) => (r.verify ? Number(r.verify.ok) : null)],
   ['CPU ms/1k back-end', cpuPer1k('backend')],

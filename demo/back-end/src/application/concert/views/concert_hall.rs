@@ -1,8 +1,8 @@
 //! `concert_halls` read model: one document per concert, built only from `Concert` events.
 //!
 //! The library applies the events of a concert to its document strictly in order and only once (the
-//! document's `last_sequence`); a document is never created from the middle of a history, so a
-//! booking after a wipe stays in the ledger until Encore! rebuilds the read model. Inside the fold,
+//! document's `last_sequence`); a document is never created from the middle of a history: a booking after a
+//! wipe makes the projection processor rebuild the document from the whole history. Inside the fold,
 //! every seat entry remembers the `sequence` of the event that last changed it and an event is
 //! applied only if its sequence is greater (LWW). A cancellation is a tombstone
 //! `{ state: "free", sequence }`, never a deleted key. Derived fields (`sold`, `revenue`,

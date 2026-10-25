@@ -3,7 +3,8 @@
 # a seat for one fan in each, cancel one, and check what the API and the databases say.
 #   - GET /api/fans/{fan}/wallet assembles both ledgers (two entries in `ledgers`, two tickets);
 #   - the refund chain runs inside the right ledger (the ticket turns `cancelled` with a `refund`);
-#   - every outbox task completes; GET /api/projections/verify answers ok: true.
+#   - every outbox task completes; GET /api/projections/verify answers ok: true with no document behind, and
+#     GET /api/projections/status reports the projections live.
 # Uses the same compose files, tooling detection and host-path mapping as run.sh (PIN, LOAD_HOST_DIR,
 # CTR/COMPOSE). The back-end's own curl runs the requests inside the network: no published ports.
 # Usage: ./smoke.sh            Exit 0 = every check passed; the stand is torn down either way.
@@ -104,8 +105,16 @@ for _ in $(seq 1 30); do
 done
 counts="$(sql "select string_agg(status || '=' || n, ',' order by status) from (select status, count(*) n from transactional_outbox group by status) t")"
 [[ "$open" == 0 && "$counts" == "completed=6" ]] && pass "outbox: $counts" || fail "outbox: $counts (open=$open)"
-verify="$(api GET /api/projections/verify)"
-[[ "$(field ok <<<"$verify")" == true ]] && pass "verify ok" || fail "verify: $verify"
+# The projections follow the journal a moment behind: verify until nothing is behind (D-20).
+verify=""
+for _ in $(seq 1 30); do
+  verify="$(api GET /api/projections/verify)"
+  [[ "$(field ok <<<"$verify")" == true && "$(field behind.documents <<<"$verify")" == 0 ]] && break
+  sleep 1
+done
+[[ "$(field ok <<<"$verify")" == true && "$(field behind.documents <<<"$verify")" == 0 ]] && pass "verify ok, nothing behind" || fail "verify: $verify"
+status="$(api GET /api/projections/status)"
+[[ "$(field state <<<"$status")" == live ]] && pass "projections live" || fail "status: $status"
 errors="$(compose logs --no-color backend 2>/dev/null | grep -c -E 'ERROR|WARN' || true)"
 [[ "$errors" == 0 ]] && pass "no WARN/ERROR in the back-end log" || { fail "$errors WARN/ERROR lines in the back-end log"; compose logs --no-color backend | grep -E 'ERROR|WARN' | head -5 >&2; }
 

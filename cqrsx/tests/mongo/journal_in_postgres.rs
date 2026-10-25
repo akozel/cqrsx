@@ -8,7 +8,7 @@ use crate::{
 use cqrsx::{
     cqrs::{
         CqrsFramework,
-        command::{executor::CqrsCommandExecutor, locks::LockLimits, wakeup::CommitWakeup},
+        command::{executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
         store::{feed::Position, persisted::PersistedEventStore, repository::PersistedEventRepository},
     },
     mongodb::projection_checkpoints::PROJECTION_CHECKPOINTS_COLLECTION,
@@ -32,7 +32,7 @@ async fn commit(pool: &PgPool, wakeup: &CommitWakeup, keys: &[&str], per_key: i3
         }
     });
     let executor =
-        Arc::new(CqrsCommandExecutor::new(factory, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()));
+        Arc::new(CommandExecutorCore::new(factory, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()));
     commit_all(keys, per_key, move |id, value| {
         let executor = executor.clone();
         async move { executor.execute(&id, vec![value], vec![]).await.unwrap() }

@@ -129,19 +129,19 @@ fn entries(registry: &Registry) -> MutexGuard<'_, HashMap<AggregateKey, Entry>> 
 /// A key's entry lives while its lock is held or awaited, so memory follows the keys that are busy right
 /// now, not every key ever seen.
 #[derive(Clone)]
-pub(crate) struct AggregateLocks {
+pub(crate) struct AggregateLockRegistry {
     limits: LockLimits,
     registry: Arc<Registry>,
 }
 
-impl Default for AggregateLocks {
+impl Default for AggregateLockRegistry {
     /// A new registry with [`LockLimits::default`].
     fn default() -> Self {
         Self::new(LockLimits::default())
     }
 }
 
-impl AggregateLocks {
+impl AggregateLockRegistry {
     pub(crate) fn new(limits: LockLimits) -> Self {
         Self {
             limits,
@@ -156,12 +156,12 @@ impl AggregateLocks {
     /// Waits for the key's lock behind the commands that came before, at most `max_wait`; refuses at once
     /// when `max_waiters` commands already wait. Dropping the returned lock hands it to the next command in
     /// line; dropping this future while it waits leaves the line without disturbing the others.
-    pub(crate) async fn acquire(&self, key: AggregateKey) -> Result<AggregateLock, LockRefused> {
+    pub(crate) async fn acquire(&self, key: AggregateKey) -> Result<AggregateLockGuard, LockRefused> {
         let line = self.line(key);
         // A free lock has nobody waiting for it (a released lock goes straight to the first waiter), so taking
         // it here never overtakes anyone. The common case of an idle key pays for no slot and no timer.
         if let Ok(guard) = line.line.mutex.clone().try_lock_owned() {
-            return Ok(AggregateLock { _guard: guard, line });
+            return Ok(AggregateLockGuard { _guard: guard, line });
         }
         let guard = {
             let _slot = WaitingSlot::join(&line.line.waiting, self.limits.max_waiters).ok_or(LockRefused::TooManyWaiters)?;
@@ -169,7 +169,7 @@ impl AggregateLocks {
                 .await
                 .map_err(|_| LockRefused::TimedOut)?
         }; // `_slot` leaves the count here: this command no longer waits, it holds the lock
-        Ok(AggregateLock { _guard: guard, line })
+        Ok(AggregateLockGuard { _guard: guard, line })
     }
 
     /// Finds the key's line, or opens one if nobody holds or awaits the key.
@@ -218,14 +218,14 @@ impl AggregateLocks {
 /// (which closes the line if nobody else holds or awaits it). So a lock never outlives its line, and a key
 /// never has two lines with a held lock. Never `mem::forget` it: the key would stay taken.
 #[must_use = "the lock passes to the next command as soon as it is dropped"]
-pub(crate) struct AggregateLock {
+pub(crate) struct AggregateLockGuard {
     _guard: OwnedMutexGuard<()>,
     line: LineRef,
 }
 
-impl fmt::Debug for AggregateLock {
+impl fmt::Debug for AggregateLockGuard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("AggregateLock").field("key", &self.line.key).finish()
+        f.debug_struct("AggregateLockGuard").field("key", &self.line.key).finish()
     }
 }
 
@@ -288,8 +288,8 @@ mod tests {
         AggregateKey::new("hall", id)
     }
 
-    fn locks(max_wait: Duration, max_waiters: usize) -> AggregateLocks {
-        AggregateLocks::new(LockLimits::new(max_wait, max_waiters).unwrap())
+    fn locks(max_wait: Duration, max_waiters: usize) -> AggregateLockRegistry {
+        AggregateLockRegistry::new(LockLimits::new(max_wait, max_waiters).unwrap())
     }
 
     /// A future polled by hand. The tests never `.await` a waiting command: on a paused clock an idle
@@ -318,7 +318,7 @@ mod tests {
         }
     }
 
-    fn acquired(output: Option<Result<AggregateLock, LockRefused>>) -> AggregateLock {
+    fn acquired(output: Option<Result<AggregateLockGuard, LockRefused>>) -> AggregateLockGuard {
         match output {
             Some(Ok(lock)) => lock,
             other => panic!("expected the lock, got {other:?}"),
@@ -331,7 +331,7 @@ mod tests {
         let lock = locks.acquire(key("h-1")).await.unwrap();
         assert_eq!(
             format!("{lock:?}"),
-            r#"AggregateLock { key: AggregateKey { aggregate_type: "hall", aggregate_id: "h-1" } }"#
+            r#"AggregateLockGuard { key: AggregateKey { aggregate_type: "hall", aggregate_id: "h-1" } }"#
         );
         assert_eq!((locks.busy_keys(), locks.waiting(&key("h-1"))), (1, 0));
         drop(lock);
@@ -577,8 +577,8 @@ mod tests {
     #[test]
     fn locks_keep_their_limits_and_refusals_have_stable_reasons() {
         let limits = LockLimits::new(Duration::from_millis(250), 3).unwrap();
-        assert_eq!(AggregateLocks::new(limits).limits(), limits);
-        assert_eq!(AggregateLocks::default().limits(), LockLimits::default());
+        assert_eq!(AggregateLockRegistry::new(limits).limits(), limits);
+        assert_eq!(AggregateLockRegistry::default().limits(), LockLimits::default());
         assert_eq!(LockRefused::TimedOut.reason(), "timed_out");
         assert_eq!(LockRefused::TooManyWaiters.reason(), "too_many_waiters");
         assert_eq!(
@@ -629,7 +629,7 @@ mod tests {
             line: VecDeque<(u32, u128)>,
         }
 
-        type Acquire<'a> = Polled<Pin<Box<dyn Future<Output = Result<AggregateLock, LockRefused>> + 'a>>>;
+        type Acquire<'a> = Polled<Pin<Box<dyn Future<Output = Result<AggregateLockGuard, LockRefused>> + 'a>>>;
 
         struct Waiter<'a> {
             id: u32,
@@ -639,10 +639,10 @@ mod tests {
 
         /// Runs `ops` against real locks and a plain model of one holder and a FIFO line per key.
         async fn check(ops: Vec<Op>) -> Result<(), TestCaseError> {
-            let locks = AggregateLocks::new(LockLimits::new(MAX_WAIT, MAX_WAITERS).unwrap());
+            let locks = AggregateLockRegistry::new(LockLimits::new(MAX_WAIT, MAX_WAITERS).unwrap());
             let keys: Vec<AggregateKey> = (0..KEYS).map(|k| key(&k.to_string())).collect();
             let mut model: Vec<ModelKey> = (0..KEYS).map(|_| ModelKey::default()).collect();
-            let mut holders: Vec<Option<(u32, AggregateLock)>> = (0..KEYS).map(|_| None).collect();
+            let mut holders: Vec<Option<(u32, AggregateLockGuard)>> = (0..KEYS).map(|_| None).collect();
             let mut waiters: Vec<Waiter<'_>> = Vec::new();
             let (mut now, mut next_id) = (0u128, 0u32);
             for op in ops {

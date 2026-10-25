@@ -47,7 +47,8 @@ onMounted(async () => {
   await session.loadConfig()
   activity.connect()
   xray.connect()
-  await Promise.all([concerts.refreshAll(), wallet.refresh(), rebuild.refreshStatus(), timeMachine.refreshTimeline()])
+  rebuild.startPolling()
+  await Promise.all([concerts.refreshAll(), wallet.refresh(), timeMachine.refreshTimeline()])
   // Safety net: a refresh every 5 s even if every push channel is silent.
   poll = setInterval(() => {
     void concerts.refreshAll()
@@ -58,6 +59,7 @@ onMounted(async () => {
 onUnmounted(() => {
   activity.disconnect()
   xray.disconnect()
+  rebuild.stopPolling()
   if (poll) clearInterval(poll)
 })
 

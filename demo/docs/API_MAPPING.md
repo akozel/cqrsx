@@ -68,15 +68,15 @@
 **Факт.** `CqrsFramework::execute_with_metadata(&self, aggregate_id, command, metadata: HashMap<String, String>)`
 существует (`cqrs.rs:522`) и кладёт карту в `EventEnvelope.metadata` каждого события → колонка `events.metadata`.
 Но порт `CommandExecutor::execute(&self, aggregate_id, command, tasks)` (`cqrs/command.rs:34`) **не имеет**
-параметра метаданных, а `CqrsCommandExecutor::execute` вызывает `framework.execute(id, command.clone())`
+параметра метаданных, а `CommandExecutorCore::execute` вызывает `framework.execute(id, command.clone())`
 (`cqrs/command/executor.rs:51-53`), то есть `HashMap::new()` (`cqrs.rs:398-403`). Через командный порт библиотеки
 `events.metadata` всегда `{}`. Повторить retry самостоятельно «как в библиотеке» нельзя:
 `retry_on_aggregate_conflict` и `AggregateConflictRetryPolicy::backoff` — `pub(super)`.
 
 | Вариант | Суть | Что видно в демо | Цена |
 |---|---|---|---|
-| **A (рекомендую)** | Декоратор `CommandContextStore<ES>: EventStore<Concert>` (≈40 строк в демо): делегирует `load_*`, в `commit` добавляет метаданные команды, запоминает `last_sequence` закоммиченного батча и считает `AggregateConflict`. `CqrsCommandExecutor` создаётся **на каждый запрос** с замыканием, захватившим метаданные (так же делает `PostgresCommandExecutor::execute`, `postgres/command.rs:110-118`). Образец оборачивания стора внутри `CqrsCommandExecutor` — `tests/postgres/command.rs::contracts::CommitBoundary` | всё как в плане: `metadata = {command_id, correlation_id, recorded_at, source}` в X-ray; `committed_sequence` в ответе 200 (иначе недоступен — успех возвращает `()`); бонус: число конфликтов для «Гонки» (U16) | один вспомогательный тип с комментарием «почему»; библиотечный retry и диагностика сохраняются |
-| B | Демо-сервис зовёт `CqrsFramework::execute_with_metadata` напрямую, свой цикл retry (3 попытки, 5–50 мс) | то же, что A, плюс полные тексты ошибок обработчиков | обходит `CommandExecutor`/`CqrsCommandExecutor`/политику retry библиотеки — демо перестаёт быть образцом командного порта; своё логирование отказов |
+| **A (рекомендую)** | Декоратор `CommandContextStore<ES>: EventStore<Concert>` (≈40 строк в демо): делегирует `load_*`, в `commit` добавляет метаданные команды, запоминает `last_sequence` закоммиченного батча и считает `AggregateConflict`. `CommandExecutorCore` создаётся **на каждый запрос** с замыканием, захватившим метаданные (так же делает `PostgresCommandExecutor::execute`, `postgres/command.rs:110-118`). Образец оборачивания стора внутри `CommandExecutorCore` — `tests/postgres/command.rs::contracts::CommitBoundary` | всё как в плане: `metadata = {command_id, correlation_id, recorded_at, source}` в X-ray; `committed_sequence` в ответе 200 (иначе недоступен — успех возвращает `()`); бонус: число конфликтов для «Гонки» (U16) | один вспомогательный тип с комментарием «почему»; библиотечный retry и диагностика сохраняются |
+| B | Демо-сервис зовёт `CqrsFramework::execute_with_metadata` напрямую, свой цикл retry (3 попытки, 5–50 мс) | то же, что A, плюс полные тексты ошибок обработчиков | обходит `CommandExecutor`/`CommandExecutorCore`/политику retry библиотеки — демо перестаёт быть образцом командного порта; своё логирование отказов |
 | C (fallback §13) | Без метаданных: `announced_at`/`booked_at`/`cancelled_at` в payload, `command_id` только в задачах | `events.metadata = {}` в X-ray; трассировка событие ↔ задача только по `aggregate_id + aggregate_sequence`; U15 сортировка «последних событий» — по `ctid` или полю payload | меньше кода, но наблюдаемое поведение беднее плана |
 
 **Рекомендация: A.** Сохраняет наблюдаемое поведение плана и библиотечный командный путь. Вариант A заодно
@@ -128,7 +128,7 @@
 
 **Факт.**
 - `cqrs/command.rs:29-40`: `trait CommandExecutor<A> { fn execute(&self, aggregate_id: &str, command: A::Command, tasks: Vec<NewTask>) -> impl Future<Output = Result<(), CommandGatewayError<A::Error>>> + Send; }`.
-- `cqrs/command/executor.rs:17-57`: `CqrsCommandExecutor::new(build_framework, retry_policy)`; `execute` вызывает фабрику **один раз** на вызов с `tasks`, повторяет только `AggregateConflict` клонами той же команды; список задач неизменяем между попытками (тест `executor_builds_once_and_retries_the_unchanged_command_and_tasks`).
+- `cqrs/command/executor.rs:17-57`: `CommandExecutorCore::new(build_framework, retry_policy)`; `execute` вызывает фабрику **один раз** на вызов с `tasks`, повторяет только `AggregateConflict` клонами той же команды; список задач неизменяем между попытками (тест `executor_builds_once_and_retries_the_unchanged_command_and_tasks`).
 - Задачи попадают в репозиторий через `PostgresEventRepositoryWithOutbox::new(pool).with_outbox(tasks)` (`postgres/outbox.rs:40`); писатель (`postgres/outbox/write.rs:92-109`) вставляет каждую с `aggregate_type = A::TYPE`, `aggregate_id`, `aggregate_sequence = sequence события`, `task_type`, `task_version`, `payload`, `metadata`, `available_at` (`Now` / `At(t)` / `After(d)`), `max_attempts` — одной CTE-инструкцией с событием (и снапшотом).
 - Вывод задач из событий или через `Services` не предусмотрен. Отклонённая команда ничего не пишет (framework возвращает до `commit`). Задачи при нуле событий → `TasksWithoutEvent` → `Unavailable`.
 - `NewTask` (`task.rs:41-104`): `new<T: TaskPayload>(payload) -> Result<Self, TaskValidationError>` (payload должен сериализоваться в JSON-объект), `.with_metadata(Value)?` (объект), `.with_max_attempts(i32)?` (> 0, по умолчанию 10), `.scheduled(TaskSchedule)?`; `id()` — `Uuid::new_v4()`, задаётся библиотекой, стабилен при conflict-retry.
@@ -169,7 +169,7 @@ impl<ES: EventStore<Concert>> EventStore<Concert> for CommandContextStore<ES> {
     }
 }
 // на каждый запрос:
-let executor = CqrsCommandExecutor::<Concert, _>::new(move |tasks| CqrsFramework::new(
+let executor = CommandExecutorCore::<Concert, _>::new(move |tasks| CqrsFramework::new(
     CommandContextStore { inner: PersistedEventStore::new_snapshot_store(
         PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks), snapshot_every), metadata: meta.clone(), outcome: outcome.clone() },
     handlers(), services.clone()), config.conflict_retry());
@@ -254,6 +254,9 @@ export function deriveTaskStatus(row: OutboxRow, dbNow: Date): UiTaskStatus {
 
 ### U8. API `EventReplay` / `ReplayStream`
 
+> 04 (2026-10-25): демо больше не использует `EventReplay`: Encore! — `request_rebuild` обеим строкам закладок, владелец
+> заменяет документы свёрткой истории на месте (см. §2.9 PLAN.md); ниже — факты о самом API для истории.
+>
 > 03/03 (2026-10-24): рядом с `EventReplay` появился `cqrs::projection::processor::ProjectionProcessor` — проекция
 > читает журнал сама от закладки (`CheckpointStore`, `PostgresCheckpointStore`), пересборка — `request_rebuild` /
 > `request_rebuild_key` через того же рабочего ключа; `EventReplay` уходит в 03/05.
@@ -265,7 +268,7 @@ export function deriveTaskStatus(row: OutboxRow, dbNow: Date): UiTaskStatus {
 - `ReplayStream::next::<A>(&mut self, upcasters: &[Box<dyn EventUpcaster>]) -> Option<Result<EventEnvelope<A>, PersistenceError>>` (`stream.rs:24`).
 
 **Решение.**
-- Rebuild: `EventReplay::new(PostgresEventRepository::new(pool.clone()), ProgressHandler::new(FanOutHandler::new(vec![concert_halls, fan_wallets]), ...)).replay_all().await` — репозиторий и обработчик создаются на каждый rebuild (проекции держат `Arc<MongoViewRepository>`, дорогого состояния нет). Ошибку → `rebuild.failed`, lock снимается guard-ом.
+- Rebuild (до эпика 03/04): `EventReplay::new(…).replay_all()` под lock кассы; теперь — процессоры проекций, см. выше.
 - Машина времени / timeline: `PersistedEventStore::<PostgresEventRepository, Concert>::new_event_store(PostgresEventRepository::new(pool.clone())).load_events(id).await` → `Vec<EventEnvelope<Concert>>` (снапшоты не участвуют — как требует §2.10), далее `Concert::apply` до нужного `sequence`. Альтернатива — `repo.stream_events::<Concert>(id)` + `next`.
 - `rebuild.started` может сразу нести `total` (`SELECT count(*) FROM events WHERE aggregate_type='Concert'`) — прогресс не зависит от sidecar.
 
@@ -364,7 +367,7 @@ where Inbound: Future<Output = io::Result<()>>, RuntimeFuture: Future<Output = R
 
 ### U16. Наблюдаемость конфликт-ретраев
 
-**Факт.** `retry_on_aggregate_conflict` — `pub(super)`; `CqrsCommandExecutor` отдаёт только итог; конфликты не логируются (`log_aggregate_error` возвращает раньше, `executor.rs:71`); в БД проигравший ничего не оставляет. Политика по умолчанию: 3 попытки, backoff 5 → 50 мс, джиттер ±20 % (`retry.rs:71-75`); `AggregateConflictRetryPolicy::new(max_attempts, initial, max, jitter) -> Result<_, _>`.
+**Факт.** `retry_on_aggregate_conflict` — `pub(super)`; `CommandExecutorCore` отдаёт только итог; конфликты не логируются (`log_aggregate_error` возвращает раньше, `executor.rs:71`); в БД проигравший ничего не оставляет. Политика по умолчанию: 3 попытки, backoff 5 → 50 мс, джиттер ±20 % (`retry.rs:71-75`); `AggregateConflictRetryPolicy::new(max_attempts, initial, max, jitter) -> Result<_, _>`.
 
 **Решение.** При U3 = A декоратор считает `Err(AggregateConflict)` → поле `conflicts` в ответе 200/422 и в `command.accepted`/`command.rejected`; `RaceResult` показывает «🐼 Bob: конфликт ×1 → повтор → seat_taken». Иначе — fallback §13 (только исходы).
 
@@ -375,7 +378,7 @@ where Inbound: Future<Output = io::Result<()>>, RuntimeFuture: Future<Output = R
 | # | Находка | Следствие для демо |
 |---|---|---|
 | D1 | `postgres::pool::connect_pool(options: PgConnectOptions) -> Result<PgPool, sqlx::Error>` (`pool.rs:9`) — не URL; 10 соединений; без ожидания готовности. **2026-10-18:** добавлен `connect_pool_with_size(options, NonZeroU32)`, демо берёт размер из `ENCORE_DATABASE_POOL_SIZE` (нагрузочные тесты показали пул как потолок пути записи) | `config.database_url.parse::<PgConnectOptions>()?` (+ `.application_name("encore-backend")`); готовность БД — `scripts/wait-db.sh` |
-| D2 | `postgres::command::command_executor` / `PostgresCommandExecutor` требуют `Aggregate<Services = ()>` и не регистрируют обработчиков (`command.rs:68-75`, док-комментарий отсылает к `CqrsCommandExecutor::new`) | §6.3 п.7: использовать `CqrsCommandExecutor::new` с фабрикой; `PostgresCommandConfig` остаётся держателем интервала и политики |
+| D2 | `postgres::command::command_executor` / `PostgresCommandExecutor` требуют `Aggregate<Services = ()>` и не регистрируют обработчиков (`command.rs:68-75`, док-комментарий отсылает к `CommandExecutorCore::new`) | §6.3 п.7: использовать `CommandExecutorCore::new` с фабрикой; `PostgresCommandConfig` остаётся держателем интервала и политики |
 | D3 | Успешный `execute` → `()`; `last_sequence` только при `CommittedWithEventHandlerFailure` | `committed_sequence` — из декоратора (A) |
 | D4 | `handler_indices` в `CommittedWithEventHandlerFailure` — индексы регистрации (0 = `concert_halls`, 1 = `fan_wallets`); framework вызывает **все** обработчики даже после сбоя первого (`cqrs.rs:545-549`) | `warnings: [{ code: "projection_failed", projection }]` по индексу |
 | D5 | `ViewProjection::set_error_observer(Box<dyn Fn(&PersistenceError)>)` — синхронный наблюдатель ошибок | альтернатива `NotifyingHandler` для `projection.failed`; `projection.updated` — всё равно декоратором |
@@ -432,8 +435,8 @@ pub struct EventHandlerFailure { pub handler_index: usize, pub error: Persistenc
 pub trait CommandExecutor<A>: Send + Sync { fn execute(&self, aggregate_id: &str, command: A::Command, tasks: Vec<NewTask>) -> impl Future<Output = Result<(), CommandGatewayError<A::Error>>> + Send; }
 pub enum CommandGatewayError<D> { Domain(D), Conflict, Unavailable, CommittedWithEventHandlerFailure { last_sequence: usize, handler_indices: Vec<usize> } } // Clone, Debug, PartialEq
 // cqrs/command/executor.rs:17-57
-pub struct CqrsCommandExecutor<A, BuildFramework>;
-impl CqrsCommandExecutor<A, BuildFramework> {
+pub struct CommandExecutorCore<A, BuildFramework>;
+impl CommandExecutorCore<A, BuildFramework> {
     pub fn new(build_framework: BuildFramework, retry_policy: AggregateConflictRetryPolicy) -> Self;
     pub async fn execute<ES>(&self, aggregate_id: &str, command: A::Command, tasks: Vec<NewTask>) -> Result<(), CommandGatewayError<A::Error>>
         where BuildFramework: Fn(Vec<NewTask>) -> CqrsFramework<A, ES> + Send + Sync, ES: EventStore<A> + 'static, ES::AC: Send;
@@ -652,7 +655,7 @@ SELECT now();
 4. MongoDB-клиент (не проверено в песочнице), базы `encore_read` / `mail_service`.
 5. `ActivityHub::new(1024, 100)`.
 6. Фабрика обработчиков `handlers() -> Vec<Box<dyn EventHandler<Concert>>>`: `[NotifyingHandler(ViewProjection::new(halls_repo.clone())), NotifyingHandler(FanWalletsProjection::new(wallets_repo.clone()))]` — вызывается на каждый framework.
-7. `CommandService { pool, snapshot_every, retry: PostgresCommandConfig::conflict_retry(), services: ConcertServices { ticket_limit }, handlers }`; на запрос — `CqrsCommandExecutor::new(move |tasks| CqrsFramework::new(CommandContextStore{…}, handlers(), services.clone()), retry).execute(id, cmd, tasks)` (U3 = A).
+7. `CommandService { pool, snapshot_every, retry: PostgresCommandConfig::conflict_retry(), services: ConcertServices { ticket_limit }, handlers }`; на запрос — `CommandExecutorCore::new(move |tasks| CqrsFramework::new(CommandContextStore{…}, handlers(), services.clone()), retry).execute(id, cmd, tasks)` (U3 = A).
 8. `let runtime = prepare_task_runtime(pool.clone(), dispatcher_factory, PostgresTaskQueueConfig::default(), runtime_config)?;` — без фоновой работы.
 9. `AppState { command_service, read_db, mail_db, pool, activity, rebuild, config }`.
 10. `seed::run(&state).await` при `ENCORE_SEED=true` (`already_announced` игнорируется).
@@ -666,11 +669,11 @@ Rebuild (§6.8): `EventReplay::new(PostgresEventRepository::new(pool.clone()), P
 ## 9. Предлагаемые правки PLAN.md (сводно)
 
 1. **§2.4, §2.6, §2.7, §3.2, §6.9, §8.8, §9 (шаг 5), §14** — убрать событие `ConcertSoldOut`; `sold_out` — производное поле; добавить страховочный тест «одна команда → одно событие» (КТ-1).
-2. **§2.4 (метаданные), §3.2, §4, §6.2, §6.3 п.7, §6.4 п.4–6** — метаданные через декоратор `CommandContextStore` и `CqrsCommandExecutor` на запрос; `executor.execute(concert_id, command, tasks)` без параметра `metadata`; добавить файл `app/command_context.rs`; `committed_sequence` и `conflicts` берутся из декоратора (КТ-2, U16).
+2. **§2.4 (метаданные), §3.2, §4, §6.2, §6.3 п.7, §6.4 п.4–6** — метаданные через декоратор `CommandContextStore` и `CommandExecutorCore` на запрос; `executor.execute(concert_id, command, tasks)` без параметра `metadata`; добавить файл `app/command_context.rs`; `committed_sequence` и `conflicts` берутся из декоратора (КТ-2, U16).
 3. **§2.7** — форматы `encore_send_e_ticket` v1 / `encore_issue_refund` v1 (КТ-3); `task_id` генерирует библиотека; backoff — через `retry_after` (1–8 с); lease 30 с; «claim-attempt limit» = `with_max_attempts(6)`.
 4. **§5.4** — `RUST_LOG=info` (один уровень); таблица `OUTBOX_*` с демо-дефолтами (U10); `ENCORE_TASK_RETRY_BASE_MS=1000`, `ENCORE_TASK_RETRY_MAX_MS=8000`.
 5. **§6.1** — `cqrsx` с `features = ["host", "logging"]`; добавить `async-trait`; `sqlx 0.8`; `rand 0.10`.
-6. **§6.3 п.3** — `connect_pool(PgConnectOptions)`; **п.7** — `CqrsCommandExecutor::new` вместо `command_executor` (D2); **п.11** — SSE завершаются по токену; после `run` закрыть пул.
+6. **§6.3 п.3** — `connect_pool(PgConnectOptions)`; **п.7** — `CommandExecutorCore::new` вместо `command_executor` (D2); **п.11** — SSE завершаются по токену; после `run` закрыть пул.
 7. **§6.2** — `outbox::dispatcher` (сейчас `infrastructure::task_runtime::dispatcher`): enum-адаптер над двумя `JsonTaskAdapter`; seed RNG через счётчик.
 8. **§3.4, §6.8** — порядок `replay_all`: по `sequence` поперёк концертов; `rebuild.started` несёт `total`.
 9. **§7.3** — убрать замечание про sqlx 0.9; запросы из §6 этого документа; сортировка событий по `metadata->>'recorded_at'` (фиксированная ширина).
@@ -686,6 +689,6 @@ Rebuild (§6.8): `EventReplay::new(PostgresEventRepository::new(pool.clone()), P
 ## 10. Что не проверялось и риски
 
 - **Не компилировалось:** нет сети и реестра cargo. Сигнатуры `cqrsx` сверены с исходниками и его тестами; интеграция с axum 0.8 (`serve`, `with_graceful_shutdown`, SSE), mongodb 3.9 и версии фронтовых пакетов проверяются при первой сборке Фазы 1.
-- **Параллельные команды на один концерт** (🌊 Толпа последовательна, ⚡ Гонка P1): конфликт решает `CqrsCommandExecutor` (3 попытки, 5–50 мс); при трёх подряд конфликтах — `409 conflict`, в демо маловероятно.
+- **Параллельные команды на один концерт** (🌊 Толпа последовательна, ⚡ Гонка P1): конфликт решает `CommandExecutorCore` (3 попытки, 5–50 мс); при трёх подряд конфликтах — `409 conflict`, в демо маловероятно.
 - **Пропускная способность пула** (10 соединений): достаточно для 2 воркеров + poller + HTTP + 1 стрим rebuild; долгие SSE соединения пул не занимают.
 - **`LoggingConfig` + sqlx:** при `RUST_LOG=debug` sqlx логирует каждый запрос; при необходимости `PgConnectOptions::log_statements(LevelFilter::Trace)`.

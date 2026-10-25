@@ -1,11 +1,10 @@
 //! Application layer: the use cases of both aggregates (metadata + outbox tasks around the cqrsx
-//! command port), the workflows driven by outbox tasks, read models, the activity log, the
-//! box-office lock and the operations over the whole ledger (rebuild, verify, time travel).
+//! command port), the workflows driven by outbox tasks, read models and their projections, the activity
+//! log and the operations over the whole ledger (rebuild, verify, time travel).
 pub mod activity;
 pub mod command_service;
 pub mod concert;
 pub mod fan;
-pub mod lock;
 pub mod operations;
 pub mod ports;
 pub mod projections;

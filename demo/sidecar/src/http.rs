@@ -163,8 +163,9 @@ async fn demo(AxumState(state): AxumState<AppState>) -> Json<Value> {
     }))
 }
 
-/// `POST /inspect/projections/wipe`: 🧨 DEMO ONLY — drop the read models; the ledger is intact and
-/// ⏪ Encore! (back-end) rebuilds them. Shows that the rules keep working from the ledger alone.
+/// `POST /inspect/projections/wipe`: 🧨 DEMO ONLY — drop the read models and their checkpoints; the ledger
+/// is intact and the back-end's projection processors rebuild every document by themselves. Shows that the
+/// rules keep working from the ledger alone.
 async fn wipe(AxumState(state): AxumState<AppState>) -> Response {
     match state.demo.wipe_read_models().await {
         Ok(dropped) => {

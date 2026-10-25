@@ -5,8 +5,8 @@ import { sleep } from 'k6';
 import { cfg } from './config.js';
 import { counters } from './metrics.js';
 
-// 409 / 422 / 423 are answers, not failures: the tests count them as outcomes.
-http.setResponseCallback(http.expectedStatuses(200, 409, 422, 423));
+// 409 / 422 are answers, not failures: the tests count them as outcomes.
+http.setResponseCallback(http.expectedStatuses(200, 409, 422));
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -32,8 +32,9 @@ function parse(res) {
 }
 
 /**
- * POST /api/concerts/{id}/commands. Returns `{ status, outcome, code, params, warnings }` where
- * outcome is accepted | rejected | conflict | locked | unavailable | other (§6.6 of the plan).
+ * POST /api/concerts/{id}/commands. Returns `{ status, outcome, code, params }` where outcome is
+ * accepted | rejected | conflict | unavailable | other (§6.6 of the plan). 200 means the event is in
+ * the ledger: the read models follow it later (D-17).
  */
 export function command(concertId, body, tags) {
   const ctags = Object.assign({ cmd: body.type }, tags);
@@ -41,27 +42,21 @@ export function command(concertId, body, tags) {
     headers: JSON_HEADERS,
     tags: ctags,
   });
-  // The body is parsed only when it carries information. A 200 whose body says `"warnings":[]` is
-  // the common case by far (tens of thousands per run) and is classified from the status alone;
-  // every other answer is parsed for the rule code, its parameters or the warning list. JSON parsing
-  // is a visible share of the load generator's CPU at ten thousand answers per second.
-  const plainSuccess = res.status === 200 && typeof res.body === 'string' && res.body.includes('"warnings":[]');
-  const json = plainSuccess ? {} : parse(res) || {};
+  // The body is parsed only when it carries information: a 200 is classified from the status alone
+  // (tens of thousands per run), every other answer is parsed for the rule code and its parameters.
+  // JSON parsing is a visible share of the load generator's CPU at ten thousand answers per second.
+  const json = res.status === 200 ? {} : parse(res) || {};
   const error = json.error || {};
   const result = {
     status: res.status,
     outcome: 'other',
     code: error.code || null,
     params: error.params || {},
-    warnings: json.warnings || [],
   };
   switch (res.status) {
     case 200:
       result.outcome = 'accepted';
       counters.accepted.add(1, ctags);
-      if (result.warnings.length > 0) {
-        counters.projection_warning.add(1, ctags);
-      }
       break;
     case 422:
       result.outcome = 'rejected';
@@ -70,10 +65,6 @@ export function command(concertId, body, tags) {
     case 409:
       result.outcome = 'conflict';
       counters.conflict.add(1, ctags);
-      break;
-    case 423:
-      result.outcome = 'locked';
-      counters.locked.add(1, ctags);
       break;
     case 503:
       result.outcome = 'unavailable';

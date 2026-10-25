@@ -13,30 +13,42 @@ const xray = useXrayStore()
 const session = useSessionStore()
 const trace = useTraceStore()
 const { t } = useI18n()
-const tab = ref<'concert_halls' | 'fan_wallets'>('concert_halls')
+const TABS = ['concert_halls', 'fan_wallets', 'projection_checkpoints'] as const
+const tab = ref<(typeof TABS)[number]>('concert_halls')
+
+/** A checkpoint's `_id` is `{ projection, aggregate_type }`: it reads as `projection/aggregate_type`. */
+function docId(id: unknown): string {
+  if (id && typeof id === 'object' && 'projection' in id && 'aggregate_type' in id)
+    return `${(id as { projection: unknown }).projection}/${(id as { aggregate_type: unknown }).aggregate_type}`
+  return String(id)
+}
 
 const collection = computed(() => xray.state.mongo[tab.value] ?? null)
 const previousDocs = computed(() => {
   const map: Record<string, unknown> = {}
-  for (const d of xray.previous.mongo[tab.value]?.docs ?? []) map[String(d._id)] = d
+  for (const d of xray.previous.mongo[tab.value]?.docs ?? []) map[docId(d._id)] = d
   return map
 })
-/** "Current" documents come first and open expanded: the hall of the current concert, or every
- * ledger of the current persona (one `fan_wallets` document per fan and concert, D-14). */
-const isCurrent = (id: unknown) =>
-  tab.value === 'concert_halls' ? id === session.concertId : isLedgerOf(String(id), session.persona)
+/** "Current" documents come first and open expanded: the hall of the current concert, every ledger of the
+ * current persona (one `fan_wallets` document per fan and concert, D-14), or every checkpoint (there are two). */
+const isCurrent = (id: string) =>
+  tab.value === 'concert_halls'
+    ? id === session.concertId
+    : tab.value === 'fan_wallets'
+      ? isLedgerOf(id, session.persona)
+      : true
 const docs = computed(() => {
-  const list = [...(collection.value?.docs ?? [])]
+  const list = (collection.value?.docs ?? []).map((d) => ({ id: docId(d._id), doc: d }))
   list.sort((a, b) => {
-    const ca = isCurrent(a._id)
-    const cb = isCurrent(b._id)
-    return ca === cb ? String(a._id).localeCompare(String(b._id)) : ca ? -1 : 1
+    const ca = isCurrent(a.id)
+    const cb = isCurrent(b.id)
+    return ca === cb ? a.id.localeCompare(b.id) : ca ? -1 : 1
   })
-  return list.map((d) => ({
-    id: String(d._id),
-    doc: d,
-    changed: changedPaths(previousDocs.value[String(d._id)], d),
-    current: isCurrent(d._id),
+  return list.map(({ id, doc }) => ({
+    id,
+    doc,
+    changed: changedPaths(previousDocs.value[id], doc),
+    current: isCurrent(id),
   }))
 })
 </script>
@@ -52,7 +64,7 @@ const docs = computed(() => {
   >
     <div class="flex gap-2 text-xs mb-2">
       <button
-        v-for="name in ['concert_halls', 'fan_wallets'] as const"
+        v-for="name in TABS"
         :key="name"
         type="button"
         class="px-2 py-0.5 rounded border border-border font-mono"
@@ -62,7 +74,9 @@ const docs = computed(() => {
         {{ name }}
       </button>
     </div>
-    <p v-if="docs.length === 0" class="text-xs opacity-60">{{ t('states.wiped') }}</p>
+    <p v-if="docs.length === 0" class="text-xs opacity-60">
+      {{ tab === 'projection_checkpoints' ? t('xray.no_checkpoints') : t('states.wiped') }}
+    </p>
     <ul class="space-y-1">
       <li
         v-for="d in docs"

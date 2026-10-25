@@ -46,15 +46,6 @@ impl ApiError {
         Self::unavailable(format!("read model storage unavailable: {error}"))
     }
 
-    pub fn locked() -> Self {
-        Self::new(
-            StatusCode::LOCKED,
-            "locked",
-            "rebuild_in_progress",
-            "box office closed for a moment: rebuilding read models",
-        )
-    }
-
     pub fn with_params(mut self, params: Value) -> Self {
         self.params = params;
         self

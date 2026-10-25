@@ -1,20 +1,22 @@
-//! PostgreSQL through cqrsx: read-only access to the committed history and the size of the ledger.
-//! The command executors are the library's `PostgresCommandExecutor`, assembled in `bootstrap`.
+//! PostgreSQL through cqrsx: read-only access to the committed history, the size of the ledger and how
+//! far a projection is behind it. The command executors are the library's `PostgresCommandExecutor`,
+//! assembled in `bootstrap`.
 use crate::{
     application::{
         StorageError,
         ports::{EventLedgerStats, LedgerTotals},
-        projections::maintenance::HistoryFactory,
     },
     domain::{concert::Concert, fan::Fan},
 };
 use async_trait::async_trait;
 use cqrsx::{
-    cqrs::{aggregate::Aggregate, store::persisted::PersistedEventStore},
+    cqrs::{
+        aggregate::Aggregate,
+        store::{feed::Position, persisted::PersistedEventStore},
+    },
     postgres::event_repository::PostgresEventRepository,
 };
 use sqlx::PgPool;
-use std::sync::Arc;
 
 /// The read path over the event tables: committed history, with or without snapshots.
 pub type HistoryStore<A> = PersistedEventStore<PostgresEventRepository, A>;
@@ -31,21 +33,19 @@ pub fn event_history<A: Aggregate>(pool: PgPool) -> HistoryStore<A> {
     PersistedEventStore::new_event_store(PostgresEventRepository::new(pool))
 }
 
-/// A fresh repository over the saved history for every replay (`EventReplay` takes it by value).
-pub fn history_repositories(pool: PgPool) -> HistoryFactory<PostgresEventRepository> {
-    Arc::new(move || PostgresEventRepository::new(pool.clone()))
-}
-
-/// Size of the ledger: the saved history of both aggregate types, counted by the library (the
-/// owner of the `events` table).
+/// Size of the ledger and the lag of a reader, counted by the library (the owner of the `events` table):
+/// the totals read the whole history on the history pool, the lag is a short count on the feed index under
+/// the main pool's statement timeout.
 pub struct PostgresLedger {
-    repository: PostgresEventRepository,
+    journal: PostgresEventRepository,
+    history: PostgresEventRepository,
 }
 
 impl PostgresLedger {
-    pub fn new(pool: PgPool) -> Self {
+    pub fn new(pool: PgPool, history_pool: PgPool) -> Self {
         Self {
-            repository: PostgresEventRepository::new(pool),
+            journal: PostgresEventRepository::new(pool),
+            history: PostgresEventRepository::new(history_pool),
         }
     }
 }
@@ -53,11 +53,22 @@ impl PostgresLedger {
 #[async_trait]
 impl EventLedgerStats for PostgresLedger {
     async fn totals(&self) -> Result<LedgerTotals, StorageError> {
-        let concerts = self.repository.totals::<Concert>().await.map_err(StorageError::new)?;
-        let fans = self.repository.totals::<Fan>().await.map_err(StorageError::new)?;
+        let concerts = self.history.totals::<Concert>().await.map_err(StorageError::new)?;
+        let fans = self.history.totals::<Fan>().await.map_err(StorageError::new)?;
         Ok(LedgerTotals {
             events: concerts.events + fans.events,
             aggregates: concerts.aggregates + fans.aggregates,
         })
+    }
+
+    async fn count_after(&self, aggregate_type: &str, after: Position, cap: u64) -> Result<u64, StorageError> {
+        let counted = if aggregate_type == Concert::TYPE {
+            self.journal.count_after::<Concert>(after, cap).await
+        } else if aggregate_type == Fan::TYPE {
+            self.journal.count_after::<Fan>(after, cap).await
+        } else {
+            return Err(StorageError(format!("no journal of {aggregate_type}")));
+        };
+        counted.map_err(StorageError::new)
     }
 }

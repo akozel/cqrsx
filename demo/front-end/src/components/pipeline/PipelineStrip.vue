@@ -33,7 +33,7 @@ const choreo = createChoreography({ speed: () => session.pace * PACE_BASE })
 provide(PIPELINE, {
   choreo,
   wiped: computed(() => concerts.stale),
-  replaying: computed(() => rebuild.status.state === 'running'),
+  replaying: computed(() => rebuild.running),
   reducedMotion: computed(() => session.reducedMotion),
   persona: computed(() => session.currentPersona()),
 })

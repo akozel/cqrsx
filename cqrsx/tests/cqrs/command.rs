@@ -11,7 +11,7 @@ use std::{
 };
 use {
     cqrsx::cqrs::AggregateError, cqrsx::cqrs::CqrsFramework, cqrsx::cqrs::command::CommandGatewayError,
-    cqrsx::cqrs::command::executor::CqrsCommandExecutor, cqrsx::cqrs::command::retry::AggregateConflictRetryPolicy,
+    cqrsx::cqrs::command::executor::CommandExecutorCore, cqrsx::cqrs::command::retry::AggregateConflictRetryPolicy,
     cqrsx::cqrs::event::EventEnvelope, cqrsx::cqrs::store::EventStore,
 };
 #[derive(Clone)]
@@ -51,7 +51,7 @@ async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command(
     let observed = store.clone();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let commands = seen.clone();
-    let executor = CqrsCommandExecutor::<Ledger, _>::new(
+    let executor = CommandExecutorCore::<Ledger, _>::new(
         move |_| CqrsFramework::new(store.clone(), Services(commands.clone())),
         AggregateConflictRetryPolicy::new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
         cqrsx::cqrs::command::locks::LockLimits::default(),

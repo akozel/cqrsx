@@ -4,7 +4,7 @@ use cqrsx::{
     cqrs::{
         CqrsFramework,
         aggregate::Aggregate,
-        command::{executor::CqrsCommandExecutor, locks::LockLimits, wakeup::CommitWakeup},
+        command::{executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
         event::{DomainEvent, EventEnvelope},
         event_handler::delivery::DeliveryConfig,
         event_sink::EventSink,
@@ -221,10 +221,10 @@ type MemStore = PersistedEventStore<MemEventRepository, Ledger>;
 type MemFactory = Box<dyn Fn(Vec<NewTask>) -> CqrsFramework<Ledger, MemStore> + Send + Sync>;
 
 /// Commands over an in-memory journal that wake its processors.
-pub(crate) fn mem_ledgers(journal: &MemEventRepository, wakeup: &CommitWakeup) -> Arc<CqrsCommandExecutor<Ledger, MemFactory>> {
+pub(crate) fn mem_ledgers(journal: &MemEventRepository, wakeup: &CommitWakeup) -> Arc<CommandExecutorCore<Ledger, MemFactory>> {
     let journal = journal.clone();
     let factory: MemFactory = Box::new(move |_| CqrsFramework::new(PersistedEventStore::new_event_store(journal.clone()), ()));
-    Arc::new(CqrsCommandExecutor::new(factory, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
+    Arc::new(CommandExecutorCore::new(factory, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
 }
 
 /// The fold of the key's whole history, `None` without a history.

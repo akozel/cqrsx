@@ -5,10 +5,7 @@ pub mod views;
 pub mod wallet;
 
 use crate::{
-    application::{
-        command_service::{CommandLabel, CommandMetadata, CommandService, Executed, Rejection},
-        lock::BoxOfficeLock,
-    },
+    application::command_service::{CommandLabel, CommandMetadata, CommandService, Executed, Rejection},
     domain::{
         FanLedgerId,
         fan::{Fan, FanCommand, FanError},
@@ -16,7 +13,6 @@ use crate::{
 };
 use cqrsx::{cqrs::command::CommandExecutor, task::NewTask};
 use serde_json::{Value, json};
-use std::sync::Arc;
 
 /// The command pipeline of `Fan`.
 pub struct FanApp<E> {
@@ -28,14 +24,8 @@ impl<E: CommandExecutor<Fan>> FanApp<E> {
         Self { service }
     }
 
-    pub fn lock(&self) -> &Arc<BoxOfficeLock> {
-        self.service.lock()
-    }
-
     /// Internal commands come from workflow steps, which also build the follow-up tasks. The command
-    /// runs on one ledger (`fan:concert`); the activity log still names the fan. During a rebuild the
-    /// outcome is `Locked`, which the step turns into a short retry: the task is durable, so waiting
-    /// costs nothing, and the wallet projection is not written while its collection is being rebuilt.
+    /// runs on one ledger (`fan:concert`); the activity log still names the fan.
     pub async fn execute(
         &self,
         ledger: &FanLedgerId,
@@ -77,6 +67,7 @@ mod tests {
         domain::{ConcertId, FanId, fan::commands::RecordCancellation},
     };
     use cqrsx::cqrs::testing::{command::TestCommandExecutor, unavailable_store::UnavailableStore};
+    use std::sync::Arc;
     use uuid::Uuid;
 
     #[test]
@@ -88,15 +79,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_closed_box_office_refuses_internal_commands_before_touching_storage() {
-        let lock = Arc::new(BoxOfficeLock::new());
+    async fn an_unreachable_ledger_is_unavailable_and_logged() {
         let activity = Arc::new(ActivityHub::new(8, 8));
         let fans = FanApp::new(CommandService::new(
             TestCommandExecutor::new(UnavailableStore, ()),
             activity.clone(),
-            lock.clone(),
         ));
-        let _guard = lock.try_acquire().unwrap();
         let command = FanCommand::RecordCancellation(RecordCancellation {
             booking_id: Uuid::now_v7(),
             cancellation_id: Uuid::now_v7(),
@@ -107,7 +95,12 @@ mod tests {
             &ConcertId::parse("radiohead-2026-11-21").unwrap(),
         );
         let executed = fans.execute(&ledger, command, CommandMetadata::ui(), vec![]).await;
-        assert_eq!(executed.outcome, CommandOutcome::Locked);
-        assert!(activity.subscribe().0.is_empty(), "a locked outcome is not logged");
+        assert_eq!(executed.outcome, CommandOutcome::Unavailable);
+        let (entries, _) = activity.subscribe();
+        assert_eq!(entries.len(), 1);
+        assert_eq!(
+            (entries[0].kind.as_str(), entries[0].fields["fan_id"].as_str()),
+            ("command.failed", Some("fox"))
+        );
     }
 }

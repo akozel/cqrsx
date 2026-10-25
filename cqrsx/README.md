@@ -283,7 +283,9 @@ tokio::spawn(read_side.run(shutdown.clone()));            // next to the task ru
 ```
 
 `CheckpointStore::status` shows where a projection stands: the position, the owner and its lease, the failed
-rounds in a row with the last error, and the state of a rebuild. The processor's observer reports every applied
+rounds in a row with the last error, and the state of a rebuild. How far it is behind is
+`PostgresEventRepository::count_after(position, cap)`: the events of its type above the checkpoint, counted up to a
+cap. The processor's observer reports every applied
 batch, every move of the checkpoint, every failure and rebuild, for an event feed or a status page.
 
 ### Read models in MongoDB
@@ -321,7 +323,7 @@ in their names.
 | Commands buffered per aggregate key for one handler, and per handler call | `DeliveryConfig::new(capacity, max_batch)` | 64, 32 |
 | Conflict retry: attempts, base and maximum backoff, jitter | `AggregateConflictRetryPolicy::new(..)` | 3, 5 ms, 50 ms, 0.2 |
 | Snapshot interval, conflict retry and lock limits of a PostgreSQL executor | `PostgresCommandConfig::new(..)` | your interval, the defaults above |
-| Projection processor: poll interval, page size, lease, key buffer; retry pauses, keys per rebuild page, documents written at once | `ProcessorConfig::new(poll, page, lease, delivery)?`, `.with_retry(base, max)?`, `.with_rebuild_page(n)?`, `.with_concurrency(n)?` | 250 ms, 1000, 10 s, the delivery defaults; 500 ms / 10 s, 100, 16 |
+| Projection processor: poll interval, page size, lease, key buffer; retry pauses, keys per rebuild page, documents written at once, pause after a wake-up | `ProcessorConfig::new(poll, page, lease, delivery)?`, `.with_retry(base, max)?`, `.with_rebuild_page(n)?`, `.with_concurrency(n)?`, `.with_settle(d)?` | 250 ms, 1000, 10 s, the delivery defaults; 500 ms / 10 s, 100, 16, 0 |
 | Server-side cap on every statement of a pool | `StatementTimeout::{Default, Custom, Unlimited}` | 4 s |
 | Connection check before hand-out | `ConnectionPingPolicy::{Default, Idle(d)}` | SQLx's; `Idle(100 ms)` recommended |
 | Task runtime | `TaskRuntimeConfig::from_env()` | see below |

@@ -46,7 +46,7 @@ jq -n --argjson w "$warm" --argjson m "$meas" --arg test "$test" --arg cmd "$cmd
       latency_ms: {all: $lat, by_cmd: {($cmd): ({requests: $m.requests} + $lat)}},
       status: $m.statuses,
       outcomes: {
-        accepted: st($m; "200"), projection_warning: 0, conflict: st($m; "409"), locked: st($m; "423"),
+        accepted: st($m; "200"), conflict: st($m; "409"),
         unavailable: st($m; "503"), rejected_total: st($m; "422"), rejected: {},
         other: ($m.requests - ([$m.statuses[]] | add // 0) + $errors)
       },

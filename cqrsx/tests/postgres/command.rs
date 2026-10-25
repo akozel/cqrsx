@@ -854,10 +854,10 @@ mod contracts {
             Err(PersistenceError::UnknownError(_))
         ));
         assert_eq!(database_state(&db.pool).await, before);
-        use cqrsx::cqrs::command::{CommandGatewayError, executor::CqrsCommandExecutor};
+        use cqrsx::cqrs::command::{CommandGatewayError, executor::CommandExecutorCore};
         let loads = Arc::new(AtomicUsize::new(0));
         let commits = Arc::new(AtomicUsize::new(0));
-        let executor = CqrsCommandExecutor::new(
+        let executor = CommandExecutorCore::new(
             {
                 let pool = db.pool.clone();
                 let loads = loads.clone();
@@ -891,7 +891,7 @@ mod contracts {
 
     #[tokio::test]
     async fn command_retry_rechecks_balance_and_unknown_or_cancelled_response_keeps_durable_commit() {
-        use cqrsx::cqrs::command::{CommandGatewayError, executor::CqrsCommandExecutor, retry::AggregateConflictRetryPolicy};
+        use cqrsx::cqrs::command::{CommandGatewayError, executor::CommandExecutorCore, retry::AggregateConflictRetryPolicy};
         let db = Database::new().await;
         for mode in 0..3 {
             let id = format!("boundary-{mode}");
@@ -903,7 +903,7 @@ mod contracts {
             let loads = Arc::new(AtomicUsize::new(0));
             let commits = Arc::new(AtomicUsize::new(0));
             let durable = Arc::new(tokio::sync::Notify::new());
-            let executor = CqrsCommandExecutor::new(
+            let executor = CommandExecutorCore::new(
                 {
                     let loads = loads.clone();
                     let commits = commits.clone();

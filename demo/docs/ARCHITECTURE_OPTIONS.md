@@ -289,7 +289,7 @@ impl<E: CommandExecutor<Concert>, S: EventStore<Concert>> ConcertApp<E, S> {
     /// atomically with `RecordTicketV1`, the first link of the fan-ledger chain.
     pub async fn book_seat(&self, concert_id: &ConcertId, command: BookSeat, metadata: CommandMetadata) -> Executed<ConcertError> {
         let tasks = match VENUE.seat(&command.seat) {
-            Some(seat) => vec![tasks::record_ticket(concert_id, &command, &seat, &metadata, self.chain_max_attempts)?],
+            Some(seat) => vec![tasks::record_ticket(concert_id, &command, &seat, &metadata, self.task_max_attempts)?],
             None => vec![], // the aggregate rejects the command before anything is written
         };
         self.run(concert_id, ConcertCommand::BookSeat(command), tasks, metadata).await

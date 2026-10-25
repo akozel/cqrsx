@@ -18,7 +18,7 @@ use cqrsx::cqrs::store::AggregateContext;
 use cqrsx::cqrs::store::EventStore;
 use cqrsx::{
     cqrs::command::{
-        CommandExecutor, CommandGatewayError, executor::CqrsCommandExecutor, locks::LockLimits,
+        CommandExecutor, CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits,
         retry::AggregateConflictRetryPolicy,
     },
     host::error::HostError,
@@ -162,7 +162,7 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         executor.execute("private_id", (), vec![]).await,
         Err(CommandGatewayError::Unavailable)
     ));
-    let executor = CqrsCommandExecutor::<ProbeAggregate, _>::new(
+    let executor = CommandExecutorCore::<ProbeAggregate, _>::new(
         |_| CqrsFramework::new(UnavailableStore, ()),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),

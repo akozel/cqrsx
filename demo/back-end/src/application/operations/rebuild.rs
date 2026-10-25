@@ -1,526 +1,668 @@
-//! Encore! — rebuild the read models from the ledger, always from scratch (the first step drops
-//! them). Dropping them *without* a rebuild is a demo operation and lives in the sidecar.
+//! The read side as an operator sees it: Encore! (every read model rebuilt from the journal while the box
+//! office stays open, D-16), the rebuild of one concert hall, and the status of the projections: where their
+//! checkpoints stand, how far behind the journal they are and who owns them.
 //!
-//! Why a lock instead of a live rebuild: simpler and deterministic for a demo. UI commands get 423
-//! while a rebuild runs; the outbox workers keep running (the write side never depends on the
-//! read side) and chain tasks that hit the lock simply retry a moment later.
-//! Replay is safe because it only calls `View::update`: no commands, no tasks, no e-mails.
-use crate::application::{
-    activity::ActivityHub,
-    lock::{BoxOfficeLock, LockGuard},
-    ports::EventLedgerStats,
-    projections::maintenance::MaintainedReadModel,
-};
+//! A rebuild is a request on the checkpoint rows (`CheckpointStore::request_rebuild`). The owner of each row,
+//! on whatever node, walks the keys of the journal and replaces the documents in place through the same key
+//! workers as the live events, so commands keep running and nothing is wiped. This service only asks, then
+//! watches the rows until both rebuilds have ended and reports what it saw.
+use crate::application::{StorageError, activity::ActivityHub, ports::EventLedgerStats};
+use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
-use cqrsx::cqrs::event_handler::{
-    delivery::DeliveryBacklog,
-    replay::{ReplayProgress, ReplayProgressObserver},
-};
-use serde::{Deserialize, Serialize};
-use serde_json::json;
+use cqrsx::cqrs::projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest};
+use serde::Serialize;
+use serde_json::{Value, json};
 use std::{
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
+    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    time::Duration,
 };
+use tokio::time::Instant;
+use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum Speed {
-    Slow,
-    Fast,
+/// How often a running Encore! reads the checkpoint rows for its progress and its end.
+pub const REBUILD_WATCH_INTERVAL: Duration = Duration::from_millis(250);
+/// The longest pause between the events of one key a rebuild may ask for (`ENCORE_REPLAY_MAX_PACE_MS`): a
+/// longer one would hold its keys, and through the window the whole projection, for hours.
+pub const DEFAULT_MAX_PACE: Duration = Duration::from_secs(1);
+/// The pause between the events of one key a slow-motion Encore! asks for (`ENCORE_REPLAY_SLOW_DELAY_MS`): the
+/// UI sends it as `pace_ms`, so the seats light up one by one.
+pub const DEFAULT_SLOW_PACE: Duration = Duration::from_millis(80);
+/// How long the status waits for the checkpoint store before it answers with the rows it saw last
+/// (`ENCORE_PROJECTION_STATUS_TIMEOUT_MS`): a paused MongoDB must not hang the status page.
+pub const DEFAULT_STATUS_TIMEOUT: Duration = Duration::from_secs(1);
+
+/// The bounds of the read side's operations, from the configuration.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReadSideLimits {
+    /// Events counted at most for one projection's lag.
+    pub lag_cap: u64,
+    pub max_pace: Duration,
+    pub status_timeout: Duration,
+}
+
+/// Why a rebuild was not started.
+#[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
+pub enum RebuildRefused {
+    #[error("a rebuild is already running")]
+    AlreadyRunning,
+    #[error("the pace must be at most {max_ms} ms")]
+    PaceTooLong { max_ms: u64 },
+    /// The checkpoint store failed, or the processors have not registered their rows yet.
+    #[error("{0}")]
+    Unavailable(String),
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RebuildStarted {
+    pub rebuild_id: Uuid,
+    pub pace: Duration,
+}
+
+/// The read side for the HTTP layer, behind a port so the router tests run it over in-memory checkpoints.
+#[async_trait]
+pub trait ReadSide: Send + Sync {
+    /// Every projection's checkpoint, lag and state, plus the rebuild this node started.
+    async fn status(&self) -> Result<Value, StorageError>;
+    /// Encore!: asks the owners to rebuild every read model with `pace` between the events of one key.
+    async fn rebuild(&self, pace: Duration) -> Result<RebuildStarted, RebuildRefused>;
+    /// Asks the owner of the concert halls to rebuild one hall from its history.
+    async fn rebuild_concert(&self, concert_id: &str) -> Result<(), RebuildRefused>;
 }
 
 #[derive(Debug, Clone, Serialize)]
 pub struct RebuildResult {
     pub rebuild_id: Uuid,
-    pub speed: Speed,
-    pub ok: bool,
-    pub replayed: u64,
-    pub aggregates: u64,
+    /// Documents rebuilt, as the checkpoint rows count them.
+    pub keys: u64,
     pub duration_ms: u64,
     pub finished_at: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone)]
 struct Running {
     rebuild_id: Uuid,
-    speed: Speed,
+    pace: Duration,
     started_at: String,
-    total: u64,
+    keys_total: u64,
 }
 
 #[derive(Default)]
-struct Status {
+struct State {
     running: Option<Running>,
     last_result: Option<RebuildResult>,
+    /// The rows the last successful read returned, for a status while the store does not answer.
+    last_rows: Vec<CheckpointStatus>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
-#[error("a rebuild is already running")]
-pub struct AlreadyRunning;
-
-pub struct RebuildService {
-    lock: Arc<BoxOfficeLock>,
-    replayed: Arc<AtomicU64>,
-    status: Mutex<Status>,
-    /// Rebuilt in this order, one pass each (`Concert` first, then `Fan`).
-    read_models: Vec<Arc<dyn MaintainedReadModel>>,
-    /// What the commands handed to ordered projections and the projections have not applied yet.
-    projection_backlogs: Vec<DeliveryBacklog>,
+/// [`ReadSide`] over the checkpoint rows of `C`.
+pub struct RebuildService<C> {
+    checkpoints: Arc<C>,
+    /// Every read model's row, the concert halls first.
+    read_models: Vec<CheckpointKey>,
     ledger: Arc<dyn EventLedgerStats>,
     activity: Arc<ActivityHub>,
-    slow_delay: Duration,
+    limits: ReadSideLimits,
+    shutdown: CancellationToken,
+    state: Arc<Mutex<State>>,
 }
 
-/// Lives inside the spawned rebuild task: clears `status.running` and then (field drop order)
-/// releases the box-office lock — on every exit path, including a panic inside `run`.
-struct RunningGuard {
-    service: Arc<RebuildService>,
-    _lock: LockGuard,
+fn now() -> String {
+    Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-impl Drop for RunningGuard {
-    fn drop(&mut self) {
-        if let Ok(mut status) = self.service.status.lock() {
-            status.running = None;
-        }
+fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
+    state.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
+fn is_row_of(key: &CheckpointKey, row: &CheckpointStatus) -> bool {
+    row.projection == key.projection() && row.aggregate_type == key.aggregate_type()
+}
+
+fn is_rebuilding(row: &CheckpointStatus) -> bool {
+    row.rebuild_requested || row.rebuild_cursor.is_some()
+}
+
+/// Documents rebuilt by the row's rebuild; a request its owner has not taken yet counts nothing (the count is
+/// still the last rebuild's).
+fn rebuilt(row: &CheckpointStatus) -> u64 {
+    if row.rebuild_requested && row.rebuild_cursor.is_none() {
+        0
+    } else {
+        row.rebuilt
     }
 }
 
-impl RebuildService {
+fn unavailable(error: CheckpointError) -> RebuildRefused {
+    match error {
+        CheckpointError::Invalid(_) => {
+            RebuildRefused::Unavailable("the read side is starting: its checkpoints are not registered yet".into())
+        }
+        other => RebuildRefused::Unavailable(other.to_string()),
+    }
+}
+
+/// The states of a projection, the worst first: the overall state is the worst of them.
+const STATES: [&str; 5] = ["stalled", "unclaimed", "starting", "rebuilding", "live"];
+
+impl<C: CheckpointStore + 'static> RebuildService<C> {
+    /// `read_models` are the rows of every read model, the concert halls first.
     pub fn new(
-        lock: Arc<BoxOfficeLock>,
-        read_models: Vec<Arc<dyn MaintainedReadModel>>,
-        projection_backlogs: Vec<DeliveryBacklog>,
+        checkpoints: Arc<C>,
+        read_models: Vec<CheckpointKey>,
         ledger: Arc<dyn EventLedgerStats>,
         activity: Arc<ActivityHub>,
-        slow_delay: Duration,
+        limits: ReadSideLimits,
+        shutdown: CancellationToken,
     ) -> Self {
         Self {
-            lock,
-            replayed: Arc::new(AtomicU64::new(0)),
-            status: Mutex::new(Status::default()),
+            checkpoints,
             read_models,
-            projection_backlogs,
             ledger,
             activity,
-            slow_delay,
+            limits,
+            shutdown,
+            state: Arc::default(),
         }
     }
 
-    pub fn lock(&self) -> &Arc<BoxOfficeLock> {
-        &self.lock
+    /// The rows of the read models, or the ones seen last when the store does not answer in time.
+    async fn rows(&self) -> (Vec<CheckpointStatus>, bool) {
+        match tokio::time::timeout(self.limits.status_timeout, self.checkpoints.status(None)).await {
+            Ok(Ok(rows)) => {
+                lock(&self.state).last_rows = rows.clone();
+                (rows, false)
+            }
+            Ok(Err(_)) | Err(_) => (lock(&self.state).last_rows.clone(), true),
+        }
     }
 
-    pub fn is_locked(&self) -> bool {
-        self.lock.is_locked()
-    }
-
-    pub fn status_json(&self) -> serde_json::Value {
-        let (running, last) = self
-            .status
-            .lock()
-            .map(|s| (s.running.clone(), s.last_result.clone()))
-            .unwrap_or_default();
-        match running {
-            Some(running) => json!({
-                "state": "running", "rebuild_id": running.rebuild_id, "speed": running.speed,
-                "started_at": running.started_at, "total": running.total,
-                "replayed": self.replayed.load(Ordering::SeqCst), "last_result": last,
+    async fn projection(
+        &self,
+        key: &CheckpointKey,
+        row: Option<&CheckpointStatus>,
+    ) -> Result<(&'static str, Value), StorageError> {
+        let Some(row) = row else {
+            let state = "starting";
+            return Ok((
+                state,
+                json!({ "projection": key.projection(), "aggregate_type": key.aggregate_type(), "state": state }),
+            ));
+        };
+        let lag = self
+            .ledger
+            .count_after(key.aggregate_type(), row.position, self.limits.lag_cap)
+            .await?;
+        let rebuilding = is_rebuilding(row);
+        let claimed = row.owner.is_some() && row.locked_until.is_some_and(|until| until > Utc::now());
+        let state = if row.failures > 0 && (lag > 0 || rebuilding) {
+            "stalled"
+        } else if !claimed {
+            "unclaimed"
+        } else if rebuilding {
+            "rebuilding"
+        } else {
+            "live"
+        };
+        Ok((
+            state,
+            json!({
+                "projection": row.projection,
+                "aggregate_type": row.aggregate_type,
+                "state": state,
+                "position": row.position.to_string(),
+                "applied": row.applied,
+                "lag": lag,
+                "lag_capped": lag >= self.limits.lag_cap,
+                "owner": row.owner,
+                "locked_until": row.locked_until.map(|until| until.to_rfc3339_opts(SecondsFormat::Millis, true)),
+                "failures": row.failures,
+                "last_error": row.last_error,
+                "rebuild": {
+                    "requested": row.rebuild_requested,
+                    "cursor": row.rebuild_cursor,
+                    "rebuilt": row.rebuilt,
+                    "pace_ms": u64::try_from(row.rebuild_pace.as_millis()).unwrap_or(u64::MAX),
+                },
             }),
-            None => json!({ "state": "idle", "last_result": last }),
+        ))
+    }
+}
+
+/// Watches the rows of a running Encore! until neither is requested nor running (a dropped row counts as
+/// ended), publishing the progress as the rows count it and the end.
+async fn watch<C: CheckpointStore>(
+    checkpoints: Arc<C>,
+    keys: Vec<CheckpointKey>,
+    activity: Arc<ActivityHub>,
+    state: Arc<Mutex<State>>,
+    shutdown: CancellationToken,
+    rebuild_id: Uuid,
+) {
+    let started = Instant::now();
+    let mut reported = 0;
+    loop {
+        tokio::select! {
+            _ = shutdown.cancelled() => return,
+            _ = tokio::time::sleep(REBUILD_WATCH_INTERVAL) => {}
         }
+        let Ok(rows) = checkpoints.status(None).await else {
+            continue;
+        };
+        let rows: Vec<&CheckpointStatus> = rows.iter().filter(|row| keys.iter().any(|key| is_row_of(key, row))).collect();
+        let keys_done: u64 = rows.iter().map(|row| rebuilt(row)).sum();
+        if keys_done != reported {
+            reported = keys_done;
+            activity.publish("rebuild.progress", json!({ "rebuild_id": rebuild_id, "keys": keys_done }));
+        }
+        if rows.iter().any(|row| is_rebuilding(row)) {
+            continue;
+        }
+        let result = RebuildResult {
+            rebuild_id,
+            keys: keys_done,
+            duration_ms: u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX),
+            finished_at: now(),
+        };
+        activity.publish(
+            "rebuild.finished",
+            json!({ "rebuild_id": rebuild_id, "keys": result.keys, "duration_ms": result.duration_ms }),
+        );
+        let mut state = lock(&state);
+        state.running = None;
+        state.last_result = Some(result);
+        return;
+    }
+}
+
+#[async_trait]
+impl<C: CheckpointStore + 'static> ReadSide for RebuildService<C> {
+    async fn status(&self) -> Result<Value, StorageError> {
+        let (rows, stale) = self.rows().await;
+        let mut projections = Vec::new();
+        let mut worst = STATES.len() - 1;
+        for key in &self.read_models {
+            let (state, projection) = self.projection(key, rows.iter().find(|row| is_row_of(key, row))).await?;
+            worst = worst.min(STATES.iter().position(|known| *known == state).unwrap_or(0));
+            projections.push(projection);
+        }
+        let state = lock(&self.state);
+        let running = state.running.as_ref().map(|running| {
+            json!({
+                "rebuild_id": running.rebuild_id,
+                "pace_ms": u64::try_from(running.pace.as_millis()).unwrap_or(u64::MAX),
+                "started_at": running.started_at,
+                "keys_total": running.keys_total,
+            })
+        });
+        Ok(json!({
+            "state": STATES[worst],
+            "stale": stale,
+            "projections": projections,
+            "rebuild": running,
+            "last_result": state.last_result,
+        }))
     }
 
-    /// ⏪ Start a rebuild in the background; returns at once with its id.
-    pub fn start(self: &Arc<Self>, speed: Speed) -> Result<Uuid, AlreadyRunning> {
-        let lock = self.lock.try_acquire().ok_or(AlreadyRunning)?;
-        let rebuild_id = Uuid::now_v7();
-        self.replayed.store(0, Ordering::SeqCst);
-        if let Ok(mut status) = self.status.lock() {
-            status.running = Some(Running {
-                rebuild_id,
-                speed,
-                started_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-                total: 0,
+    async fn rebuild(&self, pace: Duration) -> Result<RebuildStarted, RebuildRefused> {
+        if pace > self.limits.max_pace {
+            return Err(RebuildRefused::PaceTooLong {
+                max_ms: u64::try_from(self.limits.max_pace.as_millis()).unwrap_or(u64::MAX),
             });
         }
-        let service = self.clone();
-        tokio::spawn(async move {
-            let _running = RunningGuard {
-                service: service.clone(),
-                _lock: lock,
-            };
-            let result = service.run(rebuild_id, speed).await;
-            if let Ok(mut status) = service.status.lock() {
-                status.last_result = Some(result);
+        let mut accepted = false;
+        for key in &self.read_models {
+            match self.checkpoints.request_rebuild(key, pace).await.map_err(unavailable)? {
+                RebuildRequest::Accepted => accepted = true,
+                RebuildRequest::AlreadyRunning => {}
             }
-        });
-        Ok(rebuild_id)
-    }
-
-    async fn run(&self, rebuild_id: Uuid, speed: Speed) -> RebuildResult {
-        let started = Instant::now();
-        let finish = |ok: bool, replayed: u64, aggregates: u64, error: Option<String>| RebuildResult {
-            rebuild_id,
-            speed,
-            ok,
-            replayed,
-            aggregates,
-            duration_ms: started.elapsed().as_millis() as u64,
-            finished_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
-            error,
-        };
-        // Commands admitted before the lock was taken finish first: their projections write into the
-        // read models this rebuild is about to wipe. The wait is bounded by one command, its wait for the aggregate's lock included.
-        self.lock.wait_idle().await;
-        // So do the ordered projections: a command that is done may have left events in their buffers,
-        // e.g. when its client went away before the receipt. Nothing new arrives while the lock is held.
-        for backlog in &self.projection_backlogs {
-            backlog.drained().await;
         }
-        // Progress figures only: a failed count is reported as 0, the replay itself still decides.
+        if !accepted {
+            return Err(RebuildRefused::AlreadyRunning);
+        }
+        // Progress figures only: a failed count is reported as zero.
         let totals = self.ledger.totals().await.unwrap_or_default();
-        let (total, aggregates) = (totals.events, totals.aggregates);
-        if let Ok(mut status) = self.status.lock()
-            && let Some(running) = status.running.as_mut()
-        {
-            running.total = total;
-        }
+        let rebuild_id = Uuid::now_v7();
+        lock(&self.state).running = Some(Running {
+            rebuild_id,
+            pace,
+            started_at: now(),
+            keys_total: totals.aggregates,
+        });
         self.activity.publish(
             "rebuild.started",
-            json!({ "rebuild_id": rebuild_id, "speed": speed, "total": total, "aggregates": aggregates }),
+            json!({
+                "rebuild_id": rebuild_id,
+                "pace_ms": u64::try_from(pace.as_millis()).unwrap_or(u64::MAX),
+                "keys_total": totals.aggregates,
+                "events_total": totals.events,
+            }),
         );
-        // Always from scratch: never trust what a previous (maybe failed) run left behind.
-        let mut wiped = Ok(());
-        for read_model in &self.read_models {
-            wiped = wiped.and(read_model.wipe().await);
-        }
-        if let Err(error) = wiped {
-            let message = format!("wipe failed: {error}");
-            self.activity
-                .publish("rebuild.failed", json!({ "rebuild_id": rebuild_id, "message": message }));
-            return finish(false, 0, 0, Some(message));
-        }
-        let pace = if speed == Speed::Slow {
-            self.slow_delay
-        } else {
-            Duration::ZERO
-        };
-        // One pass per read model, i.e. per aggregate type. Within a pass events arrive ordered by
-        // `sequence` across aggregates ("seats light up in every hall at once"); per aggregate the
-        // order is preserved, which is all LWW needs.
-        let mut result = Ok(());
-        for read_model in &self.read_models {
-            result = self.pass(read_model.as_ref(), rebuild_id, speed, pace).await;
-            if result.is_err() {
-                break;
-            }
-        }
-        let replayed = self.replayed.load(Ordering::SeqCst);
-        match result {
-            Ok(()) => {
-                let result = finish(true, replayed, aggregates, None);
-                self.activity.publish(
-                    "rebuild.finished",
-                    json!({ "rebuild_id": rebuild_id, "speed": speed, "replayed": replayed, "aggregates": aggregates,
-                            "duration_ms": result.duration_ms }),
-                );
-                result
-            }
-            Err(message) => {
-                self.activity.publish(
-                    "rebuild.failed",
-                    json!({ "rebuild_id": rebuild_id, "speed": speed, "replayed": replayed, "message": message }),
-                );
-                finish(false, replayed, aggregates, Some(message))
-            }
-        }
+        tokio::spawn(watch(
+            self.checkpoints.clone(),
+            self.read_models.clone(),
+            self.activity.clone(),
+            self.state.clone(),
+            self.shutdown.clone(),
+            rebuild_id,
+        ));
+        Ok(RebuildStarted { rebuild_id, pace })
     }
 
-    async fn pass(
-        &self,
-        read_model: &dyn MaintainedReadModel,
-        rebuild_id: Uuid,
-        speed: Speed,
-        pace: Duration,
-    ) -> Result<(), String> {
-        let aggregate_type = read_model.aggregate_type();
-        let activity = self.activity.clone();
-        let counter = self.replayed.clone();
-        let last_progress = Mutex::new(Instant::now() - Duration::from_secs(1));
-        // The library counts per replay; `replayed` here counts across both passes.
-        let on_event: Box<ReplayProgressObserver> = Box::new(move |progress: &ReplayProgress<'_>| {
-            let count = counter.fetch_add(1, Ordering::SeqCst) + 1;
-            // Slow mode: a message per event; fast mode: at most ~20 per second (the final
-            // `rebuild.finished` carries the exact total).
-            let emit = speed == Speed::Slow
-                || last_progress
-                    .lock()
-                    .map(|mut last| {
-                        if last.elapsed() >= Duration::from_millis(50) {
-                            *last = Instant::now();
-                            true
-                        } else {
-                            false
-                        }
-                    })
-                    .unwrap_or(true);
-            if emit {
-                activity.publish(
-                    "rebuild.progress",
-                    json!({ "rebuild_id": rebuild_id, "replayed": count, "aggregate_type": aggregate_type,
-                            "aggregate_id": progress.aggregate_id, "sequence": progress.sequence, "event_type": progress.event_type }),
-                );
-            }
-        });
-        read_model.rebuild(pace, on_event).await.map_err(|e| e.0)
+    async fn rebuild_concert(&self, concert_id: &str) -> Result<(), RebuildRefused> {
+        let Some(halls) = self.read_models.first() else {
+            return Err(RebuildRefused::Unavailable("no read model to rebuild".into()));
+        };
+        self.checkpoints
+            .request_rebuild_key(halls, concert_id)
+            .await
+            .map_err(unavailable)
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::fan::test_support::record;
-    use crate::{
-        application::{StorageError, ports::LedgerTotals, projections::maintenance::Verification},
-        domain::fan::Fan,
-    };
-    use async_trait::async_trait;
-    use cqrsx::cqrs::{
-        command::CommandExecutor,
-        event::EventEnvelope,
-        event_handler::{EventHandler, delivery::DeliveryConfig},
-        store::PersistenceError,
-        testing::{command::TestCommandExecutor, mem_store::MemStore},
-    };
+    use crate::application::ports::LedgerTotals;
+    use cqrsx::cqrs::{store::feed::Position, testing::mem_checkpoint_store::MemCheckpointStore};
+    use std::collections::HashMap;
 
-    /// A read model whose history is `events` (aggregate id, sequence, event type) entries.
-    struct FakeReadModel {
-        name: &'static str,
-        events: Vec<(&'static str, usize, &'static str)>,
-        wipes: AtomicU64,
-        broken: bool,
+    fn halls() -> CheckpointKey {
+        CheckpointKey::new("concert_halls", "Concert")
     }
 
-    impl FakeReadModel {
-        fn new(name: &'static str, events: Vec<(&'static str, usize, &'static str)>) -> Arc<Self> {
-            Arc::new(Self {
-                name,
-                events,
-                wipes: AtomicU64::new(0),
-                broken: false,
-            })
+    fn wallets() -> CheckpointKey {
+        CheckpointKey::new("fan_wallets", "Fan")
+    }
+
+    /// Fixed totals and a lag per aggregate type; `None` fails the count.
+    struct Ledger(Mutex<HashMap<&'static str, Option<u64>>>);
+
+    impl Ledger {
+        fn new() -> Arc<Self> {
+            Arc::new(Self(Mutex::new(HashMap::from([("Concert", Some(0)), ("Fan", Some(0))]))))
+        }
+
+        fn set_lag(&self, aggregate_type: &'static str, lag: Option<u64>) {
+            self.0.lock().unwrap().insert(aggregate_type, lag);
         }
     }
 
     #[async_trait]
-    impl MaintainedReadModel for FakeReadModel {
-        fn name(&self) -> &'static str {
-            self.name
-        }
-
-        fn aggregate_type(&self) -> &'static str {
-            "Fake"
-        }
-
-        async fn wipe(&self) -> Result<(), StorageError> {
-            self.wipes.fetch_add(1, Ordering::SeqCst);
-            Ok(())
-        }
-
-        async fn rebuild(&self, _: Duration, on_event: Box<ReplayProgressObserver>) -> Result<(), StorageError> {
-            if self.broken {
-                return Err(StorageError("Fake replay failed: boom".into()));
-            }
-            for (replayed, (id, sequence, event_type)) in (1..).zip(&self.events) {
-                on_event(&ReplayProgress {
-                    aggregate_id: id,
-                    sequence: *sequence,
-                    event_type: (*event_type).to_owned(),
-                    replayed,
-                });
-            }
-            Ok(())
-        }
-
-        async fn verify(&self, _: Uuid) -> Result<Verification, StorageError> {
-            unreachable!("not used by rebuild")
-        }
-    }
-
-    struct FixedLedger;
-
-    #[async_trait]
-    impl EventLedgerStats for FixedLedger {
+    impl EventLedgerStats for Ledger {
         async fn totals(&self) -> Result<LedgerTotals, StorageError> {
             Ok(LedgerTotals {
-                events: 3,
-                aggregates: 2,
+                events: 9,
+                aggregates: 3,
             })
         }
+
+        async fn count_after(&self, aggregate_type: &str, _: Position, cap: u64) -> Result<u64, StorageError> {
+            match self.0.lock().unwrap().get(aggregate_type).copied().flatten() {
+                Some(lag) => Ok(lag.min(cap)),
+                None => Err(StorageError("journal unavailable".into())),
+            }
+        }
     }
 
-    fn service(read_models: Vec<Arc<dyn MaintainedReadModel>>) -> (Arc<RebuildService>, Arc<BoxOfficeLock>, Arc<ActivityHub>) {
-        service_with(read_models, Vec::new())
+    const LIMITS: ReadSideLimits = ReadSideLimits {
+        lag_cap: 100,
+        max_pace: Duration::from_secs(1),
+        status_timeout: Duration::from_secs(1),
+    };
+
+    struct Setup {
+        service: RebuildService<MemCheckpointStore>,
+        store: MemCheckpointStore,
+        ledger: Arc<Ledger>,
+        activity: Arc<ActivityHub>,
     }
 
-    fn service_with(
-        read_models: Vec<Arc<dyn MaintainedReadModel>>,
-        backlogs: Vec<DeliveryBacklog>,
-    ) -> (Arc<RebuildService>, Arc<BoxOfficeLock>, Arc<ActivityHub>) {
-        let lock = Arc::new(BoxOfficeLock::new());
+    async fn setup(registered: &[CheckpointKey]) -> Setup {
+        let store = MemCheckpointStore::default();
+        for key in registered {
+            store.register(key).await.unwrap();
+        }
+        let ledger = Ledger::new();
         let activity = Arc::new(ActivityHub::new(64, 64));
         let service = RebuildService::new(
-            lock.clone(),
-            read_models,
-            backlogs,
-            Arc::new(FixedLedger),
+            Arc::new(store.clone()),
+            vec![halls(), wallets()],
+            ledger.clone(),
             activity.clone(),
-            Duration::ZERO,
+            LIMITS,
+            CancellationToken::new(),
         );
-        (Arc::new(service), lock, activity)
-    }
-
-    async fn wait_until_idle(service: &RebuildService) -> serde_json::Value {
-        for _ in 0..200 {
-            let status = service.status_json();
-            if status["state"] == "idle" && !status["last_result"].is_null() {
-                return status;
-            }
-            tokio::time::sleep(Duration::from_millis(5)).await;
+        Setup {
+            service,
+            store,
+            ledger,
+            activity,
         }
-        panic!("the rebuild did not finish")
     }
 
-    #[tokio::test]
-    async fn status_is_idle_and_a_rebuild_is_refused_while_the_box_office_is_locked() {
-        let (service, lock, _) = service(vec![]);
-        assert_eq!(service.status_json()["state"], "idle");
-        assert!(!service.is_locked());
-        let guard = lock.try_acquire().unwrap();
-        assert_eq!(service.start(Speed::Fast), Err(AlreadyRunning));
-        drop(guard);
-        assert!(!service.is_locked());
+    fn kinds(activity: &ActivityHub) -> Vec<String> {
+        activity.subscribe().0.iter().map(|entry| entry.kind.clone()).collect()
     }
 
-    #[tokio::test]
-    async fn a_rebuild_wipes_replays_every_read_model_in_order_and_releases_the_lock() {
-        let halls = FakeReadModel::new(
-            "concert_halls",
-            vec![("c-1", 1, "ConcertAnnounced"), ("c-1", 2, "SeatBooked")],
-        );
-        let wallets = FakeReadModel::new("fan_wallets", vec![("fox", 1, "TicketRecorded")]);
-        let (service, lock, activity) = service(vec![halls.clone(), wallets.clone()]);
-        service.start(Speed::Slow).unwrap();
-        let status = wait_until_idle(&service).await;
-        assert_eq!(status["last_result"]["ok"], true);
-        assert_eq!(status["last_result"]["replayed"], 3);
-        assert_eq!(status["last_result"]["aggregates"], 2);
-        assert!(!lock.is_locked());
-        assert_eq!(
-            (halls.wipes.load(Ordering::SeqCst), wallets.wipes.load(Ordering::SeqCst)),
-            (1, 1)
-        );
-        let kinds: Vec<String> = activity.subscribe().0.iter().map(|e| e.kind.clone()).collect();
-        assert_eq!(
-            kinds,
-            [
-                "rebuild.started",
-                "rebuild.progress",
-                "rebuild.progress",
-                "rebuild.progress",
-                "rebuild.finished"
-            ]
-        );
-    }
-
-    #[tokio::test]
-    async fn a_rebuild_wipes_nothing_until_the_commands_admitted_before_it_have_finished() {
-        let halls = FakeReadModel::new("concert_halls", vec![("c-1", 1, "ConcertAnnounced")]);
-        let (service, lock, _) = service(vec![halls.clone()]);
-        let command = lock.admit().unwrap();
-        service.start(Speed::Fast).unwrap();
+    /// Plays the owner of `key`: takes the request, rebuilds `keys` documents and finishes.
+    async fn run_rebuild(store: &MemCheckpointStore, key: &CheckpointKey, keys: u64) {
+        let owner = store.claim(key, "node-a", Duration::from_secs(10)).await.unwrap().unwrap();
         assert!(
-            lock.admit().is_none(),
-            "no command is admitted once the rebuild holds the lock"
+            store
+                .take_requests(key, owner.token, 10)
+                .await
+                .unwrap()
+                .unwrap()
+                .rebuild
+                .is_some()
         );
-        for _ in 0..20 {
-            tokio::task::yield_now().await;
+        assert!(store.begin_rebuild(key, owner.token).await.unwrap());
+        if keys > 0 {
+            assert!(store.advance_rebuild(key, owner.token, "k", keys).await.unwrap());
         }
-        assert_eq!(halls.wipes.load(Ordering::SeqCst), 0, "the admitted command is still running");
-        assert_eq!(service.status_json()["state"], "running");
-        drop(command);
-        let status = wait_until_idle(&service).await;
-        assert_eq!(status["last_result"]["ok"], true);
-        assert_eq!(halls.wipes.load(Ordering::SeqCst), 1);
+        assert!(store.finish_rebuild(key, owner.token).await.unwrap());
+        store.release(key, owner.token).await.unwrap();
     }
 
-    /// A projection that holds every call until the test lets it through.
-    struct Held(tokio::sync::Semaphore);
-
-    #[async_trait]
-    impl EventHandler<Fan> for Held {
-        async fn handle(&self, _: &str, _: &[EventEnvelope<Fan>]) -> Result<(), PersistenceError> {
-            self.0.acquire().await.unwrap().forget();
-            Ok(())
+    #[tokio::test(start_paused = true)]
+    async fn a_rebuild_asks_both_rows_and_is_refused_while_they_run_or_with_a_pace_too_long() {
+        let s = setup(&[halls(), wallets()]).await;
+        let started = s.service.rebuild(Duration::from_millis(80)).await.unwrap();
+        assert_eq!(started.pace, Duration::from_millis(80));
+        for row in s.store.status(None).await.unwrap() {
+            assert_eq!((row.rebuild_requested, row.rebuild_pace), (true, Duration::from_millis(80)));
         }
+        assert_eq!(s.service.rebuild(Duration::ZERO).await, Err(RebuildRefused::AlreadyRunning));
+        assert_eq!(
+            s.service.rebuild(Duration::from_millis(1001)).await,
+            Err(RebuildRefused::PaceTooLong { max_ms: 1000 })
+        );
+        assert_eq!(kinds(&s.activity), ["rebuild.started"]);
+        let started_entry = s.activity.subscribe().0[0].clone();
+        assert_eq!(
+            (
+                started_entry.fields["pace_ms"].as_u64(),
+                started_entry.fields["keys_total"].as_u64(),
+                started_entry.fields["events_total"].as_u64()
+            ),
+            (Some(80), Some(3), Some(9))
+        );
     }
 
-    #[tokio::test]
-    async fn a_rebuild_wipes_nothing_until_the_projections_have_applied_what_was_handed_over() {
-        let halls = FakeReadModel::new("concert_halls", vec![("c-1", 1, "ConcertAnnounced")]);
-        let held = Arc::new(Held(tokio::sync::Semaphore::new(0)));
-        let executor =
-            TestCommandExecutor::new(MemStore::<Fan>::default(), ()).with_event_handler(held.clone(), DeliveryConfig::default());
-        // A command that is done, its client gone, and its events still in the projection's buffer.
-        drop(tokio::spawn({
-            let executor = executor.clone();
-            async move { executor.execute("fox", record(Uuid::from_u128(1)), vec![]).await }
-        }));
-        let backlog = executor.backlog();
-        for _ in 0..100 {
-            if !backlog.is_empty() {
-                break;
-            }
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(backlog.len(), 1, "the command handed its events over");
-        let (service, _, _) = service_with(vec![halls.clone()], vec![DeliveryBacklog::default(), backlog]);
-        service.start(Speed::Fast).unwrap();
-        for _ in 0..20 {
-            tokio::task::yield_now().await;
-        }
-        assert_eq!(halls.wipes.load(Ordering::SeqCst), 0, "the projection has not applied it yet");
-        assert_eq!(service.status_json()["state"], "running");
-        held.0.add_permits(1);
-        let status = wait_until_idle(&service).await;
-        assert_eq!(status["last_result"]["ok"], true);
-        assert_eq!(halls.wipes.load(Ordering::SeqCst), 1);
+    #[tokio::test(start_paused = true)]
+    async fn one_row_already_running_is_enough_and_a_missing_row_or_store_is_unavailable() {
+        let s = setup(&[halls(), wallets()]).await;
+        assert_eq!(
+            s.store.request_rebuild(&wallets(), Duration::ZERO).await.unwrap(),
+            RebuildRequest::Accepted
+        );
+        assert!(s.service.rebuild(Duration::ZERO).await.is_ok(), "the halls were accepted");
+        let s = setup(&[]).await;
+        assert!(matches!(
+            s.service.rebuild(Duration::ZERO).await,
+            Err(RebuildRefused::Unavailable(message)) if message.contains("starting")
+        ));
+        let s = setup(&[halls(), wallets()]).await;
+        s.store.set_unavailable(true);
+        assert!(matches!(
+            s.service.rebuild(Duration::ZERO).await,
+            Err(RebuildRefused::Unavailable(_))
+        ));
+        assert!(matches!(
+            s.service.rebuild_concert("c-1").await,
+            Err(RebuildRefused::Unavailable(_))
+        ));
     }
 
-    #[tokio::test]
-    async fn a_failed_pass_stops_the_rebuild_and_is_reported() {
-        let broken = Arc::new(FakeReadModel {
-            name: "concert_halls",
-            events: vec![],
-            wipes: AtomicU64::new(0),
-            broken: true,
-        });
-        let wallets = FakeReadModel::new("fan_wallets", vec![("fox", 1, "TicketRecorded")]);
-        let (service, lock, activity) = service(vec![broken, wallets]);
-        service.start(Speed::Fast).unwrap();
-        let status = wait_until_idle(&service).await;
-        assert_eq!(status["last_result"]["ok"], false);
-        assert_eq!(status["last_result"]["error"], "Fake replay failed: boom");
-        assert_eq!(status["last_result"]["replayed"], 0, "the second pass never ran");
-        assert!(!lock.is_locked());
-        assert_eq!(activity.subscribe().0.last().unwrap().kind, "rebuild.failed");
+    #[tokio::test(start_paused = true)]
+    async fn one_concert_is_rebuilt_on_request_by_the_owner_of_the_halls() {
+        let s = setup(&[halls(), wallets()]).await;
+        s.service.rebuild_concert("c-1").await.unwrap();
+        let owner = s
+            .store
+            .claim(&halls(), "node-a", Duration::from_secs(10))
+            .await
+            .unwrap()
+            .unwrap();
+        let requests = s.store.take_requests(&halls(), owner.token, 10).await.unwrap().unwrap();
+        assert_eq!((requests.rebuild, requests.keys), (None, vec!["c-1".to_owned()]));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_watcher_waits_for_the_owners_reports_progress_and_the_end_once_both_rows_are_done() {
+        let s = setup(&[halls(), wallets()]).await;
+        let started = s.service.rebuild(Duration::ZERO).await.unwrap();
+        tokio::time::sleep(REBUILD_WATCH_INTERVAL * 3).await;
+        assert_eq!(kinds(&s.activity), ["rebuild.started"], "nobody took the requests yet");
+        assert_eq!(
+            s.service.status().await.unwrap()["rebuild"]["rebuild_id"],
+            json!(started.rebuild_id)
+        );
+        run_rebuild(&s.store, &halls(), 2).await;
+        tokio::time::sleep(REBUILD_WATCH_INTERVAL * 2).await;
+        assert_eq!(kinds(&s.activity), ["rebuild.started", "rebuild.progress"]);
+        run_rebuild(&s.store, &wallets(), 1).await;
+        tokio::time::sleep(REBUILD_WATCH_INTERVAL * 2).await;
+        assert_eq!(
+            kinds(&s.activity),
+            ["rebuild.started", "rebuild.progress", "rebuild.progress", "rebuild.finished"]
+        );
+        let finished = s.activity.subscribe().0.last().unwrap().clone();
+        assert_eq!(finished.fields["keys"], json!(3));
+        let status = s.service.status().await.unwrap();
+        assert_eq!(status["rebuild"], Value::Null);
+        assert_eq!(status["last_result"]["keys"], json!(3));
+        assert_eq!(status["last_result"]["rebuild_id"], json!(started.rebuild_id));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_row_dropped_during_the_rebuild_ends_it_and_a_shutdown_stops_the_watcher() {
+        let s = setup(&[halls(), wallets()]).await;
+        s.service.rebuild(Duration::ZERO).await.unwrap();
+        s.store.clear();
+        tokio::time::sleep(REBUILD_WATCH_INTERVAL * 2).await;
+        assert_eq!(kinds(&s.activity), ["rebuild.started", "rebuild.finished"]);
+        let s = setup(&[halls(), wallets()]).await;
+        s.service.rebuild(Duration::ZERO).await.unwrap();
+        s.service.shutdown.cancel();
+        tokio::time::sleep(REBUILD_WATCH_INTERVAL * 2).await;
+        run_rebuild(&s.store, &halls(), 1).await;
+        run_rebuild(&s.store, &wallets(), 1).await;
+        tokio::time::sleep(REBUILD_WATCH_INTERVAL * 2).await;
+        assert_eq!(
+            kinds(&s.activity),
+            ["rebuild.started"],
+            "the watcher stopped with the process"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_status_names_the_state_of_every_projection_and_the_worst_of_them() {
+        let s = setup(&[halls()]).await;
+        let status = s.service.status().await.unwrap();
+        assert_eq!(
+            status["projections"][1]["state"], "starting",
+            "the wallets' row is not registered yet"
+        );
+        assert_eq!(status["projections"][0]["state"], "unclaimed", "nobody owns the halls");
+        assert_eq!(
+            status["state"], "unclaimed",
+            "an unowned projection is worse than one starting"
+        );
+        s.store.register(&wallets()).await.unwrap();
+        let halls_owner = s
+            .store
+            .claim(&halls(), "node-a", Duration::from_secs(10))
+            .await
+            .unwrap()
+            .unwrap();
+        let wallets_owner = s
+            .store
+            .claim(&wallets(), "node-a", Duration::from_secs(10))
+            .await
+            .unwrap()
+            .unwrap();
+        let status = s.service.status().await.unwrap();
+        assert_eq!(status["state"], "live");
+        assert_eq!(
+            (
+                status["projections"][0]["owner"].as_str(),
+                status["projections"][0]["lag"].as_u64()
+            ),
+            (Some("node-a"), Some(0))
+        );
+        s.ledger.set_lag("Concert", Some(150));
+        s.store
+            .record_failure(&halls(), halls_owner.token, "concert_halls: connection")
+            .await
+            .unwrap();
+        let status = s.service.status().await.unwrap();
+        let hall = &status["projections"][0];
+        assert_eq!(
+            (
+                hall["state"].as_str(),
+                hall["lag"].as_u64(),
+                hall["lag_capped"].as_bool(),
+                hall["last_error"].as_str()
+            ),
+            (Some("stalled"), Some(100), Some(true), Some("concert_halls: connection"))
+        );
+        assert_eq!(status["state"], "stalled");
+        s.ledger.set_lag("Concert", Some(0));
+        let status = s.service.status().await.unwrap();
+        assert_eq!(
+            status["projections"][0]["state"], "live",
+            "a failure the journal has moved past is no stall"
+        );
+        s.store.request_rebuild(&wallets(), Duration::from_millis(80)).await.unwrap();
+        let status = s.service.status().await.unwrap();
+        assert_eq!(status["projections"][1]["state"], "rebuilding");
+        assert_eq!(status["projections"][1]["rebuild"]["pace_ms"], 80);
+        s.store.expire_lease(&wallets());
+        tokio::time::sleep(Duration::from_millis(5)).await;
+        let status = s.service.status().await.unwrap();
+        assert_eq!(
+            status["projections"][1]["state"], "unclaimed",
+            "an expired lease has no owner"
+        );
+        s.store.release(&wallets(), wallets_owner.token).await.unwrap();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_store_that_does_not_answer_gives_the_rows_seen_last_and_a_failed_count_is_an_error() {
+        let s = setup(&[halls(), wallets()]).await;
+        let fresh = s.service.status().await.unwrap();
+        assert_eq!(fresh["stale"], false);
+        s.store.set_unavailable(true);
+        let stale = s.service.status().await.unwrap();
+        assert_eq!(stale["stale"], true);
+        assert_eq!(stale["projections"], fresh["projections"]);
+        s.store.set_unavailable(false);
+        s.ledger.set_lag("Fan", None);
+        assert_eq!(
+            s.service.status().await.unwrap_err(),
+            StorageError("journal unavailable".into())
+        );
     }
 }

@@ -8,7 +8,7 @@ pub async fn handle(State(state): State<AppState>) -> Result<Json<Value>, ApiErr
     let halls = state.read.halls.list().await.map_err(ApiError::read_model_unavailable)?;
     let list = halls
         .into_iter()
-        .map(|Stored { id, version, view }| {
+        .map(|Stored { id, version, view, .. }| {
             let concert = view.concert.as_ref();
             json!({
                 "concert_id": id,

@@ -2,8 +2,8 @@
 //! binary and the router tests share one graph. Each registry below is the one place to add a
 //! component of its kind:
 //!
-//! - [`aggregates`]: one module per aggregate: its command executor and the event handlers it feeds;
-//! - [`projections`]: the read models: their collections, repositories, maintenance and query ports;
+//! - [`aggregates`]: one module per aggregate: its command executor, which wakes its read model's processor;
+//! - [`projections`]: the read models: their collections, processors, verification and query ports;
 //! - [`tasks`]: the outbox task handlers;
 //! - [`routes`]: the HTTP endpoints.
 pub mod aggregates;
@@ -15,8 +15,10 @@ use crate::{
     application::{
         self,
         activity::ActivityHub,
-        lock::BoxOfficeLock,
-        operations::{rebuild::RebuildService, verify::VerifyService},
+        operations::{
+            rebuild::{ReadSide, ReadSideLimits, RebuildService},
+            verify::VerifyService,
+        },
         read_models::ReadModels,
     },
     config::Config,
@@ -25,7 +27,7 @@ use crate::{
     process::Process,
 };
 use cqrsx::{
-    cqrs::event_handler::delivery::DeliveryBacklog,
+    cqrs::projection::runtime::ProjectionRuntime,
     postgres::command::{PostgresCommandConfigError, PostgresCommandExecutor},
     task::{adapter::boxed::BoxedTaskAdapter, runtime::dispatcher_factory::TaskDispatcherFactory},
 };
@@ -51,7 +53,8 @@ pub struct AppState {
     pub config: Arc<Config>,
     pub concerts: Arc<ConcertApp>,
     pub activity: Arc<ActivityHub>,
-    pub rebuild: Arc<RebuildService>,
+    /// Encore!, the rebuild of one hall and the status of the projections.
+    pub rebuild: Arc<dyn ReadSide>,
     pub read: Arc<ReadModels>,
     pub time_travel: Arc<TimeTravel>,
     pub verify: Arc<VerifyService>,
@@ -60,12 +63,12 @@ pub struct AppState {
     pub shutdown: CancellationToken,
 }
 
-/// The wired application: the HTTP state, the task handlers for the outbox runtime and what the
-/// projections still have to apply when the process stops.
+/// The wired application: the HTTP state, the task handlers for the outbox runtime and the projection
+/// processors that feed the read models from the journal.
 pub struct Wiring {
     pub state: AppState,
     pub dispatcher: TaskDispatcherFactory<BoxedTaskAdapter>,
-    pub projection_backlogs: Vec<DeliveryBacklog>,
+    pub projections: ProjectionRuntime,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -76,28 +79,30 @@ pub enum WiringError {
     MailClient(#[from] reqwest::Error),
 }
 
-/// Builds the graph in dependency order: the read models, the aggregates that feed them, the
-/// operations over the whole ledger, the task handlers.
+/// Builds the graph in dependency order: the read side (processors and their wake-ups), the aggregates
+/// whose commits wake it, the operations over the whole ledger, the task handlers.
 pub fn wire(process: &Process) -> Result<Wiring, WiringError> {
     let config = process.config.clone();
     let activity = Arc::new(ActivityHub::new(ACTIVITY_CHANNEL_CAPACITY, ACTIVITY_BACKLOG));
-    let lock = Arc::new(BoxOfficeLock::new());
 
-    let read = projections::read_models(process);
-    let (concerts, concert_backlog) = aggregates::concert::wire(process, &read, &activity, &lock)?;
-    let (fans, fan_backlog) = aggregates::fan::wire(process, &read, &activity, &lock)?;
-    let projection_backlogs = vec![concert_backlog, fan_backlog];
+    let read = projections::read_models(process, &activity);
+    let concerts = aggregates::concert::wire(process, &read.concert_wakeup, &activity)?;
+    let fans = aggregates::fan::wire(process, &read.fan_wakeup, &activity)?;
 
-    // Operations over the whole ledger: Encore! (rebuild), verify and the time machine.
-    let rebuild = Arc::new(RebuildService::new(
-        lock.clone(),
-        read.maintenance.clone(),
-        projection_backlogs.clone(),
-        Arc::new(PostgresLedger::new(process.history_pool.clone())),
+    // Operations over the whole ledger: Encore! and the status, verify and the time machine.
+    let rebuild: Arc<dyn ReadSide> = Arc::new(RebuildService::new(
+        read.checkpoints.clone(),
+        projections::checkpoint_keys(),
+        Arc::new(PostgresLedger::new(process.pool.clone(), process.history_pool.clone())),
         activity.clone(),
-        config.replay_slow_delay,
+        ReadSideLimits {
+            lag_cap: config.projection_lag_cap,
+            max_pace: config.replay_max_pace,
+            status_timeout: config.projection_status_timeout,
+        },
+        process.shutdown.clone(),
     ));
-    let verify = Arc::new(VerifyService::new(read.maintenance));
+    let verify = Arc::new(VerifyService::new(read.verification));
     let time_travel = Arc::new(TimeTravel::new(event_history(process.history_pool.clone())));
 
     let dispatcher = tasks::dispatcher(process, fans, activity.clone())?;
@@ -114,7 +119,7 @@ pub fn wire(process: &Process) -> Result<Wiring, WiringError> {
             shutdown: process.shutdown.clone(),
         },
         dispatcher,
-        projection_backlogs,
+        projections: read.runtime,
     })
 }
 
@@ -122,14 +127,11 @@ pub fn wire(process: &Process) -> Result<Wiring, WiringError> {
 mod tests {
     use super::*;
     use crate::testing;
-    use cqrsx::cqrs::event_handler::delivery::DeliveryConfig;
 
     #[tokio::test]
-    async fn ordered_projections_are_wired_with_one_backlog_each() {
-        let mut config = testing::config();
-        config.projection_delivery = DeliveryConfig::new(8, 1).unwrap();
-        let wiring = wire(&testing::process_with(config).await).unwrap();
-        assert_eq!(wiring.projection_backlogs.len(), 2, "one per projection");
-        assert!(wiring.projection_backlogs.iter().all(DeliveryBacklog::is_empty));
+    async fn the_read_side_is_wired_with_one_processor_per_read_model() {
+        let wiring = wire(&testing::process().await).unwrap();
+        assert_eq!(wiring.projections.len(), 2, "the concert halls and the fan wallets");
+        assert_eq!(projections::checkpoint_keys().len(), 2);
     }
 }

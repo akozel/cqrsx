@@ -4,7 +4,7 @@ use crate::{
         aggregate::Aggregate,
         command::{
             CommandExecutor, CommandGatewayError,
-            executor::{CqrsCommandExecutor, FrameworkFactory},
+            executor::{CommandExecutorCore, FrameworkFactory},
             locks::LockLimits,
             retry::AggregateConflictRetryPolicy,
             wakeup::CommitWakeup,
@@ -86,10 +86,11 @@ where
     }
 }
 
-/// The command executor over PostgreSQL: a [`CqrsCommandExecutor`] whose factory binds every command's
-/// outbox tasks to a fresh repository on the shared pool, with a snapshot-backed store and a clone of the
-/// services. One per aggregate type and process: it owns the aggregate locks and the handlers' buffers, so
-/// share it (e.g. in an `Arc`) instead of building a second one. Commands run through [`CommandExecutor`].
+/// The command executor over PostgreSQL: the [`CommandExecutorCore`] with a factory that binds every
+/// command's outbox tasks to a fresh repository on the shared pool, with a snapshot-backed store and a clone
+/// of the services. One per aggregate type and process: it owns the aggregate locks and the handlers'
+/// buffers, so share it (e.g. in an `Arc`) instead of building a second one, and never build a core of your
+/// own next to it for the same aggregate type. Commands run through [`CommandExecutor`].
 ///
 /// Construction performs no I/O. Accepted event, optional snapshot and explicit tasks commit atomically; at
 /// most one event is supported per command. Connection/timeout failures may have unknown commit outcomes
@@ -97,9 +98,9 @@ where
 /// creation applies accepted events to the original committed context, preserving append and increment
 /// semantics without requiring repeatable event application.
 ///
-/// For custom stores, use [`CqrsCommandExecutor::new`] with a framework factory instead.
+/// For custom stores, use [`CommandExecutorCore::new`] with a framework factory instead.
 pub struct PostgresCommandExecutor<A: Aggregate> {
-    inner: CqrsCommandExecutor<A, PostgresFrameworkFactory<A>>,
+    inner: CommandExecutorCore<A, PostgresFrameworkFactory<A>>,
 }
 
 impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
@@ -112,7 +113,7 @@ impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
             services,
         };
         Self {
-            inner: CqrsCommandExecutor::new(factory, config.conflict_retry(), config.lock_limits()),
+            inner: CommandExecutorCore::new(factory, config.conflict_retry(), config.lock_limits()),
         }
     }
 

@@ -10,6 +10,8 @@ services:
       service: backend
     build: !reset null # never built: the image of the first node (built by run.sh BUILD=1 or BACKEND_IMAGE)
     image: ${PERF_BACKEND_IMAGE:-encore-load-backend}
+    environment:
+      ENCORE_NODE_NAME: backend-2 # an owner name of its own: the status and the handovers tell the nodes apart
     # The same per-node budget as the first node: perf/run.sh splits the back-end budget between them.
     cpus: "${LOAD_CPUS_BACKEND:-4}"
     depends_on:

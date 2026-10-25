@@ -16,6 +16,7 @@ export const useWalletStore = defineStore('wallet', () => {
   const wallet = ref<FanWalletDoc | null>(null)
   const inbox = ref<InboxMail[]>([])
   const loadedFor = ref<string | null>(null)
+  let soon: ReturnType<typeof setTimeout> | null = null
 
   const tickets = computed(() => {
     const t = wallet.value?.view.tickets ?? {}
@@ -53,11 +54,21 @@ export const useWalletStore = defineStore('wallet', () => {
     }
   }
 
+  /** One of the fan's ledgers moved or an e-mail was delivered: one refresh `ms` later covers every signal
+   * until then. */
+  function refreshDebounced(ms = 150) {
+    if (soon) return
+    soon = setTimeout(() => {
+      soon = null
+      void refresh()
+    }, ms)
+  }
+
   function clear() {
     wallet.value = null
     inbox.value = []
     loadedFor.value = null
   }
 
-  return { wallet, inbox, loadedFor, tickets, mailByBooking, refundMails, refresh, clear }
+  return { wallet, inbox, loadedFor, tickets, mailByBooking, refundMails, refresh, refreshDebounced, clear }
 })

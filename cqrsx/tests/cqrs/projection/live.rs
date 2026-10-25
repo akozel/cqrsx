@@ -8,6 +8,8 @@ use cqrsx::cqrs::{
 };
 use std::time::Duration;
 
+const SHORT: Duration = Duration::from_millis(20);
+
 /// Turns the version-0 delta nobody can read into a zero delta of the current version.
 struct Heal;
 
@@ -363,4 +365,96 @@ async fn a_command_with_several_events_is_one_transaction_and_one_job() {
     assert_eq!(h.observer.count("applied:a:3"), 1);
     assert_eq!(h.status().await.applied, 3);
     node.stop().await;
+}
+
+/// The reads the journal saw while `work` ran, over virtual time shorter than the poll.
+async fn reads_during(h: &Harness, work: impl AsyncFnOnce()) -> usize {
+    let before = h.journal.feed_reads();
+    work().await;
+    h.run_for(POLL / 5).await; // long enough to settle, short of the poll
+    h.journal.feed_reads() - before
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_commit_costs_one_read_and_neither_the_end_of_the_page_nor_its_receipt_adds_another() {
+    let h = Harness::new();
+    let node = h.node("n1");
+    h.run_for(POLL * 2).await;
+    let reads = reads_during(&h, async || {
+        h.commit("a", 1).await;
+        h.until(async || h.observer.count("advanced:") >= 1).await;
+    })
+    .await;
+    assert_eq!(
+        reads, 1,
+        "a page short of its size is the end of the journal; a receipt is no reason to read"
+    );
+    assert_eq!(h.view("a").await.unwrap().0.total, 1);
+    node.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_full_page_is_followed_at_once_by_the_next_read_and_the_last_short_page_ends_them() {
+    let config = ProcessorConfig::new(POLL, 2, Duration::from_secs(1), DeliveryConfig::default()).unwrap();
+    let h = Harness::with_config(config);
+    for delta in 1..=5 {
+        h.commit("a", delta).await;
+    }
+    let node = h.node("n1");
+    let reads = reads_during(&h, async || {
+        h.caught_up(&["a"]).await;
+    })
+    .await;
+    assert_eq!(reads, 3, "pages of 2, 2 and 1 events: the short one is the last");
+    assert_eq!(h.view("a").await.unwrap().0.total, 15);
+    node.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_settle_time_gathers_the_commits_of_a_burst_into_one_page() {
+    let burst = async |h: &Harness| {
+        for delta in 1..=5 {
+            h.commit("a", delta).await;
+            tokio::time::sleep(Duration::from_millis(2)).await;
+        }
+    };
+    let eager = Harness::new();
+    let node = eager.node("n1");
+    eager.run_for(POLL * 2).await;
+    let eager_reads = reads_during(&eager, async || burst(&eager).await).await;
+    assert_eq!(eager.view("a").await.unwrap().0.total, 15);
+    node.stop().await;
+
+    let patient = Harness::with_config(config().with_settle(SHORT).unwrap());
+    let node = patient.node("n1");
+    patient.run_for(POLL * 2).await;
+    let patient_reads = reads_during(&patient, async || burst(&patient).await).await;
+    assert_eq!(
+        patient.view("a").await.unwrap().0.total,
+        15,
+        "the settle delays the reads, it loses nothing"
+    );
+    assert_eq!(patient_reads, 1, "five commits within the settle time are one page");
+    assert!(
+        eager_reads > patient_reads,
+        "without it every commit is read on its own ({eager_reads} reads)"
+    );
+    assert_eq!(patient.observer.count("applied:a:"), 1);
+    node.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_settling_owner_stops_on_shutdown_and_still_sees_a_commit_made_while_it_settles() {
+    let h = Harness::with_config(config().with_settle(SHORT * 4).unwrap());
+    let node = h.node("n1");
+    h.run_for(POLL * 2).await;
+    h.commit("a", 1).await;
+    tokio::time::sleep(SHORT).await; // the owner is settling now
+    h.commit("a", 2).await;
+    h.caught_up(&["a"]).await;
+    assert_eq!(h.view("a").await.unwrap().0.total, 3);
+    h.commit("a", 4).await;
+    tokio::time::sleep(SHORT).await;
+    node.stop().await; // the stop interrupts the settle and releases the row
+    assert_eq!(h.status().await.owner, None);
 }

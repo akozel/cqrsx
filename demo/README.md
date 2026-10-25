@@ -5,16 +5,17 @@ Encore is an online box office for a concert hall. You pick a persona (🦊 Fox,
 
 ```
 click → command → Concert aggregate rules → event + outbox task   (one PostgreSQL transaction)
-      → "seat map" projection in MongoDB → screen
+      → a projection processor follows the ledger → "seat map" in MongoDB → screen
       → worker sends a command to the Fan aggregate → event + outbox task (second transaction)
-      → "fan wallet" projection → screen
+      → its processor follows the ledger → "fan wallet" → screen
       → worker "sends the e-ticket" through a moody mail server (20 % failures → retry)
 ```
 
 Five "aha" moments, one per topic: the **event store** (⏳ time machine), **commands and invariants**
 (🧪 rule breakers, Δ events = 0), the **transactional outbox** (🎲 retries, exactly one e-mail),
 **projections** (two event streams → two MongoDB documents) and **replay** (🧨 wipe, ⏪ Encore!).
-*Encore* ("once more!") is the pun: replay is playing the whole history again.
+*Encore* ("once more!") is the pun: replay is playing the whole history again — while the box office
+stays open.
 
 The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the library API are in
 [`docs/API_MAPPING.md`](docs/API_MAPPING.md); the autonomous build log with every verification is
@@ -169,8 +170,13 @@ make up          # fresh databases (init scripts run again), then start the apps
 From the UI, DEMO ONLY: **⟲ Reset the demo** (Encore panel) asks the sidecar to `TRUNCATE` the ledger, the
 snapshots and the outbox (role `encore_demo_admin`, which may do nothing else), drop the read models and
 the mail inbox, and announce the three default concerts again — the schemas and the containers stay.
-Only the read models can also be dropped on their own: 🧨 wipe (the sidecar, `POST /inspect/projections/wipe`),
-then ⏪ Encore! (the back-end) rebuilds them from the ledger.
+Only the read models can also be dropped on their own: 🧨 wipe (the sidecar, `POST /inspect/projections/wipe`)
+drops them together with their checkpoints, and the processors read the ledger again from the start, so the
+halls come back by themselves. ⏪ Encore! (the back-end) rebuilds every document in place without dropping
+anything.
+
+**After updating from an older version run `make reset`**: the ledger gained a transaction position
+(`events.tx`) and the read side gained its checkpoints, and the project keeps no compatibility with old data.
 
 ### 5. Stop
 
@@ -200,8 +206,8 @@ Do not mix the modes: stop the host apps before `make full`, and remove the `app
 │ back-end · axum + cqrsx              │           │ sidecar · axum                    │
 │ • write side: CommandExecutor        │           │ • does NOT depend on cqrsx        │
 │ • task runtime (outbox workers)      │           │ • SELECT / find only              │
-│ • read API over the projections      │           │ • read-only PostgreSQL role       │
-│ • replay, time machine, activity     │           │ • polling 400 ms → SSE            │
+│ • projection processors              │           │ • read-only PostgreSQL role       │
+│ • read API, time machine, activity   │           │ • polling 400 ms → SSE            │
 │ • e-mail = POST /mail (HTTP client)  │           │ • DEMO: seed, wipe, reset         │
 │ • NO demo-only code                  │           │ • DEMO: moody mail service /mail  │
 └───┬────────────────────────┬─────────┘           └─────┬────────────────────┬────────┘
@@ -212,7 +218,8 @@ Do not mix the modes: stop the host apps before `make full`, and remove the `app
 │ db `encore`          │◄┼──────────────────────────┼────┘                    │
 │ events, snapshots,   │ │ encore_read.concert_halls│◄──────────────────────────┘
 │ transactional_outbox │ │ encore_read.fan_wallets  │
-└──────────────────────┘ │ mail_service.inbox       │
+└──────────────────────┘ │ …projection_checkpoints  │
+                         │ mail_service.inbox       │
                          └──────────────────────────┘
 ```
 
@@ -238,11 +245,20 @@ Key points, each visible on screen:
   (`last_sequence`) and takes only the next one — a repeat is skipped, a gap is refused and nothing is
   written, so a document is never created from the middle of a history and never silently misses an
   event. Inside the fold, seat and ticket entries are last-writer-wins registers keyed by event
-  `sequence` with recomputed derived fields. Documents are updated in-process after commit — without
-  delivery guarantees. That is why Encore! exists.
-- **Replay** drops both collections and replays the ledger through the very same `ViewProjection`s.
-  The mail inbox belongs to the mail service, in a database the back-end never connects to: rebuilding
-  read models cannot resend e-mails.
+  `sequence` with recomputed derived fields.
+- **Projection processors** (one per read model, `bootstrap::projections`) follow the ledger by a
+  checkpoint kept in MongoDB next to the documents (`projection_checkpoints`): a commit wakes the
+  processor, which reads the new events page by page and applies them per document; a failed round is
+  retried after a pause and nothing is lost. A command answers *accepted* as soon as its event is in the
+  ledger — the read models follow a moment later, and the screen waits for the `projection.updated` of its
+  document on the activity stream. Only one node owns a checkpoint at a time (a lease): a killed owner is
+  replaced after its lease expires.
+- **Replay** (⏪ Encore!) asks the owners to rebuild every document in place from its history, with the box
+  office open: bookings made meanwhile appear as soon as the rebuild reaches their hall (slow motion pauses
+  `ENCORE_REPLAY_SLOW_DELAY_MS` between events). The 🔍 verify button compares every document with the
+  history it has applied and counts the documents still behind apart from the wrong ones. The mail inbox
+  belongs to the mail service, in a database the back-end never connects to: rebuilding read models
+  cannot resend e-mails.
 - **The strip at the top of the page** draws all of this as a live diagram (Vue Flow, sketch in
   `docs/img.png`): the `Concert service` and `Fan service` boundaries with command → aggregate →
   events + outbox → outbox worker inside each, the `projection` boundary with the read database and
@@ -268,15 +284,17 @@ Key points, each visible on screen:
    streams (`Concert`, `Fan`) → two documents (hall and the fan's ledger for this concert, shown merged in
    the wallet); the wallet catches up one chain step later.
 6. **Cancellation (30 s).** Fox cancels a ticket: `BookingCancelled` + 🔁 → `TicketCancelled` + 💸 → "Refund" e-mail.
-7. **Encore! (1.5 min).** 🧨 Wipe → click a seat that was taken (still rejected: rules read the ledger) →
-   book a free seat (⚠️ accepted with a warning: the booking is in the ledger, but a document without its
-   history is not created, so the hall stays "?") → ⏪ Encore! in slow motion: seats light up one by one,
-   the 📬 inbox does not change.
+7. **Encore! (1.5 min).** 🧨 Wipe → the hall shows "?" for a moment, click a seat that was taken (still
+   rejected: rules read the ledger) → the processors read the ledger from the start and the halls come back
+   by themselves. Then ⏪ Encore! in slow motion: seats light up one by one, you can still book a seat
+   (the box office is open), 🔍 Verify says every document matches, the 📬 inbox does not change. The
+   ⟲ button beside the zones rebuilds one hall only.
 8. **Race (30 s).** ⚡ Race: "Fox won · Panda: seat_taken" with the optimistic-locking explanation.
-9. **MongoDB outage (optional).** `podman compose stop mongo` → book a seat → the command is accepted with
-   the warning "event recorded, read model not updated" → `podman compose start mongo` → every later command
-   on that concert carries the same warning, because a document that fell behind refuses the next events
-   instead of silently skipping the missed one → Encore! catches up.
+9. **MongoDB outage (optional).** `podman compose pause mongo` → book a seat: it is accepted, the seat map
+   does not change, the Encore panel shows the lag growing and the feed `projection.failed` →
+   `podman compose unpause mongo` → the processors take their leases again and the hall catches up on its own.
+   The same with two nodes (not in this compose, see `load/chaos/`): kill the owner and the other node takes
+   the checkpoint after the lease.
 
 ## Configuration
 
@@ -293,14 +311,14 @@ timeout); the mail handler asks for 1–8 s itself.
 - **`make up` hangs in `wait-db.sh`** — check `podman compose ps`; port 5434/27018 may be taken
   (`ENCORE_POSTGRES_PORT`, `ENCORE_MONGO_PORT`).
 - **Back-end exits at start** — it needs PostgreSQL immediately (`ENCORE_DATABASE_URL`); MongoDB may
-  come later (commands then answer 200 with a `projection_failed` warning).
-- **Tasks stuck `pending` with `last_error = rebuild_in_progress`** — a rebuild is running; they
-  resume afterwards.
+  come later (commands are accepted; the read models catch up when it answers).
 - **Mail tasks retry with `last_error = mail_unreachable`** — the sidecar, which hosts the demo's mail
   service, is not running, or `ENCORE_MAIL_SERVICE_URL` points elsewhere; they resume once it answers.
 - **`cannot execute INSERT in a read-only transaction`** in the sidecar log — expected: the sidecar
   role is read-only on two levels.
-- **The tabs show "?"** — the read models are empty (after 🧨 or on a fresh MongoDB): press ⏪ Encore!.
+- **The tabs show "?"** — the read models are empty (after 🧨 or on a fresh MongoDB): the processors are
+  reading the ledger from the start; the Encore panel shows each projection's state and lag. A database from
+  before the processors (no `events.tx`) needs `make reset`.
 - **`Failed to open() /dev/net/tun: No such device` on start** — rootless Podman needs the `tun` kernel
   module for port publishing: `sudo modprobe tun`; after a kernel upgrade on a rolling distribution a
   reboot is needed first.

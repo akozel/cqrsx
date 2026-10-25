@@ -73,7 +73,7 @@ mod contracts {
     use cqrsx::{
         cqrs::{
             command::{
-                CommandGatewayError, FailedHandler, executor::CqrsCommandExecutor, locks::LockLimits,
+                CommandGatewayError, FailedHandler, executor::CommandExecutorCore, locks::LockLimits,
                 retry::AggregateConflictRetryPolicy,
             },
             event::EventEnvelope,
@@ -163,13 +163,13 @@ mod contracts {
         store: S,
         calls: &Calls,
         handlers: Vec<Arc<dyn EventHandler<Ledger>>>,
-    ) -> CqrsCommandExecutor<Ledger, impl Fn(Vec<NewTask>) -> CqrsFramework<Ledger, S> + Send + Sync>
+    ) -> CommandExecutorCore<Ledger, impl Fn(Vec<NewTask>) -> CqrsFramework<Ledger, S> + Send + Sync>
     where
         S: EventStore<Ledger> + Clone + Send + Sync,
     {
         let services = Services(calls.clone());
         let one_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-        let executor = CqrsCommandExecutor::new(
+        let executor = CommandExecutorCore::new(
             move |_| CqrsFramework::new(store.clone(), services.clone()),
             one_attempt,
             LockLimits::default(),

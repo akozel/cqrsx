@@ -17,15 +17,12 @@ export const REJECTION_CODES = [
 ];
 
 /** Statuses the command endpoint can answer with. */
-export const STATUSES = [200, 400, 409, 422, 423, 503];
+export const STATUSES = [200, 400, 409, 422, 503];
 
 export const counters = {
   accepted: new Counter('cmd_accepted'),
-  /** 200 with a `projection_failed` warning: committed, but the read model did not catch up. */
-  projection_warning: new Counter('cmd_projection_warning'),
   rejected: new Counter('cmd_rejected'),
   conflict: new Counter('cmd_conflict'),
-  locked: new Counter('cmd_locked'),
   unavailable: new Counter('cmd_unavailable'),
   other: new Counter('cmd_other'),
 };

@@ -415,7 +415,7 @@ describe('demo operations (sidecar)', () => {
         const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
         if (url === '/inspect/reset') return ok({ outcome: 'reset', report: { announced: [] } })
         if (url === '/api/concerts') return ok([])
-        if (url === '/api/projections/status') return ok({ state: 'idle', last_result: null })
+        if (url === '/api/projections/status') return ok({ state: 'live', stale: false, projections: [], rebuild: null, last_result: null })
         return { ok: false, status: 404, json: async () => null }
       }),
     )
@@ -446,7 +446,7 @@ describe('demo operations (sidecar)', () => {
     session.concertId = 'muse-2027-01-16'
     const rebuild = useRebuildStore()
     expect(await rebuild.resetDemo()).toBe(false)
-    expect(rebuild.lastError).toBe('reset is disabled')
+    expect(rebuild.lastError).toEqual({ message: 'reset is disabled' })
     expect(session.concertId).toBe('muse-2027-01-16')
   })
 })

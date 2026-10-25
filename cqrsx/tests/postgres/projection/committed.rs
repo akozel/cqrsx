@@ -3,7 +3,7 @@ use cqrsx::{
     cqrs::{
         CqrsFramework,
         aggregate::Aggregate,
-        command::{CommandGatewayError, FailedHandler, executor::CqrsCommandExecutor},
+        command::{CommandGatewayError, FailedHandler, executor::CommandExecutorCore},
         event::{DomainEvent, EventEnvelope},
         event_handler::{EventHandler, delivery::DeliveryConfig},
         event_sink::EventSink,
@@ -137,7 +137,7 @@ async fn projection_failures_preserve_one_command_commit_and_outbox_and_invoke_o
     let seen = Arc::new(Mutex::new(Vec::new()));
     let first_task = new_task();
     let second_task = new_task();
-    let executor = CqrsCommandExecutor::new(
+    let executor = CommandExecutorCore::new(
         {
             let pool = db.pool.clone();
             let calls = calls.clone();

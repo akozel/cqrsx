@@ -359,7 +359,7 @@ impl Aggregate for Fan {
 он не равен `booking_id`. Строка outbox дополнительно несёт `aggregate_type`, `aggregate_id`, `aggregate_sequence`
 своего события — связь «событие ↔ задача» в UI есть и без метаданных.
 
-**Как задачи попадают в outbox (U1 закрыт).** `CqrsCommandExecutor::execute_with_metadata(id, command, metadata,
+**Как задачи попадают в outbox (U1 закрыт).** `CommandExecutorCore::execute_with_metadata(id, command, metadata,
 tasks)` получает список `NewTask`, собранный application-слоем **до** выполнения команды; `BuildFramework`-фабрика
 отдаёт его в `PostgresEventRepositoryWithOutbox::with_outbox(tasks)`, и событие, снапшот и задачи пишутся одним
 CTE-оператором. Список неизменяем между попытками conflict-retry. Отклонённая команда не пишет ничего. Выводить
@@ -374,8 +374,8 @@ CTE-оператором. Список неизменяем между попы�
 | `Ok` | `Ok(())` |
 | `Domain(AlreadyRecorded \| AlreadyCancelled)` (R9, R11) | `Ok(())` — повторная доставка |
 | `Domain(UnknownTicket)` (R10) | `Retry { reason: "unknown_ticket", retry_after: Some(1 с) }` — отмена обогнала запись |
-| `Conflict`, `Unavailable`, rebuild-lock демо | `Retry { retry_after: Some(1 с) }` |
-| `CommittedWithEventHandlerFailure` | `Ok(())` — событие записано, витрину догонит Encore! |
+| `Conflict`, `Unavailable` | `Retry { retry_after: Some(1 с) }` |
+| `CommittedWithEventHandlerFailure` | `Ok(())` — событие записано, витрину ведёт процессор |
 | прочие `Domain` | `Permanent { reason: code }` |
 
 > **Перенесено в sidecar (2026-10-17, аудит границы, пункт S-4 в `docs/BOUNDARY_AUDIT.md`).** Имитация
@@ -421,8 +421,10 @@ storage timeout 3 с. Lease валидируется формулой `lease > 2
 
 ### 2.8 Проекции (MongoDB, база `encore_read`)
 
-Обе проекции строятся **только** из событий и обновляются `EventHandler`-ами сразу после commit — in-process и без
-гарантии доставки. Именно поэтому нужен replay. Обе — обычные `ViewProjection` (D-06): `concert_halls` над потоком
+Обе проекции строятся **только** из событий и обновляются **процессорами проекций** (эпик 03): процессор идёт по
+журналу по своей закладке (`projection_checkpoints` в MongoDB рядом с витринами), просыпается от каждого коммита
+(`CommitWakeup`) и читает новые события страницами — ничто не теряется при сбое, повтор вместо потери. Ответ
+команды — «принято» сразу после коммита (D-17); витрина догоняет мгновением позже. Обе — обычные `ViewProjection` (D-06): `concert_halls` над потоком
 `Concert` (`view_id = concert_id`), `fan_wallets` над потоком `Fan` (`view_id = <fan_id>:<concert_id>`, D-14). Собственный обработчик с
 группировкой по `fan_id` не нужен: `ViewProjection` передаёт в `View::update` события одного агрегата, а
 `view_id` всегда равен `aggregate_id`. В UI кошелёк отстаёт от зала на один шаг цепочки — это показывается, а не
@@ -500,34 +502,34 @@ outbox-обработчиками; wipe и replay его **не трогают**
 
 ### 2.9 Replay — «Encore!»
 
-- **🧨 Стереть витрины** (sidecar, `POST /inspect/projections/wipe`; до аудита 2026-10-17 это был
-  `POST /api/projections/wipe` back-end): drop коллекций `concert_halls` и `fan_wallets` (inbox не трогаем).
-  Удаление данных без восстановления — демо-операция, поэтому она у sidecar; у back-end такого эндпоинта нет.
-  Write-side продолжает работать: бронирование занятого места по-прежнему отклоняется, потому
-  что агрегат восстанавливается из PostgreSQL, а не из MongoDB. Новое событие после wipe документ не создаёт:
-  проекция отвергает дыру (`SequenceGap`), команда принята с предупреждением `projection_failed`, витрина пуста
-  до Encore! (D-15).
-- **⏪ Encore!** (`POST /api/projections/rebuild`, тело `{ "speed": "slow" }` или `{ "speed": "fast" }`):
-  1. Взять rebuild-lock: команды отвечают `423 rebuild_in_progress`, кнопки в UI блокируются с пояснением.
-     Outbox-воркер продолжает работать — он не зависит от read-side.
-  2. Ещё раз drop коллекций: пересборка всегда с нуля.
-  3. Два прохода `EventReplay::replay_all()` — по одному на тип агрегата, потому что `stream_all_events::<A>`
-     фильтрует по `aggregate_type`: сначала `Concert` → `ViewProjection<ConcertHallView>`, затем `Fan` →
-     `ViewProjection<FanWalletView>`. Обработчики те же, что в live-режиме, но без `NotifyingHandler`, обёрнутые
-     в декоратор прогресса и (в slow-режиме) задержки `ENCORE_REPLAY_SLOW_DELAY_MS = 80` мс/событие.
-     `replay_all` отдаёт события в порядке `ORDER BY sequence` поперёк агрегатов: места «загораются» по очереди
-     во всех залах сразу; внутри одного агрегата порядок сохраняется, LWW это устраивает.
-  4. Прогресс — activity `rebuild.progress`; `rebuild.started` несёт `total` (`SELECT count(*) FROM events`);
-     итог — `rebuild.finished { replayed, aggregates, duration_ms }` или `rebuild.failed` (`EventReplay`
-     останавливается на первой ошибке, применённый префикс остаётся; следующий Encore! снова начинает с wipe).
-  5. Отпустить lock (в том числе при ошибке/панике — guard).
-- **🔍 Проверить витрину** `[P1]` (`GET /api/projections/verify`): пересобрать витрины во временные коллекции
-  `concert_halls_verify` / `fan_wallets_verify` теми же `ViewProjection` и `MongoViewRepository` (без in-memory
-  фейков в рантайме, правило §12.4), сравнить канонический JSON (без `version`) с рабочими коллекциями →
-  «✅ витрина совпадает с журналом» или список расхождений; временные коллекции удалить.
-
-Почему lock, а не «живая» пересборка: проще и детерминированнее для демо. LWW-правило из §2.8 делает живую
-пересборку без блокировки корректной — это вариант `[P2]`.
+- **🧨 Стереть витрины** (sidecar, `POST /inspect/projections/wipe`; у back-end такого эндпоинта нет, удаление
+  данных без восстановления — демо-операция): drop коллекций `concert_halls` и `fan_wallets`, затем их закладок
+  `projection_checkpoints` (inbox не трогаем; в обратном порядке пересборка, прошедшая между сносами, потеряла бы
+  документы). Write-side продолжает работать: бронирование занятого места по-прежнему отклоняется, потому что
+  агрегат восстанавливается из PostgreSQL, а не из MongoDB. Процессоры регистрируют закладки заново и перечитывают
+  журнал с начала: все залы возвращаются сами, Encore! для этого не нужен (D-15: документ строится только с начала
+  истории). Документ, удалённый поодиночке, чинит первая бронь по нему (самолечение процессора).
+- **⏪ Encore!** (`POST /api/projections/rebuild`, тело `{ "pace_ms": 80 }` или `{}`; `202`, если принята хотя бы
+  одна строка закладки, `409 rebuild_in_progress`, если обе пересборки уже идут, `400`, если `pace_ms` больше
+  `ENCORE_REPLAY_MAX_PACE_MS`, `503` при отказе хранилища закладок): `RebuildService` просит обе закладки
+  (`request_rebuild`), владелец каждой на любой ноде идёт по ключам журнала и **заменяет документы на месте**
+  свёрткой истории агрегата через те же рабочие потоки ключей, что и живые события. Витрины не стираются, касса
+  открыта (D-16): команды принимаются, а бронь во время пересборки видна сразу или в конце, когда пересборка дойдёт
+  до её зала. `pace_ms` — пауза между событиями одного ключа (D-18; UI шлёт `ENCORE_REPLAY_SLOW_DELAY_MS = 80` в
+  медленном режиме или 0). Наблюдатель сервиса раз в 250 мс читает строки закладок: `rebuild.started { rebuild_id,
+  pace_ms, keys_total, events_total }`, `rebuild.progress { keys }`, `rebuild.finished { keys, duration_ms }`;
+  каждый заменённый документ даёт `projection.rebuilt { projection, view_id, events, reason }`.
+- **⟲ Один зал** (`POST /api/concerts/{id}/rebuild`, `202`): владелец закладки залов заменяет один документ
+  (`request_rebuild_key`), остальное не трогается.
+- **Статус** (`GET /api/projections/status`): по каждой проекции закладка, отставание в событиях (`count_after` с
+  потолком `ENCORE_PROJECTION_LAG_CAP`), владелец, сбои и состояние `stalled` > `unclaimed` > `starting` >
+  `rebuilding` > `live`; при недоступном хранилище закладок — последние известные строки с `stale: true`.
+- **🔍 Проверить витрину** `[P1]` (`GET /api/projections/verify`, разрешён всегда, и во время Encore!): каждый документ
+  сравнивается со свёрткой **применённой им части** истории (`last_sequence`, D-20). Отстающий или отсутствующий
+  документ — не ошибка, он считается в `behind { documents, events }`; расхождением (`differs`, `unexpected`)
+  становится только неверный. Ответ `{ ok, checked, behind, differences }`: «✅ N верны, M отстают на K событий» или
+  «❌ N расхождений». Документы читаются раньше истории, поэтому коммит между чтениями даёт `behind`, а не ложное
+  расхождение.
 
 ### 2.10 Машина времени
 
@@ -576,7 +578,7 @@ sequenceDiagram
   participant EX as CommandExecutor (cqrsx)
   participant AGG as Concert
   participant PG as PostgreSQL
-  participant EH as EventHandlers (проекции)
+  participant PP as Projection processor
   participant M as MongoDB
   UI->>API: POST /api/concerts/radiohead-2026-11-21/commands {type: BookSeat, seat: B4, fan_id: fox}
   API->>API: command_id, booking_id, metadata, NewTask(encore_record_ticket)
@@ -590,17 +592,19 @@ sequenceDiagram
   else правила соблюдены
     AGG-->>EX: SeatBooked
     EX->>PG: ОДНА транзакция: INSERT события + INSERT задачи encore_record_ticket (+ snapshot)
-    EX->>EH: committed events
-    EH->>M: upsert concert_halls/radiohead-2026-11-21
+    EX->>PP: CommitWakeup (будит процессор)
     EX-->>API: Ok
     API-->>UI: 200 {outcome: accepted}
+    PP->>PG: страница событий выше закладки
+    PP->>M: upsert concert_halls/radiohead-2026-11-21 + закладка
+    PP-->>UI: SSE projection.updated
   end
   participant W as Worker (task runtime)
   participant FAN as Fan (через CommandExecutor<Fan>)
   W->>PG: claim encore_record_ticket
   W->>FAN: execute_with_metadata("fox:radiohead-2026-11-21", RecordTicket, metadata{correlation_id, causation_id=task_id}, [NewTask(encore_send_e_ticket)])
   FAN->>PG: ОДНА транзакция: INSERT TicketRecorded + INSERT задачи encore_send_e_ticket
-  FAN->>M: upsert fan_wallets/fox:radiohead-2026-11-21
+  PP->>M: процессор fan_wallets: upsert fan_wallets/fox:radiohead-2026-11-21
   W->>PG: settle completed
   W->>PG: claim encore_send_e_ticket → FlakyMailServer 🎲 → inbox
 ```
@@ -633,24 +637,25 @@ stateDiagram-v2
 sequenceDiagram
   participant UI as front-end
   participant API as back-end
-  participant RS as ReplayStream (PostgreSQL)
-  participant ER as EventReplay
-  participant EH as EventHandlers (те же, что live)
+  participant CP as projection_checkpoints (MongoDB)
+  participant PP as Владелец закладки (любая нода)
+  participant PG as PostgreSQL
   participant M as MongoDB
-  UI->>API: POST /api/projections/rebuild {speed: slow}
+  UI->>API: POST /api/projections/rebuild {pace_ms: 80}
+  API->>CP: request_rebuild (обе строки)
   API-->>UI: 202 {rebuild_id}
-  API->>API: rebuild-lock (команды → 423)
-  API->>M: drop concert_halls, fan_wallets
-  API->>ER: replay all ids of Concert
-  loop каждое сохранённое событие
-    RS-->>ER: EventEnvelope
-    ER->>EH: handle (+ задержка 80 мс в slow-режиме)
-    EH->>M: upsert view
-    API-->>UI: SSE rebuild.progress
+  PP->>CP: take_requests (раз в poll interval)
+  loop страница ключей журнала
+    PP->>PG: история агрегата
+    PP->>M: заменить документ свёрткой истории (pace_ms между событиями)
+    PP-->>UI: SSE projection.rebuilt
+    PP->>CP: advance_rebuild (курсор)
   end
-  API-->>UI: SSE rebuild.finished
-  API->>API: release lock
+  API->>CP: наблюдатель раз в 250 мс: status
+  API-->>UI: SSE rebuild.progress / rebuild.finished
 ```
+
+Команды в это время принимаются: касса открыта (D-16).
 
 ### 3.5 Ключевые решения
 
@@ -665,7 +670,8 @@ sequenceDiagram
 | Отдельный cargo-workspace в `demo/` | не ломает `cargo build --locked --workspace` и порог покрытия 97 % корневого CI |
 | LWW-проекции, производные поля пересчитываются | идемпотентность и независимость от порядка обработчиков |
 | UI не валидирует правила | инварианты видны |
-| Rebuild-lock в P0 | простой детерминированный сценарий; «живой» rebuild — P2 |
+| Касса открыта во время Encore! (D-16) | пересборка идёт на месте через те же потоки ключей, что и живые события; lock и `423` убраны (эпик 03/04) |
+| Проекции — процессоры с закладкой (эпик 03) | сбой между коммитом и витриной не теряет обновление; wipe и перезапуск лечатся чтением журнала с начала |
 | Два агрегата, `Fan` — downstream через outbox (D-01) | все бизнес-правила синхронны в `Concert` (тосты и «Δ events = 0» сохраняются); `Fan` показывает межагрегатную цепочку, идемпотентные команды и неупорядоченную доставку задач; `fan_wallets` — обычная `ViewProjection`. Сага с компенсацией (лимит в `Fan`) — P2-эволюция |
 | Ровно одно событие на команду (D-02) | контракт `PostgresEventRepositoryWithOutbox`; закреплён тестом |
 | `ConcertSoldOut` снят (D-03) | `sold_out` производное; межагрегатная цепочка уже показывает «задача → команда» |
@@ -701,11 +707,11 @@ demo/
 │       ├── domain.rs, domain/  ids.rs (ConcertId, FanId), venue.rs,
 │       │                       concert.rs + concert/{command.rs, event.rs, error.rs, tests.rs},
 │       │                       fan.rs + fan/{command.rs, event.rs, error.rs, tests.rs}
-│       ├── app/                command_service.rs (два CqrsCommandExecutor: Concert и Fan, метаданные,
-│       │                       NamedHandler), tasks.rs (4 TaskPayload + конструкторы NewTask), lock.rs
-│       │                       (BoxOfficeLock), rebuild.rs, verify.rs [P1], time_travel.rs, activity.rs, personas.rs
+│       ├── app/                command_service.rs (два CommandExecutorCore: Concert и Fan, метаданные,
+│       │                       NamedHandler), tasks.rs (4 TaskPayload + конструкторы NewTask),
+│       │                       rebuild.rs, verify.rs [P1], time_travel.rs, activity.rs, personas.rs
 │       ├── projections/        mongo_view_repository.rs, concert_hall.rs (View<Concert>),
-│       │                       fan_wallet.rs (View<Fan>), notifying.rs, progress.rs (декоратор replay)
+│       │                       fan_wallet.rs (View<Fan>), activity_observer.rs, verification.rs
 │       ├── outbox/             flaky_mail.rs, chaos.rs, record_ticket.rs, record_cancellation.rs,
 │       │                       send_e_ticket.rs, issue_refund.rs, adapter.rs (enum EncoreTaskAdapter), dispatcher.rs
 │       └── http.rs (router), http/ commands.rs, queries.rs, projections.rs, activity.rs, error.rs
@@ -947,9 +953,9 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `application::workflows::{ticket_delivery, refund}` | бизнес-процессы на outbox-задачах, файл на шаг: `record_ticket` → `send_e_ticket`, `record_cancellation` → `issue_refund`; `tasks` — контракты следующих задач; корень `workflows` — общий шаг цепочки и маппинг исходов |
 | `application::ports` | `Mailer` (+ `Mail`), `ReadModelStore<V>` (+ `Stored<V>`), `EventLedgerStats` |
 | `application::{concert,fan}::views` | `ConcertHallView` (`View<Concert>`, LWW), `FanWalletView` (`View<Fan>`, LWW по `booking_id`) |
-| `application::projections` | `notifying` (activity после live-обновления), `maintenance` (`ProjectionMaintenance`: wipe, rebuild с темпом и наблюдателем прогресса `EventReplay`, verify для любой view) |
-| `application::operations::{rebuild, verify, time_travel}` | Encore!, verify, машина времени — поверх `MaintainedReadModel`, `EventLedgerStats` и `EventStore` |
-| `application::{activity, lock, tasks, read_models}` | `ActivityHub`; `BoxOfficeLock`; `new_task` (ключи `concert_id`/`fan_id` + `Causation::stamp_task`); `ReadModels` — query-порты для HTTP |
+| `application::projections` | `activity_observer` (`ActivityObserver`: отчёты процессора → activity), `verification` (`ProjectionVerification`, `VerifiedReadModel`: сверка документов с применённой частью истории, D-20) |
+| `application::operations::{rebuild, verify, time_travel}` | Encore! и статус проекций (`RebuildService` за портом `ReadSide`, поверх строк закладок `CheckpointStore`), verify, машина времени |
+| `application::{activity, tasks, read_models}` | `ActivityHub`; `new_task` (ключи `concert_id`/`fan_id` + `Causation::stamp_task`); `ReadModels` — query-порты для HTTP |
 | `presentation::http` | роутер; `{concerts, fans, projections, activity}/<action>.rs` — запрос, ответ и обработчик одного действия; `health`, `config` (зал и настройки правил; персонажи — реквизит демо у sidecar), `error` |
 | `infrastructure::postgres` | `HistoryStore` и `history_store`/`event_history`/`history_repositories` (чтение истории), `PostgresLedger` (через `PostgresEventRepository::totals`, тикет 08); исполнители команд — библиотечный `PostgresCommandExecutor`, собираются в `bootstrap` |
 | `infrastructure::mongo::{view_repository, read_side}` | `MongoViewRepository` (`ViewRepository` + `ReadModelStore`), коллекции read side и scratch-копии verify. К базе `mail_service` back-end не подключается |
@@ -968,19 +974,16 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
    пул PostgreSQL (10 соединений). Готовность БД обеспечивает `scripts/wait-db.sh`, не back-end.
 4. MongoDB-клиент; `read_db = encore_read`, `mail_db = mail_service`.
 5. `ActivityHub::new(capacity = 1024, backlog = 100)`.
-6. Фабрики обработчиков событий (вызываются на каждый `CqrsFramework`, обработчики дешёвые — держат
-   `Arc<MongoViewRepository>`): для `Concert` — `NotifyingHandler::new(ViewProjection::new(halls_repo)
-   .with_name("concert_halls"), activity)`, для `Fan` — то же с `"fan_wallets"`. Имя проекции для
-   `projection_failed` приходит из библиотеки: `CommittedWithEventHandlerFailure` несёт `handlers[].name`
-   (`EventHandler::name()`, `NotifyingHandler` отдаёт имя обёрнутой проекции).
+6. Процессоры проекций (`bootstrap::projections`): по одному на витрину, `ViewProjection::new(Arc<MongoReadModel>)
+   с `.with_name(…)` под `ProjectionProcessor` с общим `MongoCheckpointStore`; журнал они читают через свой пул
+   (`ENCORE_DATABASE_PROJECTION_POOL_SIZE`), отчёты идут в `ActivityObserver` (activity). Их рантайм (`ProjectionRuntime`)
+   запускается отдельной задачей после `bind`, на общем токене остановки.
 7. Два долгоживущих `PostgresCommandExecutor::new(pool, command_config, services)`, по одному на агрегат, с
-   проекцией через `.with_event_handler(Arc::new(NotifyingHandler::new(ViewProjection::new(repo).with_name(…), activity)))`.
+   `.with_commit_wakeup(wakeup)` (коммит будит процессор своей витрины); обработчиков событий у исполнителя нет.
    Исполнитель на каждую команду строит `CqrsFramework` над `PostgresEventRepositoryWithOutbox::with_outbox(tasks)`
-   со снапшотами, клоном services и общими `Arc`-обработчиками. `PostgresCommandConfig::new(ENCORE_SNAPSHOT_EVERY,
+   со снапшотами и клоном services. `PostgresCommandConfig::new(ENCORE_SNAPSHOT_EVERY,
    AggregateConflictRetryPolicy::default())` — держатель настроек. Вызов:
-   `executor.execute_with_metadata(id, command, metadata, tasks)` (Фаза 0.5). До тикета 03 бэклога эта сборка была
-   написана в demo вручную (`Executors`): библиотечный исполнитель требовал `Services = ()` и не регистрировал
-   обработчики.
+   `executor.execute_with_metadata(id, command, metadata, tasks)` (Фаза 0.5).
 8. Task runtime: `prepare_task_runtime(pool.clone(), dispatcher_factory, PostgresTaskQueueConfig::default(),
    runtime_config)?` с `TaskDispatcherFactory` из `infrastructure::task_runtime::dispatcher`; фабрика захватывает
    `Arc<FanApp>` для шагов процессов и общий `reqwest::Client` для `HttpMailer` почтовых шагов. Подготовка не запускает фоновой работы — это делает `run`.
@@ -1000,19 +1003,20 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 | `GET /api/health` | — | liveness | 200 |
 | `GET /api/config` | справочник | зал, персонажи, параметры демо | 200 |
 | `GET /inspect/demo` (sidecar) | демо | концерты по умолчанию, персонажи, `reset_enabled` | 200 |
-| `POST /inspect/projections/wipe` (sidecar) | демо | 🧨 стереть витрины (журнал цел, Encore! восстановит) | 200, 503 |
+| `POST /inspect/projections/wipe` (sidecar) | демо | 🧨 стереть витрины и их закладки (журнал цел, процессоры перечитают его с начала) | 200, 503 |
 | `POST /inspect/reset` (sidecar) | демо | стереть всё и заново анонсировать концерты по умолчанию | 200, 404 (выключен), 503 |
 | `GET /inspect/mail/{fan_id}` (sidecar) | read: `mail_service.inbox` | письма фаната, как их сохранил почтовый сервис | 200, 503 |
 | `POST /mail` (sidecar, почтовый сервис) | внешний мир | принять письмо от back-end: `200 { inbox_id, duplicate }` или `503 { reason_code }` | 200, 400, 503 |
-| `POST /api/concerts/{concert_id}/commands` | write | выполнить команду | 200, 400, 409, 422, 423, 503 |
+| `POST /api/concerts/{concert_id}/commands` | write | выполнить команду | 200, 400, 409, 422, 503 |
 | `GET /api/concerts` | read: `concert_halls` | сводка по всем концертам | 200 (`[]`, если витрина пуста) |
 | `GET /api/concerts/{concert_id}` | read: `concert_halls` | документ схемы зала | 200, 404 `projection_missing` |
 | `GET /api/fans/{fan_id}/wallet` | read: `fan_wallets`, диапазон `_id` журналов фаната | кошелёк фаната, собранный из его журналов: `{ fan_id, ledgers: [{ concert_id, version, last_sequence }], view }` (D-14) | 200, 404 |
 | `GET /api/concerts/{concert_id}/timeline` | event store | события концерта для ползунка | 200 |
 | `GET /api/concerts/{concert_id}/state-at/{sequence}` | event store | машина времени | 200, 404 |
-| `POST /api/projections/rebuild` | admin | Encore! | 202, 409 |
-| `GET /api/projections/status` | admin | `idle` / `running`, прогресс, итог последнего запуска | 200 |
-| `GET /api/projections/verify` `[P1]` | admin | сверка витрин с журналом | 200 |
+| `POST /api/projections/rebuild` | admin | Encore! `{ pace_ms }` при открытой кассе | 202, 400, 409, 503 |
+| `POST /api/concerts/{concert_id}/rebuild` | admin | пересобрать один зал по его истории | 202, 400, 503 |
+| `GET /api/projections/status` | admin | по проекции: закладка, отставание, владелец, состояние; Encore! этой ноды | 200, 503 |
+| `GET /api/projections/verify` `[P1]` | admin | сверка документов с применённой частью истории, `behind` отдельно | 200, 503 |
 | `GET /api/activity` | SSE | живой лог | `text/event-stream` |
 | `POST /api/outbox/{task_id}/requeue` `[P2]` | admin | `REQUEUE_FAILED_OUTBOX_TASK` | 200, 404 |
 
@@ -1025,13 +1029,12 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 ```
 
 Алгоритм команды (`presentation::http::concerts::execute_command` → use case → `application::command_service`):
-1. rebuild-lock взят → `423 { outcome: "locked", error: { code: "rebuild_in_progress" } }`.
-2. Десериализация (ошибка → `400 { outcome: "invalid" }`).
-3. `command_id = Uuid::now_v7()`; `BookSeat` получает `booking_id = command_id`, `CancelBooking` —
+1. Десериализация (ошибка → `400 { outcome: "invalid" }`).
+2. `command_id = Uuid::now_v7()`; `BookSeat` получает `booking_id = command_id`, `CancelBooking` —
    `cancellation_id = command_id`.
-4. `metadata = { command_id, correlation_id: command_id, causation_id: command_id, recorded_at: now, source: "ui" }`
+3. `metadata = { command_id, correlation_id: command_id, causation_id: command_id, recorded_at: now, source: "ui" }`
    (`HashMap<String, String>`, `recorded_at` фиксированной ширины — §2.4).
-5. Задачи: `BookSeat` → `[NewTask(RecordTicketV1)]`, `CancelBooking` → `[NewTask(RecordCancellationV1)]`,
+4. Задачи: `BookSeat` → `[NewTask(RecordTicketV1)]`, `CancelBooking` → `[NewTask(RecordCancellationV1)]`,
    `AnnounceConcert` → `[]`. Метаданные задачи = метаданные команды + `concert_id`, `fan_id`;
    `with_max_attempts(ENCORE_TASK_MAX_ATTEMPTS)`.
 6. `concert_commands.execute_with_metadata(concert_id, command, metadata, tasks)` (U1, U3, D-04).
@@ -1089,15 +1092,18 @@ Activity хранится только в памяти — это лог, а н�
 | `command.accepted` | команда закоммичена | `aggregate_type`, `aggregate_id`, `command_id`, `correlation_id`, `source`, `command_type`, `fan_id?`, `tasks` (без `sequence`: executor его не возвращает, D-04) |
 | `command.rejected` | доменный отказ | `aggregate_type`, `aggregate_id`, `command_id`, `correlation_id`, `source`, `command_type`, `code`, `params` (для `source: "task:…"` UI не показывает тост) |
 | `command.failed` | conflict / unavailable | `aggregate_type`, `aggregate_id`, `command_id`, `source`, `outcome`, `message` |
-| `projection.updated` | обработчик записал view | `projection`, `view_id`, `sequence` |
-| `projection.failed` | событие закоммичено, обработчик упал | `projection`, `view_id`, `message` |
+| `projection.updated` | процессор применил события к документу | `projection`, `view_id`, `sequence`, `events` |
+| `projection.failed` | раунд процессора не удался (повтор после паузы) | `projection`, `view_id?`, `handler`, `category`, `failures`, `message` |
+| `projection.rebuilt` | документ заменён свёрткой своей истории (Encore!, один зал, лечение дыры) | `projection`, `view_id`, `events`, `reason` (`requested` / `healed`) |
+| `projection.lease` | нода взяла, потеряла или отдала закладку | `projection`, `lease` (`acquired` / `lost` / `released`), `owner` |
 | `task.attempt.started` | обработчик задачи начал попытку | `task_id`, `format`, `attempt`, `correlation_id` |
 | `task.attempt.failed` | 🎲 отказ (retry) | `task_id`, `format`, `attempt`, `reason_code`, `retry: true` |
 | `task.attempt.succeeded` | письмо доставлено | `task_id`, `format`, `attempt`, `inbox_id`, `duplicate` |
 | `projections.wiped` | wipe | `collections` |
-| `rebuild.started` / `.progress` / `.finished` / `.failed` | Encore | `rebuild_id`, `speed`, `replayed`, `aggregate_id`, `sequence`, `event_type`, `aggregates`, `duration_ms`, `message` |
+| `rebuild.started` / `.progress` / `.finished` | Encore (наблюдатель сервиса на ноде, которая приняла запрос) | `rebuild_id`, `pace_ms`, `keys_total`, `events_total` / `keys` / `keys`, `duration_ms` |
 
-`rebuild.progress`: в slow-режиме — на каждое событие, в fast — не чаще 20 раз в секунду плюс финальное значение.
+`rebuild.progress`: раз в 250 мс, если изменилось число пересобранных документов в строках закладок (они двигаются
+страницами); `projection.stalled` и `rebuild.failed` нет — процессор не падает, а повторяет, «застряла» — состояние статуса.
 
 ### 6.6 Маппинг исходов команды
 
@@ -1107,15 +1113,14 @@ Activity хранится только в памяти — это лог, а н�
 | `CommandGatewayError`: domain (`ConcertError`) | 422 | `rejected` | `command.rejected` |
 | conflict (после retry-политики) | 409 | `conflict` | `command.failed` |
 | unavailable | 503 | `unavailable` | `command.failed` |
-| committed, но упал `EventHandler` (`CommittedWithEventHandlerFailure { last_sequence, handlers }`) | 200 | `accepted` + `warnings: [{ code: "projection_failed", projection }]` (имя витрины = `handlers[].name`) | `command.accepted` + `projection.failed` |
-| rebuild-lock | 423 | `locked` | — |
+| committed (обработчиков событий у исполнителя нет, витрины ведут процессоры; вариант `CommittedWithEventHandlerFailure` остаётся в библиотеке и для демо значит то же) | 200 | `accepted` | `command.accepted` |
 | битый JSON / неизвестный `type` (в том числе внутренние `RecordTicket`/`RecordCancellation` через HTTP) | 400 | `invalid` | — |
 
 Для внутренних команд `Fan` те же исходы маппятся не в HTTP, а в результат `TaskHandler` (§2.7); activity получает
 `command.accepted` / `command.rejected` с `source: "task:…"`, UI показывает их приглушённо и без тостов.
 
-Отказ из-за упавшей проекции — нормальный учебный сценарий: «событие записано, витрина отстала — Encore! её
-догонит» (демо-сценарий, шаг 9).
+Отказ read side — нормальный учебный сценарий: команда принимается, витрина отстаёт и догоняет сама, когда MongoDB
+вернётся (демо-сценарий, шаг 9, D-17).
 
 ### 6.7 `MongoViewRepository<V>`
 
@@ -1132,25 +1137,27 @@ Activity хранится только в памяти — это лог, а н�
   ошибку соединения/неизвестную.
 - В view использовать `BTreeMap` (детерминированный порядок ключей) и знаковые целые (в BSON нет беззнаковых;
   `u64` не использовать).
-- `wipe()` = `collection.drop()`.
+- Запись документов — у процессора (библиотечный `MongoViewRepository`), чтение для API — `MongoReadModel` демо; сброс
+  коллекции — 🧨 wipe у sidecar, не у back-end.
 
 ### 6.8 `RebuildService`
 
-- Состояние: `idle` или `running { rebuild_id, speed, replayed, started_at }`, плюс `last_result`.
-- Lock — `application::lock::BoxOfficeLock` (`AtomicBool` + RAII-guard, который освобождает lock при любом выходе:
-  успех, ошибка, паника задачи). Один `Arc<BoxOfficeLock>` делят `RebuildService`, `ConcertApp`, `FanApp`
-  и шаги процессов (`wait_for_unlock`); сервис rebuild всегда полностью сконфигурирован.
-- Запуск — `tokio::spawn`; HTTP сразу возвращает `202 { rebuild_id }`, повторный запуск во время работы → `409`.
-- Wipe тоже запрещён во время rebuild (`423`).
-- Два прохода: `EventReplay::new(PostgresEventRepository::new(pool.clone()), ViewProjection::new(halls_repo.clone()))
-  .with_pace(…)` с `set_progress_observer(…)` и `replay_all()` для `Concert`, затем то же для `Fan` с `wallets_repo`.
-  Репозиторий и обработчик создаются на каждый rebuild (`EventReplay::new` забирает их по значению). Те же
-  проекции, что в live-режиме, но **без** `NotifyingHandler` (иначе activity захлебнётся `projection.updated`;
-  прогресс сообщает наблюдатель `ReplayProgress` из `cqrsx`). В slow-режиме `with_pace(ENCORE_REPLAY_SLOW_DELAY_MS)`
-  выдерживает паузу перед каждым событием, в fast — `Duration::ZERO`. До тикета 06 бэклога то же делал
-  декоратор `ProgressHandler` в demo.
+- `RebuildService<C: CheckpointStore>` за портом `ReadSide` (`status`, `rebuild(pace)`, `rebuild_concert(id)`): только
+  просит и смотрит; пересобирают владельцы закладок. Состояние в памяти ноды — запущенный Encore! и `last_result`
+  плюс последние прочитанные строки закладок для статуса при недоступном хранилище.
+- `rebuild(pace)` → `request_rebuild` обеим строкам (`concert_halls`/`Concert`, `fan_wallets`/`Fan`): принята хотя бы
+  одна → `202`; обе уже идут → `409 rebuild_in_progress`; `pace > ENCORE_REPLAY_MAX_PACE_MS` → `400`; отказ хранилища
+  или ещё не зарегистрированная строка → `503`. Затем `tokio::spawn` наблюдателя: раз в 250 мс читает строки,
+  публикует `rebuild.progress`, и когда ни у одной строки нет запроса и курсора (или строки нет), — `rebuild.finished`.
+- `rebuild_concert(id)` → `request_rebuild_key` строки залов.
+- `status()` — раздел 2.9: таймаут чтения `ENCORE_PROJECTION_STATUS_TIMEOUT_MS`, отставание
+  `PostgresEventRepository::count_after(position, cap)` через порт `EventLedgerStats` (D-24).
+- Процессоры (`bootstrap::projections`): по одному на витрину, `ViewProjection::new(MongoReadModel)` под
+  `ProjectionProcessor` с общим `MongoCheckpointStore`, журнал читают через отдельный пул
+  `ENCORE_DATABASE_PROJECTION_POOL_SIZE`, `ENCORE_PROJECTION_*` → `ProcessorConfig`, `ENCORE_NODE_NAME` — имя владельца.
+  Рантайм проекций — отдельная задача на общем токене остановки; её паника останавливает процесс с ошибкой.
 - Outbox-воркеры, цепочка `Fan` и почтовый inbox replay не затрагивает: replay вызывает только `View::update`,
-  команды не выполняются, задачи не создаются (проверяется тестом/демо: число писем и строк outbox до и после равно).
+  команды не выполняются, задачи не создаются.
 
 ### 6.9 Тесты back-end
 
@@ -1537,7 +1544,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 - Единственная разрешённая правка `cqrsx` (исключение к §12.1), отдельным коммитом **до** Фазы 1.
 - В `cqrs/command.rs`: метод `execute_with_metadata(&self, aggregate_id: &str, command: A::Command,
   metadata: HashMap<String, String>, tasks: Vec<NewTask>)` в трейте `CommandExecutor`; `execute` получает
-  дефолтную реализацию, делегирующую с пустой картой. Реализации в `CqrsCommandExecutor`
+  дефолтную реализацию, делегирующую с пустой картой. Реализации в `CommandExecutorCore`
   (`retry_on_aggregate_conflict` передаёт клон карты в `framework.execute_with_metadata` на каждой попытке) и
   в `PostgresCommandExecutor`. Возвращаемый тип не меняется.
 - Тесты: unit в `cqrs/command/executor.rs` (метаданные доходят до `commit`, одинаковы между попытками при
@@ -1580,7 +1587,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 
 ### Фаза 3 — Write-side
 
-- Сборка двух `CqrsCommandExecutor` (`Concert`, `Fan`) с `execute_with_metadata` из Фазы 0.5, `POST …/commands`
+- Сборка двух `CommandExecutorCore` (`Concert`, `Fan`) с `execute_with_metadata` из Фазы 0.5, `POST …/commands`
   (только команды `Concert`), метаданные (§2.4), маппинг исходов, seed, `GET /api/config`, `ActivityHub` и SSE
   (`command.*`), завершение SSE по токену остановки.
 - **Приёмка:**
@@ -1611,18 +1618,18 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 ### Фаза 5 — Проекции и read API
 
 - `MongoViewRepository`, `ConcertHallView` (`View<Concert>`), `FanWalletView` (`View<Fan>`), обе через
-  `ViewProjection`, `NotifyingHandler`, эндпоинты чтения.
-- **Приёмка:** документы соответствуют командам; unit-тесты LWW зелёные; при остановленной MongoDB команда даёт
-  `200 accepted` с предупреждением `projection_failed`.
+  `ViewProjection` под процессорами проекций, эндпоинты чтения.
+- **Приёмка:** документы соответствуют командам; unit-тесты LWW зелёные; при остановленной MongoDB команда принимается
+  (`200 accepted`), а витрина догоняет после её возвращения.
 
 ### Фаза 6 — Replay и машина времени
 
-- wipe, `RebuildService` (lock, guard, два прохода replay — `Concert`, затем `Fan`, прогресс, slow-motion),
-  `timeline`, `state-at`.
+- `RebuildService` (пересборка на месте процессорами, прогресс, slow-motion через `pace_ms`), `timeline`, `state-at`;
+  🧨 wipe — у sidecar (Фаза 7).
 - **Приёмка:** после wipe коллекций нет, бронь занятого места → всё так же 422; fast-rebuild даёт документы,
   совпадающие с документами до wipe (сравнение JSON без `version` — тестом или `scripts/compare-projections.sh`);
-  slow-rebuild 100 событий ≈ 8 с с прогрессом; команды во время rebuild → 423, задачи цепочки в это время уходят в
-  `Retry` и завершаются после; число писем в inbox и строк outbox не меняется; `state-at` возвращает верное
+  slow-rebuild 100 событий ≈ 8 с с прогрессом; команды во время rebuild принимаются (D-16), задачи цепочки идут как
+  обычно; число писем в inbox и строк outbox не меняется; `state-at` возвращает верное
   историческое состояние.
 
 ### Фаза 7 — Sidecar
@@ -1720,7 +1727,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 ## 14. Вне рамок
 
 Аутентификация и мультиарендность; настоящая отправка почты; продакшен-деплой; саги / process managers;
-горизонтальное масштабирование back-end (rebuild-lock — внутри процесса, предполагается один экземпляр);
+горизонтальное масштабирование back-end в compose демо (процессоры это умеют — аренда закладки, сцена на стенде `load/chaos/`, D-21 — но лента событий живёт в памяти ноды);
 мобильная вёрстка; отдельный CI-job для демо (можно добавить позже).
 
 Идеи для `[P2]`: requeue упавших задач кнопкой (`REQUEUE_FAILED_OUTBOX_TASK`); «потерянный ack» — успех после
@@ -1742,9 +1749,9 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | **D-01** | **Два агрегата.** `Concert` (места, все бизнес-правила R1–R8 синхронно) и `Fan` (билеты зрителя), связанные цепочкой outbox: `SeatBooked` → `encore_record_ticket` → `Fan.RecordTicket` → `TicketRecorded` → `encore_send_e_ticket` → письмо; отмена зеркально. `Fan` получает команды только из задач. | §1, §2.1, §2.3–2.8, §3.2, §3.5, §4, §6.2–6.4, §6.8, §8.3, §9 | ☐ `domain::fan` с R9–R11 (Фаза 2) ☐ `FanCommands` с `execute_with_metadata` (Фаза 3) ☐ обработчики `record_ticket` / `record_cancellation` с таблицей исходов §2.7 (Фаза 4) ☐ `FanWalletView: View<Fan>` через `ViewProjection` (Фаза 5) ☐ второй проход replay (Фаза 6) ☐ бейдж агрегата и «⏳ записывается в кошелёк» в UI (Фаза 8) |
 | **D-02** | **Ровно одно событие на принятую команду;** отклонённая не оставляет следа. Пустой успех не используется. Причина: `PostgresEventRepositoryWithOutbox` коммитит один `event` и его задачи (AM §1 КТ-1). | §1, §2.4, §6.9 | ☐ тест инварианта на обоих агрегатах (Фаза 2) ☐ в `handle` каждой команды ровно один `sink.write` на пути успеха |
 | **D-03** | **`ConcertSoldOut` снят.** `sold_out` — производное (`free_seats() == 0` в агрегате, `sold == capacity` в витрине). Межагрегатная цепочка уже демонстрирует «задача → команда», самокоманда `CloseSales` не нужна. | §2.4, §2.6, §2.8, §8.8, §9 | ☐ `ConcertEvent` без `ConcertSoldOut` ☐ конфетти только по витрине |
-| **D-04** | **Метаданные через библиотеку:** `CommandExecutor::execute_with_metadata` добавляется в `cqrsx` (Фаза 0.5). Демо держит два долгоживущих `CqrsCommandExecutor`, без декоратора `EventStore`. Следствие: `committed_sequence` и счётчик конфликтов в ответе команды отсутствуют (P2). | §2.4, §6.3 п.7, §6.4, §10 Фаза 0.5, §12.1 | ☐ коммит в `cqrsx` с тестами и зелёным CI-набором из `CLAUDE.md` ☐ `events.metadata` проверяется в приёмке Фазы 3 |
+| **D-04** | **Метаданные через библиотеку:** `CommandExecutor::execute_with_metadata` добавляется в `cqrsx` (Фаза 0.5). Демо держит два долгоживущих `CommandExecutorCore`, без декоратора `EventStore`. Следствие: `committed_sequence` и счётчик конфликтов в ответе команды отсутствуют (P2). | §2.4, §6.3 п.7, §6.4, §10 Фаза 0.5, §12.1 | ☐ коммит в `cqrsx` с тестами и зелёным CI-набором из `CLAUDE.md` ☐ `events.metadata` проверяется в приёмке Фазы 3 |
 | **D-05** | **Имена форматов задач** только `[A-Za-z0-9_]`: `encore_record_ticket`, `encore_send_e_ticket`, `encore_record_cancellation`, `encore_issue_refund`, все версии 1. Причина: `diagnostics::safe_type` печатает иные имена как `unknown`. | §2.7, §6.4 | ☐ `TASK_TYPE` констант ровно такие |
-| **D-06** | **Обе витрины — `ViewProjection`** (`view_id == aggregate_id`); `FanWalletsProjection` и `FanOutHandler` из версии 1.0 удалены. | §2.8, §4, §6.2, §6.3 п.6 | ☐ нет собственных `EventHandler`, кроме декораторов `NotifyingHandler` и `ProgressHandler` |
+| **D-06** | **Обе витрины — `ViewProjection`** (`view_id == aggregate_id`); `FanWalletsProjection` и `FanOutHandler` из версии 1.0 удалены. | §2.8, §4, §6.2, §6.3 п.6 | ☑ нет собственных `EventHandler`; витрины ведут процессоры (эпик 03) |
 | **D-07** | **Конфигурация runtime:** C=2, Q=2, poll 300 мс, H=5 с, L=30 с, S=3 с через ключи `OUTBOX_*` с демо-дефолтами (`from_lookup`); `RUST_LOG` — один уровень. | §2.7, §5.4, §6.3 | ☐ `Config::from_env` с проверкой `latency_max < H` ☐ `.env.example` |
 | **D-08** | **Backoff почтовых задач — через `retry_after`** (1, 2, 4, 8, 8 с); задачи цепочки без хаоса; `reason` = код причины (виден в `last_error`). | §2.7, §5.4, §8.5 | ☐ `ENCORE_TASK_RETRY_BASE_MS` / `_MAX_MS` ☐ `outboxStatus.ts` по колонке `status` |
 | **D-09** | **Инфраструктура:** `connect_pool(PgConnectOptions)`; `cqrsx` с `features = ["host", "logging"]` + `async-trait`; `sqlx 0.8`; `rand 0.10`; compose монтирует `../cqrsx/sql/*.sql` с `:ro,z`; `demo/.gitignore`. | §4, §5.1, §5.2, §6.1, §6.3 п.3 | ☐ Фаза 1 |
@@ -1753,7 +1760,15 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | **D-12** | **Sidecar:** сортировка `events` по `metadata->>'recorded_at'` (строка фиксированной ширины), outbox по `created_at`, строки outbox не удаляются, `last_error` показывается. Запросы — AM §6. | §7.3, §8.5 | ☐ Фаза 7 |
 | **D-13** | **Граница back-end ↔ sidecar (аудит 2026-10-17, `docs/BOUNDARY_AUDIT.md`).** Back-end — production-подобный сервис кассы; всё demo-only и удаляющее данные — у sidecar: 🧨 wipe (`POST /inspect/projections/wipe`), письма фаната (`GET /inspect/mail/{fan_id}`), персонажи (`GET /inspect/demo`), имитация почтового сервиса (`POST /mail`). Back-end зовёт почту по HTTP (`HttpMailer`) и к базе `mail_service` не подключается. Счётчики журнала — в `cqrsx` (`PostgresEventRepository::totals`, тикет 08). Ограничения «sidecar без `cqrsx`» и «только read-only» сняты. Открытые вопросы — `docs/discussions/`. | §2.7, §2.9, §3.5, §5.4, §6.2, §6.4, §7 | ☑ реализовано 2026-10-17 |
 | **D-14** | **Журнал `Fan` — на пару «фанат + концерт»:** `aggregate_id = <fan_id>:<concert_id>`, `fan_wallets._id` тот же; домен `Fan`, wire-форматы событий и снапшота, `ViewProjection`, rebuild и verify не меняются. Кошелёк фаната собирается при чтении из диапазона `_id` `[<fan>:, <fan>;)` и отвечает `{ fan_id, ledgers, view }`. Причина: нагрузочный прогон 03b 2026-10-18 — состояние, снапшот и документ кошелька одного фаната росли без границы, стоимость задачи O(n), слив outbox 120 → 12 задач/с, потери проекции (`docs/discussions/06_fan_ledger_growth.md`). Данные демо пересоздаются (`make reset`). | §2.1, §2.3, §2.8, §3.2, §6.4 | ☑ реализовано 2026-10-18 |
-| **D-15** | **Документ без истории не создаётся.** Документ витрины хранит `last_sequence` и принимает только следующее событие своего агрегата (`cqrsx`, эпик 03/01: повтор пропускается, дыра — `SequenceGap` без записи). После 🧨 wipe бронь принимается с предупреждением `projection_failed`, лента называет дыру, витрина пуста до Encore!; флаг `incomplete` удалён из вида, API и UI. Совместимость со старыми базами не поддерживается: проект не выпущен, данные пересоздаются (`make reset`). | §2.8, §2.9, §6.7, §8.6 | ☑ реализовано 2026-10-24 |
+| **D-15** | **Документ без истории не создаётся.** Документ витрины хранит `last_sequence` и принимает только следующее событие своего агрегата (`cqrsx`, эпик 03/01: повтор пропускается, дыра — `SequenceGap` без записи); пересборка и лечение дыры заменяют документ свёрткой истории с начала. Флаг `incomplete` удалён из вида, API и UI. Совместимость со старыми базами не поддерживается: проект не выпущен, данные пересоздаются (`make reset`). | §2.8, §2.9, §6.7, §8.6 | ☑ реализовано 2026-10-24 |
+| **D-16** | **Касса открыта во время Encore!:** пересборка идёт на месте, команды принимаются, `BoxOfficeLock`, `423` и `ENCORE_CHAIN_MAX_ATTEMPTS` удалены. | §2.9, §3.4, §6.4, §6.8 | ☑ реализовано 2026-10-25 |
+| **D-17** | **Ответ команды — «принято» сразу после коммита**, без `projection_failed`; состояние витрины — SSE `projection.updated` и `/api/projections/status`; UI ждёт `projection.updated` своего документа вместо немедленного чтения. | §2.8, §6.6, §8 | ☑ реализовано 2026-10-25 |
+| **D-18** | **`pace_ms` вместо `speed`** в Encore!: пауза между событиями одного ключа; верхняя граница `ENCORE_REPLAY_MAX_PACE_MS`. | §2.9, §6.4 | ☑ реализовано 2026-10-25 |
+| **D-20** | **Verify сравнивает документ со свёрткой применённой им части истории;** отстающие и отсутствующие считаются в `behind`, расхождение — только неверный документ; стенд проверяет после догона и требует ноль отстающих. | §2.9 | ☑ реализовано 2026-10-25 |
+| **D-21** | **Сцена «убитая нода» — только на стенде** (`load/chaos/`); compose демо с одной нодой, потому что лента событий живёт в памяти ноды. | §3.4 | ☑ стенд 2026-10-25 |
+| **D-22** | **Нагрузочные и стресс-прогоны не дольше 5 минут;** часовой soak не нужен. | `load/` | ☑ принято 2026-10-24 |
+| **D-23** | **Полный замер тикета 04 — 42 прогона** с отставанием проекций p50/p99 в каждой точке. | `load/` | см. `PROGRESS.md` |
+| **D-24** | **Отставание считает `PostgresEventRepository::count_after(position, cap)`** через порт `EventLedgerStats`, потолок `ENCORE_PROJECTION_LAG_CAP` (100 000). | §2.9, §6.8 | ☑ реализовано 2026-10-25 |
 
 Открытых вопросов перед Фазой 0.5 нет.
 
@@ -1817,13 +1832,15 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 
 **⑤ Encore! / Replay**
 - **RU:** Сотрите витрины — зал погаснет, но правила продолжат работать: решения принимаются по журналу, а не по
-  витрине. Нажмите «Encore!» — все события будут сыграны на бис, и витрины восстановятся точно такими же. Письма при
-  этом повторно не отправляются: внешние действия живут в outbox, а не в витринах.
-  *Попробуйте:* 🧨 стереть → кликнуть занятое место → ⏪ Encore! в замедленном режиме.
+  витрине. Нажмите «Encore!» — каждый документ пересоберётся на месте по своей истории, а касса всё время открыта. Вместе с витринами
+  пропали и закладки процессоров, поэтому они сами перечитывают журнал с начала. Письма при этом повторно не
+  отправляются: внешние действия живут в outbox, а не в витринах.
+  *Попробуйте:* 🧨 стереть → кликнуть занятое место → ⏪ Encore! в замедленном режиме и забронировать место.
 - **EN:** Wipe the read models — the hall goes dark, but the rules keep working: decisions are made from the ledger,
-  not the shop window. Press "Encore!" — every event is played again and the read models come back exactly the same.
-  No email is re-sent: side effects live in the outbox, not in read models.
-  *Try it:* 🧨 wipe → click a taken seat → ⏪ Encore! in slow motion.
+  not the shop window. The processors lost their checkpoints too, so they read the ledger again from the start.
+  Press "Encore!" — every document is rebuilt in place from its history while the box office stays open. No email is
+  re-sent: side effects live in the outbox, not in read models.
+  *Try it:* 🧨 wipe → click a taken seat → ⏪ Encore! in slow motion and book a seat.
 
 ### A.3 Пояснения панелей (ⓘ) и состояний
 
@@ -1838,9 +1855,8 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | `panels.activity` | Живой лог back-end: что происходит прямо сейчас. Хранится только в памяти. | Live back-end log: what is happening right now. Kept in memory only. |
 | `states.race` | Оба запроса прочитали версию N и попытались записать N+1. База приняла только первый; второй повторился на свежем состоянии — и правило «место свободно» его отклонило. | Both requests read version N and tried to write N+1. The database accepted only the first; the second was retried on fresh state — and the "seat must be free" rule rejected it. |
 | `states.history` | Это состояние нигде не хранится — оно вычислено из событий 1…{n}. | This state isn't stored anywhere — it was computed from events 1…{n}. |
-| `states.wiped` | Витрины пусты. Журнал цел — нажмите Encore!, чтобы всё восстановить. | Read models are empty. The ledger is intact — press Encore! to restore everything. |
-| `states.locked` | Касса закрыта на минутку: пересобираем витрины. | Box office closed for a moment: rebuilding read models. |
-| `states.projection_failed` | ⚠️ Событие записано, но витрина не обновилась. Encore! её догонит. | ⚠️ The event was recorded, but the read model wasn't updated. Encore! will catch it up. |
+| `states.wiped` | Витрины пусты. Журнал цел: процессоры перечитывают его с начала, и зал вернётся сам. | Read models are empty. The ledger is intact: the processors read it again from the start, and the hall comes back by itself. |
+| `states.replaying` | ⏪ Encore!: витрины пересобираются по журналу на месте. Касса открыта — бронируйте. | ⏪ Encore!: the read models are rebuilt from the ledger in place. The box office stays open — book away. |
 
 ### A.4 Сообщения правил
 
@@ -1854,7 +1870,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | `ticket_limit` | Правило против перекупщиков: не больше {limit} билетов в одни руки | Anti-scalper rule: max {limit} tickets per fan |
 | `seat_not_booked` | Место {seat} никто не бронировал | Nobody has booked seat {seat} |
 | `not_your_ticket` | Это не ваш билет — отменить может только владелец | Not your ticket — only the owner can cancel it |
-| `rebuild_in_progress` | Касса закрыта на минутку: пересобираем витрины | Box office closed for a moment: rebuilding read models |
+| `rebuild_in_progress` | Encore! уже идёт | Encore! is already running |
 
 ### A.5 Причины «капризов» почтового сервера
 

@@ -4,7 +4,6 @@ use crate::{
         activity::{ActivityEntry, ActivityHub},
         command_service::CommandService,
         concert::ConcertApp,
-        lock::BoxOfficeLock,
     },
     domain::{
         ConcertId, FanId,
@@ -24,7 +23,6 @@ pub struct Harness<S: EventStore<Concert>> {
     /// A clone of the executor the app runs its commands through: shares the store and the task records.
     pub executor: TestCommandExecutor<Concert, S>,
     pub activity: Arc<ActivityHub>,
-    pub lock: Arc<BoxOfficeLock>,
 }
 
 pub fn harness<S>(store: S) -> Harness<S>
@@ -34,13 +32,11 @@ where
 {
     let executor = TestCommandExecutor::new(store.clone(), ConcertServices::default());
     let activity = Arc::new(ActivityHub::new(64, 64));
-    let lock = Arc::new(BoxOfficeLock::new());
-    let service = CommandService::new(executor.clone(), activity.clone(), lock.clone());
+    let service = CommandService::new(executor.clone(), activity.clone());
     Harness {
         app: ConcertApp::new(service, store, 6),
         executor,
         activity,
-        lock,
     }
 }
 

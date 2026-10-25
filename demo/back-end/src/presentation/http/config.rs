@@ -22,6 +22,8 @@ pub fn config_json(config: &Config) -> Value {
         },
         "ticket_limit": config.ticket_limit,
         "snapshot_every": config.snapshot_every,
+        // The pause a slow Encore! asks for between the events of one key (D-18).
+        "replay_slow_delay_ms": u64::try_from(config.replay_slow_delay.as_millis()).unwrap_or(u64::MAX),
     })
 }
 

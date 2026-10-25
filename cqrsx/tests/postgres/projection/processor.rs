@@ -7,7 +7,7 @@ use cqrsx::{
     cqrs::{
         CqrsFramework,
         aggregate::Aggregate,
-        command::{executor::CqrsCommandExecutor, locks::LockLimits, wakeup::CommitWakeup},
+        command::{executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
         event::EventEnvelope,
         event_handler::delivery::DeliveryConfig,
         projection::{
@@ -101,13 +101,13 @@ impl ProjectionObserver for Recording {
 type Store = PersistedEventStore<PostgresEventRepositoryWithOutbox, Ledger>;
 type Factory = Box<dyn Fn(Vec<NewTask>) -> CqrsFramework<Ledger, Store> + Send + Sync>;
 
-fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<CqrsCommandExecutor<Ledger, Factory>> {
+fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<CommandExecutorCore<Ledger, Factory>> {
     let pool = pool.clone();
     let factory: Factory = Box::new(move |tasks| {
         let repository = PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks);
         CqrsFramework::new(PersistedEventStore::new_event_store(repository), ())
     });
-    Arc::new(CqrsCommandExecutor::new(factory, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
+    Arc::new(CommandExecutorCore::new(factory, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
 }
 
 fn config() -> ProcessorConfig {

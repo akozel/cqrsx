@@ -5,7 +5,7 @@ use crate::{
         aggregate::Aggregate,
         command::{
             CommandExecutor, CommandGatewayError,
-            executor::{CqrsCommandExecutor, FrameworkFactory},
+            executor::{CommandExecutorCore, FrameworkFactory},
             locks::LockLimits,
             retry::AggregateConflictRetryPolicy,
             wakeup::CommitWakeup,
@@ -44,7 +44,7 @@ where
     }
 }
 
-/// The production command path behind [`CommandExecutor`] over a test store: one [`CqrsCommandExecutor`]
+/// The production command path behind [`CommandExecutor`] over a test store: one [`CommandExecutorCore`]
 /// with aggregate locks, the default conflict retry and post-commit event handlers, plus a record of the
 /// tasks every call carries.
 ///
@@ -121,7 +121,7 @@ where
 /// # }
 /// ```
 pub struct TestCommandExecutor<A: Aggregate, S = MemStore<A>> {
-    inner: Arc<CqrsCommandExecutor<A, TestFrameworkFactory<A, S>>>,
+    inner: Arc<CommandExecutorCore<A, TestFrameworkFactory<A, S>>>,
     bound: Arc<Mutex<Vec<NewTask>>>,
     published: Arc<Mutex<Vec<NewTask>>>,
 }
@@ -132,7 +132,7 @@ impl<A: Aggregate + 'static, S> TestCommandExecutor<A, S> {
     pub fn new(store: S, services: A::Services) -> Self {
         let factory = TestFrameworkFactory { store, services };
         Self {
-            inner: Arc::new(CqrsCommandExecutor::new(
+            inner: Arc::new(CommandExecutorCore::new(
                 factory,
                 AggregateConflictRetryPolicy::default(),
                 LockLimits::default(),

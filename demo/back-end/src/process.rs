@@ -1,39 +1,46 @@
 //! The process around the box office: `.env`, logging, the configuration, the connections, the HTTP
-//! server and the outbox task runtime, start and stop. Nothing here knows a concert from a fan: the
-//! application is assembled from a [`Process`] by `bootstrap`.
+//! server, the outbox task runtime and the projection processors, start and stop. Nothing here knows a
+//! concert from a fan: the application is assembled from a [`Process`] by `bootstrap`.
 use crate::{
     bootstrap::{Wiring, routes},
     config::{Config, ConfigError},
 };
 use cqrsx::{
-    cqrs::event_handler::delivery::DeliveryBacklog,
+    cqrs::projection::runtime::ProjectionRuntime,
     host::{lifecycle, signal::shutdown_signal},
     logging::LoggingConfig,
     postgres::{
         pool::{ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, StatementTimeout, connect_pool_with},
         task_runtime::prepare_task_runtime,
     },
+    task::runtime::TaskRuntimeError,
 };
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-use std::{future::IntoFuture, net::SocketAddr, sync::Arc, time::Duration};
+use std::{
+    future::{Future, IntoFuture},
+    io,
+    net::SocketAddr,
+    sync::Arc,
+    time::Duration,
+};
 use tokio_util::sync::CancellationToken;
-
-/// How long a stopping process waits for the ordered projections to apply what is left in their buffers.
-pub const PROJECTION_DRAIN_LIMIT: Duration = Duration::from_secs(5);
 
 /// What the application is built from: the configuration, the connections and the stop signal.
 pub struct Process {
     pub config: Arc<Config>,
     /// Commands and the outbox queue: short static statements, each under the pool's statement timeout.
     pub pool: PgPool,
-    /// Whole-history reads (Encore!, verify, the ledger totals and the time machine): no statement
-    /// timeout, and no connection kept while none of them runs.
+    /// Whole-history reads (verify, the ledger totals and the time machine): no statement timeout, and no
+    /// connection kept while none of them runs.
     pub history_pool: PgPool,
+    /// The projection processors' reads of the journal: pages and, on a rebuild, the history of every key
+    /// of a page, under the main pool's statement timeout but apart from the commands' connections.
+    pub projection_pool: PgPool,
     pub mongo: mongodb::Client,
-    /// Cancelled when the process stops; the SSE streams and the task runtime end with it.
+    /// Cancelled when the process stops; the SSE streams, the task runtime and the processors end with it.
     pub shutdown: CancellationToken,
 }
 
@@ -49,6 +56,8 @@ pub enum ProcessError {
     Pool(sqlx::Error),
     #[error("cannot connect the history pool to PostgreSQL: {0}")]
     HistoryPool(sqlx::Error),
+    #[error("cannot connect the projection pool to PostgreSQL: {0}")]
+    ProjectionPool(sqlx::Error),
     #[error("ENCORE_MONGODB_URI: {0}")]
     MongoUri(mongodb::error::Error),
     #[error("MongoDB client: {0}")]
@@ -57,6 +66,8 @@ pub enum ProcessError {
     Bind { addr: SocketAddr, source: std::io::Error },
     #[error("task runtime setup: {0}")]
     TaskRuntime(String),
+    #[error("the read side stopped: {0}")]
+    Projections(String),
 }
 
 impl Process {
@@ -69,20 +80,21 @@ impl Process {
             .try_init()
             .map_err(|e| ProcessError::Logging(e.to_string()))?;
         let config = Arc::new(Config::from_env()?);
-        let (pool, history_pool) = postgres_pools(&config).await?;
+        let (pool, history_pool, projection_pool) = postgres_pools(&config).await?;
         let mongo = mongo_client(&config).await?;
         Ok(Self {
             config,
             pool,
             history_pool,
+            projection_pool,
             mongo,
             shutdown: CancellationToken::new(),
         })
     }
 
-    /// Serves `app` until a stop signal: the HTTP API and the outbox task runtime side by side. Then the
-    /// ordered projections get [`PROJECTION_DRAIN_LIMIT`] to apply what is left in their buffers (the
-    /// events of commands whose clients went away; MongoDB is still open), and the pools close.
+    /// Serves `app` until a stop signal: the HTTP API, the outbox task runtime and the projection processors
+    /// side by side. A stopping processor finishes what is in flight (up to one lease) and gives its
+    /// checkpoint back; then the pools close.
     pub async fn serve(self, app: Wiring) -> Result<(), ProcessError> {
         let listener = tokio::net::TcpListener::bind(self.config.http_addr)
             .await
@@ -100,25 +112,52 @@ impl Process {
         let inbound = axum::serve(listener, routes::router(app.state))
             .with_graceful_shutdown(self.shutdown.clone().cancelled_owned())
             .into_future();
-        if let Err(error) = lifecycle::run(inbound, task_runtime, self.shutdown.clone(), shutdown_signal()).await {
-            error.log("encore-backend stopped with an error");
-        }
-        match drain_projections(&app.projection_backlogs, PROJECTION_DRAIN_LIMIT).await {
-            Ok(()) => tracing::info!("projections drained"),
-            Err(pending) => tracing::warn!(
-                pending,
-                "projections not drained in time: the read models miss these commands until the next Encore!"
-            ),
-        }
+        let served = run_components(
+            inbound,
+            task_runtime,
+            app.projections,
+            self.shutdown.clone(),
+            shutdown_signal(),
+        )
+        .await;
         self.pool.close().await;
         self.history_pool.close().await;
+        self.projection_pool.close().await;
         tracing::info!("encore-backend stopped");
-        Ok(())
+        served
     }
 }
 
-/// The main pool and the history pool over the same address, both connecting lazily.
-async fn postgres_pools(config: &Config) -> Result<(PgPool, PgPool), ProcessError> {
+/// Runs the inbound server and the task runtime under `lifecycle::run`, with the projection processors
+/// beside them on the same token: the processors start only now, after everything that could fail at start
+/// has succeeded, so a failed start never leaves a checkpoint held. Whatever stops first stops the rest
+/// (the projection runtime cancels the token when it ends). A panicking processor is an error of the process;
+/// a host error is logged, as before.
+pub async fn run_components<I, T, S>(
+    inbound: I,
+    task_runtime: T,
+    projections: ProjectionRuntime,
+    shutdown: CancellationToken,
+    signal: S,
+) -> Result<(), ProcessError>
+where
+    I: Future<Output = io::Result<()>>,
+    T: Future<Output = Result<(), TaskRuntimeError>> + Send + 'static,
+    S: Future<Output = io::Result<()>>,
+{
+    let read_side = tokio::spawn(projections.run(shutdown.clone()));
+    if let Err(error) = lifecycle::run(inbound, task_runtime, shutdown.clone(), signal).await {
+        error.log("encore-backend stopped with an error");
+    }
+    match read_side.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(ProcessError::Projections(error.to_string())),
+        Err(error) => Err(ProcessError::Projections(error.to_string())),
+    }
+}
+
+/// The main, the history and the projection pool over the same address, all connecting lazily.
+async fn postgres_pools(config: &Config) -> Result<(PgPool, PgPool, PgPool), ProcessError> {
     let options = config
         .database_url
         .parse::<PgConnectOptions>()
@@ -132,6 +171,14 @@ async fn postgres_pools(config: &Config) -> Result<(PgPool, PgPool), ProcessErro
     )
     .await
     .map_err(ProcessError::Pool)?;
+    let projection_pool = connect_pool_with(
+        options.clone(),
+        PgPoolOptions::new().max_connections(config.database_projection_pool_size.get()),
+        ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
+        config.database_statement_timeout,
+    )
+    .await
+    .map_err(ProcessError::ProjectionPool)?;
     let history_pool = connect_pool_with(
         options,
         PgPoolOptions::new()
@@ -143,11 +190,12 @@ async fn postgres_pools(config: &Config) -> Result<(PgPool, PgPool), ProcessErro
     )
     .await
     .map_err(ProcessError::HistoryPool)?;
-    Ok((pool, history_pool))
+    Ok((pool, history_pool, projection_pool))
 }
 
-/// Short server-selection and connect timeouts: when MongoDB is down a command still answers quickly
-/// (200 + `projection_failed` warning) instead of hanging for the driver's default 30 s.
+/// Short server-selection and connect timeouts: when MongoDB is down the read side fails fast and retries
+/// (the processors back off, the status answers with the rows it saw last) instead of hanging for the
+/// driver's default 30 s; the commands never touch MongoDB.
 async fn mongo_client(config: &Config) -> Result<mongodb::Client, ProcessError> {
     let mut options = mongodb::options::ClientOptions::parse(&config.mongodb_uri)
         .await
@@ -158,69 +206,136 @@ async fn mongo_client(config: &Config) -> Result<mongodb::Client, ProcessError> 
     mongodb::Client::with_options(options).map_err(ProcessError::MongoClient)
 }
 
-/// Waits until the ordered projections have applied everything handed over to them, at most `limit`.
-/// Called once the HTTP server and the task runtime have stopped: what is left then belongs to commands
-/// whose clients went away. `Err` carries how many hand-overs were still pending; like a crash, the read
-/// models then miss them until the next Encore!.
-pub async fn drain_projections(backlogs: &[DeliveryBacklog], limit: Duration) -> Result<(), usize> {
-    let drained = async {
-        for backlog in backlogs {
-            backlog.drained().await;
-        }
-    };
-    tokio::time::timeout(limit, drained)
-        .await
-        .map_err(|_| backlogs.iter().map(DeliveryBacklog::len).sum())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::domain::fan::{Fan, test_support::record};
     use cqrsx::cqrs::{
-        command::CommandExecutor,
-        event::EventEnvelope,
-        event_handler::{EventHandler, delivery::DeliveryConfig},
-        store::PersistenceError,
-        testing::{command::TestCommandExecutor, mem_store::MemStore},
+        aggregate::Aggregate,
+        event::{DomainEvent, EventEnvelope},
+        event_sink::EventSink,
+        projection::{
+            View, ViewProjection,
+            processor::{
+                ProjectionProcessor,
+                config::ProcessorConfig,
+                observer::{LeaseEvent, ProjectionObserver},
+            },
+        },
+        testing::{
+            mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
+            mem_view_repository::MemViewRepository,
+        },
     };
-    use uuid::Uuid;
+    use serde::{Deserialize, Serialize};
 
-    /// A projection that holds every call until the test lets it through.
-    struct Held(tokio::sync::Semaphore);
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    struct Counted;
 
-    #[async_trait::async_trait]
-    impl EventHandler<Fan> for Held {
-        async fn handle(&self, _: &str, _: &[EventEnvelope<Fan>]) -> Result<(), PersistenceError> {
-            self.0.acquire().await.unwrap().forget();
-            Ok(())
+    impl DomainEvent for Counted {
+        fn event_type(&self) -> String {
+            "counted".into()
+        }
+        fn event_version(&self) -> String {
+            "1".into()
         }
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn draining_waits_for_the_projections_and_reports_what_is_left_at_the_limit() {
-        assert_eq!(drain_projections(&[], Duration::from_secs(5)).await, Ok(()));
-        let held = Arc::new(Held(tokio::sync::Semaphore::new(0)));
-        let executor =
-            TestCommandExecutor::new(MemStore::<Fan>::default(), ()).with_event_handler(held.clone(), DeliveryConfig::default());
-        // Two commands whose clients went away before the projection applied their events.
-        for (ledger, booking) in [("fox", 1), ("wolf", 2)] {
-            let executor = executor.clone();
-            drop(tokio::spawn(async move {
-                executor.execute(ledger, record(Uuid::from_u128(booking)), vec![]).await
-            }));
+    #[derive(Debug, thiserror::Error)]
+    #[error("never")]
+    struct Never;
+
+    #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+    struct Counter;
+
+    impl Aggregate for Counter {
+        const TYPE: &'static str = "counter";
+        type Command = ();
+        type Event = Counted;
+        type Error = Never;
+        type Services = ();
+        async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), Never> {
+            Ok(())
         }
-        let backlog = executor.backlog();
-        for _ in 0..100 {
-            if backlog.len() == 2 {
-                break;
-            }
-            tokio::task::yield_now().await;
+        fn apply(&mut self, _: Counted) {}
+    }
+
+    #[derive(Debug, Default, Serialize, Deserialize)]
+    struct Total;
+
+    impl View<Counter> for Total {
+        fn update(&mut self, _: &EventEnvelope<Counter>) {}
+    }
+
+    /// An observer that panics as soon as its processor holds the checkpoint: a bug in the read side.
+    struct Panicking;
+
+    impl ProjectionObserver for Panicking {
+        fn lease(&self, event: LeaseEvent) {
+            assert!(event != LeaseEvent::Acquired, "a bug in an observer");
         }
-        assert_eq!(backlog.len(), 2, "both commands handed their events over");
-        let backlogs = [DeliveryBacklog::default(), backlog];
-        assert_eq!(drain_projections(&backlogs, Duration::from_secs(5)).await, Err(2));
-        held.0.add_permits(2);
-        assert_eq!(drain_projections(&backlogs, Duration::from_secs(5)).await, Ok(()));
+    }
+
+    fn runtime(observer: Option<Arc<dyn ProjectionObserver>>) -> ProjectionRuntime {
+        let processor = ProjectionProcessor::new(
+            "totals",
+            Arc::new(MemEventRepository::default()),
+            Arc::new(MemCheckpointStore::default()),
+            Arc::new(ViewProjection::new(Arc::new(MemViewRepository::<Total, Counter>::default()))),
+            ProcessorConfig::default(),
+        );
+        let processor = match observer {
+            Some(observer) => processor.with_observer(observer),
+            None => processor,
+        };
+        ProjectionRuntime::new().with_processor(processor)
+    }
+
+    /// An inbound server and a task runtime that run until the token is cancelled.
+    fn components(
+        shutdown: &CancellationToken,
+    ) -> (
+        impl Future<Output = io::Result<()>>,
+        impl Future<Output = Result<(), TaskRuntimeError>> + Send + 'static,
+    ) {
+        let (inbound, runtime) = (shutdown.clone(), shutdown.clone());
+        (
+            async move {
+                inbound.cancelled().await;
+                Ok(())
+            },
+            async move {
+                runtime.cancelled().await;
+                Ok(())
+            },
+        )
+    }
+
+    #[tokio::test]
+    async fn a_panicking_processor_stops_the_server_and_fails_the_process() {
+        let shutdown = CancellationToken::new();
+        let (inbound, task_runtime) = components(&shutdown);
+        let result = run_components(
+            inbound,
+            task_runtime,
+            runtime(Some(Arc::new(Panicking))),
+            shutdown.clone(),
+            std::future::pending(),
+        )
+        .await;
+        assert!(matches!(result, Err(ProcessError::Projections(message)) if message.contains("totals")));
+        assert!(shutdown.is_cancelled(), "the panic stopped everything else");
+    }
+
+    #[tokio::test]
+    async fn a_requested_stop_ends_every_component_and_the_processors_last() {
+        let shutdown = CancellationToken::new();
+        let (inbound, task_runtime) = components(&shutdown);
+        let stop = shutdown.clone();
+        tokio::spawn(async move {
+            tokio::time::sleep(Duration::from_millis(50)).await;
+            stop.cancel();
+        });
+        let result = run_components(inbound, task_runtime, runtime(None), shutdown.clone(), std::future::pending()).await;
+        assert!(result.is_ok(), "{result:?}");
     }
 }

@@ -427,7 +427,7 @@ function seriesSection(key, runs) {
           { name: 'conflict', slot: 2, values: sorted.map((r) => r.outcomes?.conflict ?? 0) },
           { name: 'rejected', slot: 3, values: sorted.map((r) => r.outcomes?.rejected_total ?? 0) },
           { name: 'unavailable', slot: 4, values: sorted.map((r) => r.outcomes?.unavailable ?? 0) },
-          { name: 'other', slot: 5, values: sorted.map((r) => (r.outcomes?.other ?? 0) + (r.outcomes?.locked ?? 0)) },
+          { name: 'other', slot: 5, values: sorted.map((r) => r.outcomes?.other ?? 0) },
         ],
       }),
     );
@@ -741,7 +741,7 @@ ${body}
 <footer>
 <ul>
 <li>Every run is a fresh stand and a closed loop: the VUs send requests back to back; req/s is the throughput at that concurrency, not an arrival rate. Numbers cover the measured window only; the warm-up is excluded.</li>
-<li>Outcomes: accepted = 200, conflict = 409 (a version race the back-end could not win in three retries), rejected = 422 (a domain rule), unavailable = 503 (storage, or no lock or no room in a read model's buffer for the aggregate in time), other = everything else including 423.</li>
+<li>Outcomes: accepted = 200, conflict = 409 (a version race the back-end could not win in three retries), rejected = 422 (a domain rule), unavailable = 503 (storage, or no lock or no room in the command buffer for the aggregate in time), other = everything else.</li>
 <li>CPU is the maximum of the <code>stats</code> samples, 100 % = one core. Memory is the cgroup peak when the kernel exposes it, otherwise the maximum sampled.</li>
 <li>CPU cores per series are the budgets the stand enforced for those runs (quota or pinning). The mail stub shares the k6 cores. Runs without a recorded budget predate the recording and ran with back-end 2, PostgreSQL 6, MongoDB 2, k6 2.</li>
 <li>Outbox drain: tasks completed per second after the burst ended, until no task was open. Every accepted booking creates two tasks.</li>

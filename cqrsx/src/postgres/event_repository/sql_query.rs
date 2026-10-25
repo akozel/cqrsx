@@ -6,6 +6,7 @@ pub(crate) struct SqlQueryFactory {
     insert_event: String,
     all_events: String,
     count_events: String,
+    count_after: String,
     feed_page: String,
     feed_tail: String,
     head: String,
@@ -51,6 +52,13 @@ SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payloa
 SELECT count(*) AS events, count(DISTINCT aggregate_id) AS aggregates
   FROM {event_table}
   WHERE aggregate_type = $1"
+            ),
+            // The events of one type above a position, at most $3 of them: the LIMIT stops the index scan,
+            // so a reader far behind is counted in bounded time.
+            count_after: format!(
+                "
+SELECT count(*) AS events
+  FROM (SELECT 1 FROM {event_table} WHERE aggregate_type = $1 AND tx > $2::text::xid8 LIMIT $3) AS capped"
             ),
             // sqlx has no xid8: the position travels as decimal text in both directions. The horizon
             // `pg_snapshot_xmin(pg_current_snapshot())` belongs to this statement's snapshot: every
@@ -127,6 +135,9 @@ SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
     }
     pub fn count_events(&self) -> &str {
         &self.count_events
+    }
+    pub fn count_after(&self) -> &str {
+        &self.count_after
     }
     pub fn select_events_after(&self) -> &str {
         &self.select_events_after

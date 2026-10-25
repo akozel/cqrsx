@@ -1,6 +1,6 @@
 //! A read model in a MongoDB collection: cqrsx writes its documents (`MongoViewRepository`, one document per
-//! view: `{ _id: view_id, version, last_sequence, view }`), the demo queries the collection by that shape
-//! and drops it to wipe the read model.
+//! view: `{ _id: view_id, version, last_sequence, view }`) for the projection processor, the demo queries
+//! the collection by that shape. Dropping it (🧨 wipe) is the sidecar's.
 use crate::application::{
     StorageError,
     ports::{ReadModelStore, Stored},
@@ -23,8 +23,8 @@ use mongodb::{
 };
 use serde::{Deserialize, de::DeserializeOwned};
 
-/// One read model: the projection writes through the library's repository, the queries and the wipe read
-/// and drop the same collection.
+/// One read model: the projection processor writes through the library's repository, the queries read the
+/// same collection.
 pub struct MongoReadModel<V, A> {
     views: MongoViewRepository<V, A>,
     collection: Collection<Document>,
@@ -59,12 +59,24 @@ struct StoredDocument<V> {
     #[serde(rename = "_id")]
     id: String,
     version: i64,
+    last_sequence: i64,
     view: V,
 }
 
 fn decode<V: DeserializeOwned>(document: Document) -> Result<Stored<V>, StorageError> {
-    let StoredDocument { id, version, view } = mongodb::bson::from_document(document).map_err(StorageError::new)?;
-    Ok(Stored { id, version, view })
+    let StoredDocument {
+        id,
+        version,
+        last_sequence,
+        view,
+    } = mongodb::bson::from_document(document).map_err(StorageError::new)?;
+    let last_sequence = usize::try_from(last_sequence).map_err(StorageError::new)?;
+    Ok(Stored {
+        id,
+        version,
+        last_sequence,
+        view,
+    })
 }
 
 impl<V: DeserializeOwned, A> MongoReadModel<V, A> {
@@ -107,11 +119,6 @@ where
     async fn list_range(&self, lower: &str, upper: &str) -> Result<Vec<Stored<V>>, StorageError> {
         self.find_sorted(doc! { "_id": { "$gte": lower, "$lt": upper } }).await
     }
-
-    /// Wipe = drop the collection.
-    async fn wipe(&self) -> Result<(), StorageError> {
-        self.collection.drop().await.map_err(StorageError::new)
-    }
 }
 
 #[cfg(test)]
@@ -136,10 +143,15 @@ mod tests {
             Stored {
                 id: "c-1".into(),
                 version: 3,
+                last_sequence: 7,
                 view: ConcertHallView::default()
             }
         );
-        assert!(decode::<ConcertHallView>(doc! { "_id": "c-1", "view": view }).is_err());
+        assert!(decode::<ConcertHallView>(doc! { "_id": "c-1", "view": view.clone() }).is_err());
+        assert!(
+            decode::<ConcertHallView>(doc! { "_id": "c-1", "version": 1_i64, "last_sequence": -1_i64, "view": view }).is_err(),
+            "a negative last event is no document of the library's"
+        );
     }
 
     /// The views are stored as BSON: seat and ticket keys stay strings, options stay optional.

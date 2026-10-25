@@ -7,10 +7,12 @@ use mongodb::{
 use serde::Serialize;
 use serde_json::Value;
 
-/// `(database, collection)` pairs the sidecar is allowed to show.
-pub const WHITELIST: [(&str, &str); 3] = [
+/// `(database, collection)` pairs the sidecar is allowed to show: the read models, the checkpoints of their
+/// projections and the mail inbox.
+pub const WHITELIST: [(&str, &str); 4] = [
     ("encore_read", "concert_halls"),
     ("encore_read", "fan_wallets"),
+    ("encore_read", "projection_checkpoints"),
     ("mail_service", "inbox"),
 ];
 

@@ -32,10 +32,6 @@ where
         command: CancelBooking,
         metadata: CommandMetadata,
     ) -> Executed<ConcertError> {
-        // A closed box office must not even read the ledger.
-        if self.service.is_locked() {
-            return Executed::locked();
-        }
         let tasks = match self.refund_tasks(concert_id, &command, &metadata).await {
             Ok(tasks) => tasks,
             Err(error) => return Executed::tasks_unavailable(error),
@@ -71,7 +67,7 @@ where
         else {
             return Ok(vec![]);
         };
-        let task = tasks::record_cancellation(concert_id, command, seat, booking, metadata, self.chain_max_attempts)
+        let task = tasks::record_cancellation(concert_id, command, seat, booking, metadata, self.task_max_attempts)
             .map_err(|e| e.to_string())?;
         Ok(vec![task])
     }
@@ -129,22 +125,6 @@ mod tests {
         assert_eq!(executed.outcome, CommandOutcome::Rejected(ConcertError::NotYourTicket));
         assert!(executed.tasks.is_empty());
         assert!(h.executor.take_bound_tasks().is_empty());
-    }
-
-    #[tokio::test]
-    async fn a_closed_box_office_does_not_even_read_the_ledger() {
-        let h = harness(UnavailableStore);
-        let _guard = h.lock.try_acquire().unwrap();
-        let executed = h
-            .app
-            .cancel_booking(&concert_id(), cancel("B4", "fox", Uuid::now_v7()), CommandMetadata::ui())
-            .await;
-        assert_eq!(
-            executed.outcome,
-            CommandOutcome::Locked,
-            "an unavailable store would answer Unavailable"
-        );
-        assert!(h.activity().is_empty(), "a locked outcome is not logged");
     }
 
     #[tokio::test]

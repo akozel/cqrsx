@@ -9,6 +9,7 @@ import type {
   HistoryState,
   RebuildStatus,
   TimelineEntry,
+  VerifyReport,
 } from '@/types/domain'
 
 /** The box office (`/api`): commands, read models, the time machine, Encore!. Demo operations and
@@ -42,6 +43,17 @@ export const backend = {
     )
     return { outcome: 'error', ...(response ?? {}), status } as CommandResponse
   },
-  rebuild: (speed: 'slow' | 'fast') => postJson<{ outcome: string; rebuild_id?: string }>('/api/projections/rebuild', { speed }),
-  rebuildStatus: () => getJson<RebuildStatus>('/api/projections/status'),
+  /** ⏪ Encore!: every read model rebuilt in place, `paceMs` between the events of one key (D-18). */
+  rebuild: (paceMs: number) => postJson<RebuildAnswer>('/api/projections/rebuild', { pace_ms: paceMs }),
+  /** One concert hall rebuilt from its history. */
+  rebuildConcert: (id: string) => postJson<RebuildAnswer>(`/api/concerts/${encodeURIComponent(id)}/rebuild`),
+  status: (signal?: AbortSignal) => getJson<RebuildStatus>('/api/projections/status', signal),
+  verify: () => getJson<VerifyReport>('/api/projections/verify'),
+}
+
+/** `202 { outcome: "started" | "requested" }`, or the error of a refusal (`409 rebuild_in_progress`, `400`, `503`). */
+export interface RebuildAnswer {
+  outcome?: string
+  rebuild_id?: string
+  error?: { code: string; message: string }
 }

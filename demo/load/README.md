@@ -120,15 +120,16 @@ with `DURATION=60s`.
 | 3b | `spread-bookings` + `DRAIN=1 FAN_MODE=hot` | `WORKERS` 8 | Every booking is for one fan. Before decision D-14 that meant one `Fan` stream and one wallet document growing without bound: the drain decayed 120 → 12 tasks/s and never finished (run `20261018-144205`). Since D-14 the fan has a ledger per concert, so this is the regression check: the drain must look like 3a. |
 
 What the tests deliberately do not cover yet: the read side (`GET /api/concerts`, time machine),
-rebuild / verify timing, SSE fan-out, soak, dependency outages. They are the next iteration.
+rebuild / verify timing, SSE fan-out, a soak of up to 5 minutes, dependency outages. They are the next iteration.
 
 ## Reading the numbers
 
 - `rps` is requests in the measured window divided by `DURATION`. In a closed loop it is the
   throughput at that concurrency, not an arrival rate.
 - Outcomes: `accepted` (200), `conflict` (409, retries exhausted), `rejected` (422 by code),
-  `unavailable` (503, storage), `locked` (423, never expected here), `projection_warning` (200 with
-  `projection_failed`: committed, read model not updated).
+  `unavailable` (503, storage). A 200 means the event is in the ledger; the read models follow it (D-17).
+  `projections` in `result.json` (from `projections.jsonl`, the status once a second) is how far they trailed:
+  `lag` p50/p99/max in events over the burst, `caught_up_s` after it, the owners seen and the handovers.
 - CPU percentages are `docker stats` figures: 100 % is one core, so the back-end tops out at 200 %
   when pinned to two cores. When the real docker CLI talks to a podman socket (the sandbox case) the
   sampler reads libpod's stats stream instead, once a second; it catches higher peaks than the 2–3 s
@@ -150,13 +151,16 @@ rebuild / verify timing, SSE fan-out, soak, dependency outages. They are the nex
   under its lock, in arrival order; these bound the wait for the lock, past them a command gets 503. Before
   backlog 02/08c an `ORDERING` parameter could also let them race (`concurrent`); `meta.command_ordering` in
   an older `result.json` records it, and `default` there means `concurrent` for images built before 08b.
-- `PROJECTION_BUFFER` and `PROJECTION_MAX_BATCH`: a command hands its events to a buffer per concert or fan
-  ledger and read model, applied in commit order and in batches after the command released its lock. Before
-  backlog 02/08d a `DELIVERY` parameter could also let a command update the read models itself (`inline`);
-  `meta.projection_delivery` in an older `result.json` records it. `PROJECTION_BUFFER` bounds that buffer (64 commands per aggregate), `PROJECTION_MAX_BATCH` the commands per
-  read-model update (32; 1 = no batches).
-- `VERIFY=1`: after the burst, wait for the chain tasks, then compare the read models with a rebuild from
-  the journal (`verify.json`, `verify` in `result.json`). Adds a few seconds per run.
+- `PROJECTION_BUFFER` and `PROJECTION_MAX_BATCH`: a projection processor reads the journal by its checkpoint and
+  hands the events to a buffer per document, applied in order and in batches. Before backlog 02/08d a `DELIVERY`
+  parameter could also let a command update the read models itself (`inline`); `meta.projection_delivery` in an
+  older `result.json` records it. `PROJECTION_BUFFER` bounds that buffer (64 per aggregate), `PROJECTION_MAX_BATCH`
+  the events per read-model update (32; 1 = no batches).
+- `VERIFY=1`: after the burst, wait for the chain tasks and for the projections to catch up, then compare every
+  document with the history of its aggregate (`verify.json`, `verify` in `result.json`: `ok`, `behind_documents`
+  must be 0). Adds a few seconds per run.
+- `LOAD_CHAOS=chaos/<scenario>.sh`: a fault injected while k6 runs (`chaos/README` in `chaos.sh`'s header), its
+  steps in `chaos.tsv`. `chaos.sh` runs all scenarios, each at most 5 minutes, and checks the criteria.
 - `LOAD_OUTBOX_POLL_MS` (compose env): the poller's idle cadence, 300 ms by default.
 - PostgreSQL runs with the image defaults (`fsync`, `synchronous_commit` on). That is part of the
   limit being measured; turn it off only as an explicitly labelled experiment.

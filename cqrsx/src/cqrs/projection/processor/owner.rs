@@ -55,6 +55,8 @@ enum Woke {
     Lost,
     Live(Result<LiveOutcome, JoinError>),
     Rebuild(Result<(String, Result<Done, DeliveryError>), JoinError>),
+    /// A commit woke the owner: it settles for `settle` so that the commits of a burst land in one page.
+    Commit,
     Timer,
 }
 
@@ -141,8 +143,11 @@ pub(super) struct Owner<'a, A: Aggregate, R, C> {
     checkpoint: Position,
     frontier: Position,
     reading: bool,
-    /// The last page was not empty: read on without waiting.
+    /// The last page was full: read on without waiting.
     more: bool,
+    /// The journal is read only for a reason: a wake-up, the poll, a full page before, the window
+    /// having been full, or the end of a pause. The receipt of a page is no reason.
+    read_due: bool,
     next_page: u64,
     pages: VecDeque<Page>,
     outcomes: JoinSet<LiveOutcome>,
@@ -206,6 +211,7 @@ where
             frontier: claimed.position,
             reading: true,
             more: false,
+            read_due: true,
             next_page: 0,
             pages: VecDeque::new(),
             outcomes: JoinSet::new(),
@@ -309,6 +315,7 @@ where
         } else if self.backoff_until.is_some_and(|until| Instant::now() >= until) {
             self.backoff_until = None;
             self.reading = true;
+            self.read_due = true;
         }
         if self.backoff_until.is_none() && !self.settling() {
             self.poll_requests().await?;
@@ -603,15 +610,19 @@ where
     /// the page before its transaction and stops the reading on it.
     async fn read_page(&mut self) -> Result<(), Interrupt> {
         self.more = false;
-        if !self.reading || self.pages.len() >= self.ctx.config.pages_in_flight() {
+        if !self.reading {
             return Ok(());
         }
-        let entries = match self
-            .ctx
-            .repository
-            .feed_after::<A>(self.frontier, self.ctx.config.page_size())
-            .await
-        {
+        if self.pages.len() >= self.ctx.config.pages_in_flight() {
+            self.read_due = true; // read as soon as a page of the window is settled
+            return Ok(());
+        }
+        if !self.read_due {
+            return Ok(());
+        }
+        self.read_due = false;
+        let page_size = self.ctx.config.page_size();
+        let entries = match self.ctx.repository.feed_after::<A>(self.frontier, page_size).await {
             Ok(entries) => entries,
             Err(error) => {
                 self.store_failure("feed", persistence_category(&error));
@@ -622,6 +633,9 @@ where
             return self.idle().await;
         }
         self.idle_polls = 0;
+        // A page short of its size is the end of what the journal shows: the next read waits for a commit or
+        // the poll. A full one may have more behind it.
+        let full = entries.len() >= page_size;
         let mut decoded: Vec<(Position, EventEnvelope<A>)> = Vec::with_capacity(entries.len());
         let mut poison = None;
         for entry in entries {
@@ -639,7 +653,8 @@ where
         }
         if !decoded.is_empty() {
             self.dispatch(decoded).await?;
-            self.more = true;
+            self.more = full;
+            self.read_due = full;
         }
         if let Some((position, key)) = poison {
             let no = self.page_no();
@@ -765,7 +780,7 @@ where
             Some(joined) = self.outcomes.join_next(), if !self.outcomes.is_empty() => Woke::Live(joined),
             Some(joined) = self.rebuild_outcomes.join_next(), if !self.rebuild_outcomes.is_empty() => Woke::Rebuild(joined),
             _ = tokio::time::sleep_until(until), if backing_off => Woke::Timer,
-            _ = woken, if can_read => Woke::Timer,
+            _ = woken, if can_read => Woke::Commit,
             _ = tokio::time::sleep(self.ctx.config.poll_interval()), if can_read => Woke::Timer,
         };
         self.handle(woke).await
@@ -783,7 +798,23 @@ where
                 Ok(())
             }
             Woke::Rebuild(joined) => self.on_rebuild(joined).await,
-            Woke::Timer => Ok(()),
+            Woke::Commit => {
+                let settle = self.ctx.config.settle();
+                if !settle.is_zero() {
+                    tokio::select! {
+                        biased;
+                        _ = self.ctx.shutdown.cancelled() => return Err(Interrupt::Shutdown),
+                        _ = self.lease.lost() => return Err(Interrupt::Lost),
+                        _ = tokio::time::sleep(settle) => {}
+                    }
+                }
+                self.read_due = true;
+                Ok(())
+            }
+            Woke::Timer => {
+                self.read_due = true;
+                Ok(())
+            }
         }
     }
 

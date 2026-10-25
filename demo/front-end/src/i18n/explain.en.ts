@@ -54,8 +54,8 @@ export default {
     lead: 'The read side: MongoDB documents built from the events and shaped for the screen.',
     points: [
       'concert_halls — the seat map with sold and revenue counters; fan_wallets — the tickets of each fan.',
-      'Updated in-process right after each commit, without delivery guarantees. That is why Encore! (replay) exists.',
-      '🧨 Wipe empties the collections; ⏪ Encore! replays the whole ledger through the very same projections.',
+      'A processor per read model follows the ledger by its checkpoint: woken by every commit, it reads the new events page by page and applies them. A failure is retried, nothing is lost.',
+      '🧨 Wipe drops the collections and their checkpoints: the processors start over from the first event. ⏪ Encore! rebuilds every document in place while the box office stays open.',
       'The mail inbox is not a projection: a replay never resends an e-mail.',
     ],
   },
@@ -81,7 +81,7 @@ export default {
     lead: 'A request, not a fact: AnnounceConcert, BookSeat or CancelBooking.',
     points: [
       'Carries metadata: command_id, correlation_id (follows the whole chain), causation_id and source = ui.',
-      'Accepted → 200 with the outbox tasks it produced; rejected → 422 with the rule code; during a rebuild → 423.',
+      'Accepted → 200 with the outbox tasks it produced, as soon as the event is in the ledger (the read models follow a moment later); rejected → 422 with the rule code.',
       'Try the 🧪 rule breakers: a deliberately wrong command and the exact rule that stops it.',
     ],
   },
@@ -109,7 +109,7 @@ export default {
     lead: 'The worker side of the outbox: polls transactional_outbox every 300 ms, leases a task and runs its handler.',
     points: [
       'encore_record_ticket → Fan.RecordTicket; encore_record_cancellation → Fan.RecordCancellation.',
-      'The Fan answer becomes the task result: R9/R11 (already done) = completed; R10 (too early) = retry in 1 s; box office closed by a rebuild = retry in 2 s.',
+      'The Fan answer becomes the task result: R9/R11 (already done) = completed; R10 (too early) = retry in 1 s.',
       'At-least-once delivery: a redelivered task is harmless because the Fan rules are idempotent.',
       'Up to 6 attempts per task; the status lives in the outbox panel of the X-ray.',
     ],
@@ -170,8 +170,8 @@ export default {
     lead: 'MongoDB encore_read: concert_halls (seat map, sold, revenue) and fan_wallets (tickets, refunds).',
     points: [
       'Each document remembers the last event it applied (last_sequence) and takes only the next one: a repeat is skipped, a gap is refused, so delivery may repeat and come from several nodes.',
-      'Updated by in-process projections right after a commit; a failure is only a warning, the ledger is already committed.',
-      '🧨 Wipe → the seat map shows “?” while the rules still work from the ledger; ⏪ Encore! rebuilds everything from the events.',
+      'Written by the projection processors, whose checkpoints live here too (projection_checkpoints): a paused MongoDB only delays the read side, commands are still accepted.',
+      '🧨 Wipe → the seat map shows “?” for a moment while the rules still work from the ledger; the processors rebuild it from the first event by themselves.',
       'The time machine computes a past state from events 1…n without storing it anywhere.',
     ],
   },
@@ -179,7 +179,7 @@ export default {
     title: 'UI',
     lead: 'The screen: seat map, wallet and concerts, all read from the read database via GET /api/….',
     points: [
-      'Refreshes on the SSE activity stream (projection.updated) with a 5 s safety poll.',
+      'After an accepted command it waits for its document’s projection.updated on the SSE activity stream, with a 5 s safety poll; during Encore! it reads the open hall every 250 ms.',
       'The X-ray on the right reads the databases directly through the read-only sidecar.',
     ],
   },

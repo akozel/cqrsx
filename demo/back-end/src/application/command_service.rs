@@ -1,11 +1,12 @@
 //! The command pipeline shared by both aggregates, around the cqrsx command port.
 //!
-//! Every use case ends in [`CommandService::run`]: box-office pass → `execute_with_metadata` (the
-//! event and its outbox tasks in one commit) → outcome → activity log. Metadata (the cqrsx
+//! Every use case ends in [`CommandService::run`]: `execute_with_metadata` (the event and its outbox tasks
+//! in one commit) → outcome → activity log. The read models follow from the journal (epic 03/04, D-17): an
+//! accepted command means committed, the projections apply it a moment later. Metadata (the cqrsx
 //! causation keys `command_id`, `correlation_id`, `causation_id`, `source`, plus `recorded_at`)
 //! travels through `execute_with_metadata` (decision D-04) and ends up in the `events.metadata`
 //! column of every committed event.
-use crate::application::{activity::ActivityHub, lock::BoxOfficeLock};
+use crate::application::activity::ActivityHub;
 use chrono::{SecondsFormat, Utc};
 use cqrsx::{
     cqrs::{
@@ -14,7 +15,6 @@ use cqrsx::{
     },
     task::{NewTask, attempt::TaskAttempt},
 };
-use serde::Serialize;
 use serde_json::{Value, json};
 use std::{collections::HashMap, fmt::Display, marker::PhantomData, sync::Arc};
 
@@ -67,48 +67,31 @@ pub trait Rejection {
     fn params(&self) -> Value;
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
-pub struct Warning {
-    pub code: &'static str,
-    pub projection: String,
-}
-
 /// Outcome of a command after the gateway error has been interpreted (§6.6).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum CommandOutcome<E> {
-    Accepted {
-        warnings: Vec<Warning>,
-    },
+    /// Committed: the events and their tasks are in the journal; the read models follow.
+    Accepted,
     Rejected(E),
     Conflict,
     Unavailable,
-    /// The box-office lock is held: closed for a moment while the read models are rebuilt.
-    Locked,
 }
 
 impl<E> CommandOutcome<E> {
     pub fn is_accepted(&self) -> bool {
-        matches!(self, CommandOutcome::Accepted { .. })
+        matches!(self, CommandOutcome::Accepted)
     }
 }
 
-/// Maps the library outcome to the demo outcome; a failed projection is reported under the
-/// handler name `CommittedWithEventHandlerFailure` carries (the read-model collection name).
+/// Maps the library outcome to the demo outcome. The executors have no event handlers (the projection
+/// processors read the journal), so a commit with a failed handler cannot happen; it would still be a
+/// commit. The variant leaves the library in epic 03/05.
 pub fn map_gateway_result<E>(result: Result<(), CommandGatewayError<E>>) -> CommandOutcome<E> {
     match result {
-        Ok(()) => CommandOutcome::Accepted { warnings: vec![] },
+        Ok(()) | Err(CommandGatewayError::CommittedWithEventHandlerFailure { .. }) => CommandOutcome::Accepted,
         Err(CommandGatewayError::Domain(error)) => CommandOutcome::Rejected(error),
         Err(CommandGatewayError::Conflict) => CommandOutcome::Conflict,
         Err(CommandGatewayError::Unavailable) => CommandOutcome::Unavailable,
-        Err(CommandGatewayError::CommittedWithEventHandlerFailure { handlers, .. }) => CommandOutcome::Accepted {
-            warnings: handlers
-                .into_iter()
-                .map(|handler| Warning {
-                    code: "projection_failed",
-                    projection: handler.name,
-                })
-                .collect(),
-        },
     }
 }
 
@@ -121,13 +104,6 @@ pub struct Executed<E> {
 }
 
 impl<E> Executed<E> {
-    pub fn locked() -> Self {
-        Self {
-            outcome: CommandOutcome::Locked,
-            tasks: vec![],
-        }
-    }
-
     /// The outbox tasks could not be built, so the command was not executed (and is not logged).
     pub fn tasks_unavailable(error: impl Display) -> Self {
         tracing::error!("cannot build outbox tasks: {error}");
@@ -150,7 +126,6 @@ pub struct CommandLabel<'a> {
 pub struct CommandService<A, E> {
     executor: E,
     activity: Arc<ActivityHub>,
-    lock: Arc<BoxOfficeLock>,
     aggregate: PhantomData<fn() -> A>,
 }
 
@@ -161,21 +136,12 @@ where
     A::Error: Rejection,
     E: CommandExecutor<A>,
 {
-    pub fn new(executor: E, activity: Arc<ActivityHub>, lock: Arc<BoxOfficeLock>) -> Self {
+    pub fn new(executor: E, activity: Arc<ActivityHub>) -> Self {
         Self {
             executor,
             activity,
-            lock,
             aggregate: PhantomData,
         }
-    }
-
-    pub fn lock(&self) -> &Arc<BoxOfficeLock> {
-        &self.lock
-    }
-
-    pub fn is_locked(&self) -> bool {
-        self.lock.is_locked()
     }
 
     /// Runs one command with the tasks that must be published atomically with its event. A
@@ -187,10 +153,6 @@ where
         metadata: CommandMetadata,
         tasks: Vec<NewTask>,
     ) -> Executed<A::Error> {
-        // Held until the outcome is published: a rebuild that locks the box office now waits for it.
-        let Some(_pass) = self.lock.admit() else {
-            return Executed::locked();
-        };
         let task_formats: Vec<String> = tasks.iter().map(|t| t.format().to_string()).collect();
         let result = self
             .executor
@@ -230,17 +192,8 @@ fn publish_outcome<E: Rejection>(
         Value::Object(map)
     };
     match outcome {
-        CommandOutcome::Accepted { warnings } => {
-            activity.publish(
-                "command.accepted",
-                merge(json!({ "tasks": task_formats, "warnings": warnings })),
-            );
-            for warning in warnings {
-                activity.publish(
-                    "projection.failed",
-                    json!({ "projection": warning.projection, "view_id": label.aggregate_id, "message": "event handler failed after commit" }),
-                );
-            }
+        CommandOutcome::Accepted => {
+            activity.publish("command.accepted", merge(json!({ "tasks": task_formats })));
         }
         CommandOutcome::Rejected(error) => {
             activity.publish(
@@ -260,7 +213,6 @@ fn publish_outcome<E: Rejection>(
                 merge(json!({ "outcome": "unavailable", "message": "not run: storage unavailable or aggregate busy" })),
             );
         }
-        CommandOutcome::Locked => {}
     }
 }
 
@@ -269,13 +221,13 @@ mod tests {
     use super::*;
     use crate::domain::concert::{Concert, ConcertCommand, ConcertError, commands::AnnounceConcert};
     use cqrsx::{cqrs::command::FailedHandler, task::format::TaskFormat};
-    use std::{collections::BTreeSet, future::Future, pin::Pin, sync::Mutex, task::Poll};
+    use std::collections::BTreeSet;
     use uuid::Uuid;
 
-    /// Answers only once released, like a command waiting for its aggregate's lock or for the database.
-    struct Gated(Mutex<Option<tokio::sync::oneshot::Receiver<()>>>);
+    /// Accepts every command.
+    struct Accepting;
 
-    impl CommandExecutor<Concert> for Gated {
+    impl CommandExecutor<Concert> for Accepting {
         async fn execute_with_metadata(
             &self,
             _: &str,
@@ -283,25 +235,14 @@ mod tests {
             _: HashMap<String, String>,
             _: Vec<NewTask>,
         ) -> Result<(), CommandGatewayError<ConcertError>> {
-            let released = self.0.lock().unwrap().take().expect("one gated command");
-            released.await.expect("released");
             Ok(())
         }
     }
 
-    async fn is_pending(mut future: Pin<&mut impl Future>) -> bool {
-        std::future::poll_fn(|cx| Poll::Ready(future.as_mut().poll(cx).is_pending())).await
-    }
-
     #[tokio::test]
-    async fn a_running_command_holds_back_a_rebuild_and_a_later_one_is_locked_out() {
-        let (release, released) = tokio::sync::oneshot::channel();
-        let lock = Arc::new(BoxOfficeLock::new());
-        let service = CommandService::<Concert, _>::new(
-            Gated(Mutex::new(Some(released))),
-            Arc::new(ActivityHub::new(8, 8)),
-            lock.clone(),
-        );
+    async fn an_accepted_command_is_published_once_with_its_tasks_and_no_read_model_news() {
+        let activity = Arc::new(ActivityHub::new(8, 8));
+        let service = CommandService::<Concert, _>::new(Accepting, activity.clone());
         let label = CommandLabel {
             aggregate_id: "c-1",
             command_type: "AnnounceConcert",
@@ -312,17 +253,15 @@ mod tests {
             city: "C".into(),
             date: chrono::NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
         });
-        let mut running = std::pin::pin!(service.run(label, command.clone(), CommandMetadata::ui(), vec![]));
-        assert!(is_pending(running.as_mut()).await);
-        let _rebuild = lock.try_acquire().unwrap();
-        let mut idle = std::pin::pin!(lock.wait_idle());
-        assert!(is_pending(idle.as_mut()).await, "the rebuild waits for the admitted command");
-        release.send(()).unwrap();
-        assert!(running.await.outcome.is_accepted());
-        idle.await;
-        assert_eq!(
-            service.run(label, command, CommandMetadata::ui(), vec![]).await.outcome,
-            CommandOutcome::Locked
+        let executed = service.run(label, command, CommandMetadata::ui(), vec![]).await;
+        assert_eq!(executed.outcome, CommandOutcome::Accepted);
+        let (entries, _) = activity.subscribe();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].kind, "command.accepted");
+        assert_eq!(entries[0].fields["tasks"], json!([]));
+        assert!(
+            !entries[0].fields.contains_key("warnings"),
+            "the read models follow from the journal"
         );
     }
 
@@ -365,11 +304,8 @@ mod tests {
     }
 
     #[test]
-    fn gateway_results_map_to_outcomes_and_projection_names() {
-        assert_eq!(
-            map_gateway_result::<ConcertError>(Ok(())),
-            CommandOutcome::Accepted { warnings: vec![] }
-        );
+    fn gateway_results_map_to_outcomes() {
+        assert_eq!(map_gateway_result::<ConcertError>(Ok(())), CommandOutcome::Accepted);
         assert_eq!(
             map_gateway_result(Err(CommandGatewayError::Domain(ConcertError::SoldOut))),
             CommandOutcome::Rejected(ConcertError::SoldOut)
@@ -382,27 +318,17 @@ mod tests {
             map_gateway_result::<ConcertError>(Err(CommandGatewayError::Unavailable)),
             CommandOutcome::Unavailable
         );
-        let failed = |index: usize, name: &str| FailedHandler {
-            index,
-            name: name.into(),
+        let failed = FailedHandler {
+            index: 0,
+            name: "concert_halls".into(),
         };
         assert_eq!(
             map_gateway_result::<ConcertError>(Err(CommandGatewayError::CommittedWithEventHandlerFailure {
                 last_sequence: 7,
-                handlers: vec![failed(0, "concert_halls"), failed(5, "fan_wallets")]
+                handlers: vec![failed]
             })),
-            CommandOutcome::Accepted {
-                warnings: vec![
-                    Warning {
-                        code: "projection_failed",
-                        projection: "concert_halls".into()
-                    },
-                    Warning {
-                        code: "projection_failed",
-                        projection: "fan_wallets".into()
-                    },
-                ]
-            }
+            CommandOutcome::Accepted,
+            "a commit is a commit"
         );
     }
 }

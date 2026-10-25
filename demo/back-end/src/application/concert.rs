@@ -28,7 +28,7 @@ pub struct ConcertApp<E, S> {
     /// the command before it runs).
     history: S,
     /// Attempt budget of the chain tasks the use cases publish (`encore_record_*`).
-    chain_max_attempts: i32,
+    task_max_attempts: i32,
 }
 
 impl<E, S> ConcertApp<E, S>
@@ -36,11 +36,11 @@ where
     E: CommandExecutor<Concert>,
     S: EventStore<Concert>,
 {
-    pub fn new(service: CommandService<Concert, E>, history: S, chain_max_attempts: i32) -> Self {
+    pub fn new(service: CommandService<Concert, E>, history: S, task_max_attempts: i32) -> Self {
         Self {
             service,
             history,
-            chain_max_attempts,
+            task_max_attempts,
         }
     }
 

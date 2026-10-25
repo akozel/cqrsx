@@ -654,3 +654,60 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   container fixtures moved to `tests/support/{port_lease,postgres,mongo}.rs`. The demo writes its read models
   through the library repository (`infrastructure/mongo/read_model.rs`, `MongoReadModel`: queries and wipe of its
   own); its `view_repository.rs` is gone. CI: the feature matrix and the stress step get `mongodb`.
+- **2026-10-25, the demo on the projection processors (epic 03/04)** (uncommitted). The demo's read models follow the
+  journal by themselves: one `ProjectionProcessor` per read model (`concert_halls`/`Concert`, `fan_wallets`/`Fan`)
+  with a checkpoint in MongoDB next to the documents, woken by `CommitWakeup` from the executors, reading the journal
+  through its own pool (`ENCORE_DATABASE_PROJECTION_POOL_SIZE`), configured by `ENCORE_PROJECTION_*` and named by
+  `ENCORE_NODE_NAME`; the projection runtime is a task of its own on the shared shutdown token and a panic stops the
+  process with an error. A command answers *accepted* right after the commit (D-17); `NotifyingHandler`,
+  `BoxOfficeLock`, the 423 answer, `ENCORE_CHAIN_MAX_ATTEMPTS`, the scratch collections of verify and the old
+  `EventReplay` path are gone. ⏪ Encore! asks the checkpoint rows for a rebuild (`pace_ms`, D-18, at most
+  `ENCORE_REPLAY_MAX_PACE_MS`) and the owners replace the documents in place with the box office open (D-16); a
+  watcher publishes `rebuild.started/progress/finished`, every replaced document `projection.rebuilt`;
+  `POST /api/concerts/{id}/rebuild` rebuilds one hall. `GET /api/projections/status` reports state, lag
+  (`PostgresEventRepository::count_after`, capped, D-24), owner and failures per projection and falls back to the
+  rows seen last when MongoDB does not answer. Verify (D-20) compares each document with the fold of the part of
+  its history it applied and counts documents behind apart from wrong ones. cqrsx gains `count_after` next to
+  `totals` (PostgreSQL test, EXPLAIN test). The sidecar shows and wipes `projection_checkpoints` (read models
+  first, checkpoints second). Front-end: the screen waits for the document's `projection.updated` instead of
+  reading at once, polls the status once a second, shows each projection's state/lag/owner/stall cause, verify with
+  `behind`, a per-hall rebuild button, the checkpoints tab; no 423 or warning texts. Stand: `run.sh` samples the
+  status into `projections.jsonl` (lag p50/p99, catch-up time, owners, handovers in `result.json`), waits for the
+  projections before verify and requires zero documents behind, `LOAD_CHAOS` runs `load/chaos/*.sh` in the
+  background, `ledger.tsv` counts the events; `chaos.sh` runs the scenes (each at most 5 minutes, D-22) and holds
+  them to `chaos/check.mjs`. All seven scenes passed (MongoDB pause, `kill -9` and `kill -TERM` of the owner with
+  two nodes, PostgreSQL restart, Encore! at pace 0 and 80, wipe under load); results in the ticket. Verified:
+  fmt, clippy (all and no default features), workspace tests, feature matrix, coverage 97.66 % (workspace) and
+  97.64 % (cqrsx), demo tests, front-end lint/typecheck/65 tests/build, `smoke.sh`.
+  Measurement (D-23, 42 runs, 7 points × 3 passes before/after commit `6515268`, series `perf-04-before-` /
+  `perf-04-after-`): `verify ok` with nothing behind in all 42. The ticket's expectation about cost is **not met on
+  the hot key**: accepted/s 749 → 724 (40 VU, `app`, −3 %), 758 → 713 (`db`, −6 %), 777 → 695 and 805 → 554 at 10 VU;
+  SQL statements per command 8.4 → 15.7, PostgreSQL CPU per 1000 commands +35…55 %, MongoDB +57…89 %, WAL per
+  command +8…16 % (cause not investigated). At 700 commands a second every commit wakes a processor and a page holds one or two events, so
+  the batching the executor's handler had (up to 32 commands per write, 08b) is gone. Spread bookings (`02b`) and two
+  nodes with `round_robin` are within a few percent; lag on the hot key is 1–2 events (p99 2) and the projections
+  catch up in seconds; with `BALANCE=key` the owner probably sits on another node than the one that took the command (the wake-up
+  works inside a node) and trails by 80–130 events until the next poll. Chaos scenes: see the ticket. A wake-up coalescing delay or a minimum page size in `ProcessorConfig`
+  is the obvious next step and needs its own measurement.
+- **2026-10-25, cheaper projection processor (epic 03/04, follow-up of the measurement)** (uncommitted). After the
+  D-23 measurement the user chose two changes. cqrsx: the owner reads the journal only for a reason (a wake-up, the
+  poll, a full page before, a full window, the end of a pause); a page's receipt is none, and a page short of
+  `page_size` ends the reading. `ProcessorConfig::with_settle(d)` (default 0, at most the poll interval) makes the
+  owner wait `d` after a commit's wake-up, so a burst lands in one page; shutdown and a lost lease cut the pause. The
+  demo reads `ENCORE_PROJECTION_SETTLE_MS` with its own default of 10 ms. Measurement (4 points × 3 passes × settle
+  0/10/50 ms, series `perf-04b-s*`): on the hot key (40 VU, `db`) SQL statements per command 15.7 → 11.0 (no pause) →
+  9.3 (10 ms), PostgreSQL CPU per 1000 commands 2140 → 2052 → 1682 against 1511 with the handler in the command,
+  MongoDB 1027 → 550 against 595, back-end 1891 → 1221 against 1377; the read models trail by about 10 events (p99 14).
+  50 ms saves no more PostgreSQL (1762) but more MongoDB (427) and back-end (1118), at 50 events of lag. Spread
+  bookings get faster than with the handler in the command: 3692 → 4101 (10 ms) and 4227 (50 ms) accepted per
+  second. What remains on the hot key in every processor variant: accepted/s −8…−10 %, p50 +9…10 %, PostgreSQL
+  +11 % at 40 VU (+29…33 % at 10 VU), WAL +7…10 % at 40 VU and +17…19 % at 10 VU; the cause is not established (unverified hypotheses: hint bits under data checksums, contention
+  on the last index page). `verify ok` with nothing behind in all 36 runs.
+- **2026-10-25, `CqrsCommandExecutor` renamed `CommandExecutorCore`** (uncommitted, user's decision). The name read as a
+  peer of `PostgresCommandExecutor` and `TestCommandExecutor`, while both are this core with a factory of their own
+  (field `inner`). Code, tests, `components.md`, PLAN.md, API_MAPPING.md and ticket 03/05 use the new name; older
+  entries of this log and finished tickets keep the name of their time.
+- **2026-10-25, `AggregateLocks` renamed `AggregateLockRegistry`, `AggregateLock` renamed `AggregateLockGuard`**
+  (uncommitted, user's decision). The two names differed by one letter while one is the executor's registry of locks
+  and the other the lock one command holds until it drops it. Both are private: `locks.rs`, `executor.rs` and
+  `components.md` use the new names; older entries of this log and finished tickets keep the names of their time.

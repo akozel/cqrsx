@@ -46,6 +46,34 @@ impl PostgresEventRepository {
         })
     }
 
+    /// Counts the events of aggregate type `A` above `after`, at most `cap` of them: how far a reader whose
+    /// checkpoint stands at `after` is behind the journal. A position is a transaction id shared by the whole
+    /// database, so the distance between two positions is not a number of events; this is. The count walks
+    /// the feed index and stops at `cap`, which must be positive.
+    ///
+    /// ```
+    /// use cqrsx::cqrs::{aggregate::Aggregate, store::{PersistenceError, feed::Position}};
+    /// use cqrsx::postgres::event_repository::{DEFAULT_COUNT_AFTER_CAP, PostgresEventRepository};
+    ///
+    /// async fn lag<A: Aggregate>(repository: &PostgresEventRepository, checkpoint: Position) -> Result<u64, PersistenceError> {
+    ///     repository.count_after::<A>(checkpoint, DEFAULT_COUNT_AFTER_CAP).await
+    /// }
+    /// ```
+    pub async fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> Result<u64, PersistenceError> {
+        if cap == 0 {
+            return Err(PostgresRepositoryError::UnknownError("count cap must be positive".into()).into());
+        }
+        let cap = i64::try_from(cap).map_err(|error| PostgresRepositoryError::UnknownError(Box::new(error)))?;
+        let row = sqlx::query(self.query_factory.count_after())
+            .bind(A::TYPE)
+            .bind(after.to_string())
+            .bind(cap)
+            .fetch_one(&self.pool)
+            .await
+            .map_err(PostgresRepositoryError::from)?;
+        Ok(decode_count(row.try_get("events").map_err(row_decode_error)?)?)
+    }
+
     pub(super) async fn load_snapshot<A: Aggregate>(
         &self,
         aggregate_id: &str,

@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Assembles results/<run>/result.json after a run: k6's result.json (copied out of the container)
 // + run metadata + container resources from stats.tsv + cgroup memory peaks + outbox drain figures
-// + the read-model verify (verify.json, VERIFY=1).
+// + the read-model verify (verify.json, VERIFY=1) + the projections' lag and owners (projections.jsonl)
+// + the chaos actions of the run (chaos.tsv, LOAD_CHAOS) + the events per aggregate type (ledger.tsv).
 // Prints a short human summary. run.sh calls it with everything in LOADC_* environment variables,
 // so the harness needs no jq or awk on the host.
 //
@@ -109,7 +110,7 @@ if (existsSync(resultPath)) {
   }
 }
 
-/** verify.json (GET /api/projections/verify) → ok, documents checked, differences; null without the file. */
+/** verify.json (GET /api/projections/verify) → ok, documents checked, behind, differences; null without the file. */
 function verify(path, seconds) {
   if (!existsSync(path)) {
     return null;
@@ -120,12 +121,98 @@ function verify(path, seconds) {
     return {
       ok: report.ok === true,
       checked,
+      behind_documents: num(report.behind?.documents) ?? 0,
+      behind_events: num(report.behind?.events) ?? 0,
       differences: (report.differences ?? []).length,
       seconds: num(seconds),
     };
   } catch {
     return { ok: false, checked: 0, differences: null, seconds: num(seconds), error: 'unreadable verify.json' };
   }
+}
+
+const percentile = (sorted, p) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.ceil((p / 100) * sorted.length) - 1)] : null);
+
+/**
+ * projections.jsonl: one line per second, `{ "t": epoch, "status": GET /api/projections/status }`; a line
+ * without `status` is a second the status did not answer. Over the burst: the lag of the worst projection
+ * (p50, p99, max, in events), the seconds after the burst until every projection had zero lag and no rebuild,
+ * and per projection the owners seen and the handovers between them.
+ */
+function projections(path, burstStart, burstEnd) {
+  if (!existsSync(path)) {
+    return null;
+  }
+  const samples = readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        const sample = JSON.parse(line);
+        return Array.isArray(sample.status?.projections) ? [sample] : [];
+      } catch {
+        return [];
+      }
+    });
+  if (samples.length === 0) {
+    return null;
+  }
+  const worst = (sample) => Math.max(0, ...sample.status.projections.map((p) => num(p.lag) ?? 0));
+  const quiet = (sample) => sample.status.projections.every((p) => (num(p.lag) ?? 0) === 0 && p.state === 'live');
+  const lags = samples
+    .filter((s) => s.t >= burstStart && s.t <= burstEnd)
+    .map(worst)
+    .sort((a, b) => a - b);
+  const caught = samples.find((s) => s.t >= burstEnd && quiet(s));
+  const owners = {};
+  const handovers = {};
+  let last = {};
+  for (const sample of samples) {
+    for (const p of sample.status.projections) {
+      if (!p.owner) {
+        continue;
+      }
+      (owners[p.projection] ??= new Set()).add(p.owner);
+      if (last[p.projection] && last[p.projection] !== p.owner) {
+        handovers[p.projection] = (handovers[p.projection] ?? 0) + 1;
+      }
+      last[p.projection] = p.owner;
+    }
+  }
+  return {
+    samples: samples.length,
+    lag: { p50: percentile(lags, 50), p99: percentile(lags, 99), max: lags.length ? lags[lags.length - 1] : null },
+    caught_up_s: caught ? Math.max(0, round(caught.t - burstEnd)) : null,
+    owners: Object.fromEntries(Object.entries(owners).map(([k, v]) => [k, [...v].sort()])),
+    handovers,
+  };
+}
+
+/** ledger.tsv: `aggregate_type<TAB>events` after the run → `{ Concert: n, Fan: m }`; null without the file. */
+function ledger(path) {
+  if (!existsSync(path)) {
+    return null;
+  }
+  const counts = {};
+  for (const line of readFileSync(path, 'utf8').split('\n').filter(Boolean)) {
+    const [type, events] = line.split('\t');
+    counts[type] = num(events);
+  }
+  return Object.keys(counts).length > 0 ? counts : null;
+}
+
+/** chaos.tsv: `epoch<TAB>action`, one line per step of the scenario. */
+function chaos(path) {
+  if (!existsSync(path)) {
+    return null;
+  }
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .map((line) => {
+      const [t, ...action] = line.split('\t');
+      return { t: num(t), action: action.join('\t') };
+    });
 }
 
 const memoryPeak = {};
@@ -155,6 +242,8 @@ const result = {
     // ENCORE_PROJECTION_MAX_BATCH as run.sh passed it; `default` = the back-end's own default. Runs before
     // backlog 02/08d also have `projection_delivery`, before 08c `command_ordering`.
     projection_max_batch: num(env('MAX_BATCH')) ?? 'default',
+    // ENCORE_PROJECTION_SETTLE_MS as run.sh passed it (ticket 03/04b).
+    projection_settle_ms: num(env('SETTLE')) ?? 'default',
     pg_pool: num(env('POOL')) ?? 10,
     k6_exit: num(env('K6_EXIT')) ?? -1,
     k6_started_epoch: burstStart,
@@ -172,6 +261,18 @@ const verified = verify(join(runDir, 'verify.json'), env('VERIFY_SECONDS'));
 if (verified) {
   result.verify = verified;
 }
+const trailed = projections(join(runDir, 'projections.jsonl'), burstStart, burstEnd);
+if (trailed) {
+  result.projections = trailed;
+}
+const events = ledger(join(runDir, 'ledger.tsv'));
+if (events) {
+  result.ledger = events;
+}
+const chaosSteps = chaos(join(runDir, 'chaos.tsv'));
+if (chaosSteps) {
+  result.chaos = chaosSteps;
+}
 writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`);
 
 // --- the human summary ----------------------------------------------------------------------------
@@ -187,5 +288,12 @@ if (drained) {
   console.log(`drain     ${drained.seconds} s, ${drained.tasks_per_second} tasks/s, ${drained.tasks_total} tasks total, ${drained.failed} failed`);
 }
 if (verified) {
-  console.log(`verify    ${verified.ok ? 'ok' : 'DIFFERS'}, ${verified.differences} differences in ${verified.checked} documents`);
+  console.log(
+    `verify    ${verified.ok ? 'ok' : 'DIFFERS'}, ${verified.differences} differences, ${verified.behind_documents ?? 0} behind, ${verified.checked} documents`,
+  );
+}
+if (trailed) {
+  console.log(
+    `lag       p50 ${trailed.lag.p50} p99 ${trailed.lag.p99} max ${trailed.lag.max} events, caught up ${trailed.caught_up_s ?? '-'} s after the burst`,
+  );
 }

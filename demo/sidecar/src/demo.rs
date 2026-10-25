@@ -5,12 +5,16 @@
 //! * `seed` announces the default concerts through the back-end's **public** API — ordinary
 //!   `AnnounceConcert` commands, exactly what the announce dialog of the UI sends. A repeated
 //!   announce is rejected by rule R2 (`already_announced`) and that is the idempotency.
-//! * `wipe_read_models` (🧨) drops the two read-model collections and nothing else: the ledger is
-//!   intact, the mail inbox stays, and ⏪ Encore! (a back-end operation) rebuilds the read models.
+//! * `wipe_read_models` (🧨) drops the two read-model collections, then the checkpoints of their
+//!   projections, and nothing else: the ledger is intact, the mail inbox stays, and the back-end's
+//!   projection processors register their checkpoints again and rebuild every document from the start
+//!   of the journal by themselves. The documents go first: a rebuild that ran between the two drops
+//!   would otherwise lose its documents.
 //! * `reset` empties the ledger, the snapshots and the outbox (role `encore_demo_admin`, which may
-//!   do nothing but TRUNCATE those three tables), drops the read models and the mail inbox, then
-//!   seeds again. The back-end keeps running meanwhile: a task a worker holds at that moment ends
-//!   with a harmless "row not found" in its log.
+//!   do nothing but TRUNCATE those three tables), drops the read models, their checkpoints and the
+//!   mail inbox, drops the read models once more (a write of a projection still in flight during the
+//!   first drop would recreate an old document), then seeds again. The back-end keeps running
+//!   meanwhile: a task a worker holds at that moment ends with a harmless "row not found" in its log.
 use mongodb::Client;
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -81,12 +85,17 @@ pub const PERSONAS: [Persona; 4] = [
 ];
 
 pub const TRUNCATE_SQL: &str = "TRUNCATE TABLE events, snapshots, transactional_outbox RESTART IDENTITY";
-/// `(logical database, collection)` of the read models: what 🧨 drops, and the first part of a reset.
+/// `(logical database, collection)` of the read models.
 pub const READ_MODELS: [(&str, &str); 2] = [("encore_read", "concert_halls"), ("encore_read", "fan_wallets")];
+/// The checkpoints of the read models' projections: `cqrsx::mongodb::projection_checkpoints::
+/// PROJECTION_CHECKPOINTS_COLLECTION` in the read database (the sidecar does not depend on cqrsx).
+pub const PROJECTION_CHECKPOINTS: (&str, &str) = ("encore_read", "projection_checkpoints");
+/// What 🧨 drops, in this order: the documents, then the checkpoints.
+pub const WIPED: [(&str, &str); 3] = [READ_MODELS[0], READ_MODELS[1], PROJECTION_CHECKPOINTS];
 /// The external mail service's storage: dropped by a reset only (a wipe is about read models).
 pub const MAIL_INBOX: (&str, &str) = ("mail_service", "inbox");
-/// Everything a reset drops: the read models and the mail inbox.
-pub const DROPPED: [(&str, &str); 3] = [READ_MODELS[0], READ_MODELS[1], MAIL_INBOX];
+/// Everything a reset drops: the read side and the mail inbox.
+pub const DROPPED: [(&str, &str); 4] = [READ_MODELS[0], READ_MODELS[1], PROJECTION_CHECKPOINTS, MAIL_INBOX];
 
 #[derive(Debug, Error)]
 pub enum DemoError {
@@ -223,15 +232,16 @@ impl DemoAdmin {
         Ok(dropped)
     }
 
-    /// 🧨 Drops the read models and nothing else: the ledger and the inbox stay.
+    /// 🧨 Drops the read models and their checkpoints, nothing else: the ledger and the inbox stay.
     pub async fn wipe_read_models(&self) -> Result<Vec<String>, DemoError> {
-        self.drop_collections(&READ_MODELS).await
+        self.drop_collections(&WIPED).await
     }
 
     /// Empties everything and announces the default concerts again.
     pub async fn reset(&self) -> Result<ResetReport, DemoError> {
         sqlx::query(TRUNCATE_SQL).execute(&self.admin).await?;
         let dropped = self.drop_collections(&DROPPED).await?;
+        self.drop_collections(&READ_MODELS).await?;
         let announced = self.seed().await?;
         Ok(ResetReport {
             truncated: vec!["events", "snapshots", "transactional_outbox"],
@@ -287,10 +297,16 @@ mod tests {
     }
 
     #[test]
-    fn a_reset_touches_exactly_the_demo_tables_and_collections_and_a_wipe_only_the_read_models() {
+    fn a_reset_touches_exactly_the_demo_tables_and_collections_and_a_wipe_only_the_read_side() {
         assert!(TRUNCATE_SQL.starts_with("TRUNCATE TABLE events, snapshots, transactional_outbox"));
         assert_eq!(DROPPED, crate::mongo::WHITELIST);
-        assert!(READ_MODELS.iter().all(|(database, _)| *database == "encore_read"));
-        assert!(!READ_MODELS.contains(&MAIL_INBOX), "a wipe never touches the mail inbox");
+        assert!(WIPED.iter().all(|(database, _)| *database == "encore_read"));
+        assert!(!WIPED.contains(&MAIL_INBOX), "a wipe never touches the mail inbox");
+        assert_eq!(
+            WIPED.last(),
+            Some(&PROJECTION_CHECKPOINTS),
+            "the documents go before the checkpoints, or a rebuild in between would lose its documents"
+        );
+        assert_eq!(&DROPPED[..3], &WIPED, "a reset drops the read side in the same order");
     }
 }

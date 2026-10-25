@@ -12,7 +12,7 @@
 
 ## Что удаляется
 
-- `CqrsCommandExecutor::with_event_handler`, `backlog`, `RegisteredHandlers`, резерв места и квитанции в пути
+- `CommandExecutorCore::with_event_handler`, `backlog`, `RegisteredHandlers`, резерв места и квитанции в пути
   команды; `CommandGatewayError::CommittedWithEventHandlerFailure`, `FailedHandler`; то же у
   `PostgresCommandExecutor` и `TestCommandExecutor`. Путь команды: блокировка агрегата → фреймворк → коммит с
   повторами → `wake()` → ответ. Дедлайн `max_wait` покрывает только блокировку.
@@ -42,5 +42,4 @@
 - [ ] Перечисленное удалено; `cargo doc` без битых ссылок; матрица фич зелёная; покрытие ≥ 97 %.
 - [ ] `components.md`: инвентарь, дерево исходников, путь команды и путь проекции, «Upstream attribution»
       (replay utility удалён).
-- [ ] 02/14 помечен закрытым через [02](02_event_position.md); обсуждения 03 и 04 — через
-      [04](04_demo_on_processor.md).
+- [ ] 02/14 помечен закрытым через [02](02_event_position.md) (обсуждения 03 и 04 удалены в [04](04_demo_on_processor.md)).

@@ -3,11 +3,10 @@ import { ref } from 'vue'
 import type { CommandBody, CommandResponse } from '@/types/domain'
 import { backend } from '@/api/backend'
 import { useConcertsStore } from './concerts'
-import { useWalletStore } from './wallet'
 
 export interface Toast {
   id: number
-  kind: 'success' | 'error' | 'warning' | 'info'
+  kind: 'success' | 'error' | 'info'
   code?: string
   params?: Record<string, unknown>
   text?: string
@@ -23,7 +22,6 @@ export interface PipelineSignal {
 
 export const useCommandsStore = defineStore('commands', () => {
   const concerts = useConcertsStore()
-  const wallet = useWalletStore()
   const inFlight = ref<Set<string>>(new Set())
   const lastOutcome = ref<Record<string, 'accepted' | 'rejected' | 'failed' | null>>({})
   const toasts = ref<Toast[]>([])
@@ -72,20 +70,19 @@ export const useCommandsStore = defineStore('commands', () => {
     if (seat) lastOutcome.value = { ...lastOutcome.value, [k]: response.outcome === 'accepted' ? 'accepted' : response.outcome === 'rejected' ? 'rejected' : 'failed' }
     if (response.outcome === 'accepted') {
       emit('accepted')
-      if (!options.quiet) {
-        pushToast({ kind: 'success', text: `${body.type}${seat ? ` ${seat}` : ''}` })
-        for (const warning of response.warnings ?? []) pushToast({ kind: 'warning', code: warning.code })
-      }
-    } else if (response.outcome === 'rejected') {
-      emit('rejected', response.error?.code)
-      if (!options.quiet) pushToast({ kind: 'error', code: response.error?.code ?? 'rejected', params: response.error?.params })
+      if (!options.quiet) pushToast({ kind: 'success', text: `${body.type}${seat ? ` ${seat}` : ''}` })
+      // Accepted = in the ledger; the hall follows a moment later (D-17). Reading it now would show the seat as
+      // it was, so the screen waits for the hall's projection.updated in the feed, with one fallback refresh.
+      // The wallet follows the task chain the same way.
+      concerts.refreshFallback()
     } else {
-      emit('failed', response.error?.code ?? response.outcome)
-      if (!options.quiet) pushToast({ kind: 'error', code: response.error?.code ?? response.outcome, params: response.error?.params })
+      if (response.outcome === 'rejected') emit('rejected', response.error?.code)
+      else emit('failed', response.error?.code ?? response.outcome)
+      const code = response.error?.code ?? response.outcome
+      if (!options.quiet) pushToast({ kind: 'error', code, params: response.error?.params })
+      // Nothing was written, but the screen may be behind the ledger the aggregate judged by: read it again.
+      void concerts.refreshAll()
     }
-    // After our own command: refresh the hall, the list and the wallet.
-    void concerts.refreshAll()
-    void wallet.refresh()
     return response
   }
 

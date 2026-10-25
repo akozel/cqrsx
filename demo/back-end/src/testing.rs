@@ -1,13 +1,16 @@
 //! Test fixtures that need no running database: lazily connecting PostgreSQL pools and MongoDB
 //! clients (enough to wire the whole graph and exercise every branch that returns before
 //! storage), and in-memory doubles of the read-side ports (the read models are the cqrsx
-//! `MemViewRepository`).
+//! `MemViewRepository`, the checkpoints its `MemCheckpointStore`).
 use crate::{
     application::{
         StorageError,
-        ports::{ReadModelStore, Stored},
+        activity::ActivityHub,
+        operations::rebuild::{DEFAULT_MAX_PACE, DEFAULT_STATUS_TIMEOUT, ReadSide, ReadSideLimits, RebuildService},
+        ports::{EventLedgerStats, LedgerTotals, ReadModelStore, Stored},
     },
-    config::{Config, outbox_default},
+    bootstrap::projections::checkpoint_keys,
+    config::{Config, DEFAULT_NODE_NAME, outbox_default},
     process::Process,
 };
 use async_trait::async_trait;
@@ -15,11 +18,11 @@ use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
         command::locks::LockLimits,
-        event_handler::delivery::DeliveryConfig,
-        projection::{View, repository::ViewRepository},
-        testing::mem_view_repository::MemViewRepository,
+        projection::{View, checkpoint::CheckpointStore, processor::config::ProcessorConfig, repository::ViewRepository},
+        store::feed::Position,
+        testing::{mem_checkpoint_store::MemCheckpointStore, mem_view_repository::MemViewRepository},
     },
-    postgres::pool::StatementTimeout,
+    postgres::{event_repository::DEFAULT_COUNT_AFTER_CAP, pool::StatementTimeout},
     task::runtime::config::TaskRuntimeConfig,
 };
 use mongodb::{Client, options::ClientOptions};
@@ -34,19 +37,23 @@ pub fn config() -> Config {
         database_pool_size: NonZeroU32::new(10).unwrap(),
         database_statement_timeout: StatementTimeout::Default,
         database_history_pool_size: NonZeroU32::new(1).unwrap(),
+        database_projection_pool_size: NonZeroU32::new(4).unwrap(),
         mongodb_uri: String::new(),
         read_db: "encore_read_test".into(),
         http_addr: "127.0.0.1:0".parse().unwrap(),
         mail_service_url: "http://127.0.0.1:1".into(),
         task_max_attempts: 6,
-        chain_max_attempts: 60,
         task_retry_base: Duration::from_secs(1),
         task_retry_max: Duration::from_secs(8),
         ticket_limit: 4,
         snapshot_every: 10,
         command_lock_limits: LockLimits::default(),
-        projection_delivery: DeliveryConfig::default(),
+        projection: ProcessorConfig::default(),
+        projection_lag_cap: DEFAULT_COUNT_AFTER_CAP,
+        projection_status_timeout: DEFAULT_STATUS_TIMEOUT,
+        node_name: DEFAULT_NODE_NAME.into(),
         replay_slow_delay: Duration::ZERO,
+        replay_max_pace: DEFAULT_MAX_PACE,
         task_runtime: TaskRuntimeConfig::from_lookup(outbox_default).unwrap(),
     }
 }
@@ -71,6 +78,7 @@ pub async fn process_with(config: Config) -> Process {
         config: Arc::new(config),
         pool: lazy_pool(),
         history_pool: lazy_pool(),
+        projection_pool: lazy_pool(),
         mongo: lazy_mongo().await,
         shutdown: CancellationToken::new(),
     }
@@ -82,14 +90,76 @@ pub async fn process() -> Process {
 }
 
 /// A read-model collection in memory holding `documents`, ordered by id like the MongoDB one.
-/// Seeded documents serve queries only: they carry no event history (`last_sequence` 0), so a projection
-/// would refuse to continue them.
 pub fn read_model<V: View<A>, A: Aggregate>(documents: impl IntoIterator<Item = Stored<V>>) -> Arc<MemViewRepository<V, A>> {
     let repository = MemViewRepository::default();
     for document in documents {
-        repository.put(&document.id, document.version, 0, &document.view).unwrap();
+        repository
+            .put(&document.id, document.version, document.last_sequence, &document.view)
+            .unwrap();
     }
     Arc::new(repository)
+}
+
+/// A ledger of fixed size whose readers are `lag` events behind.
+pub struct FixedLedger {
+    pub lag: u64,
+}
+
+#[async_trait]
+impl EventLedgerStats for FixedLedger {
+    async fn totals(&self) -> Result<LedgerTotals, StorageError> {
+        Ok(LedgerTotals {
+            events: 9,
+            aggregates: 3,
+        })
+    }
+
+    async fn count_after(&self, _: &str, _: Position, cap: u64) -> Result<u64, StorageError> {
+        Ok(self.lag.min(cap))
+    }
+}
+
+/// The checkpoints of both read models in memory, for the router tests, which may not name cqrsx: they
+/// drive the rows as running processors would.
+#[derive(Clone, Default)]
+pub struct Checkpoints(MemCheckpointStore);
+
+impl Checkpoints {
+    /// Both rows registered and claimed by `owner`.
+    pub async fn owned_by(owner: &str) -> Self {
+        let checkpoints = Self::default();
+        for key in checkpoint_keys() {
+            checkpoints.0.register(&key).await.unwrap();
+            checkpoints
+                .0
+                .claim(&key, owner, Duration::from_secs(60))
+                .await
+                .unwrap()
+                .unwrap();
+        }
+        checkpoints
+    }
+
+    /// Every operation fails while set, like a MongoDB that does not answer.
+    pub fn set_unavailable(&self, unavailable: bool) {
+        self.0.set_unavailable(unavailable);
+    }
+
+    /// The read side over these checkpoints, with readers `lag` events behind.
+    pub fn read_side(&self, lag: u64) -> Arc<dyn ReadSide> {
+        Arc::new(RebuildService::new(
+            Arc::new(self.0.clone()),
+            checkpoint_keys(),
+            Arc::new(FixedLedger { lag }),
+            Arc::new(ActivityHub::new(64, 64)),
+            ReadSideLimits {
+                lag_cap: DEFAULT_COUNT_AFTER_CAP,
+                max_pace: DEFAULT_MAX_PACE,
+                status_timeout: DEFAULT_STATUS_TIMEOUT,
+            },
+            CancellationToken::new(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -103,6 +173,7 @@ where
         Ok(found.map(|(view, context)| Stored {
             id: context.view_instance_id,
             version: context.version,
+            last_sequence: context.last_sequence,
             view,
         }))
     }
@@ -114,6 +185,7 @@ where
             .map(|(context, view)| Stored {
                 id: context.view_instance_id,
                 version: context.version,
+                last_sequence: context.last_sequence,
                 view,
             })
             .collect())
@@ -125,10 +197,5 @@ where
             .into_iter()
             .filter(|document| lower <= document.id.as_str() && document.id.as_str() < upper)
             .collect())
-    }
-
-    async fn wipe(&self) -> Result<(), StorageError> {
-        self.clear();
-        Ok(())
     }
 }

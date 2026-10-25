@@ -1,5 +1,4 @@
-//! What every read model shares: the event-handler decorator for activity notifications after a
-//! live update, and maintenance (wipe, rebuild, verify; replay progress and slow motion come from
-//! the cqrsx `EventReplay`).
-pub mod maintenance;
-pub mod notifying;
+//! What every read model shares now that the projection processors feed them from the journal (epic 03/04):
+//! the processors' reports as activity log entries, and verify against the history.
+pub mod activity_observer;
+pub mod verification;

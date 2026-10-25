@@ -12,8 +12,8 @@ export const useConcertsStore = defineStore('concerts', () => {
   const backendDown = ref(false)
   const previousSoldOut = ref<Record<string, boolean>>({})
   const soldOutJustHappened = ref<string | null>(null)
-  let debounce: ReturnType<typeof setTimeout> | null = null
-  let lastRebuildRefresh = 0
+  let soon: ReturnType<typeof setTimeout> | null = null
+  let fallback: ReturnType<typeof setTimeout> | null = null
 
   /** Tabs come from the read model; when it is empty, from the demo's default concerts with a "?" mark. */
   const tabs = computed(() => {
@@ -67,19 +67,28 @@ export const useConcertsStore = defineStore('concerts', () => {
     await Promise.all([refreshList(), refreshConcert()])
   }
 
+  /** A read model moved (`projection.updated`): one refresh `ms` later covers every update until then, so a
+   * stream of updates never postpones it. */
   function refreshDebounced(ms = 150) {
-    if (debounce) clearTimeout(debounce)
-    debounce = setTimeout(() => void refreshAll(), ms)
+    if (soon) return
+    soon = setTimeout(() => {
+      soon = null
+      void refreshAll()
+    }, ms)
   }
 
-  /** During a rebuild: at most once per 250 ms so seats "light up" one by one. */
-  function refreshThrottled(ms = 250) {
-    const now = Date.now()
-    if (now - lastRebuildRefresh < ms) return
-    lastRebuildRefresh = now
-    void refreshAll()
+  /** After an accepted command: the hall follows the ledger a moment later (D-17) and the feed says when;
+   * this one refresh is for a silent feed. */
+  function refreshFallback(ms = 1000) {
+    if (fallback) return
+    fallback = setTimeout(() => {
+      fallback = null
+      void refreshAll()
+    }, ms)
   }
 
+  /** 🧨 The read models and their checkpoints were dropped: the processors read the ledger again from the
+   * start, and every hall comes back by itself (`stale` until the first document returns). */
   function markWiped() {
     docs.value = {}
     list.value = []
@@ -104,7 +113,7 @@ export const useConcertsStore = defineStore('concerts', () => {
     refreshConcert,
     refreshAll,
     refreshDebounced,
-    refreshThrottled,
+    refreshFallback,
     markWiped,
     ackSoldOut,
   }

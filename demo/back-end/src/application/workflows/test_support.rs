@@ -1,8 +1,6 @@
 //! A fan ledger over in-memory storage and task attempts, for the workflow step tests.
 use crate::{
-    application::{
-        activity::ActivityHub, command_service::CommandService, concert::tasks::RecordTicketV1, fan::FanApp, lock::BoxOfficeLock,
-    },
+    application::{activity::ActivityHub, command_service::CommandService, concert::tasks::RecordTicketV1, fan::FanApp},
     domain::{
         ConcertId, FanId, FanLedgerId,
         fan::Fan,
@@ -22,11 +20,7 @@ pub type TestFans = FanApp<TestCommandExecutor<Fan>>;
 /// The ledger and a clone of the executor it runs its commands through (for the task records).
 pub fn fans(store: MemStore<Fan>) -> (Arc<TestFans>, TestCommandExecutor<Fan>) {
     let executor = TestCommandExecutor::new(store, ());
-    let service = CommandService::new(
-        executor.clone(),
-        Arc::new(ActivityHub::new(16, 16)),
-        Arc::new(BoxOfficeLock::new()),
-    );
+    let service = CommandService::new(executor.clone(), Arc::new(ActivityHub::new(16, 16)));
     (Arc::new(FanApp::new(service)), executor)
 }
 

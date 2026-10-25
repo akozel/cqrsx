@@ -59,6 +59,8 @@ services:
       ENCORE_MONGODB_URI: mongodb://mongo:27017
       ENCORE_MAIL_SERVICE_URL: http://mail
       ENCORE_SNAPSHOT_EVERY: ${LOAD_SNAPSHOT_EVERY:-10}
+      # The owner name in the projections' checkpoints; the second node overrides it.
+      ENCORE_NODE_NAME: backend
       # The aggregate lock's limits (run.sh LOCK_MAX_WAIT_MS=…, LOCK_MAX_WAITERS=…).
       # Empty = the back-end's default. Here, not in an overlay, so a second node (`extends`) gets them too.
       ENCORE_COMMAND_LOCK_MAX_WAIT_MS: ${LOAD_LOCK_MAX_WAIT_MS:-}
@@ -66,6 +68,8 @@ services:
       # The projection buffers (run.sh PROJECTION_BUFFER=…, PROJECTION_MAX_BATCH=…).
       ENCORE_PROJECTION_BUFFER: ${LOAD_PROJECTION_BUFFER:-}
       ENCORE_PROJECTION_MAX_BATCH: ${LOAD_PROJECTION_MAX_BATCH:-}
+      # The pause after a commit's wake-up before the processor reads (run.sh PROJECTION_SETTLE_MS=…).
+      ENCORE_PROJECTION_SETTLE_MS: ${LOAD_PROJECTION_SETTLE_MS:-}
       # The one PostgreSQL pool shared by HTTP, the poller and the workers: the ceiling of concurrent
       # database work (run.sh POOL=…).
       ENCORE_DATABASE_POOL_SIZE: ${LOAD_PG_POOL:-10}

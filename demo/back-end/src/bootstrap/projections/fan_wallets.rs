@@ -1,29 +1,38 @@
-//! The fan wallets: every fan's tickets across concerts, fed by the `Fan` executor.
-use super::ReadModel;
+//! The fan wallets: every fan's tickets across concerts, fed from the journal of `Fan`.
+use super::{ReadModel, processor};
 use crate::{
     application::{
-        fan::views::fan_wallet::FanWalletView,
-        projections::maintenance::{HistoryFactory, ProjectionMaintenance},
+        activity::ActivityHub, fan::views::fan_wallet::FanWalletView, projections::verification::ProjectionVerification,
     },
     domain::fan::Fan,
     infrastructure::mongo::{
         read_model::MongoReadModel,
-        read_side::{FAN_WALLETS, WalletRepository, scratch},
+        read_side::{FAN_WALLETS, WalletRepository},
     },
+    process::Process,
 };
-use cqrsx::postgres::event_repository::PostgresEventRepository;
+use cqrsx::{
+    cqrs::command::wakeup::CommitWakeup, mongodb::projection_checkpoints::MongoCheckpointStore,
+    postgres::event_repository::PostgresEventRepository,
+};
 use mongodb::Database;
 use std::sync::Arc;
 
-pub fn wire(read_db: &Database, history: &HistoryFactory<PostgresEventRepository>) -> ReadModel<WalletRepository> {
+pub fn wire(
+    process: &Process,
+    read_db: &Database,
+    checkpoints: &Arc<MongoCheckpointStore>,
+    wakeup: &CommitWakeup,
+    activity: &Arc<ActivityHub>,
+) -> ReadModel<WalletRepository, Fan> {
     let repository = Arc::new(MongoReadModel::new(read_db, FAN_WALLETS));
     ReadModel {
-        maintenance: Arc::new(ProjectionMaintenance::<_, _, FanWalletView, Fan>::new(
+        verification: Arc::new(ProjectionVerification::<_, _, FanWalletView, Fan>::new(
             FAN_WALLETS,
-            history.clone(),
+            Arc::new(PostgresEventRepository::new(process.history_pool.clone())),
             repository.clone(),
-            scratch(read_db, FAN_WALLETS),
         )),
+        processor: processor(process, FAN_WALLETS, repository.clone(), checkpoints, wakeup, activity),
         repository,
     }
 }

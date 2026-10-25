@@ -69,10 +69,6 @@ pub async fn handle(
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let concert_id = parse_concert_id(&concert_id)?;
-    // Lock check first (§6.4 step 1): even an invalid command is told the box office is closed.
-    if state.rebuild.is_locked() {
-        return Err(ApiError::locked().with_extra(json!({ "concert_id": concert_id })));
-    }
     let Json(raw) = body.map_err(|e| ApiError::invalid(format!("invalid JSON body: {e}")))?;
     let dto: CommandDto = serde_json::from_value(raw).map_err(|e| ApiError::invalid(format!("invalid command: {e}")))?;
     let metadata = CommandMetadata::ui();
@@ -85,12 +81,10 @@ pub async fn handle(
     };
     let base = json!({ "command_id": command_id, "concert_id": concert_id });
     Ok(match executed.outcome {
-        CommandOutcome::Accepted { warnings } => (
+        // Committed: the read models follow from the journal (D-17); the feed and the status tell when.
+        CommandOutcome::Accepted => (
             StatusCode::OK,
-            Json(
-                json!({ "outcome": "accepted", "command_id": command_id, "concert_id": concert_id,
-                         "tasks": executed.tasks, "warnings": warnings }),
-            ),
+            Json(json!({ "outcome": "accepted", "command_id": command_id, "concert_id": concert_id, "tasks": executed.tasks })),
         )
             .into_response(),
         CommandOutcome::Rejected(error) => {
@@ -112,7 +106,6 @@ pub async fn handle(
                 .with_extra(base)
                 .into_response()
         }
-        CommandOutcome::Locked => ApiError::locked().with_extra(base).into_response(),
     })
 }
 

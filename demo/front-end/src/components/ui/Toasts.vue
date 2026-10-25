@@ -22,7 +22,6 @@ function text(toast: { code?: string; params?: Record<string, unknown>; text?: s
         :class="{
           'border-neon-lime': toast.kind === 'success',
           'border-neon-red': toast.kind === 'error',
-          'border-neon-amber': toast.kind === 'warning',
           'border-border': toast.kind === 'info',
         }"
         @click="commands.dismiss(toast.id)"

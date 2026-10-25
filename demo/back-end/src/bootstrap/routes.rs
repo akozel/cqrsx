@@ -17,6 +17,7 @@ pub fn router(state: AppState) -> Router {
         .route("/api/concerts", get(concerts::list::handle))
         .route("/api/concerts/{concert_id}", get(concerts::get::handle))
         .route("/api/concerts/{concert_id}/commands", post(concerts::execute_command::handle))
+        .route("/api/concerts/{concert_id}/rebuild", post(concerts::rebuild::handle))
         .route("/api/concerts/{concert_id}/timeline", get(concerts::timeline::handle))
         .route(
             "/api/concerts/{concert_id}/state-at/{sequence}",

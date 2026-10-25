@@ -19,6 +19,9 @@ pub const DEFAULT_PROCESSOR_RETRY_BASE: Duration = Duration::from_millis(500);
 pub const DEFAULT_PROCESSOR_RETRY_MAX: Duration = Duration::from_secs(10);
 /// Documents written at once: live batches and rebuild writes together.
 pub const DEFAULT_PROCESSOR_CONCURRENCY: usize = 16;
+/// How long a processor waits after a commit woke it before it reads the journal: the commits of a burst land
+/// in one page, one read and one write per document instead of one per commit. Zero reads at once.
+pub const DEFAULT_PROCESSOR_SETTLE: Duration = Duration::ZERO;
 
 /// Checked bounds of a projection processor. `new` takes what every deployment sets; the rest keep the
 /// defaults above until a fallible `with_*` changes them.
@@ -32,6 +35,7 @@ pub struct ProcessorConfig {
     retry_base: Duration,
     retry_max: Duration,
     concurrency: usize,
+    settle: Duration,
 }
 
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
@@ -48,6 +52,8 @@ pub enum ProcessorConfigError {
     InvalidRetry,
     #[error("the concurrency must be positive")]
     ZeroConcurrency,
+    #[error("the settle time must be at most the poll interval {max:?}")]
+    SettleTooLong { max: Duration },
     #[error("the delivery capacity must be at least 2: one live page in flight and one rebuild job per key")]
     DeliveryCapacityTooSmall,
 }
@@ -84,6 +90,7 @@ impl ProcessorConfig {
             retry_base: DEFAULT_PROCESSOR_RETRY_BASE,
             retry_max: DEFAULT_PROCESSOR_RETRY_MAX,
             concurrency: DEFAULT_PROCESSOR_CONCURRENCY,
+            settle: DEFAULT_PROCESSOR_SETTLE,
         })
     }
 
@@ -112,6 +119,16 @@ impl ProcessorConfig {
             return Err(ProcessorConfigError::ZeroConcurrency);
         }
         self.concurrency = keys;
+        Ok(self)
+    }
+
+    /// The pause between a commit's wake-up and the read of the journal: the commits of a burst share a page.
+    /// At most the poll interval, past which the wake-up would be slower than the poll it replaces.
+    pub fn with_settle(mut self, settle: Duration) -> Result<Self, ProcessorConfigError> {
+        if settle > self.poll_interval {
+            return Err(ProcessorConfigError::SettleTooLong { max: self.poll_interval });
+        }
+        self.settle = settle;
         Ok(self)
     }
 
@@ -147,6 +164,10 @@ impl ProcessorConfig {
         self.concurrency
     }
 
+    pub fn settle(&self) -> Duration {
+        self.settle
+    }
+
     /// Live pages whose receipts may be in flight at once: the key buffer's capacity less the one place a
     /// rebuild job of the key may take.
     pub fn pages_in_flight(&self) -> usize {
@@ -172,6 +193,7 @@ impl Default for ProcessorConfig {
             retry_base: DEFAULT_PROCESSOR_RETRY_BASE,
             retry_max: DEFAULT_PROCESSOR_RETRY_MAX,
             concurrency: DEFAULT_PROCESSOR_CONCURRENCY,
+            settle: DEFAULT_PROCESSOR_SETTLE,
         }
     }
 }
@@ -236,6 +258,10 @@ mod tests {
             (valid.with_retry(seconds(2), seconds(1)), ProcessorConfigError::InvalidRetry),
             (valid.with_rebuild_page(0), ProcessorConfigError::ZeroRebuildPage),
             (valid.with_concurrency(0), ProcessorConfigError::ZeroConcurrency),
+            (
+                valid.with_settle(Duration::from_millis(1001)),
+                ProcessorConfigError::SettleTooLong { max: seconds(1) },
+            ),
         ] {
             assert_eq!(config, Err(error));
         }
@@ -245,16 +271,20 @@ mod tests {
             .with_rebuild_page(7)
             .unwrap()
             .with_concurrency(3)
+            .unwrap()
+            .with_settle(seconds(1))
             .unwrap();
         assert_eq!(
             (
                 tuned.retry_base(),
                 tuned.retry_max(),
                 tuned.rebuild_page(),
-                tuned.concurrency()
+                tuned.concurrency(),
+                tuned.settle()
             ),
-            (seconds(1), seconds(1), 7, 3)
+            (seconds(1), seconds(1), 7, 3, seconds(1))
         );
+        assert_eq!(valid.settle(), DEFAULT_PROCESSOR_SETTLE);
         assert_eq!(
             ProcessorConfigError::ZeroPollInterval.to_string(),
             "the poll interval must be positive"
@@ -278,6 +308,10 @@ mod tests {
         assert_eq!(
             ProcessorConfigError::ZeroConcurrency.to_string(),
             "the concurrency must be positive"
+        );
+        assert_eq!(
+            ProcessorConfigError::SettleTooLong { max: seconds(1) }.to_string(),
+            "the settle time must be at most the poll interval 1s"
         );
         assert_eq!(
             ProcessorConfigError::DeliveryCapacityTooSmall.to_string(),

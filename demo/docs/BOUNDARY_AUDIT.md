@@ -38,8 +38,8 @@ production-сервис кассы. Sidecar — вспомогательный �
 | C-1 | Счётчики журнала raw SQL по таблице библиотеки | `infrastructure/postgres.rs::PostgresLedger`, `ports::EventLedgerStats` | cqrsx (тикет 08) — вариант A по решению владельца | ●●● | низкая | нет | §3.5, тикет 08 | ✅ сделано: `PostgresEventRepository::totals::<A>()`, `LedgerTotals`, тест `event_store::totals`, `components.md`; `PostgresLedger` без SQL |
 | C-2 | Обобщённая часть wipe/rebuild/verify | `application/projections/maintenance.rs`, `ports::ReadModelStore::{list, wipe}` | cqrsx (тикет 07) | ●●○ | средняя | нет | тикет 07 | ✖ закрыто 2026-10-23: не переносить, пока нет проекта, которому это нужно (§3.6) |
 | C-3 | Репозиторий витрин для MongoDB | `infrastructure/mongo/view_repository.rs` | cqrsx (тикет 09), условно | ●○○ | высокая | нет | тикет 09 | ✖ закрыто 2026-10-23: не переносить, пока нет проекта, которому это нужно (§3.6) |
-| K-1 | Rebuild-lock: касса закрыта на время пересборки | `application/lock.rs` + 12 файлов, где он проверяется; `ENCORE_CHAIN_MAX_ATTEMPTS` | не переносить: либо убрать («живой» rebuild, PLAN P2), либо оставить как осознанное упрощение | ●○○ | средняя | да | §4.1 | ⏸ обсуждение: [`discussions/03`](discussions/03_rebuild_lock.md) |
-| K-2 | Замедленный replay `speed: slow` | `operations/rebuild.rs::Speed`, `ENCORE_REPLAY_SLOW_DELAY_MS` | остаётся как `pace` (библиотечный `with_pace`) | — | — | нет | §4.2 | ⏸ обсуждение: [`discussions/04`](discussions/04_replay_pace.md) |
+| K-1 | Rebuild-lock: касса закрыта на время пересборки | `application/lock.rs` + 12 файлов, где он проверяется; `ENCORE_CHAIN_MAX_ATTEMPTS` | не переносить: либо убрать («живой» rebuild, PLAN P2), либо оставить как осознанное упрощение | ●○○ | средняя | да | §4.1 | ✅ снято: касса открыта во время Encore! (D-16 эпика 03, реализовано 2026-10-25) |
+| K-2 | Замедленный replay `speed: slow` | `operations/rebuild.rs::Speed`, `ENCORE_REPLAY_SLOW_DELAY_MS` | остаётся как `pace` (библиотечный `with_pace`) | — | — | нет | §4.2 | ✅ `pace_ms` вместо `speed` (D-18 эпика 03, реализовано 2026-10-25) |
 | K-3 | Неиспользуемые зависимости `sha2`, `hex` | `back-end/Cargo.toml` | удалить | ●●● | нулевая | нет | §4.3 | ✅ сделано (вместе с `rand`, который ушёл с имитацией почты) |
 
 Остальное — production-поведение и остаётся в back-end (§5). Обратная проверка sidecar — §6.
@@ -349,8 +349,8 @@ Sidecar при этом каждые 400 мс считает `events_total` и `
 ## 4. Упрощения демо в production-пути (не для sidecar)
 
 Это не утечки в сторону sidecar — перенести их некуда. Но они нарушают критерий «похоже на production»,
-поэтому перечислены отдельно. Оба пункта вынесены в обсуждения ([`discussions/03`](discussions/03_rebuild_lock.md),
-[`discussions/04`](discussions/04_replay_pace.md)); ниже — состояние на момент аудита.
+поэтому перечислены отдельно. Оба пункта решены эпиком 03 (D-16 и D-18, 2026-10-24; реализованы 2026-10-25);
+ниже — состояние на момент аудита.
 
 ### 4.1 K-1. Rebuild-lock ●○○
 

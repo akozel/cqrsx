@@ -1,10 +1,9 @@
-//! Router tests without a database: every branch that answers before storage is touched
-//! (validation, the box-office lock, the error shape) and the few endpoints that need no storage.
+//! Router tests without a database: every branch that answers before storage is touched (validation, the
+//! error shape), the endpoints that need no storage, and the read side over in-memory checkpoints.
 use crate::{
     application::{
         concert::views::concert_hall::{ConcertHallView, ConcertSummary},
         fan::views::fan_wallet::{FanWalletView, TicketEntry, TicketEntryState},
-        lock::BoxOfficeLock,
         ports::Stored,
         read_models::ReadModels,
     },
@@ -24,16 +23,20 @@ use tower::ServiceExt;
 
 struct App {
     router: Router,
-    lock: Arc<BoxOfficeLock>,
 }
 
 async fn app() -> App {
     let wiring = bootstrap::wire(&testing::process().await).unwrap();
-    let lock = wiring.state.rebuild.lock().clone();
     App {
         router: router(wiring.state),
-        lock,
     }
+}
+
+/// The real graph, with the read side over in-memory checkpoints whose readers are `lag` events behind.
+async fn app_with_checkpoints(checkpoints: &testing::Checkpoints, lag: u64) -> Router {
+    let mut wiring = bootstrap::wire(&testing::process().await).unwrap();
+    wiring.state.rebuild = checkpoints.read_side(lag);
+    router(wiring.state)
 }
 
 /// The real graph, with the read side served from memory.
@@ -92,8 +95,16 @@ async fn health_and_config_need_no_storage() {
         body.get("personas").is_none(),
         "the cast is a demo prop, served by the sidecar"
     );
+    assert_eq!(
+        body["replay_slow_delay_ms"], 0,
+        "the slow-motion pause the UI asks Encore! for"
+    );
+    // MongoDB does not answer: the status says so instead of failing, and nothing is registered yet.
     let (status, body) = send(&app.router, get("/api/projections/status")).await;
-    assert_eq!((status, body["state"].as_str()), (StatusCode::OK, Some("idle")));
+    assert_eq!(
+        (status, body["state"].as_str(), body["stale"].as_bool()),
+        (StatusCode::OK, Some("starting"), Some(true))
+    );
 }
 
 /// Demo operations and the external mail service's data are the sidecar's: the box office has no
@@ -142,35 +153,73 @@ async fn malformed_ids_and_bodies_are_rejected_with_the_shared_error_shape() {
     .await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
     assert!(body["error"]["message"].as_str().unwrap().contains("invalid fan id"));
-    let (status, body) = send(&app.router, post_json("/api/projections/rebuild", r#"{ "speed": "warp" }"#)).await;
+    for body in [r#"{ "speed": "slow" }"#, r#"{ "pace_ms": "slow" }"#, r#"{ "pace_ms": -1 }"#] {
+        let (status, answer) = send(&app.router, post_json("/api/projections/rebuild", body)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+        assert!(
+            answer["error"]["message"]
+                .as_str()
+                .unwrap()
+                .starts_with("invalid rebuild request"),
+            "{body}"
+        );
+    }
+    let (status, _) = send(&app.router, post("/api/concerts/Tbilisi%202026/rebuild")).await;
     assert_eq!(status, StatusCode::BAD_REQUEST);
-    assert!(
-        body["error"]["message"]
-            .as_str()
-            .unwrap()
-            .starts_with("invalid rebuild request")
-    );
 }
 
 #[tokio::test]
-async fn a_closed_box_office_answers_423_before_anything_else() {
-    let app = app().await;
-    let _guard = app.lock.try_acquire().unwrap();
-    // Even an invalid command body is told the box office is closed (§6.4 step 1).
-    let (status, body) = send(&app.router, post_json("/api/concerts/c-1/commands", "{not json")).await;
-    assert_eq!(status, StatusCode::LOCKED);
-    assert_eq!(body["outcome"], "locked");
-    assert_eq!(body["error"]["code"], "rebuild_in_progress");
-    assert_eq!(body["concert_id"], "c-1");
-    let (status, body) = send(&app.router, get("/api/projections/verify")).await;
+async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
+    let checkpoints = testing::Checkpoints::owned_by("node-a").await;
+    let router = app_with_checkpoints(&checkpoints, 3).await;
+    let (status, body) = send(&router, get("/api/projections/status")).await;
     assert_eq!(
-        (status, body["error"]["code"].as_str()),
-        (StatusCode::LOCKED, Some("rebuild_in_progress"))
+        (status, body["state"].as_str(), body["stale"].as_bool()),
+        (StatusCode::OK, Some("live"), Some(false))
     );
-    let (status, body) = send(&app.router, post("/api/projections/rebuild")).await;
-    assert_eq!(status, StatusCode::CONFLICT);
-    assert_eq!(body["outcome"], "conflict");
-    assert_eq!(body["error"]["code"], "rebuild_in_progress");
+    let names: Vec<&str> = body["projections"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|projection| projection["projection"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["concert_halls", "fan_wallets"]);
+    assert_eq!(
+        (
+            body["projections"][0]["lag"].as_u64(),
+            body["projections"][0]["owner"].as_str()
+        ),
+        (Some(3), Some("node-a"))
+    );
+    // Encore! at full speed (no body), refused while it runs and with a pace beyond the limit.
+    let (status, body) = send(&router, post("/api/projections/rebuild")).await;
+    assert_eq!(
+        (status, body["outcome"].as_str(), body["pace_ms"].as_u64()),
+        (StatusCode::ACCEPTED, Some("started"), Some(0))
+    );
+    assert!(body["rebuild_id"].is_string());
+    let (status, body) = send(&router, post_json("/api/projections/rebuild", r#"{ "pace_ms": 80 }"#)).await;
+    assert_eq!(
+        (status, body["outcome"].as_str(), body["error"]["code"].as_str()),
+        (StatusCode::CONFLICT, Some("conflict"), Some("rebuild_in_progress"))
+    );
+    let (status, body) = send(&router, post_json("/api/projections/rebuild", r#"{ "pace_ms": 5000 }"#)).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(body["error"]["message"], "the pace must be at most 1000 ms");
+    let (status, body) = send(&router, get("/api/projections/status")).await;
+    assert_eq!((status, body["state"].as_str()), (StatusCode::OK, Some("rebuilding")));
+    // One hall.
+    let (status, body) = send(&router, post("/api/concerts/c-1/rebuild")).await;
+    assert_eq!(
+        (status, body),
+        (StatusCode::ACCEPTED, json!({ "outcome": "requested", "concert_id": "c-1" }))
+    );
+    checkpoints.set_unavailable(true);
+    let (status, body) = send(&router, post("/api/concerts/c-1/rebuild")).await;
+    assert_eq!(
+        (status, body["outcome"].as_str()),
+        (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable"))
+    );
 }
 
 #[tokio::test]
@@ -198,6 +247,19 @@ async fn an_unreachable_store_is_reported_as_unavailable() {
     assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
     assert_eq!(body["concert_id"], "c-1");
     assert!(body["command_id"].is_string());
+    for request in [
+        get("/api/projections/verify"),
+        post("/api/projections/rebuild"),
+        post("/api/concerts/c-1/rebuild"),
+    ] {
+        let uri = request.uri().to_string();
+        let (status, body) = send(&app.router, request).await;
+        assert_eq!(
+            (status, body["outcome"].as_str()),
+            (StatusCode::SERVICE_UNAVAILABLE, Some("unavailable")),
+            "{uri}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -250,12 +312,14 @@ async fn read_models_are_served_in_the_documented_shapes() {
     let stored = |id: &str, version: i64, view: FanWalletView| Stored {
         id: id.into(),
         version,
+        last_sequence: 1,
         view,
     };
     let router = app_reading(read_models(
         vec![Stored {
             id: "c-1".into(),
             version: 3,
+            last_sequence: 2,
             view: hall.clone(),
         }],
         vec![

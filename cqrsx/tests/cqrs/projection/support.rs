@@ -6,7 +6,7 @@ use crate::support::ledger::{Command, Delta, Ledger, Services};
 use cqrsx::cqrs::{
     CqrsFramework,
     aggregate::Aggregate,
-    command::{executor::CqrsCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
+    command::{executor::CommandExecutorCore, locks::LockLimits, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
     event::EventEnvelope,
     projection::{
         View, ViewProjection,
@@ -439,6 +439,11 @@ impl Journal {
         }
     }
 
+    /// The pages read from the feed so far, empty ones included.
+    pub(crate) fn feed_reads(&self) -> usize {
+        self.feeds.load(Ordering::SeqCst)
+    }
+
     /// Makes the head stand `above` positions over what the pages deliver, as an open transaction would.
     pub(crate) fn hold_horizon(&self, above: u64) {
         self.horizon.store(above as usize, Ordering::SeqCst);
@@ -627,7 +632,7 @@ pub(crate) struct Harness {
     pub(crate) wakeup: CommitWakeup,
     pub(crate) observer: Arc<Recording>,
     pub(crate) config: ProcessorConfig,
-    executor: Arc<CqrsCommandExecutor<Ledger, Factory>>,
+    executor: Arc<CommandExecutorCore<Ledger, Factory>>,
 }
 
 pub(crate) fn config() -> ProcessorConfig {
@@ -655,7 +660,7 @@ impl Harness {
             move |_| CqrsFramework::new(PersistedEventStore::new_event_store(journal.clone()), Services::default())
         });
         let executor = Arc::new(
-            CqrsCommandExecutor::new(factory, AggregateConflictRetryPolicy::default(), LockLimits::default())
+            CommandExecutorCore::new(factory, AggregateConflictRetryPolicy::default(), LockLimits::default())
                 .with_commit_wakeup(wakeup.clone()),
         );
         Self {

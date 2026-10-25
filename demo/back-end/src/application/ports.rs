@@ -2,7 +2,10 @@
 //! `infrastructure`; tests use in-memory doubles.
 use crate::application::StorageError;
 use async_trait::async_trait;
-use cqrsx::task::{attempt::TaskAttempt, handler::TaskHandlerError};
+use cqrsx::{
+    cqrs::store::feed::Position,
+    task::{attempt::TaskAttempt, handler::TaskHandlerError},
+};
 use serde::{Deserialize, Serialize};
 use std::future::Future;
 
@@ -27,16 +30,17 @@ pub trait Mailer: Send {
     fn send(&mut self, attempt: &TaskAttempt, mail: Mail) -> impl Future<Output = Result<(), TaskHandlerError>> + Send;
 }
 
-/// One stored read-model document: the view and the version its repository keeps for optimistic
-/// locking.
+/// One stored read-model document: the view, the version its repository keeps for optimistic locking and
+/// the last event of its aggregate it has applied (verify folds the history up to it).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct Stored<V> {
     pub id: String,
     pub version: i64,
+    pub last_sequence: usize,
     pub view: V,
 }
 
-/// Read access to one read-model collection, plus the wipe a rebuild starts with.
+/// Read access to one read-model collection. The projection processors write it; nothing here does.
 #[async_trait]
 pub trait ReadModelStore<V>: Send + Sync {
     async fn load(&self, id: &str) -> Result<Option<Stored<V>>, StorageError>;
@@ -44,8 +48,6 @@ pub trait ReadModelStore<V>: Send + Sync {
     async fn list(&self) -> Result<Vec<Stored<V>>, StorageError>;
     /// The documents whose id is in `[lower, upper)`, ordered by id (a fan's ledgers, D-14).
     async fn list_range(&self, lower: &str, upper: &str) -> Result<Vec<Stored<V>>, StorageError>;
-    /// Drops every document. The ledger is untouched; Encore! rebuilds them.
-    async fn wipe(&self) -> Result<(), StorageError>;
 }
 
 /// Size of the event ledger, for progress reporting.
@@ -55,7 +57,11 @@ pub struct LedgerTotals {
     pub aggregates: u64,
 }
 
+/// The size of the event ledger and how far a reader of it is behind.
 #[async_trait]
 pub trait EventLedgerStats: Send + Sync {
     async fn totals(&self) -> Result<LedgerTotals, StorageError>;
+    /// The events of `aggregate_type` above `after`, counted up to `cap`: the lag of a projection whose
+    /// checkpoint stands at `after`.
+    async fn count_after(&self, aggregate_type: &str, after: Position, cap: u64) -> Result<u64, StorageError>;
 }

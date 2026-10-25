@@ -247,7 +247,10 @@ describe('PipelineStrip', () => {
     expect(w.findAll('.pipe-dim').length).toBe(2) // the frame and the read database
     expect(w.text()).toContain('(пусто)')
 
-    useRebuildStore().status = { ...useRebuildStore().status, state: 'running' }
+    useRebuildStore().status = {
+      ...useRebuildStore().status,
+      rebuild: { rebuild_id: 'r-1', pace_ms: 0, started_at: '', keys_total: 3 },
+    }
     await w.vm.$nextTick()
     expect(
       w.findAll('path.pipe-edge-flow').map((p) => p.element.parentElement?.getAttribute('data-id')),

@@ -8,6 +8,7 @@ import { useSessionStore } from '@/stores/session'
 import { useConcertsStore } from '@/stores/concerts'
 import { useCommandsStore } from '@/stores/commands'
 import { useTimeMachineStore } from '@/stores/timemachine'
+import { useRebuildStore } from '@/stores/rebuild'
 import { nameOf } from '@/lib/personas'
 
 const { t } = useI18n()
@@ -15,6 +16,7 @@ const session = useSessionStore()
 const concerts = useConcertsStore()
 const commands = useCommandsStore()
 const timeMachine = useTimeMachineStore()
+const rebuild = useRebuildStore()
 
 const seats = computed(() => allSeats(session.config.venue))
 const rows = computed(() => session.config.venue.rows.map((row) => ({ row, seats: seats.value.filter((s) => s.row === row) })))
@@ -26,6 +28,22 @@ const context = computed<SeatContext>(() =>
 const artist = computed(() => concerts.currentView?.concert?.artist ?? timeMachine.historyState?.state.info?.artist ?? '')
 const soldOut = computed(() => concerts.currentView?.sold_out ?? false)
 const cancelPrompt = ref<{ seat: string; refund: number } | null>(null)
+const rebuildingHall = ref(false)
+
+/** ⟲ This hall alone, rebuilt from its history by the owner of the halls' checkpoint; the feed reports it. */
+async function rebuildHall() {
+  rebuildingHall.value = true
+  try {
+    const error = await rebuild.rebuildConcert(session.concertId)
+    commands.pushToast(
+      error
+        ? { kind: 'error', text: t('seatmap.rebuild_failed', { message: error.message }) }
+        : { kind: 'info', text: t('seatmap.rebuild_requested') },
+    )
+  } finally {
+    rebuildingHall.value = false
+  }
+}
 
 function occupant(seat: string): { fanId?: string; fanName?: string } {
   if (context.value.mode === 'history') {
@@ -82,6 +100,7 @@ async function confirmCancel() {
       {{ t('states.history', { n: timeMachine.sequence }) }}
     </div>
     <div v-else-if="concerts.stale" class="mb-2 rounded border border-border px-3 py-1 text-xs opacity-80">{{ t('states.wiped') }}</div>
+    <div v-else-if="rebuild.running" class="mb-2 rounded border border-neon-pink/60 bg-neon-pink/10 px-3 py-1 text-xs">{{ t('states.replaying') }}</div>
     <!-- Three columns: row letters · stage + seats (the stage is centred on the seats alone) · zones -->
     <div class="mx-auto flex w-fit gap-1">
       <div class="flex w-5 flex-col gap-1.5">
@@ -115,7 +134,18 @@ async function confirmCancel() {
         </div>
       </div>
       <div class="ml-2 flex w-20 flex-col gap-1.5">
-        <div class="h-6 mb-2"></div>
+        <div class="h-6 mb-2 flex items-center">
+          <button
+            type="button"
+            class="rounded border border-border px-1 text-[10px] leading-5 hover:border-neon-cyan disabled:opacity-40"
+            data-test="rebuild-hall"
+            :disabled="timeMachine.active || rebuildingHall"
+            :title="t('seatmap.rebuild_hint')"
+            @click="rebuildHall"
+          >
+            ⟲ {{ t('seatmap.rebuild') }}
+          </button>
+        </div>
         <span v-for="r in rows" :key="r.row" class="flex h-9 items-center text-[10px] font-mono opacity-60" :style="{ color: ZONE_COLORS[r.seats[0]?.zone ?? 'balcony'] }">{{ t(`zones.${r.seats[0]?.zone ?? 'balcony'}`) }} {{ r.seats[0]?.price }} €</span>
       </div>
     </div>

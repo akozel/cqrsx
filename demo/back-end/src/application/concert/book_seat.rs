@@ -28,7 +28,7 @@ where
         // An unknown seat yields no task: the aggregate rejects the command (R3) before anything
         // is written, so no task can ever be published without its event.
         let tasks = match VENUE.seat(&command.seat) {
-            Some(seat) => match tasks::record_ticket(concert_id, &command, seat, &metadata, self.chain_max_attempts) {
+            Some(seat) => match tasks::record_ticket(concert_id, &command, seat, &metadata, self.task_max_attempts) {
                 Ok(task) => vec![task],
                 Err(error) => return Executed::tasks_unavailable(error),
             },
@@ -113,19 +113,5 @@ mod tests {
             CommandOutcome::Rejected(ConcertError::SeatTaken { .. })
         ));
         assert_eq!(store.load_events(concert_id().as_str()).await.unwrap().len(), 2);
-    }
-
-    #[tokio::test]
-    async fn a_closed_box_office_refuses_the_booking_without_writing() {
-        let store = MemStore::default();
-        let h = harness(store.clone());
-        let _guard = h.lock.try_acquire().unwrap();
-        let executed = h
-            .app
-            .book_seat(&concert_id(), book("B4", "fox", Uuid::now_v7()), CommandMetadata::ui())
-            .await;
-        assert_eq!(executed.outcome, CommandOutcome::Locked);
-        assert!(store.load_events(concert_id().as_str()).await.unwrap().is_empty());
-        assert!(h.activity().is_empty(), "a locked outcome is not logged");
     }
 }

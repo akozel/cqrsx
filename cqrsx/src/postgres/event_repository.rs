@@ -36,6 +36,10 @@ pub struct LedgerTotals {
     pub aggregates: u64,
 }
 
+/// The default bound of [`PostgresEventRepository::count_after`]: a status page asks every second, and a reader
+/// far behind is shown as "at least this many".
+pub const DEFAULT_COUNT_AFTER_CAP: u64 = 100_000;
+
 /// An event repository relying on a Postgres database for persistence.
 pub struct PostgresEventRepository {
     pool: Pool<Postgres>,
@@ -240,6 +244,7 @@ mod configuration_tests {
             assert_eq!(repository.stream_channel_size, 1);
             assert!(repository.query_factory.select_events().contains("FROM custom_events"));
             assert!(repository.query_factory.count_events().contains("FROM custom_events"));
+            assert!(repository.query_factory.count_after().contains("FROM custom_events"));
             assert!(repository.query_factory.select_snapshot().contains("FROM custom_snapshots"));
         }
         pool.close().await;
