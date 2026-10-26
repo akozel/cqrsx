@@ -6,6 +6,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use chrono::NaiveDate;
 use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
+use cqrsx::task::format::TaskFormat;
 use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
@@ -34,15 +35,15 @@ use encore_backend::{
         command_service::{CommandMetadata, CommandOutcome, CommandService},
         concert::ConcertApp,
         concert::views::concert_hall::ConcertHallView,
+        workflows,
     },
     domain::{
         ConcertId, FanId,
         concert::{
             Concert, ConcertError, ConcertServices,
-            commands::{AnnounceConcert, BookSeat},
+            commands::{AnnounceConcert, BookSeat, CancelBooking},
         },
     },
-    infrastructure::postgres::history_store,
 };
 use serde_json::Value;
 use sqlx::{PgPool, Row};
@@ -121,8 +122,9 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     let (pool, container) = database().await;
     let activity = Arc::new(ActivityHub::new(64, 64));
     let config = PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default()).expect("config");
-    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 });
-    let concerts = ConcertApp::new(CommandService::new(executor, activity), history_store(pool.clone(), 10), 6);
+    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 })
+        .with_task_planner(workflows::concert_tasks(6));
+    let concerts = ConcertApp::new(CommandService::new(executor, activity));
     let concert_id = ConcertId::parse("test-2026").expect("concert id");
     let announce = AnnounceConcert {
         artist: "A".into(),
@@ -185,12 +187,22 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
         "the events.metadata keys are unchanged"
     );
 
-    let tasks = sqlx::query("SELECT task_type, aggregate_sequence, metadata, status FROM transactional_outbox")
+    let tasks = sqlx::query("SELECT id, task_type, aggregate_sequence, metadata, status FROM transactional_outbox")
         .fetch_all(&pool)
         .await
         .expect("tasks");
     assert_eq!(tasks.len(), 1, "one task for the accepted booking only");
     assert_eq!(tasks[0].get::<String, _>("task_type"), "encore_record_ticket");
+    assert_eq!(
+        tasks[0].get::<Uuid, _>("id"),
+        metadata.causation.task_id(
+            "Concert",
+            "test-2026",
+            &TaskFormat::new("encore_record_ticket", 1).expect("format"),
+            0
+        ),
+        "the task id derives from the booking's command"
+    );
     assert_eq!(tasks[0].get::<i64, _>("aggregate_sequence"), 2);
     assert_eq!(tasks[0].get::<String, _>("status"), "pending");
     let task_metadata: Value = tasks[0].get("metadata");
@@ -212,18 +224,107 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     container.stop().await.expect("stop");
 }
 
+/// Bookings and cancellations of one concert racing on two nodes (two executors, each with its own
+/// locks): whatever the optimistic check decided, every committed `SeatBooked` and `BookingCancelled` has
+/// exactly one task, and the task carries the booking of its own event.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_task_each() {
+    let (pool, container) = database().await;
+    let node = || {
+        let config =
+            PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default()).expect("config");
+        let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 40 })
+            .with_task_planner(workflows::concert_tasks(6));
+        Arc::new(ConcertApp::new(CommandService::new(
+            executor,
+            Arc::new(ActivityHub::new(64, 64)),
+        )))
+    };
+    let nodes = [node(), node()];
+    let concert_id = ConcertId::parse("race-2026").expect("concert id");
+    let announce = AnnounceConcert {
+        artist: "A".into(),
+        city: "C".into(),
+        date: NaiveDate::from_ymd_opt(2026, 11, 21).expect("date"),
+    };
+    assert!(
+        nodes[0]
+            .announce_concert(&concert_id, announce, CommandMetadata::with_source("seed"))
+            .await
+            .outcome
+            .is_accepted()
+    );
+    let mut commands = tokio::task::JoinSet::new();
+    for index in 0..40 {
+        let (concerts, concert_id) = (nodes[index % 2].clone(), concert_id.clone());
+        commands.spawn(async move {
+            // Four fans each book and cancel their seat, back and forth, on both nodes.
+            let fan = index % 4;
+            let seat = format!("A{}", fan + 1);
+            let fan_id = FanId::parse(&format!("fan-{fan}")).expect("fan");
+            let metadata = CommandMetadata::ui();
+            if index % 8 < 4 {
+                let book = BookSeat {
+                    seat,
+                    fan_id,
+                    fan_name: "Fan".into(),
+                    booking_id: metadata.causation.command_id,
+                };
+                concerts.book_seat(&concert_id, book, metadata).await.outcome
+            } else {
+                let cancel = CancelBooking {
+                    seat,
+                    fan_id,
+                    cancellation_id: metadata.causation.command_id,
+                };
+                concerts.cancel_booking(&concert_id, cancel, metadata).await.outcome
+            }
+        });
+    }
+    while let Some(outcome) = commands.join_next().await {
+        match outcome.expect("command task") {
+            CommandOutcome::Accepted | CommandOutcome::Rejected(_) | CommandOutcome::Conflict => {}
+            CommandOutcome::Unavailable => panic!("the store stayed reachable"),
+        }
+    }
+    let unmatched: i64 = sqlx::query_scalar(
+        "SELECT count(*) FROM events e FULL JOIN transactional_outbox t
+           ON t.aggregate_type = e.aggregate_type AND t.aggregate_id = e.aggregate_id AND t.aggregate_sequence = e.sequence
+         WHERE coalesce(e.aggregate_id, t.aggregate_id) = 'race-2026' AND (e.event_type IS NULL OR e.event_type <> 'ConcertAnnounced')
+           AND (e.sequence IS NULL OR t.id IS NULL OR (e.payload::jsonb ->> 'booking_id') <> (t.payload ->> 'booking_id'))",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("join");
+    assert_eq!(
+        unmatched, 0,
+        "every booking and cancellation has its task, every task its event"
+    );
+    let (events, tasks): (i64, i64) = sqlx::query_as(
+        "SELECT (SELECT count(*) FROM events WHERE aggregate_id = 'race-2026' AND event_type <> 'ConcertAnnounced'),
+                (SELECT count(*) FROM transactional_outbox WHERE aggregate_id = 'race-2026')",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("counts");
+    assert!(events > 0);
+    assert_eq!(events, tasks);
+    pool.close().await;
+    container.stop().await.expect("stop");
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() {
     let (pool, container) = database().await;
     // One attempt only: a booking that lost a version race would answer `Conflict`.
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
     let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
-    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 });
-    let concerts = Arc::new(ConcertApp::new(
-        CommandService::new(executor, Arc::new(ActivityHub::new(64, 64))),
-        history_store(pool.clone(), 10),
-        6,
-    ));
+    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 })
+        .with_task_planner(workflows::concert_tasks(6));
+    let concerts = Arc::new(ConcertApp::new(CommandService::new(
+        executor,
+        Arc::new(ActivityHub::new(64, 64)),
+    )));
     let concert_id = ConcertId::parse("hot-2026").expect("concert id");
     let announce = AnnounceConcert {
         artist: "A".into(),
@@ -400,12 +501,12 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
     let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 })
+        .with_task_planner(workflows::concert_tasks(6))
         .with_commit_wakeup(read.wakeup.clone());
-    let concerts = Arc::new(ConcertApp::new(
-        CommandService::new(executor, Arc::new(ActivityHub::new(64, 64))),
-        history_store(pool.clone(), 10),
-        6,
-    ));
+    let concerts = Arc::new(ConcertApp::new(CommandService::new(
+        executor,
+        Arc::new(ActivityHub::new(64, 64)),
+    )));
     let announce = |id: &'static str| {
         let concerts = concerts.clone();
         async move {

@@ -1,14 +1,17 @@
-//! An in-memory `PersistedEventRepository` with the write rules of the PostgreSQL one and a position
-//! per commit: for tests of everything that reads a journal, without a database.
-use crate::cqrs::{
-    aggregate::Aggregate,
-    store::{
-        PersistenceError,
-        feed::{FeedEntry, Position},
-        repository::PersistedEventRepository,
-        serialized_event::SerializedEvent,
-        snapshot::{SerializedSnapshot, SnapshotUpdate},
+//! An in-memory `PersistedEventRepository` with the write rules of the PostgreSQL one, its outbox and a
+//! position per commit: for tests of everything that reads a journal, without a database.
+use crate::{
+    cqrs::{
+        aggregate::Aggregate,
+        store::{
+            PersistenceError,
+            feed::{FeedEntry, Position},
+            repository::PersistedEventRepository,
+            serialized_event::SerializedEvent,
+            snapshot::{SerializedSnapshot, SnapshotUpdate},
+        },
     },
+    task::NewTask,
 };
 use serde_json::Value;
 use std::{
@@ -31,11 +34,22 @@ struct Snapshot {
     version: usize,
 }
 
+/// A task in the in-memory outbox and the event it was published with.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OutboxEntry {
+    pub aggregate_id: String,
+    /// The sequence of the last event of the write that published the task.
+    pub aggregate_sequence: usize,
+    pub task: NewTask,
+}
+
 #[derive(Debug, Default)]
 struct Journal {
     last_position: u64,
     rows: Vec<Row>,
     snapshots: HashMap<(String, String), Snapshot>,
+    /// The outbox in commit order, with the aggregate type of every entry.
+    outbox: Vec<(String, OutboxEntry)>,
 }
 
 /// Events and snapshots in memory with the rules of `postgres::event_repository::PostgresEventRepository`
@@ -106,6 +120,17 @@ impl MemEventRepository {
         self.journal.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The tasks published with the events of aggregate type `A`, in commit order: the outbox as the
+    /// PostgreSQL repository with an outbox would hold it.
+    pub fn outbox<A: Aggregate>(&self) -> Vec<OutboxEntry> {
+        self.journal()
+            .outbox
+            .iter()
+            .filter(|(aggregate_type, _)| aggregate_type == A::TYPE)
+            .map(|(_, entry)| entry.clone())
+            .collect()
+    }
+
     /// The events of type `A` in journal order: by position, aggregate id and sequence.
     fn ordered<A: Aggregate>(journal: &Journal) -> Vec<(Position, SerializedEvent)> {
         let mut rows: Vec<_> = journal
@@ -170,8 +195,36 @@ impl PersistedEventRepository for MemEventRepository {
         events: &[SerializedEvent],
         snapshot_update: Option<SnapshotUpdate>,
     ) -> Result<(), PersistenceError> {
+        self.persist_with_tasks::<A>(events, snapshot_update, &[]).await
+    }
+
+    /// The outbox by the PostgreSQL rules: tasks need an event in the same write, a task id is published
+    /// once (the primary key: a second one refuses the whole write), and a write that conflicts publishes
+    /// nothing. Unlike PostgreSQL several events may share a write; its tasks get the last event's sequence.
+    async fn persist_with_tasks<A: Aggregate>(
+        &self,
+        events: &[SerializedEvent],
+        snapshot_update: Option<SnapshotUpdate>,
+        tasks: &[NewTask],
+    ) -> Result<(), PersistenceError> {
         let mut journal = self.journal();
         // Everything is checked before anything is written: one transaction, all or nothing.
+        let last_event = match (events.last(), tasks.is_empty()) {
+            (None, false) => {
+                return Err(PersistenceError::UnknownError(
+                    "outbox tasks require a committed domain event".into(),
+                ));
+            }
+            (last, _) => last,
+        };
+        let mut ids = HashSet::new();
+        for task in tasks {
+            if !ids.insert(task.id()) || journal.outbox.iter().any(|(_, entry)| entry.task.id() == task.id()) {
+                return Err(PersistenceError::UnknownError(
+                    "duplicate task id: the outbox already holds it".into(),
+                ));
+            }
+        }
         let mut batch: HashSet<(&str, usize)> = HashSet::new();
         for event in events {
             let taken = journal.rows.iter().any(|row| {
@@ -215,6 +268,16 @@ impl PersistedEventRepository for MemEventRepository {
                     version: snapshot.next_version,
                 },
             );
+        }
+        if let Some(event) = last_event {
+            for task in tasks {
+                let entry = OutboxEntry {
+                    aggregate_id: event.aggregate_id.clone(),
+                    aggregate_sequence: event.sequence,
+                    task: task.clone(),
+                };
+                journal.outbox.push((A::TYPE.to_owned(), entry));
+            }
         }
         Ok(())
     }
@@ -465,14 +528,80 @@ mod tests {
         let store = PersistedEventStore::<_, Ledger>::new_event_store(journal.clone());
         let context = store.load_aggregate("x").await.unwrap();
         store
-            .commit(vec![Delta(5), Delta(-2)], context, HashMap::new())
+            .commit(vec![Delta(5), Delta(-2)], context, HashMap::new(), &[])
             .await
             .unwrap();
         let context = store.load_aggregate("x").await.unwrap();
         assert_eq!(context.aggregate.balance, 3);
-        store.commit(vec![Delta(1)], context, HashMap::new()).await.unwrap();
+        store.commit(vec![Delta(1)], context, HashMap::new(), &[]).await.unwrap();
         let page = journal.feed_after::<Ledger>(Position::START, 10).await.unwrap();
         assert_eq!(keys(&page), [(1, "x", 1), (1, "x", 2), (2, "x", 3)]);
         assert_eq!(journal.get_events_after::<Ledger>("x", 2).await.unwrap().len(), 1);
+    }
+
+    fn task(n: u8) -> NewTask {
+        NewTask::from_payload(
+            crate::task::format::TaskFormat::new("notify", 1).unwrap(),
+            serde_json::json!({ "n": n }),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn tasks_publish_with_their_events_and_never_alone() {
+        let journal = MemEventRepository::default();
+        let alone = journal.persist_with_tasks::<Ledger>(&[], None, &[task(0)]).await.unwrap_err();
+        assert_eq!(alone.to_string(), "outbox tasks require a committed domain event");
+        journal
+            .persist_with_tasks::<Ledger>(&[delta("a", 1, 5), delta("a", 2, 6)], None, &[task(1), task(2)])
+            .await
+            .unwrap();
+        let entries = |journal: &MemEventRepository| -> Vec<(String, usize, u64)> {
+            journal
+                .outbox::<Ledger>()
+                .into_iter()
+                .map(|entry| {
+                    let n = entry.task.payload()["n"].as_u64().unwrap();
+                    (entry.aggregate_id, entry.aggregate_sequence, n)
+                })
+                .collect()
+        };
+        assert_eq!(
+            entries(&journal),
+            [("a".to_owned(), 2, 1), ("a".to_owned(), 2, 2)],
+            "the tasks of a write go with its last event"
+        );
+        assert!(matches!(
+            journal
+                .persist_with_tasks::<Ledger>(&[delta("a", 2, 7)], None, &[task(3)])
+                .await,
+            Err(PersistenceError::OptimisticLockError)
+        ));
+        let published = journal.outbox::<Ledger>()[0].task.clone();
+        let duplicate = journal
+            .persist_with_tasks::<Ledger>(&[delta("a", 3, 8)], None, &[task(4), published])
+            .await
+            .unwrap_err();
+        assert_eq!(duplicate.to_string(), "duplicate task id: the outbox already holds it");
+        let twice = task(5);
+        assert!(
+            journal
+                .persist_with_tasks::<Ledger>(&[delta("a", 3, 8)], None, &[twice.clone(), twice])
+                .await
+                .is_err(),
+            "one id twice in a write"
+        );
+        assert_eq!(
+            journal.get_events::<Ledger>("a").await.unwrap().len(),
+            2,
+            "the refused writes wrote no event"
+        );
+        assert_eq!(entries(&journal).len(), 2, "and no task");
+        assert!(
+            journal.outbox::<TestAggregate>().is_empty(),
+            "the outbox is per aggregate type"
+        );
+        journal.persist::<Ledger>(&[delta("a", 3, 8)], None).await.unwrap();
+        assert_eq!(entries(&journal).len(), 2, "a write without tasks publishes none");
     }
 }

@@ -68,6 +68,8 @@ mod compatibility;
 mod event_store;
 #[path = "postgres/outbox.rs"]
 mod outbox;
+#[path = "postgres/planning.rs"]
+mod planning;
 #[path = "postgres/pool.rs"]
 mod pool;
 #[path = "support/port_lease.rs"]

@@ -1,9 +1,8 @@
-//! The box office (`Concert` aggregate): one file per use case, the task contracts those use cases
-//! publish and the read model.
+//! The box office (`Concert` aggregate): one file per use case and the read model. The tasks that follow
+//! its decisions are planned by the [workflows](crate::application::workflows) that react to it.
 pub mod announce_concert;
 pub mod book_seat;
 pub mod cancel_booking;
-pub mod tasks;
 #[cfg(test)]
 mod test_support;
 pub mod views;
@@ -15,33 +14,18 @@ use crate::{
         concert::{Concert, ConcertCommand, ConcertError},
     },
 };
-use cqrsx::{
-    cqrs::{command::CommandExecutor, store::EventStore},
-    task::NewTask,
-};
+use cqrsx::cqrs::command::CommandExecutor;
 use serde_json::{Value, json};
 
-/// The box office: the command pipeline of `Concert` plus read access to its committed history.
-pub struct ConcertApp<E, S> {
+/// The box office: the command pipeline of `Concert`. Its executor's planner plans the tasks that follow
+/// every decision, so a use case passes the command only.
+pub struct ConcertApp<E> {
     service: CommandService<Concert, E>,
-    /// Committed concert state, read before `cancel_booking` builds its task (tasks are bound to
-    /// the command before it runs).
-    history: S,
-    /// Attempt budget of the chain tasks the use cases publish (`encore_record_*`).
-    task_max_attempts: i32,
 }
 
-impl<E, S> ConcertApp<E, S>
-where
-    E: CommandExecutor<Concert>,
-    S: EventStore<Concert>,
-{
-    pub fn new(service: CommandService<Concert, E>, history: S, task_max_attempts: i32) -> Self {
-        Self {
-            service,
-            history,
-            task_max_attempts,
-        }
+impl<E: CommandExecutor<Concert>> ConcertApp<E> {
+    pub fn new(service: CommandService<Concert, E>) -> Self {
+        Self { service }
     }
 
     async fn execute(
@@ -49,7 +33,6 @@ where
         concert_id: &ConcertId,
         command: ConcertCommand,
         metadata: CommandMetadata,
-        tasks: Vec<NewTask>,
     ) -> Executed<ConcertError> {
         let fan_id = command.fan_id().cloned();
         let label = CommandLabel {
@@ -57,7 +40,7 @@ where
             command_type: command.name(),
             fan_id: fan_id.as_ref().map(FanId::as_str),
         };
-        self.service.run(label, command, metadata, tasks).await
+        self.service.run(label, command, metadata).await
     }
 }
 

@@ -8,7 +8,10 @@ pub mod upcaster;
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{AggregateError, aggregate::Aggregate, event::EventEnvelope};
+use crate::{
+    cqrs::{AggregateError, aggregate::Aggregate, event::EventEnvelope},
+    task::NewTask,
+};
 use std::{collections::HashMap, error, future::Future};
 
 /// The abstract central source for loading past events and committing new events.
@@ -28,12 +31,15 @@ where
     ) -> impl Future<Output = Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>>> + Send;
     /// Load aggregate at current state
     fn load_aggregate(&self, aggregate_id: &str) -> impl Future<Output = Result<Self::AC, AggregateError<A::Error>>> + Send;
-    /// Commit new events using the last committed aggregate context.
+    /// Commit new events and the tasks planned from them using the last committed aggregate context.
+    /// The tasks commit atomically with the events or the commit fails before writing anything; a task
+    /// never commits without an event. A store without an outbox refuses non-empty `tasks`.
     fn commit(
         &self,
         events: Vec<A::Event>,
         context: Self::AC,
         metadata: HashMap<String, String>,
+        tasks: &[NewTask],
     ) -> impl Future<Output = Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>>> + Send;
 }
 

@@ -99,6 +99,7 @@ impl EventStore<ProbeAggregate> for UnavailableStore {
         _: Vec<ProbeEvent>,
         _: ProbeContext,
         _: HashMap<String, String>,
+        _: &[cqrsx::task::NewTask],
     ) -> Result<Vec<EventEnvelope<ProbeAggregate>>, AggregateError<io::Error>> {
         Err(AggregateError::UnexpectedError(Box::new(io::Error::other("private_source"))))
     }
@@ -159,16 +160,16 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
     let config = PostgresCommandConfig::new(25, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap();
     let executor = PostgresCommandExecutor::<ProbeAggregate>::new(pool, config, ());
     assert!(matches!(
-        executor.execute("private_id", (), vec![]).await,
+        executor.execute("private_id", ()).await,
         Err(CommandGatewayError::Unavailable)
     ));
-    let executor = CommandExecutorCore::<ProbeAggregate, _>::new(
-        |_| CqrsFramework::new(UnavailableStore, ()),
+    let executor = CommandExecutorCore::new(
+        CqrsFramework::new(UnavailableStore, ()),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
     );
     assert!(matches!(
-        executor.execute("private_id", (), vec![]).await,
+        executor.execute("private_id", ()).await,
         Err(CommandGatewayError::Unavailable)
     ));
     let panic = tokio::spawn(async {

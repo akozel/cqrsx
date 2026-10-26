@@ -21,7 +21,6 @@ use cqrsx::{
         testing::mem_event_repository::MemEventRepository,
     },
     mongodb::{projection_checkpoints::MongoCheckpointStore, view_repository::MongoViewRepository},
-    task::NewTask,
 };
 use mongodb::Database;
 use serde::{Deserialize, Serialize};
@@ -217,13 +216,11 @@ where
 }
 
 type MemStore = PersistedEventStore<MemEventRepository, Ledger>;
-type MemFactory = Box<dyn Fn(Vec<NewTask>) -> CqrsFramework<Ledger, MemStore> + Send + Sync>;
 
 /// Commands over an in-memory journal that wake its processors.
-pub(crate) fn mem_ledgers(journal: &MemEventRepository, wakeup: &CommitWakeup) -> Arc<CommandExecutorCore<Ledger, MemFactory>> {
-    let journal = journal.clone();
-    let factory: MemFactory = Box::new(move |_| CqrsFramework::new(PersistedEventStore::new_event_store(journal.clone()), ()));
-    Arc::new(CommandExecutorCore::new(factory, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
+pub(crate) fn mem_ledgers(journal: &MemEventRepository, wakeup: &CommitWakeup) -> Arc<CommandExecutorCore<Ledger, MemStore>> {
+    let framework = CqrsFramework::new(PersistedEventStore::new_event_store(journal.clone()), ());
+    Arc::new(CommandExecutorCore::new(framework, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
 }
 
 /// The fold of the key's whole history, `None` without a history.

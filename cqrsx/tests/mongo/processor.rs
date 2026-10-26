@@ -23,7 +23,9 @@ async fn commit(journal: &MemEventRepository, wakeup: &CommitWakeup, keys: &[&st
     let executor = mem_ledgers(journal, wakeup);
     commit_all(keys, per_key, move |id, value| {
         let executor = executor.clone();
-        async move { executor.execute(&id, vec![value], vec![]).await.unwrap() }
+        async move {
+            executor.execute(&id, vec![value]).await.unwrap();
+        }
     })
     .await;
 }

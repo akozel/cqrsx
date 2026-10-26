@@ -36,7 +36,9 @@ impl TaskSchedule {
     }
 }
 
-/// Immutable command-bound work; preserve its generated ID across retries.
+/// A durable follow-up a command publishes with its events: a versioned payload, metadata, an initial
+/// schedule and a claim limit. Its id is random (v4); the core replaces it with an id derived from the
+/// command's causation when it plans the task (`Causation::task_id`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct NewTask {
     id: Uuid,
@@ -81,6 +83,12 @@ impl NewTask {
         if let Value::Object(metadata) = &mut self.metadata {
             metadata.extend(entries);
         }
+    }
+
+    /// The same task under `id`: the core gives every planned task the id derived from its command.
+    pub(crate) fn with_id(mut self, id: Uuid) -> Self {
+        self.id = id;
+        self
     }
 
     /// Total claims, including the initial claim and skipped invocations.
@@ -186,6 +194,37 @@ mod tests {
             const TASK_VERSION: i32 = 1;
         }
         assert_eq!(NewTask::new(Broken), Err(TaskValidationError::Serialization));
+    }
+
+    #[test]
+    fn with_id_changes_only_the_id() {
+        let task = NewTask::new(DummyTask { value: "runtime" })
+            .unwrap()
+            .with_metadata(json!({"trace": "test"}))
+            .unwrap()
+            .with_max_attempts(3)
+            .unwrap()
+            .scheduled(TaskSchedule::After(Duration::from_secs(2)))
+            .unwrap();
+        let id = Uuid::now_v7();
+        let renamed = task.clone().with_id(id);
+        assert_eq!(renamed.id(), id);
+        assert_eq!(
+            (
+                renamed.format(),
+                renamed.payload(),
+                renamed.metadata(),
+                renamed.schedule(),
+                renamed.max_attempts()
+            ),
+            (
+                task.format(),
+                task.payload(),
+                task.metadata(),
+                task.schedule(),
+                task.max_attempts()
+            )
+        );
     }
 
     #[test]

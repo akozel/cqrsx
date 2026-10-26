@@ -18,8 +18,7 @@ async fn outbox_snapshot_conflict_publishes_no_orphan_task() {
     let before = database_state(&db.pool).await;
     let task = new_task();
     let result = repo
-        .with_outbox(vec![task])
-        .persist::<Ledger>(
+        .persist_with_tasks::<Ledger>(
             &[event_for("a", 2, 20)],
             Some(SnapshotUpdate {
                 aggregate_id: "a".into(),
@@ -27,6 +26,7 @@ async fn outbox_snapshot_conflict_publishes_no_orphan_task() {
                 last_sequence: 3,
                 next_version: 3,
             }),
+            &[task],
         )
         .await;
     assert!(matches!(result, Err(PersistenceError::OptimisticLockError)));
@@ -59,9 +59,10 @@ async fn an_event_conflict_rolls_back_an_otherwise_valid_snapshot_update_and_tas
         .await
         .unwrap();
     let before = reader.get_snapshot::<TestAggregate>("rollback-snapshot").await.unwrap();
-    let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone()).with_outbox(vec![new_task()]);
+    let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    let repository_tasks = vec![new_task()];
     let result = repository
-        .persist::<TestAggregate>(
+        .persist_with_tasks::<TestAggregate>(
             &[event("rollback-snapshot", 2)],
             Some(SnapshotUpdate {
                 aggregate_id: "rollback-snapshot".into(),
@@ -69,6 +70,7 @@ async fn an_event_conflict_rolls_back_an_otherwise_valid_snapshot_update_and_tas
                 last_sequence: 2,
                 next_version: 2,
             }),
+            &repository_tasks,
         )
         .await;
     assert!(matches!(result, Err(PersistenceError::OptimisticLockError)));

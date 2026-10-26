@@ -193,6 +193,35 @@ mod configuration_tests {
     use super::*;
 
     #[tokio::test]
+    async fn a_repository_without_an_outbox_refuses_tasks_before_any_statement() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/unused")
+            .unwrap();
+        let repository = PostgresEventRepository::new(pool.clone());
+        let event = SerializedEvent::new(
+            "a".into(),
+            1,
+            "ledger".into(),
+            "delta".into(),
+            "1".into(),
+            serde_json::json!(1),
+            serde_json::json!({}),
+        );
+        let task = crate::task::NewTask::from_payload(
+            crate::task::format::TaskFormat::new("notify", 1).unwrap(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        let error = repository
+            .persist_with_tasks::<crate::cqrs::event_sink::tests::Ledger>(&[event], None, &[task])
+            .await
+            .unwrap_err();
+        assert!(error.to_string().contains("no outbox"), "{error}");
+        assert_eq!(pool.size(), 0, "no connection was opened");
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn custom_tables_reach_every_query() {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://localhost/unused")

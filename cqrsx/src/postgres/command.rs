@@ -1,18 +1,14 @@
 use crate::{
     cqrs::{
-        CqrsFramework,
+        CommitReport, CqrsFramework,
         aggregate::Aggregate,
         command::{
-            CommandExecutor, CommandGatewayError,
-            executor::{CommandExecutorCore, FrameworkFactory},
-            locks::LockLimits,
-            retry::AggregateConflictRetryPolicy,
-            wakeup::CommitWakeup,
+            CommandExecutor, CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits, planner::TaskPlanner,
+            retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup,
         },
         store::persisted::PersistedEventStore,
     },
     postgres::outbox::PostgresEventRepositoryWithOutbox,
-    task::NewTask,
 };
 use sqlx::PgPool;
 use std::{collections::HashMap, num::NonZeroUsize};
@@ -60,63 +56,49 @@ impl PostgresCommandConfig {
     }
 }
 
-/// Builds the framework of one command: the executor's repository bound to the command's outbox tasks, a
-/// snapshot-backed store over it and a clone of the services. The repository is built once, with the
-/// executor; a command gets a clone, which shares the pool and the SQL texts.
-struct PostgresFrameworkFactory<A: Aggregate> {
-    repository: PostgresEventRepositoryWithOutbox,
-    snapshot_interval: usize,
-    services: A::Services,
-}
+/// The store every command of a PostgreSQL executor runs against: one outbox repository, built with the
+/// executor (the shared pool and the SQL texts), under a snapshot-backed store.
+type PostgresStore<A> = PersistedEventStore<PostgresEventRepositoryWithOutbox, A>;
 
-impl<A: Aggregate> PostgresFrameworkFactory<A> {
-    fn repository(&self, tasks: Vec<NewTask>) -> PostgresEventRepositoryWithOutbox {
-        self.repository.clone().with_outbox(tasks)
-    }
-}
-
-impl<A> FrameworkFactory<A> for PostgresFrameworkFactory<A>
-where
-    A: Aggregate,
-    A::Services: Clone,
-{
-    type Store = PersistedEventStore<PostgresEventRepositoryWithOutbox, A>;
-
-    fn framework(&self, tasks: Vec<NewTask>) -> CqrsFramework<A, Self::Store> {
-        let store = PersistedEventStore::new_snapshot_store(self.repository(tasks), self.snapshot_interval);
-        CqrsFramework::new(store, self.services.clone())
-    }
-}
-
-/// The command executor over PostgreSQL: the [`CommandExecutorCore`] with a factory that binds every
-/// command's outbox tasks to a clone of the executor's repository (built once: the shared pool and the SQL
-/// texts), with a snapshot-backed store and a clone of the services. One per aggregate type and process: it
-/// owns the aggregate locks, so share it (e.g. in an
-/// `Arc`) instead of building a second one, and never build a core of your own next to it for the same
-/// aggregate type. Commands run through [`CommandExecutor`].
+/// The command executor over PostgreSQL: the [`CommandExecutorCore`] over one snapshot-backed store on an
+/// outbox repository, built once with the executor, and the services. One per aggregate type and process: it
+/// owns the aggregate locks, so share it (e.g. in an `Arc`) instead of building a second one, and never build
+/// a core of your own next to it for the same aggregate type. Commands run through [`CommandExecutor`].
 ///
-/// Construction performs no I/O. Accepted event, optional snapshot and explicit tasks commit atomically; at
-/// most one event is supported per command. Connection/timeout failures may have unknown commit outcomes
-/// and are not automatically retried. Command handling uses a working clone of committed state; snapshot
-/// creation applies accepted events to the original committed context, preserving append and increment
-/// semantics without requiring repeatable event application.
+/// Construction performs no I/O. The accepted event, an optional snapshot and the tasks the executor's
+/// [planner](Self::with_task_planner) planned from the decision commit atomically; at most one event is
+/// supported per command. Connection/timeout failures may have unknown commit outcomes and are not
+/// automatically retried. Command handling uses a working clone of committed state; snapshot creation applies
+/// accepted events to the original committed context, preserving append and increment semantics without
+/// requiring repeatable event application.
 ///
-/// For custom stores, use [`CommandExecutorCore::new`] with a framework factory instead.
+/// For custom stores, use [`CommandExecutorCore::new`] with a framework of your own instead.
 pub struct PostgresCommandExecutor<A: Aggregate> {
-    inner: CommandExecutorCore<A, PostgresFrameworkFactory<A>>,
+    inner: CommandExecutorCore<A, PostgresStore<A>>,
 }
 
 impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
     /// Stores the pool, the configuration and the services without I/O or environment access: the conflict
-    /// retry policy and the lock limits go to the executor, the snapshot interval to every command's store.
+    /// retry policy and the lock limits go to the executor, the snapshot interval to its store.
     pub fn new(pool: PgPool, config: PostgresCommandConfig, services: A::Services) -> Self {
-        let factory = PostgresFrameworkFactory {
-            repository: PostgresEventRepositoryWithOutbox::new(pool),
-            snapshot_interval: config.snapshot_interval(),
-            services,
-        };
+        let store =
+            PersistedEventStore::new_snapshot_store(PostgresEventRepositoryWithOutbox::new(pool), config.snapshot_interval());
         Self {
-            inner: CommandExecutorCore::new(factory, config.conflict_retry(), config.lock_limits()),
+            inner: CommandExecutorCore::new(
+                CqrsFramework::new(store, services),
+                config.conflict_retry(),
+                config.lock_limits(),
+            ),
+        }
+    }
+
+    /// Plans every decision's follow-up tasks through `planner`; they commit in the event's statement.
+    pub fn with_task_planner(self, planner: impl TaskPlanner<A> + 'static) -> Self
+    where
+        A::Command: Clone,
+    {
+        Self {
+            inner: self.inner.with_task_planner(planner),
         }
     }
 
@@ -131,7 +113,6 @@ impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
 impl<A> CommandExecutor<A> for PostgresCommandExecutor<A>
 where
     A: Aggregate + Clone + 'static,
-    A::Services: Clone,
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
 {
@@ -142,9 +123,8 @@ where
         aggregate_id: &str,
         command: A::Command,
         metadata: HashMap<String, String>,
-        tasks: Vec<NewTask>,
-    ) -> Result<(), CommandGatewayError<A::Error>> {
-        self.inner.execute_with_metadata(aggregate_id, command, metadata, tasks).await
+    ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+        self.inner.execute_with_metadata(aggregate_id, command, metadata).await
     }
 }
 
@@ -183,19 +163,15 @@ mod tests {
         fn apply(&mut self, _: Said) {}
     }
 
-    #[tokio::test]
-    async fn every_command_reads_with_the_sql_texts_of_its_executor() {
-        let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://nobody@localhost/none")
-            .unwrap();
-        let factory = PostgresFrameworkFactory::<Quiet> {
-            repository: PostgresEventRepositoryWithOutbox::new(pool),
-            snapshot_interval: 1,
-            services: (),
-        };
-        let (first, second) = (factory.repository(Vec::new()), factory.repository(Vec::new()));
-        assert!(first.shares_queries_with(&second));
-        assert!(first.shares_queries_with(&factory.repository));
+    struct NoTasks;
+
+    impl TaskPlanner<Quiet> for NoTasks {
+        fn plan(
+            &self,
+            _: &crate::cqrs::command::planner::Decision<'_, Quiet>,
+        ) -> Result<Vec<crate::task::NewTask>, crate::cqrs::command::planner::TaskPlanError> {
+            Ok(Vec::new())
+        }
     }
 
     #[tokio::test]
@@ -205,7 +181,9 @@ mod tests {
             .unwrap();
         let limits = LockLimits::new(Duration::from_millis(5), 2).unwrap();
         let config = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), limits).unwrap();
-        let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ()).with_commit_wakeup(CommitWakeup::new());
+        let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ())
+            .with_task_planner(NoTasks)
+            .with_commit_wakeup(CommitWakeup::new());
         assert_eq!(executor.inner.lock_limits(), limits);
     }
 

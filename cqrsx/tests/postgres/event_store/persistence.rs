@@ -89,8 +89,7 @@ async fn statement_and_deferred_commit_failures_restore_full_database_state() {
         let id = snapshot.as_ref().map_or("deferred", |s| s.aggregate_id.as_str());
         let sequence = if id == "existing" { 2 } else { 1 };
         let result = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
-            .with_outbox(vec![new_task()])
-            .persist::<Ledger>(&[event_for(id, sequence, 3)], snapshot)
+            .persist_with_tasks::<Ledger>(&[event_for(id, sequence, 3)], snapshot, &[new_task()])
             .await;
         let Err(PersistenceError::UnknownError(error)) = result else {
             panic!("deferred COMMIT failure must remain technical")

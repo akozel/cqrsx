@@ -91,8 +91,7 @@ pub(super) fn worker_event(id: &str) -> SerializedEvent {
 pub(super) async fn enqueue(pool: &PgPool, tasks: Vec<NewTask>) {
     let id = Uuid::new_v4().to_string();
     PostgresEventRepositoryWithOutbox::new(pool.clone())
-        .with_outbox(tasks)
-        .persist::<TestAggregate>(&[worker_event(&id)], None)
+        .persist_with_tasks::<TestAggregate>(&[worker_event(&id)], None, &tasks)
         .await
         .unwrap();
 }

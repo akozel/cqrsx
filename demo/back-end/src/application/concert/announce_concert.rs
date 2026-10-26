@@ -7,20 +7,16 @@ use crate::{
         concert::{Concert, ConcertError, commands::AnnounceConcert},
     },
 };
-use cqrsx::cqrs::{command::CommandExecutor, store::EventStore};
+use cqrsx::cqrs::command::CommandExecutor;
 
-impl<E, S> ConcertApp<E, S>
-where
-    E: CommandExecutor<Concert>,
-    S: EventStore<Concert>,
-{
+impl<E: CommandExecutor<Concert>> ConcertApp<E> {
     pub async fn announce_concert(
         &self,
         concert_id: &ConcertId,
         command: AnnounceConcert,
         metadata: CommandMetadata,
     ) -> Executed<ConcertError> {
-        self.execute(concert_id, command.into(), metadata, vec![]).await
+        self.execute(concert_id, command.into(), metadata).await
     }
 }
 
@@ -41,7 +37,7 @@ mod tests {
         let executed = h.app.announce_concert(&concert_id(), announce(), CommandMetadata::ui()).await;
         assert!(executed.outcome.is_accepted());
         assert!(executed.tasks.is_empty());
-        assert!(h.executor.take_bound_tasks().is_empty());
+        assert!(h.executor.take_published_tasks().is_empty());
         let log = h.activity();
         assert_eq!(log.len(), 1);
         assert_eq!(log[0].kind, "command.accepted");

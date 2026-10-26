@@ -172,8 +172,7 @@ pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::D
 /// - `sequence`
 ///
 /// Thus an `EventEnvelope` provides a uniqueness value along with an event `payload` and
-/// `metadata`.
-#[derive(Debug)]
+/// `metadata`. `Clone`, `Debug` and `PartialEq` need only the event's, not the aggregate's.
 pub struct EventEnvelope<A>
 where
     A: Aggregate,
@@ -196,5 +195,23 @@ impl<A: Aggregate> Clone for EventEnvelope<A> {
             payload: self.payload.clone(),
             metadata: self.metadata.clone(),
         }
+    }
+}
+
+impl<A: Aggregate> fmt::Debug for EventEnvelope<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventEnvelope")
+            .field("aggregate_id", &self.aggregate_id)
+            .field("sequence", &self.sequence)
+            .field("payload", &self.payload)
+            .field("metadata", &self.metadata)
+            .finish()
+    }
+}
+
+impl<A: Aggregate> PartialEq for EventEnvelope<A> {
+    fn eq(&self, other: &Self) -> bool {
+        (&self.aggregate_id, self.sequence, &self.payload, &self.metadata)
+            == (&other.aggregate_id, other.sequence, &other.payload, &other.metadata)
     }
 }

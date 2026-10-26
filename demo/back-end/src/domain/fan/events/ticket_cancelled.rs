@@ -1,6 +1,6 @@
 //! Fact: a ticket in the fan's ledger is cancelled. Continues the
 //! [refund](crate::application::workflows::refund) workflow through the `encore_issue_refund`
-//! task published atomically with this event.
+//! task the workflow plans from this event and commits with it.
 use crate::domain::{ConcertId, shared::venue::SeatId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

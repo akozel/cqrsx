@@ -13,29 +13,23 @@ use cqrsx::{
     },
     mongodb::projection_checkpoints::PROJECTION_CHECKPOINTS_COLLECTION,
     postgres::{event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox},
-    task::NewTask,
 };
 use mongodb::bson::Document;
 use sqlx::PgPool;
 use std::sync::Arc;
 
-type Store = PersistedEventStore<PostgresEventRepositoryWithOutbox, Ledger>;
-type Factory = Box<dyn Fn(Vec<NewTask>) -> CqrsFramework<Ledger, Store> + Send + Sync>;
-
 /// Commits `per_key` commands on every key through PostgreSQL.
 async fn commit(pool: &PgPool, wakeup: &CommitWakeup, keys: &[&str], per_key: i32) {
-    let factory: Factory = Box::new({
-        let pool = pool.clone();
-        move |tasks| {
-            let repository = PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks);
-            CqrsFramework::new(PersistedEventStore::new_event_store(repository), ())
-        }
-    });
-    let executor =
-        Arc::new(CommandExecutorCore::new(factory, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()));
+    let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
+    let framework = CqrsFramework::new(PersistedEventStore::<_, Ledger>::new_event_store(repository), ());
+    let executor = Arc::new(
+        CommandExecutorCore::new(framework, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()),
+    );
     commit_all(keys, per_key, move |id, value| {
         let executor = executor.clone();
-        async move { executor.execute(&id, vec![value], vec![]).await.unwrap() }
+        async move {
+            executor.execute(&id, vec![value]).await.unwrap();
+        }
     })
     .await;
 }

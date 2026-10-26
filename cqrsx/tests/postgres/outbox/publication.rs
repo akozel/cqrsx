@@ -8,9 +8,10 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
     second = second
         .with_metadata(json!({"correlation_id": "delivery", "custom": {"worker": true}}))
         .unwrap();
-    let repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone()).with_outbox(vec![first.clone(), second.clone()]);
+    let repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    let repo_tasks = vec![first.clone(), second.clone()];
     let events = [event("batch", 1)];
-    repo.persist::<TestAggregate>(
+    repo.persist_with_tasks::<TestAggregate>(
         &events,
         Some(SnapshotUpdate {
             aggregate_id: "batch".into(),
@@ -18,6 +19,7 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
             last_sequence: 1,
             next_version: 1,
         }),
+        &repo_tasks,
     )
     .await
     .unwrap();
@@ -42,18 +44,19 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
         .execute(&db.pool)
         .await
         .unwrap();
-    let bad_repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
-        .with_outbox(vec![new_task().with_max_attempts(1).unwrap(), invalid]);
+    let bad_repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    let bad_repo_tasks = vec![new_task().with_max_attempts(1).unwrap(), invalid];
     assert!(
         bad_repo
-            .persist::<TestAggregate>(
+            .persist_with_tasks::<TestAggregate>(
                 &[event("batch", 2)],
                 Some(SnapshotUpdate {
                     aggregate_id: "batch".into(),
                     payload: json!({"state": "bad"}),
                     last_sequence: 2,
                     next_version: 2
-                })
+                }),
+                &bad_repo_tasks
             )
             .await
             .is_err()
@@ -72,25 +75,28 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
         .await
         .unwrap();
     assert_eq!(count, 2);
-    let fresh = PostgresEventRepositoryWithOutbox::new(db.pool.clone()).with_outbox(vec![new_task()]);
+    let fresh = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    let fresh_tasks = vec![new_task()];
     assert!(matches!(
         fresh
-            .persist::<TestAggregate>(
+            .persist_with_tasks::<TestAggregate>(
                 &[event("batch", 2)],
                 Some(SnapshotUpdate {
                     aggregate_id: "batch".into(),
                     payload: json!({}),
                     last_sequence: 4,
                     next_version: 4
-                })
+                }),
+                &fresh_tasks
             )
             .await,
         Err(PersistenceError::OptimisticLockError)
     ));
     let next_task = new_task();
-    let next_repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone()).with_outbox(vec![next_task.clone()]);
+    let next_repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+    let next_repo_tasks = vec![next_task.clone()];
     next_repo
-        .persist::<TestAggregate>(
+        .persist_with_tasks::<TestAggregate>(
             &[event("batch", 2)],
             Some(SnapshotUpdate {
                 aggregate_id: "batch".into(),
@@ -98,6 +104,7 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
                 last_sequence: 2,
                 next_version: 2,
             }),
+            &next_repo_tasks,
         )
         .await
         .unwrap();
@@ -111,12 +118,18 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
             .aggregate,
         json!({"state": "next"})
     );
-    assert!(fresh.persist::<TestAggregate>(&[], None).await.is_err());
+    assert!(
+        fresh
+            .persist_with_tasks::<TestAggregate>(&[], None, &fresh_tasks)
+            .await
+            .is_err()
+    );
     assert!(new_task().scheduled(TaskSchedule::After(Duration::MAX)).is_err());
     // A duplicate task ID is not an optimistic aggregate conflict. The whole
     // statement still rolls its otherwise valid new event back.
     assert!(matches!(
-        repo.persist::<TestAggregate>(&[event("duplicate-task", 1)], None).await,
+        repo.persist_with_tasks::<TestAggregate>(&[event("duplicate-task", 1)], None, &repo_tasks)
+            .await,
         Err(PersistenceError::UnknownError(_))
     ));
     assert!(repo.get_events::<TestAggregate>("duplicate-task").await.unwrap().is_empty());
@@ -289,8 +302,7 @@ async fn rejects_multi_event_snapshot_only_and_tasks_without_event_before_writin
     );
     assert!(
         PostgresEventRepositoryWithOutbox::new(database.pool.clone())
-            .with_outbox(vec![new_task()])
-            .persist::<StreamAggregate>(&[], None)
+            .persist_with_tasks::<StreamAggregate>(&[], None, &[new_task()])
             .await
             .is_err()
     );

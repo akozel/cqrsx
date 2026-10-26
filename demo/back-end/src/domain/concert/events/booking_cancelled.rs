@@ -1,6 +1,6 @@
 //! Fact: a booking has been given back and the seat is free again. Starts the
 //! [refund](crate::application::workflows::refund) workflow through the
-//! `encore_record_cancellation` task published atomically with this event.
+//! `encore_record_cancellation` task the workflow plans from this event and commits with it.
 use crate::domain::{FanId, shared::venue::SeatId};
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

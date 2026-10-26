@@ -1,13 +1,16 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{
-    aggregate::Aggregate,
-    store::{
-        PersistenceError,
-        feed::{FeedEntry, Position},
-        serialized_event::SerializedEvent,
-        snapshot::SerializedSnapshot,
+use crate::{
+    cqrs::{
+        aggregate::Aggregate,
+        store::{
+            PersistenceError,
+            feed::{FeedEntry, Position},
+            serialized_event::SerializedEvent,
+            snapshot::{SerializedSnapshot, SnapshotUpdate},
+        },
     },
+    task::NewTask,
 };
 use std::future::Future;
 
@@ -40,6 +43,25 @@ pub trait PersistedEventRepository: Send + Sync {
         events: &[SerializedEvent],
         snapshot_update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
     ) -> impl Future<Output = Result<(), PersistenceError>> + Send;
+
+    /// Commits the events, the snapshot and the tasks planned from them in one transaction. A repository
+    /// with an outbox overrides it; this default has none: it refuses non-empty `tasks` before any I/O and
+    /// otherwise is [`persist`](Self::persist).
+    fn persist_with_tasks<A: Aggregate>(
+        &self,
+        events: &[SerializedEvent],
+        snapshot_update: Option<SnapshotUpdate>,
+        tasks: &[NewTask],
+    ) -> impl Future<Output = Result<(), PersistenceError>> + Send {
+        async move {
+            if !tasks.is_empty() {
+                return Err(PersistenceError::UnknownError(
+                    "the event repository has no outbox: its commits cannot publish tasks".into(),
+                ));
+            }
+            self.persist::<A>(events, snapshot_update).await
+        }
+    }
 
     /// The events of aggregate type `A` after `after` in the order of [`Position`], taken from the
     /// transactions that had finished when the read began: at least `limit` events when that many

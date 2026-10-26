@@ -794,3 +794,20 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   25 and 10 % within noise of each other (−9…−11 %); 25 % keeps a quarter of the buffer for the workers while the
   claim runs. The hot key is unchanged (8 workers leave no backlog to batch). A host slowdown every ~5 minutes hit
   the same variant in every pass of a fixed-order series; shuffle the order in future series.
+- **2026-10-26, epic 04 ticket 20 (tasks from the aggregate's decision).** A cqrsx component replaces ticket 11:
+  `cqrs::command::planner::{Decision, TaskPlanner, TaskPlanError}`. An executor registers one planner per aggregate
+  type (`with_task_planner`; tuples of two to eight planners are planners). The core calls it after `handle` on
+  every attempt with events, under the aggregate's lock, stamps the command's causation on every task, derives the
+  task id (UUID v5 of the aggregate, the command id, the task format and its ordinal; random without causation)
+  and commits the tasks with that attempt's events. `execute` lost its `tasks` argument and returns
+  `CommitReport { events, tasks }`; a planner error is `Unavailable`, logged as `task_plan`. `EventStore::commit`
+  takes the tasks, a repository without an outbox refuses them (`persist_with_tasks`), `FrameworkFactory` and
+  `with_outbox` are gone, `MemEventRepository` keeps an in-memory outbox. In the demo the processes
+  `TicketDelivery` and `Refund` plan for `Concert` and `Fan`; the cancellation no longer reads the concert before
+  the command (`history_store` removed). The stand counts aggregate loads and commits (`loads/commit`). Measured
+  with `REPEAT=5` in two series of 30 runs: on the hot key loads per commit 1.29 → 1.00, statements, transactions
+  and packets per command −10…−11 %, PostgreSQL CPU per command −3…−5 %, back-end −6…−10 %, accepted/s unchanged
+  (WAL-bound); the drain control within noise. The first series was meant to be shuffled, but
+  `shuf --random-source` with a repeated seed text gave every pass the same order; its −21 % MongoDB operations
+  per command shrank to −8 %, within noise, in the properly shuffled second series. Coverage 97.67 % (workspace)
+  and 97.65 % (`cqrsx`).

@@ -27,7 +27,7 @@ async fn framework_test() {
         .unwrap();
 
     assert_eq!(1, event_store.load_events(&id).await.unwrap().len());
-    assert_eq!(committed.iter().map(|e| e.sequence).collect::<Vec<_>>(), [1]);
+    assert_eq!(committed.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), [1]);
 
     let test = "TEST_A";
     let id = uuid.clone();
@@ -41,7 +41,7 @@ async fn framework_test() {
         .await
         .unwrap();
 
-    assert_eq!(committed.iter().map(|e| e.sequence).collect::<Vec<_>>(), [2]);
+    assert_eq!(committed.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), [2]);
     let stored_event_count = event_store.load_events(uuid.clone().as_str()).await.unwrap().len();
     assert_eq!(2, stored_event_count);
 
@@ -115,6 +115,7 @@ mod contracts {
             events: Vec<Delta>,
             mut context: Self::AC,
             metadata: HashMap<String, String>,
+            tasks: &[NewTask],
         ) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
             self.calls.lock().unwrap().push("commit");
             // Commit receives the unchanged committed state.
@@ -122,26 +123,18 @@ mod contracts {
             if self.failure == Some("commit") {
                 return Err(AggregateError::AggregateConflict);
             }
-            self.inner.commit(events, context, metadata).await
+            self.inner.commit(events, context, metadata, tasks).await
         }
     }
     /// An executor over `store` with one attempt per command that wakes `wakeup` after a commit with events.
-    fn executor<S>(
-        store: S,
-        calls: &Calls,
-        wakeup: &CommitWakeup,
-    ) -> CommandExecutorCore<Ledger, impl Fn(Vec<NewTask>) -> CqrsFramework<Ledger, S> + Send + Sync>
+    fn executor<S>(store: S, calls: &Calls, wakeup: &CommitWakeup) -> CommandExecutorCore<Ledger, S>
     where
-        S: EventStore<Ledger> + Clone + Send + Sync,
+        S: EventStore<Ledger> + Send + Sync,
     {
         let services = Services(calls.clone());
         let one_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-        CommandExecutorCore::new(
-            move |_| CqrsFramework::new(store.clone(), services.clone()),
-            one_attempt,
-            LockLimits::default(),
-        )
-        .with_commit_wakeup(wakeup.clone())
+        CommandExecutorCore::new(CqrsFramework::new(store, services), one_attempt, LockLimits::default())
+            .with_commit_wakeup(wakeup.clone())
     }
 
     #[tokio::test]
@@ -157,7 +150,8 @@ mod contracts {
         let events = framework
             .execute_with_metadata("account", Command::Adjust(vec![5, -3]), metadata.clone())
             .await
-            .unwrap();
+            .unwrap()
+            .events;
         assert_eq!(*calls.lock().unwrap(), ["load", "handle", "commit"]);
         assert_eq!(events.len(), 2);
         for (i, event) in events.iter().enumerate() {
@@ -189,11 +183,11 @@ mod contracts {
             let mut woken = pin!(wakeup.wait());
             assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
             let empty = matches!(&command, Command::Adjust(v) if v.is_empty());
-            let result = executor.execute("account", command, vec![]).await;
+            let result = executor.execute("account", command).await;
             match failure {
                 Some("load") => assert_eq!(result, Err(CommandGatewayError::Unavailable)),
                 Some("commit") => assert_eq!(result, Err(CommandGatewayError::Conflict)),
-                _ if empty => assert_eq!(result, Ok(())),
+                _ if empty => assert_eq!(result, Ok(Default::default())),
                 _ => assert_eq!(result, Err(CommandGatewayError::Domain(Rejected))),
             }
             assert_eq!(*calls.lock().unwrap(), expected);

@@ -1,16 +1,19 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{
-    AggregateError,
-    aggregate::Aggregate,
-    event::EventEnvelope,
-    store::{
-        AggregateContext, EventStore, PersistenceError,
-        repository::PersistedEventRepository,
-        serialized_event::{SerializedEvent, deserialize_events, serialize_events},
-        snapshot::{SerializedSnapshot, SnapshotUpdate},
-        upcaster::EventUpcaster,
+use crate::{
+    cqrs::{
+        AggregateError,
+        aggregate::Aggregate,
+        event::EventEnvelope,
+        store::{
+            AggregateContext, EventStore, PersistenceError,
+            repository::PersistedEventRepository,
+            serialized_event::{SerializedEvent, deserialize_events, serialize_events},
+            snapshot::{SerializedSnapshot, SnapshotUpdate},
+            upcaster::EventUpcaster,
+        },
     },
+    task::NewTask,
 };
 use std::{collections::HashMap, marker::PhantomData, sync::Arc};
 
@@ -489,6 +492,7 @@ where
         events: Vec<A::Event>,
         context: EventStoreAggregateContext<A>,
         metadata: HashMap<String, String>,
+        tasks: &[NewTask],
     ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
         let aggregate_id = context.aggregate_id.clone();
         let last_sequence = context.current_sequence;
@@ -510,7 +514,9 @@ where
         };
         let wrapped_events = Self::wrap_events(&aggregate_id, last_sequence, events, metadata);
         let serialized_events: Vec<SerializedEvent> = serialize_events(&wrapped_events)?;
-        self.repo.persist::<A>(&serialized_events, snapshot_update).await?;
+        self.repo
+            .persist_with_tasks::<A>(&serialized_events, snapshot_update, tasks)
+            .await?;
         Ok(wrapped_events)
     }
 }
@@ -909,6 +915,7 @@ pub(in crate::cqrs) mod tests {
                     ],
                     context,
                     HashMap::default(),
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -1046,7 +1053,7 @@ pub(in crate::cqrs) mod tests {
                 snapshot_version: Some(0),
             };
             let event_envelopes = store
-                .commit(vec![TestEvents::Started], context, HashMap::default())
+                .commit(vec![TestEvents::Started], context, HashMap::default(), &[])
                 .await
                 .unwrap();
             assert_eq!(1, event_envelopes.len());
@@ -1073,7 +1080,7 @@ pub(in crate::cqrs) mod tests {
                 snapshot_version: Some(1),
             };
             let event_envelopes = store
-                .commit(vec![TestEvents::SomethingWasDone], context, HashMap::default())
+                .commit(vec![TestEvents::SomethingWasDone], context, HashMap::default(), &[])
                 .await
                 .unwrap();
             assert_eq!(1, event_envelopes.len());
@@ -1114,6 +1121,7 @@ pub(in crate::cqrs) mod tests {
                     ],
                     context,
                     HashMap::default(),
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -1152,6 +1160,7 @@ pub(in crate::cqrs) mod tests {
                     vec![TestEvents::SomethingWasDone, TestEvents::SomethingWasDone],
                     context,
                     HashMap::default(),
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -1198,6 +1207,7 @@ pub(in crate::cqrs) mod tests {
                     ],
                     context,
                     HashMap::default(),
+                    &[],
                 )
                 .await
                 .unwrap();
@@ -1209,6 +1219,27 @@ pub(in crate::cqrs) mod tests {
             assert_eq!(TEST_AGGREGATE_ID, last_event.aggregate_id);
             assert_eq!(TestEvents::SomethingWasDone, last_event.payload);
         }
+    }
+
+    #[tokio::test]
+    async fn a_repository_without_an_outbox_refuses_tasks_before_writing_anything() {
+        let repo = MockRepo::with_commit(Box::new(|_, _| panic!("a refused commit must not persist")));
+        let store = PersistedEventStore::<MockRepo, TestAggregate>::new_event_store(repo);
+        let task = crate::task::NewTask::from_payload(
+            crate::task::format::TaskFormat::new("notify", 1).unwrap(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        let context = super::EventStoreAggregateContext::empty(TEST_AGGREGATE_ID);
+        let result =
+            crate::cqrs::store::EventStore::commit(&store, vec![TestEvents::Started], context, HashMap::new(), &[task]).await;
+        let Err(crate::cqrs::AggregateError::UnexpectedError(error)) = result else {
+            panic!("a repository without an outbox refuses tasks");
+        };
+        assert_eq!(
+            error.to_string(),
+            "the event repository has no outbox: its commits cannot publish tasks"
+        );
     }
 
     use super::*;
@@ -1245,7 +1276,7 @@ mod contract_tests {
         ));
         let context = EventStoreAggregateContext::empty("a");
         assert!(
-            matches!(store.commit(vec![TestEvents::Started], context, HashMap::new()).await, Err(AggregateError::DatabaseConnectionError(e)) if e.to_string() == "persist failed")
+            matches!(store.commit(vec![TestEvents::Started], context, HashMap::new(), &[]).await, Err(AggregateError::DatabaseConnectionError(e)) if e.to_string() == "persist failed")
         );
         let store = PersistedEventStore::<_, TestAggregate>::new_snapshot_store(
             MockRepo::with_last_events(Err(PersistenceError::UnknownError("tail failed".into())), Ok(None)),
@@ -1290,6 +1321,7 @@ mod contract_tests {
                 vec![TestEvents::Started, TestEvents::SomethingWasDone],
                 context,
                 metadata.clone(),
+                &[],
             )
             .await
             .unwrap();
@@ -1367,7 +1399,7 @@ mod serialization_failure_tests {
                 snapshot_version: None,
             };
             let error = store
-                .commit(vec![Event(!snapshot)], context, HashMap::new())
+                .commit(vec![Event(!snapshot)], context, HashMap::new(), &[])
                 .await
                 .unwrap_err();
             assert!(matches!(error, AggregateError::DeserializationError(_)));
@@ -1386,7 +1418,7 @@ mod serialization_failure_tests {
                 snapshot_version: version,
             };
             let error = store
-                .commit(vec![GuardedEvent; count], context, HashMap::new())
+                .commit(vec![GuardedEvent; count], context, HashMap::new(), &[])
                 .await
                 .unwrap_err();
             assert!(matches!(error, AggregateError::UnexpectedError(_)));
@@ -1417,7 +1449,7 @@ mod serialization_failure_tests {
             };
             assert_eq!(
                 store
-                    .commit(vec![TestEvents::SomethingWasDone], context, HashMap::new())
+                    .commit(vec![TestEvents::SomethingWasDone], context, HashMap::new(), &[])
                     .await
                     .unwrap()[0]
                     .sequence,

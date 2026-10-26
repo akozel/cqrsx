@@ -135,8 +135,7 @@ async fn stress_snapshot_cas_losers_roll_back_distinct_events() {
                         });
                         let result = if outbox {
                             PostgresEventRepositoryWithOutbox::new(pool)
-                                .with_outbox(vec![new_task()])
-                                .persist::<Ledger>(&events, snapshot)
+                                .persist_with_tasks::<Ledger>(&events, snapshot, &[new_task()])
                                 .await
                         } else {
                             PostgresEventRepository::new(pool).persist::<Ledger>(&events, snapshot).await

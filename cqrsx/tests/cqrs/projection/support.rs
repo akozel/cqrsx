@@ -34,7 +34,6 @@ use cqrsx::cqrs::{
         mem_view_repository::MemViewRepository,
     },
 };
-use cqrsx::task::NewTask;
 use serde::{Deserialize, Serialize};
 use std::{
     collections::{HashMap, HashSet},
@@ -591,7 +590,7 @@ impl ProjectionObserver for Recording {
     }
 }
 
-type Factory = Box<dyn Fn(Vec<NewTask>) -> CqrsFramework<Ledger, PersistedEventStore<MemEventRepository, Ledger>> + Send + Sync>;
+type Store = PersistedEventStore<MemEventRepository, Ledger>;
 
 /// A running processor.
 pub(crate) struct Node {
@@ -623,7 +622,7 @@ pub(crate) struct Harness {
     pub(crate) wakeup: CommitWakeup,
     pub(crate) observer: Arc<Recording>,
     pub(crate) config: ProcessorConfig,
-    executor: Arc<CommandExecutorCore<Ledger, Factory>>,
+    executor: Arc<CommandExecutorCore<Ledger, Store>>,
 }
 
 pub(crate) fn config() -> ProcessorConfig {
@@ -646,12 +645,9 @@ impl Harness {
     pub(crate) fn with_config(config: ProcessorConfig) -> Self {
         let journal = MemEventRepository::default();
         let wakeup = CommitWakeup::new();
-        let factory: Factory = Box::new({
-            let journal = journal.clone();
-            move |_| CqrsFramework::new(PersistedEventStore::new_event_store(journal.clone()), Services::default())
-        });
+        let framework = CqrsFramework::new(PersistedEventStore::new_event_store(journal.clone()), Services::default());
         let executor = Arc::new(
-            CommandExecutorCore::new(factory, AggregateConflictRetryPolicy::default(), LockLimits::default())
+            CommandExecutorCore::new(framework, AggregateConflictRetryPolicy::default(), LockLimits::default())
                 .with_commit_wakeup(wakeup.clone()),
         );
         Self {
@@ -716,15 +712,12 @@ impl Harness {
     }
 
     pub(crate) async fn executor_execute(&self, key: &str, command: Command) {
-        self.executor.execute(key, command, vec![]).await.unwrap();
+        self.executor.execute(key, command).await.unwrap();
     }
 
     /// Commits `command` of `key` with `metadata` on every event, through the command path.
     pub(crate) async fn execute_with_metadata(&self, key: &str, command: Command, metadata: HashMap<String, String>) {
-        self.executor
-            .execute_with_metadata(key, command, metadata, vec![])
-            .await
-            .unwrap();
+        self.executor.execute_with_metadata(key, command, metadata).await.unwrap();
     }
 
     /// The fold of the key's whole history, `None` without a history.

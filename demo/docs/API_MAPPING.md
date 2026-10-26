@@ -103,7 +103,7 @@
 
 | # | Вопрос | Факт | Решение | Поведение | Правка плана |
 |---|---|---|---|---|---|
-| U1 | привязка задач | prebuilt `Vec<NewTask>` в `execute(id, cmd, tasks)`; пишутся с `aggregate_type/id/sequence` события | как в плане; `task_id` генерирует библиотека (v4), стабилен при retry | = | уточнение |
+| U1 | привязка задач | prebuilt `Vec<NewTask>` в `execute(id, cmd, tasks)`; пишутся с `aggregate_type/id/sequence` события | как в плане; `task_id` генерирует библиотека (v4), стабилен при retry. С 04/20 задачи планируются из решения агрегата, `task_id` — UUID v5 из id команды | = | уточнение |
 | U2 | несколько событий | **нельзя** с outbox-репозиторием (503) | убрать `ConcertSoldOut`; `sold_out` производное; страховочный тест | **меняется** | КТ-1 |
 | U3 | метаданные | есть во framework, нет в порту executor | вариант A: декоратор `EventStore` + executor на запрос | = при A | КТ-2 |
 | U4 | view-id из события | нет: `view_id == aggregate_id` | свой `EventHandler` `FanWalletsProjection` (как в плане) | = | уточнение |
@@ -136,6 +136,8 @@
 **Решение.** Как в плане: application-слой строит задачи до выполнения команды. `booking_id`/`cancellation_id` = `command_id` (поле payload), `task_id` ≠ `booking_id`. Связь «событие ↔ задача» в UI есть и без метаданных: строка outbox несёт `aggregate_id` + `aggregate_sequence`. `AnnounceConcert` → `tasks = []` обязательно.
 
 **Правка плана.** §2.7: добавить, что `task_id` генерирует библиотека; §6.4: `tasks` в ответе — `TaskFormat` отображается как `"{type} v{version}"` (`task/format.rs:46`).
+
+> 04/20 (2026-10-26): задачи больше не передаются в `execute`. Исполнитель вызывает планировщик задач (`cqrs::command::planner::TaskPlanner`) после `handle` на каждой попытке, под блокировкой агрегата, и коммитит его задачи вместе с событиями этой попытки (`PersistedEventRepository::persist_with_tasks`). `with_outbox` и `FrameworkFactory` удалены, ответ исполнителя — `CommitReport` (события и задачи). Причинность из метаданных ядро штампует само и выводит из неё `task_id` (UUID v5). Отмена больше не читает концерт до команды (PLAN.md D-25).
 
 ### U2. Несколько событий в одном коммите — см. КТ-1
 
@@ -176,6 +178,8 @@ let executor = CommandExecutorCore::<Concert, _>::new(move |tasks| CqrsFramework
     handlers(), services.clone()), config.conflict_retry());
 executor.execute(&concert_id, command, tasks).await   // -> Result<(), CommandGatewayError<ConcertError>>
 ```
+
+Эскиз — на API до 04/20: фабрики фреймворка и `with_outbox` удалены, задачи планирует `TaskPlanner` исполнителя.
 
 Ограничения, которые нужно соблюсти: `A: Aggregate + Clone + 'static`, `A::Command: Clone + Send + 'static`,
 `A::Error: Send + 'static`, `ES: EventStore<A> + 'static`, `ES::AC: Send` (`cqrs/command/executor.rs:33-48, 76-83`).
@@ -645,7 +649,7 @@ SELECT now();
 | зависимость | `cqrsx = { path = "../cqrsx", features = ["host", "logging"] }` | U11 |
 | доп. крейты | `async-trait 0.1`, `sqlx 0.8`, `tokio-util 0.7`, `rand 0.10`, `uuid 1 (v4, v7, serde)`, `chrono 0.4 (serde)` | U11, D1 |
 | снапшоты | `PostgresCommandConfig::new(ENCORE_SNAPSHOT_EVERY=10, AggregateConflictRetryPolicy::default())` | U12, U16 |
-| задачи | `NewTask::new(payload)?.with_metadata(json!({command_id, correlation_id, concert_id, recorded_at}))?.with_max_attempts(ENCORE_TASK_MAX_ATTEMPTS=6)?` | U1, U7 |
+| задачи | процессы `workflows::concert_tasks(n)` / `fan_tasks(n)` планируют `NewTask::new(payload)?.with_metadata(json!({concert_id, fan_id}))?.with_max_attempts(ENCORE_TASK_MAX_ATTEMPTS=6)?`; ключи причинности и `task_id` добавляет ядро | U1, U7, 04/20 |
 | runtime | C=2, Q=2, poll 300 мс, H=5 с, L=30 с, S=3000 мс, statement_timeout 4000 мс (по умолчанию) | U10 |
 | retry обработчика | `retry_after = min(1 с · 2^(n−1), 8 с)` (`ENCORE_TASK_RETRY_BASE_MS`, `ENCORE_TASK_RETRY_MAX_MS`) | U6 |
 | логи | `LoggingConfig::from_env()`, `RUST_LOG=info` (один уровень) | U10 |

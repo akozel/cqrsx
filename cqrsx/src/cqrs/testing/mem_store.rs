@@ -1,10 +1,13 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{
-    AggregateError,
-    aggregate::Aggregate,
-    event::EventEnvelope,
-    store::{AggregateContext, EventStore},
+use crate::{
+    cqrs::{
+        AggregateError,
+        aggregate::Aggregate,
+        event::EventEnvelope,
+        store::{AggregateContext, EventStore},
+    },
+    task::NewTask,
 };
 use std::{
     collections::HashMap,
@@ -266,12 +269,20 @@ impl<A: Aggregate> EventStore<A> for MemStore<A> {
         })
     }
 
+    /// Accepts tasks with events and keeps nothing of them (a `MemEventRepository` keeps an outbox); tasks
+    /// without an event are refused, as by the PostgreSQL outbox.
     async fn commit(
         &self,
         events: Vec<A::Event>,
         context: MemStoreAggregateContext<A>,
         metadata: HashMap<String, String>,
+        tasks: &[NewTask],
     ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
+        if events.is_empty() && !tasks.is_empty() {
+            return Err(AggregateError::UnexpectedError(
+                "outbox tasks require a committed domain event".into(),
+            ));
+        }
         let aggregate_id = context.aggregate_id;
         let current_sequence = context.current_sequence;
         crate::cqrs::store::checked_counter_add(current_sequence, events.len())?;
@@ -447,7 +458,7 @@ mod tests {
                 current_sequence: sequence,
             };
             assert!(matches!(
-                store.commit(vec![Delta(1); count], context, HashMap::new()).await,
+                store.commit(vec![Delta(1); count], context, HashMap::new(), &[]).await,
                 Err(AggregateError::UnexpectedError(_))
             ));
             assert!(store.load_events("overflow").await.unwrap().is_empty());
@@ -458,7 +469,7 @@ mod tests {
             current_sequence: usize::MAX - 1,
         };
         assert_eq!(
-            store.commit(vec![Delta(1)], context, HashMap::new()).await.unwrap()[0].sequence,
+            store.commit(vec![Delta(1)], context, HashMap::new(), &[]).await.unwrap()[0].sequence,
             usize::MAX
         );
     }
@@ -477,6 +488,7 @@ mod tests {
                 })],
                 agg_context,
                 metadata(),
+                &[],
             )
             .await
             .unwrap();
@@ -499,6 +511,7 @@ mod tests {
                 ],
                 agg_context,
                 metadata(),
+                &[],
             )
             .await
             .unwrap();
@@ -534,7 +547,12 @@ mod legacy_api_tests {
         assert!(Arc::ptr_eq(&first, &second));
         let metadata = HashMap::from([("trace".into(), "🦀".into())]);
         clone
-            .commit(vec![Delta(5)], clone.load_aggregate("a").await.unwrap(), metadata.clone())
+            .commit(
+                vec![Delta(5)],
+                clone.load_aggregate("a").await.unwrap(),
+                metadata.clone(),
+                &[],
+            )
             .await
             .unwrap();
         let events = first.read().unwrap();
@@ -544,5 +562,33 @@ mod legacy_api_tests {
         assert_eq!(event.payload, Delta(5));
         assert_eq!(event.metadata, metadata);
         assert!(!events.contains_key("b"));
+    }
+
+    #[tokio::test]
+    async fn tasks_commit_only_with_an_event() {
+        use crate::cqrs::event_sink::tests::{Delta, Ledger};
+        let store = MemStore::<Ledger>::default();
+        let task = NewTask::from_payload(
+            crate::task::format::TaskFormat::new("notify", 1).unwrap(),
+            serde_json::json!({}),
+        )
+        .unwrap();
+        let context = || MemStoreAggregateContext {
+            aggregate_id: "a".into(),
+            aggregate: Ledger::default(),
+            current_sequence: 0,
+        };
+        assert!(matches!(
+            store.commit(vec![], context(), HashMap::new(), std::slice::from_ref(&task)).await,
+            Err(AggregateError::UnexpectedError(error)) if error.to_string() == "outbox tasks require a committed domain event"
+        ));
+        assert_eq!(
+            store
+                .commit(vec![Delta(1)], context(), HashMap::new(), &[task])
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }

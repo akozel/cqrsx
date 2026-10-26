@@ -7,26 +7,28 @@ use crate::{
     cqrs::{
         aggregate::Aggregate,
         store::{
-            PersistenceError, repository::PersistedEventRepository, serialized_event::SerializedEvent,
-            snapshot::SerializedSnapshot,
+            PersistenceError,
+            repository::PersistedEventRepository,
+            serialized_event::SerializedEvent,
+            snapshot::{SerializedSnapshot, SnapshotUpdate},
         },
     },
     postgres::event_repository::PostgresEventRepository,
     task::NewTask,
 };
 use sqlx::PgPool;
-/// Commit one accepted event, its optional snapshot, and immutable tasks atomically.
+/// Commit one accepted event, its optional snapshot, and its tasks atomically
+/// ([`persist_with_tasks`](PersistedEventRepository::persist_with_tasks)).
 ///
 /// Multi-event batches, snapshot-only writes, and tasks without an event are
-/// rejected. Bind a fresh repository/task list per command; share the pool.
-/// Reads delegate to a plain PostgreSQL repository on the same pool. A clone
-/// shares the pool and the SQL texts: build one repository and bind a clone of
-/// it per command.
+/// rejected. The repository holds no state of a command: build one per process
+/// and share it, the tasks come with every write. Reads delegate to a plain
+/// PostgreSQL repository on the same pool. A clone shares the pool and the SQL
+/// texts.
 #[derive(Clone)]
 pub struct PostgresEventRepositoryWithOutbox {
     pool: PgPool,
     reader: PostgresEventRepository,
-    tasks: Vec<NewTask>,
 }
 
 impl PostgresEventRepositoryWithOutbox {
@@ -34,34 +36,6 @@ impl PostgresEventRepositoryWithOutbox {
         Self {
             reader: PostgresEventRepository::new(pool.clone()),
             pool,
-            tasks: Vec::new(),
-        }
-    }
-
-    /// Bind work to one command execution, never to a shared mutable repository.
-    pub fn with_outbox(mut self, tasks: Vec<NewTask>) -> Self {
-        self.tasks = tasks;
-        self
-    }
-
-    /// Whether `other` reads with the very SQL texts of this repository (a clone of it).
-    #[cfg(test)]
-    pub(crate) fn shares_queries_with(&self, other: &Self) -> bool {
-        self.reader.shares_queries_with(&other.reader)
-    }
-
-    async fn persist_command<A: Aggregate>(
-        &self,
-        events: &[SerializedEvent],
-        snapshot_update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
-    ) -> Result<(), PersistenceError> {
-        match WritePlan::new(events, snapshot_update, &self.tasks)? {
-            WritePlan::NoOp => Ok(()),
-            WritePlan::OneEvent {
-                event,
-                sequence,
-                snapshot,
-            } => write::persist_one::<A>(&self.pool, &self.tasks, event, sequence, snapshot).await,
         }
     }
 }
@@ -86,9 +60,25 @@ impl PersistedEventRepository for PostgresEventRepositoryWithOutbox {
     async fn persist<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
+        snapshot_update: Option<SnapshotUpdate>,
     ) -> Result<(), PersistenceError> {
-        self.persist_command::<A>(events, snapshot_update).await
+        self.persist_with_tasks::<A>(events, snapshot_update, &[]).await
+    }
+
+    async fn persist_with_tasks<A: Aggregate>(
+        &self,
+        events: &[SerializedEvent],
+        snapshot_update: Option<SnapshotUpdate>,
+        tasks: &[NewTask],
+    ) -> Result<(), PersistenceError> {
+        match WritePlan::new(events, snapshot_update, tasks)? {
+            WritePlan::NoOp => Ok(()),
+            WritePlan::OneEvent {
+                event,
+                sequence,
+                snapshot,
+            } => write::persist_one::<A>(&self.pool, tasks, event, sequence, snapshot).await,
+        }
     }
 
     async fn feed_after<A: Aggregate>(

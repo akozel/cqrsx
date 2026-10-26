@@ -58,8 +58,7 @@ async fn stress_outbox_winners_publish_only_their_own_event_snapshot_and_task() 
                             }),
                         };
                         let result = PostgresEventRepositoryWithOutbox::new(pool)
-                            .with_outbox(vec![task.clone()])
-                            .persist::<Ledger>(std::slice::from_ref(&event), snapshot)
+                            .persist_with_tasks::<Ledger>(std::slice::from_ref(&event), snapshot, std::slice::from_ref(&task))
                             .await;
                         (event, task, result)
                     });
@@ -151,9 +150,17 @@ async fn competing_writes_keep_the_winning_event_snapshot_and_tasks_consistent()
                 last_sequence: sequence,
                 next_version: version,
             });
-            let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone()).with_outbox(vec![task.clone()]);
+            let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
+            let repository_tasks = vec![task.clone()];
             candidates.push((name, task, candidate.clone()));
-            writes.spawn(async move { (name, repository.persist::<TestAggregate>(&[candidate], snapshot).await) });
+            writes.spawn(async move {
+                (
+                    name,
+                    repository
+                        .persist_with_tasks::<TestAggregate>(&[candidate], snapshot, &repository_tasks)
+                        .await,
+                )
+            });
         }
         wait_for_blocked_queries(&db.pool, "written_events", 2).await;
         gate.commit().await.unwrap();
@@ -229,9 +236,12 @@ async fn a_conflict_without_a_snapshot_is_a_result_and_with_a_new_snapshot_still
         .await
         .unwrap();
     let task = NewTask::new(DummyTaskV1 { value: "loser".into() }).unwrap();
-    let loser = PostgresEventRepositoryWithOutbox::new(session.clone()).with_outbox(vec![task.clone()]);
+    let loser = PostgresEventRepositoryWithOutbox::new(session.clone());
+    let loser_tasks = vec![task.clone()];
     assert!(matches!(
-        loser.persist::<TestAggregate>(&[event(id, 1)], None).await,
+        loser
+            .persist_with_tasks::<TestAggregate>(&[event(id, 1)], None, &loser_tasks)
+            .await,
         Err(PersistenceError::OptimisticLockError)
     ));
     assert_eq!(
@@ -247,7 +257,8 @@ async fn a_conflict_without_a_snapshot_is_a_result_and_with_a_new_snapshot_still
     assert_eq!(tasks, 0);
 
     // With a first snapshot the conflict stays an error: the snapshot rolls back with the event.
-    let loser = PostgresEventRepositoryWithOutbox::new(session.clone()).with_outbox(vec![task.clone()]);
+    let loser = PostgresEventRepositoryWithOutbox::new(session.clone());
+    let loser_tasks = vec![task.clone()];
     let snapshot = SnapshotUpdate {
         aggregate_id: id.into(),
         payload: json!({"winner": "loser"}),
@@ -255,7 +266,9 @@ async fn a_conflict_without_a_snapshot_is_a_result_and_with_a_new_snapshot_still
         next_version: 1,
     };
     assert!(matches!(
-        loser.persist::<TestAggregate>(&[event(id, 1)], Some(snapshot)).await,
+        loser
+            .persist_with_tasks::<TestAggregate>(&[event(id, 1)], Some(snapshot), &loser_tasks)
+            .await,
         Err(PersistenceError::OptimisticLockError)
     ));
     assert_eq!(rollbacks(&session, &db.pool).await, start + 2);

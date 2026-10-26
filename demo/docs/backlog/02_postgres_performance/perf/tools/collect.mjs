@@ -86,6 +86,26 @@ const STATEMENT_KINDS = {
   settle: (query) => /WITH owned AS MATERIALIZED/.test(query) || (/^UPDATE transactional_outbox\b/.test(query) && /lock_token = \$2/.test(query)),
 };
 
+// The command path's statements, told apart by their text (whitespace collapsed by the hook): a load of
+// an aggregate starts with its snapshot, a commit is the outbox writer's statement. Every command attempt
+// loads once; a load no commit follows is a rejection, a conflict, or a read outside the command (the
+// pre-read of a cancellation before ticket 04/20).
+const COMMAND_KINDS = {
+  load: (query) => /^\s*SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload FROM snapshots WHERE/.test(query),
+  commit: (query) => /written_events AS \(INSERT INTO events/.test(query),
+};
+
+/** Aggregate loads and commits in a statement dump, and loads per commit; null without the dump. */
+function commandStatements(rows) {
+  if (rows === null) {
+    return null;
+  }
+  const calls = (matches) => rows.filter((row) => matches(String(row.query ?? ''))).reduce((sum, row) => sum + (row.calls ?? 0), 0);
+  const loads = calls(COMMAND_KINDS.load);
+  const commits = calls(COMMAND_KINDS.commit);
+  return { loads, commits, loads_per_commit: commits > 0 ? round(loads / commits, 3) : null };
+}
+
 /**
  * Per kind of statement: calls, total and mean time, rows (for claim: tasks), buffers (hit + read) and
  * full-page images per call, and its share of all SQL execution time in the dump.
@@ -370,6 +390,10 @@ if (windowStatements !== null) {
   if (accepted && result.queue.window?.settle) {
     result.queue.window.settle.per_command = per(result.queue.window.settle.calls, accepted, 3);
   }
+  result.commands = { window: commandStatements(windowStatements) };
+  if (drainStatements !== null) {
+    result.commands.drain = commandStatements(drainStatements);
+  }
 }
 const waited = waits(join(runDir, 'wait_events.tsv'));
 if (waited) {
@@ -409,6 +433,13 @@ if (eff) {
   }
 } else {
   console.log('per cmd   no counters (see run.log)');
+}
+const commands = result.commands?.window;
+if (commands) {
+  const drained = result.commands.drain;
+  console.log(
+    `commands  loads ${commands.loads} commits ${commands.commits}: ${dash(commands.loads_per_commit)} loads per commit${drained ? ` (drain ${dash(drained.loads_per_commit)})` : ''}`,
+  );
 }
 const settle = result.queue?.drain?.settle ?? result.queue?.window?.settle;
 if (settle) {

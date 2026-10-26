@@ -11,7 +11,7 @@ use crate::{
         fan::{Fan, FanCommand, FanError},
     },
 };
-use cqrsx::{cqrs::command::CommandExecutor, task::NewTask};
+use cqrsx::cqrs::command::CommandExecutor;
 use serde_json::{Value, json};
 
 /// The command pipeline of `Fan`.
@@ -24,22 +24,17 @@ impl<E: CommandExecutor<Fan>> FanApp<E> {
         Self { service }
     }
 
-    /// Internal commands come from workflow steps, which also build the follow-up tasks. The command
-    /// runs on one ledger (`fan:concert`); the activity log still names the fan.
-    pub async fn execute(
-        &self,
-        ledger: &FanLedgerId,
-        command: FanCommand,
-        metadata: CommandMetadata,
-        tasks: Vec<NewTask>,
-    ) -> Executed<FanError> {
+    /// Internal commands come from workflow steps; the workflows plan the follow-up tasks from the
+    /// ledger's decision. The command runs on one ledger (`fan:concert`); the activity log still names
+    /// the fan.
+    pub async fn execute(&self, ledger: &FanLedgerId, command: FanCommand, metadata: CommandMetadata) -> Executed<FanError> {
         let fan = ledger.fan();
         let label = CommandLabel {
             aggregate_id: ledger.as_str(),
             command_type: command.name(),
             fan_id: Some(fan.as_str()),
         };
-        self.service.run(label, command, metadata, tasks).await
+        self.service.run(label, command, metadata).await
     }
 }
 
@@ -94,7 +89,7 @@ mod tests {
             &FanId::parse("fox").unwrap(),
             &ConcertId::parse("radiohead-2026-11-21").unwrap(),
         );
-        let executed = fans.execute(&ledger, command, CommandMetadata::ui(), vec![]).await;
+        let executed = fans.execute(&ledger, command, CommandMetadata::ui()).await;
         assert_eq!(executed.outcome, CommandOutcome::Unavailable);
         let (entries, _) = activity.subscribe();
         assert_eq!(entries.len(), 1);

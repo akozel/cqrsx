@@ -1,6 +1,6 @@
 //! Fact: a ticket is in the fan's ledger. Continues the
 //! [ticket delivery](crate::application::workflows::ticket_delivery) workflow through the
-//! `encore_send_e_ticket` task published atomically with this event.
+//! `encore_send_e_ticket` task the workflow plans from this event and commits with it.
 use crate::domain::{
     ConcertId,
     shared::venue::{SeatId, Zone},

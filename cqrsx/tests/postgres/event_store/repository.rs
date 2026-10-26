@@ -52,7 +52,7 @@ async fn snapshot_command_applies_one_event_once() {
     let db = Database::new().await;
     let config = PostgresCommandConfig::new(1, Default::default(), LockLimits::default()).unwrap();
     let executor = PostgresCommandExecutor::<History>::new(db.pool.clone(), config, ());
-    executor.execute("history", 7, vec![]).await.unwrap();
+    executor.execute("history", 7).await.unwrap();
     let store = PersistedEventStore::<_, History>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 1);
     assert_eq!(store.load_events("history").await.unwrap().len(), 1);
     let context = store.load_aggregate("history").await.unwrap();
@@ -360,6 +360,7 @@ async fn simple_es_commit_and_load_test(event_store: PersistedEventStore<Postgre
             ],
             context,
             HashMap::default(),
+            &[],
         )
         .await
         .unwrap();
@@ -374,6 +375,7 @@ async fn simple_es_commit_and_load_test(event_store: PersistedEventStore<Postgre
             }],
             context,
             HashMap::default(),
+            &[],
         )
         .await
         .unwrap();

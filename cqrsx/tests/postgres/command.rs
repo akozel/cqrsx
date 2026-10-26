@@ -3,7 +3,10 @@ use cqrsx::cqrs::store::EventStore;
 use cqrsx::cqrs::store::persisted::PersistedEventStore;
 use cqrsx::{
     cqrs::command::{
-        CommandExecutor, CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits,
+        CommandExecutor, CommandGatewayError,
+        causation::Causation,
+        locks::LockLimits,
+        planner::{Decision, TaskPlanError, TaskPlanner},
         retry::AggregateConflictRetryPolicy,
     },
     postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
@@ -77,29 +80,49 @@ fn record(value: &str, expected_count: usize) -> Command {
     }
 }
 
+/// One task per decision: the value the command recorded.
+struct LastValue;
+
+impl TaskPlanner<CommandAggregate> for LastValue {
+    fn plan(&self, decision: &Decision<'_, CommandAggregate>) -> Result<Vec<NewTask>, TaskPlanError> {
+        let Some(value) = decision.after.values.last() else {
+            return Ok(Vec::new());
+        };
+        Ok(vec![NewTask::new(DummyTaskV1 { value: value.clone() })?])
+    }
+}
+
+fn planned_executor(pool: &PgPool, interval: usize) -> PostgresCommandExecutor<CommandAggregate> {
+    PostgresCommandExecutor::new(pool.clone(), config(interval), ()).with_task_planner(LastValue)
+}
+
+/// The id the core derives for the first task of `causation`'s command on `aggregate_id`.
+fn derived_id(causation: &Causation, aggregate_id: &str) -> Uuid {
+    causation.task_id(CommandAggregate::TYPE, aggregate_id, &format(), 0)
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_no_losing_tasks() {
+async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_only_its_tasks() {
     let db = Database::new().await;
     // Both commands must reach the database at once, so each goes through an executor of its own, like
     // two nodes: through one executor the second would wait for the first's lock.
-    let nodes = [(); 2].map(|_| {
-        Arc::new(PostgresCommandExecutor::<CommandAggregate>::new(
-            db.pool.clone(),
-            config(1),
-            (),
-        ))
-    });
+    let nodes = [(); 2].map(|_| Arc::new(planned_executor(&db.pool, 1)));
     let mut gate = db.pool.begin().await.unwrap();
     sqlx::query("LOCK TABLE events IN SHARE MODE")
         .execute(&mut *gate)
         .await
         .unwrap();
     let mut calls = tokio::task::JoinSet::new();
-    let mut tasks = Vec::new();
+    let mut causations = HashMap::new();
     for (value, executor) in ["left", "right"].into_iter().zip(nodes.clone()) {
-        let task = NewTask::new(DummyTaskV1 { value: value.into() }).unwrap();
-        tasks.push((value, task.clone()));
-        calls.spawn(async move { (value, executor.execute("contended", record(value, 0), vec![task]).await) });
+        let causation = Causation::root(value);
+        causations.insert(value, causation.clone());
+        calls.spawn(async move {
+            let result = executor
+                .execute_with_metadata("contended", record(value, 0), causation.event_metadata())
+                .await;
+            (value, result)
+        });
     }
     wait_for_blocked_queries(&db.pool, "written_events", 2).await;
     gate.commit().await.unwrap();
@@ -108,7 +131,10 @@ async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_
     while let Some(result) = calls.join_next().await {
         let (value, result) = result.unwrap();
         match result {
-            Ok(()) => assert!(winner.replace(value).is_none()),
+            Ok(report) => {
+                assert_eq!(report.tasks.len(), 1);
+                assert!(winner.replace(value).is_none());
+            }
             Err(CommandGatewayError::Domain(Rejected)) => rejected += 1,
             other => panic!("unexpected command result: {other:?}"),
         }
@@ -130,25 +156,34 @@ async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_
         .fetch_all(&db.pool)
         .await
         .unwrap();
-    let (_, winning_task) = tasks.iter().find(|(value, _)| *value == winner).unwrap();
-    assert_eq!(published, vec![winning_task.id()]);
+    let winning_id = derived_id(&causations[winner], "contended");
     assert_eq!(
-        &row(&db.pool, winning_task.id()).await.get::<Value, _>("payload"),
-        winning_task.payload()
+        published,
+        vec![winning_id],
+        "the loser's re-planned attempt was rejected and published nothing"
+    );
+    assert_eq!(
+        row(&db.pool, winning_id).await.get::<Value, _>("payload"),
+        json!({ "value": winner })
     );
     db.close().await;
 }
 
 #[tokio::test]
-async fn factory_publishes_atomic_work_and_preserves_rejections_and_rollbacks() {
+async fn planned_work_publishes_atomically_and_rejections_write_nothing() {
     let db = Database::new().await;
-    let executor = PostgresCommandExecutor::<CommandAggregate>::new(db.pool.clone(), config(1), ());
+    let executor = planned_executor(&db.pool, 1);
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    let task = new_task();
-    executor
-        .execute("accepted", record("first", 0), vec![task.clone()])
+    let causation = Causation::root("integration");
+    let report = executor
+        .execute_with_metadata("accepted", record("first", 0), causation.event_metadata())
         .await
         .unwrap();
+    assert_eq!(report.events.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1]);
+    assert_eq!(
+        report.tasks.iter().map(NewTask::id).collect::<Vec<_>>(),
+        [derived_id(&causation, "accepted")]
+    );
     let events = repository.get_events::<CommandAggregate>("accepted").await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].payload, json!({"Recorded": {"values": ["first"]}}));
@@ -159,16 +194,23 @@ async fn factory_publishes_atomic_work_and_preserves_rejections_and_rollbacks() 
             .unwrap()
             .is_some()
     );
-    let saved = row(&db.pool, task.id()).await;
+    let saved = row(&db.pool, derived_id(&causation, "accepted")).await;
     assert_eq!(saved.get::<String, _>("aggregate_id"), "accepted");
     assert_eq!(saved.get::<String, _>("aggregate_type"), CommandAggregate::TYPE);
     assert_eq!(saved.get::<i64, _>("aggregate_sequence"), 1);
-
-    let rejected_task = new_task();
+    assert_eq!(saved.get::<Value, _>("payload"), json!({ "value": "first" }));
     assert_eq!(
-        executor
-            .execute("rejected", Command::Reject, vec![rejected_task.clone()])
-            .await,
+        saved.get::<Value, _>("metadata"),
+        json!({
+            "command_id": causation.command_id.to_string(),
+            "correlation_id": causation.correlation_id.to_string(),
+            "causation_id": causation.causation_id.to_string(),
+        }),
+        "the core stamps the causation on every planned task"
+    );
+
+    assert_eq!(
+        executor.execute("rejected", Command::Reject).await,
         Err(CommandGatewayError::Domain(Rejected))
     );
     assert!(
@@ -185,40 +227,20 @@ async fn factory_publishes_atomic_work_and_preserves_rejections_and_rollbacks() 
             .unwrap()
             .is_none()
     );
-    let rejected_count: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox WHERE id = $1")
-        .bind(rejected_task.id())
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-    assert_eq!(rejected_count, 0);
-
-    // Reusing an existing task ID fails publication and rolls back event/snapshot.
+    executor.execute("accepted", record("second", 1)).await.unwrap();
+    let rows: Vec<(String, i64, Value)> =
+        sqlx::query_as("SELECT aggregate_id, aggregate_sequence, payload FROM transactional_outbox ORDER BY aggregate_sequence")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
     assert_eq!(
-        executor.execute("rollback", record("uncommitted", 0), vec![task]).await,
-        Err(CommandGatewayError::Unavailable)
+        rows,
+        [
+            ("accepted".to_owned(), 1, json!({ "value": "first" })),
+            ("accepted".to_owned(), 2, json!({ "value": "second" })),
+        ],
+        "one task per committed decision, none of the rejected one"
     );
-    assert!(
-        repository
-            .get_events::<CommandAggregate>("rollback")
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        repository
-            .get_snapshot::<CommandAggregate>("rollback")
-            .await
-            .unwrap()
-            .is_none()
-    );
-
-    executor.execute("accepted", record("second", 1), vec![]).await.unwrap();
-    assert_eq!(repository.get_events::<CommandAggregate>("accepted").await.unwrap().len(), 2);
-    let task_count: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox")
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-    assert_eq!(task_count, 1, "events-only execution must not reuse the previous task list");
     db.close().await;
 }
 
@@ -230,20 +252,13 @@ async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_obje
         ("command_id".to_owned(), "cmd-1".to_owned()),
         ("source".to_owned(), "integration".to_owned()),
     ]);
-    let task = new_task();
-    CommandExecutor::execute_with_metadata(
-        &executor,
-        "metadata",
-        record("first", 0),
-        metadata.clone(),
-        vec![task.clone()],
-    )
-    .await
-    .unwrap();
-    executor.execute("metadata", record("second", 1), vec![]).await.unwrap();
+    CommandExecutor::execute_with_metadata(&executor, "metadata", record("first", 0), metadata.clone())
+        .await
+        .unwrap();
+    executor.execute("metadata", record("second", 1)).await.unwrap();
     assert_eq!(
         executor
-            .execute_with_metadata("metadata", Command::Reject, metadata.clone(), vec![new_task()])
+            .execute_with_metadata("metadata", Command::Reject, metadata.clone())
             .await,
         Err(CommandGatewayError::Domain(Rejected))
     );
@@ -252,36 +267,35 @@ async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_obje
     assert_eq!(events.len(), 2, "a rejected command commits neither event nor metadata");
     assert_eq!(events[0].metadata, json!({"command_id": "cmd-1", "source": "integration"}));
     assert_eq!(events[1].metadata, json!({}));
-    assert_eq!(row(&db.pool, task.id()).await.get::<i64, _>("aggregate_sequence"), 1);
     db.close().await;
 }
 
 #[tokio::test]
-async fn shared_executor_isolates_parallel_command_task_lists() {
+async fn parallel_commands_publish_the_tasks_of_their_own_decisions() {
     let db = Database::new().await;
-    let executor = Arc::new(PostgresCommandExecutor::<CommandAggregate>::new(
-        db.pool.clone(),
-        config(25),
-        (),
-    ));
+    let executor = Arc::new(planned_executor(&db.pool, 25));
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..16 {
         let executor = executor.clone();
         commands.spawn(async move {
             let id = format!("parallel-{index}");
-            let task = NewTask::new(DummyTaskV1 { value: id.clone() }).unwrap();
-            executor.execute(&id, record(&id, 0), vec![task.clone()]).await.unwrap();
-            (id, task)
+            let causation = Causation::root("parallel");
+            let report = executor
+                .execute_with_metadata(&id, record(&id, 0), causation.event_metadata())
+                .await
+                .unwrap();
+            (id, causation, report)
         });
     }
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     while let Some(result) = commands.join_next().await {
-        let (id, task) = result.unwrap();
-        let saved = row(&db.pool, task.id()).await;
+        let (id, causation, report) = result.unwrap();
+        assert_eq!(report.tasks[0].id(), derived_id(&causation, &id));
+        let saved = row(&db.pool, derived_id(&causation, &id)).await;
         assert_eq!(saved.get::<String, _>("aggregate_id"), id);
         assert_eq!(saved.get::<String, _>("aggregate_type"), CommandAggregate::TYPE);
         assert_eq!(saved.get::<i64, _>("aggregate_sequence"), 1);
-        assert_eq!(&saved.get::<Value, _>("payload"), task.payload());
+        assert_eq!(saved.get::<Value, _>("payload"), json!({ "value": id }));
         let events = repository.get_events::<CommandAggregate>(&id).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload, json!({"Recorded": {"values": [id]}}));
@@ -299,7 +313,7 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     let db = Database::new().await;
     let executor = PostgresCommandExecutor::<CommandAggregate>::new(db.pool.clone(), config(2), ());
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    executor.execute("snapshot", record("first", 0), vec![]).await.unwrap();
+    executor.execute("snapshot", record("first", 0)).await.unwrap();
     assert!(
         repository
             .get_snapshot::<CommandAggregate>("snapshot")
@@ -307,7 +321,7 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
             .unwrap()
             .is_none()
     );
-    executor.execute("snapshot", record("second", 1), vec![]).await.unwrap();
+    executor.execute("snapshot", record("second", 1)).await.unwrap();
     let snapshot = repository
         .get_snapshot::<CommandAggregate>("snapshot")
         .await
@@ -316,12 +330,12 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     assert_eq!(snapshot.last_sequence, 2);
     assert_eq!(snapshot.aggregate, json!({"values": ["first", "second"]}));
     // The third and fourth calls require state from the snapshot, then its tail.
-    executor.execute("snapshot", record("third", 2), vec![]).await.unwrap();
+    executor.execute("snapshot", record("third", 2)).await.unwrap();
     let store = PersistedEventStore::<_, CommandAggregate>::new_snapshot_store(repository, 2);
     let context = store.load_aggregate("snapshot").await.unwrap();
     assert_eq!(context.current_sequence, 3);
     assert_eq!(context.aggregate.values, vec!["first", "second", "third"]);
-    executor.execute("snapshot", record("fourth", 3), vec![]).await.unwrap();
+    executor.execute("snapshot", record("fourth", 3)).await.unwrap();
     let snapshot = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
         .get_snapshot::<CommandAggregate>("snapshot")
         .await
@@ -341,7 +355,7 @@ async fn the_constructor_needs_no_connection_and_closed_pool_errors_remain_unava
     assert_eq!(pool.size(), 0);
     pool.close().await;
     assert_eq!(
-        executor.execute("unused", record("value", 0), vec![]).await,
+        executor.execute("unused", record("value", 0)).await,
         Err(CommandGatewayError::Unavailable)
     );
 }
@@ -385,18 +399,16 @@ async fn services_decide_and_the_metadata_is_stored_with_every_event() {
     let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
     for value in ["first", "second"] {
         executor
-            .execute_with_metadata("capped", value.into(), metadata.clone(), vec![])
+            .execute_with_metadata("capped", value.into(), metadata.clone())
             .await
             .unwrap();
     }
     assert_eq!(
-        CommandExecutor::execute(&executor, "capped", "third".into(), vec![]).await,
+        CommandExecutor::execute(&executor, "capped", "third".into()).await,
         Err(CommandGatewayError::Domain(Rejected)),
         "the cap from the services rejects the third value"
     );
-    CommandExecutor::execute(&executor, "other", "first".into(), vec![])
-        .await
-        .unwrap();
+    CommandExecutor::execute(&executor, "other", "first".into()).await.unwrap();
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     let capped = repository.get_events::<CappedAggregate>("capped").await.unwrap();
     assert_eq!(
@@ -424,10 +436,10 @@ async fn aggregate_locks_accept_forty_parallel_commands_without_conflicts() {
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..40 {
         let executor = executor.clone();
-        commands.spawn(async move { executor.execute("hot", format!("v{index}"), vec![]).await });
+        commands.spawn(async move { executor.execute("hot", format!("v{index}")).await });
     }
     while let Some(result) = commands.join_next().await {
-        assert_eq!(result.unwrap(), Ok(()), "without a conflict there is nothing to retry");
+        assert!(result.unwrap().is_ok(), "without a conflict there is nothing to retry");
     }
     let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
         .get_events::<CappedAggregate>("hot")
@@ -456,12 +468,12 @@ async fn two_executors_with_their_own_locks_meet_only_in_the_database() {
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..40 {
         let node = nodes[index % 2].clone();
-        commands.spawn(async move { node.execute("shared", format!("v{index}"), vec![]).await });
+        commands.spawn(async move { node.execute("shared", format!("v{index}")).await });
     }
     let mut accepted = 0;
     while let Some(result) = commands.join_next().await {
         match result.unwrap() {
-            Ok(()) => accepted += 1,
+            Ok(_) => accepted += 1,
             Err(CommandGatewayError::Conflict) => {}
             other => panic!("unexpected result {other:?}"),
         }
@@ -488,7 +500,7 @@ async fn two_executors_with_their_own_locks_meet_only_in_the_database() {
     db.close().await;
 }
 
-/// An aggregate whose services cannot be cloned: only a factory of one's own can build its frameworks.
+/// An aggregate whose services cannot be cloned: the executor owns them, it never clones them per command.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Counted(Vec<String>);
 
@@ -526,33 +538,39 @@ impl Aggregate for Counted {
     }
 }
 
+/// One task per counted value.
+struct CountedTasks;
+
+impl TaskPlanner<Counted> for CountedTasks {
+    fn plan(&self, decision: &Decision<'_, Counted>) -> Result<Vec<NewTask>, TaskPlanError> {
+        let mut tasks = Vec::new();
+        for Counted1(value) in decision.events {
+            tasks.push(NewTask::new(DummyTaskV1 { value: value.clone() })?);
+        }
+        Ok(tasks)
+    }
+}
+
 #[tokio::test]
-async fn a_core_executor_takes_services_that_are_not_clone_and_commits_event_snapshot_and_task_at_once() {
+async fn services_that_are_not_clone_serve_the_executor_which_commits_event_snapshot_and_task_at_once() {
     let db = Database::new().await;
     let decided = Arc::new(AtomicUsize::new(0));
-    let executor = CommandExecutorCore::<Counted, _>::new(
-        {
-            let (pool, decided) = (db.pool.clone(), decided.clone());
-            move |tasks| {
-                let repository = PostgresEventRepositoryWithOutbox::new(pool.clone()).with_outbox(tasks);
-                CqrsFramework::new(
-                    PersistedEventStore::new_snapshot_store(repository, 1),
-                    Counter(decided.clone()),
-                )
-            }
-        },
-        AggregateConflictRetryPolicy::default(),
-        LockLimits::default(),
-    );
-    let task = new_task();
-    assert_eq!(executor.execute("core", "accepted".into(), vec![task.clone()]).await, Ok(()));
+    let executor = PostgresCommandExecutor::<Counted>::new(db.pool.clone(), config(1), Counter(decided.clone()))
+        .with_task_planner(CountedTasks);
+    let causation = Causation::root("integration");
+    let report = executor
+        .execute_with_metadata("core", "accepted".into(), causation.event_metadata())
+        .await
+        .unwrap();
     assert_eq!(decided.load(Ordering::SeqCst), 1);
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     let events = repository.get_events::<Counted>("core").await.unwrap();
     assert_eq!(events.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1]);
     let snapshot = repository.get_snapshot::<Counted>("core").await.unwrap().unwrap();
     assert_eq!((snapshot.aggregate, snapshot.last_sequence), (json!(["accepted"]), 1));
-    let saved = row(&db.pool, task.id()).await;
+    let id = causation.task_id(Counted::TYPE, "core", &format(), 0);
+    assert_eq!(report.tasks[0].id(), id);
+    let saved = row(&db.pool, id).await;
     assert_eq!(saved.get::<String, _>("aggregate_id"), "core");
     assert_eq!(saved.get::<i64, _>("aggregate_sequence"), 1);
     db.close().await;
@@ -582,6 +600,7 @@ mod contracts {
             events: Vec<Delta>,
             context: Self::AC,
             metadata: HashMap<String, String>,
+            tasks: &[NewTask],
         ) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::cqrs::AggregateError<Rejected>> {
             let attempt = self.commits.fetch_add(1, Ordering::SeqCst);
             if self.mode == 0 && attempt == 0 {
@@ -590,7 +609,7 @@ mod contracts {
                     .await
                     .unwrap();
             }
-            let result = self.inner.commit(events, context, metadata).await?;
+            let result = self.inner.commit(events, context, metadata, tasks).await?;
             if self.mode == 1 {
                 return Err(cqrsx::cqrs::AggregateError::DatabaseConnectionError(
                     "response lost after real commit".into(),
@@ -624,29 +643,22 @@ mod contracts {
         let loads = Arc::new(AtomicUsize::new(0));
         let commits = Arc::new(AtomicUsize::new(0));
         let executor = CommandExecutorCore::new(
-            {
-                let pool = db.pool.clone();
-                let loads = loads.clone();
-                let commits = commits.clone();
-                move |_| {
-                    CqrsFramework::new(
-                        CommitBoundary {
-                            inner: PersistedEventStore::new_event_store(PostgresEventRepository::new(pool.clone())),
-                            pool: pool.clone(),
-                            mode: 3,
-                            loads: loads.clone(),
-                            commits: commits.clone(),
-                            durable: Arc::default(),
-                        },
-                        (),
-                    )
-                }
-            },
+            CqrsFramework::new(
+                CommitBoundary {
+                    inner: PersistedEventStore::new_event_store(PostgresEventRepository::new(db.pool.clone())),
+                    pool: db.pool.clone(),
+                    mode: 3,
+                    loads: loads.clone(),
+                    commits: commits.clone(),
+                    durable: Arc::default(),
+                },
+                (),
+            ),
             Default::default(),
             cqrsx::cqrs::command::locks::LockLimits::default(),
         );
         assert!(matches!(
-            executor.execute("command", vec![2], vec![]).await,
+            executor.execute("command", vec![2]).await,
             Err(CommandGatewayError::Unavailable)
         ));
         assert_eq!(loads.load(Ordering::SeqCst), 1);
@@ -670,30 +682,23 @@ mod contracts {
             let commits = Arc::new(AtomicUsize::new(0));
             let durable = Arc::new(tokio::sync::Notify::new());
             let executor = CommandExecutorCore::new(
-                {
-                    let loads = loads.clone();
-                    let commits = commits.clone();
-                    let durable = durable.clone();
-                    move |_| {
-                        CqrsFramework::new(
-                            CommitBoundary {
-                                inner: PersistedEventStore::new_event_store(PostgresEventRepository::new(pool.clone())),
-                                pool: pool.clone(),
-                                mode,
-                                loads: loads.clone(),
-                                commits: commits.clone(),
-                                durable: durable.clone(),
-                            },
-                            (),
-                        )
-                    }
-                },
+                CqrsFramework::new(
+                    CommitBoundary {
+                        inner: PersistedEventStore::new_event_store(PostgresEventRepository::new(pool.clone())),
+                        pool: pool.clone(),
+                        mode,
+                        loads: loads.clone(),
+                        commits: commits.clone(),
+                        durable: durable.clone(),
+                    },
+                    (),
+                ),
                 AggregateConflictRetryPolicy::new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
                 cqrsx::cqrs::command::locks::LockLimits::default(),
             );
             if mode == 2 {
                 let id = id.clone();
-                let task = tokio::spawn(async move { executor.execute(&id, vec![10], vec![]).await });
+                let task = tokio::spawn(async move { executor.execute(&id, vec![10]).await });
                 tokio::time::timeout(Duration::from_secs(10), durable.notified())
                     .await
                     .unwrap();
@@ -706,9 +711,7 @@ mod contracts {
                         .is_cancelled()
                 );
             } else {
-                let result = executor
-                    .execute(&id, if mode == 0 { vec![-7] } else { vec![10] }, vec![])
-                    .await;
+                let result = executor.execute(&id, if mode == 0 { vec![-7] } else { vec![10] }).await;
                 if mode == 0 {
                     assert!(matches!(result, Err(CommandGatewayError::Domain(Rejected))));
                 } else {

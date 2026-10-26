@@ -1,6 +1,6 @@
 //! Fact: a seat has been sold. Starts the
 //! [ticket delivery](crate::application::workflows::ticket_delivery) workflow through the
-//! `encore_record_ticket` task published atomically with this event.
+//! `encore_record_ticket` task the workflow plans from this event and commits with it.
 use crate::domain::{
     FanId,
     shared::venue::{SeatId, Zone},

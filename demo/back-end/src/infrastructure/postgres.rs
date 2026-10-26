@@ -18,14 +18,8 @@ use cqrsx::{
 };
 use sqlx::PgPool;
 
-/// The read path over the event tables: committed history, with or without snapshots.
+/// The read path over the event tables: committed history.
 pub type HistoryStore<A> = PersistedEventStore<PostgresEventRepository, A>;
-
-/// Committed state, accelerated by the snapshots the command executors write every
-/// `snapshot_every` events.
-pub fn history_store<A: Aggregate>(pool: PgPool, snapshot_every: usize) -> HistoryStore<A> {
-    PersistedEventStore::new_snapshot_store(PostgresEventRepository::new(pool), snapshot_every)
-}
 
 /// Committed history from events alone, without snapshots (the time machine shows that state is
 /// stored nowhere).

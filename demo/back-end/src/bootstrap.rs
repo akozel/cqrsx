@@ -41,7 +41,7 @@ pub const ACTIVITY_CHANNEL_CAPACITY: usize = 1024;
 pub const ACTIVITY_BACKLOG: usize = 100;
 
 /// The box office over PostgreSQL.
-pub type ConcertApp = application::concert::ConcertApp<PostgresCommandExecutor<Concert>, HistoryStore<Concert>>;
+pub type ConcertApp = application::concert::ConcertApp<PostgresCommandExecutor<Concert>>;
 /// The fan ledger over PostgreSQL.
 pub type FanApp = application::fan::FanApp<PostgresCommandExecutor<Fan>>;
 /// The time machine over the PostgreSQL history, without snapshots.

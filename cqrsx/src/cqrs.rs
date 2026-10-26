@@ -16,13 +16,17 @@ pub mod testing;
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{
-    aggregate::Aggregate,
-    event::EventEnvelope,
-    event_sink::EventSink,
-    store::{AggregateContext, EventStore},
+use crate::{
+    cqrs::{
+        aggregate::Aggregate,
+        command::planner::{Planning, TaskPlanError, TaskPlanner},
+        event::EventEnvelope,
+        event_sink::EventSink,
+        store::{AggregateContext, EventStore},
+    },
+    task::NewTask,
 };
-use std::{collections::HashMap, error};
+use std::{collections::HashMap, error, fmt};
 
 /// This is the base framework for applying commands to produce events.
 ///
@@ -36,10 +40,11 @@ use std::{collections::HashMap, error};
 ///    (see `handle` method in this trait).
 /// 1. Persisting any generated events or roll back in the event of an error.
 ///
-/// To manage these tasks we use a `CqrsFramework`. It returns the committed events and hands them to
-/// nobody: a command executor
-/// ([`CommandExecutorCore`](crate::cqrs::command::executor::CommandExecutorCore)) builds a framework per
-/// command through its factory, and the projection processors read the events from the journal.
+/// To manage these tasks we use a `CqrsFramework`. It returns what it committed, the events and the tasks
+/// its [`TaskPlanner`] planned from them, and hands them to nobody: a command executor
+/// ([`CommandExecutorCore`](crate::cqrs::command::executor::CommandExecutorCore)) owns one framework for its
+/// life, the projection processors read the events from the journal and the task runtime claims the tasks
+/// from the outbox.
 ///
 pub struct CqrsFramework<A, ES>
 where
@@ -48,6 +53,7 @@ where
 {
     store: ES,
     service: A::Services,
+    planning: Option<Planning<A>>,
 }
 
 impl<A, ES> CqrsFramework<A, ES>
@@ -162,7 +168,31 @@ where
         A: Aggregate,
         ES: EventStore<A>,
     {
-        Self { store, service }
+        Self {
+            store,
+            service,
+            planning: None,
+        }
+    }
+
+    /// Plans the follow-up tasks of every decision with events through `planner`, after `handle` on every
+    /// attempt and before the commit; the tasks commit atomically with the attempt's events. One planner per
+    /// framework: a second call replaces the first, and several planners compose as a tuple.
+    pub fn with_task_planner(mut self, planner: impl TaskPlanner<A> + 'static) -> Self
+    where
+        A::Command: Clone,
+    {
+        self.set_task_planner(Planning::new(planner));
+        self
+    }
+
+    pub(crate) fn set_task_planner(&mut self, planning: Planning<A>) {
+        self.planning = Some(planning);
+    }
+
+    /// The store the commands run against.
+    pub(crate) fn store(&self) -> &ES {
+        &self.store
     }
     /// This applies a command to an aggregate. Executing a command
     /// in this way is the only way to make changes to
@@ -172,8 +202,8 @@ where
     /// an [`AggregateError`]
     /// being returned.
     ///
-    /// If successful the events produced are persisted in the backing `EventStore` and returned
-    /// in commit order; no event handler sees them here.
+    /// If successful the events produced, and the tasks the planner planned from them, are persisted in
+    /// the backing `EventStore` and returned in commit order; no event handler sees them here.
     ///
     /// ```
     /// # mod example {
@@ -270,17 +300,13 @@ where
     ///     let command = MyCommands::DoSomething;
     ///
     ///     let committed = cqrs.execute("agg-id-F39A0C", command).await?;
-    ///     assert_eq!(committed.len(), 1);
+    ///     assert_eq!(committed.events.len(), 1);
     ///     Ok(())
     /// }
     /// ```
     /// `Clone` must provide independent mutable aggregate state. Command handling
     /// uses that working copy while commit retains the last committed context.
-    pub async fn execute(
-        &self,
-        aggregate_id: &str,
-        command: A::Command,
-    ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>>
+    pub async fn execute(&self, aggregate_id: &str, command: A::Command) -> Result<CommitReport<A>, AggregateError<A::Error>>
     where
         A: Clone,
     {
@@ -302,8 +328,8 @@ where
     /// an [`AggregateError`]
     /// being returned.
     ///
-    /// If successful the events produced are persisted in the backing `EventStore` and returned
-    /// in commit order; no event handler sees them here.
+    /// If successful the events produced, and the tasks the planner planned from them, are persisted in
+    /// the backing `EventStore` and returned in commit order; no event handler sees them here.
     ///
     /// ```
     /// # mod example {
@@ -401,28 +427,97 @@ where
     ///     let metadata = HashMap::from([("time".to_string(), chrono::Utc::now().to_rfc3339())]);
     ///
     ///     let committed = cqrs.execute_with_metadata("agg-id-F39A0C", command, metadata).await?;
-    ///     assert_eq!(committed.len(), 1);
+    ///     assert_eq!(committed.events.len(), 1);
     ///     Ok(())
     /// }
     /// ```
+    ///
+    /// With a [task planner](Self::with_task_planner), a decision with events is planned before the commit:
+    /// the planner sees the committed state, the working copy after `handle`, the command, the events and
+    /// the metadata; the core stamps the causation of `metadata` on every task and derives its id. A planner
+    /// error refuses the command ([`AggregateError::TaskPlan`]) with nothing written.
     pub async fn execute_with_metadata(
         &self,
         aggregate_id: &str,
         command: A::Command,
         metadata: HashMap<String, String>,
-    ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>>
+    ) -> Result<CommitReport<A>, AggregateError<A::Error>>
     where
         A: Clone,
     {
         let mut aggregate_context = self.store.load_aggregate(aggregate_id).await?;
         let mut aggregate = aggregate_context.aggregate().clone();
+        // The decision needs the command after `handle` consumed it: an owned clone, never a borrow
+        // across an await, so a command that is `Send` but not `Sync` keeps the future `Send`.
+        let (command, kept) = match &self.planning {
+            Some(planning) => (planning.clone_command(&command), Some(command)),
+            None => (command, None),
+        };
         let sink: EventSink<A> = Default::default();
         aggregate
             .handle(command, &self.service, &sink)
             .await
             .map_err(AggregateError::Domain)?;
         let resultant_events = sink.collect().await;
-        self.store.commit(resultant_events, aggregate_context, metadata).await
+        let tasks = match (&self.planning, &kept) {
+            (Some(planning), Some(command)) if !resultant_events.is_empty() => planning
+                .plan(
+                    aggregate_id,
+                    aggregate_context.aggregate(),
+                    &aggregate,
+                    command,
+                    &resultant_events,
+                    &metadata,
+                )
+                .map_err(AggregateError::TaskPlan)?,
+            _ => Vec::new(),
+        };
+        let events = self
+            .store
+            .commit(resultant_events, aggregate_context, metadata, &tasks)
+            .await?;
+        Ok(CommitReport { events, tasks })
+    }
+}
+
+/// What one command committed in one transaction: its events in commit order and the tasks planned from
+/// them, published atomically with them.
+pub struct CommitReport<A: Aggregate> {
+    pub events: Vec<EventEnvelope<A>>,
+    pub tasks: Vec<NewTask>,
+}
+
+// By hand: a derive would require `A` itself to be `Clone`, `Debug` and `PartialEq`, not only its events.
+impl<A: Aggregate> Clone for CommitReport<A> {
+    fn clone(&self) -> Self {
+        Self {
+            events: self.events.clone(),
+            tasks: self.tasks.clone(),
+        }
+    }
+}
+
+impl<A: Aggregate> fmt::Debug for CommitReport<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommitReport")
+            .field("events", &self.events)
+            .field("tasks", &self.tasks)
+            .finish()
+    }
+}
+
+impl<A: Aggregate> PartialEq for CommitReport<A> {
+    fn eq(&self, other: &Self) -> bool {
+        self.events == other.events && self.tasks == other.tasks
+    }
+}
+
+impl<A: Aggregate> Default for CommitReport<A> {
+    fn default() -> Self {
+        Self {
+            events: Vec::new(),
+            tasks: Vec::new(),
+        }
     }
 }
 
@@ -447,14 +542,30 @@ pub enum AggregateError<T: error::Error> {
     /// than returned to the user.
     #[error("{0}")]
     UnexpectedError(#[source] Box<dyn error::Error + Send + Sync + 'static>),
+    /// The aggregate decided, but the decision's tasks could not be planned; nothing was written.
+    #[error("{0}")]
+    TaskPlan(#[source] TaskPlanError),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::{
-        store::persisted::tests::{TestAggregate, TestCommands, TestService},
-        testing::mem_store::MemStore,
+    use crate::{
+        cqrs::{
+            command::{
+                causation::Causation,
+                planner::{Decision, TaskPlanError},
+            },
+            event::DomainEvent,
+            store::persisted::tests::{TestAggregate, TestCommands, TestService},
+            testing::mem_store::MemStore,
+        },
+        task::format::{TaskFormat, TaskPayload},
+    };
+    use serde::{Deserialize, Serialize};
+    use std::sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
     };
 
     #[tokio::test]
@@ -468,13 +579,240 @@ mod tests {
             .unwrap();
         assert_eq!(
             committed
+                .events
                 .iter()
                 .map(|e| (e.aggregate_id.as_str(), e.sequence, &e.metadata))
                 .collect::<Vec<_>>(),
             [("id", 1, &metadata)]
         );
+        assert!(committed.tasks.is_empty(), "no planner, no tasks");
         let next = framework.execute("id", TestCommands::DoSomething).await.unwrap();
-        assert_eq!(next.iter().map(|e| e.sequence).collect::<Vec<_>>(), [2]);
+        assert_eq!(next.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), [2]);
         assert_eq!(store.load_events("id").await.unwrap().len(), 2);
+    }
+
+    /// A command that counts its clones: the decision keeps one per attempt when a planner needs it.
+    #[derive(Debug)]
+    struct Probe {
+        value: u32,
+        clones: Arc<AtomicUsize>,
+    }
+
+    impl Clone for Probe {
+        fn clone(&self) -> Self {
+            self.clones.fetch_add(1, Ordering::SeqCst);
+            Self {
+                value: self.value,
+                clones: self.clones.clone(),
+            }
+        }
+    }
+
+    fn probe(value: u32) -> Probe {
+        Probe {
+            value,
+            clones: Arc::default(),
+        }
+    }
+
+    /// Adds the probe's value: 0 decides nothing, 13 is rejected.
+    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    struct Echo(u32);
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct Echoed(u32);
+
+    impl DomainEvent for Echoed {
+        fn event_type(&self) -> String {
+            "echoed".into()
+        }
+        fn event_version(&self) -> String {
+            "1".into()
+        }
+    }
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("unlucky")]
+    struct Unlucky;
+
+    impl Aggregate for Echo {
+        const TYPE: &'static str = "echo";
+        type Command = Probe;
+        type Event = Echoed;
+        type Error = Unlucky;
+        type Services = ();
+
+        async fn handle(&mut self, command: Probe, _: &(), sink: &EventSink<Self>) -> Result<(), Unlucky> {
+            match command.value {
+                0 => Ok(()),
+                13 => Err(Unlucky),
+                value => {
+                    sink.write(Echoed(value), self).await;
+                    Ok(())
+                }
+            }
+        }
+
+        fn apply(&mut self, event: Echoed) {
+            self.0 += event.0;
+        }
+    }
+
+    #[derive(Serialize)]
+    struct Shout {
+        total: u32,
+    }
+
+    impl TaskPayload for Shout {
+        const TASK_TYPE: &'static str = "shout";
+        const TASK_VERSION: i32 = 1;
+    }
+
+    type Seen = (u32, u32, u32, Vec<Echoed>, HashMap<String, String>, Option<Causation>);
+
+    /// Records what it saw and plans one shout of the new total; refuses when told to.
+    #[derive(Clone, Default)]
+    struct Recorder {
+        seen: Arc<Mutex<Vec<Seen>>>,
+        refuse: bool,
+    }
+
+    impl TaskPlanner<Echo> for Recorder {
+        fn plan(&self, d: &Decision<'_, Echo>) -> Result<Vec<NewTask>, TaskPlanError> {
+            self.seen.lock().unwrap().push((
+                d.before.0,
+                d.after.0,
+                d.command.value,
+                d.events.to_vec(),
+                d.metadata.clone(),
+                d.causation.cloned(),
+            ));
+            if self.refuse {
+                return Err(TaskPlanError::application("refused"));
+            }
+            Ok(vec![NewTask::new(Shout { total: d.after.0 })?])
+        }
+    }
+
+    #[tokio::test]
+    async fn the_planner_sees_the_decision_and_its_tasks_commit_with_the_events() {
+        let recorder = Recorder::default();
+        let framework = CqrsFramework::new(MemStore::<Echo>::default(), ()).with_task_planner(recorder.clone());
+        framework.execute("e-1", probe(5)).await.unwrap();
+        let causation = Causation::root("ui");
+        let metadata = causation.event_metadata();
+        let report = framework
+            .execute_with_metadata("e-1", probe(7), metadata.clone())
+            .await
+            .unwrap();
+        let seen = recorder.seen.lock().unwrap().clone();
+        assert_eq!(
+            seen,
+            [
+                (0, 5, 5, vec![Echoed(5)], HashMap::new(), None),
+                (5, 12, 7, vec![Echoed(7)], metadata, Some(causation.clone())),
+            ],
+            "before is the committed state, after has the events applied"
+        );
+        assert_eq!(report.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), [2]);
+        assert_eq!(report.tasks.len(), 1);
+        let task = &report.tasks[0];
+        assert_eq!(task.payload()["total"], 12);
+        assert_eq!(
+            task.id(),
+            causation.task_id("echo", "e-1", &TaskFormat::of::<Shout>().unwrap(), 0)
+        );
+        assert_eq!(task.metadata()["correlation_id"], causation.correlation_id.to_string());
+    }
+
+    #[tokio::test]
+    async fn no_events_or_a_rejection_plans_nothing() {
+        let recorder = Recorder::default();
+        let framework = CqrsFramework::new(MemStore::<Echo>::default(), ()).with_task_planner(recorder.clone());
+        assert_eq!(framework.execute("e-1", probe(0)).await.unwrap(), CommitReport::default());
+        assert!(matches!(
+            framework.execute("e-1", probe(13)).await,
+            Err(AggregateError::Domain(Unlucky))
+        ));
+        assert!(recorder.seen.lock().unwrap().is_empty(), "the planner was never called");
+    }
+
+    #[tokio::test]
+    async fn a_planning_error_refuses_the_command_and_commits_nothing() {
+        let store = MemStore::<Echo>::default();
+        let framework = CqrsFramework::new(store.clone(), ()).with_task_planner(Recorder {
+            refuse: true,
+            ..Recorder::default()
+        });
+        let Err(AggregateError::TaskPlan(error)) = framework.execute("e-1", probe(5)).await else {
+            panic!("a planning error refuses the command");
+        };
+        assert_eq!(error.to_string(), "refused");
+        assert_eq!(AggregateError::<Unlucky>::TaskPlan(error).to_string(), "refused");
+        assert!(store.load_events("e-1").await.unwrap().is_empty(), "nothing was committed");
+    }
+
+    #[tokio::test]
+    async fn without_a_planner_the_command_is_moved_and_with_one_it_is_cloned_once() {
+        let command = probe(5);
+        let clones = command.clones.clone();
+        CqrsFramework::new(MemStore::<Echo>::default(), ())
+            .execute("e-1", command)
+            .await
+            .unwrap();
+        assert_eq!(clones.load(Ordering::SeqCst), 0);
+        let command = probe(5);
+        let clones = command.clones.clone();
+        CqrsFramework::new(MemStore::<Echo>::default(), ())
+            .with_task_planner(Recorder::default())
+            .execute("e-1", command)
+            .await
+            .unwrap();
+        assert_eq!(clones.load(Ordering::SeqCst), 1, "one clone kept for the decision");
+    }
+
+    #[derive(Serialize)]
+    struct Whisper {}
+
+    impl TaskPayload for Whisper {
+        const TASK_TYPE: &'static str = "whisper";
+        const TASK_VERSION: i32 = 1;
+    }
+
+    struct Whisperer;
+
+    impl TaskPlanner<Echo> for Whisperer {
+        fn plan(&self, _: &Decision<'_, Echo>) -> Result<Vec<NewTask>, TaskPlanError> {
+            Ok(vec![NewTask::new(Whisper {})?])
+        }
+    }
+
+    #[tokio::test]
+    async fn a_second_planner_replaces_the_first() {
+        let recorder = Recorder::default();
+        let framework = CqrsFramework::new(MemStore::<Echo>::default(), ())
+            .with_task_planner(recorder.clone())
+            .with_task_planner(Whisperer);
+        let report = framework.execute("e-1", probe(5)).await.unwrap();
+        assert_eq!(report.tasks[0].format().to_string(), "whisper v1");
+        assert!(recorder.seen.lock().unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_commit_report_compares_its_parts_and_shows_them() {
+        let report = CqrsFramework::new(MemStore::<Echo>::default(), ())
+            .with_task_planner(Recorder::default())
+            .execute("e-1", probe(5))
+            .await
+            .unwrap();
+        assert_eq!(report.clone(), report);
+        assert_ne!(report, CommitReport::default());
+        let shown = format!("{report:?}");
+        for part in ["CommitReport", "EventEnvelope", "Echoed(5)", "shout"] {
+            assert!(shown.contains(part), "{shown}");
+        }
+        let mut other = report.clone();
+        other.events[0].sequence += 1;
+        assert_ne!(other, report, "envelopes compare by every field");
     }
 }

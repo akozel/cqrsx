@@ -69,7 +69,7 @@ async fn snapshot_histories(through_framework: bool) {
                     } else {
                         let context = store.load_aggregate(&id).await.unwrap();
                         store
-                            .commit(changes.iter().map(|v| Delta(*v)).collect(), context, HashMap::new())
+                            .commit(changes.iter().map(|v| Delta(*v)).collect(), context, HashMap::new(), &[])
                             .await
                             .unwrap();
                     }
@@ -133,7 +133,7 @@ async fn incompatible_snapshot_falls_back_to_complete_history_in_postgres() {
     assert_eq!(context.current_sequence, 3);
     assert_eq!(context.snapshot_version, Some(1));
     assert_eq!(context.aggregate_id, "legacy-snapshot");
-    store.commit(vec![Delta(4)], context, HashMap::new()).await.unwrap();
+    store.commit(vec![Delta(4)], context, HashMap::new(), &[]).await.unwrap();
     let recovered = store.load_aggregate("legacy-snapshot").await.unwrap();
     assert_eq!(recovered.aggregate.0, [1, 2, 3, 4]);
     assert_eq!(recovered.snapshot_version, Some(2));

@@ -1,10 +1,9 @@
-//! Step 1 of refund: task `encore_record_cancellation` → `Fan.RecordCancellation`, publishing
-//! `encore_issue_refund` in the same commit.
+//! Step 1 of refund: task `encore_record_cancellation` → `Fan.RecordCancellation`; the ledger's
+//! `TicketCancelled` plans `encore_issue_refund` in the same commit ([`Refund`](super::Refund)).
 use crate::{
     application::{
-        concert::tasks::RecordCancellationV1,
         fan::FanApp,
-        workflows::{ChainStep, refund::tasks::IssueRefundV1, run_chain_step},
+        workflows::{ChainStep, refund::tasks::RecordCancellationV1, run_chain_step},
     },
     domain::fan::{Fan, FanCommand, commands::RecordCancellation},
 };
@@ -19,20 +18,10 @@ use std::sync::Arc;
 
 pub struct RecordCancellationHandler<E> {
     pub fans: Arc<FanApp<E>>,
-    /// Attempt budget of the e-mail task this step publishes.
-    pub follow_up_max_attempts: i32,
 }
 
 impl<E: CommandExecutor<Fan>> TaskHandler<RecordCancellationV1> for RecordCancellationHandler<E> {
     async fn handle(&mut self, payload: RecordCancellationV1, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        let follow_up = IssueRefundV1 {
-            cancellation_id: payload.cancellation_id,
-            booking_id: payload.booking_id,
-            concert_id: payload.concert_id.clone(),
-            seat: payload.seat.clone(),
-            fan_id: payload.fan_id.clone(),
-            amount: payload.refund,
-        };
         let command = FanCommand::RecordCancellation(RecordCancellation {
             booking_id: payload.booking_id,
             cancellation_id: payload.cancellation_id,
@@ -45,8 +34,6 @@ impl<E: CommandExecutor<Fan>> TaskHandler<RecordCancellationV1> for RecordCancel
                 concert_id: &payload.concert_id,
                 fan_id: &payload.fan_id,
                 command,
-                follow_up,
-                follow_up_max_attempts: self.follow_up_max_attempts,
             },
         )
         .await
@@ -79,10 +66,7 @@ mod tests {
     #[tokio::test]
     async fn a_cancellation_that_overtook_its_ticket_is_retried_later() {
         let (fans, executor) = fans(MemStore::default());
-        let mut handler = RecordCancellationHandler {
-            fans,
-            follow_up_max_attempts: 6,
-        };
+        let mut handler = RecordCancellationHandler { fans };
         let payload = cancellation(ticket().booking_id);
         let result = handler.handle(payload.clone(), &attempt(&payload, Uuid::now_v7())).await;
         match result {
@@ -91,10 +75,9 @@ mod tests {
             }
             other => panic!("expected a retry (R10), got {other:?}"),
         }
-        assert_eq!(executor.take_bound_tasks().len(), 1, "the follow-up was bound to the command");
         assert!(
             executor.take_published_tasks().is_empty(),
-            "but never published: nothing was committed"
+            "a rejected command decided nothing, so nothing was planned or published"
         );
     }
 
@@ -103,31 +86,32 @@ mod tests {
         let store = MemStore::default();
         let (fans, executor) = fans(store.clone());
         let ticket = ticket();
-        RecordTicketHandler {
-            fans: fans.clone(),
-            follow_up_max_attempts: 6,
-        }
-        .handle(ticket.clone(), &attempt(&ticket, Uuid::now_v7()))
-        .await
-        .unwrap();
+        RecordTicketHandler { fans: fans.clone() }
+            .handle(ticket.clone(), &attempt(&ticket, Uuid::now_v7()))
+            .await
+            .unwrap();
         executor.take_published_tasks();
-        let mut handler = RecordCancellationHandler {
-            fans,
-            follow_up_max_attempts: 6,
-        };
+        let mut handler = RecordCancellationHandler { fans };
         let payload = cancellation(ticket.booking_id);
         let delivery = attempt(&payload, Uuid::now_v7());
         handler.handle(payload.clone(), &delivery).await.unwrap();
         assert_eq!(store.load_events(ledger().as_str()).await.unwrap().len(), 2);
+        let refunds = executor.take_published_tasks();
         assert_eq!(
-            executor.take_published_tasks()[0].format().to_string(),
-            "encore_issue_refund v1"
+            refunds.iter().map(|task| task.format().to_string()).collect::<Vec<_>>(),
+            ["encore_issue_refund v1"]
         );
+        assert_eq!(
+            refunds[0].payload()["cancellation_id"],
+            serde_json::json!(payload.cancellation_id)
+        );
+        assert_eq!(refunds[0].payload()["amount"], 80);
         handler.handle(payload, &delivery).await.unwrap();
         assert_eq!(
             store.load_events(ledger().as_str()).await.unwrap().len(),
             2,
             "R11: already cancelled"
         );
+        assert!(executor.take_published_tasks().is_empty(), "and no second refund");
     }
 }

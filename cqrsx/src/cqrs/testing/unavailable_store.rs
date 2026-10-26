@@ -1,6 +1,10 @@
 //! An event store that is never reachable.
-use crate::cqrs::{
-    AggregateError, aggregate::Aggregate, event::EventEnvelope, store::EventStore, testing::mem_store::MemStoreAggregateContext,
+use crate::{
+    cqrs::{
+        AggregateError, aggregate::Aggregate, event::EventEnvelope, store::EventStore,
+        testing::mem_store::MemStoreAggregateContext,
+    },
+    task::NewTask,
 };
 use std::{collections::HashMap, error::Error};
 
@@ -30,6 +34,7 @@ impl<A: Aggregate> EventStore<A> for UnavailableStore {
         _: Vec<A::Event>,
         _: Self::AC,
         _: HashMap<String, String>,
+        _: &[NewTask],
     ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
         Err(unavailable())
     }
@@ -57,7 +62,7 @@ mod tests {
             current_sequence: 0,
         };
         assert!(matches!(
-            store.commit(vec![], context, HashMap::new()).await,
+            store.commit(vec![], context, HashMap::new(), &[]).await,
             Err(AggregateError::DatabaseConnectionError(_))
         ));
     }

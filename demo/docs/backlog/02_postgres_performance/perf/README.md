@@ -70,7 +70,7 @@ The first run that actually starts rebuilds the back-end image; `BUILD=0` skips 
 | `pg_statements.drain.tsv` | `DRAIN=1` only: the statements of the drain, from the end of the burst to the end of the drain |
 | `wait_events.tsv` | while k6 runs, every 100 ms: the busy client sessions of PostgreSQL by state and wait event (`epoch_ms  state  wait  sessions`, a `sample` line per sample) |
 | `soak.tsv` | `SOAK=…` only: the stand's slices plus the database's growth from `hook_slice` |
-| `result.json` → `db`, `efficiency`, `queue`, `waits`, `drain.per_task`, `meta.git_describe` | the figures below |
+| `result.json` → `db`, `efficiency`, `queue`, `commands`, `waits`, `drain.per_task`, `meta.git_describe` | the figures below |
 
 | Piece | What it does |
 |---|---|
@@ -82,7 +82,7 @@ The first run that actually starts rebuilds the back-end image; `BUILD=0` skips 
 | `nginx/` | `nginx.conf` (one worker, no access log, keep-alive both ways, `$aggregate_key` from the path, `X-Upstream`) and the upstreams `upstream-{single,round_robin,key}.conf` |
 | `generator/` | the wrk image that stands in for k6 (`LOAD_K6_IMAGE`): `gen.sh` takes k6's arguments and environment, runs wrk for the warm-up and the measured window with `scenarios/<test>.lua`, and writes `result.json` in the shape of `demo/load/k6/lib/summary.js` (no projection-warning count: wrk does not read the bodies) |
 | `hooks.sh` | `hook_before_k6` resets the statement statistics, snapshots the counters and starts the wait sampler; `hook_after_k6` stops it, snapshots and dumps the statements; `hook_after_drain` waits for the projections to catch up (at most `PERF_CATCH_UP_S`, 30 s), then snapshots and dumps; `hook_slice` adds the database's growth to a soak run's slice; `hook_after_collect` runs `tools/collect.mjs` |
-| `tools/collect.mjs` | turns the counters into `db`, `efficiency` (with `chain`), `queue`, `waits`, `drain.per_task` |
+| `tools/collect.mjs` | turns the counters into `db`, `efficiency` (with `chain`), `queue`, `commands`, `waits`, `drain.per_task` |
 | `tools/lib/runs.mjs` | loading results and folding the repeats of a point into its median |
 | `tools/report.mjs` | terminal table (or a batch as Markdown, `--md`): one line per point, median, `n`, min–max |
 | `tools/report-html.mjs` | the stand's HTML report extended with these figures: medians with min–max whiskers, "CPU per 1000 accepted commands", "Database work per command" and "per drained task" |
@@ -136,6 +136,13 @@ LOCKED`) and settle (fenced by the lease token) are picked out of the statement 
 `mean_ms`, `rows_per_call` (for claim: tasks per claim), `blocks_per_call` (shared buffers hit and read),
 `wal_fpi_per_call`, `share_of_sql_time_pct` of all SQL execution time in the dump, and for the window
 `settle.per_command`. `compare.mjs` adds `claims/task`: claim calls per settled task.
+
+**Aggregate loads per commit** (`commands.window`, and `commands.drain` with `DRAIN=1`). The command path's
+statements, picked out by their text: a load of an aggregate starts with its snapshot (`SELECT … FROM snapshots
+WHERE …`), a commit is the outbox writer's statement (`written_events AS (INSERT INTO events`). `loads`,
+`commits` and `loads_per_commit`: every command attempt loads once, so a ratio above 1 is rejected or conflicted
+attempts, or reads outside a command (the pre-read of a cancellation before ticket 04/20). `compare.mjs` shows
+`loads/commit` and `drain loads/commit`.
 
 **What the sessions waited for** (`waits`). `samples` (one every 100 ms), `sessions_avg` (busy client sessions
 on average: active or inside a transaction), `active_avg`, and `top`: the ten most common states and wait

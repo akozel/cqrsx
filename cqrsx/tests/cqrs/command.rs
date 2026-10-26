@@ -33,8 +33,9 @@ impl EventStore<Ledger> for LostAcknowledgementStore {
         events: Vec<Delta>,
         context: Self::AC,
         metadata: HashMap<String, String>,
+        tasks: &[cqrsx::task::NewTask],
     ) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
-        self.inner.commit(events, context, metadata).await?;
+        self.inner.commit(events, context, metadata, tasks).await?;
         self.commits.fetch_add(1, Ordering::SeqCst);
         Err(AggregateError::DatabaseConnectionError(Box::new(io::Error::other(
             "acknowledgement lost after commit",
@@ -51,13 +52,13 @@ async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command(
     let observed = store.clone();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let commands = seen.clone();
-    let executor = CommandExecutorCore::<Ledger, _>::new(
-        move |_| CqrsFramework::new(store.clone(), Services(commands.clone())),
+    let executor = CommandExecutorCore::new(
+        CqrsFramework::new(store, Services(commands)),
         AggregateConflictRetryPolicy::new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
         cqrsx::cqrs::command::locks::LockLimits::default(),
     );
     assert_eq!(
-        CommandExecutor::execute(&executor, "lost-ack", Command::Adjust(vec![1]), vec![]).await,
+        CommandExecutor::execute(&executor, "lost-ack", Command::Adjust(vec![1])).await,
         Err(CommandGatewayError::Unavailable)
     );
     assert_eq!(observed.commits.load(Ordering::SeqCst), 1);

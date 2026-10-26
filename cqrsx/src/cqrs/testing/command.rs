@@ -1,12 +1,13 @@
 //! A command executor over a test event store or an in-memory journal, for use-case tests.
 use crate::{
     cqrs::{
-        CqrsFramework,
+        CommitReport, CqrsFramework,
         aggregate::Aggregate,
         command::{
             CommandExecutor, CommandGatewayError,
-            executor::{CommandExecutorCore, FrameworkFactory},
+            executor::CommandExecutorCore,
             locks::LockLimits,
+            planner::{Planning, TaskPlanner},
             retry::AggregateConflictRetryPolicy,
             wakeup::CommitWakeup,
         },
@@ -20,47 +21,30 @@ use std::{
     sync::{Arc, Mutex, PoisonError},
 };
 
-/// Builds every command's framework over the one test store; the tasks go to the executor's records, as
-/// the store does not model the outbox.
-struct TestFrameworkFactory<A: Aggregate, S> {
-    store: S,
-    services: A::Services,
-}
-
-impl<A, S> FrameworkFactory<A> for TestFrameworkFactory<A, S>
-where
-    A: Aggregate,
-    A::Services: Clone,
-    S: EventStore<A> + Clone,
-{
-    type Store = S;
-
-    fn framework(&self, _: Vec<NewTask>) -> CqrsFramework<A, S> {
-        CqrsFramework::new(self.store.clone(), self.services.clone())
-    }
-}
-
 /// The production command path behind [`CommandExecutor`] over a test store: one [`CommandExecutorCore`]
-/// with aggregate locks, the default conflict retry and an optional commit wake-up, plus a record of the
-/// tasks every call carries.
+/// with aggregate locks, the default conflict retry, an optional task planner and commit wake-up, plus a
+/// record of the tasks the committed calls published.
 ///
-/// *Bound* tasks are everything handed to the executor, whatever the outcome. *Published* tasks
-/// are only those of calls that committed (`Ok`), i.e. what a transactional outbox would hold. Clones share
-/// the store, the locks, the wake-up and both records, so a use case can own one clone while the test
-/// inspects another; register the wake-up before cloning.
+/// *Published* tasks are those of the calls that committed (`Ok`): what their commits report, i.e. what a
+/// transactional outbox would hold. Clones share the store, the locks, the planner, the wake-up and the
+/// record, so a use case can own one clone while the test inspects another; register the planner and the
+/// wake-up before cloning.
 ///
 /// Over a [`MemStore`] ([`new`](Self::new)) the commands only change the aggregates. Over a
 /// [`MemEventRepository`] ([`over_journal`](Self::over_journal)) they append to a journal that projection
-/// processors read, so a use-case test can follow the commands to its read models: give the processors the
-/// same journal and the executor their [`CommitWakeup`].
-///
-/// The store does not model the outbox: a call that commits no event still counts as
-/// published, while the PostgreSQL outbox rejects tasks without an event.
+/// processors read, and the journal's outbox ([`MemEventRepository::outbox`]) holds the published tasks: give
+/// the processors the same journal and the executor their [`CommitWakeup`].
 ///
 /// ```
 /// use cqrsx::cqrs::{
-///     aggregate::Aggregate, command::{CommandExecutor, CommandGatewayError}, event::DomainEvent,
-///     event_sink::EventSink, testing::command::TestCommandExecutor, testing::mem_store::MemStore,
+///     aggregate::Aggregate,
+///     command::{
+///         CommandExecutor, CommandGatewayError, causation::Causation,
+///         planner::{Decision, TaskPlanError, TaskPlanner},
+///     },
+///     event::DomainEvent,
+///     event_sink::EventSink,
+///     testing::{command::TestCommandExecutor, mem_store::MemStore},
 /// };
 /// use cqrsx::task::{NewTask, format::TaskPayload};
 /// use serde::{Deserialize, Serialize};
@@ -97,43 +81,61 @@ where
 ///     const TASK_TYPE: &'static str = "notify";
 ///     const TASK_VERSION: i32 = 1;
 /// }
+/// /// Every increment notifies.
+/// struct Notifier;
+/// impl TaskPlanner<Counter> for Notifier {
+///     fn plan(&self, decision: &Decision<'_, Counter>) -> Result<Vec<NewTask>, TaskPlanError> {
+///         decision.events.iter().map(|_| Ok(NewTask::new(Notify {})?)).collect()
+///     }
+/// }
 ///
 /// # tokio_test(async {
-/// let executor = TestCommandExecutor::new(MemStore::<Counter>::default(), 1);
+/// let executor = TestCommandExecutor::new(MemStore::<Counter>::default(), 1).with_task_planner(Notifier);
 /// let use_case = executor.clone(); // what the application under test receives
-/// for _ in 0..2 {
-///     let _ = use_case.execute("c-1", (), vec![NewTask::new(Notify {}).unwrap()]).await;
-/// }
-/// assert_eq!(executor.take_bound_tasks().len(), 2);
-/// assert_eq!(executor.take_published_tasks().len(), 1, "the second call was rejected");
+/// let causation = Causation::root("test");
+/// let report = use_case.execute_with_metadata("c-1", (), causation.event_metadata()).await.unwrap();
+/// assert_eq!(report.tasks[0].metadata()["correlation_id"], causation.correlation_id.to_string());
 /// assert_eq!(
-///     use_case.execute("c-1", (), vec![]).await,
+///     use_case.execute("c-1", ()).await,
 ///     Err(CommandGatewayError::Domain(LimitReached))
 /// );
+/// assert_eq!(executor.take_published_tasks().len(), 1, "the second call was rejected");
 /// # });
 /// # fn tokio_test(future: impl std::future::Future<Output = ()>) {
 /// #     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(future)
 /// # }
 /// ```
-pub struct TestCommandExecutor<A: Aggregate, S = MemStore<A>> {
-    inner: Arc<CommandExecutorCore<A, TestFrameworkFactory<A, S>>>,
-    bound: Arc<Mutex<Vec<NewTask>>>,
+pub struct TestCommandExecutor<A: Aggregate, S: EventStore<A> = MemStore<A>> {
+    inner: Arc<CommandExecutorCore<A, S>>,
     published: Arc<Mutex<Vec<NewTask>>>,
 }
 
-impl<A: Aggregate + 'static, S> TestCommandExecutor<A, S> {
+impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
     /// Execute against `store` with `services`, the default conflict retry and the default lock limits.
     pub fn new(store: S, services: A::Services) -> Self {
-        let factory = TestFrameworkFactory { store, services };
         Self {
             inner: Arc::new(CommandExecutorCore::new(
-                factory,
+                CqrsFramework::new(store, services),
                 AggregateConflictRetryPolicy::default(),
                 LockLimits::default(),
             )),
-            bound: Arc::default(),
             published: Arc::default(),
         }
+    }
+
+    /// Plans every decision's follow-up tasks through `planner`, as the production executor does.
+    ///
+    /// # Panics
+    ///
+    /// When a clone of the executor exists.
+    pub fn with_task_planner(mut self, planner: impl TaskPlanner<A> + 'static) -> Self
+    where
+        A::Command: Clone,
+    {
+        Arc::get_mut(&mut self.inner)
+            .expect("register the task planner before cloning the executor")
+            .set_task_planner(Planning::new(planner));
+        self
     }
 
     /// Wakes `wakeup` after every commit with events, for the projection processors under test.
@@ -150,38 +152,28 @@ impl<A: Aggregate + 'static, S> TestCommandExecutor<A, S> {
 
     /// The store the commands run against.
     pub fn store(&self) -> &S {
-        &self.inner.factory().store
-    }
-
-    /// Every task handed to the executor since the last call, in call order and whatever the
-    /// outcome; clears the record.
-    pub fn take_bound_tasks(&self) -> Vec<NewTask> {
-        take(&self.bound)
+        self.inner.framework().store()
     }
 
     /// The tasks of the calls that committed since the last call, in call order; clears the record.
     pub fn take_published_tasks(&self) -> Vec<NewTask> {
-        take(&self.published)
+        std::mem::take(&mut *self.published.lock().unwrap_or_else(PoisonError::into_inner))
     }
 }
 
 impl<A: Aggregate + 'static> TestCommandExecutor<A, PersistedEventStore<MemEventRepository, A>> {
     /// Execute against `journal` with `services`: every command loads its aggregate from the journal and
-    /// appends its events there, where projection processors over the same journal read them.
+    /// appends its events, and its tasks to the journal's outbox, where projection processors and tests
+    /// over the same journal read them.
     pub fn over_journal(journal: MemEventRepository, services: A::Services) -> Self {
         Self::new(PersistedEventStore::new_event_store(journal), services)
     }
 }
 
-fn take(tasks: &Mutex<Vec<NewTask>>) -> Vec<NewTask> {
-    std::mem::take(&mut *tasks.lock().unwrap_or_else(PoisonError::into_inner))
-}
-
-impl<A: Aggregate, S> Clone for TestCommandExecutor<A, S> {
+impl<A: Aggregate, S: EventStore<A>> Clone for TestCommandExecutor<A, S> {
     fn clone(&self) -> Self {
         Self {
             inner: self.inner.clone(),
-            bound: self.bound.clone(),
             published: self.published.clone(),
         }
     }
@@ -192,8 +184,7 @@ where
     A: Aggregate + Clone + 'static,
     A::Command: Clone + Send + 'static,
     A::Error: Send + 'static,
-    A::Services: Clone,
-    S: EventStore<A> + Clone + 'static,
+    S: EventStore<A> + 'static,
     S::AC: Send,
 {
     async fn execute_with_metadata(
@@ -201,19 +192,13 @@ where
         aggregate_id: &str,
         command: A::Command,
         metadata: HashMap<String, String>,
-        tasks: Vec<NewTask>,
-    ) -> Result<(), CommandGatewayError<A::Error>> {
-        self.bound
-            .lock()
-            .unwrap_or_else(PoisonError::into_inner)
-            .extend(tasks.iter().cloned());
-        let candidates = tasks.clone();
-        let result = self.inner.execute_with_metadata(aggregate_id, command, metadata, tasks).await;
-        if result.is_ok() {
+    ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+        let result = self.inner.execute_with_metadata(aggregate_id, command, metadata).await;
+        if let Ok(report) = &result {
             self.published
                 .lock()
                 .unwrap_or_else(PoisonError::into_inner)
-                .extend(candidates);
+                .extend(report.tasks.iter().cloned());
         }
         result
     }
@@ -224,14 +209,20 @@ mod tests {
     use super::*;
     use crate::{
         cqrs::{
-            event::DomainEvent, event_sink::EventSink, store::repository::PersistedEventRepository,
+            command::{
+                causation::Causation,
+                planner::{Decision, TaskPlanError},
+            },
+            event::DomainEvent,
+            event_sink::EventSink,
+            store::repository::PersistedEventRepository,
             testing::unavailable_store::UnavailableStore,
         },
         task::format::TaskPayload,
     };
     use serde::{Deserialize, Serialize};
 
-    /// Accepts values up to the cap in its services; `Conflict` in the store forces retries.
+    /// Accepts values up to the cap in its services.
     #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     struct Stack(Vec<u8>);
 
@@ -272,72 +263,84 @@ mod tests {
     }
 
     #[derive(Serialize)]
-    struct Notify(u8);
+    struct Notify {
+        value: u8,
+    }
 
     impl TaskPayload for Notify {
         const TASK_TYPE: &'static str = "notify";
         const TASK_VERSION: i32 = 1;
     }
 
-    fn task(value: u8) -> NewTask {
-        NewTask::from_payload(
-            crate::task::format::TaskFormat::of::<Notify>().unwrap(),
-            serde_json::json!({ "value": value }),
-        )
-        .unwrap()
+    /// One notification per pushed value.
+    struct Notifier;
+
+    impl TaskPlanner<Stack> for Notifier {
+        fn plan(&self, decision: &Decision<'_, Stack>) -> Result<Vec<NewTask>, TaskPlanError> {
+            decision
+                .events
+                .iter()
+                .map(|Pushed(value)| Ok(NewTask::new(Notify { value: *value })?))
+                .collect()
+        }
     }
 
     #[tokio::test]
-    async fn bound_and_published_tasks_differ_for_a_rejected_command() {
-        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1);
+    async fn published_tasks_are_those_of_the_committed_calls() {
+        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1).with_task_planner(Notifier);
         let use_case = executor.clone();
-        let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
-        assert_eq!(use_case.execute_with_metadata("s", 1, metadata, vec![task(1)]).await, Ok(()));
-        assert_eq!(
-            use_case.execute("s", 2, vec![task(2)]).await,
-            Err(CommandGatewayError::Domain(Full))
-        );
-        assert_eq!(executor.take_bound_tasks().len(), 2);
+        let metadata = Causation::root("test").event_metadata();
+        let report = use_case.execute_with_metadata("s", 1, metadata).await.unwrap();
+        assert_eq!(use_case.execute("s", 2).await, Err(CommandGatewayError::Domain(Full)));
         let published = executor.take_published_tasks();
-        assert_eq!(published.len(), 1);
+        assert_eq!(published, report.tasks, "the record is the committed report's tasks");
         assert_eq!(published[0].payload()["value"], 1);
-        assert!(executor.take_bound_tasks().is_empty(), "taking clears the record");
-        assert!(executor.take_published_tasks().is_empty());
+        assert!(executor.take_published_tasks().is_empty(), "taking clears the record");
         let events = executor.store().load_events("s").await.unwrap();
         assert_eq!((events.len(), events[0].metadata["source"].as_str()), (1, "test"));
     }
 
     #[tokio::test]
     async fn an_unavailable_store_is_reported_as_unavailable_and_publishes_nothing() {
-        let executor = TestCommandExecutor::<Stack, _>::new(UnavailableStore, 1);
-        assert_eq!(
-            executor.execute("s", 1, vec![task(1)]).await,
-            Err(CommandGatewayError::Unavailable)
-        );
-        assert_eq!(executor.take_bound_tasks().len(), 1);
+        let executor = TestCommandExecutor::<Stack, _>::new(UnavailableStore, 1).with_task_planner(Notifier);
+        assert_eq!(executor.execute("s", 1).await, Err(CommandGatewayError::Unavailable));
         assert!(executor.take_published_tasks().is_empty());
         let _: &UnavailableStore = executor.store();
     }
 
     #[tokio::test]
-    async fn a_journal_executor_appends_to_the_journal_and_wakes_its_processors() {
+    async fn a_journal_executor_publishes_into_the_journal_outbox_and_wakes_its_processors() {
         use std::{future::Future, pin::pin, task::Context, task::Waker};
         let (journal, wakeup) = (MemEventRepository::default(), CommitWakeup::new());
-        let executor = TestCommandExecutor::<Stack, _>::over_journal(journal.clone(), 2).with_commit_wakeup(wakeup.clone());
+        let executor = TestCommandExecutor::<Stack, _>::over_journal(journal.clone(), 2)
+            .with_task_planner(Notifier)
+            .with_commit_wakeup(wakeup.clone());
         let mut woken = pin!(wakeup.wait());
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
         for value in 1..=2 {
-            assert_eq!(executor.execute("s", value, vec![task(value)]).await, Ok(()));
+            assert_eq!(executor.execute("s", value).await.unwrap().tasks.len(), 1);
         }
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
         assert_eq!(
-            executor.execute("s", 3, vec![task(3)]).await,
+            executor.execute("s", 3).await,
             Err(CommandGatewayError::Domain(Full)),
             "the second load came from the journal"
         );
         let journaled = journal.get_events::<Stack>("s").await.unwrap();
         assert_eq!(journaled.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1, 2]);
-        assert_eq!(executor.take_published_tasks().len(), 2);
+        let outbox = journal.outbox::<Stack>();
+        assert_eq!(
+            outbox
+                .iter()
+                .map(|entry| (entry.aggregate_id.as_str(), entry.aggregate_sequence))
+                .collect::<Vec<_>>(),
+            [("s", 1), ("s", 2)],
+            "every task went to the outbox with its event"
+        );
+        assert_eq!(
+            executor.take_published_tasks(),
+            outbox.into_iter().map(|entry| entry.task).collect::<Vec<_>>()
+        );
     }
 
     #[tokio::test]
@@ -348,13 +351,22 @@ mod tests {
         let use_case = executor.clone();
         let mut woken = pin!(wakeup.wait());
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
-        use_case.execute("s", 1, vec![]).await.unwrap();
+        assert!(
+            use_case.execute("s", 1).await.unwrap().tasks.is_empty(),
+            "no planner, no tasks"
+        );
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
-        let late = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        let late_wakeup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             TestCommandExecutor::<Stack>::new(MemStore::<Stack>::default(), 1)
                 .clone()
                 .with_commit_wakeup(CommitWakeup::new())
         }));
-        assert!(late.is_err(), "a wake-up registered after a clone is refused");
+        assert!(late_wakeup.is_err(), "a wake-up registered after a clone is refused");
+        let late_planner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            TestCommandExecutor::<Stack>::new(MemStore::<Stack>::default(), 1)
+                .clone()
+                .with_task_planner(Notifier)
+        }));
+        assert!(late_planner.is_err(), "a planner registered after a clone is refused");
     }
 }

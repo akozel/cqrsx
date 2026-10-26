@@ -15,8 +15,9 @@ use std::sync::Arc;
 ///
 /// A handler never executes a command, not even from a task it spawns: it writes its read model and
 /// nothing else, and a follow-up started there would be recorded nowhere, repeated by every replay of the
-/// journal and lost by a crash. Publish the follow-up as an outbox task with the command instead; the
-/// framework does not detect the mistake (see the naming and integration rules in `doc/components.md`).
+/// journal and lost by a crash. Plan the follow-up as an outbox task from the command's decision instead
+/// ([`TaskPlanner`](crate::cqrs::command::planner::TaskPlanner)); the framework does not detect the mistake
+/// (see the naming and integration rules in `doc/components.md`).
 #[async_trait]
 pub trait EventHandler<A: Aggregate>: Send + Sync {
     /// Identifies the handler in the processor's failure reports; defaults to the type name. Decorators

@@ -32,19 +32,11 @@ pub fn dispatcher(
         retry_max: config.task_retry_max,
     };
     let http = HttpMailer::client(&mail)?;
-    // Attempt budget of the e-mail tasks the ledger steps publish.
-    let follow_up_max_attempts = config.task_max_attempts;
     Ok(Arc::new(move || {
         let mailer = || HttpMailer::new(http.clone(), mail.clone(), activity.clone());
         TaskDispatcher::try_new(vec![
-            BoxedTaskAdapter::json(RecordTicketHandler {
-                fans: fans.clone(),
-                follow_up_max_attempts,
-            })?,
-            BoxedTaskAdapter::json(RecordCancellationHandler {
-                fans: fans.clone(),
-                follow_up_max_attempts,
-            })?,
+            BoxedTaskAdapter::json(RecordTicketHandler { fans: fans.clone() })?,
+            BoxedTaskAdapter::json(RecordCancellationHandler { fans: fans.clone() })?,
             BoxedTaskAdapter::json(SendETicketHandler { mailer: mailer() })?,
             BoxedTaskAdapter::json(IssueRefundHandler { mailer: mailer() })?,
         ])
