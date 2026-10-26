@@ -764,6 +764,23 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   command a clone; the snapshot is deserialized without a clone; `EventSink` takes a `std::sync::Mutex`. Profile
   `app`: back-end CPU per booking 473 → 449 ms per 1000 (−5 %, repeats apart), hot key −4 %; PostgreSQL and MongoDB
   unchanged.
+- **Epic 04 ticket 05: a new view document without a read — measured, rejected and reverted.** `ViewProjection::apply_events` writes a batch that starts
+  with the aggregate's first event as a new document (version 0) first; a duplicate or a gap falls back to the reading
+  attempts, which keep all `max_attempts` (the conflict is not reported). The test doubles got the version rules of
+  the real repositories; the processor tests' `writes()` counts stored writes only. Announces (`full`, wrk): MongoDB
+  operations 2.01 → 1.01 per announce, MongoDB CPU −42 %, back-end −21 %, PostgreSQL −7 %, announces +11 %; bookings
+  −8 % MongoDB operations through the chain.
+  The user rejected it: a new document is rare in production, and the second write path makes `ViewProjection`
+  noticeably more complex. `projection.rs`, its tests, the MongoDB and `MemViewRepository` tests, the processor
+  double's write count and the `components.md` sentence are back at `47733f6`; the MongoDB counters of 01 stay.
 - **Epic 04 ticket 06: MongoDB client pool** (demo). `ENCORE_MONGODB_POOL_SIZE` with `DEFAULT_MONGODB_POOL_SIZE`,
   stand `MONGO_POOL=`. 10 / 32 / 64 connections (`REPEAT=3`): no more announces or bookings a second, MongoDB CPU
   per command +7…17 % with the larger pools; the default is 10, the driver's own.
+- **Epic 04 final series** (75 + 20 runs, the five stages interleaved): the accepted code (03 + 04, 06 at its
+  default) drains +39 %, a booking through the chain costs −29 % PostgreSQL CPU, announces +2 % (with 05 they were
+  +14 %); the hot key unchanged (WAL-bound); memory unchanged at every stage. Sustained bookings in `db` 750 → 850 by 2-minute runs; at 900/s for 5 minutes the base's
+  queue grows by 4.8k tasks a minute, with 03 it stays flat. Incident: the sandbox's PID 1 (`sleep infinity`) never
+  reaps orphans, the stand's samplers leave ~5 zombies a run, and after ~110 runs `pids.max` (1024) was used up
+  (docker CLI: `pthread_create failed`); the runs after 03:08 were moved to `results/superseded--e04f-pids/` and
+  measured again under a child subreaper. The host's disk (95 % full) stalls `fsync` for up to half a second, so the
+  WAL-bound points got five repeats; the full table is `backlog/04_operation_costs/results_01_06.md`.
