@@ -16,7 +16,12 @@
 #                   reports requests, accepted commands and latency per slice. Refused when the container
 #                   storage has less than LOAD_MIN_FREE_GB (default 10) free: minutes of writes are gigabytes
 #   FAN_MODE=…      spread-bookings only: spread (default) | hot (every booking for one fan)
-#   WORKERS=…       outbox workers = queue capacity (default 2)
+#   WORKERS=…       outbox workers (default 2)
+#   QUEUE=…         claimed tasks waiting for a worker, OUTBOX_QUEUE_CAPACITY (default: WORKERS)
+#   LEASE=…         task lease in seconds, OUTBOX_LEASE_SECS (default 30); with the back-end's H = 5 s and
+#                   S = 3 s it must exceed 16 + ceil(QUEUE/WORKERS)*8, so a QUEUE above WORKERS needs it
+#   REFILL=…        claim once fewer than this percent of QUEUE wait, OUTBOX_QUEUE_REFILL_PERCENT (default 25;
+#                   an image before ticket 04/19 claims for every freed slot and ignores it)
 #   DRAIN=1         after the burst, sample transactional_outbox every second until no task is open
 #   DRAIN_TIMEOUT=… seconds to wait for the drain (default 900)
 #   SNAPSHOT_EVERY=… ENCORE_SNAPSHOT_EVERY (default 10);  RUST_LOG=… back-end log level (default warn)
@@ -215,6 +220,13 @@ fi
 compose() { $COMPOSE -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 
 export LOAD_OUTBOX_WORKERS="${WORKERS:-2}"
+# Never empty: the back-end refuses an empty OUTBOX_* value.
+export LOAD_OUTBOX_QUEUE="${QUEUE:-$LOAD_OUTBOX_WORKERS}" LOAD_OUTBOX_LEASE="${LEASE:-30}" LOAD_OUTBOX_REFILL="${REFILL:-25}"
+if (( LOAD_OUTBOX_QUEUE > LOAD_OUTBOX_WORKERS )) && [[ -z "${LEASE:-}" ]]; then
+  waves=$(( (LOAD_OUTBOX_QUEUE + LOAD_OUTBOX_WORKERS - 1) / LOAD_OUTBOX_WORKERS ))
+  echo "run: QUEUE=$LOAD_OUTBOX_QUEUE above WORKERS=$LOAD_OUTBOX_WORKERS needs LEASE=… above $(( 16 + waves * 8 )) s (16 + ceil(Q/C)*8)" >&2
+  exit 2
+fi
 export LOAD_SNAPSHOT_EVERY="${SNAPSHOT_EVERY:-10}"
 export LOAD_PG_POOL="${POOL:-10}" LOAD_MONGO_POOL="${MONGO_POOL:-}"
 export LOAD_RUST_LOG="${RUST_LOG:-warn}"
@@ -432,7 +444,7 @@ if [[ -n "${LOAD_CHAOS:-}" ]]; then
   if ! declare -F chaos >/dev/null; then log "LOAD_CHAOS=$LOAD_CHAOS defines no function 'chaos'"; exit 2; fi
 fi
 
-log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, pg pool $LOAD_PG_POOL${LOAD_MONGO_POOL:+, mongo pool $LOAD_MONGO_POOL}, snapshot every $LOAD_SNAPSHOT_EVERY${LOAD_PROJECTION_MAX_BATCH:+, projection batch $LOAD_PROJECTION_MAX_BATCH}${LOAD_PROJECTION_SETTLE_MS:+, settle $LOAD_PROJECTION_SETTLE_MS ms}${LOAD_SERVICES_EXTRA:+, also $LOAD_SERVICES_EXTRA}"
+log "stand: $CTR, cpu isolation $PIN_LABEL, outbox workers $LOAD_OUTBOX_WORKERS, queue $LOAD_OUTBOX_QUEUE (refill below $LOAD_OUTBOX_REFILL %), lease $LOAD_OUTBOX_LEASE s, pg pool $LOAD_PG_POOL${LOAD_MONGO_POOL:+, mongo pool $LOAD_MONGO_POOL}, snapshot every $LOAD_SNAPSHOT_EVERY${LOAD_PROJECTION_MAX_BATCH:+, projection batch $LOAD_PROJECTION_MAX_BATCH}${LOAD_PROJECTION_SETTLE_MS:+, settle $LOAD_PROJECTION_SETTLE_MS ms}${LOAD_SERVICES_EXTRA:+, also $LOAD_SERVICES_EXTRA}"
 compose down -v --remove-orphans >/dev/null 2>&1 || true
 $CTR rm -f "$K6_NAME" >/dev/null 2>&1 || true
 if [[ "${BUILD:-0}" != 0 ]]; then
@@ -624,7 +636,7 @@ budget_of() { # service → cores, empty when not isolated
 LOADC_RUN="$RUN_ID" LOADC_SCRIPT="$SCRIPT" LOADC_PARAMS="$*" LOADC_CTR="$CTR" LOADC_PIN="$PIN_LABEL" \
   LOADC_BUDGET_BACKEND="$(budget_of backend)" LOADC_BUDGET_POSTGRES="$(budget_of postgres)" LOADC_BUDGET_MONGO="$(budget_of mongo)" LOADC_BUDGET_K6="$(budget_of k6)" \
   LOADC_GIT="$(git -C "$HERE" rev-parse --short HEAD 2>/dev/null || echo unknown)" \
-  LOADC_WORKERS="$LOAD_OUTBOX_WORKERS" LOADC_SNAPSHOT="$LOAD_SNAPSHOT_EVERY" LOADC_POOL="$LOAD_PG_POOL" LOADC_MONGO_POOL="$LOAD_MONGO_POOL" LOADC_K6_EXIT="$K6_EXIT" \
+  LOADC_WORKERS="$LOAD_OUTBOX_WORKERS" LOADC_QUEUE="$LOAD_OUTBOX_QUEUE" LOADC_LEASE="$LOAD_OUTBOX_LEASE" LOADC_REFILL="$LOAD_OUTBOX_REFILL" LOADC_SNAPSHOT="$LOAD_SNAPSHOT_EVERY" LOADC_POOL="$LOAD_PG_POOL" LOADC_MONGO_POOL="$LOAD_MONGO_POOL" LOADC_K6_EXIT="$K6_EXIT" \
   LOADC_MAX_BATCH="${LOAD_PROJECTION_MAX_BATCH:-default}" LOADC_SETTLE="${LOAD_PROJECTION_SETTLE_MS:-default}" LOADC_VERIFY_SECONDS="$VERIFY_SECONDS" \
   LOADC_BURST_START="$BURST_START" LOADC_BURST_END="$BURST_END" \
   LOADC_PEAK_BACKEND="$(peak_of backend)" LOADC_PEAK_POSTGRES="$(peak_of postgres)" LOADC_PEAK_MONGO="$(peak_of mongo)" \

@@ -133,8 +133,9 @@ The window's figures stay: they are the cost of taking a command; `chain` is the
 
 **Queue statements** (`queue.window`, and `queue.drain` with `DRAIN=1`). Claim (`WITH ready AS … FOR UPDATE SKIP
 LOCKED`) and settle (fenced by the lease token) are picked out of the statement dumps by their text: `calls`,
-`mean_ms`, `blocks_per_call` (shared buffers hit and read), `wal_fpi_per_call`, `share_of_sql_time_pct` of all
-SQL execution time in the dump, and for the window `settle.per_command`.
+`mean_ms`, `rows_per_call` (for claim: tasks per claim), `blocks_per_call` (shared buffers hit and read),
+`wal_fpi_per_call`, `share_of_sql_time_pct` of all SQL execution time in the dump, and for the window
+`settle.per_command`. `compare.mjs` adds `claims/task`: claim calls per settled task.
 
 **What the sessions waited for** (`waits`). `samples` (one every 100 ms), `sessions_avg` (busy client sessions
 on average: active or inside a transaction), `active_avg`, and `top`: the ten most common states and wait

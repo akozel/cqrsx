@@ -19,7 +19,8 @@ use uuid::Uuid;
 
 // Expired-lease recovery returns at most this many rows per poller tick, in one statement.
 const RECOVERY_BATCH_LIMIT: usize = 32;
-/// One producer claims under free bounded-channel capacity; at most C deliveries run and Q wait.
+/// One producer claims once fewer deliveries than the refill level wait, up to the free capacity of the
+/// bounded channel; at most C deliveries run and Q wait.
 /// Each worker owns its dispatcher for its entire Tokio task lifetime. Token cancellation
 /// stops admission/dequeue and drains only started invocations for a common H+S budget.
 /// Startup/restart errors cancel the supplied token before returning/draining. Pass a
@@ -84,7 +85,9 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
         pool.spawn(index, dispatcher);
     }
     info!(concurrency = config.concurrency(), buffer_capacity = config.buffer_capacity(),
+        buffer_refill_percent = config.buffer_refill_percent(),
         lease_seconds = config.lease_duration().as_secs(), owner = %owner, "task runtime started");
+    let refill_level = config.buffer_refill_level();
     let mut interval = tokio::time::interval(config.poll_interval());
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
     // All fallible runtime exits converge here rather than aborting healthy workers early.
@@ -117,10 +120,12 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
                 }
                 _ = capacity_available.notified() => {},
             }
-            let limit = config.buffer_capacity() - sender.len();
-            if limit == 0 {
+            // Claim once fewer than the refill level wait: one claim then fills the buffer instead
+            // of one claim per freed slot. The level is at most the capacity, so a full buffer waits too.
+            if sender.len() >= refill_level {
                 continue;
             }
+            let limit = config.buffer_capacity() - sender.len();
             // This is the only producer. While claim awaits, consumers can only
             // reduce occupancy, so the returned batch fits without reservations.
             let claimed = tokio::select! {
@@ -203,7 +208,7 @@ mod tests {
         })
         .await;
         assert_eq!(log.matches("task runtime started").count(), 1);
-        assert!(log.contains("concurrency=2 buffer_capacity=3"));
+        assert!(log.contains("concurrency=2 buffer_capacity=3 buffer_refill_percent=25"));
         assert!(log.contains(&format!("lease_seconds={}", config.lease_duration().as_secs())));
         let owner = log.split("owner=").nth(1).unwrap().split_whitespace().next().unwrap();
         assert!(Uuid::parse_str(owner).is_ok());

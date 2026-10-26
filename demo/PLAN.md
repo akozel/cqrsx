@@ -872,6 +872,7 @@ MongoDB для демо — без аутентификации; порты Post
 | `RUST_LOG` | оба | `info` | **один уровень** (`off/error/warn/info/debug/trace`): `cqrsx::logging::LoggingConfig::from_env` директивы вида `info,crate=debug` отвергает; sidecar читает так же |
 | `OUTBOX_WORKER_CONCURRENCY` (C) | back-end | `2` (библиотека: 128) | воркеры task runtime |
 | `OUTBOX_QUEUE_CAPACITY` (Q) | back-end | `2` (128) | локальный буфер claim-ов (`buffer_capacity`) |
+| `OUTBOX_QUEUE_REFILL_PERCENT` | back-end | `25` (25) | claim, когда в буфере меньше этой доли Q; тогда буфер заполняется (`buffer_refill_percent`) |
 | `OUTBOX_POLL_INTERVAL_MS` | back-end | `300` (1000) | период опроса outbox и recovery просроченных lease |
 | `OUTBOX_HANDLER_TIMEOUT_SECS` (H) | back-end | `5` (15) | запрос к почтовому сервису сдаётся на секунду раньше (`Config::mail_request_timeout`), чтобы попытка закончилась своим retry, а не таймаутом обработчика |
 | `OUTBOX_LEASE_SECS` (L) | back-end | `30` (60) | валидируется библиотекой: `L > 2·S + H + 5 с + ceil(Q/C)·(H+S)` = 24 с |

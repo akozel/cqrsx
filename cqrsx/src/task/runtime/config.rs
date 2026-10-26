@@ -146,10 +146,10 @@ mod tests {
             None
         })
         .unwrap();
-        assert_eq!(reads.len(), 6);
+        assert_eq!(reads.len(), 7);
         reads.sort_unstable();
         reads.dedup();
-        assert_eq!(reads.len(), 6);
+        assert_eq!(reads.len(), 7);
         let c = lookup(&[("OUTBOX_WORKER_CONCURRENCY", "256")]).unwrap();
         assert_eq!(c.worker_pool().buffer_capacity(), 128);
         assert_eq!(c.worker_pool().concurrency(), 256);

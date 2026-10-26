@@ -183,8 +183,13 @@ dependency outages are `chaos/`.
 
 ## Knobs worth turning
 
-- `WORKERS`: outbox workers and queue capacity together. They share the PostgreSQL pool with HTTP and
-  the poller.
+- `WORKERS`: outbox workers. They share the PostgreSQL pool with HTTP and the poller.
+- `QUEUE`, `REFILL`, `LEASE`: the claimed tasks waiting for a worker (`OUTBOX_QUEUE_CAPACITY`, default
+  `WORKERS`), the percent of it below which the back-end claims again and fills it
+  (`OUTBOX_QUEUE_REFILL_PERCENT`, default 25; an image before ticket 04/19 claims for every freed slot), and the
+  task lease (`OUTBOX_LEASE_SECS`, default 30). The lease must exceed `16 + ceil(QUEUE / WORKERS) * 8` seconds
+  with the back-end's handler and storage timeouts, so `run.sh` refuses a `QUEUE` above `WORKERS` without
+  `LEASE`. All three are in `meta` (`outbox_queue_capacity`, `outbox_refill_percent`, `outbox_lease_s`).
 - `POOL`: the size of that pool (`ENCORE_DATABASE_POOL_SIZE`, default 10). The 2026-10-18 runs put the
   write-path plateaus (~7.3k announces/s, ~4.3k bookings/s) on this ceiling: nothing else was saturated.
 - `MONGO_POOL`: the back-end's MongoDB client pool (`ENCORE_MONGODB_POOL_SIZE`; empty = the back-end's default,

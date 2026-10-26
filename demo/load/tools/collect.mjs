@@ -400,6 +400,11 @@ const result = {
     git: env('GIT', 'unknown'),
     cpu_pinning: env('PIN', 'off'),
     outbox_workers: num(env('WORKERS')) ?? 2,
+    // OUTBOX_QUEUE_CAPACITY, OUTBOX_LEASE_SECS and OUTBOX_QUEUE_REFILL_PERCENT as run.sh passed them (ticket
+    // 04/19); an image before that ticket ignores the refill and claims for every freed slot.
+    outbox_queue_capacity: num(env('QUEUE')) ?? num(env('WORKERS')) ?? 2,
+    outbox_lease_s: num(env('LEASE')) ?? 30,
+    outbox_refill_percent: num(env('REFILL')) ?? 25,
     snapshot_every: num(env('SNAPSHOT')) ?? 10,
     // ENCORE_PROJECTION_MAX_BATCH as run.sh passed it; `default` = the back-end's own default. Runs before
     // backlog 02/08d also have `projection_delivery`, before 08c `command_ordering`.

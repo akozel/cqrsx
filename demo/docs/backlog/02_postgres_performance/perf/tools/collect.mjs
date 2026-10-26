@@ -87,8 +87,8 @@ const STATEMENT_KINDS = {
 };
 
 /**
- * Per kind of statement: calls, total and mean time, buffers (hit + read) and full-page images per call,
- * and its share of all SQL execution time in the dump.
+ * Per kind of statement: calls, total and mean time, rows (for claim: tasks), buffers (hit + read) and
+ * full-page images per call, and its share of all SQL execution time in the dump.
  */
 function queueStatements(rows) {
   if (rows === null) {
@@ -103,12 +103,14 @@ function queueStatements(rows) {
       continue;
     }
     const time = own.reduce((sum, row) => sum + (row.total_exec_time_ms ?? 0), 0);
+    const returned = own.reduce((sum, row) => sum + (row.rows ?? 0), 0);
     const blocks = own.reduce((sum, row) => sum + (row.shared_blks_hit ?? 0) + (row.shared_blks_read ?? 0), 0);
     const fpi = own.some((row) => row.wal_fpi !== undefined) ? own.reduce((sum, row) => sum + (row.wal_fpi ?? 0), 0) : null;
     out[kind] = {
       calls,
       total_ms: round(time, 1),
       mean_ms: round(time / calls, 4),
+      rows_per_call: round(returned / calls, 2),
       blocks_per_call: round(blocks / calls, 1),
       wal_fpi_per_call: fpi === null ? null : round(fpi / calls, 3),
       share_of_sql_time_pct: total > 0 ? round((100 * time) / total, 1) : null,

@@ -46,6 +46,12 @@ const peakMiB = (service) => (r) => mib(r.memory_peak_bytes?.[service] ?? r.reso
 const anonMiB = (service) => (r) => mib(r.db?.memory_after?.[service]?.anon_bytes);
 const mongoOps = (op) => (r) => r.efficiency?.mongo_ops_per_command?.[op];
 const queue = (part, kind, field) => (r) => r.queue?.[part]?.[kind]?.[field];
+// Claims per settled task: under 1 once a claim takes several tasks (ticket 04/19).
+const claimsPerTask = (part) => (r) => {
+  const claims = r.queue?.[part]?.claim?.calls;
+  const settles = r.queue?.[part]?.settle?.calls;
+  return claims == null || !settles ? null : claims / settles;
+};
 const metrics = [
   ['req/s', (r) => r.rps],
   ['accepted/s', acceptedPerSecond],
@@ -100,6 +106,8 @@ const metrics = [
   ['settle % SQL', queue('window', 'settle', 'share_of_sql_time_pct')],
   ['claim ms', queue('window', 'claim', 'mean_ms')],
   ['claim blk', queue('window', 'claim', 'blocks_per_call')],
+  ['claim tasks/call', queue('window', 'claim', 'rows_per_call')],
+  ['claims/task', claimsPerTask('window')],
   // The whole outbox chain of the accepted commands, to the end of the drain (DRAIN=1).
   ['chain tasks/cmd', (r) => r.efficiency?.chain?.tasks_per_command],
   ['chain in window', (r) => r.efficiency?.chain?.window_share],
@@ -122,6 +130,8 @@ const metrics = [
   ['drain settle % SQL', queue('drain', 'settle', 'share_of_sql_time_pct')],
   ['drain claim ms', queue('drain', 'claim', 'mean_ms')],
   ['drain claim blk', queue('drain', 'claim', 'blocks_per_call')],
+  ['drain claim tasks/call', queue('drain', 'claim', 'rows_per_call')],
+  ['drain claims/task', claimsPerTask('drain')],
   ['PG busy sessions', (r) => r.waits?.sessions_avg],
   ['PG active sessions', (r) => r.waits?.active_avg],
   ['be CPU % max', (r) => r.resources?.backend?.cpu_max_pct],

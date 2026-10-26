@@ -784,3 +784,13 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   (docker CLI: `pthread_create failed`); the runs after 03:08 were moved to `results/superseded--e04f-pids/` and
   measured again under a child subreaper. The host's disk (95 % full) stalls `fsync` for up to half a second, so the
   WAL-bound points got five repeats; the full table is `backlog/04_operation_costs/results_01_06.md`.
+- **2026-10-26, epic 04 ticket 19 (claim in batches).** Ticket 08 (settle with the next claim) was rejected: one
+  transaction for many tasks. Instead the task runtime's producer now claims only once fewer than
+  `OUTBOX_QUEUE_REFILL_PERCENT` (`buffer_refill_percent`, default 25) of the buffer wait, and then fills it; before,
+  it claimed for every freed slot, one claim per task on a hot key. The stand got `QUEUE=`, `LEASE=`, `REFILL=` and
+  tasks per claim (`rows_per_call`). Measured: buffers of 2C/4C/16C cut the chain's PostgreSQL CPU by up to 23 % and
+  sped the drain up to +35 %, but any buffer above C needs a lease for a second queued wave; the user kept Q = C and a
+  30 s lease. At Q = C = 8 the threshold matters only with a backlog: 100 → 50 % −5 % PostgreSQL CPU per booking, 33,
+  25 and 10 % within noise of each other (−9…−11 %); 25 % keeps a quarter of the buffer for the workers while the
+  claim runs. The hot key is unchanged (8 workers leave no backlog to batch). A host slowdown every ~5 minutes hit
+  the same variant in every pass of a fixed-order series; shuffle the order in future series.

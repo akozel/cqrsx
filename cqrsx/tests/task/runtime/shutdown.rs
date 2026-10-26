@@ -225,7 +225,11 @@ async fn shared_cancellation_stops_dequeue_while_supervisor_is_claiming() {
         queue.clone(),
         Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())),
         io_factory(probe.clone()),
-        worker_config(1, 2, Duration::from_secs(3600)),
+        // A claim for every freed slot, so that a claim is in flight after the second dequeue: this test is
+        // about cancellation during a claim, not the refill level.
+        worker_config(1, 2, Duration::from_secs(3600))
+            .with_buffer_refill_percent(100)
+            .unwrap(),
         shutdown.clone(),
     ));
     wait_until(|| probe.active.load(Ordering::SeqCst) == 1 && queue.incoming.lock().unwrap().len() == 2).await;

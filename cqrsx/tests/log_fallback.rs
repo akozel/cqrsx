@@ -224,7 +224,7 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
     assert!(log.contains(&cancelled_id));
     assert!(log.contains("panicked=true cancelled=false"));
     assert!(log.contains("panicked=false cancelled=true"));
-    assert!(log.contains("concurrency=1 buffer_capacity=1 lease_seconds=60"));
+    assert!(log.contains("concurrency=1 buffer_capacity=1 buffer_refill_percent=25 lease_seconds=60"));
     assert!(log.contains("task failed"));
     assert!(log.contains(&id.to_string()));
     assert!(log.contains("task_type=unknown task_version=1 attempt=1 reason=permanent failure"));

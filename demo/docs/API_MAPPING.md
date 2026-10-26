@@ -293,6 +293,7 @@ export function deriveTaskStatus(row: OutboxRow, dbNow: Date): UiTaskStatus {
 |---|---|---|---|
 | `OUTBOX_WORKER_CONCURRENCY` (C) | `TaskWorkerPoolConfig` | 128 | > 0 |
 | `OUTBOX_QUEUE_CAPACITY` (Q = `buffer_capacity`) | `TaskWorkerPoolConfig` | 128 | > 0 |
+| `OUTBOX_QUEUE_REFILL_PERCENT` (`buffer_refill_percent`) | `TaskWorkerPoolConfig` | 25 | 1..=100: claim, когда в буфере меньше этой доли Q |
 | `OUTBOX_POLL_INTERVAL_MS` | `TaskWorkerPoolConfig` | 1000 | > 0 |
 | `OUTBOX_HANDLER_TIMEOUT_SECS` (H) | `TaskWorkerPoolConfig` | 15 | 0 < H < lease |
 | `OUTBOX_LEASE_SECS` (L) | `TaskWorkerPoolConfig` | 60 | см. формулу |

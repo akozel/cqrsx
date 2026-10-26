@@ -12,7 +12,11 @@ async fn bounded_admission_is_independent_of_concurrency_and_shutdown_leaves_que
             prepared_runtime(
                 queue.clone(),
                 io_factory(probe.clone()),
-                worker_config(c, q, Duration::from_millis(2)),
+                // A claim for every freed slot, so that the buffer fills: this test is about the bound and
+                // shutdown, not the refill level.
+                worker_config(c, q, Duration::from_millis(2))
+                    .with_buffer_refill_percent(100)
+                    .unwrap(),
             )
             .run(shutdown),
         );
@@ -41,6 +45,61 @@ async fn bounded_admission_is_independent_of_concurrency_and_shutdown_leaves_que
         assert_eq!(queue.incoming.lock().unwrap().len(), 20 - c - q);
         assert_eq!(probe.active.load(Ordering::SeqCst), 0);
     }
+}
+
+/// One worker over a buffer of four: the first claim fills the buffer, then each finished delivery lets
+/// the worker take the next one, and `claims` is the claim limits seen after each of `steps` dequeues.
+async fn claim_limits_while_one_worker_drains_a_buffer_of_four(percent: u8, steps: &[Vec<usize>]) {
+    let queue = Arc::new(Queue::default());
+    queue.incoming.lock().unwrap().extend((0..20).map(|_| claimed()));
+    let probe = Arc::new(IoProbe::default());
+    let shutdown = CancellationToken::new();
+    let stop = shutdown.clone();
+    // Four queued waves need a lease above 2 * 6 + 30 + 5 + 4 * 36 = 191 s.
+    let config = TaskWorkerPoolConfig::new(
+        1,
+        4,
+        Duration::from_millis(2),
+        Duration::from_secs(30),
+        Duration::from_secs(200),
+    )
+    .unwrap()
+    .with_buffer_refill_percent(percent)
+    .unwrap();
+    let supervisor_task = tokio::spawn(prepared_runtime(queue.clone(), io_factory(probe.clone()), config).run(shutdown));
+    for (step, expected) in steps.iter().enumerate() {
+        if step > 0 {
+            probe.gate.add_permits(1);
+        }
+        let claimed: usize = expected.iter().sum();
+        // The delivery of this step runs, and the buffer holds what was claimed and not yet taken.
+        wait_until(|| probe.calls.lock().unwrap().len() == step + 1 && queue.incoming.lock().unwrap().len() == 20 - claimed)
+            .await;
+        // Poll ticks keep coming (recovery runs every 2 ms), and none of them claims beyond the expectation.
+        let ticks = queue.recovery_calls.load(Ordering::SeqCst);
+        wait_until(|| queue.recovery_calls.load(Ordering::SeqCst) >= ticks + 3).await;
+        assert_eq!(
+            *queue.claim_limits.lock().unwrap(),
+            *expected,
+            "percent {percent}, step {step}"
+        );
+    }
+    stop.cancel();
+    probe.gate.add_permits(1);
+    supervisor_task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn a_claim_waits_until_fewer_than_half_the_buffer_waits_and_then_fills_it() {
+    // Waiting after each dequeue: 3, 2, 1 → claim 3 (back to 4), then 3, 2, 1 → claim 3.
+    let steps = [vec![4], vec![4], vec![4, 3], vec![4, 3], vec![4, 3], vec![4, 3, 3]];
+    claim_limits_while_one_worker_drains_a_buffer_of_four(50, &steps).await;
+}
+
+#[tokio::test]
+async fn a_refill_percent_of_100_claims_for_every_freed_slot() {
+    let steps = [vec![4, 1], vec![4, 1, 1], vec![4, 1, 1, 1]];
+    claim_limits_while_one_worker_drains_a_buffer_of_four(100, &steps).await;
 }
 
 #[tokio::test]
@@ -84,7 +143,10 @@ async fn consumers_free_capacity_during_claim_without_parallel_claims_or_overflo
         paused_queue.clone(),
         Arc::new(DefaultTaskExecutor::new(paused_queue.clone(), TaskStorageConfig::default())),
         io_factory(probe.clone()),
-        worker_config(1, 2, Duration::from_secs(3600)),
+        // A claim for every freed slot: this test is about a dequeue racing a claim, not the refill level.
+        worker_config(1, 2, Duration::from_secs(3600))
+            .with_buffer_refill_percent(100)
+            .unwrap(),
         shutdown,
     ));
     // One active delivery and two waiting; the next claim starts on dequeue.

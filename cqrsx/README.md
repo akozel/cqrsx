@@ -355,9 +355,12 @@ in their names.
 | Logging | `LoggingConfig::from_env()`: `RUST_LOG`, one level | `info` |
 
 The task runtime reads `OUTBOX_WORKER_CONCURRENCY` (128), `OUTBOX_QUEUE_CAPACITY` (128),
-`OUTBOX_POLL_INTERVAL_MS` (1000), `OUTBOX_HANDLER_TIMEOUT_SECS` (15), `OUTBOX_LEASE_SECS` (60) and
-`OUTBOX_STORAGE_TIMEOUT_MS` (6000), and refuses a lease shorter than the worst case of one claim:
-`2·storage + handler + 5 s + ceil(capacity / concurrency)·(handler + storage)`.
+`OUTBOX_QUEUE_REFILL_PERCENT` (25), `OUTBOX_POLL_INTERVAL_MS` (1000), `OUTBOX_HANDLER_TIMEOUT_SECS` (15),
+`OUTBOX_LEASE_SECS` (60) and `OUTBOX_STORAGE_TIMEOUT_MS` (6000), and refuses a lease shorter than the worst
+case of one claim: `2·storage + handler + 5 s + ceil(capacity / concurrency)·(handler + storage)`. Claimed
+tasks wait in a local buffer of `OUTBOX_QUEUE_CAPACITY`; the runtime claims again once fewer than
+`OUTBOX_QUEUE_REFILL_PERCENT` of it wait, and then fills it. The defaults keep the capacity equal to the
+concurrency: a larger buffer makes claims bigger but needs a lease for one more queued wave.
 
 ## Rules worth knowing
 
