@@ -70,10 +70,15 @@ pub(super) async fn settle(
     // Lock first, then check time on the locked row. An UPDATE predicate can
     // be evaluated before waiting on a lock and is not necessarily rechecked
     // when the blocker releases an unchanged tuple after our lease expires.
+    // The row is found by its primary key alone: no `status = 'processing'`.
+    // The table's CHECK gives only processing rows a lock token, so the token
+    // already says it; with the status the predicate of the partial
+    // `transactional_outbox_expired_idx` matches, and the planner looks the id
+    // up there, through an entry for every task settled since the last VACUUM.
     let row = sqlx::query(r#"
         WITH owned AS MATERIALIZED (
             SELECT id, locked_until FROM transactional_outbox
-            WHERE id = $1 AND lock_token = $2 AND status = 'processing'
+            WHERE id = $1 AND lock_token = $2
             FOR UPDATE
         )
         UPDATE transactional_outbox AS o

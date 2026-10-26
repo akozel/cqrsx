@@ -65,6 +65,97 @@ async fn competing_settlements_apply_exactly_one_transition_for_the_same_token()
     db.close().await;
 }
 
+/// Every index scan of `transactional_outbox` in an `EXPLAIN (FORMAT JSON)` plan, by index name.
+fn outbox_indexes(plan: &Value, found: &mut Vec<String>) {
+    match plan {
+        Value::Object(node) => {
+            if node.get("Relation Name").and_then(Value::as_str) == Some("transactional_outbox") {
+                let index = node.get("Index Name").and_then(Value::as_str).unwrap_or("(no index)");
+                found.push(index.to_owned());
+            }
+            node.values().for_each(|child| outbox_indexes(child, found));
+        }
+        Value::Array(items) => items.iter().for_each(|child| outbox_indexes(child, found)),
+        _ => {}
+    }
+}
+
+#[tokio::test]
+async fn settlement_finds_its_row_by_the_primary_key_while_closed_tasks_fill_the_expired_lease_index() {
+    let db = Database::new().await;
+    // One connection: the settle statement the queue prepares is then in this session's
+    // `pg_prepared_statements`, with the text the queue really sends.
+    let pool = pool_with(&db, PgPoolOptions::new().max_connections(1), StatementTimeout::Unlimited).await;
+    let queue = PostgresTaskQueue::new(pool.clone());
+    // A drain without VACUUM: every settled task leaves an entry in the expired-lease index, while the
+    // statistics say that no task is in flight, so that index looks as good as empty.
+    sqlx::query("ALTER TABLE transactional_outbox SET (autovacuum_enabled = false)")
+        .execute(&pool)
+        .await
+        .unwrap();
+    enqueue(&pool, (0..2_000).map(|_| new_task()).collect()).await;
+    loop {
+        let claimed = claim(&queue).await;
+        if claimed.is_empty() {
+            break;
+        }
+        for task in claimed {
+            assert_eq!(
+                queue.settle(&task, SettlementRequest::Completed).await.unwrap(),
+                SettlementResult::Completed
+            );
+        }
+    }
+    sqlx::query("ANALYZE transactional_outbox").execute(&pool).await.unwrap();
+    enqueue(&pool, vec![new_task()]).await;
+    let task = claim(&queue).await.pop().unwrap();
+    assert_eq!(
+        queue.settle(&task, SettlementRequest::Completed).await.unwrap(),
+        SettlementResult::Completed
+    );
+    let (name, types): (String, Vec<String>) = sqlx::query_as(
+        "SELECT name, parameter_types::text[] FROM pg_prepared_statements WHERE statement LIKE '%WITH owned AS MATERIALIZED%'",
+    )
+    .fetch_one(&pool)
+    .await
+    .unwrap();
+    assert_eq!(types.len(), 5, "settle binds id, token, status, delay and error");
+    let values = [
+        format!("'{}'", task.attempt().task_id()),
+        format!("'{}'", task.lease().lock_token()),
+        "'completed'".to_owned(),
+        "'0'".to_owned(),
+        "NULL".to_owned(),
+    ];
+    let arguments = values
+        .iter()
+        .zip(&types)
+        .map(|(value, kind)| format!("{value}::{kind}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    // The plan of the first executions (custom) and the one the statement settles on later (generic).
+    for mode in ["force_custom_plan", "force_generic_plan"] {
+        let mut connection = pool.acquire().await.unwrap();
+        sqlx::query(&format!("SET plan_cache_mode = {mode}"))
+            .execute(&mut *connection)
+            .await
+            .unwrap();
+        let plan: Value = sqlx::query_scalar(&format!("EXPLAIN (FORMAT JSON) EXECUTE {name}({arguments})"))
+            .fetch_one(&mut *connection)
+            .await
+            .unwrap();
+        let mut indexes = Vec::new();
+        outbox_indexes(&plan, &mut indexes);
+        assert!(
+            indexes.iter().any(|index| index == "transactional_outbox_pkey")
+                && !indexes.iter().any(|index| index == "transactional_outbox_expired_idx"),
+            "{mode}: settle reads {indexes:?}, plan {plan}"
+        );
+    }
+    pool.close().await;
+    db.close().await;
+}
+
 #[tokio::test]
 async fn settlement_rechecks_lease_expiry_after_waiting_for_a_row_lock() {
     let db = Database::new().await;

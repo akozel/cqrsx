@@ -750,3 +750,12 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   pool 20): sustained 750 bookings/s in `db`; in `full` 1100/s passes 2 minutes but not 5 (the queue grows by
   8k tasks a minute after 80 s: settle 0.79 ms and 290 blocks, 70 % of SQL time, the outbox at 469 MiB, dead
   rows up to 276k between autovacuum runs, 7 checkpoints and 3.4 GiB of WAL in 5 minutes).
+- **Epic 04 ticket 03: settle by the primary key.** The status predicate is gone from settle's CTE (the CHECK
+  gives only `processing` rows a lease token); a plan test reads the prepared settle from
+  `pg_prepared_statements` and checks custom and generic plans on a table whose expired-lease index is full of
+  settled tasks (it fails with the old predicate). Drain with 8 workers 1950 → 2688 tasks/s (+38 %), settle
+  0.44 ms / 94 blocks → 0.11 / 17, PostgreSQL per booking through the chain −20 %; the hot key does not gain
+  (−1 % accepted/s: bounded by WAL waits, the freed database goes to the chain). 5-minute runs: at 900
+  bookings/s the base falls behind by 4.8k tasks a minute, with 03 the queue stays flat. The single-UPDATE variant
+  (measured only, not in the tree) settles 10 % faster but drains slower (2436 tasks/s) and breaks the test of a
+  lease expiring behind an unchanged locked row: rejected by the user, only the predicate change is kept.
