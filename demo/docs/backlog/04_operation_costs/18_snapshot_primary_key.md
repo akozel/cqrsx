@@ -8,7 +8,7 @@
 | Цена | очень низкая: миграция не нужна (обратная совместимость не требуется, базы пересоздаются) |
 | cqrsx | `sql/001-event-store.sql`, `src/postgres/event_repository/sql_query.rs` (`insert_snapshot`), `src/postgres/outbox/write.rs` (`append_snapshot`), тест схемы, `doc/components.md` |
 | demo | dev-база: `make reset` |
-| Зависимости | 02 (5-минутная точка); удобно делать вместе с любой другой правкой схемы (07, 09) |
+| Зависимости | 02 (5-минутная точка); удобно делать вместе с любой другой правкой схемы (09) |
 | Где выигрыш | долгая работа: размер `snapshots` и `snapshots_pkey` |
 
 ## Сейчас

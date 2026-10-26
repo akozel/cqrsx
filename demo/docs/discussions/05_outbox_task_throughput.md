@@ -5,9 +5,10 @@
 кассы в обработчике нет, команда не сообщает о витрине); открыты пункты 4 и 5.
 **2026-10-26:** §3 и п.6 раздела 4 устарели. В пути задачи больше нет MongoDB (витрины ведут процессоры), а учёт
 очереди — claim и settle — занимает 86 % времени SQL слива ([аудит](../PERFORMANCE_AUDIT.md), §2.2). Работа — в задачах
-[04/03](../backlog/04_operation_costs/03_settle_by_primary_key.md),
-[04/07](../backlog/04_operation_costs/07_delete_completed_tasks.md) и
-[04/08](../backlog/04_operation_costs/08_settle_with_next_claim.md).
+[04/03](../backlog/04_operation_costs/03_settle_by_primary_key.md) (сделана),
+[04/07](../backlog/04_operation_costs/07_delete_completed_tasks.md) (отложена) и
+[04/19](../backlog/04_operation_costs/19_claim_in_batches.md) (claim пачками). Пакетное закрытие задач
+([04/08](../backlog/04_operation_costs/08_settle_with_next_claim.md)) отклонено: одна транзакция на много задач.
 Откуда: нагрузочные тесты 2026-10-18 ([`../../load/README.md`](../../load/README.md), прогоны `03a-drain-*`
 и `03b-drain-hot-fan-w8`, результаты в `demo/load/results/`).
 
