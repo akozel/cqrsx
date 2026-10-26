@@ -47,6 +47,9 @@ pub struct Config {
     /// the history of every key of a page), so a rebuild never takes the connections of the commands.
     pub database_projection_pool_size: NonZeroU32,
     pub mongodb_uri: String,
+    /// Connections of the MongoDB client (`ENCORE_MONGODB_POOL_SIZE`): the read models' documents, the
+    /// processors' checkpoints and leases, and the HTTP reads of halls and wallets share it.
+    pub mongodb_pool_size: NonZeroU32,
     pub read_db: String,
     pub http_addr: SocketAddr,
     /// Base URL of the external mail service the e-mail tasks call (`POST {url}/mail`), without a
@@ -162,6 +165,12 @@ const PROJECTION_SETTLE: &str = "ENCORE_PROJECTION_SETTLE_MS";
 /// command back to about the cost of the handler inside the command (PostgreSQL +11 % instead of +42 %, MongoDB and the
 /// back-end below it), and the read models trail the journal by about ten events. 50 ms saves no more PostgreSQL.
 pub const DEFAULT_PROJECTION_SETTLE: Duration = Duration::from_millis(10);
+
+const MONGODB_POOL_SIZE: &str = "ENCORE_MONGODB_POOL_SIZE";
+/// The demo's MongoDB client pool (`ENCORE_MONGODB_POOL_SIZE`), the driver's own default. Measured in epic 04/06
+/// with two projection processors writing up to 16 documents each at once: 32 or 64 connections take no more
+/// announces or bookings a second than 10, and cost MongoDB 11–17 % more CPU per command.
+pub const DEFAULT_MONGODB_POOL_SIZE: NonZeroU32 = NonZeroU32::new(10).unwrap();
 
 fn number<T: FromStr>(lookup: &impl Fn(&'static str) -> Option<String>, name: &'static str, default: T) -> Result<T, ConfigError>
 where
@@ -313,6 +322,7 @@ impl Config {
             database_history_pool_size,
             database_projection_pool_size,
             mongodb_uri: var("ENCORE_MONGODB_URI").unwrap_or_else(|| "mongodb://localhost:27018".into()),
+            mongodb_pool_size: number(&var, MONGODB_POOL_SIZE, DEFAULT_MONGODB_POOL_SIZE)?,
             read_db: var("ENCORE_READ_DB").unwrap_or_else(|| "encore_read".into()),
             http_addr: parse("ENCORE_HTTP_ADDR", "127.0.0.1:8080")?,
             mail_service_url: var("ENCORE_MAIL_SERVICE_URL")
@@ -381,6 +391,24 @@ mod tests {
             error.to_string().contains("ENCORE_DATABASE_POOL_SIZE_UNSET_IN_TESTS"),
             "{error}"
         );
+    }
+
+    #[test]
+    fn the_mongodb_pool_takes_the_demo_default_and_rejects_zero() {
+        let unset = |_: &'static str| None;
+        assert_eq!(
+            number(&unset, MONGODB_POOL_SIZE, DEFAULT_MONGODB_POOL_SIZE).unwrap(),
+            DEFAULT_MONGODB_POOL_SIZE
+        );
+        let set = |raw: &'static str| move |_: &'static str| Some(raw.to_owned());
+        assert_eq!(
+            number(&set("64"), MONGODB_POOL_SIZE, DEFAULT_MONGODB_POOL_SIZE)
+                .unwrap()
+                .get(),
+            64
+        );
+        let error = number(&set("0"), MONGODB_POOL_SIZE, DEFAULT_MONGODB_POOL_SIZE).unwrap_err();
+        assert!(error.to_string().contains(MONGODB_POOL_SIZE), "{error}");
     }
 
     fn lock_limits(pairs: &[(&'static str, &str)], handler_timeout_secs: u64) -> Result<LockLimits, ConfigError> {

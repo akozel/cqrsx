@@ -764,3 +764,6 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   command a clone; the snapshot is deserialized without a clone; `EventSink` takes a `std::sync::Mutex`. Profile
   `app`: back-end CPU per booking 473 → 449 ms per 1000 (−5 %, repeats apart), hot key −4 %; PostgreSQL and MongoDB
   unchanged.
+- **Epic 04 ticket 06: MongoDB client pool** (demo). `ENCORE_MONGODB_POOL_SIZE` with `DEFAULT_MONGODB_POOL_SIZE`,
+  stand `MONGO_POOL=`. 10 / 32 / 64 connections (`REPEAT=3`): no more announces or bookings a second, MongoDB CPU
+  per command +7…17 % with the larger pools; the default is 10, the driver's own.

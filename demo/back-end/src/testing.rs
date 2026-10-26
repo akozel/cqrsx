@@ -10,7 +10,7 @@ use crate::{
         ports::{EventLedgerStats, LedgerTotals, ReadModelStore, Stored},
     },
     bootstrap::projections::checkpoint_keys,
-    config::{Config, DEFAULT_NODE_NAME, outbox_default},
+    config::{Config, DEFAULT_MONGODB_POOL_SIZE, DEFAULT_NODE_NAME, outbox_default},
     process::Process,
 };
 use async_trait::async_trait;
@@ -39,6 +39,7 @@ pub fn config() -> Config {
         database_history_pool_size: NonZeroU32::new(1).unwrap(),
         database_projection_pool_size: NonZeroU32::new(4).unwrap(),
         mongodb_uri: String::new(),
+        mongodb_pool_size: DEFAULT_MONGODB_POOL_SIZE,
         read_db: "encore_read_test".into(),
         http_addr: "127.0.0.1:0".parse().unwrap(),
         mail_service_url: "http://127.0.0.1:1".into(),

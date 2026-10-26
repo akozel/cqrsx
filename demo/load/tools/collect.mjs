@@ -407,6 +407,8 @@ const result = {
     // ENCORE_PROJECTION_SETTLE_MS as run.sh passed it (ticket 03/04b).
     projection_settle_ms: num(env('SETTLE')) ?? 'default',
     pg_pool: num(env('POOL')) ?? 10,
+    // ENCORE_MONGODB_POOL_SIZE as run.sh passed it (MONGO_POOL=…, ticket 04/06); `default` = the back-end's own.
+    mongo_pool: num(env('MONGO_POOL')) ?? 'default',
     k6_exit: num(env('K6_EXIT')) ?? -1,
     k6_started_epoch: burstStart,
     k6_ended_epoch: burstEnd,

@@ -73,6 +73,8 @@ services:
       # The one PostgreSQL pool shared by HTTP, the poller and the workers: the ceiling of concurrent
       # database work (run.sh POOL=…).
       ENCORE_DATABASE_POOL_SIZE: ${LOAD_PG_POOL:-10}
+      # The back-end's MongoDB client pool (run.sh MONGO_POOL=…); empty = the back-end's default.
+      ENCORE_MONGODB_POOL_SIZE: ${LOAD_MONGO_POOL:-}
       # Workers = queue capacity. With Q = C the lease budget 2*S + H + 5s + ceil(Q/C)*(H+S) = 24 s
       # stays below the default 30 s lease for any worker count.
       OUTBOX_WORKER_CONCURRENCY: ${LOAD_OUTBOX_WORKERS:-2}

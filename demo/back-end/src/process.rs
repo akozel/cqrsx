@@ -203,6 +203,7 @@ async fn mongo_client(config: &Config) -> Result<mongodb::Client, ProcessError> 
     options.server_selection_timeout = Some(Duration::from_secs(3));
     options.connect_timeout = Some(Duration::from_secs(3));
     options.app_name = Some("encore-backend".into());
+    options.max_pool_size = Some(config.mongodb_pool_size.get());
     mongodb::Client::with_options(options).map_err(ProcessError::MongoClient)
 }
 

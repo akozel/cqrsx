@@ -187,6 +187,9 @@ dependency outages are `chaos/`.
   the poller.
 - `POOL`: the size of that pool (`ENCORE_DATABASE_POOL_SIZE`, default 10). The 2026-10-18 runs put the
   write-path plateaus (~7.3k announces/s, ~4.3k bookings/s) on this ceiling: nothing else was saturated.
+- `MONGO_POOL`: the back-end's MongoDB client pool (`ENCORE_MONGODB_POOL_SIZE`; empty = the back-end's default,
+  `meta.mongo_pool` in `result.json`). The read models' writes, the processors' checkpoints and the HTTP reads
+  share it.
 - `SNAPSHOT_EVERY`: compare 10 with 1000 in test 1 to see what snapshots buy on the command path.
 - `LOCK_MAX_WAIT_MS` and `LOCK_MAX_WAITERS`: the back-end runs the commands to one concert one at a time
   under its lock, in arrival order; these bound the wait for the lock, past them a command gets 503. Before
