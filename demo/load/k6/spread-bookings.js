@@ -6,6 +6,9 @@
 // BookSeat that is meant to be accepted. Every accepted booking publishes an `encore_record_ticket`
 // task, so this test is also the burst generator for the outbox drain measurement (run.sh DRAIN=1).
 //
+// With RATE=… and SOAK=… (run.sh) bookings arrive at a constant rate instead of as fast as the box office
+// answers: the soak run that shows whether the outbox chain keeps up with that rate over minutes.
+//
 // FAN_MODE=spread (default): a fan per 4 seats (`fan-<vu>-<slot>`), reused across the VU's
 //   concerts; the ticket limit (R6, 4 per fan per concert) is never hit.
 // FAN_MODE=hot: every booking is for `fan-hot`. Before decision D-14 every chain task then wrote to
@@ -16,7 +19,7 @@
 import exec from 'k6/execution';
 import { sleep } from 'k6';
 import * as api from './lib/api.js';
-import { baseOptions, cfg, phase, scenario } from './lib/config.js';
+import { baseOptions, cfg, requestTags, scenario } from './lib/config.js';
 import { SEATS, seatOf } from './lib/ids.js';
 import { summarize } from './lib/summary.js';
 
@@ -37,7 +40,7 @@ let announced = false;
 
 export function run() {
   const vu = exec.vu.idInInstance;
-  const tags = { phase: phase() };
+  const tags = requestTags();
   const concert = `${cfg.run}-c${vu}-${concertNo}`;
   if (!announced) {
     const a = api.announce(concert, tags);

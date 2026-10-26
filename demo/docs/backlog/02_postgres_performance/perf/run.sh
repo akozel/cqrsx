@@ -122,6 +122,8 @@ if [[ -n "${PERF_UPSTREAM:-}" ]]; then
   export LOAD_SERVICES_EXTRA="$services${LOAD_SERVICES_EXTRA:+ $LOAD_SERVICES_EXTRA}"
   export PERF_CPUS_BALANCER="${PERF_CPUS_BALANCER:-1}"
 fi
+# The probe that reads MongoDB's operation counters for hooks.sh (compose.perf.yaml).
+export LOAD_SERVICES_EXTRA="${LOAD_SERVICES_EXTRA:+$LOAD_SERVICES_EXTRA }mongo-probe"
 export LOAD_COMPOSE_EXTRA="$EXTRA${LOAD_COMPOSE_EXTRA:+:$LOAD_COMPOSE_EXTRA}"
 export LOAD_HOOKS="$HERE/hooks.sh"
 exec "$LOAD/run.sh" "${ARGS[@]}"

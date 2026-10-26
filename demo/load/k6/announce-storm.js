@@ -6,7 +6,7 @@
 import exec from 'k6/execution';
 import { sleep } from 'k6';
 import * as api from './lib/api.js';
-import { baseOptions, cfg, phase, scenario } from './lib/config.js';
+import { baseOptions, cfg, requestTags, scenario } from './lib/config.js';
 import { summarize } from './lib/summary.js';
 
 const COMMANDS = ['AnnounceConcert'];
@@ -19,7 +19,7 @@ export function setup() {
 
 export function run() {
   // iterationInTest is unique across VUs, so every concert id is new.
-  const r = api.announce(`${cfg.run}-c${exec.scenario.iterationInTest}`, { phase: phase() });
+  const r = api.announce(`${cfg.run}-c${exec.scenario.iterationInTest}`, requestTags());
   if (r.outcome === 'unavailable') {
     sleep(0.05);
   }

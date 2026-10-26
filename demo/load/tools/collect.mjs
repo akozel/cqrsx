@@ -2,7 +2,8 @@
 // Assembles results/<run>/result.json after a run: k6's result.json (copied out of the container)
 // + run metadata + container resources from stats.tsv + cgroup memory peaks + outbox drain figures
 // + the read-model verify (verify.json, VERIFY=1) + the projections' lag and owners (projections.jsonl)
-// + the chaos actions of the run (chaos.tsv, LOAD_CHAOS) + the events per aggregate type (ledger.tsv).
+// + the chaos actions of the run (chaos.tsv, LOAD_CHAOS) + the events per aggregate type (ledger.tsv)
+// + a soak run over time (soak.tsv, SOAK=…: every slice with the containers and the projections of it).
 // Prints a short human summary. run.sh calls it with everything in LOADC_* environment variables,
 // so the harness needs no jq or awk on the host.
 //
@@ -201,6 +202,167 @@ function ledger(path) {
   return Object.keys(counts).length > 0 ? counts : null;
 }
 
+/** stats.tsv → `[{ ts, service, cpu, mem }]`, one per container per sample. */
+function statSamples(path) {
+  if (!existsSync(path)) {
+    return [];
+  }
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .map((line) => line.split('\t'))
+    .filter((f) => f.length >= 4 && num(f[0]) !== null)
+    .map((f) => ({ ts: num(f[0]), service: serviceName(f[1]), cpu: num(f[2].replace('%', '')) ?? 0, mem: bytes(f[3].split('/')[0]) }));
+}
+
+/** projections.jsonl → `[{ t, lag: { projection: events } }]` for the seconds the status answered. */
+function lagSamples(path) {
+  if (!existsSync(path)) {
+    return [];
+  }
+  return readFileSync(path, 'utf8')
+    .split('\n')
+    .filter(Boolean)
+    .flatMap((line) => {
+      try {
+        const sample = JSON.parse(line);
+        if (!Array.isArray(sample.status?.projections)) {
+          return [];
+        }
+        return [{ t: sample.t, lag: Object.fromEntries(sample.status.projections.map((p) => [p.projection, num(p.lag) ?? 0])) }];
+      } catch {
+        return [];
+      }
+    });
+}
+
+/**
+ * A soak run over time. soak.tsv (`epoch  stand|postgres  key  value`) has one sample per slice: the outbox
+ * by status (run.sh) and the database's sizes and counters (hook_slice of the hooks, when there are any).
+ * Each sample gets the containers' average CPU % and peak memory and every projection's peak lag since the
+ * sample before it, from the once-a-second samples of stats.tsv and projections.jsonl; k6's own slices
+ * give requests, accepted commands and latency. The verdict (ticket 04/02, `soakVerdict`): the rate is
+ * sustained when the box office accepted at least 99 % of it and, at the end of the load, neither the open
+ * outbox tasks nor the worst lag are higher than from 60 s on, give or take one second of input (RATE).
+ * Dropped iterations are reported apart: a few of them are a stall of a fraction of a second (every VU
+ * waiting at once), not a rate the stand cannot take.
+ */
+function soak(path, k6, statsPath, projectionsPath, burstStart) {
+  if (!existsSync(path)) {
+    return null;
+  }
+  const byEpoch = new Map();
+  for (const line of readFileSync(path, 'utf8').split('\n')) {
+    const [epoch, source, key, value] = line.split('\t');
+    const t = num(epoch);
+    if (t === null || !source || !key || value === undefined) {
+      continue;
+    }
+    const sample = byEpoch.get(t) ?? { epoch: t, values: {} };
+    byEpoch.set(t, sample);
+    if (key !== 'slice') {
+      sample.values[key] = num(value);
+    }
+  }
+  const samples = [...byEpoch.values()].sort((a, b) => a.epoch - b.epoch);
+  if (samples.length === 0) {
+    return null;
+  }
+  const stats = statSamples(statsPath);
+  const lags = lagSamples(projectionsPath);
+  const points = samples.map((sample, j) => {
+    const from = j > 0 ? samples[j - 1].epoch : sample.epoch - 1;
+    const inSlice = (ts) => ts > from && ts <= sample.epoch;
+    const cpu = {};
+    const mem = {};
+    for (const s of stats.filter((x) => inSlice(x.ts))) {
+      (cpu[s.service] ??= []).push(s.cpu);
+      mem[s.service] = Math.max(mem[s.service] ?? 0, s.mem);
+    }
+    const lag = {};
+    for (const l of lags.filter((x) => inSlice(x.t))) {
+      for (const [projection, events] of Object.entries(l.lag)) {
+        lag[projection] = Math.max(lag[projection] ?? 0, events);
+      }
+    }
+    const { outbox_pending: pending = 0, outbox_processing: processing = 0, outbox_completed: completed = 0, outbox_failed: failed = 0, ...db } =
+      sample.values;
+    const before = j > 0 ? (samples[j - 1].values.outbox_completed ?? 0) : null;
+    return {
+      t_s: sample.epoch - burstStart,
+      outbox_open: pending + processing,
+      outbox_pending: pending,
+      outbox_processing: processing,
+      outbox_completed: completed,
+      outbox_failed: failed,
+      completed_per_s: before === null ? null : round((completed - before) / Math.max(1, sample.epoch - samples[j - 1].epoch), 1),
+      cpu_pct: Object.fromEntries(Object.entries(cpu).map(([service, xs]) => [service, round(xs.reduce((a, b) => a + b, 0) / xs.length)])),
+      mem_mib: Object.fromEntries(Object.entries(mem).map(([service, b]) => [service, Math.round(b / 1048576)])),
+      lag,
+      db,
+    };
+  });
+  const slices = (k6.slices ?? []).map((s) => ({
+    t_s: round(s.start_s + s.seconds, 1),
+    rps: s.rps,
+    accepted_per_s: s.seconds > 0 ? round(s.accepted / s.seconds, 1) : null,
+    p50: s.p50,
+    p99: s.p99,
+  }));
+  return {
+    rate: num(k6.rate),
+    slice_s: num(k6.slice_s),
+    points,
+    slices,
+    verdict: soakVerdict(points, k6),
+  };
+}
+
+const median = (xs) => {
+  const sorted = [...xs].sort((a, b) => a - b);
+  return sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)] : null;
+};
+
+/**
+ * Whether the stand kept up with the rate, from the samples taken under load (the one after k6 stopped
+ * shows the queue already draining). The open tasks and the worst lag jump for a slice or two at every
+ * stall of the stand, so each side of the comparison is the median of three slices: the first ones from
+ * 60 s on, and the last ones. `open_growth_per_min` is the least-squares slope of the open tasks from 60 s
+ * on: how fast the queue grows when the chain does not keep up.
+ */
+function soakVerdict(points, k6) {
+  const worstLag = (point) => Math.max(0, ...Object.values(point.lag));
+  const loadEnd = (num(k6.warmup_s) ?? 0) + (num(k6.duration_s) ?? 0);
+  const underLoad = points.filter((p) => p.t_s <= loadEnd);
+  const settled = underLoad.filter((p) => p.t_s >= 60);
+  const head = (settled.length > 0 ? settled : underLoad).slice(0, 3);
+  const tail = underLoad.slice(-3);
+  const margin = num(k6.rate) ?? 0;
+  const window = (k6.slices ?? []).reduce((acc, s) => ({ accepted: acc.accepted + s.accepted, seconds: acc.seconds + s.seconds }), { accepted: 0, seconds: 0 });
+  const open = [median(head.map((p) => p.outbox_open)), median(tail.map((p) => p.outbox_open))];
+  const lag = [median(head.map(worstLag)), median(tail.map(worstLag))];
+  let slope = null;
+  if (settled.length > 1) {
+    const mt = settled.reduce((sum, p) => sum + p.t_s, 0) / settled.length;
+    const mo = settled.reduce((sum, p) => sum + p.outbox_open, 0) / settled.length;
+    const sxx = settled.reduce((sum, p) => sum + (p.t_s - mt) ** 2, 0);
+    slope = sxx > 0 ? (settled.reduce((sum, p) => sum + (p.t_s - mt) * (p.outbox_open - mo), 0) / sxx) * 60 : null;
+  }
+  return {
+    sustained:
+      (window.seconds === 0 || window.accepted / window.seconds >= 0.99 * margin) &&
+      open[1] !== null &&
+      open[1] <= open[0] + margin &&
+      lag[1] <= lag[0] + margin,
+    dropped_iterations: num(k6.dropped_iterations) ?? 0,
+    accepted_per_s: window.seconds > 0 ? round(window.accepted / window.seconds, 1) : null,
+    open_at_60s: open[0],
+    open_at_end: open[1],
+    open_growth_per_min: slope === null ? null : Math.round(slope),
+    lag_at_60s: lag[0],
+    lag_at_end: lag[1],
+  };
+}
+
 /** chaos.tsv: `epoch<TAB>action`, one line per step of the scenario. */
 function chaos(path) {
   if (!existsSync(path)) {
@@ -273,6 +435,10 @@ const chaosSteps = chaos(join(runDir, 'chaos.tsv'));
 if (chaosSteps) {
   result.chaos = chaosSteps;
 }
+const soaked = soak(join(runDir, 'soak.tsv'), k6Result, join(runDir, 'stats.tsv'), join(runDir, 'projections.jsonl'), burstStart);
+if (soaked) {
+  result.soak = soaked;
+}
 writeFileSync(resultPath, `${JSON.stringify(result, null, 2)}\n`);
 
 // --- the human summary ----------------------------------------------------------------------------
@@ -295,5 +461,11 @@ if (verified) {
 if (trailed) {
   console.log(
     `lag       p50 ${trailed.lag.p50} p99 ${trailed.lag.p99} max ${trailed.lag.max} events, caught up ${trailed.caught_up_s ?? '-'} s after the burst`,
+  );
+}
+if (soaked) {
+  const v = soaked.verdict;
+  console.log(
+    `soak      ${v.sustained ? 'sustained' : 'NOT sustained'} at ${soaked.rate}/s: ${v.accepted_per_s} accepted/s, ${v.dropped_iterations} dropped; open tasks ${v.open_at_60s} at 60 s → ${v.open_at_end} at the end (${v.open_growth_per_min >= 0 ? '+' : ''}${v.open_growth_per_min}/min), worst lag ${v.lag_at_60s} → ${v.lag_at_end} events`,
   );
 }

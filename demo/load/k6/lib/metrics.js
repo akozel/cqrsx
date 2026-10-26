@@ -29,13 +29,19 @@ export const counters = {
 
 const OUTCOME_METRICS = Object.keys(counters).map((k) => counters[k].name);
 
-export function thresholds(commands) {
+/** `slices`: the slices of a soak run's window (config.js SLICES), each with its own requests and latency. */
+export function thresholds(commands, slices = 0) {
   const count = ['count>=0'];
   const trend = ['p(99)>=0'];
   const t = {
     'http_req_duration{phase:measured}': trend,
     'http_reqs{phase:measured}': count,
   };
+  for (let i = 0; i < slices; i += 1) {
+    t[`http_req_duration{phase:measured,slice:${i}}`] = trend;
+    t[`http_reqs{phase:measured,slice:${i}}`] = count;
+    t[`cmd_accepted{phase:measured,slice:${i}}`] = count;
+  }
   for (const cmd of commands) {
     t[`http_req_duration{phase:measured,cmd:${cmd}}`] = trend;
     t[`http_reqs{phase:measured,cmd:${cmd}}`] = count;

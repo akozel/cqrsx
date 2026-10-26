@@ -12,6 +12,7 @@
 //        prefix: only the runs whose name starts with it, e.g. perf-)
 import { writeFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
+import { soakSection } from '../../../../../load/tools/soak-section.mjs';
 import { groupRepeats, loadRuns, nameOf, repeatKey, spread } from './lib/runs.mjs';
 
 const resultsDir = process.argv[2];
@@ -111,8 +112,11 @@ function frame({ categories, yMax, unit, axisLabel, rightMargin = MARGIN.right }
   }
   parts.push(`<line class="axis" x1="${l}" x2="${l + pw}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>`);
   parts.push(`<text class="tick" x="${l - 8}" y="${t - 8}" text-anchor="end">${esc(unit)}</text>`);
+  const every = Math.max(1, Math.ceil(categories.length / 12)); // a label per category up to 12, then every n-th (soak slices)
   categories.forEach((c, i) => {
-    parts.push(`<text class="tick" x="${(l + (i + 0.5) * band).toFixed(1)}" y="${t + ph + 18}" text-anchor="middle">${esc(c)}</text>`);
+    if (i % every === 0) {
+      parts.push(`<text class="tick" x="${(l + (i + 0.5) * band).toFixed(1)}" y="${t + ph + 18}" text-anchor="middle">${esc(c)}</text>`);
+    }
   });
   parts.push(`<text class="tick" x="${(l + pw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(axisLabel)}</text>`);
   return { l, t, pw, ph, top, y, band, grid: parts.join('') };
@@ -483,6 +487,60 @@ function seriesSection(key, runs) {
         }),
       );
     }
+    if (sorted.some((r) => r.efficiency?.chain)) {
+      const chain = (service) => (r) => r.efficiency?.chain?.cpu_ms_per_1k_accepted?.[service] ?? null;
+      charts.push(
+        barChart({
+          title: 'CPU per 1000 accepted commands, through the drain',
+          subtitle: 'CPU time from the start of the burst to the end of the drain ÷ accepted commands: the same work whatever part of the chain ran inside the window',
+          unit: 'ms',
+          axisLabel: axis.label,
+          categories,
+          series: [line('back-end', 1, chain('backend')), line('PostgreSQL', 2, chain('postgres')), line('MongoDB', 3, chain('mongo'))],
+          labelCaps: false,
+        }),
+      );
+      charts.push(
+        barChart({
+          title: 'Database work per command, through the drain',
+          subtitle: 'SQL statements and outbox tasks per accepted command, burst and drain together',
+          unit: 'per cmd',
+          axisLabel: axis.label,
+          categories,
+          series: [
+            line('statements', 1, (r) => r.efficiency?.chain?.statements_per_command ?? null),
+            line('tasks', 2, (r) => r.efficiency?.chain?.tasks_per_command ?? null),
+          ],
+          labelCaps: false,
+        }),
+      );
+    }
+    if (sorted.some((r) => r.waits)) {
+      // The waits that matter anywhere in the series, each with its own color; everything else is `other`.
+      const best = {};
+      for (const r of sorted) {
+        for (const w of r.waits?.top ?? []) {
+          best[w.wait] = Math.max(best[w.wait] ?? 0, w.share_pct);
+        }
+      }
+      const shown = Object.entries(best)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 4)
+        .map(([wait]) => wait);
+      const shareOf = (r, wait) => r.waits?.top?.find((w) => w.wait === wait)?.share_pct ?? 0;
+      charts.push(
+        stackedShareChart({
+          title: 'What PostgreSQL’s sessions were doing',
+          subtitle: 'busy client sessions sampled every 100 ms over the burst, by wait event; CPU = active without one',
+          axisLabel: axis.label,
+          categories,
+          series: [
+            ...shown.map((wait, i) => ({ name: wait, slot: i + 1, values: sorted.map((r) => shareOf(r, wait)) })),
+            { name: 'other', slot: 5, values: sorted.map((r) => (r.waits ? Math.max(0, 100 - shown.reduce((sum, wait) => sum + shareOf(r, wait), 0)) : 0)) },
+          ],
+        }),
+      );
+    }
     if (sorted.some((r) => r.drain)) {
       charts.push(
         barChart({
@@ -559,6 +617,10 @@ const COLUMNS = [
   ['stmt/cmd', (r) => fmt(r.efficiency?.statements_per_command)],
   ['pkt/cmd', (r) => fmt(r.efficiency?.packets_per_command)],
   ['rollback/cmd', (r) => fmt(r.efficiency?.rollbacks_per_command)],
+  ['FPI/cmd', (r) => fmt(r.efficiency?.wal_fpi_per_command)],
+  ['Mongo ops/cmd', (r) => fmt(r.efficiency?.mongo_ops_per_command?.total)],
+  ['settle ms', (r) => fmt((r.queue?.drain ?? r.queue?.window)?.settle?.mean_ms)],
+  ['chain PG ms/1k', (r) => fmt(r.efficiency?.chain?.cpu_ms_per_1k_accepted?.postgres)],
   ['back-end MiB', (r) => mib(r.memory_peak_bytes?.backend ?? r.resources?.backend?.mem_max_sampled_bytes)],
   ['PG MiB', (r) => mib(r.memory_peak_bytes?.postgres ?? r.resources?.postgres?.mem_max_sampled_bytes)],
   ['drain s', (r) => r.drain?.seconds],
@@ -616,7 +678,8 @@ function runDetails(runs) {
             ]),
           ),
         )}</div>
-        <div><h4>Database (burst window)</h4>${kv(flat({ ...r.db, ...r.efficiency }))}${r.drain?.per_task ? `<h4>Per drained task</h4>${kv(flat(r.drain.per_task))}` : ''}</div>
+        <div><h4>Database (burst window)</h4>${kv(flat({ ...r.db, ...r.efficiency }))}${r.efficiency?.chain ? `<h4>Per command, through the drain</h4>${kv(flat(r.efficiency.chain))}` : ''}${r.drain?.per_task ? `<h4>Per drained task</h4>${kv(flat(r.drain.per_task))}` : ''}</div>
+        <div><h4>Queue statements</h4>${kv(flat({ ...Object.fromEntries(Object.entries(r.queue?.window ?? {}).map(([k, v]) => [`window ${k}`, v])), ...Object.fromEntries(Object.entries(r.queue?.drain ?? {}).map(([k, v]) => [`drain ${k}`, v])) }))}<h4>PostgreSQL sessions</h4>${kv(r.waits ? { samples: r.waits.samples, 'busy sessions': r.waits.sessions_avg, 'active sessions': r.waits.active_avg, ...Object.fromEntries(r.waits.top.map((w) => [w.wait, `${w.share_pct} %`])) } : null)}</div>
         <div><h4>Run</h4>${kv({ ...r.meta, ...(r.drain ? { drain_seconds: r.drain.seconds, drain_tasks_per_second: r.drain.tasks_per_second, drain_tasks_total: r.drain.tasks_total, drain_failed: r.drain.failed } : {}) })}</div>
       </div></details>`;
   });
@@ -794,6 +857,9 @@ function page(runs) {
       : `${headline(runs)}${[...groups.entries()]
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([key, group]) => seriesSection(key, group))
+          .join('')}${runs
+          .filter((run) => run.soak)
+          .map((run) => soakSection(run, nameOf(run), { lineChart, esc }))
           .join('')}${runTable(runs)}${runDetails(runs)}`;
   return `<!doctype html>
 <html lang="en">

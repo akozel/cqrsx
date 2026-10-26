@@ -724,3 +724,29 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   metadata in a projection, upcasters and a failed history read on the rebuild path, a core executor with
   services that are not `Clone`. Both models carry the `property_` prefix for the CI commit seed. Coverage 97.85 %
   (workspace and `cqrsx`).
+- **2026-10-26, epic 04 tickets 01–06 (operation costs), one go.** Measured on stage images
+  `encore-load-backend:e04-{base,03,04,05,06}` (HEAD `47733f6` plus each ticket in turn), interleaved, in one session;
+  the final table is in the epic README ("Итог 01–06"). The user's decisions after the measurement: the
+  single-UPDATE variant of 03 and ticket 05 rejected (05 reverted); one commit per accepted ticket, 01 and 02 together.
+- **Epic 04 ticket 01: the chain through the drain, WAL and waits per statement** (stand tools only). `perf/`
+  hooks snapshot `pg_stat_wal`, container memory (`anon`, page cache), CPU-quota throttling and MongoDB's
+  `opcounters` (through a `mongo-probe` container, so that `mongosh` costs MongoDB no CPU); the statement dumps
+  carry WAL records, full-page images and bytes; one psql session samples the busy sessions every 100 ms
+  (`wait_events.tsv`); the `drained` point waits for the projections. `result.json` gains `efficiency.chain`
+  (before → drained per accepted command), `cores`, `queue` (claim and settle), `waits`; `compare.mjs` takes any
+  number of batches. Baseline (`db`, pool 20, `REPEAT=3`): the window's PostgreSQL CPU per hot-key command moves
+  1092–2241 ms with the share of the chain inside the window (0.38–1.00), through the chain it is 2247–2341 ms;
+  more outbox workers take hot-key throughput (841 → 710 → 672 accepted/s at 1 / 2 / 8 workers, WAL write waits
+  24 → 45 %); a spread booking costs 2831 ms of PostgreSQL CPU per 1000 through the chain against 517 in the
+  window. The comparison of ticket 03/04 again, through the chain: the processor costs PostgreSQL 3 % less than
+  the handler in the command (2355 → 2291 ms), the same statements, WAL −1 %, back-end −14 %, MongoDB −12 % (ops
+  −40 %): the "unexplained residual" was accounting; −5 % accepted/s remain, the price of the chain running next
+  to the hot key.
+- **Epic 04 ticket 02: constant-rate runs** (stand tools only). `run.sh SOAK=<duration> RATE=<n>`: k6's open model
+  (`constant-arrival-rate`), slices of 10 s (`soak.tsv`: outbox by status, `hook_slice` adds table sizes, dead
+  rows, autovacuum, checkpoints, WAL, FPI, temp bytes; k6 per slice), `soak` in `result.json` with a verdict
+  (≥ 99 % of the rate accepted, open tasks and lag at the end no higher than from 60 s on; medians of three
+  slices), an "over time" report section, `LOAD_SOAK_MAX_S` 300, `LOAD_MIN_FREE_GB` 10. Baseline (8 workers,
+  pool 20): sustained 750 bookings/s in `db`; in `full` 1100/s passes 2 minutes but not 5 (the queue grows by
+  8k tasks a minute after 80 s: settle 0.79 ms and 290 blocks, 70 % of SQL time, the outbox at 469 MiB, dead
+  rows up to 276k between autovacuum runs, 7 checkpoints and 3.4 GiB of WAL in 5 minutes).

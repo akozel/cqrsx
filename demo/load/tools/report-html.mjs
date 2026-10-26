@@ -7,6 +7,7 @@
 // Usage: node report-html.mjs <results-dir> [out.html]   (default out: <results-dir>/report.html)
 import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve } from 'node:path';
+import { soakSection } from './soak-section.mjs';
 
 const resultsDir = process.argv[2];
 if (!resultsDir) {
@@ -126,8 +127,11 @@ function frame({ categories, yMax, unit, axisLabel, rightMargin = MARGIN.right }
   }
   parts.push(`<line class="axis" x1="${l}" x2="${l + pw}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}"/>`);
   parts.push(`<text class="tick" x="${l - 8}" y="${t - 8}" text-anchor="end">${esc(unit)}</text>`);
+  const every = Math.max(1, Math.ceil(categories.length / 12)); // a label per category up to 12, then every n-th (soak slices)
   categories.forEach((c, i) => {
-    parts.push(`<text class="tick" x="${(l + (i + 0.5) * band).toFixed(1)}" y="${t + ph + 18}" text-anchor="middle">${esc(c)}</text>`);
+    if (i % every === 0) {
+      parts.push(`<text class="tick" x="${(l + (i + 0.5) * band).toFixed(1)}" y="${t + ph + 18}" text-anchor="middle">${esc(c)}</text>`);
+    }
   });
   parts.push(`<text class="tick" x="${(l + pw / 2).toFixed(1)}" y="${H - 8}" text-anchor="middle">${esc(axisLabel)}</text>`);
   return { l, t, pw, ph, top, y, band, grid: parts.join('') };
@@ -724,6 +728,9 @@ function page(runs) {
       : `${headline(runs)}${[...groups.entries()]
           .sort(([a], [b]) => a.localeCompare(b))
           .map(([key, group]) => seriesSection(key, group))
+          .join('')}${runs
+          .filter((run) => run.soak)
+          .map((run) => soakSection(run, nameOf(run), { lineChart, esc }))
           .join('')}${runTable(runs)}${runDetails(runs)}`;
   return `<!doctype html>
 <html lang="en">

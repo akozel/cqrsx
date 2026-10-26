@@ -8,6 +8,13 @@
 #   PREFIX=…        prepended to NAME (e.g. c1-): tells one batch of runs from another in the report
 #   VUS=…           concurrent virtual users (default 10)
 #   DURATION=…      measured window (default 10s); WARMUP=… excluded from the numbers (default 3s)
+#   RATE=…          k6's open model: start that many iterations a second, served by VUS users; an iteration
+#                   that finds every user busy is dropped (the back-end did not keep up)
+#   SOAK=…          a run at a constant rate (needs RATE=…, replaces DURATION): the measured window, e.g. 4m or
+#                   290s; with WARMUP at most LOAD_SOAK_MAX_S (default 300) seconds. Every SLICE=… (default 10s)
+#                   the outbox by status and, through hook_slice, the database's growth go to soak.tsv; k6
+#                   reports requests, accepted commands and latency per slice. Refused when the container
+#                   storage has less than LOAD_MIN_FREE_GB (default 10) free: minutes of writes are gigabytes
 #   FAN_MODE=…      spread-bookings only: spread (default) | hot (every booking for one fan)
 #   WORKERS=…       outbox workers = queue capacity (default 2)
 #   DRAIN=1         after the burst, sample transactional_outbox every second until no task is open
@@ -34,9 +41,9 @@
 #   LOAD_SERVICES_EXTRA=… more services (space-separated, defined by those files) started with the stand;
 #                         each must be healthy before k6, and its log is saved as <service>.log
 #   LOAD_HOOKS=…          a bash file sourced once the run folder exists; each function it defines out of
-#                         hook_before_k6, hook_after_k6, hook_after_drain (DRAIN=1 only) and
-#                         hook_after_collect is called at that point, with RUN_DIR, compose and log at hand.
-#                         A failing hook is logged and does not fail the run.
+#                         hook_before_k6, hook_after_k6, hook_after_drain (DRAIN=1 only), hook_slice EPOCH
+#                         (SOAK=… only, every slice) and hook_after_collect is called at that point, with
+#                         RUN_DIR, compose and log at hand. A failing hook is logged and does not fail the run.
 # Tooling: docker or podman with compose (auto-detected; override with CTR=… COMPOSE=…) and node.
 #   LOAD_HOST_DIR=… the host path of this directory when the container engine runs on another machine
 #   than this script (a sandbox over the host's podman socket); bind mounts are resolved against it.
@@ -44,7 +51,7 @@
 # (a line in chaos.tsv), api_call CURL_ARGS… (curl inside the first running back-end), compose, log, RUN_DIR,
 # WARMUP_S, DURATION_S, and may define chaos_cleanup (called before the stand goes down: undo pauses).
 # Results: results/<timestamp>-<PREFIX><NAME>/ (result.json, k6.log, stats.tsv, outbox.tsv, projections.jsonl,
-# chaos.tsv, ledger.tsv, backend.log).
+# soak.tsv, chaos.tsv, ledger.tsv, backend.log).
 # Exit codes: k6's own, 2 = usage or tooling, 3 = the stand did not start.
 set -euo pipefail
 
@@ -97,6 +104,26 @@ if [[ -z "$CONTROLLERS" && "${DOCKER_HOST:-}" == unix://* ]] && command -v curl 
 fi
 has_controller() { [[ -z "$CONTROLLERS" || "$CONTROLLERS" == *"$1"* ]]; }
 
+# Free space of the container storage in GB: the filesystem of podman's graph root, from its info (the
+# podman CLI, or libpod's API behind the docker CLI); empty when the engine does not say (real docker).
+free_gb() {
+  local info=""
+  if [[ "$CTR" == podman ]]; then
+    info="$(podman info --format json 2>/dev/null || true)"
+  elif [[ "${DOCKER_HOST:-}" == unix://* ]] && command -v curl >/dev/null 2>&1; then
+    info="$(curl -s --max-time 5 --unix-socket "${DOCKER_HOST#unix://}" http://d/v4.0.0/libpod/info 2>/dev/null || true)"
+  fi
+  if [[ -z "$info" ]]; then return 0; fi
+  printf '%s' "$info" | node -e '
+    let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
+      try {
+        const store = JSON.parse(s).store;
+        const free = (store.graphRootAllocated - store.graphRootUsed) / 1e9;
+        if (Number.isFinite(free)) console.log(free.toFixed(1));
+      } catch {}
+    });' 2>/dev/null || true
+}
+
 PIN_MODE="${PIN:-auto}"
 if [[ "$PIN_MODE" == 1 ]]; then PIN_MODE=auto; fi
 if [[ "$PIN_MODE" == auto ]]; then
@@ -130,7 +157,8 @@ PIN_LABEL="$PIN_MODE"
 if [[ "$PIN_LABEL" == 0 ]]; then PIN_LABEL=off; fi
 
 if [[ "$1" == --check ]]; then
-  echo "run: tooling ok: $CTR, '$COMPOSE', node $(node --version), $(nproc) cores, cgroup controllers ${CONTROLLERS:-(docker: all)}, cpu isolation: $PIN_LABEL"
+  FREE="$(free_gb)"
+  echo "run: tooling ok: $CTR, '$COMPOSE', node $(node --version), $(nproc) cores, cgroup controllers ${CONTROLLERS:-(docker: all)}, cpu isolation: $PIN_LABEL, container storage ${FREE:-?} GB free"
   exit 0
 fi
 
@@ -151,6 +179,37 @@ for pair in "$@"; do
   K6_ENV+=(-e "$pair")
 done
 
+seconds_of() { # 290s | 4m | 290 → seconds; nothing for anything else
+  if [[ "$1" =~ ^([0-9]+)m$ ]]; then
+    printf '%s' $(( BASH_REMATCH[1] * 60 ))
+  elif [[ "$1" =~ ^([0-9]+)s?$ ]]; then
+    printf '%s' "${BASH_REMATCH[1]}"
+  fi
+}
+
+# A soak run: the measured window at a constant rate, sliced for the figures over time.
+SLICE_S=""
+if [[ -n "${SOAK:-}" ]]; then
+  if [[ -z "${RATE:-}" ]]; then echo "run: SOAK=… needs RATE=… (iterations a second)" >&2; exit 2; fi
+  if [[ -n "${DURATION:-}" ]]; then echo "run: SOAK=… is the measured window; leave DURATION out" >&2; exit 2; fi
+  soak_s="$(seconds_of "$SOAK")" warmup_s="$(seconds_of "${WARMUP:-3s}")" SLICE_S="$(seconds_of "${SLICE:-10s}")"
+  if [[ -z "$soak_s" || -z "$warmup_s" || -z "$SLICE_S" || "$SLICE_S" == 0 ]]; then
+    echo "run: SOAK, WARMUP and SLICE must be durations such as 290s or 4m (got SOAK=$SOAK WARMUP=${WARMUP:-3s} SLICE=${SLICE:-10s})" >&2
+    exit 2
+  fi
+  if (( warmup_s + soak_s > ${LOAD_SOAK_MAX_S:-300} )); then
+    echo "run: WARMUP + SOAK is $((warmup_s + soak_s)) s, more than LOAD_SOAK_MAX_S=${LOAD_SOAK_MAX_S:-300}" >&2
+    exit 2
+  fi
+  FREE="$(free_gb)"
+  if [[ -n "$FREE" ]] && awk -v free="$FREE" -v min="${LOAD_MIN_FREE_GB:-10}" 'BEGIN { exit !(free < min) }'; then
+    echo "run: the container storage has $FREE GB free; a soak run needs LOAD_MIN_FREE_GB=${LOAD_MIN_FREE_GB:-10}" >&2
+    exit 2
+  fi
+  export DURATION="$SOAK"
+  K6_ENV+=(-e "DURATION=$SOAK")
+fi
+
 # shellcheck disable=SC2086  # $COMPOSE is "docker compose" or "podman compose": two words on purpose
 compose() { $COMPOSE -p "$PROJECT" "${COMPOSE_FILES[@]}" "$@"; }
 
@@ -167,9 +226,9 @@ RUN_ID="$(date +%Y%m%d-%H%M%S)-${PREFIX:-}${NAME:-$SCRIPT}"
 RUN_DIR="$HERE/results/$RUN_ID"
 mkdir -p "$RUN_DIR"
 log() { printf '[%s] %s\n' "$(date +%H:%M:%S)" "$*" | tee -a "$RUN_DIR/run.log" >&2; }
-hook() { # point → call hook_<point> from LOAD_HOOKS when it is defined
+hook() { # point [args…] → call hook_<point> from LOAD_HOOKS with the args when it is defined
   if declare -F "hook_$1" >/dev/null; then
-    "hook_$1" || log "hook $1 failed (exit $?)"
+    "hook_$1" "${@:2}" || log "hook $1 failed (exit $?)"
   fi
 }
 if [[ -n "${LOAD_HOOKS:-}" ]]; then
@@ -178,9 +237,18 @@ if [[ -n "${LOAD_HOOKS:-}" ]]; then
 fi
 
 # --- stand ----------------------------------------------------------------------------------------
-SAMPLER_PID= STATUS_PID= CHAOS_PID=
+SAMPLER_PID= STATUS_PID= CHAOS_PID= SLICES_PID=
 K6_NAME="${PROJECT}-k6"
+stop_slices() {
+  if [[ -n "$SLICES_PID" ]]; then
+    pkill -P "$SLICES_PID" 2>/dev/null || true
+    kill "$SLICES_PID" 2>/dev/null || true
+    wait "$SLICES_PID" 2>/dev/null || true
+    SLICES_PID=
+  fi
+}
 stop_sampler() {
+  stop_slices
   if [[ -n "$SAMPLER_PID" ]]; then
     pkill -P "$SAMPLER_PID" 2>/dev/null || true # the curl | node pipeline inside the subshell
     kill "$SAMPLER_PID" 2>/dev/null || true
@@ -319,9 +387,36 @@ projections_caught_up() { # 0 when every projection has no lag and is live; also
     });'
 }
 
+# --- soak slices ------------------------------------------------------------------------------------
+# SOAK=… only: one slice every SLICE_S seconds from k6's start and one more at its end. A slice writes a
+# `epoch stand slice <n>` line and the outbox by status (`epoch stand outbox_<status> <tasks>`) to soak.tsv,
+# then calls hook_slice EPOCH; a status without tasks has no line.
+slice_once() { # number
+  local epoch status n
+  epoch=$(date +%s)
+  printf '%s\tstand\tslice\t%s\n' "$epoch" "$1" >> "$RUN_DIR/soak.tsv"
+  compose exec -T -e PGAPPNAME=load-stand postgres psql -U cqrsx -d encore -X -At -F $'\t' \
+    -c "select /* load-stand */ status, count(*) from transactional_outbox group by status" 2>/dev/null \
+    | while IFS=$'\t' read -r status n; do
+        if [[ -n "$status" ]]; then printf '%s\tstand\toutbox_%s\t%s\n' "$epoch" "$status" "$n"; fi
+      done >> "$RUN_DIR/soak.tsv" || true
+  hook slice "$epoch"
+}
+sample_slices() {
+  local i=0 start target now
+  start=$(date +%s)
+  while true; do
+    target=$((start + i * SLICE_S))
+    now=$(date +%s)
+    if (( target > now )); then sleep $((target - now)); fi
+    slice_once "$i"
+    i=$((i + 1))
+  done
+}
+
 # --- chaos ------------------------------------------------------------------------------------------
-WARMUP_S="${WARMUP:-3s}"; WARMUP_S="${WARMUP_S%s}"
-DURATION_S="${DURATION:-10s}"; DURATION_S="${DURATION_S%s}"
+WARMUP_S="$(seconds_of "${WARMUP:-3s}")"; WARMUP_S="${WARMUP_S:-3}"
+DURATION_S="$(seconds_of "${DURATION:-10s}")"; DURATION_S="${DURATION_S:-10}"
 K6_STARTED=0
 chaos_at() { # seconds after k6 started
   local now wait
@@ -358,12 +453,17 @@ hook before_k6
 
 # --- k6 -------------------------------------------------------------------------------------------
 RUN_SLUG="$(printf '%s' "$RUN_ID" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9-' '-' | cut -c1-24)"
-log "k6 $SCRIPT: VUS=${VUS:-10} DURATION=${DURATION:-10s} WARMUP=${WARMUP:-3s} FAN_MODE=${FAN_MODE:-spread}"
+log "k6 $SCRIPT: VUS=${VUS:-10} DURATION=${DURATION:-10s} WARMUP=${WARMUP:-3s} FAN_MODE=${FAN_MODE:-spread}${RATE:+ RATE=$RATE}${SOAK:+ SOAK=$SOAK, a slice every ${SLICE_S} s}"
 BURST_START=$(date +%s)
 K6_STARTED=$BURST_START
 if declare -F chaos >/dev/null; then
   chaos &
   CHAOS_PID=$!
+fi
+if [[ -n "$SLICE_S" ]]; then
+  : > "$RUN_DIR/soak.tsv"
+  sample_slices &
+  SLICES_PID=$!
 fi
 set +e
 compose run --name "$K6_NAME" --no-deps ${K6_ENV[@]+"${K6_ENV[@]}"} -e "RUN=$RUN_SLUG" \
@@ -371,6 +471,10 @@ compose run --name "$K6_NAME" --no-deps ${K6_ENV[@]+"${K6_ENV[@]}"} -e "RUN=$RUN
 K6_EXIT=${PIPESTATUS[0]}
 set -e
 BURST_END=$(date +%s)
+if [[ -n "$SLICE_S" ]]; then
+  stop_slices
+  slice_once end
+fi
 CHAOS_EXIT=0
 if [[ -n "$CHAOS_PID" ]]; then
   wait "$CHAOS_PID" || CHAOS_EXIT=$?

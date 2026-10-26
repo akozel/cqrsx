@@ -64,6 +64,7 @@ reuse it (`BUILD=1` forces a rebuild).
 cd demo/load
 ./run.sh hot-key VUS=20                              # one run, one fresh stand
 ./run.sh spread-bookings VUS=50 DRAIN=1 WORKERS=8    # burst, then measure the outbox drain
+./run.sh spread-bookings VUS=100 WORKERS=8 WARMUP=10s SOAK=4m RATE=1000   # 1000 bookings a second for 4 minutes
 ./matrix.sh                                          # the whole first-iteration matrix (below)
 ./matrix.sh PREFIX=c1-                               # the same matrix as a second batch: series c1-01-hot-key, …
 ./report.sh                                          # one table over results/*/result.json
@@ -100,14 +101,53 @@ p50, p99, 409 share, drain figures, back-end CPU and memory, with the relative c
 | `k6.log` | k6 output including the text summary |
 | `stats.tsv` | `docker stats` samples (epoch, container, CPU %, memory), ~every 2–3 s |
 | `outbox.tsv` | `DRAIN=1` only: open / completed / failed / total tasks per second |
+| `soak.tsv` | `SOAK=…` only: one sample per slice, `epoch  source  key  value` (below) |
 | `backend.log` | back-end log of the run |
 | `summary.json` | k6's full end-of-test data |
 
-Every test runs a closed loop: `VUS` virtual users send requests back to back for 3 s of warm-up
-plus 10 s of measured window (`WARMUP`, `DURATION`). Requests are tagged by phase and the summary
-reports the measured phase only, so the cold caches of a fresh stand stay out of the numbers.
+Every test runs a closed loop by default: `VUS` virtual users send requests back to back for 3 s of
+warm-up plus 10 s of measured window (`WARMUP`, `DURATION`). Requests are tagged by phase and the
+summary reports the measured phase only, so the cold caches of a fresh stand stay out of the numbers.
 Ten seconds is enough to find a ceiling; for publishable p99 figures rerun the interesting points
-with `DURATION=60s`.
+with `DURATION=60s`. `RATE=…` switches to the open model, which a soak run uses (below).
+
+## Constant-rate runs (soak)
+
+A closed loop finds ceilings but hides whether the stand keeps up with a flow: the outbox tasks of a
+10-second burst mostly run after the window. `SOAK=<duration>` runs the measured window at a constant
+rate instead:
+
+- **Open model.** `RATE=…` starts that many iterations a second (k6 `constant-arrival-rate`), whatever
+  the answers, with `VUS` users allocated up front. An iteration that finds every user busy is dropped
+  (`dropped_iterations`): the box office did not keep up. Latency then grows instead of the rate falling.
+- **Length.** `SOAK` replaces `DURATION`; warm-up plus window is at most `LOAD_SOAK_MAX_S` (300 s, the
+  5-minute limit of epic 03, D-22). Minutes of writes are gigabytes: a soak run refuses to start when the
+  container storage has less than `LOAD_MIN_FREE_GB` (10) free; `run.sh --check` prints what is free.
+- **Slices.** Every `SLICE` (10 s) from k6's start and once more at its end, `run.sh` writes the outbox by
+  status to `soak.tsv` and calls `hook_slice` (the epic's hooks add table and index sizes, dead rows,
+  autovacuum runs, HOT updates, checkpoints, WAL and full-page images, temp bytes). k6 reports requests,
+  accepted commands, p50 and p99 per slice of the measured window.
+- **`soak` in `result.json`.** `points` (one per slice: open and completed tasks, completed per second, CPU %
+  and peak memory per container and peak lag per projection since the slice before, the database's keys),
+  `slices` (k6's) and `verdict`.
+
+The verdict: the rate is **sustained** when the box office accepted at least 99 % of it and, by the last slice
+under load, neither the open outbox tasks nor the worst projection lag are higher than 60 s after k6 started,
+give or take one second of input (`RATE`). `open_growth_per_min` says how fast the queue grows when it is not.
+`dropped_iterations` is reported apart: a few dozen of them are stalls of a fraction of a second (every user
+waiting at once), not a rate the stand cannot take. The report draws every soak
+run over time ("— over time": throughput, latency, open tasks, outbox throughput, projection lag, CPU,
+memory and, with the epic's hooks, table sizes, dead rows and WAL):
+
+- open tasks that level off after the first minute — the chain keeps up; a line that keeps rising — it
+  does not, and its slope is the shortfall in tasks per second;
+- throughput below `RATE` or dropped iterations — the box office itself is the limit;
+- lag that keeps rising — a projection does not keep up;
+- table sizes and dead rows — what minutes of writes leave behind for VACUUM (backlog epic 04, tickets 07
+  and 09).
+
+The sustained rate is found by halving: 2–3 runs of 2 minutes, raise the rate after a sustained run and
+lower it after one that is not; then 5-minute runs at the rate found and 20 % above it.
 
 ## Tests
 
@@ -120,7 +160,8 @@ with `DURATION=60s`.
 | 3b | `spread-bookings` + `DRAIN=1 FAN_MODE=hot` | `WORKERS` 8 | Every booking is for one fan. Before decision D-14 that meant one `Fan` stream and one wallet document growing without bound: the drain decayed 120 → 12 tasks/s and never finished (run `20261018-144205`). Since D-14 the fan has a ledger per concert, so this is the regression check: the drain must look like 3a. |
 
 What the tests deliberately do not cover yet: the read side (`GET /api/concerts`, time machine),
-rebuild / verify timing, SSE fan-out, a soak of up to 5 minutes, dependency outages. They are the next iteration.
+rebuild / verify timing, SSE fan-out. They are the next iteration. A soak of up to 5 minutes is above,
+dependency outages are `chaos/`.
 
 ## Reading the numbers
 
@@ -175,8 +216,10 @@ Measurement tools that live outside this directory plug into a run without copyi
   must become healthy before k6 starts, and its log is saved next to `backend.log` as `<service>.log`.
   Their order is up to `depends_on` in the compose files.
 - `LOAD_HOOKS=hooks.sh` is sourced once the run folder exists. The functions it defines out of
-  `hook_before_k6`, `hook_after_k6`, `hook_after_drain` (`DRAIN=1` only) and `hook_after_collect` are
-  called at those points and see `RUN_DIR`, `compose` and `log`. A failing hook is logged, the run goes on.
+  `hook_before_k6`, `hook_after_k6`, `hook_after_drain` (`DRAIN=1` only), `hook_slice EPOCH` (`SOAK=…`
+  only, every slice: append `EPOCH  <source>  <key>  <value>` lines to `soak.tsv`) and `hook_after_collect`
+  are called at those points and see `RUN_DIR`, `compose` and `log`. A failing hook is logged, the run goes
+  on.
 
 Backlog epic 02 measures its tickets this way: `docs/backlog/02_postgres_performance/perf/` (statement
 statistics, work per command, repeats with medians).
@@ -196,10 +239,11 @@ load/
   tools/collect.mjs   assembles result.json: k6 numbers + meta + container CPU/memory + drain
   tools/report.mjs    the terminal table
   tools/report-html.mjs  the HTML report with charts (inline SVG, no dependencies)
+  tools/soak-section.mjs the "over time" section of a soak run, shared with the epic's report
   tools/compare.mjs   before/after table of two batches (by NAME, e.g. "" vs c1-)
   k6/
     hot-key.js  announce-storm.js  spread-bookings.js
-    lib/config.js     parameters, the constant-VUs scenario, phase tagging
+    lib/config.js     parameters, the scenario (constant VUs, or a constant rate), phase and slice tagging
     lib/api.js        the command endpoint and outcome classification
     lib/metrics.js    outcome counters and the sub-metric declarations
     lib/summary.js    handleSummary: text block + result.json

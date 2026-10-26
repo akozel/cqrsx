@@ -16,6 +16,7 @@ From this directory (`demo/docs/backlog/02_postgres_performance/perf`):
 ./matrix.sh PREFIX=perf-02- REPEAT=3 POOL=20 ONLY=02a-announce-vus100,03a-drain-w8  # the points of a ticket
 ./report.sh perf-02-                                    # table + demo/load/results/perf-report.html
 node tools/compare.mjs ../../../../load/results perf-base- perf-02- --md            # before → after
+node tools/compare.mjs ../../../../load/results e04-base- e04-03- e04-04- --md     # stages side by side
 ```
 
 `run.sh` takes the parameters of `demo/load/run.sh` (`--check`, `--help`, `LOAD_HOST_DIR`, …) and five of
@@ -39,7 +40,8 @@ live in the stand's `compose.yaml`, not in an overlay here, so the second node i
 `tools/compare.mjs` shows accepted commands per second and the 409 and 503 shares next to req/s, how far the
 projections trailed the journal (`lag p50/p99 events`, the status sampled once a second, and `caught up s`
 after the burst) and, for runs with `VERIFY=1`, whether the read models matched the journal afterwards
-(`verify ok`: 1 or 0, with no document behind).
+(`verify ok`: 1 or 0, with no document behind). It takes two batches or more: a column per batch, `Δ` and
+`≠` from the first to the last, so the stages of an epic stand side by side.
 
 The epic README lists the point, profile and generator per ticket ("Что мерить") and how to build the
 "before" image.
@@ -62,23 +64,25 @@ The first run that actually starts rebuilds the back-end image; `BUILD=0` skips 
 
 | File | Content |
 |---|---|
-| `counters.tsv` | cumulative counters at `before` / `after` the burst (and `drained`): cgroup CPU time of back-end, PostgreSQL and MongoDB (and of `backend-2` and `balancer` when they run), PostgreSQL network packets, commits, rollbacks, WAL position, completed tasks |
+| `counters.tsv` | cumulative counters at `before` / `after` the burst (and `drained`): cgroup CPU time, CPU-quota throttling and memory (`anon`, page cache) of back-end, PostgreSQL and MongoDB (and of `backend-2` and `balancer` when they run), PostgreSQL network packets, commits, rollbacks, WAL position, `pg_stat_wal` (records, full-page images, bytes), completed tasks, MongoDB's operation counters (`opcounters`) |
 | `backend-2.log`, `balancer.log` | the logs of the second node and of nginx, when they run (the stand's `LOAD_SERVICES_EXTRA`) |
-| `pg_statements.tsv` | `pg_stat_statements` over the burst window: one line per normalized statement with calls, total and mean time, rows, buffer hits and reads, read time; most expensive first |
+| `pg_statements.tsv` | `pg_stat_statements` over the burst window: one line per normalized statement with calls, total and mean time, rows, buffer hits and reads, read time, WAL records, full-page images and bytes; most expensive first |
 | `pg_statements.drain.tsv` | `DRAIN=1` only: the statements of the drain, from the end of the burst to the end of the drain |
-| `result.json` → `db`, `efficiency`, `drain.per_task`, `meta.git_describe` | the figures below |
+| `wait_events.tsv` | while k6 runs, every 100 ms: the busy client sessions of PostgreSQL by state and wait event (`epoch_ms  state  wait  sessions`, a `sample` line per sample) |
+| `soak.tsv` | `SOAK=…` only: the stand's slices plus the database's growth from `hook_slice` |
+| `result.json` → `db`, `efficiency`, `queue`, `waits`, `drain.per_task`, `meta.git_describe` | the figures below |
 
 | Piece | What it does |
 |---|---|
-| `compose.perf.yaml` | overlay: PostgreSQL with `shared_preload_libraries=pg_stat_statements`, `track_io_timing=on`, and `postgres/00-pg-stat-statements.sql` |
+| `compose.perf.yaml` | overlay: PostgreSQL with `shared_preload_libraries=pg_stat_statements`, `track_io_timing=on`, and `postgres/00-pg-stat-statements.sql`; the `mongo-probe` service (`mongosh` in a container of its own, started with every run), so that reading MongoDB's counters costs MongoDB no CPU |
 | `compose.image.yaml` | overlay for `BACKEND_IMAGE`: the back-end service runs that image |
 | `compose.before-feed.yaml` | overlay for the "before" runs of epic 03/03: `postgres/15-before-feed.sql` drops `events.tx` and `events_feed_idx` after the stand's schema (the back-end does not read them), so the write path is measured with and without the feed position |
 | `compose.balancer.yaml` | overlay for `BALANCE`: the `balancer` service (nginx) in front of the node(s), the generator's `BASE_URL` pointed at it |
 | `compose.node2.yaml` | overlay for `NODES=2`: the `backend-2` service, `extends` of the stand's `backend` |
 | `nginx/` | `nginx.conf` (one worker, no access log, keep-alive both ways, `$aggregate_key` from the path, `X-Upstream`) and the upstreams `upstream-{single,round_robin,key}.conf` |
 | `generator/` | the wrk image that stands in for k6 (`LOAD_K6_IMAGE`): `gen.sh` takes k6's arguments and environment, runs wrk for the warm-up and the measured window with `scenarios/<test>.lua`, and writes `result.json` in the shape of `demo/load/k6/lib/summary.js` (no projection-warning count: wrk does not read the bodies) |
-| `hooks.sh` | `hook_before_k6` resets the statement statistics and snapshots the counters; `hook_after_k6` and `hook_after_drain` snapshot and dump the statements; `hook_after_collect` runs `tools/collect.mjs` |
-| `tools/collect.mjs` | turns the counters into `db`, `efficiency`, `drain.per_task` |
+| `hooks.sh` | `hook_before_k6` resets the statement statistics, snapshots the counters and starts the wait sampler; `hook_after_k6` stops it, snapshots and dumps the statements; `hook_after_drain` waits for the projections to catch up (at most `PERF_CATCH_UP_S`, 30 s), then snapshots and dumps; `hook_slice` adds the database's growth to a soak run's slice; `hook_after_collect` runs `tools/collect.mjs` |
+| `tools/collect.mjs` | turns the counters into `db`, `efficiency` (with `chain`), `queue`, `waits`, `drain.per_task` |
 | `tools/lib/runs.mjs` | loading results and folding the repeats of a point into its median |
 | `tools/report.mjs` | terminal table (or a batch as Markdown, `--md`): one line per point, median, `n`, min–max |
 | `tools/report-html.mjs` | the stand's HTML report extended with these figures: medians with min–max whiskers, "CPU per 1000 accepted commands", "Database work per command" and "per drained task" |
@@ -96,13 +100,48 @@ stays at a ceiling somewhere else, e.g. PostgreSQL work saved while the back-end
 | `cpu_ms_per_1k_accepted.{backend,postgres,mongo}` | CPU time per 1000 accepted commands from the container's cgroup (`cpu.stat`), exact. `backend` is every back-end node together, so one node and two compare as they are |
 | `cpu_ms_per_1k_accepted.{backend_node1,backend_node2,balancer}` | with `NODES=2`: each node on its own (how evenly the balancer spread the work); with a balancer: nginx |
 | `cpu_ms_per_1k_accepted.k6` | the same for k6 from the `stats` samples (its container is gone before its cgroup could be read), approximate |
+| `cores.{backend,postgres,mongo,k6}` | the cores each container used on average over the window: its CPU time ÷ the window; against the profile's budget (`meta.cpu_budget_cores`) it says which container was the limit |
 | `statements_per_command` | SQL statements (`pg_stat_statements` calls, `BEGIN`/`COMMIT` included) per accepted command |
+| `commits_per_command` | `pg_stat_database.xact_commit` per accepted command |
 | `packets_per_command` | network packets in and out of the PostgreSQL container per accepted command |
 | `rollbacks_per_command` | `pg_stat_database.xact_rollback` per accepted command: write conflicts and errors |
 | `wal_bytes_per_command` | WAL written per accepted command, from the WAL insert position |
+| `wal_fpi_per_command` | full-page images per accepted command (`pg_stat_wal.wal_fpi`): the first change of a page after a checkpoint writes the whole 8 kB page |
+| `mongo_ops_per_command.{insert,query,update,delete,getmore,command,total}` | MongoDB operations per accepted command (`opcounters`): `query` is a `find`, `update` an `update_one`; `command` counts everything else, the lease and checkpoint writes of the processors among them |
+| `tasks_completed_per_command` | outbox tasks completed inside the window per accepted command |
 
-`db` holds the raw differences behind them. With `DRAIN=1`, `drain.per_task` gives the same figures for the
-drain (from `after` to `drained`) per task completed in it. What to keep in mind:
+`db` holds the raw differences behind them, with `cpu_throttled_ms` (the time a CPU quota held a container
+back: under `PIN=quota` a sign that it hit its budget in bursts) and `memory_after` (`anon_bytes`, the processes'
+own memory, and `file_bytes`, the page cache, of every container at `after`; the peaks of the whole run are the
+stand's `memory_peak_bytes`).
+
+**Through the chain** (`efficiency.chain`, `DRAIN=1` only). An accepted booking starts an asynchronous chain:
+task `encore_record_ticket` → `Fan` command → task `encore_send_e_ticket` → mail. How much of it runs inside the
+window depends on the code under test, so the window's figures put a varying part of the chain on the command:
+a cheaper task lets more of the chain into the window and the command looks no cheaper. `chain` measures from
+`before` to `drained` — the end of the drain, once the projections have caught up as well — and divides by the
+same accepted commands, so every variant is charged the same work: all of the chain of all of its commands.
+
+| Field | Meaning |
+|---|---|
+| `cpu_ms_per_1k_accepted.*` | CPU time per 1000 accepted commands, burst and drain together |
+| `statements_per_command`, `commits_per_command`, `packets_per_command`, `wal_bytes_per_command`, `wal_fpi_per_command`, `mongo_ops_per_command` | the same as in the window, through the chain |
+| `tasks_per_command` | outbox tasks completed per accepted command (2 for a booking, 1 for an announce: none) |
+| `window_share` | the part of those tasks completed inside the window |
+
+The window's figures stay: they are the cost of taking a command; `chain` is the cost of everything it causes.
+
+**Queue statements** (`queue.window`, and `queue.drain` with `DRAIN=1`). Claim (`WITH ready AS … FOR UPDATE SKIP
+LOCKED`) and settle (fenced by the lease token) are picked out of the statement dumps by their text: `calls`,
+`mean_ms`, `blocks_per_call` (shared buffers hit and read), `wal_fpi_per_call`, `share_of_sql_time_pct` of all
+SQL execution time in the dump, and for the window `settle.per_command`.
+
+**What the sessions waited for** (`waits`). `samples` (one every 100 ms), `sessions_avg` (busy client sessions
+on average: active or inside a transaction), `active_avg`, and `top`: the ten most common states and wait
+events with their share of the session samples. An active session without a wait event is `CPU`;
+`LWLock:WALWrite` and `IO:WalSync` wait for the WAL to be written and flushed at commit; `Lock:transactionid`
+waits for another transaction's row; `idle in transaction Client:ClientRead` is a transaction left open
+between two statements while the client works. The sampler's own session and the hooks' are left out.
 
 - The database works for the whole stand: in 02b and 03a the outbox workers run during the burst, so
   their statements are part of the per-command figures. Compare like with like.
@@ -115,7 +154,9 @@ drain (from `after` to `drained`) per task completed in it. What to keep in mind
   second of a burst may be missing from them (−1.6 % commits on a check run). CPU, packets, statements
   and WAL are exact.
 - `pg_stat_statements` costs a little CPU itself. Compare only with runs measured the same way, i.e.
-  from the `perf-base-` batch on, never with the stand's plain runs.
+  from the `perf-base-` batch on, never with the stand's plain runs. The same holds for the wait sampler
+  (one session, a light query ten times a second) and the `mongo-probe` container (from epic 04 on, batches
+  `e04-…`): both are in every run measured this way.
 - The drain is measured to the end, not in a window: its rate changes as it goes (the
   `encore_record_ticket` tasks first, the `encore_send_e_ticket` tasks they create later), and the first
   30 s show a different, noisier figure than the whole drain.

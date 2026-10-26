@@ -11,7 +11,7 @@
 import exec from 'k6/execution';
 import { sleep } from 'k6';
 import * as api from './lib/api.js';
-import { baseOptions, cfg, phase, scenario } from './lib/config.js';
+import { baseOptions, cfg, requestTags, scenario } from './lib/config.js';
 import { SEATS, seatOf } from './lib/ids.js';
 import { summarize } from './lib/summary.js';
 
@@ -35,7 +35,7 @@ export function run() {
   const vu = exec.vu.idInInstance;
   const seat = seatOf((vu - 1) % SEATS);
   const fan = `fan-${vu}`;
-  const tags = { phase: phase() };
+  const tags = requestTags();
   const r = held ? api.cancel(CONCERT, seat, fan, tags) : api.book(CONCERT, seat, fan, fan, tags);
   switch (r.outcome) {
     case 'accepted':

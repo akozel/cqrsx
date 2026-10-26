@@ -1,8 +1,9 @@
 // handleSummary for every test: a compact text block on stdout and two files run.sh copies out of
 // the container: result.json (the numbers the report reads) and summary.json (k6's full data).
 // Only the measured phase is reported, except `accepted_total_all_phases`, which is what the outbox
-// drain measurement needs: every accepted booking or cancellation created tasks.
-import { cfg } from './config.js';
+// drain measurement needs: every accepted booking or cancellation created tasks. A soak run adds the
+// requested rate, the iterations k6 dropped and the window slice by slice.
+import { cfg, SLICES } from './config.js';
 import { REJECTION_CODES, STATUSES } from './metrics.js';
 
 const round = (x) => Math.round((x || 0) * 100) / 100;
@@ -49,6 +50,30 @@ export function summarize(data, info) {
     unavailable_total_all_phases: count(m, 'cmd_unavailable'),
     other_total_all_phases: count(m, 'cmd_other'),
   };
+  if (cfg.rate > 0) {
+    // The open model: the iterations k6 could not start because every VU was busy.
+    result.rate = cfg.rate;
+    result.dropped_iterations = count(m, 'dropped_iterations');
+  }
+  if (SLICES > 0) {
+    result.slice_s = cfg.sliceMs / 1000;
+    result.slices = [];
+    for (let i = 0; i < SLICES; i += 1) {
+      const seconds = Math.min(cfg.sliceMs, cfg.durationMs - i * cfg.sliceMs) / 1000;
+      const requests = count(m, `http_reqs{phase:measured,slice:${i}}`);
+      const t = trend(m, `http_req_duration{phase:measured,slice:${i}}`);
+      result.slices.push({
+        slice: i,
+        start_s: (cfg.warmupMs + i * cfg.sliceMs) / 1000,
+        seconds,
+        requests,
+        rps: round(requests / seconds),
+        accepted: count(m, `cmd_accepted{phase:measured,slice:${i}}`),
+        p50: requests > 0 && t ? t.p50 : null,
+        p99: requests > 0 && t ? t.p99 : null,
+      });
+    }
+  }
   for (const key of Object.keys(info)) {
     if (key !== 'test' && key !== 'commands') {
       result[key] = info[key];
@@ -111,6 +136,9 @@ function text(r) {
   lines.push(
     `all phases: accepted=${r.accepted_total_all_phases} (source of outbox tasks) unavailable=${r.unavailable_total_all_phases} other=${r.other_total_all_phases}`,
   );
+  if (r.rate) {
+    lines.push(`open model: ${r.rate} iterations/s requested, ${r.dropped_iterations} dropped (no free VU)`);
+  }
   lines.push('');
   return lines.join('\n');
 }
