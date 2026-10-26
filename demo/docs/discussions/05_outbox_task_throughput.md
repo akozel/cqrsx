@@ -3,6 +3,11 @@
 Статус: обсуждается. **Пометка: обсудить правила реализации outbox task.** Пункты 2 и 3 раздела 4 закрываются
 решениями D-16 и D-17 эпика 03 (тикет [03/04](../backlog/03_durable_projections/04_demo_on_processor.md): ожидания
 кассы в обработчике нет, команда не сообщает о витрине); открыты пункты 4 и 5.
+**2026-10-26:** §3 и п.6 раздела 4 устарели. В пути задачи больше нет MongoDB (витрины ведут процессоры), а учёт
+очереди — claim и settle — занимает 86 % времени SQL слива ([аудит](../PERFORMANCE_AUDIT.md), §2.2). Работа — в задачах
+[04/03](../backlog/04_operation_costs/03_settle_by_primary_key.md),
+[04/07](../backlog/04_operation_costs/07_delete_completed_tasks.md) и
+[04/08](../backlog/04_operation_costs/08_settle_with_next_claim.md).
 Откуда: нагрузочные тесты 2026-10-18 ([`../../load/README.md`](../../load/README.md), прогоны `03a-drain-*`
 и `03b-drain-hot-fan-w8`, результаты в `demo/load/results/`).
 
