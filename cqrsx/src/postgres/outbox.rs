@@ -19,7 +19,10 @@ use sqlx::PgPool;
 ///
 /// Multi-event batches, snapshot-only writes, and tasks without an event are
 /// rejected. Bind a fresh repository/task list per command; share the pool.
-/// Reads delegate to a plain PostgreSQL repository on the same pool.
+/// Reads delegate to a plain PostgreSQL repository on the same pool. A clone
+/// shares the pool and the SQL texts: build one repository and bind a clone of
+/// it per command.
+#[derive(Clone)]
 pub struct PostgresEventRepositoryWithOutbox {
     pool: PgPool,
     reader: PostgresEventRepository,
@@ -39,6 +42,12 @@ impl PostgresEventRepositoryWithOutbox {
     pub fn with_outbox(mut self, tasks: Vec<NewTask>) -> Self {
         self.tasks = tasks;
         self
+    }
+
+    /// Whether `other` reads with the very SQL texts of this repository (a clone of it).
+    #[cfg(test)]
+    pub(crate) fn shares_queries_with(&self, other: &Self) -> bool {
+        self.reader.shares_queries_with(&other.reader)
     }
 
     async fn persist_command<A: Aggregate>(

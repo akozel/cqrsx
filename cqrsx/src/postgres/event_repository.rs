@@ -19,6 +19,7 @@ use crate::{
     postgres::error::PostgresRepositoryError,
 };
 use sqlx::{Pool, Postgres};
+use std::sync::Arc;
 
 const DEFAULT_EVENT_TABLE: &str = "events";
 const DEFAULT_SNAPSHOT_TABLE: &str = "snapshots";
@@ -37,9 +38,13 @@ pub struct LedgerTotals {
 pub const DEFAULT_COUNT_AFTER_CAP: u64 = 100_000;
 
 /// An event repository relying on a Postgres database for persistence.
+///
+/// A clone shares the pool and the SQL texts, which are built once when the repository is: a command
+/// executor builds its repository once and gives every command a clone.
+#[derive(Clone)]
 pub struct PostgresEventRepository {
     pool: Pool<Postgres>,
-    query_factory: SqlQueryFactory,
+    query_factory: Arc<SqlQueryFactory>,
 }
 
 impl PersistedEventRepository for PostgresEventRepository {
@@ -121,15 +126,21 @@ impl PostgresEventRepository {
     /// }
     /// ```
     pub fn with_tables(mut self, events_table: &str, snapshots_table: &str) -> Self {
-        self.query_factory = SqlQueryFactory::new(events_table, snapshots_table);
+        self.query_factory = Arc::new(SqlQueryFactory::new(events_table, snapshots_table));
         self
     }
 
     fn use_tables(pool: Pool<Postgres>, events_table: &str, snapshots_table: &str) -> Self {
         Self {
             pool,
-            query_factory: SqlQueryFactory::new(events_table, snapshots_table),
+            query_factory: Arc::new(SqlQueryFactory::new(events_table, snapshots_table)),
         }
+    }
+
+    /// Whether `other` uses the very SQL texts of this repository (a clone of it), not a copy of them.
+    #[cfg(test)]
+    pub(crate) fn shares_queries_with(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.query_factory, &other.query_factory)
     }
 }
 
@@ -191,6 +202,22 @@ mod configuration_tests {
         assert!(repository.query_factory.count_events().contains("FROM custom_events"));
         assert!(repository.query_factory.count_after().contains("FROM custom_events"));
         assert!(repository.query_factory.select_snapshot().contains("FROM custom_snapshots"));
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn clones_share_the_sql_texts_and_new_tables_build_their_own() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://localhost/unused")
+            .unwrap();
+        let repository = PostgresEventRepository::new(pool.clone()).with_tables("custom_events", "custom_snapshots");
+        let clone = repository.clone();
+        assert!(repository.shares_queries_with(&clone));
+        assert!(clone.query_factory.select_events().contains("FROM custom_events"));
+        let other = clone.clone().with_tables("other_events", "other_snapshots");
+        assert!(!repository.shares_queries_with(&other));
+        assert!(other.query_factory.select_events().contains("FROM other_events"));
+        assert!(repository.query_factory.select_events().contains("FROM custom_events"));
         pool.close().await;
     }
 }

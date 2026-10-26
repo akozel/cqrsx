@@ -60,12 +60,19 @@ impl PostgresCommandConfig {
     }
 }
 
-/// Builds the framework of one command: a repository on the shared pool bound to the command's outbox
-/// tasks, a snapshot-backed store over it and a clone of the services.
+/// Builds the framework of one command: the executor's repository bound to the command's outbox tasks, a
+/// snapshot-backed store over it and a clone of the services. The repository is built once, with the
+/// executor; a command gets a clone, which shares the pool and the SQL texts.
 struct PostgresFrameworkFactory<A: Aggregate> {
-    pool: PgPool,
+    repository: PostgresEventRepositoryWithOutbox,
     snapshot_interval: usize,
     services: A::Services,
+}
+
+impl<A: Aggregate> PostgresFrameworkFactory<A> {
+    fn repository(&self, tasks: Vec<NewTask>) -> PostgresEventRepositoryWithOutbox {
+        self.repository.clone().with_outbox(tasks)
+    }
 }
 
 impl<A> FrameworkFactory<A> for PostgresFrameworkFactory<A>
@@ -76,15 +83,15 @@ where
     type Store = PersistedEventStore<PostgresEventRepositoryWithOutbox, A>;
 
     fn framework(&self, tasks: Vec<NewTask>) -> CqrsFramework<A, Self::Store> {
-        let repository = PostgresEventRepositoryWithOutbox::new(self.pool.clone()).with_outbox(tasks);
-        let store = PersistedEventStore::new_snapshot_store(repository, self.snapshot_interval);
+        let store = PersistedEventStore::new_snapshot_store(self.repository(tasks), self.snapshot_interval);
         CqrsFramework::new(store, self.services.clone())
     }
 }
 
 /// The command executor over PostgreSQL: the [`CommandExecutorCore`] with a factory that binds every
-/// command's outbox tasks to a fresh repository on the shared pool, with a snapshot-backed store and a clone
-/// of the services. One per aggregate type and process: it owns the aggregate locks, so share it (e.g. in an
+/// command's outbox tasks to a clone of the executor's repository (built once: the shared pool and the SQL
+/// texts), with a snapshot-backed store and a clone of the services. One per aggregate type and process: it
+/// owns the aggregate locks, so share it (e.g. in an
 /// `Arc`) instead of building a second one, and never build a core of your own next to it for the same
 /// aggregate type. Commands run through [`CommandExecutor`].
 ///
@@ -104,7 +111,7 @@ impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
     /// retry policy and the lock limits go to the executor, the snapshot interval to every command's store.
     pub fn new(pool: PgPool, config: PostgresCommandConfig, services: A::Services) -> Self {
         let factory = PostgresFrameworkFactory {
-            pool,
+            repository: PostgresEventRepositoryWithOutbox::new(pool),
             snapshot_interval: config.snapshot_interval(),
             services,
         };
@@ -174,6 +181,21 @@ mod tests {
         }
 
         fn apply(&mut self, _: Said) {}
+    }
+
+    #[tokio::test]
+    async fn every_command_reads_with_the_sql_texts_of_its_executor() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://nobody@localhost/none")
+            .unwrap();
+        let factory = PostgresFrameworkFactory::<Quiet> {
+            repository: PostgresEventRepositoryWithOutbox::new(pool),
+            snapshot_interval: 1,
+            services: (),
+        };
+        let (first, second) = (factory.repository(Vec::new()), factory.repository(Vec::new()));
+        assert!(first.shares_queries_with(&second));
+        assert!(first.shares_queries_with(&factory.repository));
     }
 
     #[tokio::test]

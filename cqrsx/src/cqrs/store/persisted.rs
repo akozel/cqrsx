@@ -590,7 +590,7 @@ impl<A: Aggregate> TryFrom<SerializedSnapshot> for EventStoreAggregateContext<A>
     type Error = PersistenceError;
 
     fn try_from(snapshot: SerializedSnapshot) -> Result<Self, Self::Error> {
-        let aggregate = serde_json::from_value(snapshot.aggregate.clone())?;
+        let aggregate = serde_json::from_value(snapshot.aggregate)?;
         Ok(Self {
             aggregate_id: snapshot.aggregate_id,
             aggregate,

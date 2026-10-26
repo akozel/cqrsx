@@ -759,3 +759,8 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   bookings/s the base falls behind by 4.8k tasks a minute, with 03 the queue stays flat. The single-UPDATE variant
   (measured only, not in the tree) settles 10 % faster but drains slower (2436 tasks/s) and breaks the test of a
   lease expiring behind an unchanged locked row: rejected by the user, only the predicate change is kept.
+- **Epic 04 ticket 04: command CPU trifles.** `PostgresEventRepository` holds `Arc<SqlQueryFactory>` and is `Clone`
+  like `PostgresEventRepositoryWithOutbox`; the executor's factory builds the repository once and gives every
+  command a clone; the snapshot is deserialized without a clone; `EventSink` takes a `std::sync::Mutex`. Profile
+  `app`: back-end CPU per booking 473 → 449 ms per 1000 (−5 %, repeats apart), hot key −4 %; PostgreSQL and MongoDB
+  unchanged.

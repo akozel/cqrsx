@@ -1,10 +1,13 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::cqrs::aggregate::Aggregate;
-use tokio::sync::Mutex;
+use std::sync::{Mutex, PoisonError};
 
 /// Buffers new events while applying them immediately to a working aggregate.
 /// Persistence occurs later, after command handling succeeds.
+///
+/// The buffer's lock is held only for a push, never across an `.await`, so it is a plain mutex; `write`
+/// and `collect` stay `async`, the signature aggregates are written against.
 #[derive(Debug)]
 pub struct EventSink<A: Aggregate> {
     events: Mutex<Vec<A::Event>>,
@@ -22,11 +25,12 @@ impl<A: Aggregate> EventSink<A> {
     /// Apply the event in memory and buffer it; this does not persist the event.
     pub async fn write(&self, event: A::Event, aggregate: &mut A) {
         aggregate.apply(event.clone());
-        self.events.lock().await.push(event);
+        // A push cannot leave the buffer half-changed, so a panic elsewhere that poisoned the lock is no harm.
+        self.events.lock().unwrap_or_else(PoisonError::into_inner).push(event);
     }
 
     pub async fn collect(self) -> Vec<A::Event> {
-        self.events.into_inner()
+        self.events.into_inner().unwrap_or_else(PoisonError::into_inner)
     }
 }
 
