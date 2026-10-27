@@ -52,6 +52,7 @@ pub(crate) struct Never;
 
 impl Aggregate for Ledger {
     const TYPE: &'static str = "ledger";
+    type Id = String;
     type Command = i32;
     type Event = Delta;
     type Error = Never;

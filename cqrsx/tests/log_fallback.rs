@@ -70,6 +70,7 @@ impl DomainEvent for ProbeEvent {
 }
 impl Aggregate for ProbeAggregate {
     const TYPE: &'static str = "log_fallback";
+    type Id = String;
     type Command = ();
     type Event = ProbeEvent;
     type Error = io::Error;
@@ -162,7 +163,7 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
     let config = PostgresCommandConfig::new(25, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap();
     let executor = PostgresCommandExecutor::<ProbeAggregate>::new(pool, config, ());
     assert!(matches!(
-        executor.execute("private_id", ()).await,
+        executor.execute(&"private_id".into(), ()).await,
         Err(CommandGatewayError::Unavailable)
     ));
     let executor = CommandExecutorCore::new(
@@ -171,7 +172,7 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         LockLimits::default(),
     );
     assert!(matches!(
-        executor.execute("private_id", ()).await,
+        executor.execute(&"private_id".into(), ()).await,
         Err(CommandGatewayError::Unavailable)
     ));
     let panic = tokio::spawn(async {

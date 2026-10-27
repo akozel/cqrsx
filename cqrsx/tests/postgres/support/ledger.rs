@@ -17,6 +17,7 @@ impl DomainEvent for Delta {
 pub(crate) struct Rejected;
 impl Aggregate for Ledger {
     const TYPE: &'static str = "contract_ledger";
+    type Id = String;
     type Command = i32;
     type Event = Delta;
     type Error = Rejected;
@@ -48,6 +49,7 @@ use std::collections::HashMap;
 pub(crate) struct OtherLedger;
 impl Aggregate for OtherLedger {
     const TYPE: &'static str = "other_ledger";
+    type Id = String;
     type Command = ();
     type Event = Delta;
     type Error = Rejected;

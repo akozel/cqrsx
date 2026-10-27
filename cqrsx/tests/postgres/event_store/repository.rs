@@ -28,6 +28,7 @@ impl cqrsx::cqrs::event::DomainEvent for Appended {
 
 impl cqrsx::cqrs::aggregate::Aggregate for History {
     const TYPE: &'static str = "snapshot_reapplication_characterization";
+    type Id = String;
     type Command = i32;
     type Event = Appended;
     type Error = std::convert::Infallible;
@@ -53,7 +54,7 @@ async fn snapshot_command_applies_one_event_once() {
     let db = Database::new().await;
     let config = PostgresCommandConfig::new(1, Default::default(), LockLimits::default()).unwrap();
     let executor = PostgresCommandExecutor::<History>::new(db.pool.clone(), config, ());
-    executor.execute("history", 7).await.unwrap();
+    executor.execute(&"history".into(), 7).await.unwrap();
     let store = PersistedEventStore::<_, History>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 1);
     assert_eq!(store.load_events("history").await.unwrap().len(), 1);
     let context = store.load_aggregate("history").await.unwrap();

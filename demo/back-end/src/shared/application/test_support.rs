@@ -12,7 +12,7 @@ use std::collections::HashMap;
 /// read neither the state nor the command).
 pub fn plan<A: Aggregate, P: TaskPlanner<A>>(
     planner: &P,
-    aggregate_id: &str,
+    aggregate_id: &A::Id,
     command: &A::Command,
     events: &[A::Event],
 ) -> Result<Vec<NewTask>, TaskPlanError> {

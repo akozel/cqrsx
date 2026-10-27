@@ -148,7 +148,7 @@ mod contracts {
         let framework = CqrsFramework::new(store, Services(Arc::clone(&calls)));
         let metadata = HashMap::from([("trace".into(), "данные 🦀".into())]);
         let events = framework
-            .execute_with_metadata("account", Command::Adjust(5), metadata.clone())
+            .execute_with_metadata(&"account".into(), Command::Adjust(5), metadata.clone())
             .await
             .unwrap()
             .events;
@@ -180,7 +180,7 @@ mod contracts {
             // A processor waiting for the next commit, as it would be at its poll.
             let mut woken = pin!(wakeup.wait());
             assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
-            let result = executor.execute("account", command).await;
+            let result = executor.execute(&"account".into(), command).await;
             match failure {
                 Some("load") => assert_eq!(result, Err(CommandGatewayError::Unavailable)),
                 Some("commit") => assert_eq!(result, Err(CommandGatewayError::Conflict)),

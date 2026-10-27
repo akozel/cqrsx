@@ -60,6 +60,7 @@ use crate::cqrs::aggregate::Aggregate;
 ///
 /// impl Aggregate for Shelf {
 ///     const TYPE: &'static str = "shelf";
+///     type Id = String;
 ///     type Command = ShelfCommand;
 ///     type Event = ShelfEvent;
 ///     type Error = ShelfError;
@@ -146,6 +147,7 @@ use crate::cqrs::aggregate::Aggregate;
 /// struct Full;
 /// impl Aggregate for Shelf {
 ///     const TYPE: &'static str = "shelf";
+///     type Id = String;
 ///     type Command = ShelfCommand;
 ///     type Event = Put;
 ///     type Error = Full;

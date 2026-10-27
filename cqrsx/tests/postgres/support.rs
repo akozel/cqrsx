@@ -72,6 +72,7 @@ impl DomainEvent for TestEvent {
 
 impl Aggregate for TestAggregate {
     const TYPE: &'static str = "runtime_test";
+    type Id = String;
     type Command = ();
     type Event = TestEvent;
     type Error = std::convert::Infallible;

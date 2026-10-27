@@ -62,6 +62,7 @@ use std::{
 /// #
 /// # impl Aggregate for MyAggregate {
 /// #     const TYPE: &'static str = "MyAggregate";
+/// #     type Id = String;
 /// #     type Command = MyCommands;
 /// #     type Event = MyEvents;
 /// #     type Error = MyUserError;
@@ -164,6 +165,7 @@ impl<A: Aggregate> MemStore<A> {
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -366,6 +368,7 @@ mod tests {
 
     impl Aggregate for TestAggregate {
         const TYPE: &'static str = "TestAggregate";
+        type Id = String;
         type Command = ();
         type Event = TestEvent;
         type Error = TestError;

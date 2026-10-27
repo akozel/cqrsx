@@ -88,6 +88,7 @@ where
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;

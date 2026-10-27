@@ -31,6 +31,7 @@ impl DomainEvent for TestEvent {
 
 impl Aggregate for StreamAggregate {
     const TYPE: &'static str = "transactional_outbox_test";
+    type Id = String;
 
     type Command = ();
     type Event = TestEvent;

@@ -29,6 +29,7 @@ pub(crate) struct Rejected;
 pub(crate) struct Services(pub Arc<Mutex<Vec<&'static str>>>);
 impl Aggregate for Ledger {
     const TYPE: &'static str = "ledger";
+    type Id = String;
     type Command = Command;
     type Event = Delta;
     type Error = Rejected;

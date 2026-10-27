@@ -35,6 +35,7 @@
 //! #
 //! # impl Aggregate for Customer {
 //! #     const TYPE: &'static str = "Customer";
+//! #     type Id = String;
 //! #     type Command = CustomerCommand;
 //! #     type Event = CustomerEvent;
 //! #     type Error = CustomerError;
@@ -197,6 +198,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -287,6 +289,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -377,6 +380,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -469,6 +473,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;

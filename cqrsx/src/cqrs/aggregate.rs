@@ -2,6 +2,7 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::cqrs::{command::decide::Decide, event::DomainEvent};
 use serde::{Serialize, de::DeserializeOwned};
+use std::{fmt, hash::Hash, str::FromStr};
 
 /// In CQRS (and Domain Driven Design) an `Aggregate` is the fundamental component that
 /// encapsulates the state and application logic (aka business rules) for the application.
@@ -80,6 +81,7 @@ use serde::{Serialize, de::DeserializeOwned};
 ///
 /// impl Aggregate for Customer {
 ///     const TYPE: &'static str = "customer";
+///     type Id = String;
 ///     type Command = CustomerCommand;
 ///     type Event = CustomerEvent;
 ///     type Error = CustomerError;
@@ -113,6 +115,11 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// The stable aggregate type discriminator, distinct from an aggregate instance ID.
     /// This is used for persisting the events and snapshots to a database.
     const TYPE: &'static str;
+    /// The id of an instance, e.g. a validated newtype. Its [`Display`](fmt::Display) is the instance's text: the
+    /// key of its lock ([`AggregateKey::of`]), of its events, snapshots and tasks in the store, and of the ids of its
+    /// tasks ([`Causation::task_id`](crate::cqrs::command::causation::Causation::task_id)); the command executor
+    /// formats it once per command. The text is stored, so it never changes for an id; [`FromStr`] parses it back.
+    type Id: fmt::Display + FromStr + Clone + Eq + Hash + Send + Sync + 'static;
     /// Specifies the inbound command used to make changes in the state of the Aggregate: it decides itself
     /// ([`Decide`]), and it is `Send`, so that the future that executes it is.
     type Command: Decide<Self> + Send;
@@ -199,6 +206,7 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// # }
     /// # impl Aggregate for Customer {
     /// #     const TYPE: &'static str = "customer";
+    /// #     type Id = String;
     /// #     type Command = CustomerCommand;
     /// #     type Event = CustomerEvent;
     /// #     type Error = CustomerError;
@@ -230,9 +238,9 @@ impl AggregateKey {
         }
     }
 
-    /// The key of `aggregate_id` under [`A::TYPE`](Aggregate::TYPE).
-    pub fn of<A: Aggregate>(aggregate_id: &str) -> Self {
-        Self::new(A::TYPE, aggregate_id)
+    /// The key of `id` under [`A::TYPE`](Aggregate::TYPE): its text is the id's `Display`, formatted here.
+    pub fn of<A: Aggregate>(id: &A::Id) -> Self {
+        Self::new(A::TYPE, id.to_string())
     }
 
     pub fn aggregate_type(&self) -> &'static str {
@@ -271,6 +279,7 @@ pub(crate) mod tests {
     pub(crate) struct Rejected;
     impl Aggregate for Ledger {
         const TYPE: &'static str = "ledger";
+        type Id = String;
         type Command = ();
         type Event = Delta;
         type Error = Rejected;

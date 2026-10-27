@@ -75,6 +75,7 @@ struct SeatTaken;
 
 impl Aggregate for Show {
     const TYPE: &'static str = "show";
+    type Id = String;
     type Command = Book;
     type Event = Booked;
     type Error = SeatTaken;
@@ -121,6 +122,7 @@ struct AlreadyRecorded;
 
 impl Aggregate for Wallet {
     const TYPE: &'static str = "wallet";
+    type Id = String;
     type Command = String;
     type Event = Recorded;
     type Error = AlreadyRecorded;
@@ -226,7 +228,7 @@ async fn a_process_plans_across_two_aggregates_and_the_chain_keeps_its_correlati
     let root = Causation::root("ui");
     let booking = shows
         .execute_with_metadata(
-            "gig-1",
+            &"gig-1".into(),
             Book {
                 seat: "A1".into(),
                 fan: "fox".into(),
@@ -421,7 +423,7 @@ proptest! {
             let executor = ledger_executor(Interfering::new(journal.clone(), schedule), 3);
             let mut published = Vec::new();
             for value in commands {
-                match executor.execute("account", Command::Adjust(value)).await {
+                match executor.execute(&"account".into(), Command::Adjust(value)).await {
                     Ok(report) => {
                         let last = report.events.last().expect("an accepted adjustment commits events");
                         for task in &report.tasks {
@@ -465,7 +467,7 @@ async fn two_executors_on_one_journal_replan_the_loser_on_the_winners_state() {
     ];
     let mut commands = tokio::task::JoinSet::new();
     for (node, value) in nodes.iter().cloned().zip([5, 7]) {
-        commands.spawn(async move { (value, node.execute("account", Command::Adjust(value)).await) });
+        commands.spawn(async move { (value, node.execute(&"account".into(), Command::Adjust(value)).await) });
     }
     let mut reports = HashMap::new();
     while let Some(result) = commands.join_next().await {
@@ -496,7 +498,7 @@ async fn a_conflict_that_makes_the_decision_impossible_publishes_nothing() {
     };
     let executor = ledger_executor(interfering, 3);
     assert_eq!(
-        executor.execute("account", Command::Adjust(10)).await,
+        executor.execute(&"account".into(), Command::Adjust(10)).await,
         Err(CommandGatewayError::Domain(Rejected))
     );
     assert!(journal.outbox::<Ledger>().is_empty());

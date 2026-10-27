@@ -34,6 +34,7 @@ impl DomainEvent for Event {
 
 impl Aggregate for State {
     const TYPE: &'static str = "framework_compatibility_v0_5";
+    type Id = String;
     type Command = i64;
     type Event = Event;
     type Error = std::convert::Infallible;
@@ -96,7 +97,11 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
     let store = PersistedEventStore::<_, State>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 2);
     let framework = CqrsFramework::new(store, ());
     framework
-        .execute_with_metadata("old", 50, HashMap::from([("correlation_id".into(), "after-fork".into())]))
+        .execute_with_metadata(
+            &"old".into(),
+            50,
+            HashMap::from([("correlation_id".into(), "after-fork".into())]),
+        )
         .await
         .unwrap();
     let row = sqlx::query("SELECT * FROM events WHERE aggregate_id = 'old' AND sequence = 4")

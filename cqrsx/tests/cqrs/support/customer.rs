@@ -16,6 +16,7 @@ pub struct Customer {
 
 impl Aggregate for Customer {
     const TYPE: &'static str = "Customer";
+    type Id = String;
     type Command = CustomerCommand;
     type Event = CustomerEvent;
     type Error = CustomerError;

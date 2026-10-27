@@ -722,12 +722,15 @@ impl Harness {
     }
 
     pub(crate) async fn executor_execute(&self, key: &str, command: Command) {
-        self.executor.execute(key, command).await.unwrap();
+        self.executor.execute(&key.to_owned(), command).await.unwrap();
     }
 
     /// Commits `command` of `key` with `metadata` on every event, through the command path.
     pub(crate) async fn execute_with_metadata(&self, key: &str, command: Command, metadata: HashMap<String, String>) {
-        self.executor.execute_with_metadata(key, command, metadata).await.unwrap();
+        self.executor
+            .execute_with_metadata(&key.to_owned(), command, metadata)
+            .await
+            .unwrap();
     }
 
     /// The fold of the key's whole history, `None` without a history.

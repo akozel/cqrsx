@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 8): у тестовых агрегатов cqrsx `type Id = String` |
+| Статус | сделано 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 8): у тестовых агрегатов cqrsx `type Id = String` |
 | Ценность | средняя: `execute(&ConcertId, ..)` вместо строки; реакции и обработчики получают `&ConcertId`, строки не разбираются |
 | Цена | средняя: порт исполнителя и ~190 вызовов `execute` в тестах cqrsx; в демо — `FromStr`/`Display` у трёх id |
 | cqrsx | `src/cqrs/aggregate.rs` (`type Id`), `src/cqrs/command.rs` (порт), `command/{executor,planner}.rs` (`Decision.aggregate_id: &A::Id`), `src/cqrs.rs`, `src/postgres/command.rs`, `src/cqrs/testing/command.rs`, `src/cqrs/aggregate.rs::AggregateKey`, тесты, `README.md`, `doc/components.md` |
@@ -27,13 +27,15 @@
 - `Decision.aggregate_id: &A::Id`; планировщики демо перестают разбирать строки, `TaskPlanError::application` из них
   уходит.
 - cqrsx: тестовые агрегаты получают `type Id = String`; вызовы `execute("c-1", ..)` → `execute(&"c-1".into(), ..)`
-  через помощник фикстур; `README.md` — `Ledger::Id = String`.
+  на месте вызова, без помощника фикстур: помощник `id(..)` сталкивался бы с локальными `id` и требовал импорта в
+  каждом файле (план, В-1); `README.md` — `Ledger::Id = String`.
 - Демо: `impl FromStr for ConcertId/FanId/FanLedgerId` (через `parse`), `impl Display` уже есть; `to_string()`
   равен `as_str()` — тест.
 
 ## Этапы
 
-1. cqrsx: трейт, порт, ядро, `Decision`, `AggregateKey::of`, пресеты; тесты `tests/**` (помощник `id("c-1")`).
+1. cqrsx: трейт, порт, ядро, `Decision`, `AggregateKey::of`, пресеты; тесты `tests/**` (`&"c-1".into()` на месте
+   вызова).
 2. Тесты: `to_string` id уходит в хранилище и в `AggregateKey` без изменений (ключ блокировки — тот же текст);
    `Decision` держит `&A::Id`.
 3. Демо: `FromStr`, реакции без `parse`, `write_side.rs`.
@@ -65,7 +67,37 @@ let outcome = cqrs.execute::<Concert>(&concert_id, command).await;
 
 ## Критерии приёмки
 
-- [ ] `Aggregate::Id`; порт и все исполнители принимают `&A::Id`; `Decision.aggregate_id: &A::Id`.
-- [ ] Планировщики демо без разбора строк; `TaskPlanError::Application` в демо не встречается.
-- [ ] Тест: `to_string()` каждого id демо равен `as_str()`.
-- [ ] `components.md`, README cqrsx.
+- [x] `Aggregate::Id`; порт и все исполнители принимают `&A::Id`; `Decision.aggregate_id: &A::Id`.
+- [x] Планировщики демо без разбора строк; `TaskPlanError::Application` в демо не встречается.
+- [x] Тест: `to_string()` каждого id демо равен `as_str()`.
+- [x] `components.md`, README cqrsx.
+
+## Результат
+
+Сделано 2026-10-27.
+- **cqrsx:**
+  - `Aggregate::type Id: Display + FromStr + Clone + Eq + Hash + Send + Sync + 'static`;
+  - порт `CommandExecutor` и `CommandExecutorCore`, `PostgresCommandExecutor`, `TestCommandExecutor`, `CqrsFramework`
+    принимают `&A::Id`; `Decision.aggregate_id: &A::Id`.
+- **Хранилища по-прежнему знают строку** — `Display` id:
+  - ядро форматирует его один раз на команду (`AggregateKey::of`), до блокировки;
+  - каждая попытка берёт текст у блокировки (`pub(crate) AggregateLockGuard::key`, `CqrsFramework::attempt`);
+  - число операций на пути команды прежнее;
+  - `CqrsFramework::execute_with_metadata`, вызванный напрямую, форматирует один раз на вызов.
+- **У 65 тестовых агрегатов cqrsx** `type Id = String` (решение 8); вызовы — `execute(&"c-1".into(), ..)` на месте,
+  без помощника.
+- **Демо:**
+  - `FromStr` у `ConcertId`, `FanId`, `FanLedgerId` (через `parse`);
+  - `Concert::Id = ConcertId`, `Fan::Id = FanLedgerId`;
+  - реакции не разбирают строк, `TaskPlanError::Application` в демо нет;
+  - `CommandService::run(id, label, ..)`, подпись ленты — прежний `as_str()`.
+- **Тесты:**
+  - cqrsx `the_id_is_formatted_once_per_command_and_its_text_keys_the_lock_the_store_and_the_task_ids`: ключ
+    блокировки, загрузки и `task_id` — `Display` id; одно форматирование на команду из двух попыток; решение держит
+    id вызывающего;
+  - демо `the_display_of_every_id_is_its_text_and_parses_back` (`to_string() == as_str()`);
+  - демо `a_command_for_a_malformed_concert_id_is_refused_before_it_runs` (400).
+- **Тесты «чужой id отказывает»** переименованы в `each_fact_plans_only_its_own_task`: отказ держат тип и граница
+  HTTP.
+- **Сверка утверждений:** 788 / 29 / 0 / 2 / 0 / 3. Эталоны 02 без изменений; SQL, окружение и умолчания не тронуты.
+- **Тесты и покрытие:** cqrsx 667 тестов, демо 155 + 14; покрытие — workspace 97,80 %, cqrsx 97,70 %.

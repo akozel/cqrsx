@@ -105,6 +105,7 @@ struct Rules {
 
 impl Aggregate for Ledger {
     const TYPE: &'static str = "ledger";
+    type Id = String; // a validated newtype works too: its `Display` is the key in the journal
     type Command = LedgerCommand;
     type Event = LedgerEvent;
     type Error = TicketLimit;
@@ -194,7 +195,7 @@ fn main() {
         let causation = Causation::root("ui");
         let command = LedgerCommand::RecordTicket { seat: "B4".into() };
         let report = ledgers
-            .execute_with_metadata("fox", command, causation.event_metadata())
+            .execute_with_metadata(&"fox".into(), command, causation.event_metadata())
             .await
             .unwrap();
         // The task was planned from the event and published with it: on PostgreSQL, in the same statement…

@@ -170,6 +170,30 @@ async fn malformed_ids_and_bodies_are_rejected_with_the_shared_error_shape() {
     assert_eq!(status, StatusCode::BAD_REQUEST);
 }
 
+/// The aggregate id of a command is typed: a malformed one is refused at the path, so it never reaches the executor,
+/// the journal or a planner.
+#[tokio::test]
+async fn a_command_for_a_malformed_concert_id_is_refused_before_it_runs() {
+    let app = app().await;
+    let (status, body) = send(
+        &app.router,
+        post_json(
+            "/api/concerts/Tbilisi%202026/commands",
+            r#"{ "type": "AnnounceConcert", "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21" }"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST);
+    assert_eq!(
+        (&body["outcome"], &body["error"]["code"]),
+        (&json!("invalid"), &json!("invalid_request"))
+    );
+    assert!(
+        body["error"]["message"].as_str().unwrap().starts_with("invalid concert id"),
+        "{body}"
+    );
+}
+
 #[tokio::test]
 async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
     let checkpoints = testing::Checkpoints::owned_by("node-a").await;

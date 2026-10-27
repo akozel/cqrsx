@@ -126,6 +126,7 @@ where
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -288,6 +289,7 @@ where
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -654,6 +656,7 @@ pub(in crate::cqrs) mod tests {
 
     impl Aggregate for TestAggregate {
         const TYPE: &'static str = "TestAggregate";
+        type Id = String;
         type Command = TestCommands;
         type Event = TestEvents;
         type Error = TestError;
@@ -1357,6 +1360,7 @@ mod serialization_failure_tests {
     }
     impl Aggregate for State {
         const TYPE: &'static str = "broken_serializer";
+        type Id = String;
         type Command = ();
         type Event = Event;
         type Error = std::convert::Infallible;
@@ -1468,6 +1472,7 @@ mod serialization_failure_tests {
     }
     impl Aggregate for Guarded {
         const TYPE: &'static str = "guarded";
+        type Id = String;
         type Command = ();
         type Event = GuardedEvent;
         type Error = std::convert::Infallible;

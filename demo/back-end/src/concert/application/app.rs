@@ -33,7 +33,7 @@ impl<E: CommandExecutor<Concert>> ConcertApp<E> {
             command_type: command.name(),
             fan_id: labels.iter().find(|(key, _)| *key == "fan_id").map(|(_, fan)| fan.as_str()),
         };
-        self.service.run(label, command, metadata).await
+        self.service.run(concert_id, label, command, metadata).await
     }
 }
 

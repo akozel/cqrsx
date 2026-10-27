@@ -204,6 +204,7 @@ struct OverTheLimit;
 
 impl Aggregate for Tally {
     const TYPE: &'static str = "tally";
+    type Id = String;
     type Command = TallyCommand;
     type Event = Counted;
     type Error = OverTheLimit;

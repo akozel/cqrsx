@@ -41,6 +41,7 @@
 //! struct AlreadyPlaced;
 //! impl Aggregate for Order {
 //!     const TYPE: &'static str = "order";
+//!     type Id = String;
 //!     type Command = u32;
 //!     type Event = OrderEvent;
 //!     type Error = AlreadyPlaced;
@@ -100,7 +101,7 @@
 //! let (before, mut after) = (Order::default(), Order::default());
 //! after.apply(events[0].clone());
 //! let decision = Decision {
-//!     aggregate_id: "o-1",
+//!     aggregate_id: &"o-1".into(),
 //!     before: &before,
 //!     after: &after,
 //!     command: &30,
@@ -124,8 +125,9 @@ use std::{collections::HashMap, error::Error};
 
 /// What one attempt of a command decided: everything its follow-up tasks may be planned from.
 pub struct Decision<'a, A: Aggregate> {
-    /// The instance the command ran on.
-    pub aggregate_id: &'a str,
+    /// The instance the command ran on: the id the command was executed with (its text, the `Display`, keys the
+    /// store and the task ids).
+    pub aggregate_id: &'a A::Id,
     /// The committed state the command was decided on (`A::default()` for a new aggregate).
     pub before: &'a A,
     /// `before` with `events` applied: the state the commit leaves (a copy made for the planner).
@@ -164,7 +166,7 @@ pub enum TaskPlanError {
     /// nor identified.
     #[error(transparent)]
     Causation(#[from] CausationError),
-    /// The planner refused the decision for a reason of its own, e.g. an aggregate id it cannot parse.
+    /// The planner refused the decision for a reason of its own.
     #[error("{0}")]
     Application(#[source] Box<dyn Error + Send + Sync + 'static>),
 }
@@ -219,12 +221,14 @@ impl<A: Aggregate> Planning<A> {
     }
 
     /// The tasks of one attempt's decision: planned, then stamped with the causation
-    /// of `metadata` and identified by `Causation::task_id`, the ordinal counted per format over the
-    /// whole plan. Without causation the tasks keep the planner's ids and metadata. A causation that does
-    /// not parse refuses a non-empty plan only: an empty one has nothing to stamp.
+    /// of `metadata` and identified by `Causation::task_id` from `key`, the text of `id`, the ordinal counted
+    /// per format over the whole plan. Without causation the tasks keep the planner's ids and metadata. A
+    /// causation that does not parse refuses a non-empty plan only: an empty one has nothing to stamp.
+    #[allow(clippy::too_many_arguments, reason = "one attempt's decision and its id's text")]
     pub(crate) fn plan(
         &self,
-        aggregate_id: &str,
+        id: &A::Id,
+        key: &str,
         before: &A,
         after: &A,
         command: &A::Command,
@@ -233,7 +237,7 @@ impl<A: Aggregate> Planning<A> {
     ) -> Result<Vec<NewTask>, TaskPlanError> {
         let causation = Causation::from_event_metadata(metadata);
         let decision = Decision {
-            aggregate_id,
+            aggregate_id: id,
             before,
             after,
             command,
@@ -253,9 +257,9 @@ impl<A: Aggregate> Planning<A> {
             .into_iter()
             .map(|task| {
                 let ordinal = ordinals.entry(task.format().clone()).or_default();
-                let id = causation.task_id(A::TYPE, aggregate_id, task.format(), *ordinal);
+                let task_id = causation.task_id(A::TYPE, key, task.format(), *ordinal);
                 *ordinal += 1;
-                causation.stamp_task(task).with_id(id)
+                causation.stamp_task(task).with_id(task_id)
             })
             .collect())
     }
@@ -297,6 +301,7 @@ mod tests {
 
     impl Aggregate for Counter {
         const TYPE: &'static str = "counter";
+        type Id = String;
         type Command = u32;
         type Event = Counted;
         type Error = std::convert::Infallible;
@@ -372,7 +377,7 @@ mod tests {
     fn decide<P: TaskPlanner<Counter>>(planner: &P) -> Result<Vec<NewTask>, TaskPlanError> {
         let (before, after) = (Counter(0), Counter(1));
         planner.plan(&Decision {
-            aggregate_id: "c-1",
+            aggregate_id: &"c-1".into(),
             before: &before,
             after: &after,
             command: &1,
@@ -434,7 +439,7 @@ mod tests {
 
     fn plan_with(tasks: Vec<NewTask>, metadata: &HashMap<String, String>) -> Result<Vec<NewTask>, TaskPlanError> {
         let (before, after) = (Counter(0), Counter(1));
-        Planning::new(Fixed(tasks)).plan("c-1", &before, &after, &1, &[Counted(1)], metadata)
+        Planning::new(Fixed(tasks)).plan(&"c-1".into(), "c-1", &before, &after, &1, &[Counted(1)], metadata)
     }
 
     fn ping(value: u32) -> NewTask {
@@ -529,6 +534,7 @@ mod tests {
         let causation = Causation::root("ui");
         planning
             .plan(
+                &"c-1".into(),
                 "c-1",
                 &Counter(2),
                 &Counter(5),
@@ -543,7 +549,7 @@ mod tests {
         );
         let malformed = HashMap::from([("command_id".to_owned(), "cmd-1".to_owned())]);
         planning
-            .plan("c-1", &Counter(0), &Counter(1), &1, &[Counted(1)], &malformed)
+            .plan(&"c-1".into(), "c-1", &Counter(0), &Counter(1), &1, &[Counted(1)], &malformed)
             .unwrap();
         assert_eq!(seen.0.lock().unwrap().take().unwrap().5, None);
         assert_eq!(planning.clone_command(&9), 9);

@@ -45,6 +45,7 @@ struct Rejected;
 
 impl Aggregate for CommandAggregate {
     const TYPE: &'static str = "command_factory_test";
+    type Id = String;
     type Command = Command;
     type Event = CommandEvent;
     type Error = Rejected;
@@ -120,7 +121,7 @@ async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_
         causations.insert(value, causation.clone());
         calls.spawn(async move {
             let result = executor
-                .execute_with_metadata("contended", record(value, 0), causation.event_metadata())
+                .execute_with_metadata(&"contended".into(), record(value, 0), causation.event_metadata())
                 .await;
             (value, result)
         });
@@ -177,7 +178,7 @@ async fn planned_work_publishes_atomically_and_rejections_write_nothing() {
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     let causation = Causation::root("integration");
     let report = executor
-        .execute_with_metadata("accepted", record("first", 0), causation.event_metadata())
+        .execute_with_metadata(&"accepted".into(), record("first", 0), causation.event_metadata())
         .await
         .unwrap();
     assert_eq!(report.events.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1]);
@@ -211,7 +212,7 @@ async fn planned_work_publishes_atomically_and_rejections_write_nothing() {
     );
 
     assert_eq!(
-        executor.execute("rejected", Command::Reject).await,
+        executor.execute(&"rejected".into(), Command::Reject).await,
         Err(CommandGatewayError::Domain(Rejected))
     );
     assert!(
@@ -228,7 +229,7 @@ async fn planned_work_publishes_atomically_and_rejections_write_nothing() {
             .unwrap()
             .is_none()
     );
-    executor.execute("accepted", record("second", 1)).await.unwrap();
+    executor.execute(&"accepted".into(), record("second", 1)).await.unwrap();
     let rows: Vec<(String, i64, Value)> =
         sqlx::query_as("SELECT aggregate_id, aggregate_sequence, payload FROM transactional_outbox ORDER BY aggregate_sequence")
             .fetch_all(&db.pool)
@@ -253,13 +254,13 @@ async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_obje
         ("command_id".to_owned(), "cmd-1".to_owned()),
         ("source".to_owned(), "integration".to_owned()),
     ]);
-    CommandExecutor::execute_with_metadata(&executor, "metadata", record("first", 0), metadata.clone())
+    CommandExecutor::execute_with_metadata(&executor, &"metadata".into(), record("first", 0), metadata.clone())
         .await
         .unwrap();
-    executor.execute("metadata", record("second", 1)).await.unwrap();
+    executor.execute(&"metadata".into(), record("second", 1)).await.unwrap();
     assert_eq!(
         executor
-            .execute_with_metadata("metadata", Command::Reject, metadata.clone())
+            .execute_with_metadata(&"metadata".into(), Command::Reject, metadata.clone())
             .await,
         Err(CommandGatewayError::Domain(Rejected))
     );
@@ -314,7 +315,7 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     let db = Database::new().await;
     let executor = PostgresCommandExecutor::<CommandAggregate>::new(db.pool.clone(), config(2), ());
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    executor.execute("snapshot", record("first", 0)).await.unwrap();
+    executor.execute(&"snapshot".into(), record("first", 0)).await.unwrap();
     assert!(
         repository
             .get_snapshot::<CommandAggregate>("snapshot")
@@ -322,7 +323,7 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
             .unwrap()
             .is_none()
     );
-    executor.execute("snapshot", record("second", 1)).await.unwrap();
+    executor.execute(&"snapshot".into(), record("second", 1)).await.unwrap();
     let snapshot = repository
         .get_snapshot::<CommandAggregate>("snapshot")
         .await
@@ -331,12 +332,12 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     assert_eq!(snapshot.last_sequence, 2);
     assert_eq!(snapshot.aggregate, json!({"values": ["first", "second"]}));
     // The third and fourth calls require state from the snapshot, then its tail.
-    executor.execute("snapshot", record("third", 2)).await.unwrap();
+    executor.execute(&"snapshot".into(), record("third", 2)).await.unwrap();
     let store = PersistedEventStore::<_, CommandAggregate>::new_snapshot_store(repository, 2);
     let context = store.load_aggregate("snapshot").await.unwrap();
     assert_eq!(context.current_sequence, 3);
     assert_eq!(context.aggregate.values, vec!["first", "second", "third"]);
-    executor.execute("snapshot", record("fourth", 3)).await.unwrap();
+    executor.execute(&"snapshot".into(), record("fourth", 3)).await.unwrap();
     let snapshot = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
         .get_snapshot::<CommandAggregate>("snapshot")
         .await
@@ -356,7 +357,7 @@ async fn the_constructor_needs_no_connection_and_closed_pool_errors_remain_unava
     assert_eq!(pool.size(), 0);
     pool.close().await;
     assert_eq!(
-        executor.execute("unused", record("value", 0)).await,
+        executor.execute(&"unused".into(), record("value", 0)).await,
         Err(CommandGatewayError::Unavailable)
     );
 }
@@ -372,6 +373,7 @@ struct CappedAggregate {
 
 impl Aggregate for CappedAggregate {
     const TYPE: &'static str = "capped_command_test";
+    type Id = String;
     type Command = String;
     type Event = CommandEvent;
     type Error = Rejected;
@@ -401,16 +403,18 @@ async fn rules_decide_and_the_metadata_is_stored_with_every_event() {
     let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
     for value in ["first", "second"] {
         executor
-            .execute_with_metadata("capped", value.into(), metadata.clone())
+            .execute_with_metadata(&"capped".into(), value.into(), metadata.clone())
             .await
             .unwrap();
     }
     assert_eq!(
-        CommandExecutor::execute(&executor, "capped", "third".into()).await,
+        CommandExecutor::execute(&executor, &"capped".into(), "third".into()).await,
         Err(CommandGatewayError::Domain(Rejected)),
         "the cap from the rules rejects the third value"
     );
-    CommandExecutor::execute(&executor, "other", "first".into()).await.unwrap();
+    CommandExecutor::execute(&executor, &"other".into(), "first".into())
+        .await
+        .unwrap();
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     let capped = repository.get_events::<CappedAggregate>("capped").await.unwrap();
     assert_eq!(
@@ -438,7 +442,7 @@ async fn aggregate_locks_accept_forty_parallel_commands_without_conflicts() {
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..40 {
         let executor = executor.clone();
-        commands.spawn(async move { executor.execute("hot", format!("v{index}")).await });
+        commands.spawn(async move { executor.execute(&"hot".into(), format!("v{index}")).await });
     }
     while let Some(result) = commands.join_next().await {
         assert!(result.unwrap().is_ok(), "without a conflict there is nothing to retry");
@@ -470,7 +474,7 @@ async fn two_executors_with_their_own_locks_meet_only_in_the_database() {
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..40 {
         let node = nodes[index % 2].clone();
-        commands.spawn(async move { node.execute("shared", format!("v{index}")).await });
+        commands.spawn(async move { node.execute(&"shared".into(), format!("v{index}")).await });
     }
     let mut accepted = 0;
     while let Some(result) = commands.join_next().await {
@@ -524,6 +528,7 @@ struct Counter(Arc<AtomicUsize>);
 
 impl Aggregate for Counted {
     const TYPE: &'static str = "core_command_test";
+    type Id = String;
     type Command = String;
     type Event = Counted1;
     type Error = std::convert::Infallible;
@@ -562,7 +567,7 @@ async fn rules_that_are_not_clone_serve_the_executor_which_commits_event_snapsho
         .with_task_planner(CountedTasks);
     let causation = Causation::root("integration");
     let report = executor
-        .execute_with_metadata("core", "accepted".into(), causation.event_metadata())
+        .execute_with_metadata(&"core".into(), "accepted".into(), causation.event_metadata())
         .await
         .unwrap();
     assert_eq!(decided.load(Ordering::SeqCst), 1);
@@ -661,7 +666,7 @@ mod contracts {
             cqrsx::cqrs::command::locks::LockLimits::default(),
         );
         assert!(matches!(
-            executor.execute("command", 2).await,
+            executor.execute(&"command".into(), 2).await,
             Err(CommandGatewayError::Unavailable)
         ));
         assert_eq!(loads.load(Ordering::SeqCst), 1);

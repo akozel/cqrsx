@@ -207,7 +207,7 @@ struct Scripted(Mutex<VecDeque<Result<CommitReport<Concert>, CommandGatewayError
 impl CommandExecutor<Concert> for Scripted {
     async fn execute_with_metadata(
         &self,
-        _: &str,
+        _: &ConcertId,
         _: ConcertCommand,
         _: HashMap<String, String>,
     ) -> Result<CommitReport<Concert>, CommandGatewayError<ConcertError>> {
@@ -345,13 +345,14 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
             date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
         })
     };
+    let concert_id = concert();
     for fan_id in [Some("fox"), None, Some("fox"), Some("fox"), None] {
         let label = CommandLabel {
-            aggregate_id: "radiohead-2026-11-21",
+            aggregate_id: concert_id.as_str(),
             command_type: if fan_id.is_some() { "BookSeat" } else { "AnnounceConcert" },
             fan_id,
         };
-        commands.run(label, announce(), CommandMetadata::ui()).await;
+        commands.run(&concert_id, label, announce(), CommandMetadata::ui()).await;
     }
 
     // The projection processor's reports (`projection.*`).

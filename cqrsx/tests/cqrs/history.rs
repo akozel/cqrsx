@@ -27,7 +27,7 @@ mod snapshots {
                     for batch in commits {
                         let before=model.len();
                         let store=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),interval);
-                        if framework { CqrsFramework::new(store,Services::default()).execute("history",Command::Adjust(batch[0])).await.unwrap(); }
+                        if framework { CqrsFramework::new(store,Services::default()).execute(&"history".into(),Command::Adjust(batch[0])).await.unwrap(); }
                         else { let context=store.load_aggregate("history").await.unwrap(); store.commit(batch.iter().map(|v|Delta(*v)).collect(), context, HashMap::new(), &[]).await.unwrap(); }
                         model.extend(batch);
                         let boundaries:Vec<_>=(before+1..=model.len()).filter(|n|n%interval==0).collect();

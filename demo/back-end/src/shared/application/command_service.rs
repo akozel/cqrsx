@@ -98,6 +98,7 @@ pub struct Executed<E> {
 /// What every `command.*` activity entry says about the command, whatever its outcome.
 #[derive(Debug, Clone, Copy)]
 pub struct CommandLabel<'a> {
+    /// The text of the aggregate's id (`as_str`).
     pub aggregate_id: &'a str,
     pub command_type: &'static str,
     pub fan_id: Option<&'a str>,
@@ -125,14 +126,17 @@ where
         }
     }
 
-    /// Runs one command; the executor's planner plans its tasks from the decision, and they commit
+    /// Runs one command on `id`; the executor's planner plans its tasks from the decision, and they commit
     /// atomically with its event. A rejected command writes nothing, so a task is never published
-    /// without its event.
-    pub async fn run(&self, label: CommandLabel<'_>, command: A::Command, metadata: CommandMetadata) -> Executed<A::Error> {
-        let result = self
-            .executor
-            .execute_with_metadata(label.aggregate_id, command, metadata.to_map())
-            .await;
+    /// without its event. `label.aggregate_id` is the text of `id` the activity feed names.
+    pub async fn run(
+        &self,
+        id: &A::Id,
+        label: CommandLabel<'_>,
+        command: A::Command,
+        metadata: CommandMetadata,
+    ) -> Executed<A::Error> {
+        let result = self.executor.execute_with_metadata(id, command, metadata.to_map()).await;
         let task_formats: Vec<String> = match &result {
             Ok(report) => report.tasks.iter().map(|task| task.format().to_string()).collect(),
             Err(_) => Vec::new(),
@@ -198,7 +202,10 @@ fn publish_outcome<E: Rejection>(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::concert::domain::{Concert, ConcertCommand, ConcertError, commands::AnnounceConcert};
+    use crate::{
+        concert::domain::{Concert, ConcertCommand, ConcertError, commands::AnnounceConcert},
+        shared::domain::ConcertId,
+    };
     use cqrsx::{
         cqrs::CommitReport,
         task::{NewTask, format::TaskFormat},
@@ -214,7 +221,7 @@ mod tests {
     impl CommandExecutor<Concert> for Accepting {
         async fn execute_with_metadata(
             &self,
-            _: &str,
+            _: &ConcertId,
             _: ConcertCommand,
             _: HashMap<String, String>,
         ) -> Result<CommitReport<Concert>, CommandGatewayError<ConcertError>> {
@@ -233,6 +240,10 @@ mod tests {
         })
     }
 
+    fn concert() -> ConcertId {
+        ConcertId::parse("c-1").unwrap()
+    }
+
     fn label() -> CommandLabel<'static> {
         CommandLabel {
             aggregate_id: "c-1",
@@ -245,7 +256,7 @@ mod tests {
     async fn an_accepted_command_is_published_once_with_its_tasks_and_no_read_model_news() {
         let activity = Arc::new(ActivityHub::new(8, 8));
         let service = CommandService::<Concert, _>::new(Accepting { tasks: vec![] }, activity.clone());
-        let executed = service.run(label(), announce(), CommandMetadata::ui()).await;
+        let executed = service.run(&concert(), label(), announce(), CommandMetadata::ui()).await;
         assert_eq!(executed.outcome, CommandOutcome::Accepted);
         let (entries, _) = activity.subscribe();
         assert_eq!(entries.len(), 1, "{entries:?}");
@@ -262,7 +273,7 @@ mod tests {
         let activity = Arc::new(ActivityHub::new(8, 8));
         let task = NewTask::from_payload(TaskFormat::new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
         let service = CommandService::<Concert, _>::new(Accepting { tasks: vec![task] }, activity.clone());
-        let executed = service.run(label(), announce(), CommandMetadata::ui()).await;
+        let executed = service.run(&concert(), label(), announce(), CommandMetadata::ui()).await;
         assert_eq!(executed.tasks, ["encore_record_ticket v1"]);
         let (entries, _) = activity.subscribe();
         assert_eq!(entries[0].fields["tasks"], json!(["encore_record_ticket v1"]));

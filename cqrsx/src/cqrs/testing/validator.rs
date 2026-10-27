@@ -58,6 +58,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -157,6 +158,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -255,6 +257,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -361,6 +364,7 @@ where
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -437,6 +441,7 @@ mod contract_tests {
 
     impl Aggregate for Messaged {
         const TYPE: &'static str = "messaged";
+        type Id = String;
         type Command = ();
         type Event = Delta;
         type Error = Message;

@@ -14,7 +14,7 @@ pub mod planner;
 pub mod retry;
 pub mod wakeup;
 
-/// Technical command boundary; the application gateway selects the aggregate ID.
+/// Technical command boundary; the application gateway selects the aggregate by its typed ID ([`Aggregate::Id`]).
 ///
 /// Implementations own persistence and retry policy without interpreting domain
 /// rejections. The caller passes only the command: the executor's
@@ -35,7 +35,7 @@ pub mod wakeup;
 /// impl<A: Aggregate> CommandExecutor<A> for NonSendExecutor where A::Command: Send {
 ///     async fn execute_with_metadata(
 ///         &self,
-///         _: &str,
+///         _: &A::Id,
 ///         _: A::Command,
 ///         _: HashMap<String, String>,
 ///     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
@@ -51,17 +51,17 @@ pub trait CommandExecutor<A: Aggregate>: Send + Sync {
     /// [`execute_with_metadata`](Self::execute_with_metadata) with an empty map.
     fn execute(
         &self,
-        aggregate_id: &str,
+        id: &A::Id,
         command: A::Command,
     ) -> impl Future<Output = Result<CommitReport<A>, CommandGatewayError<A::Error>>> + Send {
-        self.execute_with_metadata(aggregate_id, command, HashMap::new())
+        self.execute_with_metadata(id, command, HashMap::new())
     }
 
     /// Executes one command and stores `metadata` with every committed event; the answer reports the
     /// committed events and the tasks planned from them.
     fn execute_with_metadata(
         &self,
-        aggregate_id: &str,
+        id: &A::Id,
         command: A::Command,
         metadata: HashMap<String, String>,
     ) -> impl Future<Output = Result<CommitReport<A>, CommandGatewayError<A::Error>>> + Send;

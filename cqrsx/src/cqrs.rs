@@ -115,6 +115,7 @@ where
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -246,6 +247,7 @@ where
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -289,18 +291,18 @@ where
     /// async fn do_something(cqrs: MyFramework) -> Result<(),AggregateError<MyUserError>> {
     ///     let command = MyCommands::DoSomething;
     ///
-    ///     let committed = cqrs.execute("agg-id-F39A0C", command).await?;
+    ///     let committed = cqrs.execute(&"agg-id-F39A0C".into(), command).await?;
     ///     assert_eq!(committed.events.len(), 1);
     ///     Ok(())
     /// }
     /// ```
     /// `Clone` must provide independent aggregate state: with a planner the event is applied to a copy of
     /// the committed state (the decision's `after`), while commit retains the last committed context.
-    pub async fn execute(&self, aggregate_id: &str, command: A::Command) -> Result<CommitReport<A>, AggregateError<A::Error>>
+    pub async fn execute(&self, id: &A::Id, command: A::Command) -> Result<CommitReport<A>, AggregateError<A::Error>>
     where
         A: Clone,
     {
-        self.execute_with_metadata(aggregate_id, command, HashMap::new()).await
+        self.execute_with_metadata(id, command, HashMap::new()).await
     }
 
     /// This applies a command to an aggregate. Executing a command
@@ -366,6 +368,7 @@ where
     /// #
     /// # impl Aggregate for MyAggregate {
     /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
@@ -410,7 +413,7 @@ where
     ///     let command = MyCommands::DoSomething;
     ///     let metadata = HashMap::from([("time".to_string(), chrono::Utc::now().to_rfc3339())]);
     ///
-    ///     let committed = cqrs.execute_with_metadata("agg-id-F39A0C", command, metadata).await?;
+    ///     let committed = cqrs.execute_with_metadata(&"agg-id-F39A0C".into(), command, metadata).await?;
     ///     assert_eq!(committed.events.len(), 1);
     ///     Ok(())
     /// }
@@ -424,16 +427,34 @@ where
     /// the command, the event and the metadata; the core stamps the causation of `metadata` on every task
     /// and derives its id. A planner error refuses the command ([`AggregateError::TaskPlan`]) with nothing
     /// written.
+    ///
+    /// The store and the task ids know the aggregate by the text of `id` (its `Display`), formatted here, once per
+    /// call; a command executor formats it once per command, for all of its attempts.
     pub async fn execute_with_metadata(
         &self,
-        aggregate_id: &str,
+        id: &A::Id,
         command: A::Command,
         metadata: HashMap<String, String>,
     ) -> Result<CommitReport<A>, AggregateError<A::Error>>
     where
         A: Clone,
     {
-        let mut aggregate_context = self.store.load_aggregate(aggregate_id).await?;
+        self.attempt(id, &id.to_string(), command, metadata).await
+    }
+
+    /// One attempt of a command on `id`, whose text (its `Display`) is `key`: the command executor formats it
+    /// once per command, for the lock and every attempt.
+    pub(crate) async fn attempt(
+        &self,
+        id: &A::Id,
+        key: &str,
+        command: A::Command,
+        metadata: HashMap<String, String>,
+    ) -> Result<CommitReport<A>, AggregateError<A::Error>>
+    where
+        A: Clone,
+    {
+        let mut aggregate_context = self.store.load_aggregate(key).await?;
         // The planner's decision needs the command after `decide` consumed it: one owned clone, kept for the
         // planner, never a borrow across an await, so a command that is `Send` but not `Sync` keeps the future
         // `Send`.
@@ -451,7 +472,7 @@ where
                 let mut after = before.clone();
                 after.apply(event.clone());
                 planning
-                    .plan(aggregate_id, before, &after, command, std::slice::from_ref(&event), &metadata)
+                    .plan(id, key, before, &after, command, std::slice::from_ref(&event), &metadata)
                     .map_err(AggregateError::TaskPlan)?
             }
             _ => Vec::new(),
@@ -555,7 +576,7 @@ mod tests {
         let framework = CqrsFramework::new(store.clone(), TestService);
         let metadata = HashMap::from([("trace".to_owned(), "t-1".to_owned())]);
         let committed = framework
-            .execute_with_metadata("id", TestCommands::DoSomething, metadata.clone())
+            .execute_with_metadata(&"id".into(), TestCommands::DoSomething, metadata.clone())
             .await
             .unwrap();
         assert_eq!(
@@ -567,7 +588,7 @@ mod tests {
             [("id", 1, &metadata)]
         );
         assert!(committed.tasks.is_empty(), "no planner, no tasks");
-        let next = framework.execute("id", TestCommands::DoSomething).await.unwrap();
+        let next = framework.execute(&"id".into(), TestCommands::DoSomething).await.unwrap();
         assert_eq!(next.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), [2]);
         assert_eq!(store.load_events("id").await.unwrap().len(), 2);
     }
@@ -618,6 +639,7 @@ mod tests {
 
     impl Aggregate for Echo {
         const TYPE: &'static str = "echo";
+        type Id = String;
         type Command = Probe;
         type Event = Echoed;
         type Error = Unlucky;
@@ -677,11 +699,11 @@ mod tests {
     async fn the_planner_sees_the_decision_and_its_tasks_commit_with_the_events() {
         let recorder = Recorder::default();
         let framework = CqrsFramework::new(MemStore::<Echo>::default(), ()).with_task_planner(recorder.clone());
-        framework.execute("e-1", probe(5)).await.unwrap();
+        framework.execute(&"e-1".into(), probe(5)).await.unwrap();
         let causation = Causation::root("ui");
         let metadata = causation.event_metadata();
         let report = framework
-            .execute_with_metadata("e-1", probe(7), metadata.clone())
+            .execute_with_metadata(&"e-1".into(), probe(7), metadata.clone())
             .await
             .unwrap();
         let seen = recorder.seen.lock().unwrap().clone();
@@ -709,7 +731,7 @@ mod tests {
         let recorder = Recorder::default();
         let framework = CqrsFramework::new(MemStore::<Echo>::default(), ()).with_task_planner(recorder.clone());
         assert!(matches!(
-            framework.execute("e-1", probe(13)).await,
+            framework.execute(&"e-1".into(), probe(13)).await,
             Err(AggregateError::Domain(Unlucky))
         ));
         assert!(recorder.seen.lock().unwrap().is_empty(), "the planner was never called");
@@ -724,6 +746,7 @@ mod tests {
 
     impl Aggregate for Tape {
         const TYPE: &'static str = "tape";
+        type Id = String;
         type Command = u32;
         type Event = Echoed;
         type Error = Unlucky;
@@ -759,10 +782,10 @@ mod tests {
     async fn decide_reads_the_committed_state_and_the_planner_sees_its_event_applied_once() {
         let (store, decided, planner) = (MemStore::<Tape>::default(), Decided::default(), Before::default());
         let framework = CqrsFramework::new(store.clone(), decided.clone()).with_task_planner(planner.clone());
-        framework.execute("t-1", 1).await.unwrap();
-        framework.execute("t-1", 2).await.unwrap();
+        framework.execute(&"t-1".into(), 1).await.unwrap();
+        framework.execute(&"t-1".into(), 2).await.unwrap();
         assert!(matches!(
-            framework.execute("t-1", 13).await,
+            framework.execute(&"t-1".into(), 13).await,
             Err(AggregateError::Domain(Unlucky))
         ));
         assert_eq!(
@@ -789,7 +812,7 @@ mod tests {
             refuse: true,
             ..Recorder::default()
         });
-        let Err(AggregateError::TaskPlan(error)) = framework.execute("e-1", probe(5)).await else {
+        let Err(AggregateError::TaskPlan(error)) = framework.execute(&"e-1".into(), probe(5)).await else {
             panic!("a planning error refuses the command");
         };
         assert_eq!(error.to_string(), "refused");
@@ -802,7 +825,7 @@ mod tests {
         let command = probe(5);
         let clones = command.clones.clone();
         CqrsFramework::new(MemStore::<Echo>::default(), ())
-            .execute("e-1", command)
+            .execute(&"e-1".into(), command)
             .await
             .unwrap();
         assert_eq!(clones.load(Ordering::SeqCst), 0);
@@ -810,7 +833,7 @@ mod tests {
         let clones = command.clones.clone();
         CqrsFramework::new(MemStore::<Echo>::default(), ())
             .with_task_planner(Recorder::default())
-            .execute("e-1", command)
+            .execute(&"e-1".into(), command)
             .await
             .unwrap();
         assert_eq!(clones.load(Ordering::SeqCst), 1, "one clone kept for the decision");
@@ -838,7 +861,7 @@ mod tests {
         let framework = CqrsFramework::new(MemStore::<Echo>::default(), ())
             .with_task_planner(recorder.clone())
             .with_task_planner(Whisperer);
-        let report = framework.execute("e-1", probe(5)).await.unwrap();
+        let report = framework.execute(&"e-1".into(), probe(5)).await.unwrap();
         assert_eq!(report.tasks[0].format().to_string(), "whisper v1");
         assert!(recorder.seen.lock().unwrap().is_empty());
     }
@@ -847,7 +870,7 @@ mod tests {
     async fn a_commit_report_compares_its_parts_and_shows_them() {
         let report = CqrsFramework::new(MemStore::<Echo>::default(), ())
             .with_task_planner(Recorder::default())
-            .execute("e-1", probe(5))
+            .execute(&"e-1".into(), probe(5))
             .await
             .unwrap();
         assert_eq!(report.clone(), report);

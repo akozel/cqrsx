@@ -23,6 +23,7 @@ pub(crate) struct TestAggregate {
 
 impl Aggregate for TestAggregate {
     const TYPE: &'static str = "TestAggregate";
+    type Id = String;
     type Command = TestCommand;
     type Event = TestEvent;
     type Error = TestError;
@@ -144,6 +145,7 @@ pub(crate) mod customer {
 
     impl Aggregate for Customer {
         const TYPE: &'static str = "Customer";
+        type Id = String;
         type Command = CustomerCommand;
         type Event = CustomerEvent;
         type Error = CustomerError;

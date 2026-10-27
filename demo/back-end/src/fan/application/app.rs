@@ -29,7 +29,7 @@ impl<E: CommandExecutor<Fan>> FanApp<E> {
             command_type: command.name(),
             fan_id: Some(fan.as_str()),
         };
-        self.service.run(label, command, metadata).await
+        self.service.run(ledger, label, command, metadata).await
     }
 }
 

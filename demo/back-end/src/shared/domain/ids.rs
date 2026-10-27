@@ -2,7 +2,7 @@
 //! plain strings on the wire (`#[serde(try_from = "String", into = "String")]`), so a document or a
 //! request that carries a malformed id is rejected at the boundary, never deep inside a handler.
 use serde::{Deserialize, Serialize};
-use std::fmt;
+use std::{fmt, str::FromStr};
 
 /// A validated fan identifier (`fox`, `crowd-12`, `arbitrage-bot`): `[a-z0-9_-]{1,64}`.
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -134,9 +134,18 @@ macro_rules! string_newtype_conversions {
             }
         }
 
+        /// The id's text, byte for byte its `as_str`; of an aggregate id, the key of its stream, lock and task ids.
         impl fmt::Display for $id {
             fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
                 f.write_str(&self.0)
+            }
+        }
+
+        /// The id's text parsed back, as `parse` does.
+        impl FromStr for $id {
+            type Err = $error;
+            fn from_str(raw: &str) -> Result<Self, Self::Err> {
+                $id::parse(raw)
             }
         }
     };
@@ -188,6 +197,40 @@ mod tests {
         for bad in ["fox", "fox:", ":c-1", "fox:c-1:x", "Fox:c-1", "fox:c_1", "fox/c-1"] {
             assert!(FanLedgerId::parse(bad).is_err(), "{bad}");
         }
+    }
+
+    /// The text of an id is what the journal, the locks and the task ids key by (cqrsx formats an aggregate id with
+    /// `Display`); before the typed id the demo passed `as_str()`, so the two must agree byte for byte.
+    #[test]
+    fn the_display_of_every_id_is_its_text_and_parses_back() {
+        for fan in [
+            FanId::parse("fox").unwrap(),
+            FanId::parse("crowd_12").unwrap(),
+            FanId::parse("arbitrage-bot").unwrap(),
+        ] {
+            assert_eq!(fan.to_string(), fan.as_str());
+            assert_eq!(fan.as_str().parse(), Ok(fan.clone()));
+        }
+        let concerts = [
+            ConcertId::parse("radiohead-2026-11-21").unwrap(),
+            ConcertId::parse("c-1").unwrap(),
+        ];
+        for concert in &concerts {
+            assert_eq!(concert.to_string(), concert.as_str());
+            assert_eq!(concert.as_str().parse(), Ok(concert.clone()));
+        }
+        let ledgers = [
+            FanLedgerId::new(&FanId::parse("fox").unwrap(), &concerts[0]),
+            FanLedgerId::parse("crowd_1:c-1").unwrap(),
+        ];
+        for ledger in &ledgers {
+            assert_eq!(ledger.to_string(), ledger.as_str());
+            assert_eq!(ledger.as_str().parse(), Ok(ledger.clone()));
+        }
+        assert_eq!(ledgers[0].to_string(), "fox:radiohead-2026-11-21");
+        assert_eq!(" fox ".parse::<FanId>(), FanId::parse(" fox "), "from_str is parse");
+        assert!("Not A Concert".parse::<ConcertId>().is_err());
+        assert!("no-ledger".parse::<FanLedgerId>().is_err());
     }
 
     #[test]

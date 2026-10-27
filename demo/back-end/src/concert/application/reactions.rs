@@ -11,12 +11,9 @@
 //!
 //! [`fan_ledger`] builds the ledger's tasks from the facts: the booking and the refund come from
 //! the cancellation the box office decided, so nothing is read before the command.
-use crate::{
-    concert::{
-        application::fan_ledger,
-        domain::{Concert, ConcertEvent},
-    },
-    shared::domain::ConcertId,
+use crate::concert::{
+    application::fan_ledger,
+    domain::{Concert, ConcertEvent},
 };
 use cqrsx::{
     cqrs::command::planner::{Decision, TaskPlanError, TaskPlanner},
@@ -41,14 +38,16 @@ impl TaskPlanner<Concert> for ConcertReactions {
         let mut planned = Vec::new();
         for event in decision.events {
             if let ConcertEvent::SeatBooked(booked) = event {
-                let concert_id = ConcertId::parse(decision.aggregate_id).map_err(TaskPlanError::application)?;
-                planned.push(fan_ledger::record_ticket(&concert_id, booked, self.max_attempts)?);
+                planned.push(fan_ledger::record_ticket(decision.aggregate_id, booked, self.max_attempts)?);
             }
         }
         for event in decision.events {
             if let ConcertEvent::BookingCancelled(cancelled) = event {
-                let concert_id = ConcertId::parse(decision.aggregate_id).map_err(TaskPlanError::application)?;
-                planned.push(fan_ledger::record_cancellation(&concert_id, cancelled, self.max_attempts)?);
+                planned.push(fan_ledger::record_cancellation(
+                    decision.aggregate_id,
+                    cancelled,
+                    self.max_attempts,
+                )?);
             }
         }
         Ok(planned)
@@ -60,7 +59,7 @@ mod tests {
     use super::*;
     use crate::{
         concert::{
-            application::test_support::{booked, cancelled_booking, concert_command},
+            application::test_support::{booked, cancelled_booking, concert_command, concert_id},
             domain::events::ConcertAnnounced,
         },
         fan::application::record_ticket::RecordTicketV1,
@@ -75,7 +74,7 @@ mod tests {
     #[test]
     fn a_booked_seat_plans_the_ticket_for_the_fans_ledger_from_the_fact() {
         let booking_id = Uuid::from_u128(1);
-        let tasks = plan::<Concert, _>(&REACTIONS, "radiohead-2026-11-21", &concert_command(), &[booked(booking_id)]).unwrap();
+        let tasks = plan::<Concert, _>(&REACTIONS, &concert_id(), &concert_command(), &[booked(booking_id)]).unwrap();
         let [task] = &tasks[..] else {
             panic!("one task per booking: {tasks:?}");
         };
@@ -97,7 +96,7 @@ mod tests {
         let (booking_id, cancellation_id) = (Uuid::from_u128(1), Uuid::from_u128(2));
         let tasks = plan::<Concert, _>(
             &REACTIONS,
-            "radiohead-2026-11-21",
+            &concert_id(),
             &concert_command(),
             &[cancelled_booking(booking_id, cancellation_id)],
         )
@@ -120,14 +119,14 @@ mod tests {
     #[test]
     fn every_reacting_fact_plans_one_task_through_the_aggregates_planner() {
         let concert = concert_tasks(6);
-        let id = "radiohead-2026-11-21";
+        let id = concert_id();
         assert_eq!(
-            formats(&plan::<Concert, _>(&concert, id, &concert_command(), &[booked(Uuid::nil())]).unwrap()),
+            formats(&plan::<Concert, _>(&concert, &id, &concert_command(), &[booked(Uuid::nil())]).unwrap()),
             ["encore_record_ticket v1"]
         );
         let cancelled = cancelled_booking(Uuid::nil(), Uuid::nil());
         assert_eq!(
-            formats(&plan::<Concert, _>(&concert, id, &concert_command(), &[cancelled]).unwrap()),
+            formats(&plan::<Concert, _>(&concert, &id, &concert_command(), &[cancelled]).unwrap()),
             ["encore_record_cancellation v1"]
         );
         let announced = ConcertEvent::ConcertAnnounced(ConcertAnnounced {
@@ -137,7 +136,7 @@ mod tests {
             capacity: 40,
         });
         assert!(
-            plan::<Concert, _>(&concert, id, &concert_command(), &[announced])
+            plan::<Concert, _>(&concert, &id, &concert_command(), &[announced])
                 .unwrap()
                 .is_empty(),
             "nothing downstream reacts to an announcement"
@@ -145,26 +144,17 @@ mod tests {
     }
 
     /// The delivery plans nothing for a cancellation and the refund nothing for a booking: each fact plans only the
-    /// task of its own process.
+    /// task of its own process. The concert is the decision's typed id, so a foreign one cannot reach the planner.
     #[test]
-    fn each_fact_plans_only_its_own_task_and_a_foreign_aggregate_id_is_refused() {
+    fn each_fact_plans_only_its_own_task() {
         let cancelled = cancelled_booking(Uuid::from_u128(1), Uuid::from_u128(2));
         assert_eq!(
-            formats(&plan::<Concert, _>(&REACTIONS, "radiohead-2026-11-21", &concert_command(), &[cancelled]).unwrap()),
+            formats(&plan::<Concert, _>(&REACTIONS, &concert_id(), &concert_command(), &[cancelled]).unwrap()),
             ["encore_record_cancellation v1"]
         );
         assert_eq!(
-            formats(&plan::<Concert, _>(&REACTIONS, "radiohead-2026-11-21", &concert_command(), &[booked(Uuid::nil())]).unwrap()),
+            formats(&plan::<Concert, _>(&REACTIONS, &concert_id(), &concert_command(), &[booked(Uuid::nil())]).unwrap()),
             ["encore_record_ticket v1"]
         );
-        assert!(matches!(
-            plan::<Concert, _>(&REACTIONS, "Not A Concert", &concert_command(), &[booked(Uuid::nil())]),
-            Err(TaskPlanError::Application(_))
-        ));
-        let cancelled = cancelled_booking(Uuid::nil(), Uuid::nil());
-        assert!(matches!(
-            plan::<Concert, _>(&REACTIONS, "Not A Concert", &concert_command(), &[cancelled]),
-            Err(TaskPlanError::Application(_))
-        ));
     }
 }

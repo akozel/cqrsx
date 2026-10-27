@@ -5,7 +5,7 @@ use crate::{
         events::{TicketCancelled, TicketRecorded},
     },
     shared::domain::{
-        ConcertId,
+        ConcertId, FanLedgerId,
         venue::{SeatId, Zone},
     },
 };
@@ -62,6 +62,7 @@ impl Fan {
 
 impl Aggregate for Fan {
     const TYPE: &'static str = "Fan";
+    type Id = FanLedgerId;
     type Command = FanCommand;
     type Event = FanEvent;
     type Error = FanError;

@@ -89,33 +89,31 @@ where
     S::AC: Send,
 {
     /// Executes without event metadata; see [`execute_with_metadata`](Self::execute_with_metadata).
-    pub async fn execute(
-        &self,
-        aggregate_id: &str,
-        command: A::Command,
-    ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
-        self.execute_with_metadata(aggregate_id, command, HashMap::new()).await
+    pub async fn execute(&self, id: &A::Id, command: A::Command) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+        self.execute_with_metadata(id, command, HashMap::new()).await
     }
 
-    /// Waits for the aggregate's lock, then runs the command with bounded conflict retry. Each attempt
-    /// receives a clone of `metadata`, so a retried command commits exactly the metadata of its first
+    /// Waits for the aggregate's lock, then runs the command with bounded conflict retry. The id's text (its
+    /// `Display`) is formatted once, for the lock's key, and every attempt loads and plans with that text. Each
+    /// attempt receives a clone of `metadata`, so a retried command commits exactly the metadata of its first
     /// attempt, and plans its tasks from its own decision.
     pub async fn execute_with_metadata(
         &self,
-        aggregate_id: &str,
+        id: &A::Id,
         command: A::Command,
         metadata: HashMap<String, String>,
     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
         // Held through every attempt and the wake-up.
-        let _lock = self
+        let lock = self
             .locks
-            .acquire(AggregateKey::of::<A>(aggregate_id))
+            .acquire(AggregateKey::of::<A>(id))
             .await
             .map_err(lock_refused::<A::Error>(A::TYPE))?;
+        let key = lock.key().aggregate_id(); // the id's text, formatted once: every attempt borrows it
         let framework = &self.framework;
         let metadata_ref = &metadata;
         let report = retry_on_aggregate_conflict(self.retry_policy, move || {
-            framework.execute_with_metadata(aggregate_id, command.clone(), metadata_ref.clone())
+            framework.attempt(id, key, command.clone(), metadata_ref.clone())
         })
         .await
         .inspect_err(|error| log_aggregate_error(A::TYPE, error))
@@ -158,11 +156,11 @@ where
 {
     async fn execute_with_metadata(
         &self,
-        aggregate_id: &str,
+        id: &A::Id,
         command: A::Command,
         metadata: HashMap<String, String>,
     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
-        CommandExecutorCore::execute_with_metadata(self, aggregate_id, command, metadata).await
+        CommandExecutorCore::execute_with_metadata(self, id, command, metadata).await
     }
 }
 
@@ -238,6 +236,7 @@ mod tests {
 
     impl Aggregate for DummyAggregate {
         const TYPE: &'static str = "dummy";
+        type Id = String;
         type Command = DummyCommand;
         type Event = DummyEvent;
         type Error = DummyError;
@@ -375,6 +374,7 @@ mod tests {
 
     impl Aggregate for SendOnlyAggregate {
         const TYPE: &'static str = "send_only";
+        type Id = String;
         type Command = std::cell::Cell<u32>;
         type Event = DummyEvent;
         type Error = DummyError;
@@ -407,11 +407,12 @@ mod tests {
             no_delay_policy(1),
             LockLimits::default(),
         ));
-        let report =
-            tokio::spawn(async move { CommandExecutor::execute(executor.as_ref(), "send-only", std::cell::Cell::new(7)).await })
-                .await
-                .unwrap()
-                .unwrap();
+        let report = tokio::spawn(async move {
+            CommandExecutor::execute(executor.as_ref(), &"send-only".into(), std::cell::Cell::new(7)).await
+        })
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(report.events.len(), 1);
         assert!(report.tasks.is_empty(), "no planner, no tasks");
     }
@@ -426,11 +427,12 @@ mod tests {
             )
             .with_task_planner(CommandPlanner),
         );
-        let report =
-            tokio::spawn(async move { CommandExecutor::execute(executor.as_ref(), "send-only", std::cell::Cell::new(7)).await })
-                .await
-                .unwrap()
-                .unwrap();
+        let report = tokio::spawn(async move {
+            CommandExecutor::execute(executor.as_ref(), &"send-only".into(), std::cell::Cell::new(7)).await
+        })
+        .await
+        .unwrap()
+        .unwrap();
         assert_eq!(report.tasks.len(), 1);
         assert_eq!(report.tasks[0].payload()["value"], "7");
     }
@@ -440,7 +442,7 @@ mod tests {
     impl CommandExecutor<SendOnlyAggregate> for BorrowingExecutor {
         async fn execute_with_metadata(
             &self,
-            aggregate_id: &str,
+            aggregate_id: &String,
             command: std::cell::Cell<u32>,
             metadata: HashMap<String, String>,
         ) -> Result<CommitReport<SendOnlyAggregate>, CommandGatewayError<DummyError>> {
@@ -527,7 +529,11 @@ mod tests {
             ("source".to_owned(), "ui".to_owned()),
         ]);
         executor
-            .execute_with_metadata("aggregate", DummyCommand::Record("value".to_owned()), metadata.clone())
+            .execute_with_metadata(
+                &"aggregate".into(),
+                DummyCommand::Record("value".to_owned()),
+                metadata.clone(),
+            )
             .await
             .unwrap();
         assert_eq!(*commits.lock().unwrap(), vec![metadata.clone(), metadata.clone(), metadata]);
@@ -537,7 +543,7 @@ mod tests {
     async fn execute_without_metadata_commits_an_empty_map_through_both_entry_points() {
         let commits = Arc::new(Mutex::new(Vec::new()));
         let executor = metadata_executor(0, &commits);
-        CommandExecutor::execute(&executor, "aggregate", DummyCommand::Record("trait".to_owned()))
+        CommandExecutor::execute(&executor, &"aggregate".into(), DummyCommand::Record("trait".to_owned()))
             .await
             .unwrap();
         let commits_inherent = Arc::new(Mutex::new(Vec::new()));
@@ -553,7 +559,7 @@ mod tests {
             LockLimits::default(),
         );
         inherent
-            .execute("aggregate", DummyCommand::Record("inherent".to_owned()))
+            .execute(&"aggregate".into(), DummyCommand::Record("inherent".to_owned()))
             .await
             .unwrap();
         assert_eq!(*commits.lock().unwrap(), vec![HashMap::new()]);
@@ -573,10 +579,14 @@ mod tests {
         .with_task_planner(planner.clone());
         let metadata = Causation::root("test").event_metadata();
 
-        let report =
-            CommandExecutor::execute_with_metadata(&executor, "aggregate", DummyCommand::Record("same".to_owned()), metadata)
-                .await
-                .unwrap();
+        let report = CommandExecutor::execute_with_metadata(
+            &executor,
+            &"aggregate".into(),
+            DummyCommand::Record("same".to_owned()),
+            metadata,
+        )
+        .await
+        .unwrap();
 
         assert_eq!(store.commits.load(Ordering::SeqCst), 3);
         assert_eq!(
@@ -601,14 +611,19 @@ mod tests {
     async fn executor_maps_domain_conflict_and_technical_errors_without_wrong_retries() {
         let domain_executor = dummy_executor(DummyStore::new(0), 3);
         assert_eq!(
-            CommandExecutor::execute(&domain_executor, "aggregate", DummyCommand::Reject).await,
+            CommandExecutor::execute(&domain_executor, &"aggregate".into(), DummyCommand::Reject).await,
             Err(CommandGatewayError::Domain(DummyError))
         );
 
         let store = DummyStore::new(usize::MAX);
         let conflict_executor = dummy_executor(store.clone(), 3);
         assert_eq!(
-            CommandExecutor::execute(&conflict_executor, "aggregate", DummyCommand::Record("value".to_owned())).await,
+            CommandExecutor::execute(
+                &conflict_executor,
+                &"aggregate".into(),
+                DummyCommand::Record("value".to_owned())
+            )
+            .await,
             Err(CommandGatewayError::Conflict)
         );
         assert_eq!(store.commits.load(Ordering::SeqCst), 3);
@@ -620,7 +635,7 @@ mod tests {
         ] {
             let executor = dummy_executor(DummyStore::failing(error), 3);
             assert_eq!(
-                CommandExecutor::execute(&executor, "aggregate", DummyCommand::Record("value".to_owned())).await,
+                CommandExecutor::execute(&executor, &"aggregate".into(), DummyCommand::Record("value".to_owned())).await,
                 Err(CommandGatewayError::Unavailable)
             );
         }
@@ -632,7 +647,9 @@ mod tests {
         let planner = ValuePlanner::default();
         let executor = dummy_executor(store.clone(), 3).with_task_planner(planner.clone());
         assert_eq!(
-            executor.execute("aggregate", DummyCommand::Record("value".to_owned())).await,
+            executor
+                .execute(&"aggregate".into(), DummyCommand::Record("value".to_owned()))
+                .await,
             Err(CommandGatewayError::Conflict)
         );
         assert_eq!(planner.calls.load(Ordering::SeqCst), 3);
@@ -651,7 +668,7 @@ mod tests {
             let executor = dummy_executor(store.clone(), 3).with_task_planner(planner.clone());
             assert_eq!(
                 executor
-                    .execute("private_id", DummyCommand::Record("refuse".to_owned()))
+                    .execute(&"private_id".into(), DummyCommand::Record("refuse".to_owned()))
                     .await,
                 Err(CommandGatewayError::Unavailable)
             );
@@ -673,7 +690,10 @@ mod tests {
             LockLimits::default(),
         )
         .with_task_planner(TallyPlanner { refuse_above: Some(0) });
-        assert_eq!(executor.execute("tally", 5).await, Err(CommandGatewayError::Unavailable));
+        assert_eq!(
+            executor.execute(&"tally".into(), 5).await,
+            Err(CommandGatewayError::Unavailable)
+        );
         assert_eq!(
             store.attempts.lock().unwrap().len(),
             1,
@@ -692,7 +712,10 @@ mod tests {
                 let executor = dummy_executor(DummyStore::failing(error), 3);
                 assert_eq!(
                     executor
-                        .execute("private_id@example.com", DummyCommand::Record("private_command".into()))
+                        .execute(
+                            &"private_id@example.com".into(),
+                            DummyCommand::Record("private_command".into())
+                        )
                         .await,
                     Err(CommandGatewayError::Unavailable)
                 );
@@ -700,12 +723,12 @@ mod tests {
             let store = DummyStore::new(usize::MAX);
             let executor = dummy_executor(store.clone(), 3);
             assert_eq!(
-                executor.execute("private_id", DummyCommand::Reject).await,
+                executor.execute(&"private_id".into(), DummyCommand::Reject).await,
                 Err(CommandGatewayError::Domain(DummyError))
             );
             assert_eq!(
                 executor
-                    .execute("private_id", DummyCommand::Record("private_command".into()))
+                    .execute(&"private_id".into(), DummyCommand::Record("private_command".into()))
                     .await,
                 Err(CommandGatewayError::Conflict)
             );
@@ -829,7 +852,7 @@ mod tests {
                 } else {
                     Arc::new(versioned_executor(&store, 1))
                 };
-                commands.spawn(async move { executor.execute("aggregate", record(&index.to_string())).await });
+                commands.spawn(async move { executor.execute(&"aggregate".into(), record(&index.to_string())).await });
             }
             let mut conflicts = 0;
             while let Some(result) = commands.join_next().await {
@@ -865,9 +888,9 @@ mod tests {
             };
             let first = tokio::spawn({
                 let executor = executor.clone();
-                async move { executor.execute("aggregate", record("a")).await }
+                async move { executor.execute(&"aggregate".into(), record("a")).await }
             });
-            let second = tokio::spawn(async move { second_executor.execute("aggregate", record("b")).await });
+            let second = tokio::spawn(async move { second_executor.execute(&"aggregate".into(), record("b")).await });
             assert!(first.await.unwrap().is_ok() && second.await.unwrap().is_ok());
             let calls = store.calls.lock().unwrap().clone();
             if shared {
@@ -893,7 +916,7 @@ mod tests {
         let mut commands = tokio::task::JoinSet::new();
         for index in 0..20 {
             let executor = executor.clone();
-            commands.spawn(async move { executor.execute("aggregate", record(&index.to_string())).await });
+            commands.spawn(async move { executor.execute(&"aggregate".into(), record(&index.to_string())).await });
         }
         while let Some(result) = commands.join_next().await {
             assert_eq!(result.unwrap().unwrap().tasks.len(), 1);
@@ -931,7 +954,7 @@ mod tests {
         let mut commands = tokio::task::JoinSet::new();
         for index in 0..20 {
             let node = nodes[index % 2].clone();
-            commands.spawn(async move { (index, node.execute("aggregate", record(&index.to_string())).await) });
+            commands.spawn(async move { (index, node.execute(&"aggregate".into(), record(&index.to_string())).await) });
         }
         let mut reports = Vec::new();
         while let Some(result) = commands.join_next().await {
@@ -972,10 +995,10 @@ mod tests {
         );
         let panicking = tokio::spawn({
             let executor = executor.clone();
-            async move { executor.execute("aggregate", record("panic")).await }
+            async move { executor.execute(&"aggregate".into(), record("panic")).await }
         });
         assert!(panicking.await.unwrap_err().is_panic());
-        let report = executor.execute("aggregate", record("after")).await.unwrap();
+        let report = executor.execute(&"aggregate".into(), record("after")).await.unwrap();
         assert_eq!(report.tasks.len(), 1, "the lock was released and the next command ran");
         assert_eq!(
             *store.journal.lock().unwrap(),
@@ -999,14 +1022,15 @@ mod tests {
         // The holder keeps the key's lock while its load waits at the gate.
         let holder = tokio::spawn({
             let executor = executor.clone();
-            async move { executor.execute("private_id", record("private_holder")).await }
+            async move { executor.execute(&"private_id".into(), record("private_holder")).await }
         });
         until(|| store.loads.load(Ordering::SeqCst) == 1).await;
         let (_, log) = crate::diagnostics::test_support::capture_at(tracing::Level::WARN, async {
-            let mut waiting = Box::pin(executor.execute("private_id", record("private_waiting")));
+            let private_id = String::from("private_id");
+            let mut waiting = Box::pin(executor.execute(&private_id, record("private_waiting")));
             assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(waiting.as_mut().poll(cx).is_pending())).await);
             assert_eq!(
-                executor.execute("private_id", record("private_refused")).await,
+                executor.execute(&"private_id".into(), record("private_refused")).await,
                 Err(CommandGatewayError::Unavailable),
                 "the line is full"
             );
@@ -1038,7 +1062,7 @@ mod tests {
     fn the_command_future_holding_a_lock_is_send() {
         fn require_send<F: std::future::Future + Send>(_: F) {}
         let executor = versioned_executor(&VersionedStore::default(), 1).with_task_planner(ValuePlanner::default());
-        require_send(executor.execute("aggregate", record("a")));
+        require_send(executor.execute(&"aggregate".into(), record("a")));
     }
 
     fn closed_gate() -> Arc<tokio::sync::Semaphore> {
@@ -1063,17 +1087,20 @@ mod tests {
         let executor = versioned_executor(&store, 1).with_commit_wakeup(wakeup.clone());
         let mut woken = pin!(wakeup.wait());
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
-        executor.execute("aggregate", record("a")).await.unwrap();
+        executor.execute(&"aggregate".into(), record("a")).await.unwrap();
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
         // Neither a rejected command nor one without events wakes anybody.
         let quiet = dummy_executor(DummyStore::new(0), 1).with_commit_wakeup(wakeup.clone());
         let mut silent = pin!(wakeup.wait());
         assert!(silent.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
         assert_eq!(
-            quiet.execute("aggregate", DummyCommand::Reject).await,
+            quiet.execute(&"aggregate".into(), DummyCommand::Reject).await,
             Err(CommandGatewayError::Domain(DummyError))
         );
-        assert_eq!(quiet.execute("aggregate", record("a")).await, Ok(CommitReport::default()));
+        assert_eq!(
+            quiet.execute(&"aggregate".into(), record("a")).await,
+            Ok(CommitReport::default())
+        );
         assert!(silent.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
     }
 
@@ -1116,6 +1143,7 @@ mod tests {
 
     impl Aggregate for Tally {
         const TYPE: &'static str = "tally";
+        type Id = String;
         type Command = u32;
         type Event = Added;
         type Error = DummyError;
@@ -1233,7 +1261,7 @@ mod tests {
         )
         .with_task_planner(TallyPlanner { refuse_above: None });
         let report = executor
-            .execute_with_metadata("tally", 5, Causation::root("test").event_metadata())
+            .execute_with_metadata(&"tally".into(), 5, Causation::root("test").event_metadata())
             .await
             .unwrap();
         let attempts = store.attempts.lock().unwrap().clone();
@@ -1256,5 +1284,188 @@ mod tests {
         );
         assert_eq!(report.tasks, attempts[2]);
         assert_eq!(report.events.len(), 1);
+    }
+
+    /// How often a [`RoomId`] was formatted; only the test below formats one.
+    static ROOM_IDS_FORMATTED: AtomicUsize = AtomicUsize::new(0);
+
+    /// A room's id whose text is not its fields: `RoomId { floor: 3, number: 7 }` is `3-07`. Every formatting is
+    /// counted.
+    #[derive(Clone, Debug, PartialEq, Eq, Hash)]
+    struct RoomId {
+        floor: u8,
+        number: u8,
+    }
+
+    impl std::fmt::Display for RoomId {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            ROOM_IDS_FORMATTED.fetch_add(1, Ordering::SeqCst);
+            write!(f, "{}-{:02}", self.floor, self.number)
+        }
+    }
+
+    impl std::str::FromStr for RoomId {
+        type Err = String;
+
+        fn from_str(text: &str) -> Result<Self, String> {
+            let (floor, number) = text.split_once('-').ok_or_else(|| format!("no room id: {text}"))?;
+            match (floor.parse(), number.parse()) {
+                (Ok(floor), Ok(number)) => Ok(Self { floor, number }),
+                _ => Err(format!("no room id: {text}")),
+            }
+        }
+    }
+
+    /// A hotel room, known by a typed id.
+    #[derive(Clone, Default, Serialize, Deserialize)]
+    struct Room;
+
+    impl Aggregate for Room {
+        const TYPE: &'static str = "room";
+        type Id = RoomId;
+        type Command = ();
+        type Event = DummyEvent;
+        type Error = DummyError;
+        type Rules = ();
+
+        fn apply(&mut self, _: DummyEvent) {}
+    }
+
+    impl Decide<Room> for () {
+        fn decide(self, _: &Room, _: &()) -> Result<DummyEvent, DummyError> {
+            Ok(DummyEvent::Recorded("checked in".to_owned()))
+        }
+    }
+
+    struct RoomContext(Room, String);
+
+    impl AggregateContext<Room> for RoomContext {
+        fn aggregate(&mut self) -> &mut Room {
+            &mut self.0
+        }
+    }
+
+    /// Records the key of every load and lets a load in only with a permit of its gate; the first commit
+    /// conflicts, and a committed event carries the key it was loaded with.
+    #[derive(Clone)]
+    struct RoomStore {
+        loads: Arc<Mutex<Vec<String>>>,
+        gate: Arc<tokio::sync::Semaphore>,
+        commits: Arc<AtomicUsize>,
+    }
+
+    impl EventStore<Room> for RoomStore {
+        type AC = RoomContext;
+
+        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<Room>>, AggregateError<DummyError>> {
+            Ok(Vec::new())
+        }
+
+        async fn load_aggregate(&self, key: &str) -> Result<Self::AC, AggregateError<DummyError>> {
+            self.loads.lock().unwrap().push(key.to_owned());
+            self.gate.acquire().await.unwrap().forget();
+            Ok(RoomContext(Room, key.to_owned()))
+        }
+
+        async fn commit(
+            &self,
+            events: Vec<DummyEvent>,
+            context: Self::AC,
+            metadata: HashMap<String, String>,
+            _: &[NewTask],
+        ) -> Result<Vec<EventEnvelope<Room>>, AggregateError<DummyError>> {
+            if self.commits.fetch_add(1, Ordering::SeqCst) == 0 {
+                return Err(AggregateError::AggregateConflict);
+            }
+            Ok(events
+                .into_iter()
+                .map(|payload| EventEnvelope {
+                    aggregate_id: context.1.clone(),
+                    sequence: 1,
+                    payload,
+                    metadata: metadata.clone(),
+                })
+                .collect())
+        }
+    }
+
+    /// Plans one task and writes down the address of the id every decision holds.
+    #[derive(Clone, Default)]
+    struct RoomPlanner {
+        ids: Arc<Mutex<Vec<usize>>>,
+    }
+
+    impl TaskPlanner<Room> for RoomPlanner {
+        fn plan(&self, decision: &Decision<'_, Room>) -> Result<Vec<NewTask>, TaskPlanError> {
+            self.ids
+                .lock()
+                .unwrap()
+                .push(std::ptr::from_ref(decision.aggregate_id) as usize);
+            Ok(vec![NewTask::new(DummyTask {
+                value: "room".to_owned(),
+            })?])
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn the_id_is_formatted_once_per_command_and_its_text_keys_the_lock_the_store_and_the_task_ids() {
+        let store = RoomStore {
+            loads: Arc::default(),
+            gate: closed_gate(),
+            commits: Arc::default(),
+        };
+        let planner = RoomPlanner::default();
+        let executor = CommandExecutorCore::new(
+            CqrsFramework::new(store.clone(), ()),
+            no_delay_policy(2),
+            LockLimits::new(Duration::from_millis(100), 1).unwrap(),
+        )
+        .with_task_planner(planner.clone());
+        let id = RoomId { floor: 3, number: 7 };
+        let causation = Causation::root("test");
+        let mut command = std::pin::pin!(executor.execute_with_metadata(&id, (), causation.event_metadata()));
+        // One poll: the command takes its lock and waits at the gate of its first load.
+        assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(command.as_mut().poll(cx).is_pending())).await);
+        assert_eq!(
+            executor.locks.acquire(AggregateKey::new(Room::TYPE, "3-07")).await.err(),
+            Some(LockRefused::TimedOut),
+            "the command holds the lock of the id's text"
+        );
+        drop(executor.locks.acquire(AggregateKey::new(Room::TYPE, "3-08")).await.unwrap());
+        store.gate.add_permits(2);
+        let report = command.await.unwrap();
+        assert_eq!(
+            *store.loads.lock().unwrap(),
+            ["3-07", "3-07"],
+            "both attempts load the id's text"
+        );
+        assert_eq!(
+            ROOM_IDS_FORMATTED.load(Ordering::SeqCst),
+            1,
+            "one formatting for the lock and both attempts"
+        );
+        assert_eq!(report.events[0].aggregate_id, "3-07");
+        assert_eq!(report.events[0].aggregate_id.parse::<RoomId>(), Ok(id.clone()));
+        assert_eq!(
+            report.tasks[0].id(),
+            causation.task_id("room", "3-07", report.tasks[0].format(), 0)
+        );
+        let address = std::ptr::from_ref(&id) as usize;
+        assert_eq!(
+            *planner.ids.lock().unwrap(),
+            [address, address],
+            "every decision holds the caller's id, not a copy"
+        );
+        // The framework on its own runs one attempt and formats the id once for it.
+        store.gate.add_permits(1);
+        executor
+            .framework()
+            .execute_with_metadata(&id, (), HashMap::new())
+            .await
+            .unwrap();
+        assert_eq!(ROOM_IDS_FORMATTED.load(Ordering::SeqCst), 2);
+        assert_eq!(store.loads.lock().unwrap().last().map(String::as_str), Some("3-07"));
+        assert_eq!("3".parse::<RoomId>(), Err("no room id: 3".to_owned()));
+        assert_eq!("3-x".parse::<RoomId>(), Err("no room id: 3-x".to_owned()));
     }
 }

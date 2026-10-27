@@ -222,6 +222,13 @@ pub(crate) struct AggregateLockGuard {
     line: LineRef,
 }
 
+impl AggregateLockGuard {
+    /// The key whose lock this is: its text is the one the command's attempts load and plan with.
+    pub(crate) fn key(&self) -> &AggregateKey {
+        &self.line.key
+    }
+}
+
 impl fmt::Debug for AggregateLockGuard {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("AggregateLockGuard").field("key", &self.line.key).finish()

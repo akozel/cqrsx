@@ -46,6 +46,7 @@ struct Full;
 
 impl Aggregate for Shelf {
     const TYPE: &'static str = "planning_shelf";
+    type Id = String;
     type Command = ShelfCommand;
     type Event = Put;
     type Error = Full;
@@ -188,7 +189,8 @@ async fn stress_two_nodes_publish_only_the_tasks_of_their_committed_decisions() 
         let node = nodes[index % 2].clone();
         commands.spawn(async move {
             let metadata = Causation::root("node").event_metadata();
-            node.execute_with_metadata("shared", put(format!("v{index}")), metadata).await
+            node.execute_with_metadata(&"shared".into(), put(format!("v{index}")), metadata)
+                .await
         });
     }
     // Both nodes' first commands meet at the gate: one wins, the other conflicts and plans again.
@@ -226,7 +228,7 @@ async fn forty_parallel_commands_through_one_executor_each_publish_their_own_tas
         commands.spawn(async move {
             let metadata = Causation::root("ui").event_metadata();
             executor
-                .execute_with_metadata("hot", put(format!("v{index}")), metadata)
+                .execute_with_metadata(&"hot".into(), put(format!("v{index}")), metadata)
                 .await
         });
     }
@@ -248,7 +250,7 @@ async fn stress_a_dropped_command_commits_its_event_and_its_tasks_together_or_no
             async move {
                 let metadata = Causation::root("ui").event_metadata();
                 executor
-                    .execute_with_metadata("dropped", put(format!("dropped-{round}")), metadata)
+                    .execute_with_metadata(&"dropped".into(), put(format!("dropped-{round}")), metadata)
                     .await
             }
         });
@@ -262,7 +264,7 @@ async fn stress_a_dropped_command_commits_its_event_and_its_tasks_together_or_no
         assert_eq!(events, tasks, "round {round}: the event and its task, or neither");
         let metadata = Causation::root("ui").event_metadata();
         executor
-            .execute_with_metadata("dropped", put(format!("next-{round}")), metadata)
+            .execute_with_metadata(&"dropped".into(), put(format!("next-{round}")), metadata)
             .await
             .expect("the lock was released and the next command commits");
         let (events, tasks) = tasks_match_their_events(&db.pool, "dropped").await;
@@ -282,13 +284,17 @@ async fn refused_plans_write_nothing_and_a_plan_without_tasks_needs_no_causation
     let before = database_state(&db.pool).await;
     let metadata = Causation::root("ui").event_metadata();
     assert_eq!(
-        executor.execute_with_metadata("s", put("bad"), metadata.clone()).await,
+        executor
+            .execute_with_metadata(&"s".into(), put("bad"), metadata.clone())
+            .await,
         Err(CommandGatewayError::Unavailable),
         "a planner error refuses the command"
     );
     let malformed = HashMap::from([("command_id".to_owned(), "cmd-1".to_owned())]);
     assert_eq!(
-        executor.execute_with_metadata("s", put("good"), malformed.clone()).await,
+        executor
+            .execute_with_metadata(&"s".into(), put("good"), malformed.clone())
+            .await,
         Err(CommandGatewayError::Unavailable),
         "a causation that does not parse refuses a decision with tasks"
     );
@@ -303,7 +309,10 @@ async fn refused_plans_write_nothing_and_a_plan_without_tasks_needs_no_causation
             refuse: None,
         },
     );
-    let report = untasked.execute_with_metadata("s", put("quiet"), malformed).await.unwrap();
+    let report = untasked
+        .execute_with_metadata(&"s".into(), put("quiet"), malformed)
+        .await
+        .unwrap();
     assert!(report.tasks.is_empty(), "and lets a decision without tasks through");
     assert_eq!(tasks_match_their_events(&db.pool, "s").await, (1, 0));
     db.close().await;
@@ -313,7 +322,7 @@ async fn refused_plans_write_nothing_and_a_plan_without_tasks_needs_no_causation
 async fn without_causation_a_task_keeps_its_random_id_and_carries_no_stamp() {
     let db = Database::new().await;
     let executor = shelves(&db.pool, 10, 1, ShelfPlanner::one_per_item());
-    let report = executor.execute("s", put("plain")).await.unwrap();
+    let report = executor.execute(&"s".into(), put("plain")).await.unwrap();
     let id = report.tasks[0].id();
     assert_eq!(id.get_version_num(), 4);
     let saved = row(&db.pool, id).await;
@@ -327,17 +336,20 @@ async fn the_same_command_id_twice_on_one_aggregate_publishes_once_and_writes_th
     let db = Database::new().await;
     let executor = shelves(&db.pool, 10, 3, ShelfPlanner::one_per_item());
     let metadata = Causation::root("ui").event_metadata();
-    executor.execute_with_metadata("s", put("a"), metadata.clone()).await.unwrap();
+    executor
+        .execute_with_metadata(&"s".into(), put("a"), metadata.clone())
+        .await
+        .unwrap();
     let before = database_state(&db.pool).await;
     // The aggregate accepts the second item, but its task has the first one's id: the outbox key refuses
     // the whole statement, the event included.
     assert_eq!(
-        executor.execute_with_metadata("s", put("b"), metadata.clone()).await,
+        executor.execute_with_metadata(&"s".into(), put("b"), metadata.clone()).await,
         Err(CommandGatewayError::Unavailable)
     );
     assert_eq!(database_state(&db.pool).await, before);
     // The same command id on another aggregate is another task.
-    executor.execute_with_metadata("t", put("b"), metadata).await.unwrap();
+    executor.execute_with_metadata(&"t".into(), put("b"), metadata).await.unwrap();
     assert_eq!(tasks_match_their_events(&db.pool, "s").await, (1, 1));
     assert_eq!(tasks_match_their_events(&db.pool, "t").await, (1, 1));
     db.close().await;
@@ -407,7 +419,7 @@ async fn a_store_without_an_outbox_refuses_planned_tasks_and_writes_nothing() {
     let before = database_state(&db.pool).await;
     assert_eq!(
         planned
-            .execute_with_metadata("s", put("a"), Causation::root("ui").event_metadata())
+            .execute_with_metadata(&"s".into(), put("a"), Causation::root("ui").event_metadata())
             .await,
         Err(CommandGatewayError::Unavailable)
     );
@@ -417,7 +429,7 @@ async fn a_store_without_an_outbox_refuses_planned_tasks_and_writes_nothing() {
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
     );
-    let report = CommandExecutor::execute(&unplanned, "s", put("a")).await.unwrap();
+    let report = CommandExecutor::execute(&unplanned, &"s".into(), put("a")).await.unwrap();
     assert_eq!((report.events.len(), report.tasks.len()), (1, 0));
     db.close().await;
 }

@@ -201,6 +201,7 @@ mod tests {
 
     impl Aggregate for Counter {
         const TYPE: &'static str = "counter";
+        type Id = String;
         type Command = ();
         type Event = Added;
         type Error = Never;

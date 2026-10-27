@@ -62,6 +62,7 @@ use std::{
 /// struct LimitReached;
 /// impl Aggregate for Counter {
 ///     const TYPE: &'static str = "counter";
+///     type Id = String;
 ///     type Command = ();
 ///     type Event = Incremented;
 ///     type Error = LimitReached;
@@ -94,10 +95,10 @@ use std::{
 /// let executor = TestCommandExecutor::new(MemStore::<Counter>::default(), 1).with_task_planner(Notifier);
 /// let use_case = executor.clone(); // what the application under test receives
 /// let causation = Causation::root("test");
-/// let report = use_case.execute_with_metadata("c-1", (), causation.event_metadata()).await.unwrap();
+/// let report = use_case.execute_with_metadata(&"c-1".into(), (), causation.event_metadata()).await.unwrap();
 /// assert_eq!(report.tasks[0].metadata()["correlation_id"], causation.correlation_id.to_string());
 /// assert_eq!(
-///     use_case.execute("c-1", ()).await,
+///     use_case.execute(&"c-1".into(), ()).await,
 ///     Err(CommandGatewayError::Domain(LimitReached))
 /// );
 /// assert_eq!(executor.take_published_tasks().len(), 1, "the second call was rejected");
@@ -190,11 +191,11 @@ where
 {
     async fn execute_with_metadata(
         &self,
-        aggregate_id: &str,
+        id: &A::Id,
         command: A::Command,
         metadata: HashMap<String, String>,
     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
-        let result = self.inner.execute_with_metadata(aggregate_id, command, metadata).await;
+        let result = self.inner.execute_with_metadata(id, command, metadata).await;
         if let Ok(report) = &result {
             self.published
                 .lock()
@@ -245,6 +246,7 @@ mod tests {
 
     impl Aggregate for Stack {
         const TYPE: &'static str = "stack";
+        type Id = String;
         type Command = u8;
         type Event = Pushed;
         type Error = Full;
@@ -292,8 +294,8 @@ mod tests {
         let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1).with_task_planner(Notifier);
         let use_case = executor.clone();
         let metadata = Causation::root("test").event_metadata();
-        let report = use_case.execute_with_metadata("s", 1, metadata).await.unwrap();
-        assert_eq!(use_case.execute("s", 2).await, Err(CommandGatewayError::Domain(Full)));
+        let report = use_case.execute_with_metadata(&"s".into(), 1, metadata).await.unwrap();
+        assert_eq!(use_case.execute(&"s".into(), 2).await, Err(CommandGatewayError::Domain(Full)));
         let published = executor.take_published_tasks();
         assert_eq!(published, report.tasks, "the record is the committed report's tasks");
         assert_eq!(published[0].payload()["value"], 1);
@@ -305,7 +307,7 @@ mod tests {
     #[tokio::test]
     async fn an_unavailable_store_is_reported_as_unavailable_and_publishes_nothing() {
         let executor = TestCommandExecutor::<Stack, _>::new(UnavailableStore, 1).with_task_planner(Notifier);
-        assert_eq!(executor.execute("s", 1).await, Err(CommandGatewayError::Unavailable));
+        assert_eq!(executor.execute(&"s".into(), 1).await, Err(CommandGatewayError::Unavailable));
         assert!(executor.take_published_tasks().is_empty());
         let _: &UnavailableStore = executor.store();
     }
@@ -320,11 +322,11 @@ mod tests {
         let mut woken = pin!(wakeup.wait());
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
         for value in 1..=2 {
-            assert_eq!(executor.execute("s", value).await.unwrap().tasks.len(), 1);
+            assert_eq!(executor.execute(&"s".into(), value).await.unwrap().tasks.len(), 1);
         }
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
         assert_eq!(
-            executor.execute("s", 3).await,
+            executor.execute(&"s".into(), 3).await,
             Err(CommandGatewayError::Domain(Full)),
             "the second load came from the journal"
         );
@@ -354,7 +356,7 @@ mod tests {
         let mut woken = pin!(wakeup.wait());
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
         assert!(
-            use_case.execute("s", 1).await.unwrap().tasks.is_empty(),
+            use_case.execute(&"s".into(), 1).await.unwrap().tasks.is_empty(),
             "no planner, no tasks"
         );
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());

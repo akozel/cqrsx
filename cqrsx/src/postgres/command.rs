@@ -120,11 +120,11 @@ where
     /// `metadata` is stored with the committed event.
     async fn execute_with_metadata(
         &self,
-        aggregate_id: &str,
+        id: &A::Id,
         command: A::Command,
         metadata: HashMap<String, String>,
     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
-        self.inner.execute_with_metadata(aggregate_id, command, metadata).await
+        self.inner.execute_with_metadata(id, command, metadata).await
     }
 }
 
@@ -151,6 +151,7 @@ mod tests {
 
     impl Aggregate for Quiet {
         const TYPE: &'static str = "quiet";
+        type Id = String;
         type Command = ();
         type Event = Said;
         type Error = std::convert::Infallible;

@@ -37,6 +37,7 @@
 //! # pub struct Counter;
 //! # impl Aggregate for Counter {
 //! #     const TYPE: &'static str = "counter";
+//! #     type Id = String;
 //! #     type Command = ();
 //! #     type Event = Counted;
 //! #     type Error = Never;

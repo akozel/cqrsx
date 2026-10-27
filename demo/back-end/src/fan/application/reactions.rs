@@ -1,12 +1,9 @@
 //! What follows each fact of a fan's ledger: the planner of the `Fan` executor. It continues the two processes the
 //! box office starts: a ticket recorded in the ledger is mailed ([`send_e_ticket`]), a
 //! ticket cancelled in the ledger is refunded ([`issue_refund`]).
-use crate::{
-    fan::{
-        application::{issue_refund, send_e_ticket},
-        domain::{Fan, FanEvent},
-    },
-    shared::domain::FanLedgerId,
+use crate::fan::{
+    application::{issue_refund, send_e_ticket},
+    domain::{Fan, FanEvent},
 };
 use cqrsx::{
     cqrs::command::planner::{Decision, TaskPlanError, TaskPlanner},
@@ -31,14 +28,20 @@ impl TaskPlanner<Fan> for FanReactions {
         let mut planned = Vec::new();
         for event in decision.events {
             if let FanEvent::TicketRecorded(recorded) = event {
-                let ledger = FanLedgerId::parse(decision.aggregate_id).map_err(TaskPlanError::application)?;
-                planned.push(send_e_ticket::send_e_ticket(&ledger, recorded, self.max_attempts)?);
+                planned.push(send_e_ticket::send_e_ticket(
+                    decision.aggregate_id,
+                    recorded,
+                    self.max_attempts,
+                )?);
             }
         }
         for event in decision.events {
             if let FanEvent::TicketCancelled(cancelled) = event {
-                let ledger = FanLedgerId::parse(decision.aggregate_id).map_err(TaskPlanError::application)?;
-                planned.push(issue_refund::issue_refund(&ledger, cancelled, self.max_attempts)?);
+                planned.push(issue_refund::issue_refund(
+                    decision.aggregate_id,
+                    cancelled,
+                    self.max_attempts,
+                )?);
             }
         }
         Ok(planned)
@@ -50,7 +53,7 @@ mod tests {
     use super::*;
     use crate::{
         fan::{
-            application::test_support::{fan_command, recorded},
+            application::test_support::{fan_command, ledger, recorded},
             domain::events::TicketCancelled,
         },
         shared::{
@@ -66,13 +69,7 @@ mod tests {
     #[test]
     fn a_ticket_in_the_ledger_plans_its_e_ticket_for_the_ledgers_fan() {
         let booking_id = Uuid::from_u128(1);
-        let tasks = plan::<Fan, _>(
-            &REACTIONS,
-            "fox:radiohead-2026-11-21",
-            &fan_command(),
-            &[recorded(booking_id)],
-        )
-        .unwrap();
+        let tasks = plan::<Fan, _>(&REACTIONS, &ledger(), &fan_command(), &[recorded(booking_id)]).unwrap();
         let [task] = &tasks[..] else {
             panic!("one e-ticket per recorded ticket: {tasks:?}");
         };
@@ -97,7 +94,7 @@ mod tests {
             seat: SeatId::parse("B4").unwrap(),
             refund: 80,
         });
-        let tasks = plan::<Fan, _>(&REACTIONS, "fox:radiohead-2026-11-21", &fan_command(), &[cancelled]).unwrap();
+        let tasks = plan::<Fan, _>(&REACTIONS, &ledger(), &fan_command(), &[cancelled]).unwrap();
         assert_eq!(
             tasks.iter().map(|task| task.payload().clone()).collect::<Vec<_>>(),
             [
@@ -111,15 +108,16 @@ mod tests {
     fn every_reacting_fact_plans_one_task_through_the_aggregates_planner() {
         let fan = fan_tasks(6);
         assert_eq!(
-            formats(&plan::<Fan, _>(&fan, "fox:radiohead-2026-11-21", &fan_command(), &[recorded(Uuid::nil())]).unwrap()),
+            formats(&plan::<Fan, _>(&fan, &ledger(), &fan_command(), &[recorded(Uuid::nil())]).unwrap()),
             ["encore_send_e_ticket v1"]
         );
     }
 
     /// The delivery plans nothing for a cancelled ticket and the refund nothing for a recorded one: each fact plans
-    /// only the task of its own process.
+    /// only the task of its own process. The ledger is the decision's typed id, so a foreign one cannot reach the
+    /// planner.
     #[test]
-    fn each_fact_plans_only_its_own_task_and_a_foreign_aggregate_id_is_refused() {
+    fn each_fact_plans_only_its_own_task() {
         let ticket_cancelled = FanEvent::TicketCancelled(TicketCancelled {
             booking_id: Uuid::from_u128(1),
             cancellation_id: Uuid::from_u128(2),
@@ -128,35 +126,12 @@ mod tests {
             refund: 80,
         });
         assert_eq!(
-            formats(&plan::<Fan, _>(&REACTIONS, "fox:radiohead-2026-11-21", &fan_command(), &[ticket_cancelled]).unwrap()),
+            formats(&plan::<Fan, _>(&REACTIONS, &ledger(), &fan_command(), &[ticket_cancelled]).unwrap()),
             ["encore_issue_refund v1"]
         );
         assert_eq!(
-            formats(
-                &plan::<Fan, _>(
-                    &REACTIONS,
-                    "fox:radiohead-2026-11-21",
-                    &fan_command(),
-                    &[recorded(Uuid::nil())]
-                )
-                .unwrap()
-            ),
+            formats(&plan::<Fan, _>(&REACTIONS, &ledger(), &fan_command(), &[recorded(Uuid::nil())]).unwrap()),
             ["encore_send_e_ticket v1"]
         );
-        assert!(matches!(
-            plan::<Fan, _>(&REACTIONS, "no-ledger", &fan_command(), &[recorded(Uuid::nil())]),
-            Err(TaskPlanError::Application(_))
-        ));
-        let ticket_cancelled = FanEvent::TicketCancelled(TicketCancelled {
-            booking_id: Uuid::nil(),
-            cancellation_id: Uuid::nil(),
-            concert_id: ConcertId::parse("radiohead-2026-11-21").unwrap(),
-            seat: SeatId::parse("B4").unwrap(),
-            refund: 80,
-        });
-        assert!(matches!(
-            plan::<Fan, _>(&REACTIONS, "no-ledger", &fan_command(), &[ticket_cancelled]),
-            Err(TaskPlanError::Application(_))
-        ));
     }
 }
