@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено 2026-10-27 |
+| Статус | сделано 2026-10-27 |
 | Ценность | средняя–высокая: имя и версия события, формат задачи и код отказа — атрибут на типе, а не `match`; первый шаг к декларативному домену |
 | Цена | средняя: новый крейт в workspace, четыре derive, тесты развёртки, перевод демо |
 | cqrsx | `Cargo.toml` (workspace `members`), новый `cqrsx-macros/`, `cqrsx/Cargo.toml` (зависимость), `src/lib.rs` (реэкспорт), `src/cqrs/event.rs` (`EventKind`), новый `src/cqrs/rejection.rs`, `doc/components.md` |
@@ -100,8 +100,46 @@ Derive порождает те же `event_type`/`event_version`, `TASK_TYPE`/`T
 
 ## Критерии приёмки
 
-- [ ] `cqrsx-macros` в workspace; `cqrsx::{Event, Events, Task, Rejection}` реэкспортированы; оба `Cargo.lock`
+- [x] `cqrsx-macros` в workspace; `cqrsx::{Event, Events, Task, Rejection}` реэкспортированы; оба `Cargo.lock`
       обновлены, `--locked` работает.
-- [ ] Четыре derive с тестами развёртки и `compile_fail`-doctest'ами; покрытие ≥ 97 % по workspace и по cqrsx.
-- [ ] Демо использует derive; ручные `impl DomainEvent`, `impl TaskPayload`, `code()` и `impl Rejection` удалены.
-- [ ] `components.md`: строка инвентаря и раскладка.
+- [x] Четыре derive с тестами развёртки и `compile_fail`-doctest'ами; покрытие ≥ 97 % по workspace и по cqrsx.
+- [x] Демо использует derive; ручные `impl DomainEvent`, `impl TaskPayload`, `code()` и `impl Rejection` удалены.
+- [x] `components.md`: строка инвентаря и раскладка.
+
+## Результат
+
+Сделано 2026-10-27.
+
+- **Крейт `cqrsx-macros`** (`proc-macro`, член workspace, без фич). cqrsx подключает его всегда и реэкспортирует в
+  корне `cqrsx::{Event, Events, Task, Rejection}`; трейты живут в своих модулях, скрытый `cqrsx::__private` даёт
+  развёртке `serde_json`.
+  - `Event` + `#[event(name, version)]` → `cqrs::event::EventKind` (`NAME`, `VERSION`; подсказка компилятора у
+    трейта).
+  - `Events` на enum из newtype-вариантов → `DomainEvent` через `EventKind` типа варианта.
+  - `Task` + `#[task(name, version)]` → `TaskPayload`.
+  - `Rejection` → `cqrs::rejection::Rejection`: код — вариант в snake_case (`#[rejection(code)]` переопределяет),
+    параметры — именованные поля, у unit-варианта `{}`.
+  - Ошибки при сборке: вариант не из одного типа события, тип варианта без `Event`, tuple-вариант отказа, неполный
+    атрибут, чужой или повторённый ключ, пустые значения, версия задачи ≤ 0, повтор кода, `#[rejection]` на enum.
+  - Функции развёртки над `proc_macro2`, точки входа — один вызов. 29 тестов развёртки, 3 теста скомпилированного
+    кода (`cqrsx/tests/derives.rs`), 5 `compile_fail`-doctest'ов (тексты ошибок сверены во временном крейте).
+    Покрытие крейта — 100 % строк.
+- **Lock-файлы:** в обоих только пакет `cqrsx-macros` и строка о нём у `cqrsx`; `heck`, `proc-macro2`, `quote`,
+  `syn 2.0.119` уже были.
+- **Демо на derive.** Удалены 2 `impl DomainEvent`, 4 `impl TaskPayload`, 2 `fn code()`, 2 `impl Rejection` и трейт
+  `Rejection` демо. Тестовые двойники `Counted` и `Added` остались с ручным `impl`: критерий — о домене модулей.
+  - Тесты отказов переехали к ошибкам домена дословно. Два новых теста, добавленные до замены, держат код и
+    параметры всех 11 вариантов R1–R11 литералами.
+  - `tests/architecture.rs`: домен видит `cqrsx::{Event, Events, Rejection}` и `cqrsx::cqrs::rejection`,
+    presentation — только `cqrsx::cqrs::rejection`.
+  - Dockerfile'ы бэкенда и sidecar копируют `cqrsx-macros`.
+- **Документы:** `components.md` (строки «Derive macros», «Rejection report», `EventKind`; раскладка `cqrsx-macros/`;
+  правило о реэкспортах), быстрый старт README на derive, `revisit.md` (тема 5).
+- **Поведение не изменилось** (G-22, G-33, G-34, G-35, G-36):
+  - тесты гарантий проходят, тела без правок: 145 на месте, 4 перенесены дословно (`work/04-tools/test_bodies.py`);
+  - эталоны 02 не тронуты;
+  - SQL, ключи окружения и умолчания не менялись.
+- **Переименованные тесты:** нет. В guarantees.md — новые пути двух перенесённых тестов и новые тесты (G-22, G-33,
+  G-34, G-35, G-36).
+- **Проверки:** workspace — 653 теста, матрица фич; покрытие — 97,73 % (workspace) и 97,65 % (`-p cqrsx`); демо —
+  150 + 14 тестов.

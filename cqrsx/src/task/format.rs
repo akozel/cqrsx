@@ -3,6 +3,37 @@ use serde::Serialize;
 use std::fmt;
 use thiserror::Error;
 /// Versioned wire DTO. Retain supported versions while queued work exists.
+///
+/// The type and the version are stored with every queued task and route it to its handler, so they never
+/// change for a payload's shape; `#[derive(cqrsx::Task)]` writes them from `#[task(name = "…", version = N)]`.
+///
+/// ```
+/// use cqrsx::{Task, task::{NewTask, format::{TaskFormat, TaskPayload}}};
+/// use serde::Serialize;
+///
+/// #[derive(Serialize, Task)]
+/// #[task(name = "send_e_ticket", version = 2)]
+/// struct SendETicket {
+///     seat: String,
+/// }
+///
+/// assert_eq!((SendETicket::TASK_TYPE, SendETicket::TASK_VERSION), ("send_e_ticket", 2));
+/// assert_eq!(TaskFormat::of::<SendETicket>().unwrap().to_string(), "send_e_ticket v2");
+/// let task = NewTask::new(SendETicket { seat: "B4".into() }).unwrap();
+/// assert_eq!(task.payload()["seat"], "B4");
+/// ```
+///
+/// A version is positive, as [`TaskFormat::new`] requires; the derive refuses another at compile time:
+///
+/// ```compile_fail
+/// # use cqrsx::Task;
+/// # use serde::Serialize;
+/// #[derive(Serialize, Task)]
+/// #[task(name = "send_e_ticket", version = 0)]
+/// struct SendETicket {
+///     seat: String,
+/// }
+/// ```
 pub trait TaskPayload: Serialize {
     const TASK_TYPE: &'static str;
     const TASK_VERSION: i32;

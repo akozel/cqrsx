@@ -7,7 +7,8 @@
 //! `infrastructure`). Every `use` tree is expanded to full paths and every other qualified path is collected, with
 //! comments and string literals removed first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
-//! the ledger's tasks. `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and
+//! the ledger's tasks. Of cqrsx a domain sees its contracts and their derive macros, a presentation only the rejection
+//! trait. `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and
 //! `testing.rs` compose the modules and are exempt. A few rules apply to production code only: test code may use test
 //! tooling. Relative paths (`super::`) are not resolved: one module reaches another only through `crate::`.
 use std::{
@@ -230,10 +231,16 @@ fn externals(layer: Option<Layer>) -> Externals {
         Some(Layer::Domain) => Externals {
             forbidden: &["sqlx", "mongodb", "axum", "tokio"],
             test_only: &["serde_json", "cqrsx::cqrs::testing"],
+            // The derive macros of the domain's contracts (an event's name and version, the enum of events, the code
+            // and params of a rejection) and the trait of the rejections, which the domain's tests call.
             cqrsx_allowed: Some(&[
+                "cqrsx::Event",
+                "cqrsx::Events",
+                "cqrsx::Rejection",
                 "cqrsx::cqrs::aggregate",
                 "cqrsx::cqrs::event",
                 "cqrsx::cqrs::event_sink",
+                "cqrsx::cqrs::rejection",
                 "cqrsx::cqrs::testing",
             ]),
         },
@@ -254,9 +261,10 @@ fn externals(layer: Option<Layer>) -> Externals {
             cqrsx_allowed: None,
         },
         Some(Layer::Presentation) => Externals {
-            forbidden: &["cqrsx", "sqlx", "mongodb"],
+            forbidden: &["sqlx", "mongodb"],
             test_only: &[],
-            cqrsx_allowed: None,
+            // A refused command answers with its code and params (backlog 05/04): the rejection trait, nothing else.
+            cqrsx_allowed: Some(&["cqrsx::cqrs::rejection"]),
         },
         Some(Layer::Infrastructure) | None => Externals {
             forbidden: &[],
@@ -795,6 +803,33 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         .len(),
         1
     );
+}
+
+/// The derive macros and the rejection trait on examples (backlog 05/04): a domain derives its events and rejections,
+/// an application its tasks, a presentation names the rejection trait; nothing else of cqrsx reaches them.
+#[test]
+fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
+    let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
+    for (file, code) in [
+        ("concert/domain/x.rs", "use cqrsx::{Event, Events, Rejection};\n"),
+        (
+            "concert/domain/x.rs",
+            "#[cfg(test)]\nmod tests { use cqrsx::cqrs::rejection::Rejection; }\n",
+        ),
+        ("fan/application/x.rs", "use cqrsx::{Task, cqrs::rejection::Rejection};\n"),
+        ("concert/presentation/x.rs", "use cqrsx::cqrs::rejection::Rejection;\n"),
+    ] {
+        assert!(check(file, code).is_empty(), "{file}: {code}");
+    }
+    for (file, code) in [
+        ("concert/domain/x.rs", "use cqrsx::Task;\n"),
+        ("concert/presentation/x.rs", "use cqrsx::Event;\n"),
+        ("fan/presentation/x.rs", "use cqrsx::cqrs::event::DomainEvent;\n"),
+    ] {
+        let broken = check(file, code);
+        assert_eq!(broken.len(), 1, "{file}: {code}");
+        assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
+    }
 }
 
 #[test]

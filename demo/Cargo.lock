@@ -529,6 +529,7 @@ dependencies = [
  "async-channel",
  "async-trait",
  "chrono",
+ "cqrsx-macros",
  "futures",
  "mongodb",
  "rand 0.10.3",
@@ -542,6 +543,16 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "uuid",
+]
+
+[[package]]
+name = "cqrsx-macros"
+version = "0.1.0"
+dependencies = [
+ "heck",
+ "proc-macro2",
+ "quote",
+ "syn 2.0.119",
 ]
 
 [[package]]

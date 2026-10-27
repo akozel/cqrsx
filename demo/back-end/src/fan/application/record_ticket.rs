@@ -14,10 +14,10 @@ use crate::{
     },
 };
 use cqrsx::{
+    Task,
     cqrs::command::CommandExecutor,
     task::{
         attempt::TaskAttempt,
-        format::TaskPayload,
         handler::{TaskHandler, TaskHandlerError},
     },
 };
@@ -27,7 +27,8 @@ use uuid::Uuid;
 
 /// `Concert::SeatBooked` → `Fan.RecordTicket`: step one of ticket delivery
 /// ([`record_ticket`](super::record_ticket)).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Task)]
+#[task(name = "encore_record_ticket", version = 1)]
 pub struct RecordTicketV1 {
     pub booking_id: Uuid,
     pub concert_id: ConcertId,
@@ -36,11 +37,6 @@ pub struct RecordTicketV1 {
     pub price: u32,
     pub fan_id: FanId,
     pub fan_name: String,
-}
-
-impl TaskPayload for RecordTicketV1 {
-    const TASK_TYPE: &'static str = "encore_record_ticket";
-    const TASK_VERSION: i32 = 1;
 }
 
 pub struct RecordTicketHandler<E> {

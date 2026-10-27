@@ -1,38 +1,26 @@
-//! Facts in one fan's ticket ledger, one module per event. Stored flat like the `Concert` events.
+//! Facts in one fan's ticket ledger, one module per event. Stored flat like the `Concert` events, with
+//! the `#[event(name, version)]` of each fact.
 pub mod ticket_cancelled;
 pub mod ticket_recorded;
 
 pub use ticket_cancelled::TicketCancelled;
 pub use ticket_recorded::TicketRecorded;
 
-use cqrsx::cqrs::event::DomainEvent;
+use cqrsx::Events;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Events)]
 #[serde(tag = "type")]
 pub enum FanEvent {
     TicketRecorded(TicketRecorded),
     TicketCancelled(TicketCancelled),
 }
 
-impl DomainEvent for FanEvent {
-    fn event_type(&self) -> String {
-        match self {
-            FanEvent::TicketRecorded(_) => "TicketRecorded",
-            FanEvent::TicketCancelled(_) => "TicketCancelled",
-        }
-        .to_owned()
-    }
-
-    fn event_version(&self) -> String {
-        "1.0".to_owned()
-    }
-}
-
 /// Wire contract of the stored events (see `concert::events`): the literals must never change.
 #[cfg(test)]
 mod wire_format_tests {
     use super::*;
+    use cqrsx::cqrs::event::DomainEvent;
     use serde_json::{Value, json};
 
     fn round_trip(document: Value, event_type: &str) {

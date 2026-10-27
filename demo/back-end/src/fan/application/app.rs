@@ -1,14 +1,13 @@
-//! The command pipeline of the fan's ticket ledgers (`FanApp`) and how their rejections are reported. The
-//! ledger has no UI use cases: the [chain](super::chain) steps issue its commands.
+//! The command pipeline of the fan's ticket ledgers (`FanApp`). The ledger has no UI use cases: the
+//! [chain](super::chain) steps issue its commands.
 use crate::{
     fan::domain::{Fan, FanCommand, FanError},
     shared::{
-        application::command_service::{CommandLabel, CommandMetadata, CommandService, Executed, Rejection},
+        application::command_service::{CommandLabel, CommandMetadata, CommandService, Executed},
         domain::FanLedgerId,
     },
 };
 use cqrsx::cqrs::command::CommandExecutor;
-use serde_json::{Value, json};
 
 /// The command pipeline of `Fan`.
 pub struct FanApp<E> {
@@ -34,22 +33,6 @@ impl<E: CommandExecutor<Fan>> FanApp<E> {
     }
 }
 
-/// Technical rules R9–R11 as the activity log reports them; the chain steps map them to task
-/// results (see `chain`).
-impl Rejection for FanError {
-    fn code(&self) -> &'static str {
-        FanError::code(self)
-    }
-
-    fn params(&self) -> Value {
-        match self {
-            FanError::AlreadyRecorded { booking_id }
-            | FanError::UnknownTicket { booking_id }
-            | FanError::AlreadyCancelled { booking_id } => json!({ "booking_id": booking_id }),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -63,14 +46,6 @@ mod tests {
     use cqrsx::cqrs::testing::{command::TestCommandExecutor, unavailable_store::UnavailableStore};
     use std::sync::Arc;
     use uuid::Uuid;
-
-    #[test]
-    fn rejections_report_the_booking() {
-        let booking_id = Uuid::nil();
-        let error = FanError::UnknownTicket { booking_id };
-        assert_eq!(Rejection::code(&error), "unknown_ticket");
-        assert_eq!(error.params(), json!({ "booking_id": booking_id }));
-    }
 
     #[tokio::test]
     async fn an_unreachable_ledger_is_unavailable_and_logged() {

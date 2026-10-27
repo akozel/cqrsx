@@ -9,17 +9,20 @@ use crate::{
         domain::{ConcertId, FanId, FanLedgerId, venue::SeatId},
     },
 };
-use cqrsx::task::{
-    NewTask, TaskValidationError,
-    attempt::TaskAttempt,
-    format::TaskPayload,
-    handler::{TaskHandler, TaskHandlerError},
+use cqrsx::{
+    Task,
+    task::{
+        NewTask, TaskValidationError,
+        attempt::TaskAttempt,
+        handler::{TaskHandler, TaskHandlerError},
+    },
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// `Fan::TicketRecorded` → e-mail "🎫 Your e-ticket" (step [`send_e_ticket`](super::send_e_ticket)).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Task)]
+#[task(name = "encore_send_e_ticket", version = 1)]
 pub struct SendETicketV1 {
     pub booking_id: Uuid,
     pub concert_id: ConcertId,
@@ -27,11 +30,6 @@ pub struct SendETicketV1 {
     pub fan_id: FanId,
     pub fan_name: String,
     pub price: u32,
-}
-
-impl TaskPayload for SendETicketV1 {
-    const TASK_TYPE: &'static str = "encore_send_e_ticket";
-    const TASK_VERSION: i32 = 1;
 }
 
 /// The e-ticket of a ticket the ledger recorded; the fan is the ledger's.

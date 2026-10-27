@@ -1,4 +1,4 @@
 [workspace]
-members = ["cqrsx"]
+members = ["cqrsx", "cqrsx-macros"]
 exclude = ["demo"]
 resolver = "3"

@@ -12,6 +12,7 @@ use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
         command::{CommandExecutor, CommandGatewayError, causation::Causation},
+        rejection::Rejection,
     },
     task::attempt::TaskAttempt,
 };
@@ -58,13 +59,6 @@ impl CommandMetadata {
         map.insert("recorded_at".to_owned(), self.recorded_at.clone());
         map
     }
-}
-
-/// How a domain rejection is reported to the API and the activity log: the stable code from the
-/// domain plus the parameters the UI texts interpolate.
-pub trait Rejection {
-    fn code(&self) -> &'static str;
-    fn params(&self) -> Value;
 }
 
 /// Outcome of a command after the gateway error has been interpreted (§6.6).

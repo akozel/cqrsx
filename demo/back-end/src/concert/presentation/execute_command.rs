@@ -7,7 +7,7 @@ use crate::{
         commands::{AnnounceConcert, BookSeat, CancelBooking},
     },
     shared::{
-        application::command_service::{CommandMetadata, CommandOutcome, Rejection},
+        application::command_service::{CommandMetadata, CommandOutcome},
         domain::FanId,
         presentation::{error::ApiError, parse_concert_id},
     },
@@ -19,6 +19,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::NaiveDate;
+use cqrsx::cqrs::rejection::Rejection;
 use serde::Deserialize;
 use serde_json::{Value, json};
 

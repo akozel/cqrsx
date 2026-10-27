@@ -40,10 +40,12 @@ Related configuration and validation errors stay with their owning boundary.
 | Role | Components | Responsibility |
 | --- | --- | --- |
 | Aggregate contract | `Aggregate`, associated `Command`, `Event`, `Error`, `Services`; `handle`, `apply`; `AggregateKey` | Validate commands and deterministically transition aggregate state. `TYPE` identifies an aggregate type, not an instance; `AggregateKey` (`TYPE` + ID) identifies an instance across types. |
-| Domain events | `DomainEvent`, `EventEnvelope` | Domain facts; typed payload plus aggregate ID, sequence and metadata. |
+| Domain events | `DomainEvent`, `EventKind`, `EventEnvelope` | Domain facts; typed payload plus aggregate ID, sequence and metadata. `EventKind` is the name and version one event type is stored with (`NAME`, `VERSION`); an aggregate's enum of events, one event type per variant, takes its `event_type` and `event_version` from the `EventKind` of the variant's type. |
+| Derive macros | `cqrsx::{Event, Events, Task, Rejection}` (crate `cqrsx-macros`, re-exported at the crate root); hidden `cqrsx::__private` | Contracts written as attributes on their types. `Event` + `#[event(name = "…", version = "…")]` implements `EventKind`; `Events` on an enum whose every variant carries one event type implements `DomainEvent` through each variant's `EventKind`; `Task` + `#[task(name = "…", version = N)]` implements `TaskPayload`; `Rejection` on an enum implements `Rejection`: a variant's code is its name in snake case unless `#[rejection(code = "…")]` gives it, its params are its named fields as a JSON object (`{}` for a unit variant). A misuse does not compile and says why: a variant without exactly one event type, a payload type without `Event`, a missing or incomplete attribute, another key or one given twice, an empty name, version or code, a task version that is not a positive `i32`, a tuple variant of a rejection, `#[rejection]` on the enum, two variants with one code. The expansions name `::cqrsx` paths only and reach `serde_json` through `__private`, so a domain that derives `Rejection` does not name `serde_json`; inside cqrsx itself `::cqrsx` does not resolve, so its own tests implement the traits by hand. The crate has no features; cqrsx depends on it in every feature set. Expansion functions over `proc_macro2` hold the logic and the errors, with unit tests; an entry point is one call. |
 | Event emission | `EventSink` | Apply events to the working aggregate immediately and buffer them before persistence. The buffer is behind a plain mutex, held only for the push; `write` and `collect` stay `async` for the aggregates. |
 | Command orchestration | `CqrsFramework`, `CommitReport`, `AggregateError` | Load committed state, handle a command on a copy, plan its tasks, commit. `CqrsFramework::new(store, services)` has no event handlers; `with_task_planner(planner)` (one per framework, a second replaces the first) plans every decision with events. `execute` and `execute_with_metadata` return a `CommitReport`: the committed events in commit order and the tasks published with them; the command executor wakes the projection processors, which read the events from the journal. `Domain` is a business rejection, `TaskPlan` a refused plan (nothing written). With a planner the framework keeps one owned clone of the command per attempt for the decision (`handle` consumes the command; a borrow across an await would make the future `!Send` for commands that are `Send` but not `Sync`), cloned through a function captured where `A::Command: Clone` is known, so a framework without a planner needs no `Clone` command. |
 | Command boundary | `CommandExecutor`, `CommandGatewayError` | Technical execution port and safe domain/conflict/unavailable outcome categories. The caller passes only the command: `execute_with_metadata(id, command, metadata)` stores one metadata map with every committed event and answers with the `CommitReport`; `execute` defaults to an empty map. `Unavailable` also covers a refused task plan. |
+| Rejection report | `rejection::Rejection` | A business refusal as the API and an activity feed report it: `code()`, the stable key the UI texts are looked up by, and `params()`, the values they interpolate (a JSON object). Implemented by `#[derive(Rejection)]` on the aggregate's error enum; the framework does not call it yet. |
 | Causation | `causation::Causation`, `CausationError`, `COMMAND_ID`, `CORRELATION_ID`, `CAUSATION_ID`, `SOURCE`, `TASK_ID_NAMESPACE` | Metadata convention across command → event → task → command. `root(source)`: three equal v7 ids. `from_task(attempt)`: inherits the task's `correlation_id` (falls back to the task ID), `causation_id` is the task ID, source `task:<type>`. Events get the four keys (`event_metadata`), tasks the three ids (`stamp_task`, application keys kept). `from_event_metadata(map)` is the inverse: no `command_id`, no causation; with it the three ids must be UUIDs (`CausationError::{Missing, NotUuid}`), `source` is optional. `task_id(aggregate_type, aggregate_id, format, ordinal)` is a UUID v5 (SHA-1 over `TASK_ID_NAMESPACE` and the length-prefixed fields, as `Uuid::new_v5`): the id of a planned task, the same on every attempt of the command; the namespace and the encoding are a contract of the stored ids. |
 | Command implementation | `CommandExecutorCore` | The store-independent core of command execution: `PostgresCommandExecutor` and `TestCommandExecutor` are this core over a store of their own, not other kinds of executor. One long-lived executor per aggregate type and process, shared in an `Arc`; it owns the aggregate locks, so two executors of one aggregate type are like two processes. `new(framework, retry_policy, lock_limits)`: the core owns one `CqrsFramework` (store, services, planner) for its life, since no store holds state of a command; conflict retry is bounded; `with_task_planner` and `with_commit_wakeup` configure it. Every command runs under its aggregate's lock and waits for it at most the lock's `max_wait`; a refusal is `Unavailable`, logged as a warning, and loads, plans and writes nothing. Holding the lock the command runs every attempt (load, handle, plan, commit) and, when it committed events, wakes the processors of its aggregate type; then it releases the lock and answers with the report. A failed load, plan or commit is logged once with its category (`connection`, `deserialization`, `unexpected`, `task_plan`), never with its message. |
 | Task planning | `planner::{Decision, TaskPlanner, TaskPlanError}`; private `Planning` | The follow-up tasks of a command, a pure and synchronous function of one attempt's `Decision` (aggregate id, the committed state before, the working copy after, the command, the events, the metadata and its parsed causation). The aggregate decides only events; the reaction to an event is the application's. The framework calls the planner after `handle` for a decision with events, on every attempt, under the aggregate's lock and before the commit; the tasks commit atomically with that attempt's events. With causation the core stamps every task and sets its id (`Causation::task_id`, the ordinal counted per format over the whole plan); a causation that does not parse refuses a plan with tasks. `TaskPlanError::{Task, Causation, Application}`; a refused plan is `AggregateError::TaskPlan`, never retried. Tuples of two to eight planners are planners: in order, concatenated, the first error wins; a business process is one type that plans for every aggregate type it reacts to, and an aggregate's executor registers the tuple of its processes. No blanket implementation for closures. |
@@ -108,7 +110,7 @@ MemStore remains a public testing tool.
 src/
 ├── cqrs.rs                         CqrsFramework and command execution failures
 ├── cqrs/
-│   ├── aggregate.rs, event.rs, event_sink.rs
+│   ├── aggregate.rs, event.rs, event_sink.rs, rejection.rs
 │   ├── command.rs, command/{executor,retry,causation,locks,planner,wakeup}.rs
 │   ├── event_handler.rs            EventHandler
 │   ├── projection.rs              View, ViewProjection, RebuildableProjection
@@ -150,11 +152,25 @@ src/
 └── logging.rs, diagnostics.rs, env.rs
 ```
 
+The derive macros are a crate of their own next to `cqrsx/`, a member of the workspace:
+
+```text
+cqrsx-macros/src/
+├── lib.rs                          the four #[proc_macro_derive] entry points, one call each, and `run`
+│                                   (parse, expand, an error as compile_error!)
+├── attribute.rs                    #[name(key = literal, …)]: known keys, each once
+├── event.rs                        Event and Events
+├── task.rs                         Task
+└── rejection.rs                    Rejection
+```
+
 A component root owns its contract/state and related small errors. Children own
 independent operations. Snapshot DTOs do not own restoration of a concrete store
 context. Queue operations own their complete transactions; atomic outbox publication
 has its own transaction boundary. Unit tests stay inline; integration fixtures stay
-under `tests/`. No compatibility namespaces or flattening re-exports are provided.
+under `tests/`. No compatibility namespaces or flattening re-exports are provided: the crate root
+re-exports only the derive macros (`cqrsx::{Event, Events, Task, Rejection}`), whose traits stay in
+their modules, and `__private` holds what their expansions name, not an API.
 
 ## Naming and integration rules
 

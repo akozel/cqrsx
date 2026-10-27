@@ -1,6 +1,6 @@
 //! Facts about one concert, one module per event. Stored flat (`#[serde(tag = "type")]`) so the
-//! X-ray payload reads naturally; `event_type` in the `events` table is the variant name,
-//! `event_version` is `"1.0"`.
+//! X-ray payload reads naturally; `event_type` and `event_version` in the `events` table are the
+//! `#[event(name, version)]` of each fact, and `#[derive(Events)]` dispatches them per variant.
 pub mod booking_cancelled;
 pub mod concert_announced;
 pub mod seat_booked;
@@ -9,10 +9,10 @@ pub use booking_cancelled::BookingCancelled;
 pub use concert_announced::ConcertAnnounced;
 pub use seat_booked::SeatBooked;
 
-use cqrsx::cqrs::event::DomainEvent;
+use cqrsx::Events;
 use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Events)]
 #[serde(tag = "type")]
 pub enum ConcertEvent {
     ConcertAnnounced(ConcertAnnounced),
@@ -20,26 +20,12 @@ pub enum ConcertEvent {
     BookingCancelled(BookingCancelled),
 }
 
-impl DomainEvent for ConcertEvent {
-    fn event_type(&self) -> String {
-        match self {
-            ConcertEvent::ConcertAnnounced(_) => "ConcertAnnounced",
-            ConcertEvent::SeatBooked(_) => "SeatBooked",
-            ConcertEvent::BookingCancelled(_) => "BookingCancelled",
-        }
-        .to_owned()
-    }
-
-    fn event_version(&self) -> String {
-        "1.0".to_owned()
-    }
-}
-
 /// Wire contract of the stored events: `events.payload` keeps exactly these JSON documents and the
 /// sidecar and the front-end read them. The literals must never change; the types may.
 #[cfg(test)]
 mod wire_format_tests {
     use super::*;
+    use cqrsx::cqrs::event::DomainEvent;
     use serde_json::{Value, json};
 
     fn round_trip(document: Value, event_type: &str) {

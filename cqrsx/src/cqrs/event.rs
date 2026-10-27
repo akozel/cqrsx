@@ -16,7 +16,9 @@ use std::{collections::HashMap, fmt};
 /// - DependencyAdded
 ///
 /// To simplify serialization, an event should be an enum, and each variant should carry any
-/// important information.
+/// important information. With one event type per variant (`SeatBooked(SeatBooked)`),
+/// `#[derive(cqrsx::Events)]` implements this trait from the [`EventKind`] of each variant's type;
+/// the example below implements it by hand.
 ///
 /// The `DomainEvent` trait provides event type and version; events must also derive a
 /// number of standard traits.
@@ -159,6 +161,111 @@ pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::D
     fn event_type(&self) -> String;
     /// A version of the `event_type`, used for event upcasting.
     fn event_version(&self) -> String;
+}
+
+/// The stored name and version of one event type, what `#[derive(cqrsx::Event)]` writes from its
+/// `#[event(name = "…", version = "…")]`.
+///
+/// Both are stored with every event of the type (`event_type`, `event_version`) and read back by the
+/// upcasters, so a published name and version never change: a new meaning is a new version. An
+/// aggregate's enum of events takes them from the type of each variant with `#[derive(cqrsx::Events)]`,
+/// which implements [`DomainEvent`].
+///
+/// ```
+/// use cqrsx::{
+///     Event, Events,
+///     cqrs::event::{DomainEvent, EventKind},
+/// };
+/// use serde::{Deserialize, Serialize};
+///
+/// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
+/// #[event(name = "SeatBooked", version = "1.0")]
+/// pub struct SeatBooked {
+///     pub seat: String,
+/// }
+///
+/// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
+/// #[event(name = "BookingCancelled", version = "2.0")]
+/// pub struct BookingCancelled {
+///     pub seat: String,
+///     pub refund: u32,
+/// }
+///
+/// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Events)]
+/// #[serde(tag = "type")]
+/// pub enum ConcertEvent {
+///     SeatBooked(SeatBooked),
+///     BookingCancelled(BookingCancelled),
+/// }
+///
+/// assert_eq!((SeatBooked::NAME, SeatBooked::VERSION), ("SeatBooked", "1.0"));
+/// let cancelled = ConcertEvent::BookingCancelled(BookingCancelled { seat: "B4".into(), refund: 80 });
+/// assert_eq!(cancelled.event_type(), "BookingCancelled");
+/// assert_eq!(cancelled.event_version(), "2.0");
+/// let booked = ConcertEvent::SeatBooked(SeatBooked { seat: "B4".into() });
+/// assert_eq!((booked.event_type(), booked.event_version()), ("SeatBooked".into(), "1.0".into()));
+/// ```
+///
+/// Every variant carries one event type, so a variant with fields of its own does not compile:
+///
+/// ```compile_fail
+/// # use cqrsx::{Event, Events};
+/// # use serde::{Deserialize, Serialize};
+/// # #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
+/// # #[event(name = "SeatBooked", version = "1.0")]
+/// # pub struct SeatBooked {
+/// #     pub seat: String,
+/// # }
+/// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Events)]
+/// pub enum ConcertEvent {
+///     SeatBooked(SeatBooked),
+///     BookingCancelled { seat: String, refund: u32 },
+/// }
+/// ```
+///
+/// Nor does a variant whose type has no stored name and version, so a new event never takes the
+/// version of its neighbour:
+///
+/// ```compile_fail
+/// # use cqrsx::{Event, Events};
+/// # use serde::{Deserialize, Serialize};
+/// # #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
+/// # #[event(name = "SeatBooked", version = "1.0")]
+/// # pub struct SeatBooked {
+/// #     pub seat: String,
+/// # }
+/// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+/// pub struct BookingCancelled {
+///     pub seat: String,
+/// }
+///
+/// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Events)]
+/// pub enum ConcertEvent {
+///     SeatBooked(SeatBooked),
+///     BookingCancelled(BookingCancelled),
+/// }
+/// ```
+///
+/// And `Event` needs its attribute:
+///
+/// ```compile_fail
+/// # use cqrsx::Event;
+/// # use serde::{Deserialize, Serialize};
+/// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
+/// pub struct SeatBooked {
+///     pub seat: String,
+/// }
+/// ```
+#[diagnostic::on_unimplemented(
+    message = "`{Self}` has no stored event name and version",
+    label = "not an event type",
+    note = "derive `cqrsx::Event` on it, with `#[event(name = \"…\", version = \"…\")]`"
+)]
+pub trait EventKind {
+    /// The name stored with every event of the type: `event_type`.
+    const NAME: &'static str;
+    /// The version stored with every event of the type: `event_version`.
+    const VERSION: &'static str;
 }
 
 /// `EventEnvelope` is a data structure that encapsulates an event with its pertinent

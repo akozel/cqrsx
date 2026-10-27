@@ -9,17 +9,20 @@ use crate::{
         domain::{ConcertId, FanId, FanLedgerId, venue::SeatId},
     },
 };
-use cqrsx::task::{
-    NewTask, TaskValidationError,
-    attempt::TaskAttempt,
-    format::TaskPayload,
-    handler::{TaskHandler, TaskHandlerError},
+use cqrsx::{
+    Task,
+    task::{
+        NewTask, TaskValidationError,
+        attempt::TaskAttempt,
+        handler::{TaskHandler, TaskHandlerError},
+    },
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 /// `Fan::TicketCancelled` → e-mail "💸 Refund" (step [`issue_refund`](super::issue_refund)).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Task)]
+#[task(name = "encore_issue_refund", version = 1)]
 pub struct IssueRefundV1 {
     pub cancellation_id: Uuid,
     pub booking_id: Uuid,
@@ -27,11 +30,6 @@ pub struct IssueRefundV1 {
     pub seat: SeatId,
     pub fan_id: FanId,
     pub amount: u32,
-}
-
-impl TaskPayload for IssueRefundV1 {
-    const TASK_TYPE: &'static str = "encore_issue_refund";
-    const TASK_VERSION: i32 = 1;
 }
 
 /// The refund of a ticket the ledger cancelled; the fan is the ledger's.

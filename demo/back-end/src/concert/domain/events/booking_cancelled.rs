@@ -2,10 +2,12 @@
 //! [refund](crate::concert::application::reactions) workflow through the
 //! `encore_record_cancellation` task the workflow plans from this event and commits with it.
 use crate::shared::domain::{FanId, venue::SeatId};
+use cqrsx::Event;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Event)]
+#[event(name = "BookingCancelled", version = "1.0")]
 pub struct BookingCancelled {
     pub seat: SeatId,
     pub fan_id: FanId,

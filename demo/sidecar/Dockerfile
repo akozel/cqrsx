@@ -3,6 +3,7 @@ FROM docker.io/library/rust:1.98-bookworm AS build
 WORKDIR /src
 COPY rust-toolchain.toml rustfmt.toml ./
 COPY cqrsx ./cqrsx
+COPY cqrsx-macros ./cqrsx-macros
 COPY demo/Cargo.toml demo/Cargo.lock ./demo/
 COPY demo/back-end ./demo/back-end
 COPY demo/sidecar ./demo/sidecar

@@ -50,7 +50,7 @@ use cqrsx::cqrs::{
         planner::{Decision, TaskPlanError, TaskPlanner},
         wakeup::CommitWakeup,
     },
-    event::{DomainEvent, EventEnvelope},
+    event::EventEnvelope,
     event_sink::EventSink,
     projection::{
         View, ViewProjection,
@@ -62,7 +62,7 @@ use cqrsx::cqrs::{
         mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository,
     },
 };
-use cqrsx::task::{NewTask, format::TaskPayload};
+use cqrsx::{Event, Events, Task, task::NewTask};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -78,19 +78,17 @@ enum LedgerCommand {
     RecordTicket { seat: String },
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-enum LedgerEvent {
-    TicketRecorded { seat: String },
+// An event is a fact with the name and version it is stored with; the aggregate's enum of events takes them
+// from each fact.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
+#[event(name = "ticket_recorded", version = "1")]
+struct TicketRecorded {
+    seat: String,
 }
 
-impl DomainEvent for LedgerEvent {
-    fn event_type(&self) -> String {
-        "ticket_recorded".into()
-    }
-
-    fn event_version(&self) -> String {
-        "1".into()
-    }
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Events)]
+enum LedgerEvent {
+    TicketRecorded(TicketRecorded),
 }
 
 #[derive(Debug, PartialEq, thiserror::Error)]
@@ -117,12 +115,12 @@ impl Aggregate for Ledger {
         if self.tickets >= rules.limit {
             return Err(TicketLimit { limit: rules.limit });
         }
-        sink.write(LedgerEvent::TicketRecorded { seat }, self).await;
+        sink.write(LedgerEvent::TicketRecorded(TicketRecorded { seat }), self).await;
         Ok(())
     }
 
     fn apply(&mut self, event: LedgerEvent) {
-        let LedgerEvent::TicketRecorded { .. } = event;
+        let LedgerEvent::TicketRecorded(_) = event;
         self.tickets += 1;
     }
 }
@@ -135,20 +133,17 @@ struct Wallet {
 
 impl View<Ledger> for Wallet {
     fn update(&mut self, event: &EventEnvelope<Ledger>) {
-        let LedgerEvent::TicketRecorded { seat } = &event.payload;
-        self.seats.push(seat.clone());
+        let LedgerEvent::TicketRecorded(recorded) = &event.payload;
+        self.seats.push(recorded.seat.clone());
     }
 }
 
-// A follow-up that must survive a crash: an outbox task, committed together with the event.
-#[derive(Serialize, Deserialize)]
+// A follow-up that must survive a crash: an outbox task, committed together with the event. Its type and
+// version are stored with it and route it to its handler.
+#[derive(Serialize, Deserialize, Task)]
+#[task(name = "send_e_ticket", version = 1)]
 struct SendETicket {
     seat: String,
-}
-
-impl TaskPayload for SendETicket {
-    const TASK_TYPE: &'static str = "send_e_ticket";
-    const TASK_VERSION: i32 = 1;
 }
 
 // The process that reacts to the ledger: every recorded ticket is mailed. The core runs the planner after
@@ -158,8 +153,8 @@ struct TicketDelivery;
 impl TaskPlanner<Ledger> for TicketDelivery {
     fn plan(&self, decision: &Decision<'_, Ledger>) -> Result<Vec<NewTask>, TaskPlanError> {
         let mut tasks = Vec::new();
-        for LedgerEvent::TicketRecorded { seat } in decision.events {
-            tasks.push(NewTask::new(SendETicket { seat: seat.clone() })?);
+        for LedgerEvent::TicketRecorded(recorded) in decision.events {
+            tasks.push(NewTask::new(SendETicket { seat: recorded.seat.clone() })?);
         }
         Ok(tasks)
     }
@@ -168,7 +163,7 @@ impl TaskPlanner<Ledger> for TicketDelivery {
 fn main() {
     // The aggregate on its own: given, when, then (synchronous, no runtime needed).
     TestFramework::<Ledger>::with(Rules { limit: 1 })
-        .given(vec![LedgerEvent::TicketRecorded { seat: "A1".into() }])
+        .given(vec![LedgerEvent::TicketRecorded(TicketRecorded { seat: "A1".into() })])
         .when(LedgerCommand::RecordTicket { seat: "A2".into() })
         .then_expect_error_message("ticket limit of 1 reached");
 

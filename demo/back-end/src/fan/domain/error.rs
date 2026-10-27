@@ -1,9 +1,12 @@
+use cqrsx::Rejection;
 use thiserror::Error;
 use uuid::Uuid;
 
 /// Technical rules R9–R11. Workflow steps map `AlreadyRecorded` / `AlreadyCancelled` to "already
 /// done" (task completed) and `UnknownTicket` to "too early, retry" (see `fan::application::chain`).
-#[derive(Debug, Clone, PartialEq, Eq, Error)]
+/// The activity log reports them by their code, the variant in snake case, and the booking
+/// (`#[derive(Rejection)]`).
+#[derive(Debug, Clone, PartialEq, Eq, Error, Rejection)]
 pub enum FanError {
     #[error("ticket {booking_id} is already recorded")]
     AlreadyRecorded { booking_id: Uuid },
@@ -13,19 +16,11 @@ pub enum FanError {
     AlreadyCancelled { booking_id: Uuid },
 }
 
-impl FanError {
-    pub fn code(&self) -> &'static str {
-        match self {
-            FanError::AlreadyRecorded { .. } => "already_recorded",
-            FanError::UnknownTicket { .. } => "unknown_ticket",
-            FanError::AlreadyCancelled { .. } => "already_cancelled",
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use cqrsx::cqrs::rejection::Rejection;
+    use serde_json::{Value, json};
 
     /// The codes are the contract of the activity log and the task-outcome mapping.
     #[test]
@@ -40,5 +35,36 @@ mod tests {
         .map(FanError::code)
         .collect();
         assert_eq!(codes, ["already_recorded", "unknown_ticket", "already_cancelled"]);
+    }
+
+    #[test]
+    fn rejections_report_the_booking() {
+        let booking_id = Uuid::nil();
+        let error = FanError::UnknownTicket { booking_id };
+        assert_eq!(Rejection::code(&error), "unknown_ticket");
+        assert_eq!(error.params(), json!({ "booking_id": booking_id }));
+    }
+
+    /// Every rule R9–R11 as the activity feed reports it, variant by variant: the code and the booking.
+    #[test]
+    fn every_ledger_rejection_reports_its_code_and_its_booking() {
+        let booking_id = Uuid::from_u128(1);
+        let reported: Vec<(&str, Value)> = [
+            FanError::AlreadyRecorded { booking_id },
+            FanError::UnknownTicket { booking_id },
+            FanError::AlreadyCancelled { booking_id },
+        ]
+        .iter()
+        .map(|error| (Rejection::code(error), Rejection::params(error)))
+        .collect();
+        let booking = json!({ "booking_id": "00000000-0000-0000-0000-000000000001" });
+        assert_eq!(
+            reported,
+            [
+                ("already_recorded", booking.clone()),
+                ("unknown_ticket", booking.clone()),
+                ("already_cancelled", booking),
+            ]
+        );
     }
 }

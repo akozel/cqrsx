@@ -5,10 +5,12 @@ use crate::shared::domain::{
     ConcertId,
     venue::{SeatId, Zone},
 };
+use cqrsx::Event;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, Event)]
+#[event(name = "TicketRecorded", version = "1.0")]
 pub struct TicketRecorded {
     pub booking_id: Uuid,
     pub concert_id: ConcertId,

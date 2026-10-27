@@ -3,14 +3,15 @@
 //!
 //! [`command`] adds command gateways and conflict retry, [`store`] implements event
 //! persistence, [`event_handler`] holds the contract of a committed-event reaction, and
-//! [`projection`] owns materialized read models and the processors that feed them. [`testing`] is
-//! the public downstream testing toolkit.
+//! [`projection`] owns materialized read models and the processors that feed them. [`rejection`] is how a
+//! business refusal is reported (a code and its params). [`testing`] is the public downstream testing toolkit.
 pub mod aggregate;
 pub mod command;
 pub mod event;
 pub mod event_handler;
 pub mod event_sink;
 pub mod projection;
+pub mod rejection;
 pub mod store;
 pub mod testing;
 

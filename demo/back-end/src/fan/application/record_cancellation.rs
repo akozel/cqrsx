@@ -11,10 +11,10 @@ use crate::{
     shared::domain::{ConcertId, FanId, venue::SeatId},
 };
 use cqrsx::{
+    Task,
     cqrs::command::CommandExecutor,
     task::{
         attempt::TaskAttempt,
-        format::TaskPayload,
         handler::{TaskHandler, TaskHandlerError},
     },
 };
@@ -24,7 +24,8 @@ use uuid::Uuid;
 
 /// `Concert::BookingCancelled` → `Fan.RecordCancellation`: step one of the refund
 /// ([`record_cancellation`](super::record_cancellation)).
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Task)]
+#[task(name = "encore_record_cancellation", version = 1)]
 pub struct RecordCancellationV1 {
     pub booking_id: Uuid,
     pub cancellation_id: Uuid,
@@ -32,11 +33,6 @@ pub struct RecordCancellationV1 {
     pub seat: SeatId,
     pub fan_id: FanId,
     pub refund: u32,
-}
-
-impl TaskPayload for RecordCancellationV1 {
-    const TASK_TYPE: &'static str = "encore_record_cancellation";
-    const TASK_VERSION: i32 = 1;
 }
 
 pub struct RecordCancellationHandler<E> {
