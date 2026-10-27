@@ -5,6 +5,18 @@ marked done, never redo committed work. Plan: `demo/PLAN.md` v1.1; facts: `demo/
 
 Run started 2026-10-17 ≈ 02:35 UTC, finished ≈ 06:10 UTC. **Status: P0 (Phases 0.5, 1–8, 10) and P1 (Phase 9) closed**; the remaining items are browser walk-throughs and image builds that need a machine with a browser and `podman compose`.
 
+## Engine API migration — load comparison, 2026-10-27
+
+The before/after series for epic 05 ticket 13 ran on `91dda19` and `78356bf`: 40 measured runs and eight
+checks. No clear throughput regression appeared in these short runs; WAL decreased after the documented task
+metadata exception. Some drain CPU and claim differences remain uncertain, and the comparison does not prove
+performance equivalence. The results and caveats are in [ticket 13](backlog/05_engine_api/13_measurement_before_after.md)
+and the [load report](backlog/05_engine_api/load-report.md); the user accepted the live-feed comparison limitation. Raw measurements and
+the work log are local git-ignored artifacts and may not be present in another checkout.
+The follow-up hot-key series on 2026-10-28 did not reproduce the drain CPU and claim differences, but was
+interrupted and resumed; its db profile showed lower median throughput and higher median p99 with overlapping
+ranges. Both versions passed the controlled activity-feed golden test. Details are in ticket 13.
+
 ## Step 0 — pre-flight (2026-10-17)
 
 | Check | Result |
