@@ -81,13 +81,13 @@ cancel_booking}.rs`, `command_service.rs`, `concert.rs`, `fan.rs` исчезаю
 ## Как проверить
 
 - Проверки `CLAUDE.md`, покрытие (наблюдатель).
-- Демо: тесты; `tests/contracts.rs` (лента); `write_side.rs`; HTTP-тесты `operations/presentation/tests.rs`.
+- Демо: тесты; `tests/contracts.rs` (лента); `write_side.rs`; HTTP-тесты `bootstrap/routes/tests.rs`.
 
 ## Поведение не меняется: чем доказано
 
 - Записи ленты `command.*` — те же имена и поля (G-36: эталон `activity_feed.txt` не меняется; тесты наблюдателя
   проверяют значения на четырёх исходах).
-- HTTP-ответы — те же коды и формы (G-35: тесты `execute_command.rs` и `operations/presentation/tests.rs`).
+- HTTP-ответы — те же коды и формы (G-35: тесты `execute_command.rs` и `bootstrap/routes/tests.rs`).
 - Метаданные событий — те же ключи (G-12: `metadata.rs` с прежним тестом `ui_metadata_uses_one_id_…`).
 - Путь команды не менялся: наблюдатель вызывается вне блокировки, тесты G-01–G-05 без правок.
 

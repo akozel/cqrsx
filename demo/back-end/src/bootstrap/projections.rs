@@ -6,16 +6,12 @@ pub mod concert_halls;
 pub mod fan_wallets;
 
 use crate::{
-    application::{
-        activity::ActivityHub, projections::activity_observer::ActivityObserver, projections::verification::VerifiedReadModel,
-        read_models::ReadModels,
-    },
-    domain::{concert::Concert, fan::Fan},
-    infrastructure::mongo::{
-        read_model::MongoReadModel,
-        read_side::{CONCERT_HALLS, FAN_WALLETS},
-    },
+    bootstrap::read_models::ReadModels,
+    concert::{application::views::concert_hall, domain::Concert},
+    fan::{application::views::fan_wallet, domain::Fan},
+    operations::application::{activity_observer::ActivityObserver, verification::VerifiedReadModel},
     process::Process,
+    shared::{application::activity::ActivityHub, infrastructure::mongo_read_model::MongoReadModel},
 };
 use cqrsx::{
     cqrs::{
@@ -59,8 +55,8 @@ pub struct ReadSideWiring {
 /// collection names.
 pub fn checkpoint_keys() -> Vec<CheckpointKey> {
     vec![
-        CheckpointKey::new(CONCERT_HALLS, Concert::TYPE),
-        CheckpointKey::new(FAN_WALLETS, Fan::TYPE),
+        CheckpointKey::new(concert_hall::NAME, Concert::TYPE),
+        CheckpointKey::new(fan_wallet::NAME, Fan::TYPE),
     ]
 }
 

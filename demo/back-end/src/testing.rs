@@ -3,15 +3,18 @@
 //! storage), and in-memory doubles of the read-side ports (the read models are the cqrsx
 //! `MemViewRepository`, the checkpoints its `MemCheckpointStore`).
 use crate::{
-    application::{
-        StorageError,
-        activity::ActivityHub,
-        operations::rebuild::{DEFAULT_MAX_PACE, DEFAULT_STATUS_TIMEOUT, ReadSide, ReadSideLimits, RebuildService},
-        ports::{EventLedgerStats, LedgerTotals, ReadModelStore, Stored},
-    },
     bootstrap::projections::checkpoint_keys,
     config::{Config, DEFAULT_MONGODB_POOL_SIZE, DEFAULT_NODE_NAME, outbox_default},
+    operations::application::{
+        ledger::{EventLedgerStats, LedgerTotals},
+        rebuild::{DEFAULT_MAX_PACE, DEFAULT_STATUS_TIMEOUT, ReadSide, ReadSideLimits, RebuildService},
+    },
     process::Process,
+    shared::application::{
+        StorageError,
+        activity::ActivityHub,
+        read_model::{ReadModelStore, Stored},
+    },
 };
 use async_trait::async_trait;
 use cqrsx::{

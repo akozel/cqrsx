@@ -6,25 +6,30 @@
 //! - [`projections`]: the read models: their collections, processors, verification and query ports;
 //! - [`tasks`]: the outbox task handlers;
 //! - [`routes`]: the HTTP endpoints.
+//!
+//! [`read_models`] and [`ledger`] are what only the composition knows of every module: the read models the HTTP
+//! queries use and the journals of every aggregate type.
 pub mod aggregates;
+pub mod ledger;
 pub mod projections;
+pub mod read_models;
 pub mod routes;
 pub mod tasks;
 
 use crate::{
-    application::{
-        self,
-        activity::ActivityHub,
-        operations::{
-            rebuild::{ReadSide, ReadSideLimits, RebuildService},
-            verify::VerifyService,
-        },
-        read_models::ReadModels,
-    },
+    bootstrap::{ledger::PostgresLedger, read_models::ReadModels},
+    concert::domain::Concert,
     config::Config,
-    domain::{concert::Concert, fan::Fan},
-    infrastructure::postgres::{HistoryStore, PostgresLedger, event_history},
+    fan::domain::Fan,
+    operations::application::{
+        rebuild::{ReadSide, ReadSideLimits, RebuildService},
+        verify::VerifyService,
+    },
     process::Process,
+    shared::{
+        application::activity::ActivityHub,
+        infrastructure::postgres::{HistoryStore, event_history},
+    },
 };
 use cqrsx::{
     cqrs::projection::runtime::ProjectionRuntime,
@@ -41,11 +46,11 @@ pub const ACTIVITY_CHANNEL_CAPACITY: usize = 1024;
 pub const ACTIVITY_BACKLOG: usize = 100;
 
 /// The box office over PostgreSQL.
-pub type ConcertApp = application::concert::ConcertApp<PostgresCommandExecutor<Concert>>;
+pub type ConcertApp = crate::concert::application::app::ConcertApp<PostgresCommandExecutor<Concert>>;
 /// The fan ledger over PostgreSQL.
-pub type FanApp = application::fan::FanApp<PostgresCommandExecutor<Fan>>;
+pub type FanApp = crate::fan::application::app::FanApp<PostgresCommandExecutor<Fan>>;
 /// The time machine over the PostgreSQL history, without snapshots.
-pub type TimeTravel = application::operations::time_travel::TimeTravel<HistoryStore<Concert>>;
+pub type TimeTravel = crate::concert::application::time_travel::TimeTravel<HistoryStore<Concert>>;
 
 /// Everything the HTTP handlers use.
 #[derive(Clone)]

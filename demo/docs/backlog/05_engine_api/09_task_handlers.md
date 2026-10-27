@@ -6,7 +6,7 @@
 | Ценность | высокая: обработчик — функция рядом с задачей, следующая команда — `ctx.execute`, повторы и паузы считает движок |
 | Цена | средняя–высокая: контракт `TaskHandler` меняется (общий обработчик без фабрики), контекст задачи, реестр зависимостей, атрибутный макрос |
 | cqrsx | `src/task/handler.rs` (`TaskHandler::handle(&self, task, &TaskContext) -> TaskResult`), новый `src/task/context.rs` (`TaskContext`, `Executors`), новый `src/task/dependencies.rs` (`Dependencies`), `src/task/adapter/{json,boxed}.rs` (`&self`), `src/task/dispatcher.rs`, `src/task/runtime/{dispatcher_factory (удаляется), supervisor, worker_pool, worker}.rs` (общий диспетчер), `src/task/executor/default_executor.rs` (пауза по политике), `src/postgres/task_runtime.rs`, `cqrsx-macros` (`#[task_handler]`), `tests/task/**`, `tests/postgres/{runtime,task_queue/*}.rs`, `doc/components.md` |
-| demo | `fan/application/{record_ticket,send_e_ticket,record_cancellation,issue_refund}.rs`, `shared/application/{chain.rs (удаляется), mail.rs, metadata.rs (удаляется)}`, `shared/infrastructure/http_mailer.rs` (без своей формулы паузы), `bootstrap/tasks.rs`, `config.rs` |
+| demo | `fan/application/{record_ticket,send_e_ticket,record_cancellation,issue_refund}.rs`, `fan/application/chain.rs` (удаляется), `shared/application/{mail.rs, metadata.rs (удаляется)}`, `shared/infrastructure/http_mailer.rs` (без своей формулы паузы), `bootstrap/tasks.rs`, `config.rs` |
 | Зависимости | 07, 08 |
 | Гарантии | G-14, G-16, G-17, G-18, G-19, G-21, G-22, G-36 (`task.attempt.*`) |
 

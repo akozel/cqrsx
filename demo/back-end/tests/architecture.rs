@@ -1,17 +1,222 @@
-//! Layer rules of the clean architecture, checked on the source text.
+//! Module and layer rules of the clean architecture ("who sees whom", backlog 05, design 01), checked on the source
+//! text.
 //!
-//! Every `use` tree is expanded to full paths and every other qualified path is collected, with
-//! comments and string literals removed first (event docs link to the workflows they start).
-//! `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and `testing.rs`
-//! compose the layers and are exempt. A few rules apply to production code only: test modules may use test tooling.
+//! The crate is a set of modules, each a directory with its layers inside and its root file next to it: `concert` and
+//! `fan` (an aggregate each: `domain`, `application`, `presentation`), `operations` (no aggregate: `application`,
+//! `presentation`) and `shared`, the kernel several modules need (`domain`, `application`, `presentation`,
+//! `infrastructure`). Every `use` tree is expanded to full paths and every other qualified path is collected, with
+//! comments and string literals removed first (docs link across modules). Inside a module a layer sees the layers
+//! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
+//! the ledger's tasks. `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and
+//! `testing.rs` compose the modules and are exempt. A few rules apply to production code only: test code may use test
+//! tooling. Relative paths (`super::`) are not resolved: one module reaches another only through `crate::`.
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fs,
     path::{Path, PathBuf},
 };
 
-struct Layer {
-    dir: &'static str,
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Layer {
+    Domain,
+    Application,
+    Presentation,
+    Infrastructure,
+}
+
+impl Layer {
+    const ALL: [Layer; 4] = [Layer::Domain, Layer::Application, Layer::Presentation, Layer::Infrastructure];
+
+    fn name(self) -> &'static str {
+        match self {
+            Layer::Domain => "domain",
+            Layer::Application => "application",
+            Layer::Presentation => "presentation",
+            Layer::Infrastructure => "infrastructure",
+        }
+    }
+}
+
+/// The modules of the crate and their layers.
+const MODULES: &[(&str, &[Layer])] = &[
+    ("concert", &[Layer::Domain, Layer::Application, Layer::Presentation]),
+    ("fan", &[Layer::Domain, Layer::Application, Layer::Presentation]),
+    ("operations", &[Layer::Application, Layer::Presentation]),
+    (
+        "shared",
+        &[Layer::Domain, Layer::Application, Layer::Presentation, Layer::Infrastructure],
+    ),
+];
+
+/// The composition root and the process: they see everything and are not checked.
+const EXEMPT: &[&str] = &["bootstrap", "process", "config", "main", "lib", "testing"];
+
+/// What one module may name of another: the producer of a fact builds the consumer's task, so the box office's
+/// application names the contracts of the ledger's tasks and nothing else of the ledger. The ledger never names the
+/// box office: its contracts are built from `shared` types only.
+const ACROSS: &[(&str, Layer, &[&str])] = &[(
+    "concert",
+    Layer::Application,
+    &[
+        "crate::fan::application::record_ticket",
+        "crate::fan::application::record_cancellation",
+    ],
+)];
+
+/// Test tooling of the crate: test code of every layer may use it.
+const CRATE_TEST_TOOLS: &str = "crate::testing";
+
+/// Paths a place may name although its rules do not allow them, each with its reason and the task that removes it.
+/// An exception nobody needs any more fails the check: the task that removes the reason removes the line.
+struct Exception {
+    id: &'static str,
+    /// A file (`….rs`) or a directory prefix; `*` matches any one module (`*/presentation`).
+    place: &'static str,
+    paths: &'static [&'static str],
+    /// The paths are allowed in test code only.
+    tests_only: bool,
+    why: &'static str,
+}
+
+const EXCEPTIONS: &[Exception] = &[
+    Exception {
+        id: "I-1",
+        place: "*/presentation",
+        paths: &["crate::bootstrap::AppState"],
+        tests_only: false,
+        why: "the state of the routes is the composition's until the engine serves the modules (05/11, 05/12)",
+    },
+    Exception {
+        id: "I-2",
+        place: "operations/presentation/config.rs",
+        paths: &["crate::config::Config"],
+        tests_only: false,
+        why: "`/api/config` shows settings of the configuration until the engine reads it (05/12)",
+    },
+    Exception {
+        id: "I-3",
+        place: "concert/presentation/rebuild.rs",
+        paths: &["crate::operations::presentation::projections::rebuild::refused"],
+        tests_only: false,
+        why: "the rebuild of one hall is the operations' rebuild service and answers its refusals as Encore! does, until \
+              the engine rebuilds a key (05/10, 05/11)",
+    },
+    Exception {
+        id: "I-4",
+        place: "fan/application/wallet.rs",
+        paths: &["crate::bootstrap::read_models::ReadModels"],
+        tests_only: false,
+        why: "the wallet is a query on the composition's read side until it reads through the engine (05/10)",
+    },
+    Exception {
+        id: "I-4",
+        place: "fan/application/wallet.rs",
+        paths: &[
+            "crate::concert::application::views::concert_hall::ConcertHallView",
+            "crate::concert::domain::Concert",
+        ],
+        tests_only: true,
+        why: "the test builds the composition's read side, which holds the concert halls too (05/10)",
+    },
+    Exception {
+        id: "I-5",
+        place: "shared/application/command_service.rs",
+        paths: &["crate::concert::domain"],
+        tests_only: true,
+        why: "the command pipeline is tested on the `Concert` aggregate until the file goes (05/08)",
+    },
+    Exception {
+        id: "I-6",
+        place: "shared/application/tasks.rs",
+        paths: &[
+            "crate::fan::application::record_ticket",
+            "crate::fan::application::send_e_ticket",
+            "crate::fan::application::record_cancellation",
+            "crate::fan::application::issue_refund",
+        ],
+        tests_only: true,
+        why: "the formats and the queued JSON of the four task contracts are tested next to `new_task` until the file \
+              goes (05/07)",
+    },
+    Exception {
+        id: "I-7",
+        place: "shared/infrastructure/mongo_read_model.rs",
+        paths: &[
+            "crate::concert::application::views::concert_hall",
+            "crate::fan::application::views::fan_wallet",
+        ],
+        tests_only: true,
+        why: "the BSON round trip of both views until the adapter goes (05/10)",
+    },
+];
+
+/// Where a file lives: a layer of a module, a module's root file (`layer: None`), the exempt composition, or nowhere.
+#[derive(Debug, PartialEq, Eq)]
+enum Located {
+    Exempt,
+    Module { module: &'static str, layer: Option<Layer> },
+    Nowhere(String),
+}
+
+fn locate(relative: &Path) -> Located {
+    let parts: Vec<String> = relative
+        .iter()
+        .map(|part| part.to_string_lossy().trim_end_matches(".rs").to_owned())
+        .collect();
+    let Some(first) = parts.first() else {
+        return Located::Nowhere("an empty path".to_owned());
+    };
+    if EXEMPT.contains(&first.as_str()) {
+        return Located::Exempt;
+    }
+    let Some((module, layers)) = MODULES.iter().find(|(module, _)| module == first) else {
+        return Located::Nowhere("is in no module".to_owned());
+    };
+    let Some(second) = parts.get(1) else {
+        return Located::Module { module, layer: None };
+    };
+    let Some(layer) = layers.iter().find(|layer| layer.name() == second) else {
+        return Located::Nowhere(format!("is in no layer of `{module}`"));
+    };
+    if let Some(inner) = parts[2..]
+        .iter()
+        .find(|part| Layer::ALL.iter().any(|layer| layer.name() == *part))
+    {
+        return Located::Nowhere(format!("puts the layer `{inner}` inside the layer `{}`", layer.name()));
+    }
+    Located::Module {
+        module,
+        layer: Some(*layer),
+    }
+}
+
+/// The prefixes of the crate a place may name: its own module's layers up to its own and the same layers of `shared`;
+/// a module's root file sees its module and `shared`.
+fn crate_allowed(module: &str, layer: Option<Layer>) -> Vec<String> {
+    let Some(layer) = layer else {
+        return vec![format!("crate::{module}"), "crate::shared".to_owned()];
+    };
+    let below: &[Layer] = match layer {
+        Layer::Domain => &[Layer::Domain],
+        Layer::Application => &[Layer::Domain, Layer::Application],
+        Layer::Presentation => &[Layer::Domain, Layer::Application, Layer::Presentation],
+        Layer::Infrastructure => &[Layer::Domain, Layer::Application, Layer::Infrastructure],
+    };
+    let mut allowed: Vec<String> = [module, "shared"]
+        .iter()
+        .flat_map(|owner| below.iter().map(move |layer| format!("crate::{owner}::{}", layer.name())))
+        .collect();
+    allowed.extend(
+        ACROSS
+            .iter()
+            .filter(|(from, from_layer, _)| *from == module && *from_layer == layer)
+            .flat_map(|(_, _, paths)| paths.iter().map(|path| (*path).to_owned())),
+    );
+    allowed
+}
+
+/// What a layer may use outside the crate.
+struct Externals {
     /// Path prefixes the layer must not use anywhere, tests included.
     forbidden: &'static [&'static str],
     /// Path prefixes only test code of the layer may use.
@@ -20,62 +225,148 @@ struct Layer {
     cqrsx_allowed: Option<&'static [&'static str]>,
 }
 
-const LAYERS: &[Layer] = &[
-    Layer {
-        dir: "domain",
-        forbidden: &[
-            "crate::application",
-            "crate::presentation",
-            "crate::infrastructure",
-            "crate::bootstrap",
-            "crate::config",
-            "sqlx",
-            "mongodb",
-            "axum",
-            "tokio",
-        ],
-        test_only: &["serde_json", "cqrsx::cqrs::testing"],
-        cqrsx_allowed: Some(&[
-            "cqrsx::cqrs::aggregate",
-            "cqrsx::cqrs::event",
-            "cqrsx::cqrs::event_sink",
-            "cqrsx::cqrs::testing",
-        ]),
-    },
-    Layer {
-        dir: "application",
-        forbidden: &[
-            "crate::presentation",
-            "crate::infrastructure",
-            "crate::bootstrap",
-            "crate::config",
-            "cqrsx::postgres",
-            "cqrsx::mongodb",
-            "cqrsx::task::adapter",
-            "cqrsx::task::dispatcher",
-            "cqrsx::task::runtime",
-            "cqrsx::host",
-            "cqrsx::logging",
-            "sqlx",
-            "mongodb",
-            "axum",
-        ],
-        test_only: &["cqrsx::cqrs::testing"],
-        cqrsx_allowed: None,
-    },
-    Layer {
-        dir: "presentation",
-        forbidden: &["crate::infrastructure", "cqrsx", "sqlx", "mongodb"],
-        test_only: &[],
-        cqrsx_allowed: None,
-    },
-    Layer {
-        dir: "infrastructure",
-        forbidden: &["crate::presentation", "crate::bootstrap"],
-        test_only: &[],
-        cqrsx_allowed: None,
-    },
-];
+fn externals(layer: Option<Layer>) -> Externals {
+    match layer {
+        Some(Layer::Domain) => Externals {
+            forbidden: &["sqlx", "mongodb", "axum", "tokio"],
+            test_only: &["serde_json", "cqrsx::cqrs::testing"],
+            cqrsx_allowed: Some(&[
+                "cqrsx::cqrs::aggregate",
+                "cqrsx::cqrs::event",
+                "cqrsx::cqrs::event_sink",
+                "cqrsx::cqrs::testing",
+            ]),
+        },
+        Some(Layer::Application) => Externals {
+            forbidden: &[
+                "cqrsx::postgres",
+                "cqrsx::mongodb",
+                "cqrsx::task::adapter",
+                "cqrsx::task::dispatcher",
+                "cqrsx::task::runtime",
+                "cqrsx::host",
+                "cqrsx::logging",
+                "sqlx",
+                "mongodb",
+                "axum",
+            ],
+            test_only: &["cqrsx::cqrs::testing"],
+            cqrsx_allowed: None,
+        },
+        Some(Layer::Presentation) => Externals {
+            forbidden: &["cqrsx", "sqlx", "mongodb"],
+            test_only: &[],
+            cqrsx_allowed: None,
+        },
+        Some(Layer::Infrastructure) | None => Externals {
+            forbidden: &[],
+            test_only: &[],
+            cqrsx_allowed: None,
+        },
+    }
+}
+
+/// Whether an exception's place covers a file: `*` matches any one path component, a place without `.rs` is a
+/// directory and covers the layer's root file next to it too (`concert/presentation` covers `concert/presentation.rs`).
+fn covers(place: &str, relative: &Path) -> bool {
+    let file: Vec<String> = relative
+        .iter()
+        .map(|part| part.to_string_lossy().trim_end_matches(".rs").to_owned())
+        .collect();
+    let pattern: Vec<&str> = place.trim_end_matches(".rs").split('/').collect();
+    let matches = |count: usize| {
+        pattern
+            .iter()
+            .zip(&file)
+            .take(count)
+            .all(|(want, got)| *want == "*" || want == got)
+    };
+    if place.ends_with(".rs") {
+        file.len() == pattern.len() && matches(pattern.len())
+    } else {
+        file.len() >= pattern.len() && matches(pattern.len())
+    }
+}
+
+/// The rules broken by one file. `code` is stripped; `whole_file_is_test` marks a file declared `#[cfg(test)] mod …;`.
+/// Every exception that allowed a path is recorded in `used` as (exception, path) indices.
+fn violations(
+    relative: &Path,
+    code: &str,
+    whole_file_is_test: bool,
+    exceptions: &[Exception],
+    used: &mut BTreeSet<(usize, usize)>,
+) -> Vec<String> {
+    let (module, layer) = match locate(relative) {
+        Located::Exempt => return Vec::new(),
+        Located::Nowhere(why) => return vec![format!("{}: {why}", relative.display())],
+        Located::Module { module, layer } => (module, layer),
+    };
+    let place = match layer {
+        Some(layer) => format!("{module}/{}", layer.name()),
+        None => format!("{module}.rs"),
+    };
+    let allowed = crate_allowed(module, layer);
+    let outside = externals(layer);
+    let production: BTreeSet<(usize, String)> = if whole_file_is_test {
+        BTreeSet::new()
+    } else {
+        paths(&without_test_modules(code)).into_iter().collect()
+    };
+    let mut broken = Vec::new();
+    // A plain `use a::b;` is found both as a `use` tree and as an inline path: one report each.
+    for (line, path) in paths(code).into_iter().collect::<BTreeSet<_>>() {
+        let in_production = production.contains(&(line, path.clone()));
+        let mut why: Vec<String> = Vec::new();
+        if starts_with(&path, "crate") && path != "crate" {
+            let visible = allowed.iter().any(|prefix| starts_with(&path, prefix))
+                || (!in_production && starts_with(&path, CRATE_TEST_TOOLS));
+            let excepted = || {
+                exceptions.iter().enumerate().find_map(|(index, exception)| {
+                    let covered = covers(exception.place, relative) && (!exception.tests_only || !in_production);
+                    let at = exception.paths.iter().position(|prefix| starts_with(&path, prefix))?;
+                    covered.then_some((index, at))
+                })
+            };
+            if !visible {
+                match excepted() {
+                    Some(exception) => {
+                        used.insert(exception);
+                    }
+                    None => why.push(format!("is not visible from `{place}`")),
+                }
+            }
+        }
+        why.extend(
+            outside
+                .forbidden
+                .iter()
+                .filter(|prefix| starts_with(&path, prefix))
+                .map(|prefix| format!("uses `{prefix}`")),
+        );
+        if in_production {
+            why.extend(
+                outside
+                    .test_only
+                    .iter()
+                    .filter(|prefix| starts_with(&path, prefix))
+                    .map(|prefix| format!("uses `{prefix}` outside tests")),
+            );
+        }
+        if let Some(allowed) = outside.cqrsx_allowed
+            && starts_with(&path, "cqrsx")
+            && path != "cqrsx"
+            && !allowed.iter().any(|prefix| starts_with(&path, prefix))
+        {
+            why.push("uses a cqrsx module outside its allowlist".to_owned());
+        }
+        broken.extend(
+            why.into_iter()
+                .map(|why| format!("{}:{line}: `{path}` {why}", relative.display())),
+        );
+    }
+    broken
+}
 
 /// Blanks comments and string/char literals, keeping line breaks so line numbers stay valid.
 fn strip(source: &str) -> String {
@@ -322,14 +613,29 @@ fn rust_files(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
+/// Files declared `#[cfg(test)] mod name;`: whole files of test code. The crate root's children live next to it,
+/// every other module's in its own directory.
+fn test_files(src: &Path, stripped: &[(PathBuf, String)]) -> BTreeSet<PathBuf> {
+    stripped
+        .iter()
+        .flat_map(|(file, code)| {
+            let dir = if file.parent() == Some(src) && (file.ends_with("lib.rs") || file.ends_with("main.rs")) {
+                src.to_path_buf()
+            } else {
+                file.with_extension("")
+            };
+            test_only_children(code)
+                .into_iter()
+                .map(move |child| dir.join(format!("{child}.rs")))
+        })
+        .collect()
+}
+
 #[test]
 fn every_layer_imports_only_what_it_may() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
     let mut files = Vec::new();
-    for layer in LAYERS {
-        rust_files(&src.join(layer.dir), &mut files);
-        files.push(src.join(format!("{}.rs", layer.dir)));
-    }
+    rust_files(&src, &mut files);
     let stripped: Vec<(PathBuf, String)> = files
         .iter()
         .map(|file| {
@@ -339,66 +645,156 @@ fn every_layer_imports_only_what_it_may() {
             )
         })
         .collect();
-    let test_files: BTreeSet<PathBuf> = stripped
-        .iter()
-        .flat_map(|(file, code)| {
-            let dir = file.with_extension("");
-            test_only_children(code)
-                .into_iter()
-                .map(move |child| dir.join(format!("{child}.rs")))
-        })
-        .collect();
-    let mut violations = Vec::new();
-    let mut checked = 0;
+    let test_files = test_files(&src, &stripped);
+    let mut broken = Vec::new();
+    let mut used = BTreeSet::new();
+    let mut checked: BTreeMap<(&str, Option<Layer>), usize> = BTreeMap::new();
     for (file, code) in &stripped {
         let relative = file.strip_prefix(&src).unwrap_or(file);
-        let Some(layer) = LAYERS
-            .iter()
-            .find(|l| relative.starts_with(l.dir) || relative == Path::new(&format!("{}.rs", l.dir)))
-        else {
-            continue;
-        };
-        checked += 1;
-        let production: BTreeSet<(usize, String)> = if test_files.contains(file) {
-            BTreeSet::new()
-        } else {
-            paths(&without_test_modules(code)).into_iter().collect()
-        };
-        for (line, path) in paths(code) {
-            let mut broken: Vec<String> = layer
-                .forbidden
-                .iter()
-                .filter(|prefix| starts_with(&path, prefix))
-                .map(|prefix| format!("uses `{prefix}`"))
-                .collect();
-            if production.contains(&(line, path.clone())) {
-                broken.extend(
-                    layer
-                        .test_only
-                        .iter()
-                        .filter(|prefix| starts_with(&path, prefix))
-                        .map(|prefix| format!("uses `{prefix}` outside tests")),
-                );
+        if let Located::Module { module, layer } = locate(relative) {
+            *checked.entry((module, layer)).or_default() += 1;
+        }
+        broken.extend(violations(relative, code, test_files.contains(file), EXCEPTIONS, &mut used));
+    }
+    for (index, exception) in EXCEPTIONS.iter().enumerate() {
+        for (at, path) in exception.paths.iter().enumerate() {
+            if !used.contains(&(index, at)) {
+                broken.push(format!(
+                    "exception {} ({}: `{path}`; {}) is not needed any more: remove it",
+                    exception.id, exception.place, exception.why
+                ));
             }
-            if let Some(allowed) = layer.cqrsx_allowed
-                && starts_with(&path, "cqrsx")
-                && path != "cqrsx"
-                && !allowed.iter().any(|prefix| starts_with(&path, prefix))
-            {
-                broken.push("uses a cqrsx module outside its allowlist".to_owned());
-            }
-            violations.extend(
-                broken
-                    .into_iter()
-                    .map(|why| format!("{}:{line}: `{path}` {why}", relative.display())),
+        }
+    }
+    let total: usize = checked.values().sum();
+    assert!(
+        total > 60,
+        "only {total} files checked: is the layout still src/<module>/<layer>/…?"
+    );
+    for (module, layers) in MODULES {
+        for layer in *layers {
+            assert!(
+                checked.get(&(module, Some(*layer))).is_some_and(|count| *count > 0),
+                "no file checked in {module}/{}",
+                layer.name()
             );
         }
     }
+    assert!(broken.is_empty(), "module rules broken:\n{}", broken.join("\n"));
+}
+
+/// The rules on examples (backlog 05/03): the box office's application naming the ledger's domain is caught, and so
+/// is every other reach across the modules that design 01 rules out.
+#[test]
+fn the_module_rules_catch_a_reach_into_another_module() {
+    let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
+    let broken = check("concert/application/fan_ledger.rs", "use crate::fan::domain::Fan;\n");
+    assert_eq!(broken.len(), 1, "{broken:?}");
     assert!(
-        checked > 50,
-        "only {checked} files checked: is the layout still src/<layer>/…?"
+        broken[0].contains("`crate::fan::domain::Fan` is not visible from `concert/application`"),
+        "{broken:?}"
     );
-    assert!(violations.is_empty(), "layer rules broken:\n{}", violations.join("\n"));
+    // The contracts of the ledger's tasks are what the box office's application may name of the ledger, nothing more.
+    let contract = "use crate::fan::application::record_ticket::RecordTicketV1;\n";
+    assert!(check("concert/application/fan_ledger.rs", contract).is_empty());
+    for (file, code) in [
+        ("concert/presentation/get.rs", contract),
+        ("concert/application/x.rs", "use crate::fan::application::app::FanApp;\n"),
+        ("fan/application/x.rs", "use crate::concert::domain::Concert;\n"),
+        ("fan/domain/x.rs", "use crate::concert::domain::events::SeatBooked;\n"),
+        (
+            "operations/application/x.rs",
+            "fn f() { crate::fan::domain::Fan::default(); }\n",
+        ),
+        (
+            "operations/presentation/x.rs",
+            "use crate::concert::application::views::concert_hall::ConcertHallView;\n",
+        ),
+        ("shared/application/x.rs", "use crate::concert;\n"),
+        (
+            "shared/infrastructure/x.rs",
+            "use crate::operations::application::ledger::EventLedgerStats;\n",
+        ),
+        ("concert/domain/x.rs", "use crate::concert::application::app::ConcertApp;\n"),
+        ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
+        ("concert/domain/x.rs", "use cqrsx::postgres::pool::connect_pool;\n"),
+        ("concert/presentation/x.rs", "use cqrsx::cqrs::command::CommandExecutor;\n"),
+        ("fan/application/x.rs", "use cqrsx::cqrs::testing::mem_store::MemStore;\n"),
+        ("concert.rs", "use crate::fan::domain::Fan;\n"),
+    ] {
+        assert_eq!(check(file, code).len(), 1, "{file}: {code}");
+    }
+    assert!(
+        check(
+            "fan/application/x.rs",
+            "#[cfg(test)]\nmod tests { use cqrsx::cqrs::testing::mem_store::MemStore; use crate::testing; }\n"
+        )
+        .is_empty(),
+        "test tooling in test code"
+    );
+    assert!(check("concert.rs", "pub mod domain; use crate::shared::domain::ConcertId;\n").is_empty());
+    // Every file has its place: the old layout, a missing layer and a layer inside a layer are reported.
+    for file in ["domain/concert.rs", "operations/domain.rs", "concert/application/domain/x.rs"] {
+        assert_eq!(check(file, "").len(), 1, "{file}");
+    }
+    assert!(
+        check("bootstrap/routes.rs", "use crate::fan::domain::Fan;\n").is_empty(),
+        "the composition is exempt"
+    );
+    // An exception allows its paths in its place only, and in test code only when it says so.
+    let exceptions = [Exception {
+        id: "T",
+        place: "*/presentation",
+        paths: &["crate::bootstrap::AppState"],
+        tests_only: true,
+        why: "",
+    }];
+    let mut used = BTreeSet::new();
+    let state = "use crate::bootstrap::AppState;\n";
+    let in_tests = "#[cfg(test)]\nmod tests { use crate::bootstrap::AppState; }\n";
+    assert!(
+        violations(
+            Path::new("fan/presentation/wallet.rs"),
+            &strip(in_tests),
+            false,
+            &exceptions,
+            &mut used
+        )
+        .is_empty()
+    );
+    assert!(
+        violations(
+            Path::new("fan/presentation.rs"),
+            &strip(in_tests),
+            false,
+            &exceptions,
+            &mut used
+        )
+        .is_empty()
+    );
+    assert_eq!(used, BTreeSet::from([(0, 0)]));
+    assert_eq!(
+        violations(
+            Path::new("fan/presentation/wallet.rs"),
+            &strip(state),
+            false,
+            &exceptions,
+            &mut used
+        )
+        .len(),
+        1
+    );
+    assert_eq!(
+        violations(
+            Path::new("fan/application/wallet.rs"),
+            &strip(in_tests),
+            false,
+            &exceptions,
+            &mut used
+        )
+        .len(),
+        1
+    );
 }
 
 #[test]

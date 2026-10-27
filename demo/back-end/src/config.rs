@@ -2,7 +2,7 @@
 //!
 //! Parsing happens once at start-up, so this is the one place where a hard failure with a clear
 //! message is acceptable; everything after `Config::from_env` is free of `unwrap`/`expect`.
-use crate::application::operations::rebuild::{DEFAULT_MAX_PACE, DEFAULT_SLOW_PACE, DEFAULT_STATUS_TIMEOUT};
+use crate::operations::application::rebuild::{DEFAULT_MAX_PACE, DEFAULT_SLOW_PACE, DEFAULT_STATUS_TIMEOUT};
 use cqrsx::{
     cqrs::{
         command::locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits, LockLimitsError},

@@ -709,20 +709,21 @@ demo/
 ├── back-end/                   crate `encore-backend`
 │   ├── Cargo.toml
 │   ├── Dockerfile              [P1]
-│   └── src/
-│       ├── main.rs             сборка компонентов, host::lifecycle::run
-│       ├── config.rs
-│       ├── domain.rs, domain/  ids.rs (ConcertId, FanId), venue.rs,
-│       │                       concert.rs + concert/{command.rs, event.rs, error.rs, tests.rs},
-│       │                       fan.rs + fan/{command.rs, event.rs, error.rs, tests.rs}
-│       ├── app/                command_service.rs (два CommandExecutorCore: Concert и Fan, метаданные,
-│       │                       NamedHandler), tasks.rs (4 TaskPayload + конструкторы NewTask),
-│       │                       rebuild.rs, verify.rs [P1], time_travel.rs, activity.rs, personas.rs
-│       ├── projections/        mongo_view_repository.rs, concert_hall.rs (View<Concert>),
-│       │                       fan_wallet.rs (View<Fan>), activity_observer.rs, verification.rs
-│       ├── outbox/             flaky_mail.rs, chaos.rs, record_ticket.rs, record_cancellation.rs,
-│       │                       send_e_ticket.rs, issue_refund.rs, adapter.rs (enum EncoreTaskAdapter), dispatcher.rs
-│       └── http.rs (router), http/ commands.rs, queries.rs, projections.rs, activity.rs, error.rs
+│   ├── tests/                  architecture.rs (кто кого видит), contracts.rs и golden/ (эталоны), write_side.rs
+│   └── src/                    модуль — каталог со слоями внутри, корень модуля — файл рядом (эпик 05, задача 03)
+│       ├── main.rs, lib.rs     процесс: process.rs (запуск и остановка), config.rs; testing.rs — заглушки тестов
+│       ├── bootstrap.rs, bootstrap/  композиция: aggregates/, projections/, tasks.rs, routes.rs (+ routes/tests.rs),
+│       │                       read_models.rs, ledger.rs
+│       ├── concert.rs, concert/  касса: domain/ (Concert, команды, события), application/ (сценарии, reactions.rs,
+│       │                       fan_ledger.rs, time_travel.rs, views/concert_hall.rs), presentation/ (HTTP кассы)
+│       ├── fan.rs, fan/        книжка фаната: domain/ (Fan), application/ (record_ticket.rs, send_e_ticket.rs,
+│       │                       record_cancellation.rs, issue_refund.rs — задача с обработчиком; reactions.rs, chain.rs,
+│       │                       views/fan_wallet.rs, wallet.rs), presentation/ (кошелёк)
+│       ├── operations.rs, operations/  без агрегата: application/ (лента, перестройка, сверка, ledger.rs),
+│       │                       presentation/ (здоровье, настройки, лента, перестройка, статус, сверка)
+│       └── shared.rs, shared/  общее ядро: domain/ (ids.rs, venue.rs), application/ (конвейер команд, tasks.rs,
+│                               mail.rs, read_model.rs, activity.rs), presentation/ (ApiError), infrastructure/
+│                               (PostgreSQL, витрины в MongoDB, почтовый клиент)
 ├── sidecar/                    crate `encore-sidecar`
 │   ├── Cargo.toml
 │   ├── Dockerfile              [P1]

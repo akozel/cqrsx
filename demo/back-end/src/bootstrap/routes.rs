@@ -1,8 +1,13 @@
-//! The HTTP endpoints: one line per endpoint. The handlers live in `presentation::http`, one file per
-//! action; everything they share is the [`AppState`].
+//! The HTTP endpoints: one line per endpoint. The handlers live in the `presentation` of each module, one file
+//! per action; everything they share is the [`AppState`].
+#[cfg(test)]
+mod tests;
+
 use crate::{
     bootstrap::AppState,
-    presentation::http::{activity, concerts, config, fans, health, projections},
+    concert::presentation as concerts,
+    fan::presentation as fans,
+    operations::presentation::{activity, config, health, projections},
 };
 use axum::{
     Router,

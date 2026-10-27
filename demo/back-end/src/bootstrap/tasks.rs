@@ -3,16 +3,16 @@
 //! external mail service, since a connection pool is meant to be shared.
 use super::{FanApp, WiringError};
 use crate::{
-    application::{
-        activity::ActivityHub,
-        workflows::{
-            refund::{issue_refund::IssueRefundHandler, record_cancellation::RecordCancellationHandler},
-            ticket_delivery::{record_ticket::RecordTicketHandler, send_e_ticket::SendETicketHandler},
-        },
-    },
     config::Config,
-    infrastructure::mail::http_mailer::{HttpMailer, MailClientSettings},
+    fan::application::{
+        issue_refund::IssueRefundHandler, record_cancellation::RecordCancellationHandler, record_ticket::RecordTicketHandler,
+        send_e_ticket::SendETicketHandler,
+    },
     process::Process,
+    shared::{
+        application::activity::ActivityHub,
+        infrastructure::http_mailer::{HttpMailer, MailClientSettings},
+    },
 };
 use cqrsx::task::{
     adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, runtime::dispatcher_factory::TaskDispatcherFactory,
