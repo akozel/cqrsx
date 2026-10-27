@@ -13,7 +13,7 @@
 1. `demo/docs/backlog/05_engine_api/status.md` — где мы; после каждого сжатия контекста перечитывай его первым.
 2. `demo/docs/backlog/05_engine_api/README.md` — цель, таблица задач, порядок, решения по вопросам, правила.
 3. `demo/docs/backlog/05_engine_api/guarantees.md` — гарантии и их тесты: главный критерий приёмки.
-4. `demo/docs/backlog/05_engine_api/design/README.md` и семь файлов дизайна — согласованный API; его не меняют.
+4. `cqrsx/doc/typical_scenario.md` — согласованный API после переноса дизайна; его не меняют.
 5. `demo/docs/backlog/05_engine_api/revisit.md` — что решено «пока».
 6. `CLAUDE.md` в корне и `cqrsx/doc/components.md` — проверки и контракт имён.
 
@@ -179,7 +179,7 @@ testcontainers на сокете podman. Стенд — только проек�
 - demo/docs/backlog/05_engine_api/README.md (цель, правила, решения по вопросам);
 - demo/docs/backlog/05_engine_api/<NN_файл>.md — твой тикет, целиком;
 - demo/docs/backlog/05_engine_api/guarantees.md — строки, названные в тикете, и их тесты;
-- demo/docs/backlog/05_engine_api/design/README.md и файлы дизайна, на которые ссылается тикет;
+- cqrsx/doc/typical_scenario.md и разделы документации, на которые ссылается тикет;
 - demo/docs/backlog/05_engine_api/revisit.md;
 - CLAUDE.md в корне, cqrsx/doc/components.md, cqrsx/README.md;
 - demo/docs/backlog/05_engine_api/work/<MM>-report.md для уже принятых задач <список> — что сделано до тебя;

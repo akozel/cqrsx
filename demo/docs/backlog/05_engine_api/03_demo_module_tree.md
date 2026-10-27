@@ -20,7 +20,7 @@ projections,…}`, `presentation/http/*`, `infrastructure/*`. Путь «отм�
 
 ## Станет
 
-Дерево из дизайна [01](design/01_overview.md): модуль — каталог со слоями внутри, корень модуля — файл рядом.
+Дерево из дизайна [01](../../../../cqrsx/doc/typical_scenario.md#overview-and-module-boundaries): модуль — каталог со слоями внутри, корень модуля — файл рядом.
 Только перемещения и правка путей `use`; ни одна функция не меняет тело. Карта переезда (уточнена при утверждении плана
 2026-10-27: вопросы В-1…В-4 [плана](work/03-plan.md); справка «старый путь → новый» для задач 04–15):
 
@@ -61,7 +61,7 @@ projections,…}`, `presentation/http/*`, `infrastructure/*`. Путь «отм�
 Корни модулей `concert.rs`, `fan.rs`, `operations.rs`, `shared.rs` пока только объявляют `pub mod`; их содержание —
 задача 11.
 
-**`tests/architecture.rs`** переписывается под правила «Кто кого видит» ([01](design/01_overview.md)):
+**`tests/architecture.rs`** переписывается под правила «Кто кого видит» ([01](../../../../cqrsx/doc/typical_scenario.md#overview-and-module-boundaries)):
 - в модуле `M`: `M/domain` видит только `crate::shared::domain` и `cqrsx::cqrs::{aggregate, event, event_sink,
   testing}` (список растёт в 04 и 05); `M/application` видит `M/domain`, `crate::shared::{domain, application}` и
   `cqrsx` без `postgres`, `mongodb`, `task::{adapter, dispatcher, runtime}`, `host`, `logging`; `M/presentation` видит

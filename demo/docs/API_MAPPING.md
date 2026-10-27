@@ -15,6 +15,16 @@
 
 ---
 
+## Актуализация после эпика 05
+
+Материал ниже сохраняет исследование Фазы 0 и его первоначальные сигнатуры как историю, а не справочник
+текущего API. После эпика 05: U1 — задачи планирует `Reactions` каждого агрегата, модуль регистрирует
+типы и движок собирает исполнители; U3 — metadata и причинность задаёт движок (`cqrs.from` и `ctx.execute`);
+U6 — политика типа задачи задаёт паузы и бюджет; U7 — один общий диспетчер и функции `#[task_handler]`
+с `TaskContext` и зависимостями. Актуальный код сборки — `back-end/src/main.rs`, правила и пример —
+[типовой сценарий](../../cqrsx/doc/typical_scenario.md). Старые эскизы `EventSink`, декоратора и фабрики
+ниже относятся к исследованию до миграции и не описывают работающую реализацию.
+
 ## 0. Главное за минуту
 
 | | Вывод |
@@ -126,6 +136,9 @@
 
 ### U1. Как задачи привязываются к команде
 
+**Актуально после 05:** `Decide` решает событие, `Reactions` агрегата планирует задачи, а `Cqrs` собирает
+исполнитель из регистраций модулей. Событие и задачи атомарно записываются вместе. Дальше — история Фазы 0.
+
 **Факт.**
 - `cqrs/command.rs:29-40`: `trait CommandExecutor<A> { fn execute(&self, aggregate_id: &str, command: A::Command, tasks: Vec<NewTask>) -> impl Future<Output = Result<(), CommandGatewayError<A::Error>>> + Send; }`.
 - `cqrs/command/executor.rs:17-57`: `CommandExecutorCore::new(build_framework, retry_policy)`; `execute` вызывает фабрику **один раз** на вызов с `tasks`, повторяет только `AggregateConflict` клонами той же команды; список задач неизменяем между попытками (тест `executor_builds_once_and_retries_the_unchanged_command_and_tasks`).
@@ -144,6 +157,9 @@
 Дополнительно: `components.md` формулирует контракт прямо — «One event, optional checkpoint and explicit tasks in one atomic SQL statement»; `postgres/command.rs:58-59` — «at most one event is supported per command».
 
 ### U3. Метаданные при выполнении команды — см. КТ-2
+
+**Актуально после 05:** `cqrs.from("ui")` задаёт источник команды, `TaskContext::execute` продолжает
+причинность задачи; движок строит `CommandMetadata`, метаданные коммитятся с событием.
 
 Дополнительно:
 - `EventEnvelope.metadata: HashMap<String, String>` (`cqrs/event.rs:189`) — только строковые значения; `recorded_at` — строка RFC 3339.
@@ -234,6 +250,9 @@ export function deriveTaskStatus(row: OutboxRow, dbNow: Date): UiTaskStatus {
 
 ### U6. Настраивается ли backoff
 
+**Актуально после 05:** паузу и бюджет задаёт политика, привязанная к типу обработчика в `fan.rs`;
+обработчик возвращает done/retry/fail, `ctx.retry_pause()` доступен для наблюдения.
+
 **Факт.** `task/queue/retry.rs:3-8`: `redelivery_backoff(attempt) = min(5 с · 2^min(attempt−1, 6), 300 с) × U(0.8, 1.2)` — не настраивается. Используется, когда обработчик вернул `Retry { retry_after: None }`, при таймауте обработчика, при `insufficient lease budget` и при восстановлении просроченного lease. Если обработчик вернул `Retry { retry_after: Some(d) }`, задержка `d` применяется как есть (`default_executor.rs:93-113`; тест `worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_failure`: `available_at ≈ now + 300 с` при `retry_after = 300 с`).
 
 **Решение.** `FlakyMailServer` возвращает `TaskHandlerError::Retry { reason: reason_code, retry_after: Some(min(base · 2^(attempt−1), max)) }` с `ENCORE_TASK_RETRY_BASE_MS = 1000`, `ENCORE_TASK_RETRY_MAX_MS = 8000` → 1, 2, 4, 8, 8 с. В README: библиотечный backoff 4–300 с действует только для аварийных путей (истёкший lease, таймаут обработчика).
@@ -241,6 +260,9 @@ export function deriveTaskStatus(row: OutboxRow, dbNow: Date): UiTaskStatus {
 **Правка плана.** §2.7 («если настраивается») → настраивается обработчиком; §5.4 — две переменные.
 
 ### U7. API `TaskHandlerError`, `TaskAttempt`, `TaskDispatcherFactory`
+
+**Актуально после 05:** функции `#[task_handler]` получают задачу, `TaskContext` и зависимости по типу;
+движок строит один общий диспетчер обработчиков. Перечисленные ниже сигнатуры и фабрика — история Фазы 0.
 
 **Факт.**
 - `task/handler.rs:8-16`: `enum TaskHandlerError { Retry { reason: String, retry_after: Option<Duration> }, Permanent { reason: String } }`.

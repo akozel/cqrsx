@@ -22,7 +22,7 @@
 
 ## Станет
 
-Дизайн [05](design/05_tasks.md).
+Дизайн [05](../../../../cqrsx/doc/typical_scenario.md#task-handlers-policies-and-dependencies).
 
 **cqrsx**
 - `TaskHandler<P>`: `fn handle(&self, task: P, ctx: &TaskContext) -> impl Future<Output = TaskResult> + Send`;

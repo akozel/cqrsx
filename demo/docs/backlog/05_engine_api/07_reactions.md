@@ -20,7 +20,7 @@
 
 ## Станет
 
-Дизайн [04](design/04_application.md), [05](design/05_tasks.md) (политики).
+Дизайн [04](../../../../cqrsx/doc/typical_scenario.md#reactions-and-commit), [05](../../../../cqrsx/doc/typical_scenario.md#task-handlers-policies-and-dependencies) (политики).
 
 **cqrsx**
 - `cqrs::reactions::Reactions: Aggregate` — `fn react(decided: &Decided<'_, Self>, then: &mut Then)`.

@@ -33,6 +33,20 @@ The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the libra
 | `scripts/` | `dev.sh` (everything in one terminal), `wait-db.sh`, `compare-projections.sh` |
 | `load/` | k6 load tests on an isolated stand (own compose project, no ports, mail stub instead of the sidecar): hot aggregate, new aggregates, spread bookings, outbox drain — see `load/README.md` |
 
+### How to read the code
+
+Start at [`back-end/src/main.rs`](back-end/src/main.rs), then follow the module roots
+[`concert.rs`](back-end/src/concert.rs) and [`fan.rs`](back-end/src/fan.rs). Domain commands decide events;
+application reactions plan tasks; handlers in `fan/application/` continue the chain. The
+[typical scenario](../cqrsx/doc/typical_scenario.md) traces cancellation to refund.
+
+| Layer | Responsibility |
+|---|---|
+| `domain` | Aggregate state, commands, decisions, events and business rules. |
+| `application` | Reactions, task handlers, views and use cases for the module. |
+| `presentation` | HTTP routes and translation between API and application contracts. |
+| `infrastructure` | Implementations of ports, such as the HTTP mail client. |
+
 ## Requirements
 
 - Rust `1.98.1` through `rustup` (`../rust-toolchain.toml` applies here too).
@@ -239,13 +253,12 @@ Key points, each visible on screen:
   with an `Idempotency-Key`; `503` → retry after 1, 2, 4, 8 s, `4xx` → permanent failure). The demo's
   provider is the sidecar's moody mail service (DEMO ONLY, `sidecar/src/mail.rs`): it refuses 20 % of
   the deliveries (`SIDECAR_MAIL_FAILURE_RATE`) and stores the rest in `mail_service.inbox` with an
-  idempotent upsert, so a repeat only bumps `deliveries`. The steps of both chains live in
-  `application::workflows::{ticket_delivery, refund}`, one file per step.
+  idempotent upsert, so a repeat only bumps `deliveries`. The reactions live in each aggregate module; the four task handlers live in
+  `fan/application/`, one file per step.
 - **Projections** are contiguous documents: each remembers the last event of its aggregate it applied
   (`last_sequence`) and takes only the next one — a repeat is skipped, a gap is refused and nothing is
   written, so a document is never created from the middle of a history and never silently misses an
-  event. Inside the fold, seat and ticket entries are last-writer-wins registers keyed by event
-  `sequence` with recomputed derived fields.
+  event. The ordered fold updates seats and tickets and recomputes derived fields.
 - **Projection processors** (one per read model, built by the engine for every view a module registers) follow the ledger by a
   checkpoint kept in MongoDB next to the documents (`projection_checkpoints`): a commit wakes the
   processor, which reads the new events page by page and applies them per document; a failed round is
@@ -331,8 +344,8 @@ timeout); the mail handler asks for 1–8 s itself.
 
 ```bash
 cd demo
-cargo test --workspace                 # domain rules R1–R11, D-02 invariant, use cases and workflow steps on MemStore,
-                                       # projections (LWW), read API, the mail client against a stub provider, chain mapping,
+cargo test --workspace                 # domain rules R1–R11, D-02 invariant, module scenarios with the in-memory engine,
+                                       # ordered projections, read API, the mail client against a stub provider, chain mapping,
                                        # layer rules; sidecar: X-ray, demo lifecycle, the moody mail service
 cd front-end && npm test               # seatState, outboxStatus, diff, i18n parity (EN/RU)
 ```

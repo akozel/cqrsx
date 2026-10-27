@@ -16,6 +16,8 @@ the work log are local git-ignored artifacts and may not be present in another c
 The follow-up hot-key series on 2026-10-28 did not reproduce the drain CPU and claim differences, but was
 interrupted and resumed; its db profile showed lower median throughput and higher median p99 with overlapping
 ranges. Both versions passed the controlled activity-feed golden test. Details are in ticket 13.
+Ticket 14 documents the implemented module and engine API, the in-memory path and the cancellation-to-refund
+flow in `cqrsx/doc/typical_scenario.md`; the earlier seven-file design has moved there.
 
 ## Step 0 — pre-flight (2026-10-17)
 

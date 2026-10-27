@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено 2026-10-27 |
+| Статус | сделано 2026-10-28 |
 | Ценность | средняя–высокая: быстрый старт = типовой сценарий; дизайн не остаётся в бэклоге |
 | Цена | низкая–средняя: документы; доктесты README компилируются |
 | cqrsx | `README.md`, `doc/components.md`, новый `doc/typical_scenario.md` (из `design/`), `cqrsx-macros/README.md` |
@@ -66,6 +66,12 @@ Reactions for Concert`, `#[task_handler]`, `Cqrs::from_env`. Сегодня READ
 
 ## Критерии приёмки
 
-- [ ] README cqrsx: быстрый старт — типовой сценарий, компилируется; сборка на PostgreSQL — `main.rs` демо.
-- [ ] `components.md` с новыми разделами и словарём; `typical_scenario.md`; `design/` удалён.
-- [ ] `PLAN.md` (D-26), `API_MAPPING.md`, README демо, `PROGRESS.md`.
+- [x] README cqrsx: быстрый старт — типовой сценарий, компилируется; сборка на PostgreSQL — `main.rs` демо.
+- [x] `components.md` с новыми разделами и словарём; `typical_scenario.md`; `design/` удалён.
+- [x] `PLAN.md` (D-26), `API_MAPPING.md`, README демо, `PROGRESS.md`.
+
+## Результат
+
+Документация cqrsx и демо переведена на Engine API; семь тем дизайна собраны в `cqrsx/doc/typical_scenario.md`.
+Сквозной пример цепочки в памяти выполняется как doctest; копия `main.rs` приведена как текст примера приложения.
+Проверены ссылки, doctest и 174 теста демо. Код и эталоны не изменились.

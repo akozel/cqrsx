@@ -1,244 +1,38 @@
 # cqrsx
 
-CQRS and Event Sourcing for Rust services: aggregates and command execution, event and snapshot
-persistence, read-model projections, a transactional outbox and a durable task queue. PostgreSQL stores
-the data, Tokio runs the background work. The application owns the business rules; the library owns
-consistency, ordering and retries.
+CQRS and event sourcing for Rust: the application owns its business rules, and the engine assembles
+the journal, transactional outbox, task runtime and projections for its modules.
 
 ## At a glance
 
-- **One command, one lock, one transaction.** Inside a process the commands to one aggregate run one at
-  a time, in arrival order. The event, an optional snapshot and the outbox tasks planned from the decision
-  commit in a single statement; a conflict with another process is retried with backoff, and the retry
-  plans its tasks again from the fresh state.
-- **Projections from the journal, with a checkpoint.** A projection processor reads the journal of its
-  aggregate type page by page from a checkpoint row it holds under a lease, applies the events through a
-  worker per key and moves the checkpoint behind what is applied; a commit wakes it. Nothing is lost on the
-  way to the read model, two nodes never apply at once, and a rebuild (the whole journal, one key, or a
-  document that refused a gap) runs through the same workers without stopping the writes. The views and the
-  checkpoint may live in MongoDB, next to each other (feature `mongodb`).
-- **Durable follow-ups, planned from the decision.** The aggregate decides events only; its reactions say what
-  follows each event, one `match` the compiler checks for completeness, and the tasks commit with the event.
-  Anything that must survive a crash is an outbox task: claimed under a lease, retried after the pause and within
-  the attempt budget of its type's policy, run by a worker pool that drains on shutdown; its handler is a function
-  of the task, its context and its dependencies (`#[task_handler]`).
-- **Testable without a database.** A given/when/then framework for aggregates, an in-memory store and
-  journal with an outbox and its task queue, a command executor that records the tasks a use case publishes, and
-  the engine in memory: the modules of an application assembled as the process assembles them, whose tasks run to
-  the end of their chains and whose views catch up with the journal on demand.
+1. An **aggregate** holds state and applies named, versioned events.
+2. A **command** decides one event or a domain rejection against that state and its rules.
+3. The aggregate's **reactions** describe durable tasks following each event; the event and tasks commit atomically.
+4. A **task handler** runs a follow-up command or external effect with its context and dependencies.
+5. A **view** folds the aggregate's journal into a queryable document; its processor keeps a checkpoint.
 
-```text
-command ─► CommandExecutor ─► CqrsFramework ─► Aggregate ─► Reactions ─► EventStore ──┐ one transaction:
-               │  aggregate lock                 (event)     (event → tasks)         ├─ event, snapshot,
-               └─► CommitWakeup                                                       └─ outbox tasks
-
-events (tx) ─► ProjectionProcessor (checkpoint, lease) ─► worker per key ─► ViewProjection ─► read model
-                       ▲ CommitWakeup after a commit, or the poll
-
-transactional_outbox ─► TaskRuntime ─► Worker ─► TaskDispatcher ─► TaskHandler ─► e-mail, next command, …
-```
+The application registers these pieces in modules and builds `Cqrs` in memory or with PostgreSQL and MongoDB.
+The [typical scenario](doc/typical_scenario.md) follows a cancellation through a refund.
 
 ## Quick start
 
-A fan's ticket ledger: an aggregate with one command and one event, a read model and a follow-up task
-its reactions plan from the event. Everything below runs in memory, and the same types run unchanged on PostgreSQL.
+This complete example is adapted from [`tests/engine/modules.rs`](tests/engine/modules.rs) and
+[`tests/engine/scenario.rs`](tests/engine/scenario.rs): a box office books a seat, a task records a ticket
+in the fan's wallet, a second task mails it, and the hall view catches up. It runs without databases.
 
 ```rust
-use cqrsx::cqrs::{
-    aggregate::Aggregate,
-    command::{
-        CommandExecutor,
-        causation::Causation,
-        decide::Decide,
-        wakeup::CommitWakeup,
-    },
-    event::EventEnvelope,
-    projection::{
-        View, ViewProjection,
-        processor::{ProjectionProcessor, config::ProcessorConfig},
-        repository::ViewRepository,
-    },
-    reactions::{Decided, Reactions, ReactionsPlanner, Then},
-    testing::{
-        TestFramework, command::TestCommandExecutor, mem_checkpoint_store::MemCheckpointStore,
-        mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository,
-    },
-};
-use cqrsx::{Event, Events, Task, task::policy::Policies};
-use serde::{Deserialize, Serialize};
-use std::{sync::Arc, time::Duration};
-use tokio_util::sync::CancellationToken;
-
-// The aggregate. Business rules live in the command's `decide`, state changes in `apply`.
-#[derive(Clone, Debug, Default, Serialize, Deserialize)]
-struct Ledger {
-    tickets: u32,
-}
-
-#[derive(Clone, Debug)]
-enum LedgerCommand {
-    RecordTicket { seat: String },
-}
-
-// An event is a fact with the name and version it is stored with; the aggregate's enum of events takes them
-// from each fact.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
-#[event(name = "ticket_recorded", version = "1")]
-struct TicketRecorded {
-    seat: String,
-}
-
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Events)]
-enum LedgerEvent {
-    TicketRecorded(TicketRecorded),
-}
-
-#[derive(Debug, PartialEq, thiserror::Error)]
-#[error("ticket limit of {limit} reached")]
-struct TicketLimit {
-    limit: u32,
-}
-
-/// What the rules need from the application; here, the ticket limit.
-#[derive(Clone)]
-struct Rules {
-    limit: u32,
-}
-
-impl Aggregate for Ledger {
-    const TYPE: &'static str = "ledger";
-    type Id = String; // a validated newtype works too: its `Display` is the key in the journal
-    type Command = LedgerCommand;
-    type Event = LedgerEvent;
-    type Error = TicketLimit;
-    type Rules = Rules;
-
-    fn apply(&mut self, event: LedgerEvent) {
-        let LedgerEvent::TicketRecorded(_) = event;
-        self.tickets += 1;
-    }
-}
-
-// A command decides on the committed state: one event or a rejection.
-impl Decide<Ledger> for LedgerCommand {
-    fn decide(self, ledger: &Ledger, rules: &Rules) -> Result<LedgerEvent, TicketLimit> {
-        let LedgerCommand::RecordTicket { seat } = self;
-        if ledger.tickets >= rules.limit {
-            return Err(TicketLimit { limit: rules.limit });
-        }
-        Ok(LedgerEvent::TicketRecorded(TicketRecorded { seat }))
-    }
-}
-
-// The read model: a wallet, kept up to date by a projection processor that reads the journal.
-#[derive(Debug, Default, Serialize, Deserialize)]
-struct Wallet {
-    seats: Vec<String>,
-}
-
-impl View<Ledger> for Wallet {
-    const NAME: &'static str = "wallets"; // its collection or table and its projection's checkpoint row
-
-    fn update(&mut self, event: &EventEnvelope<Ledger>) {
-        let LedgerEvent::TicketRecorded(recorded) = &event.payload;
-        self.seats.push(recorded.seat.clone());
-    }
-}
-
-// A follow-up that must survive a crash: an outbox task, committed together with the event. Its type and
-// version are stored with it and route it to its handler.
-#[derive(Serialize, Deserialize, Task)]
-#[task(name = "send_e_ticket", version = 1)]
-struct SendETicket {
-    seat: String,
-}
-
-// What follows each fact of the ledger: every recorded ticket is mailed. The core runs the reactions after
-// every decision, under the aggregate's lock, and commits their tasks with the event; a new event without a
-// branch does not compile.
-impl Reactions for Ledger {
-    fn react(decided: &Decided<'_, Self>, then: &mut Then) {
-        match decided.event {
-            LedgerEvent::TicketRecorded(recorded) => then.task(SendETicket { seat: recorded.seat.clone() }),
-        }
-    }
-}
-
-fn main() {
-    // The aggregate on its own: given, when, then (synchronous, no runtime needed).
-    TestFramework::<Ledger>::with(Rules { limit: 1 })
-        .given(vec![LedgerEvent::TicketRecorded(TicketRecorded { seat: "A1".into() })])
-        .when(LedgerCommand::RecordTicket { seat: "A2".into() })
-        .then_expect_error_message("ticket limit of 1 reached");
-
-    // The command path over an in-memory journal: aggregate locks, conflict retry, the reactions and a
-    // record of the tasks every commit published. A projection processor reads the same journal into the
-    // wallets; the executor wakes it after every commit.
-    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
-    runtime.block_on(async {
-        let (journal, wakeup) = (MemEventRepository::default(), CommitWakeup::new());
-        let wallets = Arc::new(MemViewRepository::<Wallet, Ledger>::default());
-        let processor = ProjectionProcessor::new(
-            Wallet::NAME,
-            Arc::new(journal.clone()),
-            Arc::new(MemCheckpointStore::default()),
-            Arc::new(ViewProjection::new(wallets.clone())),
-            ProcessorConfig::default(),
-        )
-        .with_wakeup(wakeup.clone());
-        let shutdown = CancellationToken::new();
-        let running = tokio::spawn(processor.run(shutdown.clone()));
-        let ledgers = TestCommandExecutor::<Ledger, _>::over_journal(journal.clone(), Rules { limit: 4 })
-            // No policies: the tasks get the engine's attempt budget.
-            .with_task_planner(ReactionsPlanner::<Ledger>::new(Policies::default()))
-            .with_commit_wakeup(wakeup);
-
-        // Who caused the command travels in its metadata; the core stamps it on every task it plans.
-        let causation = Causation::root("ui");
-        let command = LedgerCommand::RecordTicket { seat: "B4".into() };
-        let report = ledgers
-            .execute_with_metadata(&"fox".into(), command, causation.event_metadata())
-            .await
-            .unwrap();
-        // The task was planned from the event and published with it: on PostgreSQL, in the same statement…
-        assert_eq!(report.tasks[0].payload()["seat"], "B4");
-        assert_eq!(report.tasks[0].metadata()["correlation_id"], causation.correlation_id.to_string());
-        assert_eq!(journal.outbox::<Ledger>().len(), 1);
-
-        // …and the processor brings the wallet up to date in the background, a moment later.
-        let mut wallet = None;
-        for _ in 0..500 {
-            wallet = wallets.load("fox").await.unwrap();
-            if wallet.is_some() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(10)).await;
-        }
-        assert_eq!(wallet.map(|wallet| wallet.seats), Some(vec!["B4".to_owned()]));
-        shutdown.cancel();
-        running.await.unwrap();
-    });
-}
-```
-
-## Running on PostgreSQL
-
-Apply the three schemas once, `postgres::EVENT_STORE_SCHEMA`, `postgres::TRANSACTIONAL_OUTBOX_SCHEMA` and
-`postgres::PROJECTION_CHECKPOINTS_SCHEMA` (the compose file in the repository root does it for a local
-database; a read-model table in PostgreSQL is the application's, with the columns documented on
-`PostgresViewRepository::new`). Then let the engine assemble the process from the modules of the application: an
-executor per aggregate type with its reactions, a projection processor per view, the task runtime with every handler,
-the HTTP routes of the modules (feature `http`). This is a sketch; `../demo/back-end/src/main.rs` and the module roots
-next to it (`concert.rs`, `fan.rs`, `operations.rs`) are the complete, tested version.
-
-```rust,ignore
 use cqrsx::{
+    engine::Cqrs,
+    Command, Event, Events, Rejection, Task,
+    cqrs::{
+        aggregate::Aggregate,
+        command::{CommandGatewayError, decide::Decide},
+        event::EventEnvelope,
+        projection::View,
+        reactions::{Decided, Reactions, Then},
+    },
     engine::{
-        Cqrs,
         module::Module,
-        mongodb::MongoDb,
-        postgres::Postgres,
-        settings::Defaults,
         setup::{Setup, SetupError},
     },
     task::{
@@ -248,105 +42,288 @@ use cqrsx::{
     },
     task_handler,
 };
-use std::sync::Arc;
+use serde::{Deserialize, Serialize};
+use std::{
+    collections::BTreeMap,
+    sync::{Arc, Mutex},
+    time::Duration,
+};
+use uuid::Uuid;
 
-/// The handlers' dependency, by its type: the mail service, a trait object the module provides once.
-type Mailer = dyn MailService;
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Show {
+    seats: BTreeMap<String, String>,
+}
 
-/// The task handler, a function: the task, its context, its dependencies. A task arrives at least once: the same one
-/// may come back after a crash or a timeout, so the effect is keyed by the task id and repeating it is harmless. A
-/// failed send is retried after the pause of the task type's policy; the handler names none.
-#[task_handler]
-async fn send_e_ticket(task: SendETicket, ctx: &TaskContext, mail: &Mailer) -> TaskResult {
-    match mail.send(ctx.task_id(), &task.seat).await {
-        Ok(()) => TaskResult::done(),
-        Err(error) => TaskResult::retry(error.to_string()),
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
+#[event(name = "seat_booked", version = "1")]
+struct SeatBooked {
+    seat: String,
+    fan: String,
+    booking_id: Uuid,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Events)]
+enum ShowEvent {
+    SeatBooked(SeatBooked),
+}
+
+/// A booking: its id is the command's.
+#[derive(Clone, Debug, Command)]
+struct BookSeat {
+    seat: String,
+    #[label]
+    fan: String,
+    #[command_id]
+    booking_id: Uuid,
+}
+
+#[derive(Debug, PartialEq, thiserror::Error, Rejection)]
+enum ShowError {
+    #[error("seat {seat} is taken")]
+    SeatTaken { seat: String },
+}
+
+impl Aggregate for Show {
+    const TYPE: &'static str = "show";
+    type Id = String;
+    type Command = BookSeat;
+    type Event = ShowEvent;
+    type Error = ShowError;
+    type Rules = ();
+
+    fn apply(&mut self, ShowEvent::SeatBooked(booked): ShowEvent) {
+        self.seats.insert(booked.seat, booked.fan);
     }
 }
 
+impl Decide<Show> for BookSeat {
+    fn decide(self, show: &Show, _: &()) -> Result<ShowEvent, ShowError> {
+        if show.seats.contains_key(&self.seat) {
+            return Err(ShowError::SeatTaken { seat: self.seat });
+        }
+        Ok(ShowEvent::SeatBooked(SeatBooked {
+            seat: self.seat,
+            fan: self.fan,
+            booking_id: self.booking_id,
+        }))
+    }
+}
+
+/// A booked seat goes into the fan's wallet.
+impl Reactions for Show {
+    fn react(decided: &Decided<'_, Self>, then: &mut Then) {
+        match decided.event {
+            ShowEvent::SeatBooked(booked) => then.task(RecordTicket {
+                fan: booked.fan.clone(),
+                seat: booked.seat.clone(),
+            }),
+        }
+    }
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct Wallet {
+    tickets: Vec<String>,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
+#[event(name = "ticket_recorded", version = "1")]
+struct TicketRecorded {
+    seat: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Events)]
+enum WalletEvent {
+    TicketRecorded(TicketRecorded),
+}
+
+#[derive(Clone, Debug, Command)]
+struct Record {
+    seat: String,
+}
+
+#[derive(Debug, PartialEq, thiserror::Error, Rejection)]
+enum WalletError {
+    #[error("ticket {seat} is recorded already")]
+    AlreadyRecorded { seat: String },
+}
+
+impl Aggregate for Wallet {
+    const TYPE: &'static str = "wallet";
+    type Id = String;
+    type Command = Record;
+    type Event = WalletEvent;
+    type Error = WalletError;
+    type Rules = ();
+
+    fn apply(&mut self, WalletEvent::TicketRecorded(recorded): WalletEvent) {
+        self.tickets.push(recorded.seat);
+    }
+}
+
+impl Decide<Wallet> for Record {
+    fn decide(self, wallet: &Wallet, _: &()) -> Result<WalletEvent, WalletError> {
+        if wallet.tickets.contains(&self.seat) {
+            return Err(WalletError::AlreadyRecorded { seat: self.seat });
+        }
+        Ok(WalletEvent::TicketRecorded(TicketRecorded { seat: self.seat }))
+    }
+}
+
+/// A recorded ticket is mailed to its fan.
+impl Reactions for Wallet {
+    fn react(decided: &Decided<'_, Self>, then: &mut Then) {
+        match decided.event {
+            WalletEvent::TicketRecorded(recorded) => then.task(MailTicket {
+                to: decided.id.clone(),
+                seat: recorded.seat.clone(),
+            }),
+        }
+    }
+}
+
+/// The step of the chain: the ticket goes into the fan's wallet.
+#[derive(Debug, Serialize, Deserialize, Task)]
+#[task(name = "record_ticket", version = 1)]
+struct RecordTicket {
+    fan: String,
+    seat: String,
+}
+
+/// Records the ticket; one recorded already is done.
+#[task_handler]
+async fn record_ticket(task: RecordTicket, ctx: &TaskContext) -> TaskResult {
+    match ctx.execute::<Wallet>(&task.fan, Record { seat: task.seat }).await {
+        Err(CommandGatewayError::Domain(WalletError::AlreadyRecorded { .. })) => TaskResult::done(),
+        other => other.into(),
+    }
+}
+
+/// The e-mail of a ticket, to the fan its label names.
+#[derive(Debug, Serialize, Deserialize, Task)]
+#[task(name = "mail_ticket", version = 1)]
+struct MailTicket {
+    #[label]
+    to: String,
+    seat: String,
+}
+
+trait MailService: Send + Sync {
+    fn send(&self, to: &str, seat: &str);
+}
+
+/// The handlers' dependency: the mail service, by this type.
+type Mailer = dyn MailService;
+
+#[derive(Default)]
+struct Outbox(Mutex<Vec<String>>);
+
+impl MailService for Outbox {
+    fn send(&self, to: &str, seat: &str) {
+        self.0.lock().unwrap().push(format!("{to}:{seat}"));
+    }
+}
+
+#[task_handler]
+async fn mail_ticket(task: MailTicket, mail: &Mailer) -> TaskResult {
+    mail.send(&task.to, &task.seat);
+    TaskResult::done()
+}
+
+#[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+struct Hall {
+    seats: BTreeMap<String, String>,
+}
+
+impl View<Show> for Hall {
+    const NAME: &'static str = "halls";
+
+    fn update(&mut self, event: &EventEnvelope<Show>) {
+        let ShowEvent::SeatBooked(booked) = &event.payload;
+        self.seats.insert(booked.seat.clone(), booked.fan.clone());
+    }
+}
+
+const STEP: PolicyName = PolicyName::new("step");
 const MAIL: PolicyName = PolicyName::new("mail");
 
-/// The root of the module: what it plugs into the engine, its own variables under the application's prefix
-/// (`SHOP_TICKET_LIMIT`, `SHOP_MAIL_ATTEMPTS`) and its HTTP routes.
-fn wallets(setup: &Setup) -> Result<Module, SetupError> {
-    let mail: Arc<Mailer> = Arc::new(HttpMailer::new(setup.engine().handler_timeout()).map_err(SetupError::failed)?);
-    Ok(Module::new("wallets")
-        .aggregate::<Ledger>(Rules { limit: setup.env("TICKET_LIMIT", 4)? })
-        .view::<Wallet, Ledger>() // the collection `wallets`
-        .provide(mail)
-        .policy(MAIL, Retry::backoff(setup.millis("MAIL_BASE_MS", 1000)?, setup.millis("MAIL_MAX_MS", 8000)?), 6)
-        .task(send_e_ticket)
-        .policy(MAIL)
-        .routes(http::routes())) // axum::Router<Arc<Cqrs>>: the handlers take the engine as their state
+/// The box office: the shows and their halls.
+fn box_office(_: &Setup) -> Result<Module, SetupError> {
+    Ok(Module::new("box_office").aggregate::<Show>(()).view::<Hall, Show>())
 }
 
-/// The application's values where a variable is absent, and the name of its connections.
-const SHOP_DEFAULTS: Defaults = Defaults::new("shop", &[("DATABASE_URL", "postgresql://shop@localhost/shop")]);
+/// The wallets: the step (`STEP`, a second between attempts) and the e-mail (`MAIL`), both with the budget of
+/// `ATTEMPTS`, and a mail service of their own.
+fn wallets(setup: &Setup) -> Result<Module, SetupError> {
+    let attempts = setup.env("ATTEMPTS", 3)?;
+    let mail: Arc<Mailer> = Arc::new(Outbox::default());
+    Ok(Module::new("wallets")
+        .aggregate::<Wallet>(())
+        .provide(mail)
+        .policy(STEP, Retry::fixed(Duration::from_secs(1)), attempts)
+        .policy(MAIL, Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), attempts)
+        .task(record_ticket)
+        .policy(STEP)
+        .task(mail_ticket)
+        .policy(MAIL))
+}
+#[tokio::main(flavor = "current_thread")]
+async fn main() {
+    let outbox = Arc::new(Outbox::default());
+    let mail: Arc<Mailer> = outbox.clone();
+    let cqrs = Cqrs::in_memory().module(box_office).module(wallets)
+        .provide(mail).build().await.unwrap();
+    let booking_id = Uuid::now_v7();
+    cqrs.from("ui").execute::<Show>(&"show-1".into(), BookSeat {
+        seat: "A1".into(), fan: "fox".into(), booking_id,
+    }).await.unwrap();
+    assert_eq!(cqrs.run_tasks().await, 2); // record the ticket, then mail it
+    assert_eq!(*outbox.0.lock().unwrap(), ["fox:A1"]);
+    cqrs.catch_up().await;
+    let hall = cqrs.view::<Hall>().get(&"show-1").await.unwrap().unwrap();
+    assert_eq!(hall.view.seats.get("A1").map(String::as_str), Some("fox"));
+}
+```
+
+
+## Running on PostgreSQL
+
+The complete [`demo/back-end/src/main.rs`](../demo/back-end/src/main.rs) below uses the `postgres`, `mongodb`
+and `http` features; it is application source, not a standalone example. `DEMO_DEFAULTS` and the module roots
+are defined by `encore_backend`. The engine opens PostgreSQL pools and configures the MongoDB read side, then
+serves the module routes alongside the workers and projection processors.
+
+```text
+//! Encore back-end: the box office on the cqrsx engine. The engine reads its settings from the `ENCORE_*` variables
+//! (and the library's `OUTBOX_*`), keeps the journal in PostgreSQL and the read models in MongoDB, and serves the HTTP
+//! API of the modules next to the task runtime and the projection processors until a signal.
+use cqrsx::engine::{Cqrs, mongodb::MongoDb, postgres::Postgres};
+use encore_backend::{DEMO_DEFAULTS, concert, fan, operations};
+
+fn fail(message: impl std::fmt::Display) -> ! {
+    tracing::error!("{message}");
+    eprintln!("encore-backend: {message}");
+    std::process::exit(2)
+}
 
 #[tokio::main]
-async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    // SHOP_DATABASE_URL, SHOP_SNAPSHOT_EVERY, SHOP_PROJECTION_*, SHOP_HTTP_ADDR, …, the library's OUTBOX_* as they are.
-    Cqrs::from_env("SHOP")
-        .defaults(SHOP_DEFAULTS)
-        .event_store(Postgres) // the journal, the snapshots, the outbox and the task queue: three pools
-        .projections(MongoDb)  // the views and their checkpoints; or .projections(Postgres)
-        .module(wallets)
-        .serve() // RUST_LOG, the pools, the HTTP API, the task runtime and the processors until SIGINT or SIGTERM
-        .await?;
-    Ok(())
+async fn main() {
+    dotenvy::dotenv().ok();
+    let served = Cqrs::from_env("ENCORE")
+        .defaults(DEMO_DEFAULTS)
+        .event_store(Postgres)
+        .projections(MongoDb)
+        .module(concert::module)
+        .module(fan::module)
+        .module(operations::module)
+        .serve()
+        .await;
+    if let Err(error) = served {
+        fail(error)
+    }
 }
 ```
-
-`serve` stops in order: the server takes no more requests, the task runtime drains, the processors finish what is in
-flight and give their checkpoints back, then the pools close. The engine opens its pools when it is built, one
-connection each (an unreachable database fails the start); the client of MongoDB connects when it is first used. The
-pieces the engine assembles stay public for an assembly of one's own: `PostgresCommandExecutor`,
-`ProjectionProcessor`, `prepare_task_runtime`, `host::lifecycle::run_with_processors`.
-
-## Projections from the journal
-
-A `ProjectionProcessor` reads the journal of its aggregate type page by page from a checkpoint row (`projection_checkpoints`) that it holds under a lease, hands
-every key's events to a worker of that key and moves the checkpoint behind what is applied; a commit wakes the
-processors of its type, and on another node the poll finds it. Nothing is lost between the commit and the read
-model, two nodes never apply at once, and a rebuild runs through the same workers: the whole journal key by key
-(`request_rebuild`, with a pace between the events of a key for people to watch), one key
-(`request_rebuild_key`), or a document that refused a live event as a gap, healed on the spot.
-
-The engine wires one per view: a `CommitWakeup` per aggregate type, shared by the executor
-(`with_commit_wakeup`) and the type's processors (`with_wakeup`), and a `ProjectionRuntime` that runs the
-processors of the process until the shutdown token.
-
-`CheckpointStore::status` shows where a projection stands: the position, the owner and its lease, the failed
-rounds in a row with the last error, and the state of a rebuild. How far it is behind is
-`PostgresEventRepository::count_after(position, cap)`: the events of its type above the checkpoint, counted up to a
-cap. The processor's observer reports every applied
-batch, every move of the checkpoint, every failure and rebuild, for an event feed or a status page.
-
-### Read models in MongoDB
-
-With the `mongodb` feature the checkpoint moves next to the read models: the journal stays in PostgreSQL, the
-views and the checkpoint live in one MongoDB database (`.projections(MongoDb)`: `SHOP_MONGODB_URI`, `SHOP_READ_DB`,
-`SHOP_MONGODB_POOL_SIZE`). Built by hand, the processor of a view takes the repositories of MongoDB:
-
-```rust,ignore
-use cqrsx::mongodb::{projection_checkpoints::MongoCheckpointStore, view_repository::MongoViewRepository};
-
-let read_db = mongodb::Client::with_options(options)?.database("read");
-let wallets = Arc::new(MongoViewRepository::<Wallet, Ledger>::new(&read_db)); // the collection `wallets`
-let processor = ProjectionProcessor::new(
-    Wallet::NAME,
-    Arc::new(PostgresEventRepository::new(pool.clone())), // the journal
-    Arc::new(MongoCheckpointStore::new(&read_db)),       // collection `projection_checkpoints`
-    Arc::new(ViewProjection::new(wallets)),
-    ProcessorConfig::default(),
-)
-.with_wakeup(wakeup);
-```
-
-A view is one document `{ _id: view id, version, last_sequence, view }`. Every view repository answers three queries:
-one document by id (`load_with_context`), every document (`list`) and a range of ids (`range`), in the order of the
-ids' bytes, alike in memory, in PostgreSQL and in MongoDB. Each checkpoint is one document, and every operation on
-it is one atomic statement by the server's clock (MongoDB 4.2 or later).
 
 ## Configuration
 
@@ -367,25 +344,11 @@ from two helpers that say so in their names.
 | `MONGODB_URI`, `MONGODB_POOL_SIZE`, `READ_DB` | the client of MongoDB (3 s to select a server and to connect) and the database of the views | `mongodb://localhost:27017`, 10, `read` |
 | `HTTP_ADDR` | where `serve` listens | `127.0.0.1:8080` |
 
-| What | How | Default |
-|---|---|---|
-| How long, and how many, commands wait for one aggregate's lock | `LockLimits::new(max_wait, max_waiters)` | 1 s, 128 |
-| Conflict retry: attempts, base and maximum backoff, jitter | `AggregateConflictRetryPolicy::new(..)` | 3, 5 ms, 50 ms, 0.2 |
-| Snapshot interval, conflict retry and lock limits of a PostgreSQL executor | `PostgresCommandConfig::new(..)` | your interval, the defaults above |
-| Projection processor: poll interval, page size, lease, key buffer; retry pauses, keys per rebuild page, documents written at once, pause after a wake-up | `ProcessorConfig::new(poll, page, lease, delivery_limits)?`, `.with_retry(base, max)?`, `.with_rebuild_page(n)?`, `.with_concurrency(n)?`, `.with_settle(d)?` | 250 ms, 1000, 10 s, the limits below; 500 ms / 10 s, 100, 16, 0 |
-| A processor's buffer per aggregate key (jobs, at least 2; the pages in flight are one fewer) and live jobs per handler call | `DeliveryLimits::new(capacity, max_batch)` | 64, 32 |
-| Server-side cap on every statement of a pool | `StatementTimeout::{Default, Custom, Unlimited}` | 4 s |
-| Connection check before hand-out | `ConnectionPingPolicy::{Default, Idle(d)}` | SQLx's; `Idle(100 ms)` recommended |
-| Task runtime | `TaskRuntimeConfig::from_env()` | see below |
-| Logging | `LoggingConfig::from_env()`: `RUST_LOG`, one level (`serve` installs it once) | `info` |
-
-The task runtime reads `OUTBOX_WORKER_CONCURRENCY` (128), `OUTBOX_QUEUE_CAPACITY` (128),
-`OUTBOX_QUEUE_REFILL_PERCENT` (25), `OUTBOX_POLL_INTERVAL_MS` (1000), `OUTBOX_HANDLER_TIMEOUT_SECS` (15),
-`OUTBOX_LEASE_SECS` (60) and `OUTBOX_STORAGE_TIMEOUT_MS` (6000), and refuses a lease shorter than the worst
-case of one claim: `2·storage + handler + 5 s + ceil(capacity / concurrency)·(handler + storage)`. Claimed
-tasks wait in a local buffer of `OUTBOX_QUEUE_CAPACITY`; the runtime claims again once fewer than
-`OUTBOX_QUEUE_REFILL_PERCENT` of it wait, and then fills it. The defaults keep the capacity equal to the
-concurrency: a larger buffer makes claims bigger but needs a lease for one more queued wave.
+Processor configuration and the lower-level building blocks are described in
+[`doc/components.md`](doc/components.md). The task runtime reads `OUTBOX_WORKER_CONCURRENCY`,
+`OUTBOX_QUEUE_CAPACITY`, `OUTBOX_QUEUE_REFILL_PERCENT`, `OUTBOX_POLL_INTERVAL_MS`,
+`OUTBOX_HANDLER_TIMEOUT_SECS`, `OUTBOX_LEASE_SECS` and `OUTBOX_STORAGE_TIMEOUT_MS` without the
+application prefix. Module-specific variables are read through `Setup` with that prefix.
 
 ## Rules worth knowing
 
@@ -432,16 +395,12 @@ concurrency: a larger buffer makes claims bigger but needs a lease for one more 
 
 | Tool | For |
 |---|---|
-| `engine::Cqrs::in_memory()` | An application end to end: `.module(root)…build().await` assembles the modules over stores in memory (a test's `.provide` replaces a module's dependency; `Cqrs::from_lookup` gives the modules and the engine variables of the test); `cqrs.from("ui").execute::<A>(..)`, then `run_tasks()` (the due tasks to the end of their chains; a retry waits for the Tokio clock), `catch_up()` and `view::<V>().get(..)`; `checkpoints()` and `documents::<V, A>()` reach the stores in memory, `router()` the HTTP routes (feature `http`) |
-| `task::testing::mem_task_queue::MemTaskQueue` | The task queue over the outbox of a `MemEventRepository`, by the rules of the PostgreSQL queue and the Tokio clock; `tasks()` shows every delivery, `lose_settlements(true)` a process that stops before its acknowledgements |
-| `cqrs::testing::TestFramework` | An aggregate's rules: `with(rules).given(events).when(command).then_expect_event(..)` or `then_expect_error_message(..)` |
-| `cqrs::testing::command::TestCommandExecutor` | A use case: the production command path, with locks, retry, the task planner and a commit wake-up, over `MemStore` or (`over_journal`) over a `MemEventRepository` that projection processors read; `take_published_tasks()` shows what the committed calls published |
-| `cqrs::testing::mem_event_repository::MemEventRepository::outbox` | The tasks published with the events of an aggregate type, each with the sequence of its event, by the rules of the PostgreSQL outbox |
-| `cqrs::reactions::Decided` | An aggregate's reactions on their own: build what was decided by hand, react into a `Then` and look at its tasks |
-| `cqrs::testing::mem_view_repository::MemViewRepository` | A projection and the queries over it |
-| `cqrs::testing::mem_checkpoint_store::MemCheckpointStore` | A projection processor without a database, next to `MemEventRepository` and `MemViewRepository` (leases follow the Tokio clock, so a paused test clock drives them) |
-| `cqrs::testing::unavailable_store::UnavailableStore` | The storage-down path |
-| `task::context::TaskContext::new(..)` | A task handler, called as the function it is (`handler.call(task, &ctx, &dependency)`), with a first claim (`TaskAttempt::first(..)`) and the pause of its retry; `with_executors` over a `TestCommandExecutor` for a handler that runs a command |
+| `Cqrs::in_memory()` | Assemble application modules; `run_tasks()` runs due tasks and `catch_up()` waits for views. A test's `.provide` replaces a dependency by type. |
+| `TestFramework` | Aggregate given/when/then tests for a decision and rejection. |
+| `TaskContext::new` | Exercise a handler with an attempt, retry pause, dependencies and executors. |
+| `MemTaskQueue` | Inspect the in-memory outbox queue, delivery and settlement. |
+
+The lower-level building blocks and their contracts are in [`doc/components.md`](doc/components.md).
 
 ## Features
 

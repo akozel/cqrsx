@@ -23,7 +23,7 @@
 
 ## Станет
 
-Дизайн [06](design/06_projections.md).
+Дизайн [06](../../../../cqrsx/doc/typical_scenario.md#views-and-queries).
 
 **cqrsx**
 - `View<A>`: `const NAME: &'static str` — имя коллекции и строки закладки. `ViewProjection::new(repo)` берёт

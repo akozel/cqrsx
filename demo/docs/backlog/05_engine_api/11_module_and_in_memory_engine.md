@@ -19,7 +19,7 @@
 
 ## Станет
 
-Дизайн [07](design/07_bootstrap.md) (модуль, тесты) и [04](design/04_application.md) («Как тестировать»).
+Дизайн [07](../../../../cqrsx/doc/typical_scenario.md#bootstrap-and-configuration) (модуль, тесты) и [04](../../../../cqrsx/doc/typical_scenario.md#reactions-and-commit) («Как тестировать»).
 
 **cqrsx, `engine`**
 - `Module::new(name)`: `.aggregate::<A>(rules)` (требует `A: Reactions`, `A::Command: CommandInfo`, `A::Error:

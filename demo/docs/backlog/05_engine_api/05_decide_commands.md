@@ -22,7 +22,7 @@
 
 ## Станет
 
-Дизайн [02](design/02_aggregate.md) и [03](design/03_commands.md).
+Дизайн [02](../../../../cqrsx/doc/typical_scenario.md#aggregate-events-and-typed-id) и [03](../../../../cqrsx/doc/typical_scenario.md#commands-and-decisions).
 
 **cqrsx**
 - `Aggregate`: `const TYPE`, `type Command: Decide<Self> + Send`, `type Event: DomainEvent`, `type Error: Error`,

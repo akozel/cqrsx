@@ -19,7 +19,7 @@
 
 ## Станет
 
-Дизайн [07](design/07_bootstrap.md).
+Дизайн [07](../../../../cqrsx/doc/typical_scenario.md#bootstrap-and-configuration).
 
 **cqrsx**
 - `engine::settings::Settings` — все настройки движка с умолчаниями-константами; `Cqrs::from_env(prefix)` →
