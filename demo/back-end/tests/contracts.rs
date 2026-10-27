@@ -20,6 +20,16 @@
 use axum::{Json, Router, http::StatusCode, routing::post};
 use chrono::NaiveDate;
 use cqrsx::{
+    cqrs::projection::checkpoint::CheckpointKey,
+    engine::{
+        Cqrs,
+        build::{BuildError, Builder},
+        settings::{Settings, duration_text},
+        setup::Setup,
+    },
+    task::policy::Policies,
+};
+use cqrsx::{
     cqrs::{
         AggregateError,
         command::{
@@ -62,15 +72,16 @@ use cqrsx::{
     },
 };
 use encore_backend::{
-    bootstrap::{
-        projections::checkpoint_keys,
-        tasks::{handlers, mailer, policies},
+    DEMO_DEFAULTS, concert,
+    concert::{
+        application::views::concert_hall::ConcertHallView,
+        domain::{
+            Concert, ConcertCommand, ConcertError, ConcertEvent, ConcertRules,
+            commands::{AnnounceConcert, BookSeat, CancelBooking},
+        },
     },
-    concert::domain::{
-        Concert, ConcertCommand, ConcertError, ConcertEvent, ConcertRules,
-        commands::{AnnounceConcert, BookSeat, CancelBooking},
-    },
-    config::{Config, duration_text},
+    fan,
+    fan::application::views::fan_wallet::FanWalletView,
     fan::application::{
         issue_refund::IssueRefundV1,
         record_cancellation::RecordCancellationV1,
@@ -81,16 +92,17 @@ use encore_backend::{
         Fan, FanCommand,
         commands::{RecordCancellation, RecordTicket},
     },
+    operations,
     operations::application::{
         activity_observer::{ActivityObserver, CommandActivityObserver},
         ledger::{EventLedgerStats, LedgerTotals},
-        rebuild::{ReadSide, ReadSideLimits, RebuildService},
+        rebuild::{ReadSideLimits, RebuildService},
     },
-    process::{mongo_plan, pool_plan},
     shared::{
         application::{
-            StorageError,
+            StorageError, TicketLimit,
             activity::ActivityHub,
+            mail::Mailer,
             policies::{MAIL, STEP},
         },
         domain::{
@@ -102,7 +114,6 @@ use encore_backend::{
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
-    cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     path::Path,
     sync::{
@@ -154,7 +165,7 @@ fn assert_golden(name: &str, golden: &str, actual: &str) {
     );
 }
 
-/// `30 s` or `250 ms`, as `config::duration_text` writes them.
+/// `30 s` or `250 ms`, as `duration_text` writes them.
 fn duration(text: &str) -> Duration {
     match text.split_once(' ') {
         Some((n, "s")) => Duration::from_secs(n.parse().unwrap()),
@@ -163,14 +174,96 @@ fn duration(text: &str) -> Duration {
     }
 }
 
+// --- the process ---------------------------------------------------------------------------------------------
+
+/// A lookup of variables by their full names.
+type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
+
+/// The variables of a process (full names), as the engine and its modules read them.
+#[derive(Clone)]
+struct Config {
+    lookup: Lookup,
+}
+
+impl Config {
+    /// The variables of `lookup`.
+    fn from_lookup(lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> Result<Self, BuildError> {
+        Ok(Self {
+            lookup: Arc::new(lookup),
+        })
+    }
+
+    /// The engine of the process over these variables, as `main.rs` builds it, in memory.
+    fn engine(&self) -> Builder {
+        let lookup = self.lookup.clone();
+        Cqrs::from_lookup("ENCORE", move |name| lookup(name))
+            .defaults(DEMO_DEFAULTS)
+            .module(concert::module)
+            .module(fan::module)
+            .module(operations::module)
+    }
+
+    /// The engine's settings of these variables.
+    fn settings(&self) -> Settings {
+        Settings::from_lookup("ENCORE", &*self.lookup, &DEMO_DEFAULTS).unwrap()
+    }
+
+    /// The ticket limit the box office reads.
+    fn ticket_limit(&self) -> usize {
+        ready(self.engine().build()).unwrap().dependency::<TicketLimit>().unwrap().0
+    }
+}
+
+/// The output of `future`, which must not wait: an engine in memory builds without one.
+fn ready<F: std::future::Future>(future: F) -> F::Output {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::pin::pin!(future).poll(&mut context) {
+        std::task::Poll::Ready(output) => output,
+        std::task::Poll::Pending => panic!("the future waits"),
+    }
+}
+
+/// The policies of the task types of the process.
+fn policies(config: &Config) -> Result<Policies, BuildError> {
+    ready(config.engine().build()).map(|cqrs| cqrs.policies().clone())
+}
+
+/// The mail service of the process, one for every worker.
+fn mailer(config: &Config) -> Result<Arc<Mailer>, BuildError> {
+    let lookup = config.lookup.clone();
+    Ok(fan::mailer(&Setup::new(
+        "ENCORE",
+        move |name| lookup(name),
+        config.settings(),
+    ))?)
+}
+
+/// The handlers of the four task types the modules register, in one dispatcher every worker shares: the chain steps
+/// run their commands on `fans`, the e-mails go through `mail` and are reported to `activity`.
+fn handlers<E: CommandExecutor<Fan> + 'static>(
+    fans: Arc<E>,
+    mail: Arc<Mailer>,
+    activity: Arc<ActivityHub>,
+) -> Result<TaskDispatcher<BoxedTaskAdapter>, BuildError> {
+    let modules = Config::from_lookup(|_| None)?.engine().provide(mail).provide(activity);
+    Ok(modules.task_handlers()?.executor(fans).build()?)
+}
+
+/// The rows of the read models' checkpoints, the concert halls first.
+fn checkpoint_keys() -> Vec<CheckpointKey> {
+    vec![
+        CheckpointKey::of::<ConcertHallView, Concert>(),
+        CheckpointKey::of::<FanWalletView, Fan>(),
+    ]
+}
+
 // --- effective configuration ---------------------------------------------------------------------------------
 
-fn effective_configuration() -> String {
+/// The settings of the engine and what its modules read, without a single variable.
+async fn effective_configuration() -> String {
     let config = Config::from_lookup(|_| None).unwrap();
-    let mut lines = config.describe();
-    lines.extend(pool_plan(&config).describe());
-    lines.extend(mongo_plan(&config).describe());
-    render(lines)
+    let cqrs = config.engine().build().await.unwrap();
+    render(cqrs.describe())
 }
 
 /// The keys of the settings read from a variable: the names of the variables.
@@ -181,20 +274,25 @@ fn variables(golden: &str) -> BTreeSet<&str> {
         .collect()
 }
 
-#[test]
-fn the_effective_configuration_without_environment_is_the_golden_one() {
-    assert_golden("effective_config.txt", EFFECTIVE_CONFIG, &effective_configuration());
+#[tokio::test]
+async fn the_effective_configuration_without_environment_is_the_golden_one() {
+    assert_golden("effective_config.txt", EFFECTIVE_CONFIG, &effective_configuration().await);
 }
 
-#[test]
-fn every_variable_the_process_reads_is_in_the_golden_configuration() {
-    let read = RefCell::new(BTreeSet::new());
-    Config::from_lookup(|name| {
-        read.borrow_mut().insert(name.to_owned());
+#[tokio::test]
+async fn every_variable_the_process_reads_is_in_the_golden_configuration() {
+    let read = Arc::new(Mutex::new(BTreeSet::new()));
+    let recording = read.clone();
+    Config::from_lookup(move |name| {
+        recording.lock().unwrap().insert(name.to_owned());
         None
     })
+    .unwrap()
+    .engine()
+    .build()
+    .await
     .unwrap();
-    let read = read.into_inner();
+    let read = read.lock().unwrap().clone();
     let described: BTreeSet<String> = variables(EFFECTIVE_CONFIG).into_iter().map(str::to_owned).collect();
     assert_eq!(read, described, "the variables read and the variables described");
     assert_eq!(
@@ -219,7 +317,7 @@ fn the_golden_configuration_is_what_env_example_documents() {
     let golden = parse(EFFECTIVE_CONFIG);
     for name in variables(EFFECTIVE_CONFIG) {
         let value = golden[name];
-        // The golden file writes durations as `config::duration_text` does; `.env.example` in the variable's unit.
+        // The golden file writes durations as `duration_text` does; `.env.example` in the variable's unit.
         let in_unit = if name.ends_with("_MS") {
             duration(value).as_millis().to_string()
         } else if name.ends_with("_SECS") {
@@ -552,7 +650,7 @@ impl Feed {
         let concerts = TestCommandExecutor::new(
             store,
             ConcertRules {
-                ticket_limit: config.ticket_limit,
+                ticket_limit: config.ticket_limit(),
             },
         )
         .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
@@ -852,7 +950,7 @@ async fn run_through_the_runtime(
     let runtime = prepare(
         queue.clone(),
         dispatcher,
-        config.task_runtime.clone(),
+        config.settings().task_runtime().clone(),
         policies(config).unwrap(),
     );
     let shutdown = CancellationToken::new();
@@ -1068,7 +1166,8 @@ async fn closed_mail() -> String {
 
 /// The configuration without environment, with the mail service at `url`.
 fn config_with_mail(url: &str) -> Config {
-    Config::from_lookup(|name| (name == "ENCORE_MAIL_SERVICE_URL").then(|| url.to_owned())).unwrap()
+    let url = url.to_owned();
+    Config::from_lookup(move |name| (name == "ENCORE_MAIL_SERVICE_URL").then(|| url.clone())).unwrap()
 }
 
 /// The handlers of the composition with its mail service at the address of `config`, writing to `activity`; the
@@ -1086,7 +1185,7 @@ fn step_dispatcher<E: CommandExecutor<Fan> + 'static>(fans: Arc<E>) -> TaskDispa
 
 /// The executor of the task runtime over `queue`, with the storage budget and the policies of `config`.
 fn task_executor(queue: &Arc<MemQueue>, config: &Config) -> DefaultTaskExecutor<MemQueue> {
-    DefaultTaskExecutor::new(queue.clone(), config.task_runtime.storage().clone()).with_policies(policies(config).unwrap())
+    DefaultTaskExecutor::new(queue.clone(), config.settings().task_storage().clone()).with_policies(policies(config).unwrap())
 }
 
 /// Runs `task` through `dispatcher` as a worker does and settles its result in the executor's queue.
@@ -1096,7 +1195,7 @@ async fn run_attempt(
     task: LeasedTask,
     config: &Config,
 ) {
-    let handler_timeout = config.task_runtime.worker_pool().handler_timeout();
+    let handler_timeout = config.settings().handler_timeout();
     executor.execute_and_settle(dispatcher, task, handler_timeout).await.unwrap();
 }
 

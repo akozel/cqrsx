@@ -225,45 +225,32 @@ fn main() {
 
 Apply the three schemas once, `postgres::EVENT_STORE_SCHEMA`, `postgres::TRANSACTIONAL_OUTBOX_SCHEMA` and
 `postgres::PROJECTION_CHECKPOINTS_SCHEMA` (the compose file in the repository root does it for a local
-database; a read-model table is the application's, with the columns documented on
-`PostgresViewRepository::new`). Then assemble the process with the types of the quick
-start. This is a sketch; the demo back-end in `../demo/back-end/src/process.rs` and
-`../demo/back-end/src/bootstrap/` is the complete, tested version.
+database; a read-model table in PostgreSQL is the application's, with the columns documented on
+`PostgresViewRepository::new`). Then let the engine assemble the process from the modules of the application: an
+executor per aggregate type with its reactions, a projection processor per view, the task runtime with every handler,
+the HTTP routes of the modules (feature `http`). This is a sketch; `../demo/back-end/src/main.rs` and the module roots
+next to it (`concert.rs`, `fan.rs`, `operations.rs`) are the complete, tested version.
 
 ```rust,ignore
 use cqrsx::{
-    cqrs::{
-        command::{locks::LockLimits, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
-        projection::{
-            ViewProjection,
-            processor::{ProjectionProcessor, config::ProcessorConfig},
-            runtime::ProjectionRuntime,
-        },
-        reactions::ReactionsPlanner,
-    },
-    host::{lifecycle, signal::shutdown_signal},
-    logging::LoggingConfig,
-    postgres::{
-        command::{PostgresCommandConfig, PostgresCommandExecutor},
-        event_repository::PostgresEventRepository,
-        pool::{ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, StatementTimeout, connect_pool},
-        projection_checkpoints::PostgresCheckpointStore,
-        task_runtime::prepare_task_runtime,
-        view_repository::PostgresViewRepository,
+    engine::{
+        Cqrs,
+        module::Module,
+        mongodb::MongoDb,
+        postgres::Postgres,
+        settings::Defaults,
+        setup::{Setup, SetupError},
     },
     task::{
         context::TaskContext,
-        handlers::TaskHandlers,
-        policy::{Policies, PolicyName, Retry, TaskPolicy},
+        policy::{PolicyName, Retry},
         result::TaskResult,
-        runtime::config::TaskRuntimeConfig,
     },
     task_handler,
 };
-use std::{sync::Arc, time::Duration};
-use tokio_util::sync::CancellationToken;
+use std::sync::Arc;
 
-/// The handlers' dependency, by its type: the mail service, a trait object the process provides once.
+/// The handlers' dependency, by its type: the mail service, a trait object the module provides once.
 type Mailer = dyn MailService;
 
 /// The task handler, a function: the task, its context, its dependencies. A task arrives at least once: the same one
@@ -277,60 +264,44 @@ async fn send_e_ticket(task: SendETicket, ctx: &TaskContext, mail: &Mailer) -> T
     }
 }
 
+const MAIL: PolicyName = PolicyName::new("mail");
+
+/// The root of the module: what it plugs into the engine, its own variables under the application's prefix
+/// (`SHOP_TICKET_LIMIT`, `SHOP_MAIL_ATTEMPTS`) and its HTTP routes.
+fn wallets(setup: &Setup) -> Result<Module, SetupError> {
+    let mail: Arc<Mailer> = Arc::new(HttpMailer::new(setup.engine().handler_timeout()).map_err(SetupError::failed)?);
+    Ok(Module::new("wallets")
+        .aggregate::<Ledger>(Rules { limit: setup.env("TICKET_LIMIT", 4)? })
+        .view::<Wallet, Ledger>() // the collection `wallets`
+        .provide(mail)
+        .policy(MAIL, Retry::backoff(setup.millis("MAIL_BASE_MS", 1000)?, setup.millis("MAIL_MAX_MS", 8000)?), 6)
+        .task(send_e_ticket)
+        .policy(MAIL)
+        .routes(http::routes())) // axum::Router<Arc<Cqrs>>: the handlers take the engine as their state
+}
+
+/// The application's values where a variable is absent, and the name of its connections.
+const SHOP_DEFAULTS: Defaults = Defaults::new("shop", &[("DATABASE_URL", "postgresql://shop@localhost/shop")]);
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    LoggingConfig::from_env()?.try_init()?; // RUST_LOG, one level
-
-    // One pool for the commands and the task queue: short statements, each under a statement timeout.
-    let pool = connect_pool(
-        "postgresql://cqrsx:cqrsx@localhost:5433/cqrsx".parse()?,
-        ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
-        StatementTimeout::Default,
-    )
-    .await?;
-
-    // One executor per aggregate type and process: it owns the aggregate locks. Share it; a second
-    // executor of the same type behaves like another process. Its reactions plan the tasks of every
-    // decision, with the attempt budget of each task type's policy; a commit wakes the type's processors.
-    let wakeup = CommitWakeup::new();
-    const MAIL: PolicyName = PolicyName::new("mail");
-    let mail_policy = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 6)?;
-    let policies = Policies::default().with_policy(MAIL, mail_policy)?.with_task::<SendETicket>(MAIL)?;
-    let config = PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default())?;
-    let ledgers = Arc::new(
-        PostgresCommandExecutor::<Ledger>::new(pool.clone(), config, Rules { limit: 4 })
-            .with_task_planner(ReactionsPlanner::<Ledger>::new(policies.clone()))
-            .with_commit_wakeup(wakeup.clone()),
-    );
-
-    // The read side: a processor per read model reads the journal from its checkpoint row.
-    let wallets = Arc::new(PostgresViewRepository::<Wallet, Ledger>::new(pool.clone())); // the table `wallets`
-    let processor = ProjectionProcessor::new(
-        Wallet::NAME,                                         // the row: projection name + aggregate type
-        Arc::new(PostgresEventRepository::new(pool.clone())),
-        Arc::new(PostgresCheckpointStore::new(pool.clone())), // PROJECTION_CHECKPOINTS_SCHEMA
-        Arc::new(ViewProjection::new(wallets)),
-        ProcessorConfig::default(),
-    )
-    .with_wakeup(wakeup);
-
-    // The task handlers: one line per task type, one set for every worker, their dependencies by type (the assembly
-    // refuses a handler whose dependency nobody provides); a retry waits the pause of its task type's policy.
-    let mail: Arc<Mailer> = Arc::new(HttpMailer::new()?);
-    let dispatcher = TaskHandlers::new().handler(send_e_ticket).provide(mail).build()?;
-    let runtime = prepare_task_runtime(pool.clone(), dispatcher, TaskRuntimeConfig::from_env()?, policies);
-
-    // Serve until a signal: your inbound server, the task runtime and the read side side by side. On
-    // the signal the processors finish what is in flight and release their checkpoint rows.
-    let shutdown = CancellationToken::new();
-    let read_side = tokio::spawn(ProjectionRuntime::new().with_processor(processor).run(shutdown.clone()));
-    let inbound = serve_http(ledgers, shutdown.clone()); // axum, tonic, …: ends when `shutdown` is cancelled
-    lifecycle::run(inbound, runtime.run(shutdown.clone()), shutdown, shutdown_signal()).await?;
-    read_side.await??;
-    pool.close().await;
+    // SHOP_DATABASE_URL, SHOP_SNAPSHOT_EVERY, SHOP_PROJECTION_*, SHOP_HTTP_ADDR, …, the library's OUTBOX_* as they are.
+    Cqrs::from_env("SHOP")
+        .defaults(SHOP_DEFAULTS)
+        .event_store(Postgres) // the journal, the snapshots, the outbox and the task queue: three pools
+        .projections(MongoDb)  // the views and their checkpoints; or .projections(Postgres)
+        .module(wallets)
+        .serve() // RUST_LOG, the pools, the HTTP API, the task runtime and the processors until SIGINT or SIGTERM
+        .await?;
     Ok(())
 }
 ```
+
+`serve` stops in order: the server takes no more requests, the task runtime drains, the processors finish what is in
+flight and give their checkpoints back, then the pools close. The engine opens its pools when it is built, one
+connection each (an unreachable database fails the start); the client of MongoDB connects when it is first used. The
+pieces the engine assembles stay public for an assembly of one's own: `PostgresCommandExecutor`,
+`ProjectionProcessor`, `prepare_task_runtime`, `host::lifecycle::run_with_processors`.
 
 ## Projections from the journal
 
@@ -341,7 +312,7 @@ model, two nodes never apply at once, and a rebuild runs through the same worker
 (`request_rebuild`, with a pace between the events of a key for people to watch), one key
 (`request_rebuild_key`), or a document that refused a live event as a gap, healed on the spot.
 
-The sketch above wires one: a `CommitWakeup` per aggregate type, shared by the executor
+The engine wires one per view: a `CommitWakeup` per aggregate type, shared by the executor
 (`with_commit_wakeup`) and the type's processors (`with_wakeup`), and a `ProjectionRuntime` that runs the
 processors of the process until the shutdown token.
 
@@ -354,7 +325,8 @@ batch, every move of the checkpoint, every failure and rebuild, for an event fee
 ### Read models in MongoDB
 
 With the `mongodb` feature the checkpoint moves next to the read models: the journal stays in PostgreSQL, the
-views and the checkpoint live in one MongoDB database. The application builds the client with its own options.
+views and the checkpoint live in one MongoDB database (`.projections(MongoDb)`: `SHOP_MONGODB_URI`, `SHOP_READ_DB`,
+`SHOP_MONGODB_POOL_SIZE`). Built by hand, the processor of a view takes the repositories of MongoDB:
 
 ```rust,ignore
 use cqrsx::mongodb::{projection_checkpoints::MongoCheckpointStore, view_repository::MongoViewRepository};
@@ -378,8 +350,22 @@ it is one atomic statement by the server's clock (MongoDB 4.2 or later).
 
 ## Configuration
 
-Every tunable is a checked value with a default. Only two helpers read the environment, and they say so
-in their names.
+Every tunable is a checked value with a default. The engine reads its settings from variables under the
+application's prefix (`Cqrs::from_env("SHOP")`: `SHOP_SNAPSHOT_EVERY`, …) and the task runtime's `OUTBOX_*` as they
+are, with the application's `Defaults` where a variable is absent; `settings().describe()` lists what it uses. A
+module reads its own variables through its `Setup`, under the same prefix. Read by hand, a component's settings come
+from two helpers that say so in their names.
+
+| Variable (after the prefix) | Setting | Default |
+|---|---|---|
+| `SNAPSHOT_EVERY` | a snapshot every N events | 10 |
+| `COMMAND_LOCK_MAX_WAIT_MS`, `COMMAND_LOCK_MAX_WAITERS` | the lock limits (`LockLimits`); the wait below `OUTBOX_HANDLER_TIMEOUT_SECS` | 1 s, 128 |
+| `PROJECTION_POLL_MS`, `_PAGE`, `_LEASE_MS`, `_RETRY_BASE_MS`, `_RETRY_MAX_MS`, `_CONCURRENCY`, `_BUFFER`, `_MAX_BATCH`, `_REBUILD_PAGE`, `_SETTLE_MS` | every processor (`ProcessorConfig`, `DeliveryLimits`) | the table below |
+| `PROJECTION_LAG_CAP`, `PROJECTION_STATUS_TIMEOUT_MS` | the cap of a view's lag, the wait of an operator's status | 100 000, 1 s |
+| `NODE_NAME` | the owner of this node's checkpoints | a fresh id |
+| `DATABASE_URL`, `DATABASE_POOL_SIZE`, `DATABASE_STATEMENT_TIMEOUT_MS`, `DATABASE_HISTORY_POOL_SIZE`, `DATABASE_PROJECTION_POOL_SIZE` | the three pools of PostgreSQL (`PostgresSettings::pool_plan`; 0 ms: no cap) | `postgresql://cqrsx:cqrsx@localhost:5433/cqrsx`, 10, 4 s, 1, 4 |
+| `MONGODB_URI`, `MONGODB_POOL_SIZE`, `READ_DB` | the client of MongoDB (3 s to select a server and to connect) and the database of the views | `mongodb://localhost:27017`, 10, `read` |
+| `HTTP_ADDR` | where `serve` listens | `127.0.0.1:8080` |
 
 | What | How | Default |
 |---|---|---|
@@ -391,7 +377,7 @@ in their names.
 | Server-side cap on every statement of a pool | `StatementTimeout::{Default, Custom, Unlimited}` | 4 s |
 | Connection check before hand-out | `ConnectionPingPolicy::{Default, Idle(d)}` | SQLx's; `Idle(100 ms)` recommended |
 | Task runtime | `TaskRuntimeConfig::from_env()` | see below |
-| Logging | `LoggingConfig::from_env()`: `RUST_LOG`, one level | `info` |
+| Logging | `LoggingConfig::from_env()`: `RUST_LOG`, one level (`serve` installs it once) | `info` |
 
 The task runtime reads `OUTBOX_WORKER_CONCURRENCY` (128), `OUTBOX_QUEUE_CAPACITY` (128),
 `OUTBOX_QUEUE_REFILL_PERCENT` (25), `OUTBOX_POLL_INTERVAL_MS` (1000), `OUTBOX_HANDLER_TIMEOUT_SECS` (15),
@@ -446,7 +432,7 @@ concurrency: a larger buffer makes claims bigger but needs a lease for one more 
 
 | Tool | For |
 |---|---|
-| `engine::Cqrs::in_memory()` | An application end to end: `.module(root)…build()` assembles the modules over stores in memory (a test's `.provide` replaces a module's dependency); `cqrs.from("ui").execute::<A>(..)`, then `run_tasks()` (the due tasks to the end of their chains; a retry waits for the Tokio clock), `catch_up()` and `view::<V>().get(..)` |
+| `engine::Cqrs::in_memory()` | An application end to end: `.module(root)…build().await` assembles the modules over stores in memory (a test's `.provide` replaces a module's dependency; `Cqrs::from_lookup` gives the modules and the engine variables of the test); `cqrs.from("ui").execute::<A>(..)`, then `run_tasks()` (the due tasks to the end of their chains; a retry waits for the Tokio clock), `catch_up()` and `view::<V>().get(..)`; `checkpoints()` and `documents::<V, A>()` reach the stores in memory, `router()` the HTTP routes (feature `http`) |
 | `task::testing::mem_task_queue::MemTaskQueue` | The task queue over the outbox of a `MemEventRepository`, by the rules of the PostgreSQL queue and the Tokio clock; `tasks()` shows every delivery, `lose_settlements(true)` a process that stops before its acknowledgements |
 | `cqrs::testing::TestFramework` | An aggregate's rules: `with(rules).given(events).when(command).then_expect_event(..)` or `then_expect_error_message(..)` |
 | `cqrs::testing::command::TestCommandExecutor` | A use case: the production command path, with locks, retry, the task planner and a commit wake-up, over `MemStore` or (`over_journal`) over a `MemEventRepository` that projection processors read; `take_published_tasks()` shows what the committed calls published |
@@ -466,6 +452,7 @@ concurrency: a larger buffer makes claims bigger but needs a lease for one more 
 | `host` | process signals and the coordinated shutdown of inbound server and task runtime | no |
 | `logging` | `LoggingConfig`: an explicit `tracing` subscriber from `RUST_LOG` | no |
 | `mongodb` | the MongoDB read side: a view repository and the checkpoint store of projection processors | no |
+| `http` | the HTTP routes of the modules and `serve` of an engine (axum 0.8, `TraceLayer`); implies `host` | no |
 
 Without PostgreSQL the core still compiles and tests: aggregates, the framework, the in-memory stores,
 projections, the projection processor with its checkpoints and the task contracts.

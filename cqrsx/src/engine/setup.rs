@@ -1,53 +1,14 @@
 //! What a module gets when the engine is built: its variables of the environment and the settings of the engine.
-use crate::{
-    cqrs::{
-        command::{locks::LockLimits, retry::AggregateConflictRetryPolicy},
-        projection::processor::config::ProcessorConfig,
-    },
-    task::queue::storage_config::TaskStorageConfig,
+use crate::engine::settings::{Settings, duration_text, variable};
+use std::{
+    collections::BTreeMap,
+    error::Error,
+    fmt::Display,
+    str::FromStr,
+    sync::{Arc, Mutex, PoisonError},
+    time::Duration,
 };
-use std::{error::Error, fmt::Display, num::NonZeroUsize, str::FromStr, sync::Arc, time::Duration};
 use thiserror::Error;
-
-/// A snapshot of an aggregate every ten events.
-pub const DEFAULT_SNAPSHOT_EVERY: NonZeroUsize = NonZeroUsize::new(10).unwrap();
-/// How long a task's handler may run: the task runtime's default.
-pub const DEFAULT_HANDLER_TIMEOUT: Duration = Duration::from_secs(15);
-/// How long a claimed task is leased: the task runtime's default.
-pub const DEFAULT_TASK_LEASE: Duration = Duration::from_secs(60);
-
-/// What an engine builds its components with; the defaults are the library's. A module reads them
-/// ([`Setup::engine`]), e.g. the handler's timeout for a request of its own.
-#[derive(Clone, Debug)]
-pub struct Settings {
-    /// Every executor: a snapshot of an aggregate every this many events.
-    pub snapshot_every: NonZeroUsize,
-    pub conflict_retry: AggregateConflictRetryPolicy,
-    pub lock_limits: LockLimits,
-    /// Every projection processor.
-    pub processor: ProcessorConfig,
-    /// The owner this node writes on the checkpoints of its processors; `None`: a fresh one per engine.
-    pub node_name: Option<String>,
-    /// Every attempt of a task: how long its handler may run, the lease of its claim, the storage budget.
-    pub handler_timeout: Duration,
-    pub task_lease: Duration,
-    pub task_storage: TaskStorageConfig,
-}
-
-impl Default for Settings {
-    fn default() -> Self {
-        Self {
-            snapshot_every: DEFAULT_SNAPSHOT_EVERY,
-            conflict_retry: AggregateConflictRetryPolicy::default(),
-            lock_limits: LockLimits::default(),
-            processor: ProcessorConfig::default(),
-            node_name: None,
-            handler_timeout: DEFAULT_HANDLER_TIMEOUT,
-            task_lease: DEFAULT_TASK_LEASE,
-            task_storage: TaskStorageConfig::default(),
-        }
-    }
-}
 
 /// Where the variables of the environment come from: a lookup by the variable's full name.
 pub(crate) type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
@@ -58,6 +19,8 @@ pub struct Setup {
     prefix: String,
     lookup: Lookup,
     settings: Settings,
+    /// What the modules read and described, by key: `Cqrs::describe` lists it next to the engine's settings.
+    described: Mutex<BTreeMap<String, String>>,
 }
 
 /// A variable of a module that cannot be read, or a resource the module could not make.
@@ -92,19 +55,63 @@ impl Setup {
             prefix,
             lookup,
             settings,
+            described: Mutex::default(),
         }
     }
 
     /// The variable `name` under the prefix (`ENCORE_TICKET_LIMIT` for `TICKET_LIMIT`), trimmed and parsed; `default`
-    /// when it is not set or blank. A value that does not parse names the variable.
-    pub fn env<T: FromStr>(&self, name: &str, default: T) -> Result<T, SetupError>
+    /// when it is not set or blank. A value that does not parse names the variable. The value the module gets is
+    /// described under the variable's name (`Cqrs::describe`).
+    pub fn env<T: FromStr + Display>(&self, name: &str, default: T) -> Result<T, SetupError>
     where
         T::Err: Display,
     {
-        let variable = match self.prefix.as_str() {
-            "" => name.to_owned(),
-            prefix => format!("{prefix}_{name}"),
-        };
+        let value = self.read(name, default)?;
+        self.describe(self.variable(name), value.to_string());
+        Ok(value)
+    }
+
+    /// The variable `name` as milliseconds; `default_ms` when it is not set. Described as a duration (`1 s`, `80 ms`).
+    pub fn millis(&self, name: &str, default_ms: u64) -> Result<Duration, SetupError> {
+        let value = Duration::from_millis(self.read(name, default_ms)?);
+        self.describe(self.variable(name), duration_text(value));
+        Ok(value)
+    }
+
+    /// The name of the variable `name` under the prefix.
+    pub fn variable(&self, name: &str) -> String {
+        variable(&self.prefix, name)
+    }
+
+    /// A value of the variable `name` the module refuses, e.g. `must be positive`.
+    pub fn invalid(&self, name: &str, message: impl Into<String>) -> SetupError {
+        SetupError::Invalid {
+            variable: self.variable(name),
+            message: message.into(),
+        }
+    }
+
+    /// A setting of the module with no variable of its own (derived from others) in the engine's description, under a
+    /// dotted name in lower case (`mail.request_timeout`); a key described twice keeps the last value.
+    pub fn describe(&self, key: impl Into<String>, value: impl Into<String>) {
+        let mut described = self.described.lock().unwrap_or_else(PoisonError::into_inner);
+        described.insert(key.into(), value.into());
+    }
+
+    /// What the modules read and described, sorted by key.
+    pub(crate) fn described(self) -> Vec<(String, String)> {
+        self.described
+            .into_inner()
+            .unwrap_or_else(PoisonError::into_inner)
+            .into_iter()
+            .collect()
+    }
+
+    fn read<T: FromStr>(&self, name: &str, default: T) -> Result<T, SetupError>
+    where
+        T::Err: Display,
+    {
+        let variable = self.variable(name);
         match (self.lookup)(&variable).map(|value| value.trim().to_owned()) {
             Some(value) if !value.is_empty() => value.parse().map_err(|error: T::Err| SetupError::Invalid {
                 message: format!("cannot parse {value:?}: {error}"),
@@ -112,11 +119,6 @@ impl Setup {
             }),
             _ => Ok(default),
         }
-    }
-
-    /// The variable `name` as milliseconds; `default_ms` when it is not set.
-    pub fn millis(&self, name: &str, default_ms: u64) -> Result<Duration, SetupError> {
-        self.env(name, default_ms).map(Duration::from_millis)
     }
 
     /// The settings of the engine the module is built into.
@@ -128,7 +130,7 @@ impl Setup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::command::locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS};
+    use crate::engine::settings::DEFAULT_SNAPSHOT_EVERY;
     use std::collections::HashMap;
 
     fn setup(prefix: &str, variables: &[(&str, &str)]) -> Setup {
@@ -152,7 +154,7 @@ mod tests {
         assert_eq!(bare.env("TICKET_LIMIT", 4).unwrap(), 9, "no prefix: the name as it is");
         assert_eq!(bare.millis("RETRY_MS", 1000).unwrap(), Duration::from_millis(250));
         assert_eq!(bare.millis("ABSENT_MS", 1000).unwrap(), Duration::from_secs(1));
-        assert_eq!(bare.engine().snapshot_every, DEFAULT_SNAPSHOT_EVERY);
+        assert_eq!(bare.engine().snapshot_every(), DEFAULT_SNAPSHOT_EVERY);
     }
 
     #[test]
@@ -166,49 +168,35 @@ mod tests {
     }
 
     #[test]
-    fn the_default_settings_are_the_library_constants() {
-        let defaults = Settings::default();
-        assert_eq!(
-            (defaults.snapshot_every.get(), defaults.conflict_retry, defaults.lock_limits),
-            (
-                10,
-                AggregateConflictRetryPolicy::default(),
-                LockLimits::new(DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS.get()).unwrap()
-            )
+    fn a_module_records_what_it_reads_and_names_its_refusals() {
+        let encore = setup(
+            "ENCORE",
+            &[
+                ("ENCORE_TICKET_LIMIT", "7"),
+                ("ENCORE_RETRY_MS", "1500"),
+                ("ENCORE_URL", "http://mail/"),
+            ],
         );
+        assert_eq!(encore.env("TICKET_LIMIT", 4).unwrap(), 7);
+        assert_eq!(encore.millis("RETRY_MS", 1000).unwrap(), Duration::from_millis(1500));
+        assert_eq!(encore.millis("PACE_MS", 1000).unwrap(), Duration::from_secs(1));
+        assert_eq!(encore.env("URL", String::new()).unwrap(), "http://mail/");
+        encore.describe("mail.request_timeout", "4 s");
+        encore.describe("mail.request_timeout", "3 s");
+        assert_eq!(encore.variable("TICKET_LIMIT"), "ENCORE_TICKET_LIMIT");
+        let refused = encore.invalid("TICKET_LIMIT", "must be positive");
+        assert_eq!(refused.to_string(), "ENCORE_TICKET_LIMIT: must be positive");
+        assert!(matches!(refused, SetupError::Invalid { ref variable, .. } if variable == "ENCORE_TICKET_LIMIT"));
         assert_eq!(
-            (
-                defaults.processor,
-                defaults.node_name,
-                defaults.handler_timeout,
-                defaults.task_lease
-            ),
-            (
-                ProcessorConfig::default(),
-                None,
-                Duration::from_secs(15),
-                Duration::from_secs(60)
-            )
-        );
-        assert_eq!(defaults.task_storage.storage_timeout(), Duration::from_secs(6));
-    }
-
-    #[cfg(feature = "worker")]
-    #[test]
-    fn the_task_defaults_are_the_task_runtimes() {
-        let runtime = crate::task::runtime::config::TaskRuntimeConfig::default();
-        let defaults = Settings::default();
-        assert_eq!(
-            (
-                defaults.handler_timeout,
-                defaults.task_lease,
-                defaults.task_storage.storage_timeout()
-            ),
-            (
-                runtime.worker_pool().handler_timeout(),
-                runtime.worker_pool().lease_duration(),
-                runtime.storage().storage_timeout()
-            )
+            encore.described(),
+            [
+                ("ENCORE_PACE_MS", "1 s"),
+                ("ENCORE_RETRY_MS", "1500 ms"),
+                ("ENCORE_TICKET_LIMIT", "7"),
+                ("ENCORE_URL", "http://mail/"),
+                ("mail.request_timeout", "3 s"),
+            ]
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
         );
     }
 }

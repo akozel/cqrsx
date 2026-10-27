@@ -125,6 +125,7 @@ impl TaskWorkerPoolConfig {
         self.buffer_refill_percent
     }
     /// Waiting deliveries below which the producer claims: ceil(Q * percent / 100), from 1 to Q.
+    #[cfg(feature = "worker")]
     pub(super) fn buffer_refill_level(&self) -> usize {
         let level = (self.buffer_capacity as u128 * u128::from(self.buffer_refill_percent)).div_ceil(100);
         usize::try_from(level).expect("the refill level never exceeds the buffer capacity")
@@ -333,6 +334,7 @@ mod tests {
         assert!(config(1, 1, Duration::MAX, Duration::from_secs(30), Duration::from_secs(120)).is_err());
     }
 
+    #[cfg(feature = "worker")]
     #[test]
     fn buffer_refill_level_rounds_up_and_stays_within_capacity() {
         let level = |q, percent| {

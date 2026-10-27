@@ -38,7 +38,7 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-features
 cargo test --locked -p cqrsx --no-default-features            # core without PostgreSQL / worker
-cargo test --locked -p cqrsx --no-default-features --features postgres   # also: worker, host, logging, mongodb
+cargo test --locked -p cqrsx --no-default-features --features postgres   # also: worker, host, logging, mongodb, http
 cargo llvm-cov --locked --workspace --all-features --fail-under-lines 97
 cargo llvm-cov --locked -p cqrsx --all-features --fail-under-lines 97
 ```

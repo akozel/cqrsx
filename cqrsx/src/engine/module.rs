@@ -36,7 +36,8 @@ type TaskRegistration = (Result<BoxedTaskAdapter, TaskFormatError>, Option<(Poli
 /// - task types with their handlers, bound to policies ([`task`](Self::task), [`policy`](Self::policy));
 /// - what the handlers depend on, by type ([`provide`](Self::provide));
 /// - the observers of every command and every processor of the engine ([`observe_commands`](Self::observe_commands),
-///   [`observe_projections`](Self::observe_projections)), e.g. for an activity feed.
+///   [`observe_projections`](Self::observe_projections)), e.g. for an activity feed;
+/// - with the feature `http`, its HTTP routes, served with the routes of every module (`routes`).
 pub struct Module {
     pub(crate) name: &'static str,
     pub(crate) aggregates: Vec<AggregateEntry>,
@@ -46,6 +47,8 @@ pub struct Module {
     pub(crate) dependencies: Dependencies,
     pub(crate) command_observers: Vec<Arc<dyn AnyCommandObserver>>,
     pub(crate) projection_observers: Vec<ProjectionObservers>,
+    #[cfg(feature = "http")]
+    pub(crate) routes: Option<axum::Router<Arc<Cqrs>>>,
 }
 
 impl Module {
@@ -59,6 +62,8 @@ impl Module {
             dependencies: Dependencies::default(),
             command_observers: Vec::new(),
             projection_observers: Vec::new(),
+            #[cfg(feature = "http")]
+            routes: None,
         }
     }
 

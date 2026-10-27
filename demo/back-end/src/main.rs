@@ -1,6 +1,8 @@
-//! Encore back-end: the process. What runs in it is assembled in `bootstrap`; how it starts, serves and
-//! stops is `process`.
-use encore_backend::{bootstrap, process::Process};
+//! Encore back-end: the box office on the cqrsx engine. The engine reads its settings from the `ENCORE_*` variables
+//! (and the library's `OUTBOX_*`), keeps the journal in PostgreSQL and the read models in MongoDB, and serves the HTTP
+//! API of the modules next to the task runtime and the projection processors until a signal.
+use cqrsx::engine::{Cqrs, mongodb::MongoDb, postgres::Postgres};
+use encore_backend::{DEMO_DEFAULTS, concert, fan, operations};
 
 fn fail(message: impl std::fmt::Display) -> ! {
     tracing::error!("{message}");
@@ -10,7 +12,17 @@ fn fail(message: impl std::fmt::Display) -> ! {
 
 #[tokio::main]
 async fn main() {
-    let process = Process::start().await.unwrap_or_else(|e| fail(e)); // .env, logging, Config, PostgreSQL, MongoDB
-    let app = bootstrap::wire(&process).unwrap_or_else(|e| fail(e)); // aggregates, projections, tasks, routes
-    process.serve(app).await.unwrap_or_else(|e| fail(e)); // HTTP API + task runtime until a signal, drain, close
+    dotenvy::dotenv().ok();
+    let served = Cqrs::from_env("ENCORE")
+        .defaults(DEMO_DEFAULTS)
+        .event_store(Postgres)
+        .projections(MongoDb)
+        .module(concert::module)
+        .module(fan::module)
+        .module(operations::module)
+        .serve()
+        .await;
+    if let Err(error) = served {
+        fail(error)
+    }
 }

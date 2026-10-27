@@ -1,7 +1,8 @@
 #[cfg(test)]
 use crate::task::runtime::worker_pool_config::TaskWorkerPoolConfigError;
-use crate::{host::error::HostError, task::runtime::TaskRuntimeError};
+use crate::{cqrs::projection::runtime::ProjectionRuntime, host::error::HostError, task::runtime::TaskRuntimeError};
 use std::{future::Future, io};
+use thiserror::Error;
 use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
 
@@ -81,6 +82,46 @@ where
             expected_inbound_exit((&mut inbound).await),
         ),
     }
+}
+
+/// What stopped the components of a process ([`run_with_processors`]): the host's outcome, as [`run`] reports it, and
+/// the read side's.
+#[derive(Debug)]
+pub struct Stopped {
+    pub host: Result<(), HostError>,
+    pub read_side: Result<(), ReadSideStopped>,
+}
+
+/// The projection processors failed: one panicked (and stopped the others), or their runtime did.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("the read side stopped: {0}")]
+pub struct ReadSideStopped(pub String);
+
+/// Runs the inbound server and the task runtime under [`run`], with the projection processors beside them on the same
+/// token: the processors start only now, after everything that could fail at start has succeeded, so a failed start
+/// never leaves a checkpoint held. Whatever stops first stops the rest (the projection runtime cancels the token when it
+/// ends). The processors are awaited after the server and the task runtime: they finish what is in flight and give
+/// their checkpoints back; a panicking processor is the read side's failure.
+pub async fn run_with_processors<I, T, S>(
+    inbound: I,
+    task_runtime: T,
+    processors: ProjectionRuntime,
+    shutdown: CancellationToken,
+    signal: S,
+) -> Stopped
+where
+    I: Future<Output = io::Result<()>>,
+    T: Future<Output = Result<(), TaskRuntimeError>> + Send + 'static,
+    S: Future<Output = io::Result<()>>,
+{
+    let read_side = tokio::spawn(processors.run(shutdown.clone()));
+    let host = run(inbound, task_runtime, shutdown, signal).await;
+    let read_side = match read_side.await {
+        Ok(Ok(())) => Ok(()),
+        Ok(Err(error)) => Err(ReadSideStopped(error.to_string())),
+        Err(error) => Err(ReadSideStopped(error.to_string())),
+    };
+    Stopped { host, read_side }
 }
 
 fn preserve_primary_failure(primary: Result<(), HostError>, secondary: Result<(), HostError>) -> Result<(), HostError> {
@@ -657,5 +698,148 @@ mod tests {
         tokio::task::yield_now().await;
         assert!(ready.load(Ordering::SeqCst));
         assert!(matches!(host.await, Err(HostError::InboundStopped)));
+    }
+
+    mod processors {
+        use super::*;
+        use crate::cqrs::{
+            aggregate::Aggregate,
+            command::decide::Decide,
+            event::{DomainEvent, EventEnvelope},
+            projection::{
+                View, ViewProjection,
+                processor::{
+                    ProjectionProcessor,
+                    config::ProcessorConfig,
+                    observer::{LeaseEvent, ProjectionObserver},
+                },
+            },
+            testing::{
+                mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
+                mem_view_repository::MemViewRepository,
+            },
+        };
+        use serde::{Deserialize, Serialize};
+        use std::time::Duration;
+
+        #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+        struct Counted;
+
+        impl DomainEvent for Counted {
+            fn event_type(&self) -> String {
+                "counted".into()
+            }
+            fn event_version(&self) -> String {
+                "1".into()
+            }
+        }
+
+        #[derive(Debug, thiserror::Error)]
+        #[error("never")]
+        struct Never;
+
+        #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+        struct Counter;
+
+        impl Aggregate for Counter {
+            const TYPE: &'static str = "counter";
+            type Id = String;
+            type Command = ();
+            type Event = Counted;
+            type Error = Never;
+            type Rules = ();
+            fn apply(&mut self, _: Counted) {}
+        }
+
+        impl Decide<Counter> for () {
+            fn decide(self, _: &Counter, _: &()) -> Result<Counted, Never> {
+                Ok(Counted)
+            }
+        }
+
+        #[derive(Debug, Default, Serialize, Deserialize)]
+        struct Total;
+
+        impl View<Counter> for Total {
+            const NAME: &'static str = "totals";
+            fn update(&mut self, _: &EventEnvelope<Counter>) {}
+        }
+
+        /// An observer that panics as soon as its processor holds the checkpoint: a bug in the read side.
+        struct Panicking;
+
+        impl ProjectionObserver for Panicking {
+            fn lease(&self, event: LeaseEvent) {
+                assert!(event != LeaseEvent::Acquired, "a bug in an observer");
+            }
+        }
+
+        fn runtime(observer: Option<Arc<dyn ProjectionObserver>>) -> ProjectionRuntime {
+            let processor = ProjectionProcessor::new(
+                "totals",
+                Arc::new(MemEventRepository::default()),
+                Arc::new(MemCheckpointStore::default()),
+                Arc::new(ViewProjection::new(Arc::new(MemViewRepository::<Total, Counter>::default()))),
+                ProcessorConfig::default(),
+            );
+            let processor = match observer {
+                Some(observer) => processor.with_observer(observer),
+                None => processor,
+            };
+            ProjectionRuntime::new().with_processor(processor)
+        }
+
+        /// An inbound server and a task runtime that run until the token is cancelled.
+        fn components(
+            shutdown: &CancellationToken,
+        ) -> (
+            impl Future<Output = io::Result<()>>,
+            impl Future<Output = Result<(), TaskRuntimeError>> + Send + 'static,
+        ) {
+            let (inbound, runtime) = (shutdown.clone(), shutdown.clone());
+            (
+                async move {
+                    inbound.cancelled().await;
+                    Ok(())
+                },
+                async move {
+                    runtime.cancelled().await;
+                    Ok(())
+                },
+            )
+        }
+
+        #[tokio::test]
+        async fn a_panicking_processor_stops_the_server_and_fails_the_process() {
+            let shutdown = CancellationToken::new();
+            let (inbound, task_runtime) = components(&shutdown);
+            let result = run_with_processors(
+                inbound,
+                task_runtime,
+                runtime(Some(Arc::new(Panicking))),
+                shutdown.clone(),
+                std::future::pending(),
+            )
+            .await
+            .read_side;
+            assert!(matches!(result, Err(ReadSideStopped(message)) if message.contains("totals")));
+            assert!(shutdown.is_cancelled(), "the panic stopped everything else");
+        }
+
+        #[tokio::test]
+        async fn a_requested_stop_ends_every_component_and_the_processors_last() {
+            let shutdown = CancellationToken::new();
+            let (inbound, task_runtime) = components(&shutdown);
+            let stop = shutdown.clone();
+            tokio::spawn(async move {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                stop.cancel();
+            });
+            let stopped =
+                run_with_processors(inbound, task_runtime, runtime(None), shutdown.clone(), std::future::pending()).await;
+            let result = stopped.read_side;
+            assert!(result.is_ok(), "{result:?}");
+            assert!(stopped.host.is_ok());
+        }
     }
 }

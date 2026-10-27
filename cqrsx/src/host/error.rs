@@ -42,7 +42,7 @@ impl fmt::Debug for HostError {
 
 impl HostError {
     /// Log the failure without formatting a runtime task's panic payload.
-    pub fn log(&self, message: &'static str) {
+    pub fn log(&self, message: &str) {
         match self {
             Self::TaskRuntimeJoin(source) => error!(
                 error = %self, tokio_task_id = %source.id(), panicked = source.is_panic(),

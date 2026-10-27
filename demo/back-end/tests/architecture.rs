@@ -7,9 +7,10 @@
 //! `infrastructure`). Every `use` tree is expanded to full paths and every other qualified path is collected, with
 //! comments and string literals removed first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
-//! the ledger's tasks. Of cqrsx a domain sees its contracts and their derive macros, a presentation the command port,
-//! its outcomes, the rejection trait and the queries of the read models. `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and
-//! `testing.rs` compose the modules and are exempt. A few rules apply to production code only: test code may use test
+//! the ledger's tasks. Of cqrsx a domain sees its contracts and their derive macros, a presentation the engine (its
+//! commands, its views, the dependencies of the modules), the outcomes of a command, the rejection trait and the
+//! documents of the read models. `main.rs` and `lib.rs` compose the modules, `testing.rs` and `composition.rs` with
+//! their directories test them as composed: they are exempt. A few rules apply to production code only: test code may use test
 //! tooling. Relative paths (`super::`) are not resolved: one module reaches another only through `crate::`.
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -49,8 +50,9 @@ const MODULES: &[(&str, &[Layer])] = &[
     ),
 ];
 
-/// The composition root and the process: they see everything and are not checked.
-const EXEMPT: &[&str] = &["bootstrap", "process", "config", "main", "lib", "testing"];
+/// The composition (`main.rs` lists the modules for the engine, `lib.rs` its defaults) and the tests of the modules as
+/// composed: they see everything and are not checked.
+const EXEMPT: &[&str] = &["main", "lib", "testing", "composition"];
 
 /// What one module may name of another: the producer of a fact builds the consumer's task, so the box office's
 /// application names the contracts of the ledger's tasks and nothing else of the ledger. The ledger never names the
@@ -79,30 +81,9 @@ struct Exception {
     why: &'static str,
 }
 
-const EXCEPTIONS: &[Exception] = &[
-    Exception {
-        id: "I-1",
-        place: "*/presentation",
-        paths: &["crate::bootstrap::AppState"],
-        tests_only: false,
-        why: "the state of the routes is the composition's until the engine serves the modules (05/12)",
-    },
-    Exception {
-        id: "I-2",
-        place: "operations/presentation/config.rs",
-        paths: &["crate::config::Config"],
-        tests_only: false,
-        why: "`/api/config` shows settings of the configuration until the engine reads it (05/12)",
-    },
-    Exception {
-        id: "I-3",
-        place: "concert/presentation/rebuild.rs",
-        paths: &["crate::operations::presentation::projections::rebuild::refused"],
-        tests_only: false,
-        why: "the rebuild of one hall is the operations' rebuild service and answers its refusals as Encore! does, until \
-              the HTTP API asks the engine to rebuild a key (05/12)",
-    },
-];
+/// The engine serves the modules (backlog 05/12): I-1 (`AppState` in the presentation), I-2 (`Config` in `/api/config`)
+/// and I-3 (the rebuild of one hall by the operations' service) are gone with the composition root.
+const EXCEPTIONS: &[Exception] = &[];
 
 /// Where a file lives: a layer of a module, a module's root file (`layer: None`), the exempt composition, or nowhere.
 #[derive(Debug, PartialEq, Eq)]
@@ -220,19 +201,15 @@ fn externals(layer: Option<Layer>) -> Externals {
         Some(Layer::Presentation) => Externals {
             forbidden: &["sqlx", "mongodb"],
             test_only: &[],
-            // The handler hands a command to the engine's command port with the metadata of a UI command and answers
-            // its outcome (backlog 05/08 and 05/09, design 04; 05/12 replaces them with the engine's `execute` from
-            // the source "ui" and its outcome); a refused command answers with its code and params (05/04): the port,
-            // its error, the command's metadata and the rejection trait. A read model is read through the engine's
-            // repository, a stored document is what it answers (05/10, design 06; 05/12 replaces them with the
-            // engine's `view::<V>()`). Nothing else.
+            // The handler takes the engine as its state and hands it a command from the source "ui" (backlog 05/12,
+            // design 04 and 07), answers its outcome (the error of a command) and, for a refused one, its code and
+            // params (05/04): the rejection trait. A read model is read through the engine's view, a stored document is
+            // what it answers (05/10, design 06). Nothing else.
             cqrsx_allowed: Some(&[
-                "cqrsx::cqrs::command::CommandExecutor",
+                "cqrsx::engine::Cqrs",
                 "cqrsx::cqrs::command::CommandGatewayError",
-                "cqrsx::cqrs::command::metadata::CommandMetadata",
                 "cqrsx::cqrs::rejection",
                 "cqrsx::cqrs::projection::repository::StoredView",
-                "cqrsx::cqrs::projection::repository::ViewRepository",
             ]),
         },
         Some(Layer::Infrastructure) | None => Externals {
@@ -718,7 +695,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         assert_eq!(check(file, "").len(), 1, "{file}");
     }
     assert!(
-        check("bootstrap/routes.rs", "use crate::fan::domain::Fan;\n").is_empty(),
+        check("main.rs", "use crate::fan::domain::Fan;\n").is_empty(),
         "the composition is exempt"
     );
     // An exception allows its paths in its place only, and in test code only when it says so.
@@ -804,24 +781,27 @@ fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
     }
 }
 
-/// Backlog 05/08: the HTTP handler hands a command to the engine's command port and answers its outcome; nothing
-/// else of the command path reaches a presentation. Backlog 05/09: the metadata of the command is cqrsx's.
+/// Backlog 05/08: the HTTP handler hands a command to the engine and answers its outcome; nothing else of the command
+/// path reaches a presentation. Backlog 05/12: the engine is the port, the metadata of the command its own.
 #[test]
 fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::cqrs::command::{CommandExecutor, CommandGatewayError};\n",
+        "use cqrsx::{cqrs::command::CommandGatewayError, engine::Cqrs};\n",
         "fn f(e: cqrsx::cqrs::command::CommandGatewayError<()>) {}\n",
-        "use cqrsx::cqrs::command::metadata::CommandMetadata;\n",
+        "fn f(cqrs: &cqrsx::engine::Cqrs) {}\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
     }
     for code in [
+        "use cqrsx::cqrs::command::CommandExecutor;\n",
+        "use cqrsx::cqrs::command::metadata::CommandMetadata;\n",
         "use cqrsx::cqrs::command::CommandInfo;\n",
         "use cqrsx::cqrs::command::observer::CommandObserver;\n",
         "use cqrsx::cqrs::CommitReport;\n",
         "use cqrsx::cqrs::testing::command::TestCommandExecutor;\n",
         "use cqrsx::postgres::command::PostgresCommandExecutor;\n",
+        "use cqrsx::engine::build::Builder;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}");
@@ -829,18 +809,20 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
     }
 }
 
-/// Backlog 05/10: a presentation reads a read model through the engine's repository and answers its stored documents;
-/// nothing else of the read side reaches it.
+/// Backlog 05/10: a presentation reads a read model through the engine and answers its stored documents; nothing else
+/// of the read side reaches it. Backlog 05/12: the engine's view (`cqrs.view::<V>()`) instead of a repository.
 #[test]
 fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_the_read_side() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::cqrs::projection::repository::{StoredView, ViewRepository};\n",
+        "use cqrsx::{cqrs::projection::repository::StoredView, engine::Cqrs};\n",
         "fn f(d: cqrsx::cqrs::projection::repository::StoredView<()>) {}\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
     }
     for code in [
+        "use cqrsx::cqrs::projection::repository::ViewRepository;\n",
+        "use cqrsx::engine::views::Views;\n",
         "use cqrsx::cqrs::projection::ViewProjection;\n",
         "use cqrsx::cqrs::projection::repository::ViewContext;\n",
         "use cqrsx::cqrs::projection::verify::verify;\n",
@@ -904,11 +886,12 @@ fn the_checker_sees_grouped_imports_inline_paths_and_ignores_comments_and_string
     );
 }
 
-/// G-11 (backlog 05/02; since 05/11 the engine refuses a second registration of an aggregate type, which the
-/// composition reads its aggregates from) until the engine builds the executors of the process (05/12): the process
-/// builds one command executor per aggregate type, in that aggregate's module of the composition root, and the root
-/// builds each once. The HTTP commands and the task handlers' commands to one aggregate share it, and with it the locks; a second
-/// executor of one type would be another process to them, meeting the first only at the optimistic check.
+/// G-11 (backlog 05/02; since 05/11 the engine refuses a second registration of an aggregate type, since 05/12 it
+/// builds the executors of the process): one command executor per aggregate type and process. The demo builds none of
+/// its own: the engine builds one per aggregate type a module registers, and `main.rs` builds the engine once, with
+/// every module once. The HTTP commands and the task handlers' commands to one aggregate share it, and with it the
+/// locks; a second executor of one type would be another process to them, meeting the first only at the optimistic
+/// check.
 #[test]
 fn the_process_builds_one_command_executor_per_aggregate_type() {
     let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
@@ -921,55 +904,29 @@ fn the_process_builds_one_command_executor_per_aggregate_type() {
             (file.clone(), strip(&code))
         })
         .collect();
-    let test_files: BTreeSet<PathBuf> = stripped
-        .iter()
-        .flat_map(|(file, code)| {
-            // The crate root's children live next to it, every other module's in its own directory.
-            let dir = if file.parent() == Some(src.as_path()) && (file.ends_with("lib.rs") || file.ends_with("main.rs")) {
-                src.clone()
-            } else {
-                file.with_extension("")
-            };
-            test_only_children(code)
-                .into_iter()
-                .map(move |child| dir.join(format!("{child}.rs")))
-        })
-        .collect();
+    let test_files = test_files(&src, &stripped);
     let mut built = Vec::new();
-    let mut test_executors = Vec::new();
     for (file, code) in stripped.iter().filter(|(file, _)| !test_files.contains(file)) {
         let relative = file.strip_prefix(&src).unwrap_or(file).display().to_string();
         let production = without_test_modules(code);
-        let count = production.matches("PostgresCommandExecutor::new(").count();
-        if count > 0 {
-            built.push((relative.clone(), count));
-        }
-        if production.contains("TestCommandExecutor") {
-            test_executors.push(relative);
+        for executor in ["PostgresCommandExecutor", "CommandExecutorCore", "TestCommandExecutor"] {
+            if production.contains(executor) {
+                built.push((relative.clone(), executor));
+            }
         }
     }
-    built.sort();
-    assert_eq!(
-        built,
-        [
-            ("bootstrap/aggregates/concert.rs".to_owned(), 1),
-            ("bootstrap/aggregates/fan.rs".to_owned(), 1)
-        ],
-        "one executor per aggregate type, in its module of the composition root"
-    );
     assert!(
-        test_executors.is_empty(),
-        "test executors in production code: {test_executors:?}"
+        built.is_empty(),
+        "command executors in production code: the engine builds them: {built:?}"
     );
-    let root = src.join("bootstrap.rs");
-    let root = without_test_modules(&strip(
-        &fs::read_to_string(&root).unwrap_or_else(|e| panic!("{}: {e}", root.display())),
-    ));
-    for aggregate in ["concert", "fan"] {
+    let main = src.join("main.rs");
+    let main = strip(&fs::read_to_string(&main).unwrap_or_else(|e| panic!("{}: {e}", main.display())));
+    assert_eq!(main.matches("Cqrs::from_env(").count(), 1, "main.rs builds the engine once");
+    for module in ["concert", "fan", "operations"] {
         assert_eq!(
-            root.matches(&format!("aggregates::{aggregate}::wire(")).count(),
+            main.matches(&format!(".module({module}::module)")).count(),
             1,
-            "bootstrap.rs builds the {aggregate} executor once"
+            "main.rs registers the {module} module once"
         );
     }
 }

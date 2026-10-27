@@ -40,7 +40,7 @@ fn done(task_type: &str, attempts: i32) -> (String, TaskStatus, i32) {
 
 #[tokio::test]
 async fn a_cancellation_refunds_the_fan() {
-    let (cqrs, mail) = test_app();
+    let (cqrs, mail) = test_app().await;
     let ui = cqrs.from("ui");
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", Uuid::now_v7()))
@@ -68,7 +68,7 @@ async fn a_cancellation_refunds_the_fan() {
 /// once.
 #[tokio::test(start_paused = true)]
 async fn a_delivery_repeated_after_a_lost_acknowledgement_records_one_ticket_and_one_letter() {
-    let (cqrs, mail) = test_app();
+    let (cqrs, mail) = test_app().await;
     let ui = cqrs.from("ui");
     let booking_id = Uuid::now_v7();
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
@@ -82,7 +82,7 @@ async fn a_delivery_repeated_after_a_lost_acknowledgement_records_one_ticket_and
         "the step and the e-mail ran; their acknowledgements are lost"
     );
     cqrs.outbox().lose_settlements(false);
-    tokio::time::advance(cqrs.settings().task_lease).await;
+    tokio::time::advance(cqrs.settings().task_lease()).await;
     assert_eq!(
         cqrs.run_tasks().await,
         0,
@@ -105,7 +105,7 @@ async fn a_delivery_repeated_after_a_lost_acknowledgement_records_one_ticket_and
 /// both letters.
 #[tokio::test(start_paused = true)]
 async fn a_cancellation_that_overtook_its_ticket_is_retried_and_refunds_after_the_ticket() {
-    let (cqrs, mail) = test_app();
+    let (cqrs, mail) = test_app().await;
     let ui = cqrs.from("ui");
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", Uuid::now_v7()))
@@ -152,7 +152,7 @@ async fn a_cancellation_that_overtook_its_ticket_is_retried_and_refunds_after_th
 
 #[tokio::test]
 async fn the_concert_halls_catch_up_with_the_journal() {
-    let (cqrs, _) = test_app();
+    let (cqrs, _) = test_app().await;
     let ui = cqrs.from("ui");
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", Uuid::now_v7()))
@@ -182,7 +182,7 @@ async fn the_concert_halls_catch_up_with_the_journal() {
 /// the seat when it was submitted.
 #[tokio::test]
 async fn a_cancellation_queued_behind_a_rebooking_refunds_the_booking_it_cancels() {
-    let (cqrs, _) = test_app();
+    let (cqrs, _) = test_app().await;
     let ui = cqrs.from("ui");
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
     let first = Uuid::now_v7();
@@ -224,7 +224,7 @@ async fn a_cancellation_queued_behind_a_rebooking_refunds_the_booking_it_cancels
 /// cancellation task carries the booking of the `BookingCancelled` its own command committed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_events() {
-    let (cqrs, _) = test_app();
+    let (cqrs, _) = test_app().await;
     let cqrs = Arc::new(cqrs);
     cqrs.from("ui").execute::<Concert>(&concert_id(), announce()).await.unwrap();
     let mut commands = tokio::task::JoinSet::new();

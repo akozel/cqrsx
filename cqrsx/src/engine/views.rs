@@ -8,8 +8,8 @@ use crate::{
             repository::{StoredView, ViewRepository},
             verify::{Verification, verify},
         },
-        store::{PersistenceError, feed::Position},
-        testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
+        store::{PersistenceError, feed::Position, repository::PersistedEventRepository},
+        testing::mem_event_repository::MemEventRepository,
     },
     engine::Cqrs,
 };
@@ -25,6 +25,75 @@ use std::{
 use thiserror::Error;
 
 type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T, PersistenceError>> + Send + 'a>>;
+type CheckpointAnswer<'a, T> = Pin<Box<dyn Future<Output = Result<T, CheckpointError>> + Send + 'a>>;
+
+/// The size of the journal of the views' aggregate types: their events and the aggregates that hold them.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JournalTotals {
+    pub events: u64,
+    pub aggregates: u64,
+}
+
+/// What a journal counts of one aggregate type: the events above a position (how far a view is behind) and its size.
+pub(crate) trait Counts: Send + Sync {
+    fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send;
+    fn totals<A: Aggregate>(&self) -> impl Future<Output = Result<JournalTotals, PersistenceError>> + Send;
+}
+
+impl Counts for MemEventRepository {
+    fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
+        MemEventRepository::count_after::<A>(self, after, cap)
+    }
+
+    async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
+        let events = MemEventRepository::count_after::<A>(self, Position::START, u64::MAX).await?;
+        let (mut aggregates, mut after) = (0, String::new());
+        loop {
+            let page = self.aggregate_ids_after::<A>(&after, 100).await?;
+            let Some(last) = page.last() else {
+                return Ok(JournalTotals { events, aggregates });
+            };
+            after = last.clone();
+            aggregates += page.len() as u64;
+        }
+    }
+}
+
+#[cfg(feature = "postgres")]
+impl Counts for crate::postgres::event_repository::PostgresEventRepository {
+    fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
+        crate::postgres::event_repository::PostgresEventRepository::count_after::<A>(self, after, cap)
+    }
+
+    async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
+        let totals = crate::postgres::event_repository::PostgresEventRepository::totals::<A>(self).await?;
+        Ok(JournalTotals {
+            events: totals.events,
+            aggregates: totals.aggregates,
+        })
+    }
+}
+
+/// What the operations over the views ask of the checkpoints, the store erased.
+pub(crate) trait CheckpointOps: Send + Sync {
+    fn status<'a>(&'a self, projection: Option<&'a str>) -> CheckpointAnswer<'a, Vec<CheckpointStatus>>;
+    fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildRequest>;
+    fn request_rebuild_key<'a>(&'a self, key: &'a CheckpointKey, id: &'a str) -> CheckpointAnswer<'a, ()>;
+}
+
+impl<C: CheckpointStore + 'static> CheckpointOps for C {
+    fn status<'a>(&'a self, projection: Option<&'a str>) -> CheckpointAnswer<'a, Vec<CheckpointStatus>> {
+        Box::pin(CheckpointStore::status(self, projection))
+    }
+
+    fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildRequest> {
+        Box::pin(CheckpointStore::request_rebuild(self, key, pace))
+    }
+
+    fn request_rebuild_key<'a>(&'a self, key: &'a CheckpointKey, id: &'a str) -> CheckpointAnswer<'a, ()> {
+        Box::pin(CheckpointStore::request_rebuild_key(self, key, id))
+    }
+}
 
 /// The queries of a view, its aggregate type erased.
 trait Queries<V>: Send + Sync {
@@ -37,16 +106,27 @@ trait Queries<V>: Send + Sync {
 trait Operations: Send + Sync {
     fn key(&self) -> CheckpointKey;
     fn verify(&self) -> Answer<'_, Verification>;
-    fn lag(&self, after: Position) -> Answer<'_, u64>;
+    fn count_after(&self, after: Position, cap: u64) -> Answer<'_, u64>;
+    fn totals(&self) -> Answer<'_, JournalTotals>;
 }
 
-/// A view in memory: its documents and the journal of its aggregate.
-struct Registered<V, A> {
-    documents: Arc<MemViewRepository<V, A>>,
-    journal: MemEventRepository,
+/// A view: its documents, the journal its documents are verified against and its size counted on (`history`), and
+/// the journal its lag is counted on (`counter`).
+struct Registered<V, A, D, H, K> {
+    documents: Arc<D>,
+    history: H,
+    counter: K,
+    types: std::marker::PhantomData<fn() -> (V, A)>,
 }
 
-impl<V: View<A> + 'static, A: Aggregate + 'static> Queries<V> for Registered<V, A> {
+impl<V, A, D, H, K> Queries<V> for Registered<V, A, D, H, K>
+where
+    V: View<A> + 'static,
+    A: Aggregate + 'static,
+    D: ViewRepository<V, A> + 'static,
+    H: Send + Sync,
+    K: Send + Sync,
+{
     fn get<'a>(&'a self, id: &'a str) -> Answer<'a, Option<StoredView<V>>> {
         Box::pin(async move { Ok(self.documents.load_with_context(id).await?.map(StoredView::from)) })
     }
@@ -60,17 +140,28 @@ impl<V: View<A> + 'static, A: Aggregate + 'static> Queries<V> for Registered<V, 
     }
 }
 
-impl<V: View<A> + PartialEq + 'static, A: Aggregate + 'static> Operations for Registered<V, A> {
+impl<V, A, D, H, K> Operations for Registered<V, A, D, H, K>
+where
+    V: View<A> + PartialEq + 'static,
+    A: Aggregate + 'static,
+    D: ViewRepository<V, A> + 'static,
+    H: PersistedEventRepository + Counts + 'static,
+    K: Counts + 'static,
+{
     fn key(&self) -> CheckpointKey {
         CheckpointKey::of::<V, A>()
     }
 
     fn verify(&self) -> Answer<'_, Verification> {
-        Box::pin(verify::<V, A>(&self.journal, &*self.documents))
+        Box::pin(verify::<V, A>(&self.history, &*self.documents))
     }
 
-    fn lag(&self, after: Position) -> Answer<'_, u64> {
-        Box::pin(self.journal.count_after::<A>(after, u64::MAX))
+    fn count_after(&self, after: Position, cap: u64) -> Answer<'_, u64> {
+        Box::pin(self.counter.count_after::<A>(after, cap))
+    }
+
+    fn totals(&self) -> Answer<'_, JournalTotals> {
+        Box::pin(self.history.totals::<A>())
     }
 }
 
@@ -82,12 +173,20 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    pub(crate) fn register<V, A>(&mut self, documents: Arc<MemViewRepository<V, A>>, journal: MemEventRepository)
+    pub(crate) fn register<V, A, D, H, K>(&mut self, documents: Arc<D>, history: H, counter: K)
     where
         V: View<A> + PartialEq + 'static,
         A: Aggregate + 'static,
+        D: ViewRepository<V, A> + 'static,
+        H: PersistedEventRepository + Counts + 'static,
+        K: Counts + 'static,
     {
-        let view = Arc::new(Registered { documents, journal });
+        let view = Arc::new(Registered::<V, A, D, H, K> {
+            documents,
+            history,
+            counter,
+            types: std::marker::PhantomData,
+        });
         let queries: Arc<dyn Queries<V>> = view.clone();
         self.queries.insert(TypeId::of::<V>(), Box::new(queries));
         self.operations.push(view);
@@ -138,6 +237,8 @@ impl<V: 'static> ViewQuery<'_, V> {
 pub enum ViewsError {
     #[error("the view `{0}` is not registered")]
     Unknown(String),
+    #[error("no view of the aggregate type `{0}` is registered")]
+    UnknownAggregateType(String),
     #[error(transparent)]
     Checkpoint(#[from] CheckpointError),
     #[error(transparent)]
@@ -151,21 +252,27 @@ pub struct Views<'a> {
 }
 
 impl Views<'_> {
+    /// The rows of the views' checkpoints, in the order the modules registered the views: the projection (the view's
+    /// name) and the aggregate type of each.
+    pub fn keys(&self) -> Vec<CheckpointKey> {
+        self.cqrs.views.operations.iter().map(|view| view.key()).collect()
+    }
+
     /// The checkpoint rows: positions, owners, leases, failures and rebuilds.
     pub async fn status(&self) -> Result<Vec<CheckpointStatus>, CheckpointError> {
-        self.cqrs.memory.checkpoints.status(None).await
+        self.cqrs.checkpoints.status(None).await
     }
 
     /// Asks the processor of the view `name` to rebuild every document, `pace` between the events of a key.
     pub async fn rebuild(&self, name: &str, pace: Duration) -> Result<RebuildRequest, ViewsError> {
         let key = self.cqrs.views.named(name)?.key();
-        Ok(self.cqrs.memory.checkpoints.request_rebuild(&key, pace).await?)
+        Ok(self.cqrs.checkpoints.request_rebuild(&key, pace).await?)
     }
 
     /// Asks the processor of the view `name` to rebuild the document of the aggregate `id`.
     pub async fn rebuild_key(&self, name: &str, id: &str) -> Result<(), ViewsError> {
         let key = self.cqrs.views.named(name)?.key();
-        Ok(self.cqrs.memory.checkpoints.request_rebuild_key(&key, id).await?)
+        Ok(self.cqrs.checkpoints.request_rebuild_key(&key, id).await?)
     }
 
     /// Every document of the view `name` against the fold of the part of its history it applied (D-20).
@@ -173,11 +280,44 @@ impl Views<'_> {
         Ok(self.cqrs.views.named(name)?.verify().await?)
     }
 
-    /// The events of its aggregate type above the checkpoint of the view `name`.
+    /// The events of its aggregate type above the checkpoint of the view `name`, counted up to the lag cap of the
+    /// settings.
     pub async fn lag(&self, name: &str) -> Result<u64, ViewsError> {
         let view = self.cqrs.views.named(name)?;
-        let rows = self.cqrs.memory.checkpoints.status(Some(name)).await?;
-        Ok(view.lag(rows.first().map_or(Position::START, |row| row.position)).await?)
+        let rows = self.cqrs.checkpoints.status(Some(name)).await?;
+        let after = rows.first().map_or(Position::START, |row| row.position);
+        Ok(view.count_after(after, self.cqrs.settings.lag_cap()).await?)
+    }
+
+    /// The events of `aggregate_type` above `after`, counted up to `cap`: how far a view of the type whose checkpoint
+    /// stands at `after` is behind.
+    pub async fn count_after(&self, aggregate_type: &str, after: Position, cap: u64) -> Result<u64, ViewsError> {
+        let view = self.of_type(aggregate_type)?;
+        Ok(view.count_after(after, cap).await?)
+    }
+
+    /// The size of the journals of the views' aggregate types: their events and aggregates, each type once.
+    pub async fn totals(&self) -> Result<JournalTotals, ViewsError> {
+        let mut counted = Vec::new();
+        let mut totals = JournalTotals::default();
+        for view in &self.cqrs.views.operations {
+            let aggregate_type = view.key().aggregate_type();
+            if counted.contains(&aggregate_type) {
+                continue;
+            }
+            counted.push(aggregate_type);
+            let of_type = view.totals().await?;
+            totals.events += of_type.events;
+            totals.aggregates += of_type.aggregates;
+        }
+        Ok(totals)
+    }
+
+    fn of_type(&self, aggregate_type: &str) -> Result<&dyn Operations, ViewsError> {
+        let views = &self.cqrs.views.operations;
+        let view = views.iter().find(|view| view.key().aggregate_type() == aggregate_type);
+        view.map(|view| &**view)
+            .ok_or_else(|| ViewsError::UnknownAggregateType(aggregate_type.to_owned()))
     }
 }
 
@@ -199,7 +339,7 @@ impl Cqrs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{setup::Settings, test_support::*};
+    use crate::engine::{settings::Settings, test_support::*};
 
     async fn book_every(cqrs: &Cqrs, bookings: &[(&str, &str, &str)]) {
         for (show, seat, fan) in bookings {
@@ -212,7 +352,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_view_answers_get_list_and_range_once_caught_up() {
-        let (cqrs, _) = engine();
+        let (cqrs, _) = engine().await;
         book_every(&cqrs, &[("s-2", "A1", "fox"), ("s-1", "B2", "panda"), ("s-3", "C3", "fox")]).await;
         cqrs.catch_up().await;
         cqrs.catch_up().await;
@@ -246,7 +386,7 @@ mod tests {
 
     #[tokio::test]
     async fn views_report_their_status_and_lag_verify_and_take_rebuild_requests() {
-        let (cqrs, _) = engine();
+        let (cqrs, _) = engine().await;
         book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
         let views = cqrs.views();
         assert_eq!(
@@ -305,7 +445,7 @@ mod tests {
     /// G-09: a commit wakes the processors of its aggregate type, which read the journal before their poll.
     #[tokio::test(start_paused = true)]
     async fn a_commit_wakes_the_processors_of_its_type_before_their_poll() {
-        let config = Settings::default().processor;
+        let config = Settings::default().processor();
         let hour = crate::cqrs::projection::processor::config::ProcessorConfig::new(
             Duration::from_secs(3600),
             config.page_size(),
@@ -313,14 +453,15 @@ mod tests {
             config.delivery_limits(),
         )
         .unwrap();
-        let cqrs = Cqrs::in_memory()
-            .settings(Settings {
-                processor: hour,
-                ..Settings::default()
-            })
-            .module(shows)
-            .build()
-            .unwrap();
+        let defaults = Settings::default();
+        let settings = Settings::new(
+            defaults.snapshot_every().get(),
+            defaults.lock_limits(),
+            hour,
+            defaults.task_runtime().clone(),
+        )
+        .unwrap();
+        let cqrs = Cqrs::with_settings(settings).module(shows).build().await.unwrap();
         cqrs.catch_up().await;
         let start = tokio::time::Instant::now();
         book_every(&cqrs, &[("s-1", "A1", "fox")]).await;
@@ -331,6 +472,47 @@ mod tests {
             start.elapsed() < Duration::from_secs(1),
             "woken, not polled: {:?}",
             start.elapsed()
+        );
+    }
+
+    #[tokio::test]
+    async fn the_views_name_their_rows_count_their_journal_and_its_size() {
+        let (cqrs, _) = engine().await;
+        book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
+        let views = cqrs.views();
+        let keys: Vec<(String, &str)> = views
+            .keys()
+            .iter()
+            .map(|key| (key.projection().to_owned(), key.aggregate_type()))
+            .collect();
+        assert_eq!(keys, [("halls".to_owned(), "show"), ("tickets".to_owned(), "wallet")]);
+        assert_eq!(views.count_after("show", Position::START, 10).await.unwrap(), 3);
+        assert_eq!(
+            views.count_after("show", Position::START, 2).await.unwrap(),
+            2,
+            "up to the cap"
+        );
+        assert_eq!(views.count_after("wallet", Position::START, 10).await.unwrap(), 0);
+        assert_eq!(
+            views.count_after("seat", Position::START, 10).await.unwrap_err().to_string(),
+            "no view of the aggregate type `seat` is registered"
+        );
+        assert_eq!(
+            views.totals().await.unwrap(),
+            JournalTotals {
+                events: 3,
+                aggregates: 2
+            },
+            "the shows, the wallets have no event yet"
+        );
+        cqrs.run_tasks().await;
+        assert_eq!(
+            views.totals().await.unwrap(),
+            JournalTotals {
+                events: 5,
+                aggregates: 4
+            },
+            "every aggregate type of a view once: fox's second A1 is recorded already"
         );
     }
 }

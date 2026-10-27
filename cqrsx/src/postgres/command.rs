@@ -92,6 +92,12 @@ impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
         }
     }
 
+    /// The core this executor wraps: its settings, for a test of an assembly.
+    #[cfg(test)]
+    pub(crate) fn core(&self) -> &CommandExecutorCore<A, PostgresStore<A>> {
+        &self.inner
+    }
+
     /// Plans every decision's follow-up tasks through `planner`; they commit in the event's statement.
     pub fn with_task_planner(self, planner: impl TaskPlanner<A> + 'static) -> Self
     where

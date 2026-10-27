@@ -34,6 +34,7 @@ impl TaskRuntimeConfig {
         &self.worker
     }
 
+    #[cfg(feature = "worker")]
     pub(super) fn into_parts(self) -> (TaskStorageConfig, TaskWorkerPoolConfig) {
         (self.storage, self.worker)
     }

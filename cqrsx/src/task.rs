@@ -14,7 +14,6 @@ pub mod handlers;
 pub mod policy;
 pub mod queue;
 pub mod result;
-#[cfg(feature = "worker")]
 pub mod runtime;
 #[cfg(test)]
 pub(crate) mod test_support;

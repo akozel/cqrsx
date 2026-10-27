@@ -1,62 +1,159 @@
-//! Router tests without a database: every branch that answers before storage is touched (validation, the
-//! error shape), the endpoints that need no storage, and the read side over in-memory checkpoints.
-use crate::{
-    bootstrap::{
-        self,
-        read_models::{Documents, ReadModels},
-        routes::router,
-    },
-    concert::{
-        application::views::concert_hall::{ConcertHallView, ConcertSummary},
-        domain::Concert,
-    },
-    fan::{
-        application::views::fan_wallet::{FanWalletView, TicketEntry, TicketEntryState},
-        domain::Fan,
-    },
-    testing,
-};
+//! The HTTP API of the box office on the engine (moved from `bootstrap/routes/tests.rs` with the routes): every branch
+//! that answers before storage is touched (validation, the error shape), the endpoints that need no storage, and the
+//! read side, on the engine in memory or over databases nobody listens on.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
 use axum::{
     Router,
     body::Body,
     http::{Request, StatusCode, header},
 };
-use cqrsx::cqrs::projection::repository::StoredView;
+use chrono::NaiveDate;
+use cqrsx::{
+    cqrs::projection::{
+        checkpoint::{CheckpointKey, CheckpointStore},
+        repository::StoredView,
+    },
+    engine::{
+        Cqrs,
+        build::Builder,
+        mongodb::MongoDb,
+        postgres::{Postgres, PostgresPools},
+    },
+};
+use encore_backend::{
+    DEMO_DEFAULTS, concert,
+    concert::{
+        application::views::concert_hall::{ConcertHallView, ConcertSummary},
+        domain::{
+            Concert, ConcertCommand,
+            commands::{AnnounceConcert, BookSeat},
+        },
+    },
+    fan,
+    fan::{
+        application::views::fan_wallet::{FanWalletView, TicketEntry, TicketEntryState},
+        domain::Fan,
+    },
+    operations,
+    shared::domain::{ConcertId, FanId},
+};
 use http_body_util::BodyExt;
+use mongodb::{Client, options::ClientOptions};
 use serde_json::{Value, json};
-use std::{collections::BTreeMap, sync::Arc};
+use sqlx::{PgPool, postgres::PgPoolOptions};
+use std::{collections::BTreeMap, sync::Arc, time::Duration};
 use tower::ServiceExt;
+use uuid::Uuid;
+
+/// The modules of the process over the variables of the router tests: a mail service nobody listens on, Encore! at
+/// full speed only (no slow motion).
+fn modules() -> Builder {
+    Cqrs::from_lookup("ENCORE", |name| match name {
+        "ENCORE_MAIL_SERVICE_URL" => Some("http://127.0.0.1:1".to_owned()),
+        "ENCORE_REPLAY_SLOW_DELAY_MS" => Some("0".to_owned()),
+        "ENCORE_READ_DB" => Some("encore_read_test".to_owned()),
+        _ => None,
+    })
+    .defaults(DEMO_DEFAULTS)
+    .module(concert::module)
+    .module(fan::module)
+    .module(operations::module)
+}
+
+/// Nothing listens on port 1: the first acquire fails fast instead of retrying for the default 30 s.
+fn lazy_pool() -> PgPool {
+    PgPoolOptions::new()
+        .acquire_timeout(Duration::from_millis(200))
+        .connect_lazy_with("postgresql://encore:encore@127.0.0.1:1/encore".parse().unwrap())
+}
+
+async fn lazy_mongo() -> Client {
+    let mut options = ClientOptions::parse("mongodb://127.0.0.1:1").await.unwrap();
+    options.server_selection_timeout = Some(Duration::from_millis(50));
+    Client::with_options(options).unwrap()
+}
 
 struct App {
     router: Router,
 }
 
+/// The process over databases nobody listens on: enough to exercise every branch that answers before storage is
+/// touched, and every answer of a store that does not answer.
 async fn app() -> App {
-    let wiring = bootstrap::wire(&testing::process().await).unwrap();
+    let pools = PostgresPools {
+        main: lazy_pool(),
+        history: lazy_pool(),
+        projection: lazy_pool(),
+    };
+    let cqrs = modules()
+        .event_store(Postgres)
+        .postgres_pools(pools)
+        .projections(MongoDb)
+        .mongodb_client(lazy_mongo().await)
+        .build()
+        .await
+        .unwrap();
     App {
-        router: router(wiring.state),
+        router: Arc::new(cqrs).router(),
     }
 }
 
-/// The real graph, with the read side over in-memory checkpoints whose readers are `lag` events behind.
-async fn app_with_checkpoints(checkpoints: &testing::Checkpoints, lag: u64) -> Router {
-    let mut wiring = bootstrap::wire(&testing::process().await).unwrap();
-    wiring.state.rebuild = checkpoints.read_side(lag);
-    router(wiring.state)
-}
-
-/// The real graph, with the read side served from memory.
-async fn app_reading(read: ReadModels) -> Router {
-    let mut wiring = bootstrap::wire(&testing::process().await).unwrap();
-    wiring.state.read = Arc::new(read);
-    router(wiring.state)
-}
-
-fn read_models(halls: Vec<StoredView<ConcertHallView>>, wallets: Vec<StoredView<FanWalletView>>) -> ReadModels {
-    ReadModels {
-        halls: Arc::new(Documents::Memory(testing::read_model::<_, Concert>(halls))),
-        wallets: Arc::new(Documents::Memory(testing::read_model::<_, Fan>(wallets))),
+/// The process in memory, whose processors do not run: the rows of both read models registered and claimed by `owner`,
+/// three events of the concert halls' journal unapplied.
+async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrs>) {
+    let cqrs = modules().build().await.unwrap();
+    for key in [
+        CheckpointKey::of::<ConcertHallView, Concert>(),
+        CheckpointKey::of::<FanWalletView, Fan>(),
+    ] {
+        cqrs.checkpoints().register(&key).await.unwrap();
+        cqrs.checkpoints()
+            .claim(&key, owner, Duration::from_secs(60))
+            .await
+            .unwrap()
+            .unwrap();
     }
+    let concert_id = ConcertId::parse("c-1").unwrap();
+    let announce = AnnounceConcert {
+        artist: "A".into(),
+        city: "C".into(),
+        date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
+    };
+    let ui = cqrs.from("ui");
+    ui.execute::<Concert>(&concert_id, ConcertCommand::AnnounceConcert(announce))
+        .await
+        .unwrap();
+    for (seat, fan) in [("A1", "fox"), ("A2", "panda")] {
+        let book = BookSeat {
+            seat: seat.into(),
+            fan_id: FanId::parse(fan).unwrap(),
+            fan_name: fan.into(),
+            booking_id: Uuid::now_v7(),
+        };
+        ui.execute::<Concert>(&concert_id, ConcertCommand::BookSeat(book))
+            .await
+            .unwrap();
+    }
+    let cqrs = Arc::new(cqrs);
+    (cqrs.router(), cqrs)
+}
+
+/// The process in memory, the documents of both read models written by hand.
+async fn app_reading(halls: Vec<StoredView<ConcertHallView>>, wallets: Vec<StoredView<FanWalletView>>) -> Router {
+    let cqrs = modules().build().await.unwrap();
+    let hall_documents = cqrs.documents::<ConcertHallView, Concert>().unwrap();
+    for document in halls {
+        hall_documents
+            .put(&document.id, document.version, document.last_sequence, &document.view)
+            .unwrap();
+    }
+    let wallet_documents = cqrs.documents::<FanWalletView, Fan>().unwrap();
+    for document in wallets {
+        wallet_documents
+            .put(&document.id, document.version, document.last_sequence, &document.view)
+            .unwrap();
+    }
+    Arc::new(cqrs).router()
 }
 
 async fn send(router: &Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -200,8 +297,7 @@ async fn a_command_for_a_malformed_concert_id_is_refused_before_it_runs() {
 
 #[tokio::test]
 async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
-    let checkpoints = testing::Checkpoints::owned_by("node-a").await;
-    let router = app_with_checkpoints(&checkpoints, 3).await;
+    let (router, cqrs) = app_with_checkpoints("node-a").await;
     let (status, body) = send(&router, get("/api/projections/status")).await;
     assert_eq!(
         (status, body["state"].as_str(), body["stale"].as_bool()),
@@ -244,7 +340,7 @@ async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
         (status, body),
         (StatusCode::ACCEPTED, json!({ "outcome": "requested", "concert_id": "c-1" }))
     );
-    checkpoints.set_unavailable(true);
+    cqrs.checkpoints().set_unavailable(true);
     let (status, body) = send(&router, post("/api/concerts/c-1/rebuild")).await;
     assert_eq!(
         (status, body["outcome"].as_str()),
@@ -294,7 +390,7 @@ async fn an_unreachable_store_is_reported_as_unavailable() {
 
 #[tokio::test]
 async fn empty_read_models_answer_an_empty_list_and_404s() {
-    let router = app_reading(read_models(vec![], vec![])).await;
+    let router = app_reading(vec![], vec![]).await;
     let (status, body) = send(&router, get("/api/concerts")).await;
     assert_eq!((status, body), (StatusCode::OK, json!([])));
     for uri in ["/api/concerts/c-1", "/api/fans/fox/wallet"] {
@@ -345,7 +441,7 @@ async fn read_models_are_served_in_the_documented_shapes() {
         last_sequence: 1,
         view,
     };
-    let router = app_reading(read_models(
+    let router = app_reading(
         vec![StoredView {
             id: "c-1".into(),
             version: 3,
@@ -357,7 +453,7 @@ async fn read_models_are_served_in_the_documented_shapes() {
             stored("fox:muse-2027-01-16", 2, ledger("muse-2027-01-16", 120)),
             stored("fox:radiohead-2026-11-21", 1, ledger("radiohead-2026-11-21", 80)),
         ],
-    ))
+    )
     .await;
     let (_, body) = send(&router, get("/api/concerts")).await;
     assert_eq!(

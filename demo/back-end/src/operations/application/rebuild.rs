@@ -5,7 +5,9 @@
 //! A rebuild is a request on the checkpoint rows (`CheckpointStore::request_rebuild`). The owner of each row,
 //! on whatever node, walks the keys of the journal and replaces the documents in place through the same key
 //! workers as the live events, so commands keep running and nothing is wiped. This service only asks, then
-//! watches the rows until both rebuilds have ended and reports what it saw.
+//! watches the rows until both rebuilds have ended and reports what it saw. It reads the rows through the port
+//! [`Checkpoints`] and the journal through [`EventLedgerStats`]: the engine's views in the process
+//! ([`EngineViews`](super::engine::EngineViews)), doubles in the tests.
 use crate::{
     operations::application::ledger::EventLedgerStats,
     shared::application::{StorageError, activity::ActivityHub},
@@ -31,17 +33,43 @@ pub const DEFAULT_MAX_PACE: Duration = Duration::from_secs(1);
 /// The pause between the events of one key a slow-motion Encore! asks for (`ENCORE_REPLAY_SLOW_DELAY_MS`): the
 /// UI sends it as `pace_ms`, so the seats light up one by one.
 pub const DEFAULT_SLOW_PACE: Duration = Duration::from_millis(80);
-/// How long the status waits for the checkpoint store before it answers with the rows it saw last
-/// (`ENCORE_PROJECTION_STATUS_TIMEOUT_MS`): a paused MongoDB must not hang the status page.
-pub const DEFAULT_STATUS_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// The bounds of the read side's operations, from the configuration.
+/// The pace of Encore! (`ENCORE_REPLAY_*`): the slow motion the UI asks for, at most the longest pause anybody may ask
+/// for. The `operations` module reads it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Replay {
+    pub slow_delay: Duration,
+    pub max_pace: Duration,
+}
+
+/// The bounds of the read side's operations: the lag cap and the status timeout of the engine, the longest pace of
+/// [`Replay`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadSideLimits {
     /// Events counted at most for one projection's lag.
     pub lag_cap: u64,
     pub max_pace: Duration,
     pub status_timeout: Duration,
+}
+
+/// The rows of the read models' checkpoints as the operations read and request them: every row, a rebuild of one.
+#[async_trait]
+pub trait Checkpoints: Send + Sync {
+    /// Every row: `CheckpointStore::status(None)`.
+    async fn rows(&self) -> Result<Vec<CheckpointStatus>, CheckpointError>;
+    /// Asks the owner of the row `key` to rebuild every document: `CheckpointStore::request_rebuild`.
+    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError>;
+}
+
+#[async_trait]
+impl<C: CheckpointStore> Checkpoints for C {
+    async fn rows(&self) -> Result<Vec<CheckpointStatus>, CheckpointError> {
+        self.status(None).await
+    }
+
+    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
+        self.request_rebuild(key, pace).await
+    }
 }
 
 /// Why a rebuild was not started.
@@ -60,17 +88,6 @@ pub enum RebuildRefused {
 pub struct RebuildStarted {
     pub rebuild_id: Uuid,
     pub pace: Duration,
-}
-
-/// The read side for the HTTP layer, behind a port so the router tests run it over in-memory checkpoints.
-#[async_trait]
-pub trait ReadSide: Send + Sync {
-    /// Every projection's checkpoint, lag and state, plus the rebuild this node started.
-    async fn status(&self) -> Result<Value, StorageError>;
-    /// Encore!: asks the owners to rebuild every read model with `pace` between the events of one key.
-    async fn rebuild(&self, pace: Duration) -> Result<RebuildStarted, RebuildRefused>;
-    /// Asks the owner of the concert halls to rebuild one hall from its history.
-    async fn rebuild_concert(&self, concert_id: &str) -> Result<(), RebuildRefused>;
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -98,7 +115,12 @@ struct State {
     last_rows: Vec<CheckpointStatus>,
 }
 
-/// [`ReadSide`] over the checkpoint rows of `C`.
+/// What this node saw of the read side: the Encore! it started and the last one it saw finish, the rows it read last.
+/// The `operations` module keeps one for the process; every [`RebuildService`] of a request shares it.
+#[derive(Default)]
+pub struct RebuildState(Mutex<State>);
+
+/// Encore! and the status of the read side, over the checkpoint rows of `C`.
 pub struct RebuildService<C> {
     checkpoints: Arc<C>,
     /// Every read model's row, the concert halls first.
@@ -107,15 +129,15 @@ pub struct RebuildService<C> {
     activity: Arc<ActivityHub>,
     limits: ReadSideLimits,
     shutdown: CancellationToken,
-    state: Arc<Mutex<State>>,
+    state: Arc<RebuildState>,
 }
 
 fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
 }
 
-fn lock(state: &Mutex<State>) -> MutexGuard<'_, State> {
-    state.lock().unwrap_or_else(PoisonError::into_inner)
+fn lock(state: &RebuildState) -> MutexGuard<'_, State> {
+    state.0.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn is_row_of(key: &CheckpointKey, row: &CheckpointStatus) -> bool {
@@ -148,7 +170,7 @@ fn unavailable(error: CheckpointError) -> RebuildRefused {
 /// The states of a projection, the worst first: the overall state is the worst of them.
 const STATES: [&str; 5] = ["stalled", "unclaimed", "starting", "rebuilding", "live"];
 
-impl<C: CheckpointStore + 'static> RebuildService<C> {
+impl<C: Checkpoints + 'static> RebuildService<C> {
     /// `read_models` are the rows of every read model, the concert halls first.
     pub fn new(
         checkpoints: Arc<C>,
@@ -169,9 +191,15 @@ impl<C: CheckpointStore + 'static> RebuildService<C> {
         }
     }
 
+    /// The same service over the state of this node `state`, shared with the services of the other requests.
+    pub fn with_state(mut self, state: Arc<RebuildState>) -> Self {
+        self.state = state;
+        self
+    }
+
     /// The rows of the read models, or the ones seen last when the store does not answer in time.
     async fn rows(&self) -> (Vec<CheckpointStatus>, bool) {
-        match tokio::time::timeout(self.limits.status_timeout, self.checkpoints.status(None)).await {
+        match tokio::time::timeout(self.limits.status_timeout, self.checkpoints.rows()).await {
             Ok(Ok(rows)) => {
                 lock(&self.state).last_rows = rows.clone();
                 (rows, false)
@@ -234,11 +262,11 @@ impl<C: CheckpointStore + 'static> RebuildService<C> {
 
 /// Watches the rows of a running Encore! until neither is requested nor running (a dropped row counts as
 /// ended), publishing the progress as the rows count it and the end.
-async fn watch<C: CheckpointStore>(
+async fn watch<C: Checkpoints>(
     checkpoints: Arc<C>,
     keys: Vec<CheckpointKey>,
     activity: Arc<ActivityHub>,
-    state: Arc<Mutex<State>>,
+    state: Arc<RebuildState>,
     shutdown: CancellationToken,
     rebuild_id: Uuid,
 ) {
@@ -249,7 +277,7 @@ async fn watch<C: CheckpointStore>(
             _ = shutdown.cancelled() => return,
             _ = tokio::time::sleep(REBUILD_WATCH_INTERVAL) => {}
         }
-        let Ok(rows) = checkpoints.status(None).await else {
+        let Ok(rows) = checkpoints.rows().await else {
             continue;
         };
         let rows: Vec<&CheckpointStatus> = rows.iter().filter(|row| keys.iter().any(|key| is_row_of(key, row))).collect();
@@ -278,9 +306,9 @@ async fn watch<C: CheckpointStore>(
     }
 }
 
-#[async_trait]
-impl<C: CheckpointStore + 'static> ReadSide for RebuildService<C> {
-    async fn status(&self) -> Result<Value, StorageError> {
+impl<C: Checkpoints + 'static> RebuildService<C> {
+    /// Every projection's checkpoint, lag and state, plus the rebuild this node started.
+    pub async fn status(&self) -> Result<Value, StorageError> {
         let (rows, stale) = self.rows().await;
         let mut projections = Vec::new();
         let mut worst = STATES.len() - 1;
@@ -307,7 +335,8 @@ impl<C: CheckpointStore + 'static> ReadSide for RebuildService<C> {
         }))
     }
 
-    async fn rebuild(&self, pace: Duration) -> Result<RebuildStarted, RebuildRefused> {
+    /// Encore!: asks the owners to rebuild every read model with `pace` between the events of one key.
+    pub async fn rebuild(&self, pace: Duration) -> Result<RebuildStarted, RebuildRefused> {
         if pace > self.limits.max_pace {
             return Err(RebuildRefused::PaceTooLong {
                 max_ms: u64::try_from(self.limits.max_pace.as_millis()).unwrap_or(u64::MAX),
@@ -315,7 +344,7 @@ impl<C: CheckpointStore + 'static> ReadSide for RebuildService<C> {
         }
         let mut accepted = false;
         for key in &self.read_models {
-            match self.checkpoints.request_rebuild(key, pace).await.map_err(unavailable)? {
+            match self.checkpoints.ask_rebuild(key, pace).await.map_err(unavailable)? {
                 RebuildRequest::Accepted => accepted = true,
                 RebuildRequest::AlreadyRunning => {}
             }
@@ -350,16 +379,6 @@ impl<C: CheckpointStore + 'static> ReadSide for RebuildService<C> {
             rebuild_id,
         ));
         Ok(RebuildStarted { rebuild_id, pace })
-    }
-
-    async fn rebuild_concert(&self, concert_id: &str) -> Result<(), RebuildRefused> {
-        let Some(halls) = self.read_models.first() else {
-            return Err(RebuildRefused::Unavailable("no read model to rebuild".into()));
-        };
-        self.checkpoints
-            .request_rebuild_key(halls, concert_id)
-            .await
-            .map_err(unavailable)
     }
 }
 
@@ -512,24 +531,6 @@ mod tests {
             s.service.rebuild(Duration::ZERO).await,
             Err(RebuildRefused::Unavailable(_))
         ));
-        assert!(matches!(
-            s.service.rebuild_concert("c-1").await,
-            Err(RebuildRefused::Unavailable(_))
-        ));
-    }
-
-    #[tokio::test(start_paused = true)]
-    async fn one_concert_is_rebuilt_on_request_by_the_owner_of_the_halls() {
-        let s = setup(&[halls(), wallets()]).await;
-        s.service.rebuild_concert("c-1").await.unwrap();
-        let owner = s
-            .store
-            .claim(&halls(), "node-a", Duration::from_secs(10))
-            .await
-            .unwrap()
-            .unwrap();
-        let requests = s.store.take_requests(&halls(), owner.token, 10).await.unwrap().unwrap();
-        assert_eq!((requests.rebuild, requests.keys), (None, vec!["c-1".to_owned()]));
     }
 
     #[tokio::test(start_paused = true)]

@@ -332,13 +332,14 @@ pub(crate) fn wallets(_: &Setup) -> Result<Module, SetupError> {
 }
 
 /// Both modules in memory with a mailbox of the test instead of the wallets' own.
-pub(crate) fn engine() -> (Cqrs, Arc<Mailbox>) {
+pub(crate) async fn engine() -> (Cqrs, Arc<Mailbox>) {
     let mailbox = Arc::new(Mailbox::default());
     let cqrs = Cqrs::in_memory()
         .module(shows)
         .module(wallets)
         .provide(mailbox.clone())
         .build()
+        .await
         .unwrap();
     (cqrs, mailbox)
 }
@@ -349,5 +350,14 @@ pub(crate) fn book(seat: &str, fan: &str) -> Book {
         seat: seat.into(),
         fan: fan.into(),
         booking_id: None,
+    }
+}
+
+/// The output of `future`, which must not wait: an engine in memory builds without one.
+pub(crate) fn ready<F: std::future::Future>(future: F) -> F::Output {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::pin::pin!(future).poll(&mut context) {
+        std::task::Poll::Ready(output) => output,
+        std::task::Poll::Pending => panic!("the future waits"),
     }
 }

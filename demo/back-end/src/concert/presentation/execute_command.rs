@@ -1,9 +1,8 @@
 //! `POST /api/concerts/{concert_id}/commands` — the only write endpoint. The UI never validates
 //! business rules: every click becomes a command and the aggregate is the judge.
 use crate::{
-    bootstrap::AppState,
     concert::domain::{
-        ConcertCommand, ConcertError,
+        Concert, ConcertCommand, ConcertError,
         commands::{AnnounceConcert, BookSeat, CancelBooking},
     },
     shared::{
@@ -18,12 +17,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::NaiveDate;
-use cqrsx::cqrs::{
-    command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata},
-    rejection::Rejection,
+use cqrsx::{
+    cqrs::{command::CommandGatewayError, rejection::Rejection},
+    engine::Cqrs,
 };
 use serde::Deserialize;
 use serde_json::{Value, json};
+use std::sync::Arc;
 use uuid::Uuid;
 
 /// Wire shape of a UI command. Internal `Fan` commands are deliberately not representable here.
@@ -35,7 +35,8 @@ pub enum CommandDto {
     CancelBooking { seat: String, fan_id: String },
 }
 
-fn to_command(dto: CommandDto, metadata: &CommandMetadata) -> Result<ConcertCommand, ApiError> {
+/// The command of `dto`; a booking and a cancellation are identified by their command (`command_id`).
+fn to_command(dto: CommandDto, command_id: Uuid) -> Result<ConcertCommand, ApiError> {
     let fan = |raw: &str| FanId::parse(raw).map_err(|e| ApiError::invalid(e.to_string()));
     Ok(match dto {
         CommandDto::AnnounceConcert { artist, city, date } => {
@@ -57,30 +58,31 @@ fn to_command(dto: CommandDto, metadata: &CommandMetadata) -> Result<ConcertComm
                 fan_name.trim().to_owned()
             },
             // The booking id is the command id: the one fact the whole chain refers to.
-            booking_id: metadata.causation.command_id,
+            booking_id: command_id,
         }),
         CommandDto::CancelBooking { seat, fan_id } => ConcertCommand::CancelBooking(CancelBooking {
             seat,
             fan_id: fan(&fan_id)?,
-            cancellation_id: metadata.causation.command_id,
+            cancellation_id: command_id,
         }),
     })
 }
 
+/// The command goes to the engine from the source `ui`: its id is chosen here, so that every answer names it, and is
+/// the id of a booking and a cancellation.
 pub async fn handle(
-    State(state): State<AppState>,
+    State(cqrs): State<Arc<Cqrs>>,
     Path(concert_id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     let concert_id = parse_concert_id(&concert_id)?;
     let Json(raw) = body.map_err(|e| ApiError::invalid(format!("invalid JSON body: {e}")))?;
     let dto: CommandDto = serde_json::from_value(raw).map_err(|e| ApiError::invalid(format!("invalid command: {e}")))?;
-    let metadata = CommandMetadata::root("ui");
-    let command = to_command(dto, &metadata)?;
-    let command_id = metadata.causation.command_id;
-    let result = state
-        .concerts
-        .execute_with_metadata(&concert_id, command, metadata.to_map())
+    let command_id = Uuid::now_v7();
+    let command = to_command(dto, command_id)?;
+    let result = cqrs
+        .from("ui")
+        .execute_with_id::<Concert>(command_id, &concert_id, command)
         .await
         .map(|report| report.tasks.iter().map(|task| task.format().to_string()).collect());
     Ok(answer(result, command_id, &concert_id))
@@ -141,29 +143,29 @@ mod tests {
 
     #[test]
     fn booking_and_cancellation_ids_are_the_command_id() {
-        let metadata = CommandMetadata::root("ui");
+        let command_id = Uuid::now_v7();
         let book = to_command(
             CommandDto::BookSeat {
                 seat: "B4".into(),
                 fan_id: "fox".into(),
                 fan_name: "  ".into(),
             },
-            &metadata,
+            command_id,
         )
         .unwrap();
         assert!(
-            matches!(book, ConcertCommand::BookSeat(BookSeat { booking_id, ref fan_name, .. }) if booking_id == metadata.causation.command_id && fan_name == "fox")
+            matches!(book, ConcertCommand::BookSeat(BookSeat { booking_id, ref fan_name, .. }) if booking_id == command_id && fan_name == "fox")
         );
         let cancel = to_command(
             CommandDto::CancelBooking {
                 seat: "B4".into(),
                 fan_id: "fox".into(),
             },
-            &metadata,
+            command_id,
         )
         .unwrap();
         assert!(
-            matches!(cancel, ConcertCommand::CancelBooking(CancelBooking { cancellation_id, .. }) if cancellation_id == metadata.causation.command_id)
+            matches!(cancel, ConcertCommand::CancelBooking(CancelBooking { cancellation_id, .. }) if cancellation_id == command_id)
         );
         assert!(
             to_command(
@@ -171,7 +173,7 @@ mod tests {
                     seat: "B4".into(),
                     fan_id: "Fox!".into()
                 },
-                &metadata
+                command_id
             )
             .is_err()
         );

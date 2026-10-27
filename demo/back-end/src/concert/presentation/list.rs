@@ -1,12 +1,17 @@
 //! `GET /api/concerts` — summary of every concert in `concert_halls` (`[]` when the read models
 //! are empty, e.g. after a wipe).
-use crate::{bootstrap::AppState, shared::presentation::error::ApiError};
+use crate::{concert::application::views::concert_hall::ConcertHallView, shared::presentation::error::ApiError};
 use axum::{Json, extract::State};
-use cqrsx::cqrs::projection::repository::{StoredView, ViewRepository};
+use cqrsx::{cqrs::projection::repository::StoredView, engine::Cqrs};
 use serde_json::{Value, json};
+use std::sync::Arc;
 
-pub async fn handle(State(state): State<AppState>) -> Result<Json<Value>, ApiError> {
-    let halls = state.read.halls.list().await.map_err(ApiError::read_model_unavailable)?;
+pub async fn handle(State(cqrs): State<Arc<Cqrs>>) -> Result<Json<Value>, ApiError> {
+    let halls = cqrs
+        .view::<ConcertHallView>()
+        .list()
+        .await
+        .map_err(ApiError::read_model_unavailable)?;
     let list = halls
         .into_iter()
         .map(|StoredView { id, version, view, .. }| {

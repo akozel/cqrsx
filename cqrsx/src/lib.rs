@@ -2,10 +2,12 @@
 //!
 //! - [`cqrs`]: aggregates, commands, event persistence, projections and testing tools.
 //! - [`task`]: durable work, handlers, adapters, queues and the optional worker runtime.
-//! - [`engine`]: an application of modules assembled from these components: commands, views and tasks; in memory.
+//! - [`engine`]: an application of modules assembled from these components: commands, views and tasks; in memory or
+//!   over PostgreSQL and MongoDB, its settings read from the environment, served with its HTTP routes (`http`).
 //! - `postgres`: PostgreSQL adapters, atomic outbox publication and canonical SQL assets.
 //! - `mongodb`: optional MongoDB read side: read-model documents and projection checkpoints.
 //! - `host`: optional process signals and coordinated component shutdown.
+//! - `http`: optional HTTP routes of the modules and `serve` of an engine (axum 0.8).
 //! - `logging`: optional explicit logger configuration and installation.
 //! - [`Command`], [`Commands`], [`Event`], [`Events`], [`Task`], [`Rejection`]: derive macros (crate
 //!   `cqrsx-macros`) for what is known of a command, an aggregate's enum of commands, an event type's

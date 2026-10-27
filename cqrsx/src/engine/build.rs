@@ -1,29 +1,42 @@
-//! How an engine is built: its modules are set up, their registrations merged and checked ([`Registrations`]), and the
-//! components assembled from them over the engine's stores.
+//! How an engine is built: its settings are read, its modules set up, their registrations merged and checked
+//! (`Registrations`), its stores opened, and the components assembled from the registrations over the stores.
+#[cfg(feature = "mongodb")]
+use crate::engine::mongodb::MongoDb;
+#[cfg(feature = "postgres")]
+use crate::engine::postgres::{Postgres, PostgresPools};
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        command::{CommandInfo, observer::CommandObserver},
-        projection::{processor::observer::ProjectionObserver, runtime::ProjectionRuntime},
-        rejection::Rejection,
-    },
+    cqrs::projection::runtime::ProjectionRuntime,
     engine::{
-        Commands, Cqrs,
+        Cqrs, Journal,
         memory::MemoryBackend,
         module::{AggregateEntry, Module, ViewEntry},
-        setup::{Lookup, Settings, Setup, SetupError},
+        settings::{Defaults, Settings, SettingsError},
+        setup::{Lookup, Setup, SetupError},
+        views::CheckpointOps,
     },
     task::{
         adapter::boxed::BoxedTaskAdapter,
         context::Executors,
-        dependencies::{Dependencies, MissingDependency},
+        dependencies::Dependencies,
         dispatcher::{TaskDispatcher, TaskDispatcherError},
         handlers::TaskHandlers,
         policy::{Policies, PolicyError, TaskPolicy},
     },
 };
+#[cfg(test)]
+use crate::{
+    cqrs::{
+        aggregate::Aggregate,
+        command::{CommandInfo, observer::CommandObserver},
+        projection::processor::observer::ProjectionObserver,
+        rejection::Rejection,
+    },
+    engine::Commands,
+    task::dependencies::MissingDependency,
+};
+#[cfg(test)]
+use std::any::TypeId;
 use std::{
-    any::TypeId,
     collections::HashSet,
     sync::{Arc, Mutex},
 };
@@ -31,9 +44,11 @@ use thiserror::Error;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-/// Why an engine could not be built: the first refusal of its modules.
+/// Why an engine could not be built: its settings, the first refusal of its modules, or a store it could not open.
 #[derive(Debug, Error)]
 pub enum BuildError {
+    #[error("{0}")]
+    Settings(#[from] SettingsError),
     #[error("{0}")]
     Setup(#[from] SetupError),
     #[error("the aggregate type `{0}` is registered twice: one executor per aggregate type")]
@@ -46,42 +61,150 @@ pub enum BuildError {
     Policy(#[from] PolicyError),
     #[error("task handlers: {0}")]
     Tasks(#[from] TaskDispatcherError),
+    /// Views in PostgreSQL or MongoDB hold positions of a durable journal in their checkpoints.
+    #[error("the views in {0} need the journal in PostgreSQL")]
+    ViewsWithoutJournal(&'static str),
+    #[cfg(feature = "postgres")]
+    #[error("{variable}: {source}")]
+    DatabaseUrl { variable: String, source: sqlx::Error },
+    #[cfg(feature = "postgres")]
+    #[error("cannot connect to PostgreSQL: {0}")]
+    Pool(sqlx::Error),
+    #[cfg(feature = "postgres")]
+    #[error("cannot connect the history pool to PostgreSQL: {0}")]
+    HistoryPool(sqlx::Error),
+    #[cfg(feature = "postgres")]
+    #[error("cannot connect the projection pool to PostgreSQL: {0}")]
+    ProjectionPool(sqlx::Error),
+    #[cfg(feature = "mongodb")]
+    #[error("{variable}: {source}")]
+    MongoUri {
+        variable: String,
+        source: ::mongodb::error::Error,
+    },
+    #[cfg(feature = "mongodb")]
+    #[error("MongoDB client: {0}")]
+    MongoClient(::mongodb::error::Error),
 }
 
 type ModuleRoot = Box<dyn FnOnce(&Setup) -> Result<Module, SetupError>>;
 
-/// What an engine is built from: the roots of its modules, its settings, the variables the modules read and the
-/// dependencies the builder provides instead of theirs (a test replaces a module's by type).
+/// Where the views of an engine live: `Builder::projections` takes one of these, PostgreSQL or MongoDB; without it
+/// the views are in memory.
+pub trait ProjectionStore: sealed::Sealed {}
+
+mod sealed {
+    /// The views' store an engine is built with.
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    pub enum Views {
+        Memory,
+        #[cfg(feature = "postgres")]
+        Postgres,
+        #[cfg(feature = "mongodb")]
+        MongoDb,
+    }
+
+    pub trait Sealed {
+        const VIEWS: Views;
+    }
+}
+
+use sealed::Views;
+
+#[cfg(feature = "postgres")]
+impl sealed::Sealed for Postgres {
+    const VIEWS: Views = Views::Postgres;
+}
+
+#[cfg(feature = "postgres")]
+impl ProjectionStore for Postgres {}
+
+#[cfg(feature = "mongodb")]
+impl sealed::Sealed for MongoDb {
+    const VIEWS: Views = Views::MongoDb;
+}
+
+#[cfg(feature = "mongodb")]
+impl ProjectionStore for MongoDb {}
+
+/// The stores an engine is built over, and what the application opened for them.
+struct Stores {
+    #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
+    postgres: bool,
+    views: Views,
+    #[cfg(feature = "postgres")]
+    pools: Option<PostgresPools>,
+    #[cfg(feature = "mongodb")]
+    client: Option<::mongodb::Client>,
+}
+
+/// What an engine is built from: its settings (given, or read from the variables when it is built, with the
+/// application's defaults), the roots of its modules and the variables they read, its stores, and the dependencies
+/// the builder provides instead of theirs (a test replaces a module's by type).
 pub struct Builder {
-    settings: Settings,
+    settings: Option<Settings>,
     prefix: String,
     lookup: Lookup,
+    defaults: Defaults,
+    stores: Stores,
     modules: Vec<ModuleRoot>,
     dependencies: Dependencies,
 }
 
-impl Default for Builder {
-    /// The library's settings and no variable: every module reads its defaults.
-    fn default() -> Self {
+impl Builder {
+    pub(crate) fn new(settings: Option<Settings>, prefix: String, lookup: Lookup) -> Self {
         Self {
-            settings: Settings::default(),
-            prefix: String::new(),
-            lookup: Arc::new(|_| None),
+            settings,
+            prefix,
+            lookup,
+            defaults: Defaults::LIBRARY,
+            stores: Stores {
+                postgres: false,
+                views: Views::Memory,
+                #[cfg(feature = "postgres")]
+                pools: None,
+                #[cfg(feature = "mongodb")]
+                client: None,
+            },
             modules: Vec::new(),
             dependencies: Dependencies::default(),
         }
     }
-}
 
-impl Builder {
-    pub fn settings(mut self, settings: Settings) -> Self {
-        self.settings = settings;
+    /// The application's values where a variable is absent, and its name (`Cqrs::from_env`, `Cqrs::from_lookup`).
+    pub fn defaults(mut self, defaults: Defaults) -> Self {
+        self.defaults = defaults;
         self
     }
 
-    /// The modules read their variables from `lookup` under `prefix` (`Setup::env`).
-    pub fn env(mut self, prefix: impl Into<String>, lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static) -> Self {
-        (self.prefix, self.lookup) = (prefix.into(), Arc::new(lookup));
+    /// The journal, the snapshots, the outbox and the task queue in PostgreSQL: three pools as the settings plan them,
+    /// opened when the engine is built (one connection each: an unreachable database fails the build).
+    #[cfg(feature = "postgres")]
+    pub fn event_store(mut self, _: Postgres) -> Self {
+        self.stores.postgres = true;
+        self
+    }
+
+    /// The views and their checkpoints in PostgreSQL (the main pool) or MongoDB (the database of the settings); the
+    /// journal must be in PostgreSQL.
+    #[cfg(any(feature = "postgres", feature = "mongodb"))]
+    pub fn projections<S: ProjectionStore>(mut self, _: S) -> Self {
+        self.stores.views = S::VIEWS;
+        self
+    }
+
+    /// The pools of the engine over PostgreSQL as the application opened them (e.g. pools that connect lazily, for a
+    /// test over a database nobody listens on): the engine opens none.
+    #[cfg(feature = "postgres")]
+    pub fn postgres_pools(mut self, pools: PostgresPools) -> Self {
+        self.stores.pools = Some(pools);
+        self
+    }
+
+    /// The client of the views in MongoDB as the application made it: the engine makes none.
+    #[cfg(feature = "mongodb")]
+    pub fn mongodb_client(mut self, client: ::mongodb::Client) -> Self {
+        self.stores.client = Some(client);
         self
     }
 
@@ -97,16 +220,26 @@ impl Builder {
         self
     }
 
-    /// The engine in memory, or the first refusal of its modules.
-    pub fn build(self) -> Result<Cqrs, BuildError> {
+    /// The task handlers of the modules with their dependencies (the builder's winning), checked as `build` checks
+    /// them, without the engine: for a runtime or a test of one's own, which adds the command executors and builds them.
+    pub fn task_handlers(self) -> Result<TaskHandlers, BuildError> {
+        let mut registrations = self.registrations()?;
+        Ok(registrations.take_task_handlers())
+    }
+
+    /// The engine: its settings, its modules set up and checked, its stores opened (or taken from the application),
+    /// its components assembled over them; or the first refusal.
+    pub async fn build(self) -> Result<Cqrs, BuildError> {
         let Registrations {
             mut cqrs,
             aggregates,
             views,
             adapters,
+            stores,
         } = self.registrations()?;
+        cqrs.open(stores).await?;
         for entry in aggregates {
-            // The rules are gone only when an assembly of one's own took them.
+            // The rules are gone only when a test took them.
             entry.rules.map_or(Ok(()), |rules| (entry.install)(&mut cqrs, rules))?;
         }
         for entry in views {
@@ -120,30 +253,56 @@ impl Builder {
         Ok(cqrs)
     }
 
-    /// What the modules registered, merged and checked as `build` checks them (an aggregate type and a view name
-    /// once, a policy declared once and bound to its task types, one observer of each kind), for an assembly over
-    /// stores of one's own: a backend the engine does not have yet.
-    pub fn registrations(self) -> Result<Registrations, BuildError> {
-        let setup = Setup::over(self.prefix, self.lookup, self.settings);
+    /// The settings, then what the modules registered, merged and checked as `build` checks them (an aggregate type and
+    /// a view name once, a policy declared once and bound to its task types, one observer of each kind), over stores
+    /// in memory not yet chosen.
+    pub(crate) fn registrations(self) -> Result<Registrations, BuildError> {
+        let settings = match self.settings {
+            Some(settings) => settings,
+            None => Settings::from_lookup(&self.prefix, &*self.lookup, &self.defaults)?,
+        };
+        if !self.stores.postgres && self.stores.views != Views::Memory {
+            #[cfg(feature = "postgres")]
+            let store = if self.stores.views == Views::Postgres {
+                "PostgreSQL"
+            } else {
+                "MongoDB"
+            };
+            #[cfg(not(feature = "postgres"))]
+            let store = "MongoDB";
+            return Err(BuildError::ViewsWithoutJournal(store));
+        }
+        let setup = Setup::over(self.prefix, self.lookup, settings);
         let modules = self
             .modules
             .into_iter()
             .map(|root| root(&setup))
             .collect::<Result<Vec<_>, _>>()?;
         let shutdown = CancellationToken::new();
+        let settings = setup.engine().clone();
+        let memory = MemoryBackend::new();
+        let checkpoints: Arc<dyn CheckpointOps> = memory.checkpoints.clone();
         let mut cqrs = Cqrs {
-            owner: setup.engine().node_name.clone().unwrap_or_else(|| Uuid::new_v4().to_string()),
-            settings: setup.engine().clone(),
+            owner: settings.node_name().map_or_else(|| Uuid::new_v4().to_string(), str::to_owned),
+            settings,
             policies: Policies::default(),
             dependencies: Dependencies::default(),
             command_observer: None,
             projection_observers: None,
+            commands: Default::default(),
             executors: Executors::default(),
             wakeups: Default::default(),
             dispatcher: None,
             views: Default::default(),
-            memory: MemoryBackend::new(),
+            described: setup.described(),
+            memory,
+            journal: Journal::Memory,
+            #[cfg(feature = "postgres")]
+            view_store: crate::engine::ViewStore::Memory,
+            checkpoints,
             processors: Mutex::new(ProjectionRuntime::new()),
+            #[cfg(feature = "http")]
+            routes: axum::Router::new(),
             _stop: shutdown.clone().drop_guard(),
             shutdown,
         };
@@ -185,6 +344,10 @@ impl Builder {
                     return Err(twice);
                 }
             }
+            #[cfg(feature = "http")]
+            if let Some(routes) = module.routes {
+                cqrs.routes = std::mem::take(&mut cqrs.routes).merge(routes);
+            }
         }
         cqrs.dependencies = cqrs.dependencies.merged(&self.dependencies);
         Ok(Registrations {
@@ -192,48 +355,91 @@ impl Builder {
             aggregates,
             views,
             adapters,
+            stores: self.stores,
         })
     }
 }
 
-/// What the modules of an engine registered, merged and checked ([`Builder::registrations`]). An application whose
-/// stores the engine does not have yet takes from it the rules of every aggregate type, the policies, the task handlers
-/// with their dependencies and the observers, and builds the executors and processors of its stores with them.
-pub struct Registrations {
+impl Cqrs {
+    /// Opens the stores the builder chose, or takes those the application opened: the pools of PostgreSQL in the order
+    /// of the plan (main, projection, history), the client of MongoDB (lazy).
+    async fn open(&mut self, stores: Stores) -> Result<(), BuildError> {
+        #[cfg(feature = "postgres")]
+        if stores.postgres {
+            let pools = match stores.pools {
+                Some(pools) => pools,
+                None => crate::engine::postgres::open(&self.settings).await?,
+            };
+            match stores.views {
+                Views::Postgres => {
+                    self.checkpoints = Arc::new(crate::postgres::projection_checkpoints::PostgresCheckpointStore::new(
+                        pools.main.clone(),
+                    ));
+                    self.view_store = crate::engine::ViewStore::Postgres;
+                }
+                #[cfg(feature = "mongodb")]
+                Views::MongoDb => {
+                    let client = match stores.client {
+                        Some(client) => client,
+                        None => crate::engine::mongodb::client(&self.settings).await?,
+                    };
+                    let database = client.database(self.settings.mongodb().read_db());
+                    self.checkpoints = Arc::new(crate::mongodb::projection_checkpoints::MongoCheckpointStore::new(&database));
+                    self.view_store = crate::engine::ViewStore::MongoDb(database);
+                }
+                Views::Memory => {}
+            }
+            self.journal = Journal::Postgres(pools);
+        }
+        let _ = stores;
+        Ok(())
+    }
+}
+
+/// What the modules of an engine registered, merged and checked ([`Builder::registrations`]), with the engine they are
+/// installed into and the stores it is built over.
+pub(crate) struct Registrations {
     cqrs: Cqrs,
     aggregates: Vec<AggregateEntry>,
     views: Vec<ViewEntry>,
     adapters: Vec<BoxedTaskAdapter>,
+    stores: Stores,
 }
 
 impl Registrations {
-    pub fn settings(&self) -> &Settings {
+    #[cfg(test)]
+    pub(crate) fn settings(&self) -> &Settings {
         &self.cqrs.settings
     }
 
+    #[cfg(test)]
     /// The policies of the task types: the reactions plan with them, the task runtime pauses by them.
-    pub fn policies(&self) -> &Policies {
+    pub(crate) fn policies(&self) -> &Policies {
         &self.cqrs.policies
     }
 
+    #[cfg(test)]
     /// The aggregate types, in the order of the registrations.
-    pub fn aggregate_types(&self) -> Vec<&'static str> {
+    pub(crate) fn aggregate_types(&self) -> Vec<&'static str> {
         self.aggregates.iter().map(|entry| entry.name).collect()
     }
 
+    #[cfg(test)]
     /// The names of the views, in the order of the registrations.
-    pub fn view_names(&self) -> Vec<&'static str> {
+    pub(crate) fn view_names(&self) -> Vec<&'static str> {
         self.views.iter().map(|entry| entry.name).collect()
     }
 
+    #[cfg(test)]
     /// The rules of the aggregate type `A`, once.
-    pub fn take_rules<A: Aggregate + 'static>(&mut self) -> Option<A::Rules> {
+    pub(crate) fn take_rules<A: Aggregate + 'static>(&mut self) -> Option<A::Rules> {
         let entry = self.aggregates.iter_mut().find(|entry| entry.id == TypeId::of::<A>())?;
         entry.rules.take()?.downcast::<A::Rules>().ok().map(|rules| *rules)
     }
 
+    #[cfg(test)]
     /// The observer of every command, as the observer of the commands of `A`.
-    pub fn command_observer<A: Aggregate>(&self) -> Option<Arc<dyn CommandObserver<A>>>
+    pub(crate) fn command_observer<A: Aggregate>(&self) -> Option<Arc<dyn CommandObserver<A>>>
     where
         A::Command: CommandInfo,
         A::Error: Rejection,
@@ -241,18 +447,20 @@ impl Registrations {
         Some(Arc::new(Commands(self.cqrs.command_observer.clone()?)))
     }
 
+    #[cfg(test)]
     /// The observer of the processor of the view named `projection` on this node.
-    pub fn projection_observer(&self, projection: &'static str) -> Option<Arc<dyn ProjectionObserver>> {
+    pub(crate) fn projection_observer(&self, projection: &'static str) -> Option<Arc<dyn ProjectionObserver>> {
         let observers = self.cqrs.projection_observers.as_ref()?;
         Some(observers(projection, &self.cqrs.owner))
     }
 
-    pub fn dependency<T: ?Sized + 'static>(&self) -> Result<Arc<T>, MissingDependency> {
+    #[cfg(test)]
+    pub(crate) fn dependency<T: ?Sized + 'static>(&self) -> Result<Arc<T>, MissingDependency> {
         self.cqrs.dependency::<T>()
     }
 
     /// The task handlers with their dependencies, once: the assembly adds the command executors and builds them.
-    pub fn take_task_handlers(&mut self) -> TaskHandlers {
+    pub(crate) fn take_task_handlers(&mut self) -> TaskHandlers {
         TaskHandlers::assembled(std::mem::take(&mut self.adapters), self.cqrs.dependencies.clone())
     }
 }
@@ -279,15 +487,16 @@ mod tests {
             handler::TaskHandler,
             policy::Retry,
             result::TaskResult,
+            runtime::config::TaskRuntimeConfig,
         },
     };
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use std::{num::NonZeroUsize, time::Duration};
+    use std::time::Duration;
     use uuid::Uuid;
 
     fn refusal(builder: Builder) -> BuildError {
-        builder.build().err().unwrap()
+        ready(builder.build()).err().unwrap()
     }
 
     fn module(root: impl FnOnce(Module) -> Module + 'static) -> impl FnOnce(&Setup) -> Result<Module, SetupError> {
@@ -419,7 +628,7 @@ mod tests {
     #[test]
     fn a_module_whose_setup_fails_fails_the_build() {
         let limit = |setup: &Setup| setup.env::<u32>("LIMIT", 1).map(|_| Module::new("limited"));
-        let builder = Cqrs::in_memory().env("APP", |name| (name == "APP_LIMIT").then(|| "x".to_owned()));
+        let builder = Cqrs::from_lookup("APP", |name| (name == "APP_LIMIT").then(|| "x".to_owned()));
         let refused = refusal(builder.module(limit));
         assert_eq!(
             refused.to_string(),
@@ -449,7 +658,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_last_provide_wins_so_a_test_replaces_a_modules_dependency() {
-        let (cqrs, mailbox) = engine();
+        let (cqrs, mailbox) = engine().await;
         assert!(Arc::ptr_eq(&cqrs.dependency::<Mailbox>().unwrap(), &mailbox));
         assert_eq!(
             cqrs.dependency::<String>().unwrap_err().to_string(),
@@ -474,16 +683,12 @@ mod tests {
         .unwrap();
         let limits = LockLimits::new(Duration::from_millis(500), 7).unwrap();
         let retry = AggregateConflictRetryPolicy::new(5, Duration::from_millis(1), Duration::from_millis(2), 0.0).unwrap();
-        let settings = Settings {
-            snapshot_every: NonZeroUsize::new(3).unwrap(),
-            conflict_retry: retry,
-            lock_limits: limits,
-            processor,
-            node_name: Some("node-a".into()),
-            ..Settings::default()
-        };
+        let settings = Settings::new(3, limits, processor, TaskRuntimeConfig::default())
+            .unwrap()
+            .with_conflict_retry(retry)
+            .with_node_name("node-a");
         let defaults = Cqrs::in_memory().module(shows).registrations().unwrap();
-        let set = Cqrs::in_memory().settings(settings).module(shows).registrations().unwrap();
+        let set = Cqrs::with_settings(settings).module(shows).registrations().unwrap();
         let mut built = Vec::new();
         for registrations in [defaults, set] {
             let mut cqrs = registrations.cqrs;
@@ -515,13 +720,10 @@ mod tests {
             ],
             "the library's defaults, then the settings"
         );
-        let named = Cqrs::in_memory().settings(Settings {
-            node_name: Some("node-a".into()),
-            ..Settings::default()
-        });
+        let named = Cqrs::with_settings(Settings::default().with_node_name("node-a"));
         assert_eq!(named.registrations().unwrap().cqrs.owner, "node-a");
         // The reactions plan with the budget of each task type's policy.
-        let (cqrs, _) = engine();
+        let (cqrs, _) = engine().await;
         let booked = cqrs
             .from("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
@@ -569,18 +771,15 @@ mod tests {
                 },
             ))
         };
-        let node = Settings {
-            node_name: Some("node-a".into()),
-            ..Settings::default()
-        };
-        let cqrs = Cqrs::in_memory()
-            .settings(node)
+        let node = Settings::default().with_node_name("node-a");
+        let cqrs = Cqrs::with_settings(node)
             .module(shows)
             .module(wallets)
             .module(observers)
             .build()
+            .await
             .unwrap();
-        assert_eq!(cqrs.settings().node_name.as_deref(), Some("node-a"));
+        assert_eq!(cqrs.settings().node_name(), Some("node-a"));
         let ui = cqrs.from("ui");
         ui.execute::<Show>(&"s-1".into(), book("A1", "fox")).await.unwrap();
         ui.execute::<Show>(&"s-1".into(), book("A1", "panda")).await.unwrap_err();
@@ -615,7 +814,7 @@ mod tests {
         let mut registrations = builder.provide(Arc::new(String::from("extra"))).registrations().unwrap();
         assert_eq!(registrations.aggregate_types(), ["show", "wallet"]);
         assert_eq!(registrations.view_names(), ["halls", "tickets"]);
-        assert_eq!(registrations.settings().snapshot_every.get(), 10);
+        assert_eq!(registrations.settings().snapshot_every().get(), 10);
         assert_eq!(registrations.take_rules::<Show>(), Some(()));
         assert_eq!(registrations.take_rules::<Show>(), None, "once");
         assert_eq!(
@@ -664,5 +863,54 @@ mod tests {
         let mut bare = Cqrs::in_memory().module(shows).registrations().unwrap();
         assert!(bare.command_observer::<Show>().is_none() && bare.projection_observer("halls").is_none());
         assert!(bare.take_task_handlers().build().is_err(), "no task type");
+    }
+
+    #[test]
+    fn views_outside_memory_need_the_journal_in_postgres() {
+        #[cfg(feature = "postgres")]
+        assert_eq!(
+            refusal(Cqrs::in_memory().projections(crate::engine::postgres::Postgres).module(shows)).to_string(),
+            "the views in PostgreSQL need the journal in PostgreSQL"
+        );
+        #[cfg(feature = "mongodb")]
+        assert!(matches!(
+            refusal(Cqrs::in_memory().projections(crate::engine::mongodb::MongoDb).module(shows)),
+            BuildError::ViewsWithoutJournal("MongoDB")
+        ));
+        let settings = refusal(Cqrs::from_lookup("APP", |name| {
+            (name == "APP_SNAPSHOT_EVERY").then(|| "x".to_owned())
+        }));
+        assert!(matches!(settings, BuildError::Settings(_)), "{settings:?}");
+    }
+
+    #[tokio::test]
+    async fn task_handlers_are_the_modules_with_their_dependencies() {
+        let mailbox = Arc::new(Mailbox::default());
+        let handlers = Cqrs::in_memory()
+            .module(shows)
+            .module(wallets)
+            .provide(mailbox.clone())
+            .task_handlers()
+            .unwrap();
+        let dispatcher = handlers.build().unwrap();
+        assert_eq!(
+            dispatcher.formats(),
+            [
+                TaskFormat::of::<RecordTicket>().unwrap(),
+                TaskFormat::of::<MailTicket>().unwrap()
+            ]
+        );
+        let attempt = crate::task::attempt::TaskAttempt::first(
+            &MailTicket {
+                to: "fox".into(),
+                seat: "A1".into(),
+            },
+            json!({}),
+        )
+        .unwrap();
+        assert_eq!(dispatcher.dispatch(attempt, Duration::ZERO).await, TaskResult::Done);
+        assert_eq!(mailbox.sent(), ["fox:A1"], "the builder's mailbox, not the module's");
+        let refused = Cqrs::in_memory().module(shows).module(shows).task_handlers().err().unwrap();
+        assert!(matches!(refused, BuildError::AggregateTwice("show")));
     }
 }

@@ -9,6 +9,12 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use chrono::NaiveDate;
+use cqrsx::engine::{
+    Cqrs,
+    mongodb::MongoDb,
+    postgres::{Postgres, PostgresPools},
+    settings::Settings,
+};
 use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
 use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat, result::TaskResult};
 use cqrsx::{
@@ -39,7 +45,7 @@ use cqrsx::{
     },
 };
 use encore_backend::{
-    bootstrap::{self, routes::router, tasks::policies},
+    DEMO_DEFAULTS, concert,
     concert::{
         application::views::concert_hall::ConcertHallView,
         domain::{
@@ -47,9 +53,11 @@ use encore_backend::{
             commands::{AnnounceConcert, BookSeat, CancelBooking},
         },
     },
-    config::Config,
-    process::Process,
-    shared::domain::{ConcertId, FanId},
+    fan, operations,
+    shared::{
+        application::activity::ActivityHub,
+        domain::{ConcertId, FanId},
+    },
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -88,10 +96,23 @@ fn committed(answer: &Result<CommitReport<Concert>, CommandGatewayError<ConcertE
     }
 }
 
+/// The engine of the process over the variables of nobody: its modules as `main.rs` registers them.
+fn process() -> cqrsx::engine::build::Builder {
+    Cqrs::from_lookup("ENCORE", |_| None)
+        .defaults(DEMO_DEFAULTS)
+        .module(concert::module)
+        .module(fan::module)
+        .module(operations::module)
+}
+
 /// The box office's reactions with the policies of the configuration without environment, as the process plans.
 fn concert_reactions() -> ReactionsPlanner<Concert> {
-    let config = Config::from_lookup(|_| None).expect("configuration");
-    ReactionsPlanner::new(policies(&config).expect("policies"))
+    // An engine in memory builds without waiting.
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    let std::task::Poll::Ready(cqrs) = std::pin::pin!(process().build()).poll(&mut context) else {
+        panic!("the engine in memory waits");
+    };
+    ReactionsPlanner::new(cqrs.expect("configuration").policies().clone())
 }
 
 async fn database() -> (PgPool, testcontainers::ContainerAsync<GenericImage>) {
@@ -269,16 +290,25 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
         .await
         .expect("options");
     mongo.server_selection_timeout = Some(Duration::from_millis(50));
-    let process = Process {
-        config: Arc::new(Config::from_lookup(|_| None).expect("configuration")),
-        pool: pool.clone(),
-        history_pool: pool.clone(),
-        projection_pool: pool.clone(),
-        mongo: mongodb::Client::with_options(mongo).expect("client"),
-        shutdown: CancellationToken::new(),
+    let settings = Settings::from_lookup("ENCORE", |_| None, &DEMO_DEFAULTS).expect("configuration");
+    let pools = PostgresPools {
+        main: pool.clone(),
+        history: pool.clone(),
+        projection: pool.clone(),
     };
-    let wiring = bootstrap::wire(&process).expect("wiring");
-    let router = router(wiring.state.clone());
+    let cqrs = Cqrs::with_settings(settings)
+        .event_store(Postgres)
+        .postgres_pools(pools)
+        .projections(MongoDb)
+        .mongodb_client(mongodb::Client::with_options(mongo).expect("client"))
+        .module(concert::module)
+        .module(fan::module)
+        .module(operations::module)
+        .build()
+        .await
+        .expect("wiring");
+    let cqrs = Arc::new(cqrs);
+    let router = cqrs.router();
 
     let (status, announced) = post_command(
         &router,
@@ -355,7 +385,10 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
     )
     .expect("attempt");
     assert_eq!(
-        wiring.dispatcher.dispatch(attempt, Duration::ZERO).await,
+        cqrs.dispatcher()
+            .expect("task handlers")
+            .dispatch(attempt, Duration::ZERO)
+            .await,
         TaskResult::Done,
         "the step records the ticket"
     );
@@ -364,9 +397,9 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
         .await
         .expect("the ledger's event");
 
-    let entries: Vec<(String, Value)> = wiring
-        .state
-        .activity
+    let entries: Vec<(String, Value)> = cqrs
+        .dependency::<ActivityHub>()
+        .expect("the activity log")
         .subscribe()
         .0
         .iter()

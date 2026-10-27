@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Статус | предложено 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 1): HTTP — фича `http` cqrsx |
+| Статус | сделано 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 1): HTTP — фича `http` cqrsx |
 | Ценность | высокая: `main.rs` в десять строк; движок читает свои настройки сам; требования 2–4 пользователя |
 | Цена | высокая: настройки (39 переменных), пулы, рантаймы, жизненный цикл и HTTP переезжают в cqrsx; новая фича `http` |
-| cqrsx | `src/engine/{settings,postgres,mongodb,serve,http}.rs` (новые), `src/host/lifecycle.rs` (процессоры рядом с рантаймом), `src/postgres/pool.rs`, `Cargo.toml` (фича `http`: axum 0.8), `tests/engine/{postgres,settings}.rs`, `doc/components.md`, `README.md`, корневой `CLAUDE.md` (матрица фич) |
-| demo | `main.rs`, `concert.rs`, `fan.rs`, `operations.rs` (`.routes`), `operations/presentation/config.rs`, `shared/infrastructure/http_mailer.rs`, `testing.rs`, `tests/write_side.rs`, `tests/contracts.rs`; удаляются `config.rs`, `process.rs`, `bootstrap.rs`, `bootstrap/*`; `.env.example` (без изменений имён), `README.md` демо |
+| cqrsx | `src/engine/{settings,postgres,mongodb,serve,http}.rs` (новые), `src/engine{.rs,/build.rs,/setup.rs,/module.rs,/outcome.rs,/views.rs,/memory.rs}`, `src/host/{lifecycle,error}.rs` (процессоры рядом с рантаймом), `src/task/runtime{.rs,/config.rs,/worker_pool_config.rs}` (настройки без фичи `worker`, `prepare` над `Arc`), `src/postgres/{task_runtime,command}.rs`, `src/lib.rs`, `Cargo.toml` (фича `http`: axum 0.8, tower-http 0.7), `tests/engine{.rs,/modules.rs,/scenario.rs,/postgres.rs}`, `doc/components.md`, `README.md`, корневой `CLAUDE.md` (матрица фич), `Cargo.lock` |
+| demo | `main.rs`, `lib.rs` (`DEMO_DEFAULTS`), `concert.rs`, `fan.rs`, `operations.rs` (`.routes`), `{concert,fan,operations}/presentation*` (на `Arc<Cqrs>`), `concert/application/{time_travel,rebuild}.rs`, `fan/application/wallet.rs`, `operations/application/{rebuild,verify,ledger,engine}.rs`, `shared/{application,presentation,infrastructure}.rs`, `testing.rs`, `tests.rs` и `tests/*` (тесты собранного процесса), `tests/{write_side,contracts,architecture,http}.rs`; удаляются `config.rs`, `process.rs`, `bootstrap.rs`, `bootstrap/*`, `shared/infrastructure/postgres.rs`; `Cargo.toml`, `Cargo.lock`; `README.md` демо; `.env.example` — без изменений |
 | Зависимости | 11 |
 | Гарантии | G-02, G-07, G-09, G-10, G-11, G-17, G-18, G-27, G-29, G-30, G-31, G-35, G-37 |
 
@@ -36,7 +36,10 @@
 - `engine::postgres::Postgres` + `engine::mongodb::MongoDb` — бэкенды: три пула PostgreSQL по плану G-29 (главный:
   команды, очередь, закладки PostgreSQL; истории: без таймаута, `min 0`, idle 30 с; проекций: страницы журнала и
   истории ключей), клиент MongoDB (таймауты 3 с, имя приложения, пул); `.event_store(Postgres)`,
-  `.projections(MongoDb)` или `.projections(Postgres)`. `.build().await` открывает пулы лениво, как сейчас.
+  `.projections(MongoDb)` или `.projections(Postgres)`. `.build().await` открывает пулы, как сейчас `Process::start`:
+  тем же `connect_pool_with` (SQLx `connect_with` сразу открывает по одному соединению, недоступный PostgreSQL —
+  ошибка запуска); клиент MongoDB подключается лениво, при первом обращении. Пулы и клиент, которые открыло
+  приложение, — `.postgres_pools(..)`, `.mongodb_client(..)` (тесты над недоступными базами — ленивые пулы).
 - `settings().describe()` — построчное описание действующих настроек и плана ресурсов (эталон 02).
 - `serve()` (фича `host`): слушатель `ENCORE_HTTP_ADDR`, логирование `RUST_LOG` (`LoggingConfig`, один раз),
   `prepare_task_runtime`, процессоры рядом с `lifecycle::run` (перенос `run_components` из `process.rs` в
@@ -55,7 +58,8 @@
   (не меньше 1 с, как сейчас); `operations` — `REPLAY_SLOW_DELAY_MS`, `REPLAY_MAX_PACE_MS`, маршруты служебные;
   `/api/config` — из `ConcertRules` и `cqrs.settings()`.
 - `config.rs`, `process.rs`, `bootstrap.rs`, `bootstrap/*` удаляются; `testing.rs` — движки в памяти и
-  `with_settings` над ленивыми пулами для тестов, которые отвечают до обращения к базе.
+  движок над ленивыми пулами и клиентом (`.postgres_pools`, `.mongodb_client`) для тестов, которые отвечают до
+  обращения к базе.
 - `.env.example`: имена и умолчания не меняются; меняются только комментарии про место настройки.
 
 ## Этапы
@@ -121,7 +125,22 @@ async fn main() -> Result<(), StartupError> {
 
 ## Критерии приёмки
 
-- [ ] `Cqrs::from_env`, `Settings`, `Defaults`, бэкенды PostgreSQL и MongoDB, `serve`, фича `http`.
-- [ ] Демо: `main.rs` по дизайну; `config.rs`, `process.rs`, `bootstrap/` удалены; корни модулей читают свои ключи.
-- [ ] Эталоны настроек, ленты и пауз проходят без изменений; `.env.example` — те же имена и значения.
-- [ ] `components.md`, README cqrsx, `CLAUDE.md` (матрица), guarantees.md.
+- [x] `Cqrs::from_env`, `Settings`, `Defaults`, бэкенды PostgreSQL и MongoDB, `serve`, фича `http`.
+- [x] Демо: `main.rs` по дизайну; `config.rs`, `process.rs`, `bootstrap/` удалены; корни модулей читают свои ключи.
+- [x] Эталоны настроек, ленты и пауз проходят без изменений; `.env.example` — те же имена и значения.
+- [x] `components.md`, README cqrsx, `CLAUDE.md` (матрица), guarantees.md.
+
+## Результат
+
+Сделано 2026-10-27. cqrsx: `engine::settings` (`Settings` по контракту настроек, `from_lookup`, `describe`,
+`Defaults` — значения приложения, действующие только без переменной), бэкенды `engine::postgres::Postgres` (три пула
+по плану G-29, открываются при сборке тем же `connect_pool_with`) и `engine::mongodb::MongoDb` (ленивый клиент),
+входы `Cqrs::{in_memory, with_settings, from_lookup, from_env}`, `Builder::{defaults, event_store, projections,
+postgres_pools, mongodb_client}`, асинхронная `build()`; фича `http` (axum 0.8.9, tower-http 0.7.1):
+`Module::routes`, `Cqrs::router()`, `Builder::serve()` / `Cqrs::serve()`; `host::lifecycle::run_with_processors`
+(перенос `run_components`). Демо: `main.rs` — `Cqrs::from_env("ENCORE").defaults(DEMO_DEFAULTS)…serve()`; корни
+модулей читают свои ключи и отдают маршруты; обработчики на `Arc<Cqrs>`; `config.rs`, `process.rs`, `bootstrap*`,
+`shared/infrastructure/postgres.rs` удалены (1523 строки без тестов); исключения И-1…И-3 сняты. Эталоны задачи 02
+байт в байт; `.env.example` без изменений. Тесты 958 → 982; сверка утверждений 931 / 9 / 16 / 2 / 0 / 24; покрытие
+98,05 % / 97,97 %. Отступления — В-1…В-22 плана (пулы при сборке, `serve` под `http`, `fail` в `main.rs`, одно
+выделение на запрос витрины); путь команды HTTP — без `Box`. Отчёт — `work/12-report.md`.

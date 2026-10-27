@@ -17,7 +17,7 @@ use std::sync::Arc;
 /// pool's `StatementTimeout`.
 pub fn prepare_task_runtime<A: TaskAdapter + 'static>(
     pool: PgPool,
-    dispatcher: TaskDispatcher<A>,
+    dispatcher: impl Into<Arc<TaskDispatcher<A>>>,
     runtime_config: TaskRuntimeConfig,
     policies: Policies,
 ) -> TaskRuntime<PostgresTaskQueue, A> {

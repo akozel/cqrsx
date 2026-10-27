@@ -1,5 +1,5 @@
-//! The port to the event ledger: its size and how far a reader of it is behind. The adapter is
-//! `bootstrap::ledger`; tests use in-memory doubles.
+//! The port to the event ledger: its size and how far a reader of it is behind. The adapter is the engine's views
+//! (`engine::EngineViews`); tests use in-memory doubles.
 use crate::shared::application::StorageError;
 use async_trait::async_trait;
 use cqrsx::cqrs::store::feed::Position;

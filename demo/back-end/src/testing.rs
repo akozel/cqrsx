@@ -1,48 +1,34 @@
-//! Test fixtures that need no running database: the box office on the engine in memory ([`test_app`]), lazily
-//! connecting PostgreSQL pools and MongoDB clients (enough to wire the whole graph and exercise every branch that
-//! returns before storage), and the read side in memory (the read models are the cqrsx `MemViewRepository`, the
-//! checkpoints its `MemCheckpointStore`).
+//! Test fixtures: the box office on the engine in memory ([`test_app`], [`app`]), as `main.rs` assembles it but with
+//! its stores in memory, and what its tests read from it.
 use crate::{
-    bootstrap::projections::checkpoint_keys,
-    config::{Config, DEFAULT_MONGODB_POOL_SIZE, DEFAULT_NODE_NAME, outbox_default},
-    operations::application::{
-        activity_observer::CommandActivityObserver,
-        ledger::{EventLedgerStats, LedgerTotals},
-        rebuild::{DEFAULT_MAX_PACE, DEFAULT_STATUS_TIMEOUT, ReadSide, ReadSideLimits, RebuildService},
-    },
-    process::Process,
-    shared::application::{StorageError, activity::ActivityHub, mail::Mailer, test_support::RecordingMailer},
+    DEMO_DEFAULTS,
+    operations::application::activity_observer::CommandActivityObserver,
+    shared::application::{activity::ActivityHub, mail::Mailer, test_support::RecordingMailer},
 };
-use async_trait::async_trait;
 use cqrsx::{
-    cqrs::{
-        aggregate::Aggregate,
-        command::locks::LockLimits,
-        projection::{View, checkpoint::CheckpointStore, processor::config::ProcessorConfig, repository::StoredView},
-        store::feed::Position,
-        testing::{mem_checkpoint_store::MemCheckpointStore, mem_view_repository::MemViewRepository},
-    },
-    engine::Cqrs,
-    postgres::{event_repository::DEFAULT_COUNT_AFTER_CAP, pool::StatementTimeout},
-    task::runtime::config::TaskRuntimeConfig,
+    cqrs::{aggregate::Aggregate, projection::View, projection::repository::StoredView},
+    engine::{Cqrs, build::Builder, settings::Settings},
+    task::policy::Policies,
 };
-use mongodb::{Client, options::ClientOptions};
-use sqlx::{PgPool, postgres::PgPoolOptions};
-use std::{num::NonZeroU32, sync::Arc, time::Duration};
-use tokio_util::sync::CancellationToken;
+use std::{collections::HashMap, future::Future, sync::Arc};
 
-/// The box office on the engine in memory: the modules `concert`, `fan` and `operations` as the process registers
-/// them, with a mail service that records the letters instead of the module's (a test's `provide` wins).
-pub fn test_app() -> (Cqrs, Arc<RecordingMailer>) {
-    let mail = Arc::new(RecordingMailer::delivering());
-    let mailer: Arc<Mailer> = mail.clone();
-    let cqrs = Cqrs::in_memory()
+/// The modules of the box office as `main.rs` registers them, over the variables `pairs` (full names) and the demo's
+/// defaults, in memory.
+pub fn app(pairs: &[(&str, &str)]) -> Builder {
+    let pairs: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    Cqrs::from_lookup("ENCORE", move |name| pairs.get(name).cloned())
+        .defaults(DEMO_DEFAULTS)
         .module(crate::concert::module)
         .module(crate::fan::module)
         .module(crate::operations::module)
-        .provide(mailer)
-        .build()
-        .expect("the modules assemble");
+}
+
+/// The box office on the engine in memory: the modules `concert`, `fan` and `operations` as the process registers
+/// them, with a mail service that records the letters instead of the module's (a test's `provide` wins).
+pub async fn test_app() -> (Cqrs, Arc<RecordingMailer>) {
+    let mail = Arc::new(RecordingMailer::delivering());
+    let mailer: Arc<Mailer> = mail.clone();
+    let cqrs = app(&[]).provide(mailer).build().await.expect("the modules assemble");
     (cqrs, mail)
 }
 
@@ -52,140 +38,32 @@ pub fn command_feed(activity: &Arc<ActivityHub>) -> Arc<CommandActivityObserver>
     Arc::new(CommandActivityObserver::new(activity.clone()))
 }
 
-/// The policies of the task types under [`config`]: six attempts, a step waits 1 s, an e-mail 1 s to 8 s.
-pub fn policies() -> cqrsx::task::policy::Policies {
-    crate::bootstrap::tasks::policies(&config()).unwrap()
+/// The engine's settings of the process without variables: the library's with the demo's defaults.
+pub fn settings() -> Settings {
+    Settings::from_lookup("ENCORE", |_| None, &DEMO_DEFAULTS).expect("the demo's defaults validate")
 }
 
-/// A valid configuration with the demo defaults and databases nobody listens on.
-pub fn config() -> Config {
-    Config {
-        database_url: String::new(),
-        database_pool_size: NonZeroU32::new(10).unwrap(),
-        database_statement_timeout: StatementTimeout::Default,
-        database_history_pool_size: NonZeroU32::new(1).unwrap(),
-        database_projection_pool_size: NonZeroU32::new(4).unwrap(),
-        mongodb_uri: String::new(),
-        mongodb_pool_size: DEFAULT_MONGODB_POOL_SIZE,
-        read_db: "encore_read_test".into(),
-        http_addr: "127.0.0.1:0".parse().unwrap(),
-        mail_service_url: "http://127.0.0.1:1".into(),
-        task_max_attempts: 6,
-        task_retry_base: Duration::from_secs(1),
-        task_retry_max: Duration::from_secs(8),
-        ticket_limit: 4,
-        snapshot_every: 10,
-        command_lock_limits: LockLimits::default(),
-        projection: ProcessorConfig::default(),
-        projection_lag_cap: DEFAULT_COUNT_AFTER_CAP,
-        projection_status_timeout: DEFAULT_STATUS_TIMEOUT,
-        node_name: DEFAULT_NODE_NAME.into(),
-        replay_slow_delay: Duration::ZERO,
-        replay_max_pace: DEFAULT_MAX_PACE,
-        task_runtime: TaskRuntimeConfig::from_lookup(outbox_default).unwrap(),
+/// The policies of the task types of the process without variables: six attempts, a step waits 1 s, an e-mail 1 s to
+/// 8 s.
+pub fn policies() -> Policies {
+    ready(app(&[]).build()).expect("the modules assemble").policies().clone()
+}
+
+/// The output of `future`, which must not wait: an engine in memory builds without one.
+pub fn ready<F: Future>(future: F) -> F::Output {
+    let mut context = std::task::Context::from_waker(std::task::Waker::noop());
+    match std::pin::pin!(future).poll(&mut context) {
+        std::task::Poll::Ready(output) => output,
+        std::task::Poll::Pending => panic!("the future waits"),
     }
 }
 
-/// Nothing listens on port 1: the first acquire fails fast instead of retrying for the default 30 s.
-pub fn lazy_pool() -> PgPool {
-    PgPoolOptions::new()
-        .acquire_timeout(Duration::from_millis(200))
-        .connect_lazy_with("postgresql://encore:encore@127.0.0.1:1/encore".parse().unwrap())
-}
-
-pub async fn lazy_mongo() -> Client {
-    let mut options = ClientOptions::parse("mongodb://127.0.0.1:1").await.unwrap();
-    options.server_selection_timeout = Some(Duration::from_millis(50));
-    Client::with_options(options).unwrap()
-}
-
-/// A process over `config` and databases nobody listens on: enough to wire the whole graph and to
-/// exercise every branch that answers before storage is touched.
-pub async fn process_with(config: Config) -> Process {
-    Process {
-        config: Arc::new(config),
-        pool: lazy_pool(),
-        history_pool: lazy_pool(),
-        projection_pool: lazy_pool(),
-        mongo: lazy_mongo().await,
-        shutdown: CancellationToken::new(),
-    }
-}
-
-/// [`process_with`] over the demo defaults.
-pub async fn process() -> Process {
-    process_with(config()).await
-}
-
-/// A read-model collection in memory holding `documents`, ordered by id like the MongoDB one.
-pub fn read_model<V: View<A>, A: Aggregate>(documents: impl IntoIterator<Item = StoredView<V>>) -> MemViewRepository<V, A> {
-    let repository = MemViewRepository::default();
+/// Writes `documents` into the repository of the view `V` of the engine in memory, as a processor would have.
+pub fn put<V: View<A> + 'static, A: Aggregate + 'static>(cqrs: &Cqrs, documents: impl IntoIterator<Item = StoredView<V>>) {
+    let repository = cqrs.documents::<V, A>().expect("a view of the engine in memory");
     for document in documents {
         repository
             .put(&document.id, document.version, document.last_sequence, &document.view)
             .unwrap();
-    }
-    repository
-}
-
-/// A ledger of fixed size whose readers are `lag` events behind.
-pub struct FixedLedger {
-    pub lag: u64,
-}
-
-#[async_trait]
-impl EventLedgerStats for FixedLedger {
-    async fn totals(&self) -> Result<LedgerTotals, StorageError> {
-        Ok(LedgerTotals {
-            events: 9,
-            aggregates: 3,
-        })
-    }
-
-    async fn count_after(&self, _: &str, _: Position, cap: u64) -> Result<u64, StorageError> {
-        Ok(self.lag.min(cap))
-    }
-}
-
-/// The checkpoints of both read models in memory, for the router tests: they drive the rows as running
-/// processors would.
-#[derive(Clone, Default)]
-pub struct Checkpoints(MemCheckpointStore);
-
-impl Checkpoints {
-    /// Both rows registered and claimed by `owner`.
-    pub async fn owned_by(owner: &str) -> Self {
-        let checkpoints = Self::default();
-        for key in checkpoint_keys() {
-            checkpoints.0.register(&key).await.unwrap();
-            checkpoints
-                .0
-                .claim(&key, owner, Duration::from_secs(60))
-                .await
-                .unwrap()
-                .unwrap();
-        }
-        checkpoints
-    }
-
-    /// Every operation fails while set, like a MongoDB that does not answer.
-    pub fn set_unavailable(&self, unavailable: bool) {
-        self.0.set_unavailable(unavailable);
-    }
-
-    /// The read side over these checkpoints, with readers `lag` events behind.
-    pub fn read_side(&self, lag: u64) -> Arc<dyn ReadSide> {
-        Arc::new(RebuildService::new(
-            Arc::new(self.0.clone()),
-            checkpoint_keys(),
-            Arc::new(FixedLedger { lag }),
-            Arc::new(ActivityHub::new(64, 64)),
-            ReadSideLimits {
-                lag_cap: DEFAULT_COUNT_AFTER_CAP,
-                max_pace: DEFAULT_MAX_PACE,
-                status_timeout: DEFAULT_STATUS_TIMEOUT,
-            },
-            CancellationToken::new(),
-        ))
     }
 }

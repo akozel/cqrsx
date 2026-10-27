@@ -1,16 +1,20 @@
 //! `POST /api/projections/rebuild` — ⏪ Encore!: the owners of the checkpoints rebuild every read model from
 //! the journal while the box office stays open (`202`). `pace_ms` is the pause between the events of one key
 //! (D-18): the UI sends the slow-motion delay or 0.
-use crate::{bootstrap::AppState, operations::application::rebuild::RebuildRefused, shared::presentation::error::ApiError};
+use crate::{
+    operations::application::rebuild::{RebuildRefused, RebuildService},
+    shared::presentation::error::ApiError,
+};
 use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
     http::StatusCode,
     response::{IntoResponse, Response},
 };
+use cqrsx::engine::Cqrs;
 use serde::Deserialize;
 use serde_json::json;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -19,7 +23,7 @@ pub struct RebuildRequest {
     pace_ms: u64,
 }
 
-/// The answer to a refused rebuild request, shared with the rebuild of one hall.
+/// The answer to a refused rebuild request.
 pub fn refused(refusal: RebuildRefused) -> ApiError {
     match refusal {
         RebuildRefused::AlreadyRunning => ApiError::new(
@@ -34,7 +38,7 @@ pub fn refused(refusal: RebuildRefused) -> ApiError {
 }
 
 pub async fn handle(
-    State(state): State<AppState>,
+    State(cqrs): State<Arc<Cqrs>>,
     body: Result<Json<RebuildRequest>, JsonRejection>,
 ) -> Result<Response, ApiError> {
     // No body means full speed; anything else must parse.
@@ -43,8 +47,7 @@ pub async fn handle(
         Err(JsonRejection::MissingJsonContentType(_)) => RebuildRequest::default(),
         Err(error) => return Err(ApiError::invalid(format!("invalid rebuild request: {error}"))),
     };
-    let started = state
-        .rebuild
+    let started = RebuildService::of(&cqrs)?
         .rebuild(Duration::from_millis(request.pace_ms))
         .await
         .map_err(refused)?;
