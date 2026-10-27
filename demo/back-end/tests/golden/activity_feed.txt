@@ -1,0 +1,18 @@
+command.accepted = aggregate_id, aggregate_type, at, command_id, command_type, correlation_id, fan_id, id, source, tasks, type
+command.failed[outcome=conflict] = aggregate_id, aggregate_type, at, command_id, command_type, correlation_id, fan_id, id, message, outcome, source, type
+command.failed[outcome=unavailable] = aggregate_id, aggregate_type, at, command_id, command_type, correlation_id, fan_id, id, message, outcome, source, type
+command.rejected = aggregate_id, aggregate_type, at, code, command_id, command_type, correlation_id, fan_id, id, params, source, type
+projection.failed = at, category, failures, handler, id, message, projection, type, view_id
+projection.lease[lease=acquired] = at, id, lease, owner, projection, type
+projection.lease[lease=lost] = at, id, lease, owner, projection, type
+projection.lease[lease=released] = at, id, lease, owner, projection, type
+projection.rebuilt[reason=healed] = at, events, id, projection, reason, type, view_id
+projection.rebuilt[reason=requested] = at, events, id, projection, reason, type, view_id
+projection.updated = at, events, id, projection, sequence, type, view_id
+rebuild.finished = at, duration_ms, id, keys, rebuild_id, type
+rebuild.progress = at, id, keys, rebuild_id, type
+rebuild.started = at, events_total, id, keys_total, pace_ms, rebuild_id, type
+task.attempt.failed[retry=false] = at, attempt, correlation_id, format, id, inbox_id, message, reason_code, retry, task_id, type
+task.attempt.failed[retry=true] = at, attempt, correlation_id, format, id, inbox_id, reason_code, retry, retry_after_ms, task_id, type
+task.attempt.started = at, attempt, correlation_id, format, id, inbox_id, task_id, type
+task.attempt.succeeded = at, attempt, correlation_id, duplicate, format, id, inbox_id, task_id, type

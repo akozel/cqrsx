@@ -3,7 +3,7 @@
 //! concert from a fan: the application is assembled from a [`Process`] by `bootstrap`.
 use crate::{
     bootstrap::{Wiring, routes},
-    config::{Config, ConfigError},
+    config::{Config, ConfigError, duration_text, statement_timeout_text},
 };
 use cqrsx::{
     cqrs::projection::runtime::ProjectionRuntime,
@@ -15,6 +15,7 @@ use cqrsx::{
     },
     task::runtime::TaskRuntimeError,
 };
+use mongodb::options::ClientOptions;
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
@@ -23,6 +24,7 @@ use std::{
     future::{Future, IntoFuture},
     io,
     net::SocketAddr,
+    num::NonZeroU32,
     sync::Arc,
     time::Duration,
 };
@@ -156,54 +158,184 @@ where
     }
 }
 
-/// The main, the history and the projection pool over the same address, all connecting lazily.
+/// The name the process gives its connections: PostgreSQL's `application_name`, MongoDB's `appName`.
+const APPLICATION_NAME: &str = "encore-backend";
+
+/// How the process connects one PostgreSQL pool: what it sets; everything else is SQLx's default.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PostgresPool {
+    pub max_connections: NonZeroU32,
+    /// `None` keeps SQLx's minimum (none).
+    pub min_connections: Option<u32>,
+    /// `None` keeps SQLx's idle timeout (10 minutes).
+    pub idle_timeout: Option<Duration>,
+    pub ping: ConnectionPingPolicy,
+    pub statement_timeout: StatementTimeout,
+}
+
+impl PostgresPool {
+    /// SQLx's pool options with what this plan sets on top of its defaults.
+    pub fn options(&self) -> PgPoolOptions {
+        let mut options = PgPoolOptions::new().max_connections(self.max_connections.get());
+        if let Some(min_connections) = self.min_connections {
+            options = options.min_connections(min_connections);
+        }
+        if let Some(idle_timeout) = self.idle_timeout {
+            options = options.idle_timeout(idle_timeout);
+        }
+        options
+    }
+
+    async fn connect(&self, connection: PgConnectOptions) -> Result<PgPool, sqlx::Error> {
+        connect_pool_with(connection, self.options(), self.ping, self.statement_timeout).await
+    }
+
+    /// The pool as it is opened: SQLx's options read back, the ping policy and the statement timeout.
+    fn describe(&self, name: &str) -> Vec<(String, String)> {
+        let options = self.options();
+        let optional = |duration: Option<Duration>| duration.map_or_else(|| "none".to_owned(), duration_text);
+        let ping = match self.ping {
+            ConnectionPingPolicy::Default => "always".to_owned(),
+            ConnectionPingPolicy::Idle(after) => format!("idle {}", duration_text(after)),
+        };
+        [
+            ("acquire_timeout", duration_text(options.get_acquire_timeout())),
+            ("idle_timeout", optional(options.get_idle_timeout())),
+            ("max_connections", options.get_max_connections().to_string()),
+            ("max_lifetime", optional(options.get_max_lifetime())),
+            ("min_connections", options.get_min_connections().to_string()),
+            ("ping", ping),
+            ("statement_timeout", statement_timeout_text(self.statement_timeout)),
+        ]
+        .into_iter()
+        .map(|(field, value)| (format!("postgres.{name}.{field}"), value))
+        .collect()
+    }
+}
+
+/// The three PostgreSQL pools of the process over the same address, as `postgres_pools` opens them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PoolPlan {
+    pub application_name: &'static str,
+    /// Commands, the outbox queue and the checkpoints: short static statements, each under the statement timeout.
+    pub main: PostgresPool,
+    /// The projection processors' reads of the journal, under the main pool's statement timeout but apart from the
+    /// commands' connections.
+    pub projection: PostgresPool,
+    /// Whole-history reads (verify, the ledger totals and the time machine): no statement timeout, and no connection
+    /// kept while none of them runs.
+    pub history: PostgresPool,
+}
+
+impl PoolPlan {
+    /// Every pool as `postgres.<pool>.<field>` and the application name, sorted by key (see `Config::describe`).
+    pub fn describe(&self) -> Vec<(String, String)> {
+        let mut lines = vec![("postgres.application_name".to_owned(), self.application_name.to_owned())];
+        lines.extend(self.main.describe("main"));
+        lines.extend(self.projection.describe("projection"));
+        lines.extend(self.history.describe("history"));
+        lines.sort();
+        lines
+    }
+}
+
+/// The pools of `config`: the sizes and the statement timeout it names, a ping only after 100 ms idle, and a history
+/// pool without a cap that keeps no idle connection longer than 30 s.
+pub fn pool_plan(config: &Config) -> PoolPlan {
+    let ping = ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER);
+    PoolPlan {
+        application_name: APPLICATION_NAME,
+        main: PostgresPool {
+            max_connections: config.database_pool_size,
+            min_connections: None,
+            idle_timeout: None,
+            ping,
+            statement_timeout: config.database_statement_timeout,
+        },
+        projection: PostgresPool {
+            max_connections: config.database_projection_pool_size,
+            min_connections: None,
+            idle_timeout: None,
+            ping,
+            statement_timeout: config.database_statement_timeout,
+        },
+        history: PostgresPool {
+            max_connections: config.database_history_pool_size,
+            min_connections: Some(0),
+            idle_timeout: Some(Duration::from_secs(30)),
+            ping,
+            statement_timeout: StatementTimeout::Unlimited,
+        },
+    }
+}
+
+/// The main, the history and the projection pool over the same address, as `pool_plan` says.
 async fn postgres_pools(config: &Config) -> Result<(PgPool, PgPool, PgPool), ProcessError> {
-    let options = config
+    let plan = pool_plan(config);
+    let connection = config
         .database_url
         .parse::<PgConnectOptions>()
         .map_err(ProcessError::DatabaseUrl)?
-        .application_name("encore-backend");
-    let pool = connect_pool_with(
-        options.clone(),
-        PgPoolOptions::new().max_connections(config.database_pool_size.get()),
-        ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
-        config.database_statement_timeout,
-    )
-    .await
-    .map_err(ProcessError::Pool)?;
-    let projection_pool = connect_pool_with(
-        options.clone(),
-        PgPoolOptions::new().max_connections(config.database_projection_pool_size.get()),
-        ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
-        config.database_statement_timeout,
-    )
-    .await
-    .map_err(ProcessError::ProjectionPool)?;
-    let history_pool = connect_pool_with(
-        options,
-        PgPoolOptions::new()
-            .max_connections(config.database_history_pool_size.get())
-            .min_connections(0)
-            .idle_timeout(Duration::from_secs(30)),
-        ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER),
-        StatementTimeout::Unlimited,
-    )
-    .await
-    .map_err(ProcessError::HistoryPool)?;
+        .application_name(plan.application_name);
+    let pool = plan.main.connect(connection.clone()).await.map_err(ProcessError::Pool)?;
+    let projection_pool = plan
+        .projection
+        .connect(connection.clone())
+        .await
+        .map_err(ProcessError::ProjectionPool)?;
+    let history_pool = plan.history.connect(connection).await.map_err(ProcessError::HistoryPool)?;
     Ok((pool, history_pool, projection_pool))
+}
+
+/// How the process connects to MongoDB, on top of what its URI says.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MongoPlan {
+    pub max_pool_size: NonZeroU32,
+    pub server_selection_timeout: Duration,
+    pub connect_timeout: Duration,
+    pub app_name: &'static str,
+}
+
+impl MongoPlan {
+    /// Sets the plan's options, whatever the URI said about them.
+    pub fn apply(&self, options: &mut ClientOptions) {
+        options.server_selection_timeout = Some(self.server_selection_timeout);
+        options.connect_timeout = Some(self.connect_timeout);
+        options.app_name = Some(self.app_name.into());
+        options.max_pool_size = Some(self.max_pool_size.get());
+    }
+
+    /// The client as `mongodb.<option>`, sorted by key (see `Config::describe`).
+    pub fn describe(&self) -> Vec<(String, String)> {
+        vec![
+            ("mongodb.app_name".to_owned(), self.app_name.to_owned()),
+            ("mongodb.connect_timeout".to_owned(), duration_text(self.connect_timeout)),
+            ("mongodb.max_pool_size".to_owned(), self.max_pool_size.to_string()),
+            (
+                "mongodb.server_selection_timeout".to_owned(),
+                duration_text(self.server_selection_timeout),
+            ),
+        ]
+    }
 }
 
 /// Short server-selection and connect timeouts: when MongoDB is down the read side fails fast and retries
 /// (the processors back off, the status answers with the rows it saw last) instead of hanging for the
-/// driver's default 30 s; the commands never touch MongoDB.
+/// driver's default 30 s; the commands never touch MongoDB. The pool is `ENCORE_MONGODB_POOL_SIZE`.
+pub fn mongo_plan(config: &Config) -> MongoPlan {
+    MongoPlan {
+        max_pool_size: config.mongodb_pool_size,
+        server_selection_timeout: Duration::from_secs(3),
+        connect_timeout: Duration::from_secs(3),
+        app_name: APPLICATION_NAME,
+    }
+}
+
 async fn mongo_client(config: &Config) -> Result<mongodb::Client, ProcessError> {
-    let mut options = mongodb::options::ClientOptions::parse(&config.mongodb_uri)
+    let mut options = ClientOptions::parse(&config.mongodb_uri)
         .await
         .map_err(ProcessError::MongoUri)?;
-    options.server_selection_timeout = Some(Duration::from_secs(3));
-    options.connect_timeout = Some(Duration::from_secs(3));
-    options.app_name = Some("encore-backend".into());
-    options.max_pool_size = Some(config.mongodb_pool_size.get());
+    mongo_plan(config).apply(&mut options);
     mongodb::Client::with_options(options).map_err(ProcessError::MongoClient)
 }
 
@@ -325,6 +457,112 @@ mod tests {
         .await;
         assert!(matches!(result, Err(ProcessError::Projections(message)) if message.contains("totals")));
         assert!(shutdown.is_cancelled(), "the panic stopped everything else");
+    }
+
+    #[test]
+    fn the_pool_plan_takes_the_sizes_and_the_timeout_of_the_configuration() {
+        let mut config = crate::testing::config();
+        config.database_pool_size = NonZeroU32::new(7).unwrap();
+        config.database_projection_pool_size = NonZeroU32::new(3).unwrap();
+        config.database_history_pool_size = NonZeroU32::new(2).unwrap();
+        config.database_statement_timeout = StatementTimeout::Custom(Duration::from_millis(2500));
+        let plan = pool_plan(&config);
+        let ping = ConnectionPingPolicy::Idle(Duration::from_millis(100));
+        let capped = |size| PostgresPool {
+            max_connections: NonZeroU32::new(size).unwrap(),
+            min_connections: None,
+            idle_timeout: None,
+            ping,
+            statement_timeout: StatementTimeout::Custom(Duration::from_millis(2500)),
+        };
+        assert_eq!((plan.main, plan.projection), (capped(7), capped(3)));
+        assert_eq!(
+            plan.history,
+            PostgresPool {
+                max_connections: NonZeroU32::new(2).unwrap(),
+                min_connections: Some(0),
+                idle_timeout: Some(Duration::from_secs(30)),
+                ping,
+                statement_timeout: StatementTimeout::Unlimited,
+            }
+        );
+        assert_eq!(plan.application_name, "encore-backend");
+        let (main, history) = (plan.main.options(), plan.history.options());
+        assert_eq!(
+            (
+                main.get_max_connections(),
+                main.get_min_connections(),
+                main.get_idle_timeout()
+            ),
+            (7, 0, Some(Duration::from_secs(600))),
+            "SQLx's minimum and idle timeout where the plan sets none"
+        );
+        assert_eq!(
+            (
+                history.get_max_connections(),
+                history.get_min_connections(),
+                history.get_idle_timeout()
+            ),
+            (2, 0, Some(Duration::from_secs(30)))
+        );
+        let lines = plan.describe();
+        assert!(lines.is_sorted());
+        for line in [
+            ("postgres.main.statement_timeout", "2500 ms"),
+            ("postgres.history.statement_timeout", "unlimited"),
+            ("postgres.projection.ping", "idle 100 ms"),
+        ] {
+            assert!(
+                lines.contains(&(line.0.to_owned(), line.1.to_owned())),
+                "{line:?} in {lines:?}"
+            );
+        }
+        let always = PostgresPool {
+            ping: ConnectionPingPolicy::Default,
+            ..plan.main
+        };
+        assert!(
+            always
+                .describe("main")
+                .contains(&("postgres.main.ping".to_owned(), "always".to_owned()))
+        );
+    }
+
+    #[tokio::test]
+    async fn the_mongo_plan_overrides_what_the_uri_says() {
+        let mut config = crate::testing::config();
+        config.mongodb_pool_size = NonZeroU32::new(12).unwrap();
+        let plan = mongo_plan(&config);
+        let mut options = ClientOptions::parse(
+            "mongodb://localhost:27018/?maxPoolSize=50&appName=other&connectTimeoutMS=100&serverSelectionTimeoutMS=100",
+        )
+        .await
+        .unwrap();
+        plan.apply(&mut options);
+        assert_eq!(
+            (
+                options.max_pool_size,
+                options.server_selection_timeout,
+                options.connect_timeout,
+                options.app_name.as_deref()
+            ),
+            (
+                Some(12),
+                Some(Duration::from_secs(3)),
+                Some(Duration::from_secs(3)),
+                Some("encore-backend")
+            )
+        );
+        assert_eq!(
+            plan.describe(),
+            [
+                ("mongodb.app_name", "encore-backend"),
+                ("mongodb.connect_timeout", "3 s"),
+                ("mongodb.max_pool_size", "12"),
+                ("mongodb.server_selection_timeout", "3 s"),
+            ]
+            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+        );
     }
 
     #[tokio::test]

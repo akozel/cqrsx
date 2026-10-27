@@ -429,3 +429,72 @@ fn the_checker_sees_grouped_imports_inline_paths_and_ignores_comments_and_string
         ["test_support"]
     );
 }
+
+/// G-11 (backlog 05/02) until the engine refuses a second registration of an aggregate (05/11): the process builds one
+/// command executor per aggregate type, in that aggregate's module of the composition root, and the root builds each
+/// once. The HTTP commands and the task handlers' commands to one aggregate share it, and with it the locks; a second
+/// executor of one type would be another process to them, meeting the first only at the optimistic check.
+#[test]
+fn the_process_builds_one_command_executor_per_aggregate_type() {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&src, &mut files);
+    let stripped: Vec<(PathBuf, String)> = files
+        .iter()
+        .map(|file| {
+            let code = fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            (file.clone(), strip(&code))
+        })
+        .collect();
+    let test_files: BTreeSet<PathBuf> = stripped
+        .iter()
+        .flat_map(|(file, code)| {
+            // The crate root's children live next to it, every other module's in its own directory.
+            let dir = if file.parent() == Some(src.as_path()) && (file.ends_with("lib.rs") || file.ends_with("main.rs")) {
+                src.clone()
+            } else {
+                file.with_extension("")
+            };
+            test_only_children(code)
+                .into_iter()
+                .map(move |child| dir.join(format!("{child}.rs")))
+        })
+        .collect();
+    let mut built = Vec::new();
+    let mut test_executors = Vec::new();
+    for (file, code) in stripped.iter().filter(|(file, _)| !test_files.contains(file)) {
+        let relative = file.strip_prefix(&src).unwrap_or(file).display().to_string();
+        let production = without_test_modules(code);
+        let count = production.matches("PostgresCommandExecutor::new(").count();
+        if count > 0 {
+            built.push((relative.clone(), count));
+        }
+        if production.contains("TestCommandExecutor") {
+            test_executors.push(relative);
+        }
+    }
+    built.sort();
+    assert_eq!(
+        built,
+        [
+            ("bootstrap/aggregates/concert.rs".to_owned(), 1),
+            ("bootstrap/aggregates/fan.rs".to_owned(), 1)
+        ],
+        "one executor per aggregate type, in its module of the composition root"
+    );
+    assert!(
+        test_executors.is_empty(),
+        "test executors in production code: {test_executors:?}"
+    );
+    let root = src.join("bootstrap.rs");
+    let root = without_test_modules(&strip(
+        &fs::read_to_string(&root).unwrap_or_else(|e| panic!("{}: {e}", root.display())),
+    ));
+    for aggregate in ["concert", "fan"] {
+        assert_eq!(
+            root.matches(&format!("aggregates::{aggregate}::wire(")).count(),
+            1,
+            "bootstrap.rs builds the {aggregate} executor once"
+        );
+    }
+}

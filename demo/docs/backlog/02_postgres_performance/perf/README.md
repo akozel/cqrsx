@@ -17,6 +17,8 @@ From this directory (`demo/docs/backlog/02_postgres_performance/perf`):
 ./report.sh perf-02-                                    # table + demo/load/results/perf-report.html
 node tools/compare.mjs ../../../../load/results perf-base- perf-02- --md            # before → after
 node tools/compare.mjs ../../../../load/results e04-base- e04-03- e04-04- --md     # stages side by side
+node tools/statements.mjs ../../../../load/results e05-02-                         # the SQL statements of a batch
+node tools/statements.mjs ../../../../load/results e05-base- e05-                  # statements only one batch has
 ```
 
 `run.sh` takes the parameters of `demo/load/run.sh` (`--check`, `--help`, `LOAD_HOST_DIR`, …) and five of
@@ -87,6 +89,25 @@ The first run that actually starts rebuilds the back-end image; `BUILD=0` skips 
 | `tools/report.mjs` | terminal table (or a batch as Markdown, `--md`): one line per point, median, `n`, min–max |
 | `tools/report-html.mjs` | the stand's HTML report extended with these figures: medians with min–max whiskers, "CPU per 1000 accepted commands", "Database work per command" and "per drained task" |
 | `tools/compare.mjs` | two batches point by point: medians with min–max, relative change, `≠` when the two ranges do not overlap |
+| `tools/statements.mjs` | the SQL statements of a batch as a set, per point (below); with two batches, the statements only one of them has |
+
+## The set of statements
+
+`tools/statements.mjs` reads the statement column of `pg_statements.tsv` and `pg_statements.drain.tsv` of every run
+and folds the repeats of a point into one set, the points paired by name as in `compare.mjs` (a whole run name is a
+prefix too: the set of that run). With one batch it prints every point's set and how many distinct texts the dumps
+held before and after normalization; with two, per point, `=` for the same set, `≠` with the statements only in the
+first (`-`) or only in the second (`+`) batch, and `?` for a point only one of them has. It is the check that a change
+adds, drops or rewrites no statement (backlog epic 05: the set must stay the same).
+
+- **Normalization.** Whitespace is collapsed, and parameters (`$1`) and literals (`'pending'`, `1`, `0.5`, `NULL`,
+  `TRUE`, `FALSE`) become `?`. Without it identical runs differ: `pg_stat_statements` keeps one text per statement
+  (`queryid`), normalized (`SELECT $4 FROM events …`) when the statement was parsed after the statistics were reset,
+  as sent (`SELECT 1 FROM events …`) when its connection had prepared it before; a run gets one or the other.
+- **The price.** A changed literal value is not seen (`status = 'processing'` → `status = 'pending'`), just as
+  `queryid` does not see it; a statement that gains or loses a condition, a column, a parameter or a literal is.
+- **Exit code.** 0: listed, or the same set at every point; 1: a statement or a point only one batch has; 2: wrong
+  usage, or a batch without a single run with statement dumps.
 
 ## Work per command
 

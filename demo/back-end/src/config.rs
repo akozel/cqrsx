@@ -13,8 +13,14 @@ use cqrsx::{
             ProcessorConfigError,
         },
     },
-    postgres::{event_repository::DEFAULT_COUNT_AFTER_CAP, pool::StatementTimeout},
-    task::runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
+    postgres::{
+        event_repository::DEFAULT_COUNT_AFTER_CAP,
+        pool::{DEFAULT_STATEMENT_TIMEOUT, StatementTimeout},
+    },
+    task::{
+        queue::lease::LEASE_SAFETY_MARGIN,
+        runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
+    },
 };
 use std::{env, net::SocketAddr, num::NonZeroU32, str::FromStr, time::Duration};
 
@@ -97,19 +103,15 @@ pub(crate) fn outbox_default(name: &str) -> Option<String> {
     Some(value.to_owned())
 }
 
-fn outbox_lookup(name: &str) -> Option<String> {
-    env::var(name).ok().or_else(|| outbox_default(name))
-}
-
-fn var(name: &'static str) -> Option<String> {
-    env::var(name).ok().map(|v| v.trim().to_owned()).filter(|v| !v.is_empty())
-}
-
-fn parse<T: std::str::FromStr>(name: &'static str, default: &str) -> Result<T, ConfigError>
+fn parse<T: std::str::FromStr>(
+    lookup: &impl Fn(&'static str) -> Option<String>,
+    name: &'static str,
+    default: &str,
+) -> Result<T, ConfigError>
 where
     T::Err: std::fmt::Display,
 {
-    parse_value(name, &var(name).unwrap_or_else(|| default.to_owned()))
+    parse_value(name, &lookup(name).unwrap_or_else(|| default.to_owned()))
 }
 
 fn parse_value<T: std::str::FromStr>(name: &'static str, raw: &str) -> Result<T, ConfigError>
@@ -266,15 +268,70 @@ fn read_side(lookup: impl Fn(&'static str) -> Option<String>) -> Result<ReadSide
     Ok(settings)
 }
 
+const STATEMENT_TIMEOUT: &str = "ENCORE_DATABASE_STATEMENT_TIMEOUT_MS";
+
 /// Unset = `StatementTimeout::Default`, `0` = `Unlimited`, any other number of milliseconds = `Custom`.
 fn statement_timeout(value: Option<String>) -> Result<StatementTimeout, ConfigError> {
-    const NAME: &str = "ENCORE_DATABASE_STATEMENT_TIMEOUT_MS";
     match value.map(|value| value.parse::<u32>()) {
         None => Ok(StatementTimeout::Default),
         Some(Ok(0)) => Ok(StatementTimeout::Unlimited),
         Some(Ok(millis)) if millis <= i32::MAX as u32 => Ok(StatementTimeout::Custom(Duration::from_millis(millis.into()))),
-        Some(_) => Err(invalid(NAME, "must be 0 (no cap) or 1..=2147483647 milliseconds")),
+        Some(_) => Err(invalid(
+            STATEMENT_TIMEOUT,
+            "must be 0 (no cap) or 1..=2147483647 milliseconds",
+        )),
     }
+}
+
+const TASK_MAX_ATTEMPTS: &str = "ENCORE_TASK_MAX_ATTEMPTS";
+const TASK_RETRY_BASE: &str = "ENCORE_TASK_RETRY_BASE_MS";
+const TASK_RETRY_MAX: &str = "ENCORE_TASK_RETRY_MAX_MS";
+const TICKET_LIMIT: &str = "ENCORE_TICKET_LIMIT";
+const SNAPSHOT_EVERY: &str = "ENCORE_SNAPSHOT_EVERY";
+const DATABASE_URL: &str = "ENCORE_DATABASE_URL";
+const DATABASE_POOL_SIZE: &str = "ENCORE_DATABASE_POOL_SIZE";
+const DATABASE_HISTORY_POOL_SIZE: &str = "ENCORE_DATABASE_HISTORY_POOL_SIZE";
+const DATABASE_PROJECTION_POOL_SIZE: &str = "ENCORE_DATABASE_PROJECTION_POOL_SIZE";
+const MONGODB_URI: &str = "ENCORE_MONGODB_URI";
+const READ_DB: &str = "ENCORE_READ_DB";
+const HTTP_ADDR: &str = "ENCORE_HTTP_ADDR";
+const MAIL_SERVICE_URL: &str = "ENCORE_MAIL_SERVICE_URL";
+const NODE_NAME: &str = "ENCORE_NODE_NAME";
+
+/// A duration as the description of the settings writes it: whole seconds as `N s` (zero too), otherwise whole
+/// milliseconds as `N ms`, otherwise `N ns`.
+pub fn duration_text(duration: Duration) -> String {
+    if duration.subsec_nanos() == 0 {
+        format!("{} s", duration.as_secs())
+    } else if duration.subsec_nanos().is_multiple_of(1_000_000) {
+        format!("{} ms", duration.as_millis())
+    } else {
+        format!("{} ns", duration.as_nanos())
+    }
+}
+
+/// The cap a statement timeout puts on a statement (`Default` is the library's 4 s), or `unlimited`.
+pub fn statement_timeout_text(timeout: StatementTimeout) -> String {
+    match timeout {
+        StatementTimeout::Default => duration_text(DEFAULT_STATEMENT_TIMEOUT),
+        StatementTimeout::Custom(timeout) => duration_text(timeout),
+        StatementTimeout::Unlimited => "unlimited".to_owned(),
+    }
+}
+
+/// What the task lease must exceed, the bound the library checks at start-up
+/// (`TaskWorkerPoolConfig::validate_for_storage_timeout`): a claim and a settlement within the storage timeout S, the
+/// handler timeout H, the safety margin, and every wave of the buffer ahead of a delivery, ⌈Q/C⌉ · (H + S).
+fn lease_budget(runtime: &TaskRuntimeConfig) -> Duration {
+    let worker = runtime.worker_pool();
+    let storage = runtime.storage().storage_timeout();
+    let handler = worker.handler_timeout();
+    let waves = u32::try_from(worker.buffer_capacity().div_ceil(worker.concurrency())).unwrap_or(u32::MAX);
+    storage
+        .saturating_mul(2)
+        .saturating_add(handler)
+        .saturating_add(LEASE_SAFETY_MARGIN)
+        .saturating_add(handler.saturating_add(storage).saturating_mul(waves))
 }
 
 fn invalid(name: &'static str, message: impl Into<String>) -> ConfigError {
@@ -285,47 +342,53 @@ fn invalid(name: &'static str, message: impl Into<String>) -> ConfigError {
 }
 
 impl Config {
+    /// The configuration from the process environment.
     pub fn from_env() -> Result<Self, ConfigError> {
-        let task_runtime = TaskRuntimeConfig::from_lookup(outbox_lookup)?;
-        let task_max_attempts: i32 = parse("ENCORE_TASK_MAX_ATTEMPTS", "6")?;
+        Self::from_lookup(|name| env::var(name).ok())
+    }
+
+    /// The configuration from `lookup` instead of the process environment: an `ENCORE_*` value is trimmed and counts as
+    /// unset when empty; an `OUTBOX_*` value goes to the library as it is, with the demo's default when absent.
+    /// `Config::from_lookup(|_| None)` is the configuration without a single variable.
+    pub fn from_lookup(lookup: impl Fn(&str) -> Option<String>) -> Result<Self, ConfigError> {
+        let var = |name: &'static str| lookup(name).map(|v| v.trim().to_owned()).filter(|v| !v.is_empty());
+        let task_runtime = TaskRuntimeConfig::from_lookup(|name| lookup(name).or_else(|| outbox_default(name)))?;
+        let task_max_attempts: i32 = parse(&var, TASK_MAX_ATTEMPTS, "6")?;
         if task_max_attempts <= 0 {
-            return Err(invalid("ENCORE_TASK_MAX_ATTEMPTS", "must be positive"));
+            return Err(invalid(TASK_MAX_ATTEMPTS, "must be positive"));
         }
-        let task_retry_base = Duration::from_millis(parse("ENCORE_TASK_RETRY_BASE_MS", "1000")?);
-        let task_retry_max = Duration::from_millis(parse("ENCORE_TASK_RETRY_MAX_MS", "8000")?);
+        let task_retry_base = Duration::from_millis(parse(&var, TASK_RETRY_BASE, "1000")?);
+        let task_retry_max = Duration::from_millis(parse(&var, TASK_RETRY_MAX, "8000")?);
         if task_retry_base > task_retry_max {
-            return Err(invalid(
-                "ENCORE_TASK_RETRY_BASE_MS",
-                "must not exceed ENCORE_TASK_RETRY_MAX_MS",
-            ));
+            return Err(invalid(TASK_RETRY_BASE, "must not exceed ENCORE_TASK_RETRY_MAX_MS"));
         }
-        let ticket_limit: usize = parse("ENCORE_TICKET_LIMIT", "4")?;
+        let ticket_limit: usize = parse(&var, TICKET_LIMIT, "4")?;
         if ticket_limit == 0 {
-            return Err(invalid("ENCORE_TICKET_LIMIT", "must be positive"));
+            return Err(invalid(TICKET_LIMIT, "must be positive"));
         }
-        let snapshot_every: usize = parse("ENCORE_SNAPSHOT_EVERY", "10")?;
+        let snapshot_every: usize = parse(&var, SNAPSHOT_EVERY, "10")?;
         if snapshot_every == 0 {
-            return Err(invalid("ENCORE_SNAPSHOT_EVERY", "must be positive"));
+            return Err(invalid(SNAPSHOT_EVERY, "must be positive"));
         }
         // `NonZeroU32` rejects 0 while parsing.
-        let database_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_POOL_SIZE", "10")?;
-        let database_history_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_HISTORY_POOL_SIZE", "1")?;
-        let database_projection_pool_size: NonZeroU32 = parse("ENCORE_DATABASE_PROJECTION_POOL_SIZE", "4")?;
-        let database_statement_timeout = statement_timeout(var("ENCORE_DATABASE_STATEMENT_TIMEOUT_MS"))?;
+        let database_pool_size: NonZeroU32 = parse(&var, DATABASE_POOL_SIZE, "10")?;
+        let database_history_pool_size: NonZeroU32 = parse(&var, DATABASE_HISTORY_POOL_SIZE, "1")?;
+        let database_projection_pool_size: NonZeroU32 = parse(&var, DATABASE_PROJECTION_POOL_SIZE, "4")?;
+        let database_statement_timeout = statement_timeout(var(STATEMENT_TIMEOUT))?;
         let command_lock_limits = command_lock_limits(var, task_runtime.worker_pool().handler_timeout())?;
         let projection = projection_config(var)?;
         let read_side = read_side(var)?;
         Ok(Self {
-            database_url: var("ENCORE_DATABASE_URL").unwrap_or_else(|| "postgresql://cqrsx:cqrsx@localhost:5434/encore".into()),
+            database_url: var(DATABASE_URL).unwrap_or_else(|| "postgresql://cqrsx:cqrsx@localhost:5434/encore".into()),
             database_pool_size,
             database_statement_timeout,
             database_history_pool_size,
             database_projection_pool_size,
-            mongodb_uri: var("ENCORE_MONGODB_URI").unwrap_or_else(|| "mongodb://localhost:27018".into()),
+            mongodb_uri: var(MONGODB_URI).unwrap_or_else(|| "mongodb://localhost:27018".into()),
             mongodb_pool_size: number(&var, MONGODB_POOL_SIZE, DEFAULT_MONGODB_POOL_SIZE)?,
-            read_db: var("ENCORE_READ_DB").unwrap_or_else(|| "encore_read".into()),
-            http_addr: parse("ENCORE_HTTP_ADDR", "127.0.0.1:8080")?,
-            mail_service_url: var("ENCORE_MAIL_SERVICE_URL")
+            read_db: var(READ_DB).unwrap_or_else(|| "encore_read".into()),
+            http_addr: parse(&var, HTTP_ADDR, "127.0.0.1:8080")?,
+            mail_service_url: var(MAIL_SERVICE_URL)
                 .unwrap_or_else(|| "http://127.0.0.1:8090".into())
                 .trim_end_matches('/')
                 .to_owned(),
@@ -338,11 +401,76 @@ impl Config {
             projection,
             projection_lag_cap: read_side.lag_cap,
             projection_status_timeout: read_side.status_timeout,
-            node_name: var("ENCORE_NODE_NAME").unwrap_or_else(|| DEFAULT_NODE_NAME.into()),
+            node_name: var(NODE_NAME).unwrap_or_else(|| DEFAULT_NODE_NAME.into()),
             replay_slow_delay: read_side.slow_delay,
             replay_max_pace: read_side.max_pace,
             task_runtime,
         })
+    }
+
+    /// Every setting as `(key, value)`, sorted by key. A setting read from a variable is described under the
+    /// variable's name with the value the process uses, read back from the object built from it (`LockLimits`,
+    /// `ProcessorConfig`, `TaskRuntimeConfig`); what has no variable of its own is described under a dotted name in
+    /// lower case. Durations as [`duration_text`] writes them. `tests/golden/effective_config.txt` holds the description
+    /// of the configuration without a single variable, next to the plan of the connections (`process::pool_plan`,
+    /// `process::mongo_plan`).
+    pub fn describe(&self) -> Vec<(String, String)> {
+        let locks = &self.command_lock_limits;
+        let projection = &self.projection;
+        let delivery = projection.delivery_limits();
+        let worker = self.task_runtime.worker_pool();
+        let mut lines: Vec<(String, String)> = [
+            (DATABASE_URL, self.database_url.clone()),
+            (DATABASE_POOL_SIZE, self.database_pool_size.to_string()),
+            (STATEMENT_TIMEOUT, statement_timeout_text(self.database_statement_timeout)),
+            (DATABASE_HISTORY_POOL_SIZE, self.database_history_pool_size.to_string()),
+            (DATABASE_PROJECTION_POOL_SIZE, self.database_projection_pool_size.to_string()),
+            (MONGODB_URI, self.mongodb_uri.clone()),
+            (MONGODB_POOL_SIZE, self.mongodb_pool_size.to_string()),
+            (READ_DB, self.read_db.clone()),
+            (HTTP_ADDR, self.http_addr.to_string()),
+            (MAIL_SERVICE_URL, self.mail_service_url.clone()),
+            (TASK_MAX_ATTEMPTS, self.task_max_attempts.to_string()),
+            (TASK_RETRY_BASE, duration_text(self.task_retry_base)),
+            (TASK_RETRY_MAX, duration_text(self.task_retry_max)),
+            (TICKET_LIMIT, self.ticket_limit.to_string()),
+            (SNAPSHOT_EVERY, self.snapshot_every.to_string()),
+            (LOCK_MAX_WAIT, duration_text(locks.max_wait())),
+            (LOCK_MAX_WAITERS, locks.max_waiters().to_string()),
+            (PROJECTION_POLL, duration_text(projection.poll_interval())),
+            (PROJECTION_PAGE, projection.page_size().to_string()),
+            (PROJECTION_LEASE, duration_text(projection.lease())),
+            (PROJECTION_RETRY_BASE, duration_text(projection.retry_base())),
+            (PROJECTION_RETRY_MAX, duration_text(projection.retry_max())),
+            (PROJECTION_CONCURRENCY, projection.concurrency().to_string()),
+            (PROJECTION_BUFFER, delivery.capacity().to_string()),
+            (PROJECTION_MAX_BATCH, delivery.max_batch().to_string()),
+            (PROJECTION_REBUILD_PAGE, projection.rebuild_page().to_string()),
+            (PROJECTION_SETTLE, duration_text(projection.settle())),
+            ("projection.pages_in_flight", projection.pages_in_flight().to_string()),
+            (LAG_CAP, self.projection_lag_cap.to_string()),
+            (STATUS_TIMEOUT, duration_text(self.projection_status_timeout)),
+            (NODE_NAME, self.node_name.clone()),
+            (SLOW_DELAY, duration_text(self.replay_slow_delay)),
+            (MAX_PACE, duration_text(self.replay_max_pace)),
+            ("OUTBOX_WORKER_CONCURRENCY", worker.concurrency().to_string()),
+            ("OUTBOX_QUEUE_CAPACITY", worker.buffer_capacity().to_string()),
+            ("OUTBOX_QUEUE_REFILL_PERCENT", format!("{} %", worker.buffer_refill_percent())),
+            ("OUTBOX_POLL_INTERVAL_MS", duration_text(worker.poll_interval())),
+            ("OUTBOX_HANDLER_TIMEOUT_SECS", duration_text(worker.handler_timeout())),
+            ("OUTBOX_LEASE_SECS", duration_text(worker.lease_duration())),
+            (
+                "OUTBOX_STORAGE_TIMEOUT_MS",
+                duration_text(self.task_runtime.storage().storage_timeout()),
+            ),
+            ("outbox.lease_budget", duration_text(lease_budget(&self.task_runtime))),
+            ("mail.request_timeout", duration_text(self.mail_request_timeout())),
+        ]
+        .into_iter()
+        .map(|(key, value)| (key.to_owned(), value))
+        .collect();
+        lines.sort();
+        lines
     }
 
     /// A mail request must give up before the task runtime's handler timeout does, so an attempt
@@ -380,17 +508,119 @@ mod tests {
 
     #[test]
     fn the_pool_size_defaults_to_ten_and_rejects_zero() {
+        let unset = |_: &'static str| None;
+        assert_eq!(parse::<NonZeroU32>(&unset, DATABASE_POOL_SIZE, "10").unwrap().get(), 10);
+        let error = parse::<NonZeroU32>(&unset, DATABASE_POOL_SIZE, "0").unwrap_err();
+        assert!(error.to_string().contains(DATABASE_POOL_SIZE), "{error}");
+    }
+
+    fn from_pairs(pairs: &[(&str, &str)]) -> Result<Config, ConfigError> {
+        let pairs: std::collections::HashMap<String, String> =
+            pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+        Config::from_lookup(|name| pairs.get(name).cloned())
+    }
+
+    #[test]
+    fn from_lookup_trims_encore_variables_and_passes_outbox_variables_as_they_are() {
+        let config = from_pairs(&[
+            (SNAPSHOT_EVERY, " 25 "),
+            (NODE_NAME, "   "),
+            (MAIL_SERVICE_URL, "http://mail:8025/"),
+            ("OUTBOX_WORKER_CONCURRENCY", "4"),
+            ("OUTBOX_QUEUE_CAPACITY", "4"),
+        ])
+        .unwrap();
+        assert_eq!(config.snapshot_every, 25, "an ENCORE_* value is trimmed");
+        assert_eq!(config.node_name, DEFAULT_NODE_NAME, "a blank ENCORE_* value counts as unset");
+        assert_eq!(config.mail_service_url, "http://mail:8025", "without the trailing slash");
+        assert_eq!(config.task_runtime.worker_pool().concurrency(), 4);
         assert_eq!(
-            parse::<NonZeroU32>("ENCORE_DATABASE_POOL_SIZE_UNSET_IN_TESTS", "10")
+            config.task_runtime.worker_pool().lease_duration(),
+            Duration::from_secs(30),
+            "an absent OUTBOX_* variable takes the demo's default"
+        );
+        for (name, raw) in [("OUTBOX_LEASE_SECS", ""), ("OUTBOX_LEASE_SECS", " 30")] {
+            assert!(
+                matches!(from_pairs(&[(name, raw)]), Err(ConfigError::TaskRuntime(_))),
+                "an OUTBOX_* value reaches the library untrimmed: {raw:?}"
+            );
+        }
+        let error = from_pairs(&[(TICKET_LIMIT, "0")]).unwrap_err().to_string();
+        assert_eq!(error, "ENCORE_TICKET_LIMIT: must be positive");
+    }
+
+    #[test]
+    fn durations_are_whole_seconds_or_milliseconds() {
+        assert_eq!(duration_text(Duration::ZERO), "0 s");
+        assert_eq!(duration_text(Duration::from_secs(30)), "30 s");
+        assert_eq!(duration_text(Duration::from_millis(10_000)), "10 s");
+        assert_eq!(duration_text(Duration::from_millis(250)), "250 ms");
+        assert_eq!(duration_text(Duration::from_millis(1500)), "1500 ms");
+        assert_eq!(duration_text(Duration::from_micros(1500)), "1500000 ns");
+        assert_eq!(statement_timeout_text(StatementTimeout::Default), "4 s");
+        assert_eq!(
+            statement_timeout_text(StatementTimeout::Custom(Duration::from_millis(2500))),
+            "2500 ms"
+        );
+        assert_eq!(statement_timeout_text(StatementTimeout::Unlimited), "unlimited");
+    }
+
+    #[test]
+    fn the_description_names_every_setting_once_in_its_unit() {
+        let config = from_pairs(&[
+            (STATEMENT_TIMEOUT, "0"),
+            (PROJECTION_SETTLE, "0"),
+            ("OUTBOX_LEASE_SECS", "45"),
+        ])
+        .unwrap();
+        let lines = config.describe();
+        let keys: std::collections::BTreeSet<&str> = lines.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(keys.len(), lines.len(), "every key once");
+        assert!(lines.is_sorted(), "sorted by key");
+        let value = |key: &str| lines.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        assert_eq!(value(STATEMENT_TIMEOUT), Some("unlimited"));
+        assert_eq!(value(PROJECTION_SETTLE), Some("0 s"));
+        assert_eq!(value("OUTBOX_LEASE_SECS"), Some("45 s"));
+        assert_eq!(value("OUTBOX_QUEUE_REFILL_PERCENT"), Some("25 %"));
+        assert_eq!(value("projection.pages_in_flight"), Some("63"));
+    }
+
+    #[test]
+    fn the_lease_budget_is_the_bound_the_runtime_checks() {
+        use cqrsx::task::runtime::worker_pool_config::{TaskWorkerPoolConfig, TaskWorkerPoolConfigError};
+        let wider = |name: &str| match name {
+            "OUTBOX_WORKER_CONCURRENCY" => Some("2".to_owned()),
+            "OUTBOX_QUEUE_CAPACITY" => Some("5".to_owned()),
+            "OUTBOX_HANDLER_TIMEOUT_SECS" => Some("2".to_owned()),
+            "OUTBOX_STORAGE_TIMEOUT_MS" => Some("1500".to_owned()),
+            "OUTBOX_LEASE_SECS" => Some("60".to_owned()),
+            _ => None,
+        };
+        let demo = TaskRuntimeConfig::from_lookup(outbox_default).unwrap();
+        assert_eq!(lease_budget(&demo), Duration::from_secs(24), "2·3 + 5 + 5 + 1·(5 + 3) s");
+        let wider = TaskRuntimeConfig::from_lookup(wider).unwrap();
+        assert_eq!(
+            lease_budget(&wider),
+            Duration::from_millis(20_500),
+            "2·1.5 + 2 + 5 + 3·(2 + 1.5) s"
+        );
+        for runtime in [demo, wider] {
+            let worker = runtime.worker_pool();
+            let with_lease = |lease| {
+                TaskWorkerPoolConfig::new(
+                    worker.concurrency(),
+                    worker.buffer_capacity(),
+                    worker.poll_interval(),
+                    worker.handler_timeout(),
+                    lease,
+                )
                 .unwrap()
-                .get(),
-            10
-        );
-        let error = parse::<NonZeroU32>("ENCORE_DATABASE_POOL_SIZE_UNSET_IN_TESTS", "0").unwrap_err();
-        assert!(
-            error.to_string().contains("ENCORE_DATABASE_POOL_SIZE_UNSET_IN_TESTS"),
-            "{error}"
-        );
+                .validate_for_storage_timeout(runtime.storage().storage_timeout())
+            };
+            let budget = lease_budget(&runtime);
+            assert_eq!(with_lease(budget), Err(TaskWorkerPoolConfigError::LeaseTooShort));
+            assert_eq!(with_lease(budget + Duration::from_millis(1)), Ok(()));
+        }
     }
 
     #[test]

@@ -4,7 +4,7 @@
 |---|---|
 | Статус | предложено 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 1): HTTP — фича `http` cqrsx |
 | Ценность | высокая: `main.rs` в десять строк; движок читает свои настройки сам; требования 2–4 пользователя |
-| Цена | высокая: настройки (45 ключей), пулы, рантаймы, жизненный цикл и HTTP переезжают в cqrsx; новая фича `http` |
+| Цена | высокая: настройки (39 переменных), пулы, рантаймы, жизненный цикл и HTTP переезжают в cqrsx; новая фича `http` |
 | cqrsx | `src/engine/{settings,postgres,mongodb,serve,http}.rs` (новые), `src/host/lifecycle.rs` (процессоры рядом с рантаймом), `src/postgres/pool.rs`, `Cargo.toml` (фича `http`: axum 0.8), `tests/engine/{postgres,settings}.rs`, `doc/components.md`, `README.md`, корневой `CLAUDE.md` (матрица фич) |
 | demo | `main.rs`, `concert.rs`, `fan.rs`, `operations.rs` (`.routes`), `operations/presentation/config.rs`, `shared/infrastructure/http_mailer.rs`, `testing.rs`, `tests/write_side.rs`, `tests/contracts.rs`; удаляются `config.rs`, `process.rs`, `bootstrap.rs`, `bootstrap/*`; `.env.example` (без изменений имён), `README.md` демо |
 | Зависимости | 11 |
@@ -14,8 +14,8 @@
 
 `Process::start` (`.env`, логирование, `Config::from_env`, три пула PostgreSQL, клиент MongoDB), `bootstrap::wire`
 (исполнители, процессоры, диспетчер, операции, маршруты), `Process::serve` (слушатель, `prepare_task_runtime`,
-`lifecycle::run` с процессорами рядом, закрытие пулов). `config.rs` — 580 строк и 38 ключей `ENCORE_*`, почти все
-настраивают механизмы движка; умолчания демо для `OUTBOX_*` — `outbox_default`.
+`lifecycle::run` с процессорами рядом, закрытие пулов). `config.rs` — 580 строк, 32 переменные `ENCORE_*` (и 7
+`OUTBOX_*` библиотеки), почти все настраивают механизмы движка; умолчания демо для `OUTBOX_*` — `outbox_default`.
 
 ## Станет
 
@@ -93,8 +93,8 @@ async fn main() -> Result<(), StartupError> {
 
 ## Риски
 
-- **Незаметная смена умолчания или пула.** Эталон `effective_config.txt` (02) должен совпасть байт в байт: все 45
-  ключей, производные и план пулов. Это главная защита задачи.
+- **Незаметная смена умолчания или пула.** Эталон `effective_config.txt` (02) должен совпасть байт в байт: все 39
+  переменных (32 `ENCORE_*` и 7 `OUTBOX_*`), производные и план пулов. Это главная защита задачи.
 - **Фича `http` тянет axum в cqrsx.** axum уже в дереве зависимостей демо и в офлайн-кэше; фича необязательная,
   `--no-default-features` её не включает. Решение пользователя 2026-10-27: фича `http`; вариант `serve_with(inbound)`
   без axum отклонён.
