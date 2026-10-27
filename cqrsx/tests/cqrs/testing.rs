@@ -2,44 +2,24 @@ use crate::support::ledger::*;
 use cqrsx::cqrs::testing::TestFramework;
 
 #[test]
-fn typed_errors_and_empty_success_can_be_inspected() {
+fn typed_errors_and_success_can_be_inspected() {
     TestFramework::<Ledger>::with(Services::default())
         .given(vec![Delta(4)])
         .and(vec![Delta(3)])
-        .when(Command::Adjust(vec![-7]))
-        .then_expect_events(vec![Delta(-7)]);
+        .when(Command::Adjust(-7))
+        .then_expect_event(Delta(-7));
     TestFramework::<Ledger>::with(Services::default())
         .given_no_previous_events()
-        .when(Command::Adjust(vec![-1]))
+        .when(Command::Adjust(-1))
         .then_expect_error(Rejected);
     assert_eq!(
         TestFramework::<Ledger>::with(Services::default())
             .given_no_previous_events()
-            .when(Command::Adjust(vec![]))
+            .when(Command::Adjust(2))
             .inspect_result()
             .unwrap(),
-        vec![]
+        Delta(2)
     );
-}
-
-#[tokio::test]
-async fn async_dsl_observes_dependent_events_and_discards_rejected_events() {
-    TestFramework::<Ledger>::with(Services::default())
-        .given(vec![Delta(4)])
-        .and(vec![Delta(3)])
-        .when_async(Command::Adjust(vec![-7]))
-        .await
-        .then_expect_events(vec![Delta(-7)]);
-    TestFramework::<Ledger>::with(Services::default())
-        .given_no_previous_events()
-        .when_async(Command::Adjust(vec![3, -4]))
-        .await
-        .then_expect_error(Rejected);
-    TestFramework::<Ledger>::with(Services::default())
-        .given_no_previous_events()
-        .when_async(Command::RejectAfterWrite)
-        .await
-        .then_expect_error(Rejected);
 }
 
 mod given {
@@ -56,9 +36,9 @@ mod given {
             .when(CustomerCommand::AddCustomerName {
                 name: "John Doe".to_string(),
             })
-            .then_expect_events(vec![CustomerEvent::NameAdded {
+            .then_expect_event(CustomerEvent::NameAdded {
                 name: "John Doe".to_string(),
-            }]);
+            });
     }
 
     #[test]
@@ -80,13 +60,14 @@ mod given {
             .when(CustomerCommand::UpdateEmail {
                 new_email: "john.doe@example.com".to_string(),
             })
-            .then_expect_events(vec![CustomerEvent::EmailUpdated {
+            .then_expect_event(CustomerEvent::EmailUpdated {
                 new_email: "john.doe@example.com".to_string(),
-            }]);
+            });
     }
 
+    /// A command decides one event: the email that completes the customer's data is the email, and nothing else.
     #[test]
-    fn test_add_email_name_populted() {
+    fn test_add_email_after_the_name_is_one_event() {
         CustomerTestFramework::with(CustomerService)
             .given(vec![CustomerEvent::NameAdded {
                 name: "John Doe".to_string(),
@@ -94,47 +75,41 @@ mod given {
             .when(CustomerCommand::UpdateEmail {
                 new_email: "john.doe@example.com".to_string(),
             })
-            .then_expect_events(vec![
-                CustomerEvent::EmailUpdated {
-                    new_email: "john.doe@example.com".to_string(),
-                },
-                CustomerEvent::CustomerDataPopulated,
-            ]);
+            .then_expect_event(CustomerEvent::EmailUpdated {
+                new_email: "john.doe@example.com".to_string(),
+            });
     }
 }
-mod executor {
+mod framework {
     use {crate::support::scenario::*, cqrsx::cqrs::testing::TestFramework};
 
-    #[tokio::test]
-    async fn async_executor_applies_given_and_additional_events_before_the_command() {
+    #[test]
+    fn the_framework_applies_given_and_additional_events_before_the_command() {
         TestFramework::<TestAggregate>::with(TestService)
             .given_no_previous_events()
-            .when_async(TestCommand::CreateTest(CreateTest { id: "created".into() }))
-            .await
-            .then_expect_events(vec![TestEvent::Created(Created { id: "created".into() })]);
+            .when(TestCommand::CreateTest(CreateTest { id: "created".into() }))
+            .then_expect_event(TestEvent::Created(Created { id: "created".into() }));
 
         TestFramework::<TestAggregate>::with(TestService)
             .given(vec![TestEvent::Created(Created { id: "created".into() })])
             .and(vec![TestEvent::Tested(Tested {
                 test_name: "previous".into(),
             })])
-            .when_async(TestCommand::DoSomethingElse(DoSomethingElse {
+            .when(TestCommand::DoSomethingElse(DoSomethingElse {
                 description: "changed".into(),
             }))
-            .await
-            .then_expect_events(vec![TestEvent::SomethingElse(SomethingElse {
+            .then_expect_event(TestEvent::SomethingElse(SomethingElse {
                 description: "changed".into(),
-            })]);
+            }));
 
         TestFramework::<TestAggregate>::with(TestService)
             .given_no_previous_events()
             .and(vec![TestEvent::Tested(Tested {
                 test_name: "previous".into(),
             })])
-            .when_async(TestCommand::ConfirmTest(ConfirmTest {
+            .when(TestCommand::ConfirmTest(ConfirmTest {
                 test_name: "previous".into(),
             }))
-            .await
             .then_expect_error_message("test already performed");
     }
 }
@@ -154,9 +129,9 @@ mod validators {
             .when(TestCommand::ConfirmTest(ConfirmTest {
                 test_name: test_name.to_string(),
             }))
-            .then_expect_events(vec![TestEvent::Tested(Tested {
+            .then_expect_event(TestEvent::Tested(Tested {
                 test_name: test_name.to_string(),
-            })]);
+            }));
 
         ThisTestFramework::with(TestService)
             .given(vec![TestEvent::Tested(Tested {
@@ -180,13 +155,13 @@ mod validators {
             .when(TestCommand::ConfirmTest(ConfirmTest {
                 test_name: test_name.to_string(),
             }))
-            .then_expect_events(vec![TestEvent::Tested(Tested {
+            .then_expect_event(TestEvent::Tested(Tested {
                 test_name: test_name.to_string(),
-            })]);
+            }));
     }
 
     #[test]
-    #[should_panic(expected = "expected error, received events")]
+    #[should_panic(expected = "expected error, received event")]
     fn test_framework_failure_test_b() {
         let test_name = "test A";
 

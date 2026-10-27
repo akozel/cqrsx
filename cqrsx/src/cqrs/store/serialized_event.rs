@@ -155,7 +155,7 @@ pub(in crate::cqrs) mod tests {
     }
 
     use super::*;
-    use crate::cqrs::event_sink::tests::*;
+    use crate::cqrs::aggregate::tests::*;
     use crate::cqrs::store::upcaster::NumericVersionUpcaster;
     use proptest::prelude::*;
     use std::collections::HashMap;

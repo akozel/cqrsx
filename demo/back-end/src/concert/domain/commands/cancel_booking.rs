@@ -1,25 +1,26 @@
 //! `CancelBooking`: the owner gives a ticket back. Rules R1, R3, R7, R8; the accepted fact is
 //! [`BookingCancelled`].
 use crate::{
-    concert::domain::{Concert, ConcertError, ConcertEvent, ConcertServices, events::BookingCancelled},
+    concert::domain::{Concert, ConcertError, ConcertEvent, ConcertRules, events::BookingCancelled},
     shared::domain::{FanId, venue::VENUE},
 };
+use cqrsx::{Command, cqrs::command::decide::Decide};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Command)]
 pub struct CancelBooking {
     /// Raw seat text from the UI; the aggregate validates it (rule R3).
     pub seat: String,
+    /// The activity feed shows and filters a cancellation by its fan.
+    #[label]
     pub fan_id: FanId,
+    /// The cancellation is identified by its command: the cancellation id is the command id.
+    #[command_id]
     pub cancellation_id: Uuid,
 }
 
-impl CancelBooking {
-    pub(in crate::concert::domain) fn decide(
-        self,
-        concert: &Concert,
-        _services: &ConcertServices,
-    ) -> Result<ConcertEvent, ConcertError> {
+impl Decide<Concert> for CancelBooking {
+    fn decide(self, concert: &Concert, _rules: &ConcertRules) -> Result<ConcertEvent, ConcertError> {
         let CancelBooking {
             seat,
             fan_id,
@@ -54,7 +55,7 @@ mod tests {
         concert::domain::{
             Concert, ConcertError, ConcertEvent,
             events::BookingCancelled,
-            test_support::{announced, booked, cancel, fan, services},
+            test_support::{announced, booked, cancel, fan, rules},
         },
         shared::domain::venue::SeatId,
     };
@@ -66,21 +67,21 @@ mod tests {
         let booking_id = Uuid::new_v4();
         let cancellation_id = Uuid::new_v4();
         // A VIP seat booked at 120: the refund comes from the SeatBooked fact.
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given(vec![announced(), booked("A1", "fox", "Fox", booking_id)])
             .when(cancel("A1", "fox", cancellation_id))
-            .then_expect_events(vec![ConcertEvent::BookingCancelled(BookingCancelled {
+            .then_expect_event(ConcertEvent::BookingCancelled(BookingCancelled {
                 seat: SeatId::parse("A1").unwrap(),
                 fan_id: fan("fox"),
                 booking_id,
                 cancellation_id,
                 refund: 120,
-            })]);
+            }));
     }
 
     #[test]
     fn r1_rejects_cancelling_in_an_unannounced_concert() {
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given_no_previous_events()
             .when(cancel("B4", "fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::ConcertNotFound);
@@ -88,7 +89,7 @@ mod tests {
 
     #[test]
     fn r3_rejects_an_unknown_seat() {
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given(vec![announced()])
             .when(cancel("Z9", "fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::UnknownSeat { seat: "Z9".into() });
@@ -96,7 +97,7 @@ mod tests {
 
     #[test]
     fn r7_rejects_cancelling_a_free_seat() {
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given(vec![announced()])
             .when(cancel("B4", "fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::SeatNotBooked {
@@ -106,7 +107,7 @@ mod tests {
 
     #[test]
     fn r8_rejects_cancelling_somebody_elses_ticket() {
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given(vec![announced(), booked("B4", "fox", "Fox", Uuid::new_v4())])
             .when(cancel("B4", "panda", Uuid::new_v4()))
             .then_expect_error(ConcertError::NotYourTicket);

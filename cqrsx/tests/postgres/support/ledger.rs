@@ -17,21 +17,20 @@ impl DomainEvent for Delta {
 pub(crate) struct Rejected;
 impl Aggregate for Ledger {
     const TYPE: &'static str = "contract_ledger";
-    type Command = Vec<i32>;
+    type Command = i32;
     type Event = Delta;
     type Error = Rejected;
-    type Services = ();
-    async fn handle(&mut self, changes: Vec<i32>, _: &(), sink: &EventSink<Self>) -> Result<(), Rejected> {
-        for change in changes {
-            if self.0.iter().map(|v| i64::from(*v)).sum::<i64>() + i64::from(change) < 0 {
-                return Err(Rejected);
-            }
-            sink.write(Delta(change), self).await;
-        }
-        Ok(())
-    }
+    type Rules = ();
     fn apply(&mut self, event: Delta) {
         self.0.push(event.0);
+    }
+}
+impl Decide<Ledger> for i32 {
+    fn decide(self, ledger: &Ledger, _: &()) -> Result<Delta, Rejected> {
+        if ledger.0.iter().map(|v| i64::from(*v)).sum::<i64>() + i64::from(self) < 0 {
+            return Err(Rejected);
+        }
+        Ok(Delta(self))
     }
 }
 pub(crate) fn event_for(id: &str, sequence: usize, value: i32) -> SerializedEvent {
@@ -52,9 +51,11 @@ impl Aggregate for OtherLedger {
     type Command = ();
     type Event = Delta;
     type Error = Rejected;
-    type Services = ();
-    async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), Rejected> {
-        Ok(())
-    }
+    type Rules = ();
     fn apply(&mut self, _: Delta) {}
+}
+impl Decide<OtherLedger> for () {
+    fn decide(self, _: &OtherLedger, _: &()) -> Result<Delta, Rejected> {
+        Ok(Delta(0))
+    }
 }

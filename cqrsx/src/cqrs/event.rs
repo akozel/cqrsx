@@ -38,7 +38,7 @@ use std::{collections::HashMap, fmt};
 /// # use cqrsx::cqrs::event::EventEnvelope;
 /// # use cqrsx::cqrs::event_handler::EventHandler;
 /// # use cqrsx::cqrs::projection::View;
-/// # use cqrsx::cqrs::event_sink::EventSink;
+/// # use cqrsx::cqrs::command::decide::Decide;
 /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
 /// # use cqrsx::cqrs::store::PersistenceError;
 /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -59,48 +59,29 @@ use std::{collections::HashMap, fmt};
 /// #     type Command = CustomerCommand;
 /// #     type Event = CustomerEvent;
 /// #     type Error = CustomerError;
-/// #     type Services = CustomerService;
-/// #
-/// #     async fn handle(
-/// #         &mut self,
-/// #         command: Self::Command,
-/// #         _service: &Self::Services,
-/// #         sink: &EventSink<Self>,
-/// #     ) -> Result<(), Self::Error> {
-/// #         match command {
-/// #             CustomerCommand::AddCustomerName { .. } if self.name.as_str() != "" => {
-/// #                 return Err("a name has already been added for this customer".into())
-/// #             }
-/// #             CustomerCommand::AddCustomerName { name: changed_name } => {
-/// #                 sink.write(
-/// #                     CustomerEvent::NameAdded {
-/// #                         name: changed_name.to_string(),
-/// #                     },
-/// #                     self,
-/// #                 )
-/// #                 .await;
-/// #             }
-/// #             CustomerCommand::UpdateEmail { new_email } => {
-/// #                 sink.write(
-/// #                     CustomerEvent::EmailUpdated {
-/// #                         new_email: new_email.to_string(),
-/// #                     },
-/// #                     self,
-/// #                 )
-/// #                 .await;
-/// #             }
-/// #         };
-/// #         if !self.data_populated && !self.name.is_empty() && !self.email.is_empty() {
-/// #             sink.write(CustomerEvent::CustomerDataPopulated, self).await;
-/// #         }
-/// #         Ok(())
-/// #     }
+/// #     type Rules = CustomerService;
 /// #
 /// #     fn apply(&mut self, event: Self::Event) {
 /// #         match event {
 /// #             CustomerEvent::NameAdded { name: changed_name } => self.name = changed_name,
 /// #             CustomerEvent::EmailUpdated { new_email } => self.email = new_email,
 /// #             CustomerEvent::CustomerDataPopulated => self.data_populated = true,
+/// #         }
+/// #     }
+/// # }
+/// #
+/// # impl Decide<Customer> for CustomerCommand {
+/// #     fn decide(self, customer: &Customer, _rules: &CustomerService) -> Result<CustomerEvent, CustomerError> {
+/// #         match self {
+/// #             CustomerCommand::AddCustomerName { .. } if customer.name.as_str() != "" => {
+/// #                 Err("a name has already been added for this customer".into())
+/// #             }
+/// #             CustomerCommand::AddCustomerName { name: changed_name } => Ok(CustomerEvent::NameAdded {
+/// #                 name: changed_name.to_string(),
+/// #             }),
+/// #             CustomerCommand::UpdateEmail { new_email } => Ok(CustomerEvent::EmailUpdated {
+/// #                 new_email: new_email.to_string(),
+/// #             }),
 /// #         }
 /// #     }
 /// # }

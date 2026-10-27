@@ -1,5 +1,5 @@
-//! The `Concert` state and its `impl Aggregate`: `handle` checks the rules, `apply` is the state
-//! machine.
+//! The `Concert` state and its `impl Aggregate`: `apply` is the state machine; every command decides itself
+//! (`commands/`).
 use crate::{
     concert::domain::{
         ConcertCommand, ConcertError, ConcertEvent,
@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use chrono::NaiveDate;
-use cqrsx::cqrs::{aggregate::Aggregate, event_sink::EventSink};
+use cqrsx::cqrs::aggregate::Aggregate;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -31,13 +31,13 @@ pub struct Booking {
     pub price: u32,
 }
 
-/// Configuration the rules depend on; history does not (replay calls `apply`, never `handle`).
+/// Configuration the rules depend on; history does not (replay calls `apply`, never `decide`).
 #[derive(Debug, Clone)]
-pub struct ConcertServices {
+pub struct ConcertRules {
     pub ticket_limit: usize,
 }
 
-impl Default for ConcertServices {
+impl Default for ConcertRules {
     fn default() -> Self {
         Self { ticket_limit: 4 }
     }
@@ -83,25 +83,10 @@ impl Aggregate for Concert {
     type Command = ConcertCommand;
     type Event = ConcertEvent;
     type Error = ConcertError;
-    type Services = ConcertServices;
-
-    /// Each command decides itself (see `commands/`). Every accepted command writes exactly ONE
-    /// event (decision D-02): the outbox repository commits one event plus its tasks atomically
-    /// and rejects multi-event batches, so `decide` returns one event, not a list.
-    async fn handle(
-        &mut self,
-        command: ConcertCommand,
-        services: &ConcertServices,
-        sink: &EventSink<Self>,
-    ) -> Result<(), ConcertError> {
-        let event = match command {
-            ConcertCommand::AnnounceConcert(command) => command.decide(self, services)?,
-            ConcertCommand::BookSeat(command) => command.decide(self, services)?,
-            ConcertCommand::CancelBooking(command) => command.decide(self, services)?,
-        };
-        sink.write(event, self).await;
-        Ok(())
-    }
+    // Each command decides itself (see `commands/`): `ConcertCommand: Decide<Concert>`. Every accepted
+    // command writes exactly ONE event (decision D-02): the outbox repository commits one event plus its
+    // tasks atomically and rejects multi-event batches, so `decide` returns one event, not a list.
+    type Rules = ConcertRules;
 
     /// The state machine: how every fact changes the concert. Replay calls only this.
     fn apply(&mut self, event: ConcertEvent) {
@@ -137,8 +122,7 @@ impl Aggregate for Concert {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::concert::domain::test_support::{announce, announced, book, booked, cancel, fan, full_house, services};
-    use cqrsx::cqrs::testing::TestFramework;
+    use crate::concert::domain::test_support::{announced, booked, fan, full_house};
 
     #[test]
     fn after_the_last_booking_the_concert_is_sold_out() {
@@ -168,43 +152,6 @@ mod tests {
         assert!(json["bookings"]["B4"].is_object());
         let restored: Concert = serde_json::from_value(json).unwrap();
         assert_eq!(restored, concert);
-    }
-
-    /// Decision D-02: the outbox repository commits exactly one event per command. `decide`
-    /// returns one event by its signature; this safeguard keeps `handle` honest as well.
-    #[test]
-    fn d02_every_accepted_concert_command_yields_exactly_one_event() {
-        let booking_id = Uuid::new_v4();
-        let states: Vec<Vec<ConcertEvent>> = vec![
-            vec![],
-            vec![announced()],
-            vec![announced(), booked("B4", "fox", "Fox", booking_id)],
-            {
-                let mut almost_full = full_house();
-                almost_full.pop();
-                almost_full
-            },
-        ];
-        let commands = vec![
-            announce(),
-            book("B4", "fox", "Fox", Uuid::new_v4()),
-            book("E8", "panda", "Panda", Uuid::new_v4()),
-            cancel("B4", "fox", Uuid::new_v4()),
-        ];
-        let mut accepted = 0;
-        for state in &states {
-            for command in &commands {
-                let result = TestFramework::<Concert>::with(services())
-                    .given(state.clone())
-                    .when(command.clone())
-                    .inspect_result();
-                if let Ok(events) = result {
-                    accepted += 1;
-                    assert_eq!(events.len(), 1, "{command:?} on {} events produced {events:?}", state.len());
-                }
-            }
-        }
-        assert!(accepted >= 4, "the matrix must contain accepted commands");
     }
 }
 

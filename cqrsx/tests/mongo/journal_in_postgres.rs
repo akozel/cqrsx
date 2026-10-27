@@ -28,7 +28,7 @@ async fn commit(pool: &PgPool, wakeup: &CommitWakeup, keys: &[&str], per_key: i3
     commit_all(keys, per_key, move |id, value| {
         let executor = executor.clone();
         async move {
-            executor.execute(&id, vec![value]).await.unwrap();
+            executor.execute(&id, value).await.unwrap();
         }
     })
     .await;

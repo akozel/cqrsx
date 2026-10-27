@@ -13,7 +13,7 @@ use crate::cqrs::{
 use std::{collections::HashMap, error::Error};
 
 /// The core of command execution for one aggregate type, independent of the store: the [`CqrsFramework`] it
-/// owns for its life holds the store, the services and the task planner. `postgres::command::PostgresCommandExecutor`
+/// owns for its life holds the store, the rules and the task planner. `postgres::command::PostgresCommandExecutor`
 /// and the test executor are this core over a store of their own, not other kinds of executor; build the core
 /// yourself only for a store of your own. One long-lived executor per aggregate type and process, shared (e.g. in
 /// an `Arc`) by everything that issues its commands: a second executor of the same type, whether a core or a
@@ -84,7 +84,7 @@ impl<A: Aggregate + 'static, S: EventStore<A>> CommandExecutorCore<A, S> {
 impl<A, S> CommandExecutorCore<A, S>
 where
     A: Aggregate + Clone + 'static,
-    A::Command: Clone + Send,
+    A::Command: Clone,
     S: EventStore<A> + 'static,
     S::AC: Send,
 {
@@ -151,7 +151,7 @@ fn log_aggregate_error<D: Error>(aggregate_type: &str, error: &AggregateError<D>
 impl<A, S> CommandExecutor<A> for CommandExecutorCore<A, S>
 where
     A: Aggregate + Clone + 'static,
-    A::Command: Clone + Send + 'static,
+    A::Command: Clone + 'static,
     A::Error: Send + 'static,
     S: EventStore<A> + 'static,
     S::AC: Send,
@@ -188,9 +188,9 @@ mod tests {
         },
     };
 
+    use crate::cqrs::command::decide::Decide;
     use crate::cqrs::event::DomainEvent;
     use crate::cqrs::event::EventEnvelope;
-    use crate::cqrs::event_sink::EventSink;
     use crate::cqrs::store::AggregateContext;
     use serde::{Deserialize, Serialize};
 
@@ -241,25 +241,19 @@ mod tests {
         type Command = DummyCommand;
         type Event = DummyEvent;
         type Error = DummyError;
-        type Services = Arc<Mutex<Vec<DummyCommand>>>;
+        type Rules = Arc<Mutex<Vec<DummyCommand>>>;
 
-        async fn handle(
-            &mut self,
-            command: Self::Command,
-            seen: &Self::Services,
-            sink: &EventSink<Self>,
-        ) -> Result<(), Self::Error> {
-            seen.lock().unwrap().push(command.clone());
-            match command {
-                DummyCommand::Record(value) => {
-                    sink.write(DummyEvent::Recorded(value), self).await;
-                    Ok(())
-                }
+        fn apply(&mut self, _: Self::Event) {}
+    }
+
+    impl Decide<DummyAggregate> for DummyCommand {
+        fn decide(self, _: &DummyAggregate, seen: &Arc<Mutex<Vec<DummyCommand>>>) -> Result<DummyEvent, DummyError> {
+            seen.lock().unwrap().push(self.clone());
+            match self {
+                DummyCommand::Record(value) => Ok(DummyEvent::Recorded(value)),
                 DummyCommand::Reject => Err(DummyError),
             }
         }
-
-        fn apply(&mut self, _: Self::Event) {}
     }
 
     struct DummyContext(DummyAggregate);
@@ -384,19 +378,15 @@ mod tests {
         type Command = std::cell::Cell<u32>;
         type Event = DummyEvent;
         type Error = DummyError;
-        type Services = ();
-
-        async fn handle(
-            &mut self,
-            command: Self::Command,
-            _: &(),
-            sink: &crate::cqrs::event_sink::EventSink<Self>,
-        ) -> Result<(), DummyError> {
-            sink.write(DummyEvent::Recorded(command.get().to_string()), self).await;
-            Ok(())
-        }
+        type Rules = ();
 
         fn apply(&mut self, _: DummyEvent) {}
+    }
+
+    impl Decide<SendOnlyAggregate> for std::cell::Cell<u32> {
+        fn decide(self, _: &SendOnlyAggregate, _: &()) -> Result<DummyEvent, DummyError> {
+            Ok(DummyEvent::Recorded(self.get().to_string()))
+        }
     }
 
     /// Plans one task from the command, read through the shared reference the decision holds.
@@ -1129,15 +1119,16 @@ mod tests {
         type Command = u32;
         type Event = Added;
         type Error = DummyError;
-        type Services = ();
-
-        async fn handle(&mut self, amount: u32, _: &(), sink: &EventSink<Self>) -> Result<(), DummyError> {
-            sink.write(Added(amount), self).await;
-            Ok(())
-        }
+        type Rules = ();
 
         fn apply(&mut self, event: Added) {
             self.0 += event.0;
+        }
+    }
+
+    impl Decide<Tally> for u32 {
+        fn decide(self, _: &Tally, _: &()) -> Result<Added, DummyError> {
+            Ok(Added(self))
         }
     }
 

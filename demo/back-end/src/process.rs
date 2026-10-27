@@ -344,8 +344,8 @@ mod tests {
     use super::*;
     use cqrsx::cqrs::{
         aggregate::Aggregate,
+        command::decide::Decide,
         event::{DomainEvent, EventEnvelope},
-        event_sink::EventSink,
         projection::{
             View, ViewProjection,
             processor::{
@@ -385,11 +385,14 @@ mod tests {
         type Command = ();
         type Event = Counted;
         type Error = Never;
-        type Services = ();
-        async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), Never> {
-            Ok(())
-        }
+        type Rules = ();
         fn apply(&mut self, _: Counted) {}
+    }
+
+    impl Decide<Counter> for () {
+        fn decide(self, _: &Counter, _: &()) -> Result<Counted, Never> {
+            Ok(Counted)
+        }
     }
 
     #[derive(Debug, Default, Serialize, Deserialize)]

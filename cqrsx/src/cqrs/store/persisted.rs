@@ -92,7 +92,7 @@ where
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -129,24 +129,18 @@ where
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -260,7 +254,7 @@ where
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -297,24 +291,18 @@ where
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -612,8 +600,8 @@ pub(in crate::cqrs) mod tests {
     // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
     use crate::cqrs::{
         aggregate::Aggregate,
+        command::decide::Decide,
         event::DomainEvent,
-        event_sink::EventSink,
         store::{
             PersistenceError, repository::PersistedEventRepository, serialized_event::SerializedEvent,
             snapshot::SerializedSnapshot,
@@ -669,26 +657,23 @@ pub(in crate::cqrs) mod tests {
         type Command = TestCommands;
         type Event = TestEvents;
         type Error = TestError;
-        type Services = TestService;
+        type Rules = TestService;
 
-        async fn handle(
-            &mut self,
-            command: Self::Command,
-            _service: &Self::Services,
-            sink: &EventSink<Self>,
-        ) -> Result<(), Self::Error> {
-            match command {
-                TestCommands::DoSomething => sink.write(TestEvents::SomethingWasDone, self).await,
-                TestCommands::BadCommand => return Err("the expected error message".into()),
-            };
-            Ok(())
-        }
         fn apply(&mut self, event: Self::Event) {
             match event {
                 TestEvents::Started => {}
                 TestEvents::SomethingWasDone => {
                     self.something_happened += 1;
                 }
+            }
+        }
+    }
+
+    impl Decide<TestAggregate> for TestCommands {
+        fn decide(self, _: &TestAggregate, _: &TestService) -> Result<TestEvents, TestError> {
+            match self {
+                TestCommands::DoSomething => Ok(TestEvents::SomethingWasDone),
+                TestCommands::BadCommand => Err("the expected error message".into()),
             }
         }
     }
@@ -1338,7 +1323,7 @@ mod contract_tests {
 mod serialization_failure_tests {
     use super::tests::MockRepo;
     use super::*;
-    use crate::cqrs::{event::DomainEvent, event_sink::EventSink};
+    use crate::cqrs::{command::decide::Decide, event::DomainEvent};
     use serde::{Deserialize, Serialize, Serializer};
     #[derive(Clone, Debug, PartialEq, Deserialize)]
     struct Event(bool);
@@ -1375,11 +1360,13 @@ mod serialization_failure_tests {
         type Command = ();
         type Event = Event;
         type Error = std::convert::Infallible;
-        type Services = ();
-        async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), Self::Error> {
-            Ok(())
-        }
+        type Rules = ();
         fn apply(&mut self, _: Event) {}
+    }
+    impl Decide<State> for () {
+        fn decide(self, _: &State, _: &()) -> Result<Event, std::convert::Infallible> {
+            Ok(Event(false))
+        }
     }
     #[tokio::test]
     async fn serialization_failure_precedes_any_repository_write() {
@@ -1484,12 +1471,14 @@ mod serialization_failure_tests {
         type Command = ();
         type Event = GuardedEvent;
         type Error = std::convert::Infallible;
-        type Services = ();
-        async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), Self::Error> {
-            Ok(())
-        }
+        type Rules = ();
         fn apply(&mut self, _: GuardedEvent) {
             panic!("invalid batch applied event")
+        }
+    }
+    impl Decide<Guarded> for () {
+        fn decide(self, _: &Guarded, _: &()) -> Result<GuardedEvent, std::convert::Infallible> {
+            Ok(GuardedEvent)
         }
     }
 }

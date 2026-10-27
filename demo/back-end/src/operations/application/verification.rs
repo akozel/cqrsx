@@ -173,8 +173,8 @@ impl<J, R, V, A> ProjectionVerification<J, R, V, A> {
 mod tests {
     use super::*;
     use cqrsx::cqrs::{
+        command::decide::Decide,
         event::DomainEvent,
-        event_sink::EventSink,
         store::serialized_event::SerializedEvent,
         testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
     };
@@ -204,11 +204,14 @@ mod tests {
         type Command = ();
         type Event = Added;
         type Error = Never;
-        type Services = ();
-        async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), Never> {
-            Ok(())
-        }
+        type Rules = ();
         fn apply(&mut self, _: Added) {}
+    }
+
+    impl Decide<Counter> for () {
+        fn decide(self, _: &Counter, _: &()) -> Result<Added, Never> {
+            Ok(Added(0))
+        }
     }
 
     #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

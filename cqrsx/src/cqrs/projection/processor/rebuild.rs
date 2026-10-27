@@ -116,7 +116,7 @@ impl<A: Aggregate + 'static, R: PersistedEventRepository + 'static> Rebuilder fo
 mod tests {
     use super::*;
     use crate::cqrs::{
-        event_sink::tests::{Delta, Ledger},
+        aggregate::tests::{Delta, Ledger},
         projection::{View, ViewProjection, repository::ViewRepository},
         store::serialized_event::SerializedEvent,
         testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},

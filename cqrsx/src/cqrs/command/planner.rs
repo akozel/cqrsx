@@ -1,6 +1,6 @@
 //! Task planning: the follow-up tasks of a command, planned from what its aggregate decided.
 //!
-//! An executor runs its [`TaskPlanner`] after the aggregate's `handle`, on every attempt, under the
+//! An executor runs its [`TaskPlanner`] after the command's `decide`, on every attempt, under the
 //! aggregate's lock and before the commit; the tasks it plans commit atomically with that attempt's
 //! events, and a conflict retry plans again from the fresh state. The aggregate decides only events: a
 //! task is a delivery contract of the application, so the reaction to an event belongs to the planner.
@@ -14,9 +14,11 @@
 //! ```
 //! use cqrsx::cqrs::{
 //!     aggregate::Aggregate,
-//!     command::planner::{Decision, TaskPlanError, TaskPlanner},
+//!     command::{
+//!         decide::Decide,
+//!         planner::{Decision, TaskPlanError, TaskPlanner},
+//!     },
 //!     event::DomainEvent,
-//!     event_sink::EventSink,
 //! };
 //! use cqrsx::task::{NewTask, format::TaskPayload};
 //! use serde::{Deserialize, Serialize};
@@ -42,15 +44,16 @@
 //!     type Command = u32;
 //!     type Event = OrderEvent;
 //!     type Error = AlreadyPlaced;
-//!     type Services = ();
-//!     async fn handle(&mut self, total: u32, _: &(), sink: &EventSink<Self>) -> Result<(), AlreadyPlaced> {
-//!         if self.placed {
+//!     type Rules = ();
+//!     fn apply(&mut self, _: OrderEvent) { self.placed = true; }
+//! }
+//! impl Decide<Order> for u32 {
+//!     fn decide(self, order: &Order, _: &()) -> Result<OrderEvent, AlreadyPlaced> {
+//!         if order.placed {
 //!             return Err(AlreadyPlaced);
 //!         }
-//!         sink.write(OrderEvent::Placed { total }, self).await;
-//!         Ok(())
+//!         Ok(OrderEvent::Placed { total: self })
 //!     }
-//!     fn apply(&mut self, _: OrderEvent) { self.placed = true; }
 //! }
 //!
 //! #[derive(Serialize)]
@@ -125,10 +128,10 @@ pub struct Decision<'a, A: Aggregate> {
     pub aggregate_id: &'a str,
     /// The committed state the command was decided on (`A::default()` for a new aggregate).
     pub before: &'a A,
-    /// `before` with `events` applied: the state the commit leaves.
+    /// `before` with `events` applied: the state the commit leaves (a copy made for the planner).
     pub after: &'a A,
     pub command: &'a A::Command,
-    /// What the aggregate decided, in commit order; never empty.
+    /// What the command decided, in commit order: its one event.
     pub events: &'a [A::Event],
     /// The command's metadata, stored with every event.
     pub metadata: &'a HashMap<String, String>,
@@ -141,8 +144,8 @@ pub struct Decision<'a, A: Aggregate> {
 ///
 /// A planner is pure and synchronous: no I/O (it runs under the lock, and the signature rules out an
 /// `await`), no clock and no randomness its tasks depend on. Data from outside comes in the command;
-/// schedule with `TaskSchedule::After`, not `At(now + …)`. It is called for decisions with events only,
-/// once per attempt. An error refuses the command with nothing written.
+/// schedule with `TaskSchedule::After`, not `At(now + …)`. It is called for every decision (an event; a
+/// rejection is not planned), once per attempt. An error refuses the command with nothing written.
 ///
 /// Several planners compose as a tuple of two to eight: `(A, B)` plans `A`'s tasks, then `B`'s, and the
 /// first error wins. The order is part of the derived task ids when two planners plan tasks of one
@@ -193,7 +196,7 @@ tuple_planner!(P0 0, P1 1, P2 2, P3 3, P4 4, P5 5, P6 6);
 tuple_planner!(P0 0, P1 1, P2 2, P3 3, P4 4, P5 5, P6 6, P7 7);
 
 /// A framework's planner and the way it clones a command for it: the decision needs the command after
-/// `handle` has consumed it. The clone is captured where `A::Command: Clone` is known, so a framework
+/// `decide` has consumed it. The clone is captured where `A::Command: Clone` is known, so a framework
 /// without a planner needs no `Clone` command.
 pub(crate) struct Planning<A: Aggregate> {
     planner: Box<dyn TaskPlanner<A>>,
@@ -215,7 +218,7 @@ impl<A: Aggregate> Planning<A> {
         (self.clone_command)(command)
     }
 
-    /// The tasks of one attempt's decision, which has events: planned, then stamped with the causation
+    /// The tasks of one attempt's decision: planned, then stamped with the causation
     /// of `metadata` and identified by `Causation::task_id`, the ordinal counted per format over the
     /// whole plan. Without causation the tasks keep the planner's ids and metadata. A causation that does
     /// not parse refuses a non-empty plan only: an empty one has nothing to stamp.
@@ -262,7 +265,7 @@ impl<A: Aggregate> Planning<A> {
 mod tests {
     use super::*;
     use crate::{
-        cqrs::{event::DomainEvent, event_sink::EventSink},
+        cqrs::{command::decide::Decide, event::DomainEvent},
         task::{TaskSchedule, format::TaskPayload},
     };
     use proptest::prelude::*;
@@ -297,15 +300,16 @@ mod tests {
         type Command = u32;
         type Event = Counted;
         type Error = std::convert::Infallible;
-        type Services = ();
-
-        async fn handle(&mut self, by: u32, _: &(), sink: &EventSink<Self>) -> Result<(), Self::Error> {
-            sink.write(Counted(by), self).await;
-            Ok(())
-        }
+        type Rules = ();
 
         fn apply(&mut self, event: Counted) {
             self.0 += event.0;
+        }
+    }
+
+    impl Decide<Counter> for u32 {
+        fn decide(self, _: &Counter, _: &()) -> Result<Counted, std::convert::Infallible> {
+            Ok(Counted(self))
         }
     }
 

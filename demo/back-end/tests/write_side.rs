@@ -33,7 +33,7 @@ use encore_backend::{
     concert::{
         application::{app::ConcertApp, reactions, views::concert_hall::ConcertHallView},
         domain::{
-            Concert, ConcertError, ConcertServices,
+            Concert, ConcertError, ConcertRules,
             commands::{AnnounceConcert, BookSeat, CancelBooking},
         },
     },
@@ -122,7 +122,7 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     let (pool, container) = database().await;
     let activity = Arc::new(ActivityHub::new(64, 64));
     let config = PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default()).expect("config");
-    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 })
+    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
         .with_task_planner(reactions::concert_tasks(6));
     let concerts = ConcertApp::new(CommandService::new(executor, activity));
     let concert_id = ConcertId::parse("test-2026").expect("concert id");
@@ -233,7 +233,7 @@ async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_tas
     let node = || {
         let config =
             PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default()).expect("config");
-        let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 40 })
+        let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 40 })
             .with_task_planner(reactions::concert_tasks(6));
         Arc::new(ConcertApp::new(CommandService::new(
             executor,
@@ -319,7 +319,7 @@ async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() 
     // One attempt only: a booking that lost a version race would answer `Conflict`.
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
     let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
-    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 })
+    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
         .with_task_planner(reactions::concert_tasks(6));
     let concerts = Arc::new(ConcertApp::new(CommandService::new(
         executor,
@@ -500,7 +500,7 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
     let read = ReadSide::new(&pool);
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
     let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
-    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertServices { ticket_limit: 4 })
+    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
         .with_task_planner(reactions::concert_tasks(6))
         .with_commit_wakeup(read.wakeup.clone());
     let concerts = Arc::new(ConcertApp::new(CommandService::new(

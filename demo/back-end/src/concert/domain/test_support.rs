@@ -1,7 +1,7 @@
 //! Given/when fixtures shared by the rule tests of every `Concert` command.
 use crate::{
     concert::domain::{
-        ConcertCommand, ConcertEvent, ConcertServices,
+        ConcertCommand, ConcertEvent, ConcertRules,
         commands::{AnnounceConcert, BookSeat, CancelBooking},
         events::{ConcertAnnounced, SeatBooked},
     },
@@ -10,8 +10,8 @@ use crate::{
 use chrono::NaiveDate;
 use uuid::Uuid;
 
-pub fn services() -> ConcertServices {
-    ConcertServices { ticket_limit: 4 }
+pub fn rules() -> ConcertRules {
+    ConcertRules { ticket_limit: 4 }
 }
 
 pub fn fan(id: &str) -> FanId {

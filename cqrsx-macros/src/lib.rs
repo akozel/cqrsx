@@ -1,9 +1,10 @@
-//! Derive macros of cqrsx. Use them through cqrsx, which re-exports them as `cqrsx::{Event, Events, Task,
-//! Rejection}`: the expansions name `::cqrsx` paths only.
+//! Derive macros of cqrsx. Use them through cqrsx, which re-exports them as `cqrsx::{Command, Commands, Event, Events,
+//! Task, Rejection}`: the expansions name `::cqrsx` paths only.
 //!
 //! Every entry point is one call of its expansion, a function over `proc_macro2` that the unit tests call directly;
 //! what does not compile is shown by the `compile_fail` examples of cqrsx.
 mod attribute;
+mod command;
 mod event;
 mod rejection;
 mod task;
@@ -11,6 +12,27 @@ mod task;
 use proc_macro::TokenStream;
 use proc_macro2::TokenStream as TokenStream2;
 use syn::DeriveInput;
+
+/// What an observer knows of one command besides its decision: on a struct, implements
+/// `cqrsx::cqrs::command::CommandInfo`. Its name is the type's (`CancelBooking`); the field marked `#[command_id]`, a
+/// `Uuid` and at most one, is the command's id; the fields marked `#[label]` are its labels, in field order, each as
+/// its name and its `Display`. An enum, a second `#[command_id]`, an attribute with arguments or on a field without a
+/// name, and a command id that is not a `Uuid` do not compile. Examples: `cqrsx::cqrs::command::CommandInfo`.
+#[proc_macro_derive(Command, attributes(command_id, label))]
+pub fn derive_command(input: TokenStream) -> TokenStream {
+    run(command::expand_command, input.into()).into()
+}
+
+/// An aggregate's enum of commands, every variant carrying one command type (`CancelBooking(CancelBooking)`):
+/// implements `cqrsx::cqrs::command::decide::Decide<A>` for every aggregate `A` that each variant's type decides, by
+/// handing the command to that type's `decide`, and `cqrsx::cqrs::command::CommandInfo` by the same delegation. The
+/// derive does not know the aggregate: `ConcertCommand: Decide<Concert>` holds once every variant decides `Concert`.
+/// A variant without exactly one field does not compile, nor does a variant whose type does not decide the
+/// aggregate the enum is the command of. Examples: `cqrsx::cqrs::command::decide::Decide`.
+#[proc_macro_derive(Commands)]
+pub fn derive_commands(input: TokenStream) -> TokenStream {
+    run(command::expand_commands, input.into()).into()
+}
 
 /// The stored name and version of one event type: `#[event(name = "BookingCancelled", version = "1.0")]` on the
 /// type implements `cqrsx::cqrs::event::EventKind` with them. Both are stored with every event of the type and

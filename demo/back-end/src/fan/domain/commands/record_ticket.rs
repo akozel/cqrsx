@@ -7,9 +7,10 @@ use crate::{
         venue::{SeatId, Zone},
     },
 };
+use cqrsx::{Command, cqrs::command::decide::Decide};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Command)]
 pub struct RecordTicket {
     pub booking_id: Uuid,
     pub concert_id: ConcertId,
@@ -19,8 +20,8 @@ pub struct RecordTicket {
     pub fan_name: String,
 }
 
-impl RecordTicket {
-    pub(in crate::fan::domain) fn decide(self, fan: &Fan, _services: &()) -> Result<FanEvent, FanError> {
+impl Decide<Fan> for RecordTicket {
+    fn decide(self, fan: &Fan, _rules: &()) -> Result<FanEvent, FanError> {
         let RecordTicket {
             booking_id,
             concert_id,
@@ -58,7 +59,7 @@ mod tests {
         TestFramework::<Fan>::with(())
             .given_no_previous_events()
             .when(record(id))
-            .then_expect_events(vec![recorded(id)]);
+            .then_expect_event(recorded(id));
     }
 
     #[test]

@@ -1,27 +1,28 @@
 //! `BookSeat`: a fan takes a free seat. Rules R1, R3–R6; the accepted fact is [`SeatBooked`].
 use crate::{
-    concert::domain::{Concert, ConcertError, ConcertEvent, ConcertServices, events::SeatBooked},
+    concert::domain::{Concert, ConcertError, ConcertEvent, ConcertRules, events::SeatBooked},
     shared::domain::{FanId, venue::VENUE},
 };
+use cqrsx::{Command, cqrs::command::decide::Decide};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Command)]
 pub struct BookSeat {
     /// Raw seat text from the UI; the aggregate validates it (rule R3).
     pub seat: String,
+    /// The activity feed shows and filters a booking by its fan.
+    #[label]
     pub fan_id: FanId,
     pub fan_name: String,
+    /// The booking is identified by its command: the booking id is the command id.
+    #[command_id]
     pub booking_id: Uuid,
 }
 
-impl BookSeat {
+impl Decide<Concert> for BookSeat {
     /// Rules are checked in the documented order, from "does the concert exist" to the most
     /// specific check, so the first failing rule is the most fundamental one.
-    pub(in crate::concert::domain) fn decide(
-        self,
-        concert: &Concert,
-        services: &ConcertServices,
-    ) -> Result<ConcertEvent, ConcertError> {
+    fn decide(self, concert: &Concert, rules: &ConcertRules) -> Result<ConcertEvent, ConcertError> {
         let BookSeat {
             seat,
             fan_id,
@@ -41,9 +42,9 @@ impl BookSeat {
                 by: booking.fan_name.clone(),
             }); // R5
         }
-        if concert.tickets_of(&fan_id) >= services.ticket_limit {
+        if concert.tickets_of(&fan_id) >= rules.ticket_limit {
             return Err(ConcertError::TicketLimit {
-                limit: services.ticket_limit,
+                limit: rules.ticket_limit,
             }); // R6
         }
         // Sold-out is derived state, not a second event (D-02/D-03).
@@ -62,9 +63,9 @@ impl BookSeat {
 mod tests {
     use crate::{
         concert::domain::{
-            Concert, ConcertError, ConcertEvent, ConcertServices,
+            Concert, ConcertError, ConcertEvent, ConcertRules,
             events::{BookingCancelled, SeatBooked},
-            test_support::{announced, book, booked, fan, full_house, services},
+            test_support::{announced, book, booked, fan, full_house, rules},
         },
         shared::domain::venue::{SeatId, Zone},
     };
@@ -74,22 +75,22 @@ mod tests {
     #[test]
     fn book_seat_happy_path_records_zone_and_price() {
         let id = Uuid::new_v4();
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given(vec![announced()])
             .when(book("b4", "fox", "Fox", id))
-            .then_expect_events(vec![ConcertEvent::SeatBooked(SeatBooked {
+            .then_expect_event(ConcertEvent::SeatBooked(SeatBooked {
                 seat: SeatId::parse("B4").unwrap(),
                 zone: Zone::Standard,
                 price: 80,
                 fan_id: fan("fox"),
                 fan_name: "Fox".into(),
                 booking_id: id,
-            })]);
+            }));
     }
 
     #[test]
     fn r1_rejects_booking_in_an_unannounced_concert() {
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given_no_previous_events()
             .when(book("B4", "fox", "Fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::ConcertNotFound);
@@ -97,7 +98,7 @@ mod tests {
 
     #[test]
     fn r3_rejects_an_unknown_seat() {
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given(vec![announced()])
             .when(book("Z9", "fox", "Fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::UnknownSeat { seat: "Z9".into() });
@@ -106,7 +107,7 @@ mod tests {
     /// Sold-out wins over "seat taken": on a full hall even a taken seat is reported as sold out.
     #[test]
     fn r4_rejects_booking_when_sold_out() {
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given(full_house())
             .when(book("B4", "fox", "Fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::SoldOut);
@@ -114,7 +115,7 @@ mod tests {
 
     #[test]
     fn r5_rejects_a_taken_seat() {
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given(vec![announced(), booked("B4", "fox", "Fox", Uuid::new_v4())])
             .when(book("B4", "panda", "Panda", Uuid::new_v4()))
             .then_expect_error(ConcertError::SeatTaken {
@@ -124,7 +125,7 @@ mod tests {
     }
 
     #[test]
-    fn r6_rejects_the_fifth_ticket_and_the_limit_comes_from_services() {
+    fn r6_rejects_the_fifth_ticket_and_the_limit_comes_from_the_rules() {
         let history = vec![
             announced(),
             booked("A1", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()),
@@ -132,21 +133,21 @@ mod tests {
             booked("A3", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()),
             booked("A4", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()),
         ];
-        TestFramework::<Concert>::with(services())
+        TestFramework::<Concert>::with(rules())
             .given(history.clone())
             .when(book("A5", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()))
             .then_expect_error(ConcertError::TicketLimit { limit: 4 });
         // Another fan is unaffected.
         assert!(
-            TestFramework::<Concert>::with(services())
+            TestFramework::<Concert>::with(rules())
                 .given(history.clone())
                 .when(book("A5", "fox", "Fox", Uuid::new_v4()))
                 .inspect_result()
                 .is_ok()
         );
-        // A looser limit from the services accepts the fifth ticket.
+        // A looser limit from the rules accepts the fifth ticket.
         assert!(
-            TestFramework::<Concert>::with(ConcertServices { ticket_limit: 5 })
+            TestFramework::<Concert>::with(ConcertRules { ticket_limit: 5 })
                 .given(history)
                 .when(book("A5", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()))
                 .inspect_result()
@@ -169,7 +170,7 @@ mod tests {
             }),
         ];
         assert!(
-            TestFramework::<Concert>::with(services())
+            TestFramework::<Concert>::with(rules())
                 .given(history)
                 .when(book("B4", "panda", "Panda", Uuid::new_v4()))
                 .inspect_result()

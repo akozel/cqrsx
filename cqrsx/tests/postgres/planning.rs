@@ -14,7 +14,7 @@ use cqrsx::{
 };
 use thiserror::Error;
 
-/// Holds up to its capacity of items, which the services give.
+/// Holds up to its capacity of items, which the rules give.
 #[derive(Clone, Default, Serialize, Deserialize)]
 struct Shelf {
     items: Vec<String>,
@@ -38,8 +38,6 @@ impl DomainEvent for Put {
 #[derive(Clone)]
 enum ShelfCommand {
     Put(String),
-    /// Accepted, decides nothing.
-    Nothing,
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
@@ -51,21 +49,20 @@ impl Aggregate for Shelf {
     type Command = ShelfCommand;
     type Event = Put;
     type Error = Full;
-    type Services = usize;
-
-    async fn handle(&mut self, command: ShelfCommand, capacity: &usize, sink: &EventSink<Self>) -> Result<(), Full> {
-        let ShelfCommand::Put(item) = command else {
-            return Ok(());
-        };
-        if self.items.len() >= *capacity {
-            return Err(Full);
-        }
-        sink.write(Put { item }, self).await;
-        Ok(())
-    }
+    type Rules = usize;
 
     fn apply(&mut self, Put { item }: Put) {
         self.items.push(item);
+    }
+}
+
+impl Decide<Shelf> for ShelfCommand {
+    fn decide(self, shelf: &Shelf, capacity: &usize) -> Result<Put, Full> {
+        let ShelfCommand::Put(item) = self;
+        if shelf.items.len() >= *capacity {
+            return Err(Full);
+        }
+        Ok(Put { item })
     }
 }
 
@@ -275,7 +272,7 @@ async fn stress_a_dropped_command_commits_its_event_and_its_tasks_together_or_no
 }
 
 #[tokio::test]
-async fn refused_plans_and_empty_decisions_write_nothing() {
+async fn refused_plans_write_nothing_and_a_plan_without_tasks_needs_no_causation() {
     let db = Database::new().await;
     let planner = ShelfPlanner {
         per_item: 1,
@@ -289,23 +286,26 @@ async fn refused_plans_and_empty_decisions_write_nothing() {
         Err(CommandGatewayError::Unavailable),
         "a planner error refuses the command"
     );
-    assert_eq!(
-        executor.execute_with_metadata("s", ShelfCommand::Nothing, metadata).await,
-        Ok(Default::default()),
-        "a decision without events plans nothing and writes nothing"
-    );
     let malformed = HashMap::from([("command_id".to_owned(), "cmd-1".to_owned())]);
     assert_eq!(
         executor.execute_with_metadata("s", put("good"), malformed.clone()).await,
         Err(CommandGatewayError::Unavailable),
         "a causation that does not parse refuses a decision with tasks"
     );
-    assert_eq!(
-        executor.execute_with_metadata("s", ShelfCommand::Nothing, malformed).await,
-        Ok(Default::default()),
-        "and lets a decision without tasks through"
-    );
     assert_eq!(database_state(&db.pool).await, before);
+    // A decision its planner plans no task for: the same causation does not stand in its way.
+    let untasked = shelves(
+        &db.pool,
+        1,
+        3,
+        ShelfPlanner {
+            per_item: 0,
+            refuse: None,
+        },
+    );
+    let report = untasked.execute_with_metadata("s", put("quiet"), malformed).await.unwrap();
+    assert!(report.tasks.is_empty(), "and lets a decision without tasks through");
+    assert_eq!(tasks_match_their_events(&db.pool, "s").await, (1, 0));
     db.close().await;
 }
 

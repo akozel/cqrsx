@@ -61,15 +61,15 @@ impl PostgresCommandConfig {
 type PostgresStore<A> = PersistedEventStore<PostgresEventRepositoryWithOutbox, A>;
 
 /// The command executor over PostgreSQL: the [`CommandExecutorCore`] over one snapshot-backed store on an
-/// outbox repository, built once with the executor, and the services. One per aggregate type and process: it
+/// outbox repository, built once with the executor, and the rules. One per aggregate type and process: it
 /// owns the aggregate locks, so share it (e.g. in an `Arc`) instead of building a second one, and never build
 /// a core of your own next to it for the same aggregate type. Commands run through [`CommandExecutor`].
 ///
 /// Construction performs no I/O. The accepted event, an optional snapshot and the tasks the executor's
-/// [planner](Self::with_task_planner) planned from the decision commit atomically; at most one event is
-/// supported per command. Connection/timeout failures may have unknown commit outcomes and are not
-/// automatically retried. Command handling uses a working clone of committed state; snapshot creation applies
-/// accepted events to the original committed context, preserving append and increment semantics without
+/// [planner](Self::with_task_planner) planned from the decision commit atomically; a command decides one
+/// event. Connection/timeout failures may have unknown commit outcomes and are not
+/// automatically retried. A command decides on the committed state; snapshot creation applies
+/// the accepted event to the original committed context, preserving append and increment semantics without
 /// requiring repeatable event application.
 ///
 /// For custom stores, use [`CommandExecutorCore::new`] with a framework of your own instead.
@@ -78,14 +78,14 @@ pub struct PostgresCommandExecutor<A: Aggregate> {
 }
 
 impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
-    /// Stores the pool, the configuration and the services without I/O or environment access: the conflict
+    /// Stores the pool, the configuration and the rules without I/O or environment access: the conflict
     /// retry policy and the lock limits go to the executor, the snapshot interval to its store.
-    pub fn new(pool: PgPool, config: PostgresCommandConfig, services: A::Services) -> Self {
+    pub fn new(pool: PgPool, config: PostgresCommandConfig, rules: A::Rules) -> Self {
         let store =
             PersistedEventStore::new_snapshot_store(PostgresEventRepositoryWithOutbox::new(pool), config.snapshot_interval());
         Self {
             inner: CommandExecutorCore::new(
-                CqrsFramework::new(store, services),
+                CqrsFramework::new(store, rules),
                 config.conflict_retry(),
                 config.lock_limits(),
             ),
@@ -113,7 +113,7 @@ impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
 impl<A> CommandExecutor<A> for PostgresCommandExecutor<A>
 where
     A: Aggregate + Clone + 'static,
-    A::Command: Clone + Send + 'static,
+    A::Command: Clone + 'static,
     A::Error: Send + 'static,
 {
     /// Runs the command under the aggregate's lock with conflict retry (a refused lock is `Unavailable`);
@@ -154,13 +154,15 @@ mod tests {
         type Command = ();
         type Event = Said;
         type Error = std::convert::Infallible;
-        type Services = ();
-
-        async fn handle(&mut self, _: (), _: &(), _: &crate::cqrs::event_sink::EventSink<Self>) -> Result<(), Self::Error> {
-            Ok(())
-        }
+        type Rules = ();
 
         fn apply(&mut self, _: Said) {}
+    }
+
+    impl crate::cqrs::command::decide::Decide<Quiet> for () {
+        fn decide(self, _: &Quiet, _: &()) -> Result<Said, std::convert::Infallible> {
+            Ok(Said)
+        }
     }
 
     struct NoTasks;

@@ -11,9 +11,9 @@ use std::{
 use cqrsx::cqrs::AggregateError;
 use cqrsx::cqrs::CqrsFramework;
 use cqrsx::cqrs::aggregate::Aggregate;
+use cqrsx::cqrs::command::decide::Decide;
 use cqrsx::cqrs::event::DomainEvent;
 use cqrsx::cqrs::event::EventEnvelope;
-use cqrsx::cqrs::event_sink::EventSink;
 use cqrsx::cqrs::store::AggregateContext;
 use cqrsx::cqrs::store::EventStore;
 use cqrsx::{
@@ -73,11 +73,13 @@ impl Aggregate for ProbeAggregate {
     type Command = ();
     type Event = ProbeEvent;
     type Error = io::Error;
-    type Services = ();
-    async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), io::Error> {
-        Ok(())
-    }
+    type Rules = ();
     fn apply(&mut self, _: ProbeEvent) {}
+}
+impl Decide<ProbeAggregate> for () {
+    fn decide(self, _: &ProbeAggregate, _: &()) -> Result<ProbeEvent, io::Error> {
+        Ok(ProbeEvent)
+    }
 }
 struct ProbeContext(ProbeAggregate);
 impl AggregateContext<ProbeAggregate> for ProbeContext {

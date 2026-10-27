@@ -351,10 +351,10 @@ async fn a_commit_wakes_an_idle_processor_before_the_poll() {
 }
 
 #[tokio::test(start_paused = true)]
-async fn a_command_with_several_events_is_one_transaction_and_one_job() {
+async fn a_commit_with_several_events_is_one_transaction_and_one_job() {
     let h = Harness::new();
     let node = h.node("n1");
-    h.executor_execute("a", Command::Adjust(vec![1, 2, 3])).await;
+    h.commit_together("a", &[1, 2, 3]).await;
     h.caught_up(&["a"]).await;
     assert_eq!(h.observer.count("applied:a:3"), 1);
     assert_eq!(h.status().await.applied, 3);
@@ -478,7 +478,8 @@ async fn the_metadata_of_an_event_reaches_the_projection() {
     let shutdown = CancellationToken::new();
     let running = tokio::spawn(processor.run(shutdown.clone()));
     let metadata = HashMap::from([("source".to_owned(), "box office".to_owned())]);
-    h.execute_with_metadata("a", Command::Adjust(vec![1, 2]), metadata).await;
+    h.execute_with_metadata("a", Command::Adjust(1), metadata.clone()).await;
+    h.execute_with_metadata("a", Command::Adjust(2), metadata).await;
     h.commit("a", 3).await;
     h.until(async || sources.load("a").await.unwrap().is_some_and(|seen| seen.0.len() == 3))
         .await;

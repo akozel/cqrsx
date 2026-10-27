@@ -68,7 +68,7 @@ where
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -105,24 +105,18 @@ where
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -219,7 +213,7 @@ where
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -256,24 +250,18 @@ where
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -355,7 +343,7 @@ where
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -392,24 +380,18 @@ where
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]

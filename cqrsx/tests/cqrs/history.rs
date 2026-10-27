@@ -21,20 +21,25 @@ mod snapshots {
                 repo.persist::<Ledger>(&seed,None).await.unwrap();
                 let (mut watermark,mut version)=(0,0);
                 for batch in batches {
-                    let before=model.len();
-                    let store=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),interval);
-                    if framework { CqrsFramework::new(store,Services::default()).execute("history",Command::Adjust(batch.clone())).await.unwrap(); }
-                    else { let context=store.load_aggregate("history").await.unwrap(); store.commit(batch.iter().map(|v|Delta(*v)).collect(), context, HashMap::new(), &[]).await.unwrap(); }
-                    model.extend(batch);
-                    let boundaries:Vec<_>=(before+1..=model.len()).filter(|n|n%interval==0).collect();
-                    if let Some(last)=boundaries.last() { watermark = *last;version+=1; }
-                    let snapshot=repo.get_snapshot::<Ledger>("history").await.unwrap();
-                    if watermark==0 { assert!(snapshot.is_none()); } else { let snapshot=snapshot.unwrap(); assert_eq!(snapshot.aggregate,serde_json::json!({"history":&model[..watermark], "balance":model[..watermark].iter().map(|v|i64::from(*v)).sum::<i64>()})); assert_eq!(snapshot.last_sequence,watermark);assert_eq!(snapshot.snapshot_version,version); }
-                    let restored=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),interval).load_aggregate("history").await.unwrap();
-                    let replay=PersistedEventStore::<_,Ledger>::new_event_store(repo.clone()).load_aggregate("history").await.unwrap();
-                    assert_eq!(restored.aggregate.history,model);assert_eq!(replay.aggregate.history,model);
-                    assert_eq!(restored.aggregate.balance,model.iter().map(|v|i64::from(*v)).sum::<i64>());
-                    assert_eq!(restored.current_sequence,model.len());
+                    // Through the framework every value is a command of its own and a commit of its own; directly, the
+                    // batch is one commit.
+                    let commits:Vec<Vec<i32>>=if framework { batch.iter().map(|v|vec![*v]).collect() } else { vec![batch] };
+                    for batch in commits {
+                        let before=model.len();
+                        let store=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),interval);
+                        if framework { CqrsFramework::new(store,Services::default()).execute("history",Command::Adjust(batch[0])).await.unwrap(); }
+                        else { let context=store.load_aggregate("history").await.unwrap(); store.commit(batch.iter().map(|v|Delta(*v)).collect(), context, HashMap::new(), &[]).await.unwrap(); }
+                        model.extend(batch);
+                        let boundaries:Vec<_>=(before+1..=model.len()).filter(|n|n%interval==0).collect();
+                        if let Some(last)=boundaries.last() { watermark = *last;version+=1; }
+                        let snapshot=repo.get_snapshot::<Ledger>("history").await.unwrap();
+                        if watermark==0 { assert!(snapshot.is_none()); } else { let snapshot=snapshot.unwrap(); assert_eq!(snapshot.aggregate,serde_json::json!({"history":&model[..watermark], "balance":model[..watermark].iter().map(|v|i64::from(*v)).sum::<i64>()})); assert_eq!(snapshot.last_sequence,watermark);assert_eq!(snapshot.snapshot_version,version); }
+                        let restored=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),interval).load_aggregate("history").await.unwrap();
+                        let replay=PersistedEventStore::<_,Ledger>::new_event_store(repo.clone()).load_aggregate("history").await.unwrap();
+                        assert_eq!(restored.aggregate.history,model);assert_eq!(replay.aggregate.history,model);
+                        assert_eq!(restored.aggregate.balance,model.iter().map(|v|i64::from(*v)).sum::<i64>());
+                        assert_eq!(restored.current_sequence,model.len());
+                    }
                 }
             });
         }
@@ -49,7 +54,7 @@ mod memory {
         #![proptest_config(property_config())]
         #[test]
         fn property_command_histories_match_independent_balance_model(
-            history in prop::collection::vec((0usize..3, prop::collection::vec(-20i32..21, 0..8), ".{0,12}"), 0..45)
+            history in prop::collection::vec((0usize..3, -20i32..21, ".{0,12}"), 0..45)
         ) {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
@@ -58,16 +63,16 @@ mod memory {
                 let mut balances = [0i64; 3];
                 let mut accepted: [Vec<i32>; 3] = Default::default();
                 let mut metadata_history: [Vec<HashMap<String,String>>; 3] = Default::default();
-                for (id, changes, trace) in history {
+                for (id, delta, trace) in history {
                     let key = format!("account-{id}");
-                    let mut candidate = balances[id];
-                    let valid = changes.iter().all(|delta| { candidate += i64::from(*delta); candidate >= 0 });
+                    let candidate = balances[id] + i64::from(delta);
+                    let valid = candidate >= 0;
                     let metadata = HashMap::from([("trace".into(), trace)]);
-                    let result = framework.execute_with_metadata(&key, Command::Adjust(changes.clone()), metadata.clone()).await;
+                    let result = framework.execute_with_metadata(&key, Command::Adjust(delta), metadata.clone()).await;
                     if valid {
                         result.unwrap(); balances[id] = candidate;
-                        metadata_history[id].extend(vec![metadata; changes.len()]);
-                        accepted[id].extend(changes);
+                        metadata_history[id].push(metadata);
+                        accepted[id].push(delta);
                     } else { assert!(matches!(result, Err(AggregateError::Domain(Rejected)))); }
                     for other in 0..3 {
                         let other_key = format!("account-{other}");

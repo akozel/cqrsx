@@ -35,18 +35,15 @@ impl Aggregate for StreamAggregate {
     type Command = ();
     type Event = TestEvent;
     type Error = std::convert::Infallible;
-    type Services = ();
-
-    async fn handle(
-        &mut self,
-        _command: Self::Command,
-        _service: &Self::Services,
-        _sink: &EventSink<Self>,
-    ) -> Result<(), Self::Error> {
-        Ok(())
-    }
+    type Rules = ();
 
     fn apply(&mut self, _event: Self::Event) {}
+}
+
+impl Decide<StreamAggregate> for () {
+    fn decide(self, _: &StreamAggregate, _: &()) -> Result<TestEvent, std::convert::Infallible> {
+        Ok(TestEvent::Recorded { value: String::new() })
+    }
 }
 
 fn serialized_event(sequence: usize, value: &str) -> SerializedEvent {

@@ -9,7 +9,7 @@ use crate::{
         venue::{SeatId, Zone},
     },
 };
-use cqrsx::cqrs::{aggregate::Aggregate, event_sink::EventSink};
+use cqrsx::cqrs::aggregate::Aggregate;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;
@@ -65,18 +65,9 @@ impl Aggregate for Fan {
     type Command = FanCommand;
     type Event = FanEvent;
     type Error = FanError;
-    type Services = ();
-
-    /// Each command decides itself (see `commands/`); exactly one event per accepted command
-    /// (D-02), like `Concert`.
-    async fn handle(&mut self, command: FanCommand, services: &(), sink: &EventSink<Self>) -> Result<(), FanError> {
-        let event = match command {
-            FanCommand::RecordTicket(command) => command.decide(self, services)?,
-            FanCommand::RecordCancellation(command) => command.decide(self, services)?,
-        };
-        sink.write(event, self).await;
-        Ok(())
-    }
+    // Each command decides itself (see `commands/`): `FanCommand: Decide<Fan>`; exactly one event per
+    // accepted command (D-02), like `Concert`.
+    type Rules = ();
 
     /// The state machine. Cancelled tickets stay in the ledger: they are history.
     fn apply(&mut self, event: FanEvent) {
@@ -113,8 +104,7 @@ impl Aggregate for Fan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::fan::domain::test_support::{cancel, cancelled, record, recorded, seat};
-    use cqrsx::cqrs::testing::TestFramework;
+    use crate::fan::domain::test_support::{cancelled, recorded, seat};
 
     #[test]
     fn derived_counters_ignore_cancelled_tickets_and_name_comes_from_the_first_ticket() {
@@ -139,28 +129,6 @@ mod tests {
         assert!(json["tickets"][first.to_string()].is_object());
         let restored: Fan = serde_json::from_value(json).unwrap();
         assert_eq!(restored, fan);
-    }
-
-    /// Decision D-02 for the downstream aggregate.
-    #[test]
-    fn d02_every_accepted_fan_command_yields_exactly_one_event() {
-        let id = Uuid::new_v4();
-        let states = vec![vec![], vec![recorded(id)], vec![recorded(id), cancelled(id, Uuid::new_v4())]];
-        let commands = vec![record(id), record(Uuid::new_v4()), cancel(id, Uuid::new_v4())];
-        let mut accepted = 0;
-        for state in &states {
-            for command in &commands {
-                if let Ok(events) = TestFramework::<Fan>::with(())
-                    .given(state.clone())
-                    .when(command.clone())
-                    .inspect_result()
-                {
-                    accepted += 1;
-                    assert_eq!(events.len(), 1, "{command:?} produced {events:?}");
-                }
-            }
-        }
-        assert!(accepted >= 3);
     }
 }
 

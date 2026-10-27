@@ -3,7 +3,7 @@
 use crate::{
     concert::{
         application::app::ConcertApp,
-        domain::{Concert, ConcertError, commands::AnnounceConcert},
+        domain::{Concert, ConcertCommand, ConcertError, commands::AnnounceConcert},
     },
     shared::{
         application::command_service::{CommandMetadata, Executed},
@@ -19,7 +19,8 @@ impl<E: CommandExecutor<Concert>> ConcertApp<E> {
         command: AnnounceConcert,
         metadata: CommandMetadata,
     ) -> Executed<ConcertError> {
-        self.execute(concert_id, command.into(), metadata).await
+        self.execute(concert_id, ConcertCommand::AnnounceConcert(command), metadata)
+            .await
     }
 }
 

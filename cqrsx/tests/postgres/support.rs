@@ -75,13 +75,15 @@ impl Aggregate for TestAggregate {
     type Command = ();
     type Event = TestEvent;
     type Error = std::convert::Infallible;
-    type Services = ();
-
-    async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), Self::Error> {
-        Ok(())
-    }
+    type Rules = ();
 
     fn apply(&mut self, _: Self::Event) {}
+}
+
+impl Decide<TestAggregate> for () {
+    fn decide(self, _: &TestAggregate, _: &()) -> Result<TestEvent, std::convert::Infallible> {
+        Ok(TestEvent::Recorded { value: String::new() })
+    }
 }
 
 pub(super) fn worker_event(id: &str) -> SerializedEvent {

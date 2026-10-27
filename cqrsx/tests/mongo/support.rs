@@ -4,9 +4,8 @@ use cqrsx::{
     cqrs::{
         CqrsFramework,
         aggregate::Aggregate,
-        command::{executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
+        command::{decide::Decide, executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
         event::{DomainEvent, EventEnvelope},
-        event_sink::EventSink,
         projection::{
             View, ViewProjection,
             checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore},
@@ -53,20 +52,19 @@ pub(crate) struct Never;
 
 impl Aggregate for Ledger {
     const TYPE: &'static str = "ledger";
-    type Command = Vec<i32>;
+    type Command = i32;
     type Event = Delta;
     type Error = Never;
-    type Services = ();
-
-    async fn handle(&mut self, changes: Vec<i32>, _: &(), sink: &EventSink<Self>) -> Result<(), Never> {
-        for change in changes {
-            sink.write(Delta(change), self).await;
-        }
-        Ok(())
-    }
+    type Rules = ();
 
     fn apply(&mut self, event: Delta) {
         self.0.push(event.0);
+    }
+}
+
+impl Decide<Ledger> for i32 {
+    fn decide(self, _: &Ledger, _: &()) -> Result<Delta, Never> {
+        Ok(Delta(self))
     }
 }
 

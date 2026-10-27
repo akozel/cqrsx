@@ -7,7 +7,7 @@ use crate::{
         domain::FanLedgerId,
     },
 };
-use cqrsx::cqrs::command::CommandExecutor;
+use cqrsx::cqrs::command::{CommandExecutor, CommandInfo};
 
 /// The command pipeline of `Fan`.
 pub struct FanApp<E> {
@@ -36,6 +36,7 @@ impl<E: CommandExecutor<Fan>> FanApp<E> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fan::application::test_support::{fan_command, ledger, ticket};
     use crate::{
         fan::domain::commands::RecordCancellation,
         shared::{
@@ -43,7 +44,7 @@ mod tests {
             domain::{ConcertId, FanId},
         },
     };
-    use cqrsx::cqrs::testing::{command::TestCommandExecutor, unavailable_store::UnavailableStore};
+    use cqrsx::cqrs::testing::{command::TestCommandExecutor, mem_store::MemStore, unavailable_store::UnavailableStore};
     use std::sync::Arc;
     use uuid::Uuid;
 
@@ -70,6 +71,41 @@ mod tests {
         assert_eq!(
             (entries[0].kind.as_str(), entries[0].fields["fan_id"].as_str()),
             ("command.failed", Some("fox"))
+        );
+    }
+
+    /// What the activity feed names every command of a ledger by: its type and the ledger's fan.
+    #[tokio::test]
+    async fn every_ledger_command_is_logged_with_its_type_and_the_ledgers_fan() {
+        let activity = Arc::new(ActivityHub::new(8, 8));
+        let fans = FanApp::new(CommandService::new(
+            TestCommandExecutor::new(MemStore::default(), ()),
+            activity.clone(),
+        ));
+        fans.execute(&ledger(), fan_command(), CommandMetadata::ui()).await;
+        let cancellation = FanCommand::RecordCancellation(RecordCancellation {
+            booking_id: ticket().booking_id,
+            cancellation_id: Uuid::now_v7(),
+            refund: 80,
+        });
+        fans.execute(&ledger(), cancellation, CommandMetadata::ui()).await;
+        let (entries, _) = activity.subscribe();
+        let logged: Vec<_> = entries
+            .iter()
+            .map(|entry| {
+                (
+                    entry.kind.as_str(),
+                    entry.fields["command_type"].as_str(),
+                    entry.fields["fan_id"].as_str(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            logged,
+            [
+                ("command.accepted", Some("RecordTicket"), Some("fox")),
+                ("command.accepted", Some("RecordCancellation"), Some("fox")),
+            ]
         );
     }
 }

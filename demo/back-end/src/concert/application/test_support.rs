@@ -4,7 +4,7 @@ use crate::{
     concert::{
         application::{app::ConcertApp, reactions::concert_tasks},
         domain::{
-            Concert, ConcertCommand, ConcertError, ConcertEvent, ConcertServices,
+            Concert, ConcertCommand, ConcertError, ConcertEvent, ConcertRules,
             commands::{AnnounceConcert, BookSeat, CancelBooking},
             events::{BookingCancelled, SeatBooked},
         },
@@ -58,7 +58,7 @@ where
     S: EventStore<Concert> + 'static,
     S::AC: Send,
 {
-    let executor = TestCommandExecutor::new(store, ConcertServices::default()).with_task_planner(concert_tasks(6));
+    let executor = TestCommandExecutor::new(store, ConcertRules::default()).with_task_planner(concert_tasks(6));
     let activity = Arc::new(ActivityHub::new(64, 64));
     let service = CommandService::new(executor.clone(), activity.clone());
     Harness {

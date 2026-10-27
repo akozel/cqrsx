@@ -6,30 +6,32 @@ pub mod record_ticket;
 pub use record_cancellation::RecordCancellation;
 pub use record_ticket::RecordTicket;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+use cqrsx::Commands;
+
+/// The derive routes every variant to its command's decision and reports it to the activity feed by its name.
+#[derive(Debug, Clone, PartialEq, Eq, Commands)]
 pub enum FanCommand {
     RecordTicket(RecordTicket),
     RecordCancellation(RecordCancellation),
 }
 
-impl FanCommand {
-    /// The command type the activity log reports.
-    pub fn name(&self) -> &'static str {
-        match self {
-            FanCommand::RecordTicket(_) => "RecordTicket",
-            FanCommand::RecordCancellation(_) => "RecordCancellation",
-        }
-    }
-}
+#[cfg(test)]
+mod tests {
+    use crate::fan::domain::test_support::{cancel, record};
+    use cqrsx::cqrs::command::CommandInfo;
+    use uuid::Uuid;
 
-impl From<RecordTicket> for FanCommand {
-    fn from(command: RecordTicket) -> Self {
-        FanCommand::RecordTicket(command)
-    }
-}
-
-impl From<RecordCancellation> for FanCommand {
-    fn from(command: RecordCancellation) -> Self {
-        FanCommand::RecordCancellation(command)
+    /// The activity feed names a ledger's command by its type; its fan is the ledger's, its id not the command's.
+    #[test]
+    fn every_ledger_command_reports_its_name() {
+        let id = Uuid::now_v7();
+        let reported = [record(id), cancel(id, Uuid::now_v7())]
+            .iter()
+            .map(|command| (command.name(), command.labels(), command.command_id()))
+            .collect::<Vec<_>>();
+        assert_eq!(
+            reported,
+            [("RecordTicket", vec![], None), ("RecordCancellation", vec![], None)]
+        );
     }
 }

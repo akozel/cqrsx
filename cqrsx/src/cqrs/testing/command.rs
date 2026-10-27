@@ -40,10 +40,10 @@ use std::{
 ///     aggregate::Aggregate,
 ///     command::{
 ///         CommandExecutor, CommandGatewayError, causation::Causation,
+///         decide::Decide,
 ///         planner::{Decision, TaskPlanError, TaskPlanner},
 ///     },
 ///     event::DomainEvent,
-///     event_sink::EventSink,
 ///     testing::{command::TestCommandExecutor, mem_store::MemStore},
 /// };
 /// use cqrsx::task::{NewTask, format::TaskPayload};
@@ -65,15 +65,16 @@ use std::{
 ///     type Command = ();
 ///     type Event = Incremented;
 ///     type Error = LimitReached;
-///     type Services = u32;
-///     async fn handle(&mut self, _: (), limit: &u32, sink: &EventSink<Self>) -> Result<(), LimitReached> {
-///         if self.0 >= *limit {
+///     type Rules = u32;
+///     fn apply(&mut self, _: Incremented) { self.0 += 1; }
+/// }
+/// impl Decide<Counter> for () {
+///     fn decide(self, counter: &Counter, limit: &u32) -> Result<Incremented, LimitReached> {
+///         if counter.0 >= *limit {
 ///             return Err(LimitReached);
 ///         }
-///         sink.write(Incremented, self).await;
-///         Ok(())
+///         Ok(Incremented)
 ///     }
-///     fn apply(&mut self, _: Incremented) { self.0 += 1; }
 /// }
 /// #[derive(Serialize)]
 /// struct Notify {}
@@ -111,11 +112,11 @@ pub struct TestCommandExecutor<A: Aggregate, S: EventStore<A> = MemStore<A>> {
 }
 
 impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
-    /// Execute against `store` with `services`, the default conflict retry and the default lock limits.
-    pub fn new(store: S, services: A::Services) -> Self {
+    /// Execute against `store` with `rules`, the default conflict retry and the default lock limits.
+    pub fn new(store: S, rules: A::Rules) -> Self {
         Self {
             inner: Arc::new(CommandExecutorCore::new(
-                CqrsFramework::new(store, services),
+                CqrsFramework::new(store, rules),
                 AggregateConflictRetryPolicy::default(),
                 LockLimits::default(),
             )),
@@ -162,11 +163,11 @@ impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
 }
 
 impl<A: Aggregate + 'static> TestCommandExecutor<A, PersistedEventStore<MemEventRepository, A>> {
-    /// Execute against `journal` with `services`: every command loads its aggregate from the journal and
+    /// Execute against `journal` with `rules`: every command loads its aggregate from the journal and
     /// appends its events, and its tasks to the journal's outbox, where projection processors and tests
     /// over the same journal read them.
-    pub fn over_journal(journal: MemEventRepository, services: A::Services) -> Self {
-        Self::new(PersistedEventStore::new_event_store(journal), services)
+    pub fn over_journal(journal: MemEventRepository, rules: A::Rules) -> Self {
+        Self::new(PersistedEventStore::new_event_store(journal), rules)
     }
 }
 
@@ -182,7 +183,7 @@ impl<A: Aggregate, S: EventStore<A>> Clone for TestCommandExecutor<A, S> {
 impl<A, S> CommandExecutor<A> for TestCommandExecutor<A, S>
 where
     A: Aggregate + Clone + 'static,
-    A::Command: Clone + Send + 'static,
+    A::Command: Clone + 'static,
     A::Error: Send + 'static,
     S: EventStore<A> + 'static,
     S::AC: Send,
@@ -211,10 +212,10 @@ mod tests {
         cqrs::{
             command::{
                 causation::Causation,
+                decide::Decide,
                 planner::{Decision, TaskPlanError},
             },
             event::DomainEvent,
-            event_sink::EventSink,
             store::repository::PersistedEventRepository,
             testing::unavailable_store::UnavailableStore,
         },
@@ -222,7 +223,7 @@ mod tests {
     };
     use serde::{Deserialize, Serialize};
 
-    /// Accepts values up to the cap in its services.
+    /// Accepts values up to the cap in its rules.
     #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     struct Stack(Vec<u8>);
 
@@ -247,18 +248,19 @@ mod tests {
         type Command = u8;
         type Event = Pushed;
         type Error = Full;
-        type Services = usize;
-
-        async fn handle(&mut self, value: u8, cap: &usize, sink: &EventSink<Self>) -> Result<(), Full> {
-            if self.0.len() >= *cap {
-                return Err(Full);
-            }
-            sink.write(Pushed(value), self).await;
-            Ok(())
-        }
+        type Rules = usize;
 
         fn apply(&mut self, event: Pushed) {
             self.0.push(event.0);
+        }
+    }
+
+    impl Decide<Stack> for u8 {
+        fn decide(self, stack: &Stack, cap: &usize) -> Result<Pushed, Full> {
+            if stack.0.len() >= *cap {
+                return Err(Full);
+            }
+            Ok(Pushed(self))
         }
     }
 

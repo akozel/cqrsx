@@ -9,7 +9,6 @@ pub mod aggregate;
 pub mod command;
 pub mod event;
 pub mod event_handler;
-pub mod event_sink;
 pub mod projection;
 pub mod rejection;
 pub mod store;
@@ -20,9 +19,11 @@ pub mod testing;
 use crate::{
     cqrs::{
         aggregate::Aggregate,
-        command::planner::{Planning, TaskPlanError, TaskPlanner},
+        command::{
+            decide::Decide,
+            planner::{Planning, TaskPlanError, TaskPlanner},
+        },
         event::EventEnvelope,
-        event_sink::EventSink,
         store::{AggregateContext, EventStore},
     },
     task::NewTask,
@@ -37,9 +38,9 @@ use std::{collections::HashMap, error, fmt};
 /// With event-sourcing this means:
 /// 1. Loading all previous events for the aggregate instance.
 /// 1. Applying these events, in order, to a new `Aggregate` in order to reach the correct state.
-/// 1. Using the recreated `Aggregate` to handle an inbound `Command` producing events or an error
-///    (see `handle` method in this trait).
-/// 1. Persisting any generated events or roll back in the event of an error.
+/// 1. Deciding an inbound `Command` on the recreated `Aggregate`: one event or an error
+///    (see [`Decide`]).
+/// 1. Persisting the event or, on an error, nothing.
 ///
 /// To manage these tasks we use a `CqrsFramework`. It returns what it committed, the events and the tasks
 /// its [`TaskPlanner`] planned from them, and hands them to nobody: a command executor
@@ -53,7 +54,7 @@ where
     ES: EventStore<A>,
 {
     store: ES,
-    service: A::Services,
+    rules: A::Rules,
     planning: Option<Planning<A>>,
 }
 
@@ -63,8 +64,8 @@ where
     ES: EventStore<A>,
 {
     /// Creates new framework for dispatching commands using the provided elements.
-    /// Takes an implementation of an `EventStore` and a set of services to be used within the
-    /// command handler.
+    /// Takes an implementation of an `EventStore` and the rules the commands decide with
+    /// ([`Aggregate::Rules`]).
     ///
     /// For a simple in-memory `EventStore` suitable for experimentation or testing see
     /// [MemStore](crate::cqrs::testing::mem_store::MemStore).
@@ -80,7 +81,7 @@ where
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -117,24 +118,18 @@ where
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -156,27 +151,27 @@ where
     /// use cqrsx::cqrs::testing::mem_store::MemStore;
     ///
     /// let store = MemStore::<MyAggregate>::default();
-    /// let service = MyService::default();
+    /// let rules = MyService::default();
     ///
-    /// let cqrs = CqrsFramework::new(store, service);
+    /// let cqrs = CqrsFramework::new(store, rules);
     /// ```
     /// For production uses a
     /// [persistent event store](crate::cqrs::store::persisted::PersistedEventStore)
     /// backed by the local PostgreSQL adapter is required.
     ///
-    pub fn new(store: ES, service: A::Services) -> Self
+    pub fn new(store: ES, rules: A::Rules) -> Self
     where
         A: Aggregate,
         ES: EventStore<A>,
     {
         Self {
             store,
-            service,
+            rules,
             planning: None,
         }
     }
 
-    /// Plans the follow-up tasks of every decision with events through `planner`, after `handle` on every
+    /// Plans the follow-up tasks of every decision through `planner`, after `decide` on every
     /// attempt and before the commit; the tasks commit atomically with the attempt's events. One planner per
     /// framework: a second call replaces the first, and several planners compose as a tuple.
     pub fn with_task_planner(mut self, planner: impl TaskPlanner<A> + 'static) -> Self
@@ -203,8 +198,8 @@ where
     /// an [`AggregateError`]
     /// being returned.
     ///
-    /// If successful the events produced, and the tasks the planner planned from them, are persisted in
-    /// the backing `EventStore` and returned in commit order; no event handler sees them here.
+    /// If successful the event decided, and the tasks the planner planned from it, are persisted in
+    /// the backing `EventStore` and returned; no event handler sees them here.
     ///
     /// ```
     /// # mod example {
@@ -217,7 +212,7 @@ where
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -254,24 +249,18 @@ where
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -305,8 +294,8 @@ where
     ///     Ok(())
     /// }
     /// ```
-    /// `Clone` must provide independent mutable aggregate state. Command handling
-    /// uses that working copy while commit retains the last committed context.
+    /// `Clone` must provide independent aggregate state: with a planner the event is applied to a copy of
+    /// the committed state (the decision's `after`), while commit retains the last committed context.
     pub async fn execute(&self, aggregate_id: &str, command: A::Command) -> Result<CommitReport<A>, AggregateError<A::Error>>
     where
         A: Clone,
@@ -329,8 +318,8 @@ where
     /// an [`AggregateError`]
     /// being returned.
     ///
-    /// If successful the events produced, and the tasks the planner planned from them, are persisted in
-    /// the backing `EventStore` and returned in commit order; no event handler sees them here.
+    /// If successful the event decided, and the tasks the planner planned from it, are persisted in
+    /// the backing `EventStore` and returned; no event handler sees them here.
     ///
     /// ```
     /// # mod example {
@@ -343,7 +332,7 @@ where
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -380,24 +369,18 @@ where
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -433,10 +416,14 @@ where
     /// }
     /// ```
     ///
-    /// With a [task planner](Self::with_task_planner), a decision with events is planned before the commit:
-    /// the planner sees the committed state, the working copy after `handle`, the command, the events and
-    /// the metadata; the core stamps the causation of `metadata` on every task and derives its id. A planner
-    /// error refuses the command ([`AggregateError::TaskPlan`]) with nothing written.
+    /// The command decides on the committed state ([`Decide::decide`]), synchronously: one event or a
+    /// rejection ([`AggregateError::Domain`]), with nothing written.
+    ///
+    /// With a [task planner](Self::with_task_planner), the decision is planned before the commit: the
+    /// planner sees the committed state, a copy of it with the event applied (made for the planner only),
+    /// the command, the event and the metadata; the core stamps the causation of `metadata` on every task
+    /// and derives its id. A planner error refuses the command ([`AggregateError::TaskPlan`]) with nothing
+    /// written.
     pub async fn execute_with_metadata(
         &self,
         aggregate_id: &str,
@@ -447,42 +434,35 @@ where
         A: Clone,
     {
         let mut aggregate_context = self.store.load_aggregate(aggregate_id).await?;
-        let mut aggregate = aggregate_context.aggregate().clone();
-        // The decision needs the command after `handle` consumed it: an owned clone, never a borrow
-        // across an await, so a command that is `Send` but not `Sync` keeps the future `Send`.
+        // The planner's decision needs the command after `decide` consumed it: one owned clone, kept for the
+        // planner, never a borrow across an await, so a command that is `Send` but not `Sync` keeps the future
+        // `Send`.
         let (command, kept) = match &self.planning {
             Some(planning) => (planning.clone_command(&command), Some(command)),
             None => (command, None),
         };
-        let sink: EventSink<A> = Default::default();
-        aggregate
-            .handle(command, &self.service, &sink)
-            .await
+        let event = command
+            .decide(aggregate_context.aggregate(), &self.rules)
             .map_err(AggregateError::Domain)?;
-        let resultant_events = sink.collect().await;
         let tasks = match (&self.planning, &kept) {
-            (Some(planning), Some(command)) if !resultant_events.is_empty() => planning
-                .plan(
-                    aggregate_id,
-                    aggregate_context.aggregate(),
-                    &aggregate,
-                    command,
-                    &resultant_events,
-                    &metadata,
-                )
-                .map_err(AggregateError::TaskPlan)?,
+            (Some(planning), Some(command)) => {
+                // The state the commit leaves, for the planner only: one copy of the state and of the event.
+                let before = aggregate_context.aggregate();
+                let mut after = before.clone();
+                after.apply(event.clone());
+                planning
+                    .plan(aggregate_id, before, &after, command, std::slice::from_ref(&event), &metadata)
+                    .map_err(AggregateError::TaskPlan)?
+            }
             _ => Vec::new(),
         };
-        let events = self
-            .store
-            .commit(resultant_events, aggregate_context, metadata, &tasks)
-            .await?;
+        let events = self.store.commit(vec![event], aggregate_context, metadata, &tasks).await?;
         Ok(CommitReport { events, tasks })
     }
 }
 
-/// What one command committed in one transaction: its events in commit order and the tasks planned from
-/// them, published atomically with them.
+/// What one command committed in one transaction: its events in commit order (the one event it decided, as
+/// the store reports it) and the tasks planned from them, published atomically with them.
 pub struct CommitReport<A: Aggregate> {
     pub events: Vec<EventEnvelope<A>>,
     pub tasks: Vec<NewTask>,
@@ -616,7 +596,7 @@ mod tests {
         }
     }
 
-    /// Adds the probe's value: 0 decides nothing, 13 is rejected.
+    /// Adds the probe's value; 13 is rejected.
     #[derive(Clone, Debug, Default, Serialize, Deserialize)]
     struct Echo(u32);
 
@@ -641,21 +621,19 @@ mod tests {
         type Command = Probe;
         type Event = Echoed;
         type Error = Unlucky;
-        type Services = ();
-
-        async fn handle(&mut self, command: Probe, _: &(), sink: &EventSink<Self>) -> Result<(), Unlucky> {
-            match command.value {
-                0 => Ok(()),
-                13 => Err(Unlucky),
-                value => {
-                    sink.write(Echoed(value), self).await;
-                    Ok(())
-                }
-            }
-        }
+        type Rules = ();
 
         fn apply(&mut self, event: Echoed) {
             self.0 += event.0;
+        }
+    }
+
+    impl Decide<Echo> for Probe {
+        fn decide(self, _: &Echo, _: &()) -> Result<Echoed, Unlucky> {
+            match self.value {
+                13 => Err(Unlucky),
+                value => Ok(Echoed(value)),
+            }
         }
     }
 
@@ -727,15 +705,81 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn no_events_or_a_rejection_plans_nothing() {
+    async fn a_rejection_plans_nothing() {
         let recorder = Recorder::default();
         let framework = CqrsFramework::new(MemStore::<Echo>::default(), ()).with_task_planner(recorder.clone());
-        assert_eq!(framework.execute("e-1", probe(0)).await.unwrap(), CommitReport::default());
         assert!(matches!(
             framework.execute("e-1", probe(13)).await,
             Err(AggregateError::Domain(Unlucky))
         ));
         assert!(recorder.seen.lock().unwrap().is_empty(), "the planner was never called");
+    }
+
+    /// The events applied, in order: the state shows how often each was applied.
+    #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    struct Tape(Vec<u32>);
+
+    /// Every state a decision was taken on, written by the decision through its rules.
+    type Decided = Arc<Mutex<Vec<Vec<u32>>>>;
+
+    impl Aggregate for Tape {
+        const TYPE: &'static str = "tape";
+        type Command = u32;
+        type Event = Echoed;
+        type Error = Unlucky;
+        type Rules = Decided;
+
+        fn apply(&mut self, event: Echoed) {
+            self.0.push(event.0);
+        }
+    }
+
+    impl Decide<Tape> for u32 {
+        fn decide(self, tape: &Tape, decided: &Decided) -> Result<Echoed, Unlucky> {
+            decided.lock().unwrap().push(tape.0.clone());
+            if self == 13 { Err(Unlucky) } else { Ok(Echoed(self)) }
+        }
+    }
+
+    /// A state before and after a decision.
+    type BeforeAndAfter = (Vec<u32>, Vec<u32>);
+
+    /// The states before and after every decision the planner saw.
+    #[derive(Clone, Default)]
+    struct Before(Arc<Mutex<Vec<BeforeAndAfter>>>);
+
+    impl TaskPlanner<Tape> for Before {
+        fn plan(&self, d: &Decision<'_, Tape>) -> Result<Vec<NewTask>, TaskPlanError> {
+            self.0.lock().unwrap().push((d.before.0.clone(), d.after.0.clone()));
+            Ok(Vec::new())
+        }
+    }
+
+    #[tokio::test]
+    async fn decide_reads_the_committed_state_and_the_planner_sees_its_event_applied_once() {
+        let (store, decided, planner) = (MemStore::<Tape>::default(), Decided::default(), Before::default());
+        let framework = CqrsFramework::new(store.clone(), decided.clone()).with_task_planner(planner.clone());
+        framework.execute("t-1", 1).await.unwrap();
+        framework.execute("t-1", 2).await.unwrap();
+        assert!(matches!(
+            framework.execute("t-1", 13).await,
+            Err(AggregateError::Domain(Unlucky))
+        ));
+        assert_eq!(
+            *decided.lock().unwrap(),
+            [vec![], vec![1], vec![1, 2]],
+            "every command decided on the committed state"
+        );
+        assert_eq!(
+            *planner.0.lock().unwrap(),
+            [(vec![], vec![1]), (vec![1], vec![1, 2])],
+            "the planner's copy has the event applied once; a rejection is not planned"
+        );
+        assert_eq!(
+            store.load_events("t-1").await.unwrap().len(),
+            2,
+            "the rejection wrote nothing"
+        );
     }
 
     #[tokio::test]

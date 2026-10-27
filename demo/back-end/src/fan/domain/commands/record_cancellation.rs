@@ -1,17 +1,18 @@
 //! `RecordCancellation`: a cancelled booking is marked in the fan's ledger. Rules R10, R11; the
 //! accepted fact is [`TicketCancelled`].
 use crate::fan::domain::{Fan, FanError, FanEvent, TicketState, events::TicketCancelled};
+use cqrsx::{Command, cqrs::command::decide::Decide};
 use uuid::Uuid;
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Command)]
 pub struct RecordCancellation {
     pub booking_id: Uuid,
     pub cancellation_id: Uuid,
     pub refund: u32,
 }
 
-impl RecordCancellation {
-    pub(in crate::fan::domain) fn decide(self, fan: &Fan, _services: &()) -> Result<FanEvent, FanError> {
+impl Decide<Fan> for RecordCancellation {
+    fn decide(self, fan: &Fan, _rules: &()) -> Result<FanEvent, FanError> {
         let RecordCancellation {
             booking_id,
             cancellation_id,
@@ -48,7 +49,7 @@ mod tests {
         TestFramework::<Fan>::with(())
             .given(vec![recorded(id)])
             .when(cancel(id, cancellation_id))
-            .then_expect_events(vec![cancelled(id, cancellation_id)]);
+            .then_expect_event(cancelled(id, cancellation_id));
     }
 
     #[test]

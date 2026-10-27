@@ -14,8 +14,8 @@ use std::{
 
 use chrono::{DateTime, Utc};
 use cqrsx::cqrs::aggregate::Aggregate;
+use cqrsx::cqrs::command::decide::Decide;
 use cqrsx::cqrs::event::DomainEvent;
-use cqrsx::cqrs::event_sink::EventSink;
 use cqrsx::cqrs::store::PersistenceError;
 use cqrsx::cqrs::store::repository::PersistedEventRepository;
 use cqrsx::cqrs::store::serialized_event::SerializedEvent;

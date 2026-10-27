@@ -9,6 +9,6 @@ pub mod events;
 mod test_support;
 
 pub use commands::ConcertCommand;
-pub use concert::{Booking, Concert, ConcertInfo, ConcertServices};
+pub use concert::{Booking, Concert, ConcertInfo, ConcertRules};
 pub use error::ConcertError;
 pub use events::ConcertEvent;

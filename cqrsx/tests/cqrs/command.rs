@@ -58,10 +58,10 @@ async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command(
         cqrsx::cqrs::command::locks::LockLimits::default(),
     );
     assert_eq!(
-        CommandExecutor::execute(&executor, "lost-ack", Command::Adjust(vec![1])).await,
+        CommandExecutor::execute(&executor, "lost-ack", Command::Adjust(1)).await,
         Err(CommandGatewayError::Unavailable)
     );
     assert_eq!(observed.commits.load(Ordering::SeqCst), 1);
-    assert_eq!(*seen.lock().unwrap(), vec!["handle"]);
+    assert_eq!(*seen.lock().unwrap(), vec!["decide"]);
     assert_eq!(observed.inner.load_events("lost-ack").await.unwrap().len(), 1);
 }

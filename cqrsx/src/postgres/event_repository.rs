@@ -213,7 +213,7 @@ mod configuration_tests {
         )
         .unwrap();
         let error = repository
-            .persist_with_tasks::<crate::cqrs::event_sink::tests::Ledger>(&[event], None, &[task])
+            .persist_with_tasks::<crate::cqrs::aggregate::tests::Ledger>(&[event], None, &[task])
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no outbox"), "{error}");

@@ -64,7 +64,7 @@ struct Journal {
 ///
 /// ```
 /// # mod example {
-/// # use cqrsx::cqrs::{aggregate::Aggregate, event::DomainEvent, event_sink::EventSink};
+/// # use cqrsx::cqrs::{aggregate::Aggregate, command::decide::Decide, event::DomainEvent};
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// # pub struct Counted;
@@ -82,9 +82,11 @@ struct Journal {
 /// #     type Command = ();
 /// #     type Event = Counted;
 /// #     type Error = Never;
-/// #     type Services = ();
-/// #     async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), Never> { Ok(()) }
+/// #     type Rules = ();
 /// #     fn apply(&mut self, _: Counted) {}
+/// # }
+/// # impl Decide<Counter> for () {
+/// #     fn decide(self, _: &Counter, _: &()) -> Result<Counted, Never> { Ok(Counted) }
 /// # }
 /// # }
 /// # use example::{Counted, Counter};
@@ -334,8 +336,8 @@ impl PersistedEventRepository for MemEventRepository {
 mod tests {
     use super::*;
     use crate::cqrs::{
+        aggregate::tests::{Delta, Ledger},
         event::EventEnvelope,
-        event_sink::tests::{Delta, Ledger},
         store::{EventStore, persisted::PersistedEventStore, persisted::tests::TestAggregate},
     };
     use std::collections::HashMap;

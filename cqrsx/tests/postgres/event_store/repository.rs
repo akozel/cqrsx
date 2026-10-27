@@ -31,15 +31,16 @@ impl cqrsx::cqrs::aggregate::Aggregate for History {
     type Command = i32;
     type Event = Appended;
     type Error = std::convert::Infallible;
-    type Services = ();
-
-    async fn handle(&mut self, value: i32, _: &(), sink: &cqrsx::cqrs::event_sink::EventSink<Self>) -> Result<(), Self::Error> {
-        sink.write(Appended(value), self).await;
-        Ok(())
-    }
+    type Rules = ();
 
     fn apply(&mut self, event: Appended) {
         self.entries.push(event.0);
+    }
+}
+
+impl cqrsx::cqrs::command::decide::Decide<History> for i32 {
+    fn decide(self, _: &History, _: &()) -> Result<Appended, std::convert::Infallible> {
+        Ok(Appended(self))
     }
 }
 

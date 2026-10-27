@@ -708,7 +708,17 @@ impl Harness {
 
     /// Commits one event of `key` through the command path, which wakes the processors.
     pub(crate) async fn commit(&self, key: &str, delta: i32) {
-        self.executor_execute(key, Command::Adjust(vec![delta])).await;
+        self.executor_execute(key, Command::Adjust(delta)).await;
+    }
+
+    /// Commits the events of `deltas` of `key` in one transaction, past the command path (a command decides one
+    /// event), and wakes the processors as a commit of the executor does.
+    pub(crate) async fn commit_together(&self, key: &str, deltas: &[i32]) {
+        let store = Store::new_event_store(self.journal.inner.clone());
+        let context = store.load_aggregate(key).await.unwrap();
+        let events = deltas.iter().map(|delta| Delta(*delta)).collect();
+        store.commit(events, context, HashMap::new(), &[]).await.unwrap();
+        self.wakeup.wake();
     }
 
     pub(crate) async fn executor_execute(&self, key: &str, command: Command) {

@@ -231,15 +231,19 @@ fn externals(layer: Option<Layer>) -> Externals {
         Some(Layer::Domain) => Externals {
             forbidden: &["sqlx", "mongodb", "axum", "tokio"],
             test_only: &["serde_json", "cqrsx::cqrs::testing"],
-            // The derive macros of the domain's contracts (an event's name and version, the enum of events, the code
-            // and params of a rejection) and the trait of the rejections, which the domain's tests call.
+            // The derive macros of the domain's contracts (what is known of a command, the enum of commands, an
+            // event's name and version, the enum of events, the code and params of a rejection), the decision of a
+            // command, and the traits of the commands and the rejections, which the domain's tests call.
             cqrsx_allowed: Some(&[
+                "cqrsx::Command",
+                "cqrsx::Commands",
                 "cqrsx::Event",
                 "cqrsx::Events",
                 "cqrsx::Rejection",
                 "cqrsx::cqrs::aggregate",
+                "cqrsx::cqrs::command::CommandInfo",
+                "cqrsx::cqrs::command::decide",
                 "cqrsx::cqrs::event",
-                "cqrsx::cqrs::event_sink",
                 "cqrsx::cqrs::rejection",
                 "cqrsx::cqrs::testing",
             ]),
@@ -828,6 +832,28 @@ fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
     ] {
         let broken = check(file, code);
         assert_eq!(broken.len(), 1, "{file}: {code}");
+        assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
+    }
+}
+
+/// Backlog 05/05: a command decides itself in the domain (`Decide`) and derives what is known of it; the domain sees
+/// nothing else of the command path, and the event sink is gone.
+#[test]
+fn the_command_derives_and_the_decide_contract_are_visible_in_the_domain() {
+    let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
+    for code in [
+        "use cqrsx::{Command, Commands, cqrs::command::decide::Decide};\n",
+        "#[cfg(test)]\nmod tests { use cqrsx::cqrs::command::CommandInfo; }\n",
+    ] {
+        assert!(check("concert/domain/x.rs", code).is_empty(), "{code}");
+    }
+    for code in [
+        "use cqrsx::cqrs::event_sink::EventSink;\n",
+        "use cqrsx::cqrs::command::CommandExecutor;\n",
+        "use cqrsx::cqrs::command::planner::TaskPlanner;\n",
+    ] {
+        let broken = check("fan/domain/x.rs", code);
+        assert_eq!(broken.len(), 1, "{code}");
         assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
     }
 }

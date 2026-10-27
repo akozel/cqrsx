@@ -126,7 +126,7 @@ mod contracts {
             self.inner.commit(events, context, metadata, tasks).await
         }
     }
-    /// An executor over `store` with one attempt per command that wakes `wakeup` after a commit with events.
+    /// An executor over `store` with one attempt per command that wakes `wakeup` after a commit with an event.
     fn executor<S>(store: S, calls: &Calls, wakeup: &CommitWakeup) -> CommandExecutorCore<Ledger, S>
     where
         S: EventStore<Ledger> + Send + Sync,
@@ -138,7 +138,7 @@ mod contracts {
     }
 
     #[tokio::test]
-    async fn load_handle_commit_preserves_services_and_metadata_and_returns_the_events() {
+    async fn load_decide_commit_preserves_the_rules_and_metadata_and_returns_the_event() {
         let calls = Calls::default();
         let store = Store {
             inner: MemStore::default(),
@@ -148,27 +148,25 @@ mod contracts {
         let framework = CqrsFramework::new(store, Services(Arc::clone(&calls)));
         let metadata = HashMap::from([("trace".into(), "данные 🦀".into())]);
         let events = framework
-            .execute_with_metadata("account", Command::Adjust(vec![5, -3]), metadata.clone())
+            .execute_with_metadata("account", Command::Adjust(5), metadata.clone())
             .await
             .unwrap()
             .events;
-        assert_eq!(*calls.lock().unwrap(), ["load", "handle", "commit"]);
-        assert_eq!(events.len(), 2);
+        assert_eq!(*calls.lock().unwrap(), ["load", "decide", "commit"]);
+        assert_eq!(events.len(), 1);
         for (i, event) in events.iter().enumerate() {
             assert_eq!(event.aggregate_id, "account");
             assert_eq!(event.sequence, i + 1);
-            assert_eq!(event.payload, Delta([5, -3][i]));
+            assert_eq!(event.payload, Delta([5][i]));
             assert_eq!(event.metadata, metadata);
         }
     }
     #[tokio::test]
-    async fn empty_commands_and_all_failure_boundaries_wake_nobody() {
+    async fn every_failure_boundary_wakes_nobody() {
         for (failure, command, expected) in [
-            (Some("load"), Command::Adjust(vec![5]), vec!["load"]),
-            (Some("commit"), Command::Adjust(vec![5]), vec!["load", "handle", "commit"]),
-            (None, Command::Adjust(vec![]), vec!["load", "handle", "commit"]),
-            (None, Command::RejectAfterWrite, vec!["load", "handle"]),
-            (None, Command::Adjust(vec![5, -6]), vec!["load", "handle"]),
+            (Some("load"), Command::Adjust(5), vec!["load"]),
+            (Some("commit"), Command::Adjust(5), vec!["load", "decide", "commit"]),
+            (None, Command::Adjust(-6), vec!["load", "decide"]),
         ] {
             let calls = Calls::default();
             let wakeup = CommitWakeup::new();
@@ -182,12 +180,10 @@ mod contracts {
             // A processor waiting for the next commit, as it would be at its poll.
             let mut woken = pin!(wakeup.wait());
             assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
-            let empty = matches!(&command, Command::Adjust(v) if v.is_empty());
             let result = executor.execute("account", command).await;
             match failure {
                 Some("load") => assert_eq!(result, Err(CommandGatewayError::Unavailable)),
                 Some("commit") => assert_eq!(result, Err(CommandGatewayError::Conflict)),
-                _ if empty => assert_eq!(result, Ok(Default::default())),
                 _ => assert_eq!(result, Err(CommandGatewayError::Domain(Rejected))),
             }
             assert_eq!(*calls.lock().unwrap(), expected);

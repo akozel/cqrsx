@@ -47,11 +47,11 @@ use cqrsx::cqrs::{
     command::{
         CommandExecutor,
         causation::Causation,
+        decide::Decide,
         planner::{Decision, TaskPlanError, TaskPlanner},
         wakeup::CommitWakeup,
     },
     event::EventEnvelope,
-    event_sink::EventSink,
     projection::{
         View, ViewProjection,
         processor::{ProjectionProcessor, config::ProcessorConfig},
@@ -67,7 +67,7 @@ use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-// The aggregate. Business rules live in `handle`, state changes in `apply`.
+// The aggregate. Business rules live in the command's `decide`, state changes in `apply`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Ledger {
     tickets: u32,
@@ -97,7 +97,7 @@ struct TicketLimit {
     limit: u32,
 }
 
-/// What command handling needs from the application; here, the ticket limit.
+/// What the rules need from the application; here, the ticket limit.
 #[derive(Clone)]
 struct Rules {
     limit: u32,
@@ -108,20 +108,22 @@ impl Aggregate for Ledger {
     type Command = LedgerCommand;
     type Event = LedgerEvent;
     type Error = TicketLimit;
-    type Services = Rules;
-
-    async fn handle(&mut self, command: LedgerCommand, rules: &Rules, sink: &EventSink<Self>) -> Result<(), TicketLimit> {
-        let LedgerCommand::RecordTicket { seat } = command;
-        if self.tickets >= rules.limit {
-            return Err(TicketLimit { limit: rules.limit });
-        }
-        sink.write(LedgerEvent::TicketRecorded(TicketRecorded { seat }), self).await;
-        Ok(())
-    }
+    type Rules = Rules;
 
     fn apply(&mut self, event: LedgerEvent) {
         let LedgerEvent::TicketRecorded(_) = event;
         self.tickets += 1;
+    }
+}
+
+// A command decides on the committed state: one event or a rejection.
+impl Decide<Ledger> for LedgerCommand {
+    fn decide(self, ledger: &Ledger, rules: &Rules) -> Result<LedgerEvent, TicketLimit> {
+        let LedgerCommand::RecordTicket { seat } = self;
+        if ledger.tickets >= rules.limit {
+            return Err(TicketLimit { limit: rules.limit });
+        }
+        Ok(LedgerEvent::TicketRecorded(TicketRecorded { seat }))
     }
 }
 
@@ -430,7 +432,7 @@ concurrency: a larger buffer makes claims bigger but needs a lease for one more 
 
 | Tool | For |
 |---|---|
-| `cqrs::testing::TestFramework` | An aggregate's rules: `with(services).given(events).when(command).then_expect_events(..)` or `then_expect_error_message(..)` |
+| `cqrs::testing::TestFramework` | An aggregate's rules: `with(rules).given(events).when(command).then_expect_event(..)` or `then_expect_error_message(..)` |
 | `cqrs::testing::command::TestCommandExecutor` | A use case: the production command path, with locks, retry, the task planner and a commit wake-up, over `MemStore` or (`over_journal`) over a `MemEventRepository` that projection processors read; `take_published_tasks()` shows what the committed calls published |
 | `cqrs::testing::mem_event_repository::MemEventRepository::outbox` | The tasks published with the events of an aggregate type, each with the sequence of its event, by the rules of the PostgreSQL outbox |
 | `cqrs::command::planner::Decision` | A task planner on its own: build the decision by hand and call `plan` |

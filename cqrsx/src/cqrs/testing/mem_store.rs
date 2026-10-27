@@ -28,7 +28,7 @@ use std::{
 /// # use cqrsx::cqrs::event::EventEnvelope;
 /// # use cqrsx::cqrs::event_handler::EventHandler;
 /// # use cqrsx::cqrs::projection::View;
-/// # use cqrsx::cqrs::event_sink::EventSink;
+/// # use cqrsx::cqrs::command::decide::Decide;
 /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
 /// # use cqrsx::cqrs::store::PersistenceError;
 /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -65,24 +65,18 @@ use std::{
 /// #     type Command = MyCommands;
 /// #     type Event = MyEvents;
 /// #     type Error = MyUserError;
-/// #     type Services = MyService;
+/// #     type Rules = MyService;
 /// #
-/// #     async fn handle(
-/// #         &mut self,
-/// #         command: Self::Command,
-/// #         _service: &Self::Services,
-/// #         sink: &EventSink<Self>,
-/// #     ) -> Result<(), Self::Error> {
-/// #         match command {
-/// #             MyCommands::DoSomething => {
-/// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-/// #                 Ok(())
-/// #             }
+/// #     fn apply(&mut self, _event: Self::Event) {}
+/// # }
+/// #
+/// # impl Decide<MyAggregate> for MyCommands {
+/// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+/// #         match self {
+/// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
 /// #             MyCommands::BadCommand => Err("the expected error message".into()),
 /// #         }
 /// #     }
-/// #
-/// #     fn apply(&mut self, _event: Self::Event) {}
 /// # }
 /// #
 /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -136,7 +130,7 @@ impl<A: Aggregate> MemStore<A> {
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -173,24 +167,18 @@ impl<A: Aggregate> MemStore<A> {
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -353,7 +341,7 @@ where
 mod tests {
     // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
     // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-    use crate::cqrs::{aggregate::Aggregate, event::DomainEvent, event_sink::EventSink};
+    use crate::cqrs::{aggregate::Aggregate, command::decide::Decide, event::DomainEvent};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -381,11 +369,7 @@ mod tests {
         type Command = ();
         type Event = TestEvent;
         type Error = TestError;
-        type Services = TestService;
-
-        async fn handle(&mut self, _: Self::Command, _: &Self::Services, _: &EventSink<Self>) -> Result<(), Self::Error> {
-            Ok(())
-        }
+        type Rules = TestService;
 
         fn apply(&mut self, event: Self::Event) {
             match event {
@@ -399,6 +383,12 @@ mod tests {
                     self.description = e.description;
                 }
             }
+        }
+    }
+
+    impl Decide<TestAggregate> for () {
+        fn decide(self, _: &TestAggregate, _: &TestService) -> Result<TestEvent, TestError> {
+            Ok(TestEvent::Created(Created { id: String::new() }))
         }
     }
 
@@ -449,7 +439,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_sequence_overflow_is_atomic_and_last_sequence_is_supported() {
-        use crate::cqrs::event_sink::tests::{Delta, Ledger};
+        use crate::cqrs::aggregate::tests::{Delta, Ledger};
         let store = MemStore::<Ledger>::default();
         for (sequence, count) in [(usize::MAX, 1), (usize::MAX - 1, 2)] {
             let context = MemStoreAggregateContext {
@@ -536,7 +526,7 @@ mod tests {
 #[cfg(test)]
 mod legacy_api_tests {
     use super::*;
-    use crate::cqrs::event_sink::tests::*;
+    use crate::cqrs::aggregate::tests::*;
     #[tokio::test]
     #[allow(deprecated)]
     async fn legacy_event_handle_and_clones_observe_the_same_envelopes() {
@@ -566,7 +556,7 @@ mod legacy_api_tests {
 
     #[tokio::test]
     async fn tasks_commit_only_with_an_event() {
-        use crate::cqrs::event_sink::tests::{Delta, Ledger};
+        use crate::cqrs::aggregate::tests::{Delta, Ledger};
         let store = MemStore::<Ledger>::default();
         let task = NewTask::from_payload(
             crate::task::format::TaskFormat::new("notify", 1).unwrap(),

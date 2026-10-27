@@ -7,11 +7,11 @@ pub struct AggregateResultValidator<A>
 where
     A: Aggregate,
 {
-    result: Result<Vec<A::Event>, A::Error>,
+    result: Result<A::Event, A::Error>,
 }
 
 impl<A: Aggregate> AggregateResultValidator<A> {
-    /// Verifies that the expected events have been produced by the command.
+    /// Verifies that the command decided the expected event.
     ///
     /// ```
     /// # mod example {
@@ -24,7 +24,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -61,24 +61,18 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -105,14 +99,14 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     ///     .given_no_previous_events()
     ///     .when(MyCommands::DoSomething);
     ///
-    /// validator.then_expect_events(vec![MyEvents::SomethingWasDone]);
+    /// validator.then_expect_event(MyEvents::SomethingWasDone);
     /// # }
     /// ```
-    pub fn then_expect_events(self, expected_events: Vec<A::Event>) {
-        let events = self.result.unwrap_or_else(|err| {
+    pub fn then_expect_event(self, expected_event: A::Event) {
+        let event = self.result.unwrap_or_else(|err| {
             panic!("expected success, received aggregate error: '{err}'");
         });
-        assert_eq!(events, expected_events);
+        assert_eq!(event, expected_event);
     }
 
     /// Verifies that the result is a `UserError` and returns the internal error payload for
@@ -129,7 +123,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -166,24 +160,18 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -213,8 +201,8 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// ```
     pub fn then_expect_error_message(self, error_message: &str) {
         match self.result {
-            Ok(events) => {
-                panic!("expected error, received events: '{events:?}'");
+            Ok(event) => {
+                panic!("expected error, received event: '{event:?}'");
             }
             Err(err) => assert_eq!(err.to_string(), error_message.to_string()),
         }
@@ -233,7 +221,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -270,24 +258,18 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -317,11 +299,11 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// let expected = MyUserError("the expected error message".to_string());
     /// assert_eq!(expected,validator.inspect_result().unwrap_err());
     /// ```
-    pub fn inspect_result(self) -> Result<Vec<A::Event>, A::Error> {
+    pub fn inspect_result(self) -> Result<A::Event, A::Error> {
         self.result
     }
 
-    pub(crate) fn new(result: Result<Vec<A::Event>, A::Error>) -> Self {
+    pub(crate) fn new(result: Result<A::Event, A::Error>) -> Self {
         Self { result }
     }
 }
@@ -345,7 +327,7 @@ where
     /// # use cqrsx::cqrs::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::event_sink::EventSink;
+    /// # use cqrsx::cqrs::command::decide::Decide;
     /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
     /// # use cqrsx::cqrs::store::PersistenceError;
     /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
@@ -382,24 +364,18 @@ where
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
     /// #     type Error = MyUserError;
-    /// #     type Services = MyService;
+    /// #     type Rules = MyService;
     /// #
-    /// #     async fn handle(
-    /// #         &mut self,
-    /// #         command: Self::Command,
-    /// #         _service: &Self::Services,
-    /// #         sink: &EventSink<Self>,
-    /// #     ) -> Result<(), Self::Error> {
-    /// #         match command {
-    /// #             MyCommands::DoSomething => {
-    /// #                 sink.write(MyEvents::SomethingWasDone, self).await;
-    /// #                 Ok(())
-    /// #             }
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
     /// #             MyCommands::BadCommand => Err("the expected error message".into()),
     /// #         }
     /// #     }
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
     /// # }
     /// #
     /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
@@ -431,8 +407,8 @@ where
     /// ```
     pub fn then_expect_error(self, expected_error: A::Error) {
         match self.result {
-            Ok(events) => {
-                panic!("expected error, received events: '{events:?}'");
+            Ok(event) => {
+                panic!("expected error, received event: '{event:?}'");
             }
             Err(err) => {
                 assert_eq!(err, expected_error);
@@ -444,12 +420,12 @@ where
 #[cfg(test)]
 mod contract_tests {
     use super::*;
-    use crate::cqrs::event_sink::tests::*;
+    use crate::cqrs::{aggregate::tests::*, command::decide::Decide};
 
     #[test]
-    #[should_panic(expected = "expected error, received events")]
+    #[should_panic(expected = "expected error, received event")]
     fn typed_error_validator_rejects_success() {
-        AggregateResultValidator::<Ledger>::new(Ok(vec![])).then_expect_error(Rejected);
+        AggregateResultValidator::<Ledger>::new(Ok(Delta(0))).then_expect_error(Rejected);
     }
     /// An aggregate whose errors carry a message, so two errors can differ.
     #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -464,11 +440,14 @@ mod contract_tests {
         type Command = ();
         type Event = Delta;
         type Error = Message;
-        type Services = ();
-        async fn handle(&mut self, _: (), _: &(), _: &crate::cqrs::event_sink::EventSink<Self>) -> Result<(), Message> {
-            Ok(())
-        }
+        type Rules = ();
         fn apply(&mut self, _: Delta) {}
+    }
+
+    impl Decide<Messaged> for () {
+        fn decide(self, _: &Messaged, _: &()) -> Result<Delta, Message> {
+            Ok(Delta(0))
+        }
     }
 
     #[test]
@@ -479,7 +458,7 @@ mod contract_tests {
     #[test]
     #[should_panic(expected = "assertion `left == right` failed")]
     fn event_validator_checks_payload_not_just_count() {
-        AggregateResultValidator::<Ledger>::new(Ok(vec![Delta(2)])).then_expect_events(vec![Delta(1)]);
+        AggregateResultValidator::<Ledger>::new(Ok(Delta(2))).then_expect_event(Delta(1));
     }
     #[test]
     #[should_panic(expected = "assertion `left == right` failed")]
@@ -491,7 +470,7 @@ mod contract_tests {
 #[cfg(test)]
 mod inspection_tests {
     use super::*;
-    use crate::cqrs::event_sink::tests::{Ledger, Rejected};
+    use crate::cqrs::aggregate::tests::{Ledger, Rejected};
     #[test]
     fn constructor_retains_the_typed_error() {
         assert_eq!(

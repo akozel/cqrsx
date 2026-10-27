@@ -22,7 +22,7 @@
 //!
 //! ```
 //! # mod example {
-//! # use cqrsx::cqrs::{aggregate::Aggregate, event::{DomainEvent, EventEnvelope}, event_sink::EventSink, projection::View};
+//! # use cqrsx::cqrs::{aggregate::Aggregate, command::decide::Decide, event::{DomainEvent, EventEnvelope}, projection::View};
 //! # use serde::{Deserialize, Serialize};
 //! # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 //! # pub struct Counted;
@@ -40,9 +40,11 @@
 //! #     type Command = ();
 //! #     type Event = Counted;
 //! #     type Error = Never;
-//! #     type Services = ();
-//! #     async fn handle(&mut self, _: (), _: &(), _: &EventSink<Self>) -> Result<(), Never> { Ok(()) }
+//! #     type Rules = ();
 //! #     fn apply(&mut self, _: Counted) {}
+//! # }
+//! # impl Decide<Counter> for () {
+//! #     fn decide(self, _: &Counter, _: &()) -> Result<Counted, Never> { Ok(Counted) }
 //! # }
 //! # #[derive(Debug, Default, Serialize, Deserialize)]
 //! # pub struct Total { pub count: usize }

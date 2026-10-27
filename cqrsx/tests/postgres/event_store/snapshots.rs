@@ -41,7 +41,7 @@ async fn snapshot_watermark_retains_tail_across_boundaries() {
 }
 
 #[tokio::test]
-async fn snapshot_framework_batches_restore_the_full_history() {
+async fn snapshot_framework_commands_restore_the_full_history() {
     snapshot_histories(true).await;
 }
 
@@ -58,52 +58,63 @@ async fn snapshot_histories(through_framework: bool) {
                 let mut watermark = 0;
                 let mut version = 0;
                 for size in [count, 1, interval + 2] {
-                    let before = expected.len();
-                    let changes: Vec<_> = (before + 1..=before + size).map(|i| i as i32).collect();
-                    let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(
-                        PostgresEventRepository::new(db.pool.clone()),
-                        interval,
-                    );
-                    if through_framework {
-                        CqrsFramework::new(store, ()).execute(&id, changes.clone()).await.unwrap();
+                    let first = expected.len();
+                    let changes: Vec<_> = (first + 1..=first + size).map(|i| i as i32).collect();
+                    // Through the framework every change is a command of its own and a commit of its own;
+                    // directly, the changes are one commit.
+                    let commits: Vec<Vec<i32>> = if through_framework {
+                        changes.iter().map(|change| vec![*change]).collect()
                     } else {
-                        let context = store.load_aggregate(&id).await.unwrap();
-                        store
-                            .commit(changes.iter().map(|v| Delta(*v)).collect(), context, HashMap::new(), &[])
-                            .await
-                            .unwrap();
-                    }
-                    expected.extend(changes);
-                    if let Some(boundary) = (before + 1..=expected.len()).rfind(|n| n % interval == 0) {
-                        watermark = boundary;
-                        version += 1;
-                    }
-                    let snapshot = repo.get_snapshot::<Ledger>(&id).await.unwrap();
-                    if watermark == 0 {
-                        assert_eq!(snapshot, None);
-                    } else {
-                        assert_eq!(
-                            snapshot,
-                            Some(SerializedSnapshot {
-                                aggregate_id: id.clone(),
-                                aggregate: json!(&expected[..watermark]),
-                                last_sequence: watermark,
-                                snapshot_version: version
-                            })
+                        vec![changes]
+                    };
+                    for changes in commits {
+                        let before = expected.len();
+                        let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(
+                            PostgresEventRepository::new(db.pool.clone()),
+                            interval,
                         );
+                        if through_framework {
+                            CqrsFramework::new(store, ()).execute(&id, changes[0]).await.unwrap();
+                        } else {
+                            let context = store.load_aggregate(&id).await.unwrap();
+                            store
+                                .commit(changes.iter().map(|v| Delta(*v)).collect(), context, HashMap::new(), &[])
+                                .await
+                                .unwrap();
+                        }
+                        expected.extend(changes);
+                        if let Some(boundary) = (before + 1..=expected.len()).rfind(|n| n % interval == 0) {
+                            watermark = boundary;
+                            version += 1;
+                        }
+                        let snapshot = repo.get_snapshot::<Ledger>(&id).await.unwrap();
+                        if watermark == 0 {
+                            assert_eq!(snapshot, None);
+                        } else {
+                            assert_eq!(
+                                snapshot,
+                                Some(SerializedSnapshot {
+                                    aggregate_id: id.clone(),
+                                    aggregate: json!(&expected[..watermark]),
+                                    last_sequence: watermark,
+                                    snapshot_version: version
+                                })
+                            );
+                        }
+                        let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(
+                            PostgresEventRepository::new(db.pool.clone()),
+                            interval,
+                        );
+                        let restored = store.load_aggregate(&id).await.unwrap();
+                        let replay =
+                            PersistedEventStore::<_, Ledger>::new_event_store(PostgresEventRepository::new(db.pool.clone()))
+                                .load_aggregate(&id)
+                                .await
+                                .unwrap();
+                        assert_eq!(restored.aggregate.0, expected);
+                        assert_eq!(replay.aggregate.0, expected);
+                        assert_eq!(restored.current_sequence, expected.len());
                     }
-                    let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(
-                        PostgresEventRepository::new(db.pool.clone()),
-                        interval,
-                    );
-                    let restored = store.load_aggregate(&id).await.unwrap();
-                    let replay = PersistedEventStore::<_, Ledger>::new_event_store(PostgresEventRepository::new(db.pool.clone()))
-                        .load_aggregate(&id)
-                        .await
-                        .unwrap();
-                    assert_eq!(restored.aggregate.0, expected);
-                    assert_eq!(replay.aggregate.0, expected);
-                    assert_eq!(restored.current_sequence, expected.len());
                 }
             }
         }

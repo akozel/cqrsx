@@ -3,8 +3,8 @@ use super::support::Database;
 use cqrsx::cqrs::{
     CqrsFramework,
     aggregate::Aggregate,
+    command::decide::Decide,
     event::DomainEvent,
-    event_sink::EventSink,
     store::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
 };
 use cqrsx::postgres::event_repository::PostgresEventRepository;
@@ -37,14 +37,15 @@ impl Aggregate for State {
     type Command = i64;
     type Event = Event;
     type Error = std::convert::Infallible;
-    type Services = ();
-    async fn handle(&mut self, value: i64, _: &(), sink: &EventSink<Self>) -> Result<(), Self::Error> {
-        sink.write(Event::ValueSet { value }, self).await;
-        Ok(())
-    }
+    type Rules = ();
     fn apply(&mut self, event: Event) {
         let Event::ValueSet { value } = event;
         self.value = value;
+    }
+}
+impl Decide<State> for i64 {
+    fn decide(self, _: &State, _: &()) -> Result<Event, std::convert::Infallible> {
+        Ok(Event::ValueSet { value: self })
     }
 }
 

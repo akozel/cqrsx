@@ -3,7 +3,7 @@
 use super::command_config;
 use crate::{
     bootstrap::{ConcertApp, WiringError},
-    concert::{application::reactions, domain::ConcertServices},
+    concert::{application::reactions, domain::ConcertRules},
     process::Process,
     shared::application::{activity::ActivityHub, command_service::CommandService},
 };
@@ -15,7 +15,7 @@ pub fn wire(process: &Process, wakeup: &CommitWakeup, activity: &Arc<ActivityHub
     let executor = PostgresCommandExecutor::new(
         process.pool.clone(),
         command_config(config)?,
-        ConcertServices {
+        ConcertRules {
             ticket_limit: config.ticket_limit,
         },
     )

@@ -8,13 +8,13 @@ use cqrsx::{
         command::{
             CommandExecutor, CommandGatewayError,
             causation::Causation,
+            decide::Decide,
             executor::CommandExecutorCore,
             locks::LockLimits,
             planner::{Decision, TaskPlanError, TaskPlanner},
             retry::AggregateConflictRetryPolicy,
         },
         event::DomainEvent,
-        event_sink::EventSink,
         store::{
             PersistenceError,
             feed::{FeedEntry, Position},
@@ -78,18 +78,20 @@ impl Aggregate for Show {
     type Command = Book;
     type Event = Booked;
     type Error = SeatTaken;
-    type Services = ();
-
-    async fn handle(&mut self, Book { seat, fan }: Book, _: &(), sink: &EventSink<Self>) -> Result<(), SeatTaken> {
-        if self.seats.contains_key(&seat) {
-            return Err(SeatTaken);
-        }
-        sink.write(Booked { seat, fan }, self).await;
-        Ok(())
-    }
+    type Rules = ();
 
     fn apply(&mut self, Booked { seat, fan }: Booked) {
         self.seats.insert(seat, fan);
+    }
+}
+
+impl Decide<Show> for Book {
+    fn decide(self, show: &Show, _: &()) -> Result<Booked, SeatTaken> {
+        let Book { seat, fan } = self;
+        if show.seats.contains_key(&seat) {
+            return Err(SeatTaken);
+        }
+        Ok(Booked { seat, fan })
     }
 }
 
@@ -122,18 +124,19 @@ impl Aggregate for Wallet {
     type Command = String;
     type Event = Recorded;
     type Error = AlreadyRecorded;
-    type Services = ();
-
-    async fn handle(&mut self, ticket: String, _: &(), sink: &EventSink<Self>) -> Result<(), AlreadyRecorded> {
-        if self.tickets.contains(&ticket) {
-            return Err(AlreadyRecorded);
-        }
-        sink.write(Recorded { ticket }, self).await;
-        Ok(())
-    }
+    type Rules = ();
 
     fn apply(&mut self, Recorded { ticket }: Recorded) {
         self.tickets.push(ticket);
+    }
+}
+
+impl Decide<Wallet> for String {
+    fn decide(self, wallet: &Wallet, _: &()) -> Result<Recorded, AlreadyRecorded> {
+        if wallet.tickets.contains(&self) {
+            return Err(AlreadyRecorded);
+        }
+        Ok(Recorded { ticket: self })
     }
 }
 
@@ -409,7 +412,7 @@ proptest! {
     #![proptest_config(ProptestConfig { cases: 64, ..ProptestConfig::default() })]
     #[test]
     fn committed_tasks_are_the_plan_of_the_attempt_that_committed(
-        commands in proptest::collection::vec(proptest::collection::vec(1..20_i32, 1..3), 1..8),
+        commands in proptest::collection::vec(1..20_i32, 1..8),
         schedule in proptest::collection::vec(any::<bool>(), 0..24),
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -417,8 +420,8 @@ proptest! {
             let journal = MemEventRepository::default();
             let executor = ledger_executor(Interfering::new(journal.clone(), schedule), 3);
             let mut published = Vec::new();
-            for values in commands {
-                match executor.execute("account", Command::Adjust(values)).await {
+            for value in commands {
+                match executor.execute("account", Command::Adjust(value)).await {
                     Ok(report) => {
                         let last = report.events.last().expect("an accepted adjustment commits events");
                         for task in &report.tasks {
@@ -462,7 +465,7 @@ async fn two_executors_on_one_journal_replan_the_loser_on_the_winners_state() {
     ];
     let mut commands = tokio::task::JoinSet::new();
     for (node, value) in nodes.iter().cloned().zip([5, 7]) {
-        commands.spawn(async move { (value, node.execute("account", Command::Adjust(vec![value])).await) });
+        commands.spawn(async move { (value, node.execute("account", Command::Adjust(value)).await) });
     }
     let mut reports = HashMap::new();
     while let Some(result) = commands.join_next().await {
@@ -493,7 +496,7 @@ async fn a_conflict_that_makes_the_decision_impossible_publishes_nothing() {
     };
     let executor = ledger_executor(interfering, 3);
     assert_eq!(
-        executor.execute("account", Command::Adjust(vec![10])).await,
+        executor.execute("account", Command::Adjust(10)).await,
         Err(CommandGatewayError::Domain(Rejected))
     );
     assert!(journal.outbox::<Ledger>().is_empty());

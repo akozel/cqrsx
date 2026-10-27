@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 8): `then_expect_event(event)` вместо `then_expect_events(vec![..])` |
+| Статус | сделано 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 8): `then_expect_event(event)` вместо `then_expect_events(vec![..])` |
 | Ценность | высокая: правила команды — чистая синхронная функция в файле команды; одна команда — одно событие на уровне типов |
 | Цена | высокая: контракт `Aggregate` меняется, 62 реализации в cqrsx (31 файл) и две в демо переводятся, `TestFramework` упрощается |
 | cqrsx | `src/cqrs/aggregate.rs`, новый `src/cqrs/command/decide.rs`, `src/cqrs/event_sink.rs` (удаляется), `src/cqrs.rs`, `src/cqrs/command/{executor,planner}.rs` (`Services` → `Rules`), `src/cqrs/testing.rs`, `testing/{executor,validator,command}.rs`, `src/postgres/command.rs`, `cqrsx-macros` (`Command`, `Commands`), все doctest'ы и `README.md`, `doc/components.md`, `tests/**` (31 файл с агрегатами) |
@@ -35,10 +35,12 @@
   больше одного, тип `Uuid`) и полей `#[label]` (значение через `Display`); `#[derive(Commands)]` на enum newtype-
   вариантов — `impl<A> Decide<A> for Enum where каждый вариант: Decide<A>` (диспетчер-`match`) и `CommandInfo`
   делегированием. Derive не знает тип агрегата: обобщённый `impl` с `where`.
-- `CqrsFramework::execute_with_metadata`: загрузка → `let event = command.decide(committed, &rules)?` → рабочая копия
-  `after = committed.clone(); after.apply(event.clone())` (одна копия события на команду, тема 1 списка пересмотра) →
-  `events = vec![event]` → планирование → коммит. С планировщиком команда клонируется один раз, как сейчас
-  (`Planning::clone_command`): `decide` потребляет команду, а `Decision` её показывает.
+- `CqrsFramework::execute_with_metadata`: загрузка → `let event = command.decide(committed, &rules)?` → при
+  планировщике рабочая копия `after = committed.clone(); after.apply(event.clone())` и планирование (одна копия
+  состояния и одна копия события на команду, тема 1 списка пересмотра; её единственный читатель — `Decision::after`,
+  без планировщика копии нет — решение 2026-10-27, отступление В-1 плана) → коммит `vec![event]`. С планировщиком
+  команда клонируется один раз, как сейчас (`Planning::clone_command`): `decide` потребляет команду, а `Decision` её
+  показывает.
 - `Services` → `Rules` везде: `CqrsFramework::new(store, rules)`, `PostgresCommandExecutor::new(pool, config, rules)`,
   `TestCommandExecutor::new(store, rules)`, `TestFramework::with(rules)`.
 - `TestFramework` — синхронный: `.given(events).when(command)` зовёт `decide` на свёртке; `then_expect_event(event)`,
@@ -117,11 +119,74 @@ impl Decide<Concert> for CancelBooking {
   HTTP-обработчик — тест `booking_and_cancellation_ids_are_the_command_id`).
 - Стенд не нужен: число операторов и загрузок не меняется (одна копия состояния, как сейчас).
 
+## Инвентарь многособытийных команд
+
+Составлен 2026-10-27, при выполнении задачи; всё переписано. Пустой назван исход «принято без событий». Обе формы —
+и многособытийная, и пустая — с `decide` невыразимы. Остальные 62 реализации cqrsx (с doctest'ами), README и обе
+реализации демо решали одним событием или отказом; их перевод механический. Тестовые фикстуры, которые никогда не
+исполняются (`()` → `Ok(())`), решают нейтральное событие. Подробно, с утверждениями по каждому тесту, — в
+`work/05-plan.md`, §3, и `work/05-report.md`.
+
+| # | Где | Что было | Как переписано |
+|---|---|---|---|
+| П-1 | `cqrs.rs` (юнит-тесты), `Echo` | `Probe(0)` принимался без событий | `0` больше не особый; случай «без событий» ушёл из `a_rejection_plans_nothing` (было `no_events_or_a_rejection_plans_nothing`) |
+| П-2 | `tests/cqrs/support/ledger.rs`, `Ledger` | `Adjust(Vec<i32>)` — 0…n событий, отказ на префиксе после частичной записи; `RejectAfterWrite` — запись, затем отказ | `Adjust(i32)` — одно событие или отказ; `RejectAfterWrite` удалён. Тесты: `execution.rs` (2), `command.rs`, `testing.rs` (асинхронный — удалён с `when_async`), `history.rs` (2 свойства: через фреймворк — команда на значение; ветка прямого `commit` — пакетом), `planning.rs` (3), `projection/support.rs` |
+| П-3 | `tests/cqrs/projection/live.rs` | `Adjust([1, 2, 3])` и `Adjust([1, 2])` через исполнитель | три события одним `commit` хранилища (`Harness::commit_together`) — `a_commit_with_several_events_is_one_transaction_and_one_job`; две команды с теми же метаданными |
+| П-4 | `tests/postgres/planning.rs`, `Shelf` | `ShelfCommand::Nothing` — без событий | вариант удалён; «неразборчивая причинность пропускает решение без задач» — на настоящем решении с планировщиком без задач (`refused_plans_write_nothing_and_a_plan_without_tasks_needs_no_causation`) |
+| П-5 | `tests/postgres/support/ledger.rs`, `Ledger` | `Vec<i32>`, n событий; исполнялись только одно-значные | `Command = i32` |
+| П-6 | `tests/postgres/event_store/snapshots.rs` | `snapshot_histories(true)`: пакет — одна команда | через фреймворк — команда на значение, модель после каждого коммита (`snapshot_framework_commands_restore_the_full_history`); ветка `commit` — пакетом |
+| П-7 | `Customer`: `tests/cqrs/support/customer.rs`, `tests/postgres/support/repository.rs`, doctest'ы `event.rs`, `testing.rs` | `UpdateEmail` при имени — `EmailUpdated` и `CustomerDataPopulated` | решает только `EmailUpdated`, вариант события остаётся; `test_add_email_after_the_name_is_one_event` (было `test_add_email_name_populted`) |
+| П-8 | `tests/mongo/support.rs`, `Ledger` | `Vec<i32>`; исполнялись только одно-значные | `Command = i32` |
+
+`tests/cqrs/support/scenario.rs`, названный в «Этапах», решал ровно одним событием или отказом — переписывать нечего.
+Doctest'ы `aggregate.rs` (`Customer`) тоже однособытийные.
+
 ## Критерии приёмки
 
-- [ ] `Aggregate` без `handle`; `EventSink` удалён; `Decide<A>` и `CommandInfo` в cqrsx; `Command`/`Commands` в
+- [x] `Aggregate` без `handle`; `EventSink` удалён; `Decide<A>` и `CommandInfo` в cqrsx; `Command`/`Commands` в
       `cqrsx-macros` с тестами и `compile_fail`.
-- [ ] 62 реализации cqrsx и демо переведены; инвентарь многособытийных команд в тикете, каждая переписана.
-- [ ] `TestFramework` синхронный; `AggregateTestExecutor` удалён.
-- [ ] Демо: `impl Decide` в файлах команд, `#[derive(Commands)]`, `ConcertRules`; D-02-тесты удалены.
-- [ ] `components.md`, README cqrsx (компилируется), guarantees.md (переименованные тесты).
+- [x] 62 реализации cqrsx и демо переведены; инвентарь многособытийных команд в тикете, каждая переписана.
+- [x] `TestFramework` синхронный; `AggregateTestExecutor` удалён.
+- [x] Демо: `impl Decide` в файлах команд, `#[derive(Commands)]`, `ConcertRules`; D-02-тесты удалены.
+- [x] `components.md`, README cqrsx (компилируется), guarantees.md (переименованные тесты).
+
+## Результат
+
+Сделано 2026-10-27.
+
+- **Агрегат — состояние и `apply`.**
+  - `type Command: Decide<Self> + Send`, `type Rules` (было `Services`);
+  - `handle`, `EventSink` (`event_sink.rs`) и асинхронный путь решения удалены.
+- **`cqrs::command::decide::Decide<A>`**: `decide(self, &state, &rules) -> Result<Event, Error>` — чисто, синхронно,
+  одно событие или отказ; D-02 — правило типов. `#[diagnostic::on_unimplemented]` объясняет вариант без решения.
+- **`cqrs::command::CommandInfo`**: `name()`, `command_id()`, `labels()`, у двух последних — умолчания. Ядро его не
+  читает; он нужен ленте демо, а в 08 и 11 — наблюдателю и сборке.
+- **`cqrsx-macros`**: `#[derive(Command)]` (`#[command_id]` — `Uuid`, не больше одного; `#[label]` — `Display` в
+  порядке полей) и `#[derive(Commands)]` (обобщённый `impl<A> Decide<A>` и `CommandInfo` делегированием, с
+  границами по вариантам).
+  - 7 тестов развёртки (100 %), 2 теста скомпилированного кода в `tests/derives.rs`.
+  - 4 `compile_fail`: struct-вариант, вариант без `Decide<A>`, два `#[command_id]`, `#[command_id]` не `Uuid`.
+- **`CqrsFramework`** решает на зафиксированном состоянии. Копию с применённым событием (`Decision::after`) строит
+  только при планировщике: одна копия состояния и одна копия события, как до. Клон команды для решения прежний; в
+  коммите одно событие. `CommandExecutorCore` — только границы `where`.
+- **`TestFramework`** синхронный: `with(rules).given(..).and(..).when(..)`, `then_expect_event`, `then_expect_error`,
+  `then_expect_error_message`, `inspect_result`. `AggregateTestExecutor`, `when_async`, `then_expect_events`
+  удалены.
+- **62 реализации cqrsx** (doctest'ы, юнит- и интеграционные тесты) и README переведены. Многособытийные и пустые
+  команды тестов переписаны (инвентарь выше): многособытийные записи идут через `commit`, утверждения моделей и
+  процессоров дословны.
+- **Демо:**
+  - `impl Decide<Concert|Fan>` в файлах команд, `#[derive(Command)]` с `#[label] fan_id` и `#[command_id]`
+    `booking_id` / `cancellation_id`, `#[derive(Commands)]`;
+  - `ConcertRules`; подписи ленты из `CommandInfo` — по ключу `fan_id`;
+  - ручные `name()`, `fan_id()`, `From` удалены; сценарии кассы строят `ConcertCommand::X(command)`;
+  - тесты D-02 удалены;
+  - два теста подписей ленты написаны и прошли до замены;
+  - allowlist домена в `tests/architecture.rs`.
+- **Документы:** `components.md` (+«Command decision», −«Event emission», схема, раскладка), быстрый старт README.
+- **Поведение не изменилось** (G-01, G-03…G-10, G-12, G-13, G-15, G-22, G-24, G-31, G-34, G-36):
+  - сверка утверждений (`work/05-tools/assertions.py`): 759 тестов дословно, 23 после механических правил API; 4
+    изменены, 13 переименованы, 6 ушли — все с причиной в отчёте;
+  - эталоны 02 и SQL не тронуты.
+- **Переименованные тесты** — 12, в guarantees.md.
+- **Проверки:** 666 тестов workspace, матрица фич; покрытие 97,79 % (workspace) и 97,69 % (`-p cqrsx`); демо — 153 + 14.

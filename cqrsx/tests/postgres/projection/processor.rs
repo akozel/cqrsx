@@ -195,7 +195,7 @@ async fn commit_all(pool: &PgPool, wakeup: &CommitWakeup, keys: &[&str], per_key
         let (executor, id) = (executor.clone(), (*id).to_owned());
         commands.spawn(async move {
             for value in 1..=per_key {
-                executor.execute(&id, vec![value as i32]).await.unwrap();
+                executor.execute(&id, value as i32).await.unwrap();
             }
         });
     }
@@ -250,7 +250,7 @@ async fn forty_parallel_commands_to_one_key_reach_the_view_in_commit_order() {
     let mut commands = JoinSet::new();
     for value in 1..=40 {
         let executor = executor.clone();
-        commands.spawn(async move { executor.execute("hot", vec![value]).await });
+        commands.spawn(async move { executor.execute("hot", value).await });
     }
     while let Some(result) = commands.join_next().await {
         assert!(result.unwrap().is_ok(), "the lock orders the commands: nothing conflicts");

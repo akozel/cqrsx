@@ -48,23 +48,24 @@ impl Aggregate for CommandAggregate {
     type Command = Command;
     type Event = CommandEvent;
     type Error = Rejected;
-    type Services = ();
-
-    async fn handle(&mut self, command: Command, _: &(), sink: &EventSink<Self>) -> Result<(), Rejected> {
-        match command {
-            Command::Record { value, expected_count } if self.values.len() == expected_count => {
-                let mut values = self.values.clone();
-                values.push(value);
-                sink.write(CommandEvent::Recorded { values }, self).await;
-                Ok(())
-            }
-            _ => Err(Rejected),
-        }
-    }
+    type Rules = ();
 
     fn apply(&mut self, event: CommandEvent) {
         let CommandEvent::Recorded { values } = event;
         self.values = values;
+    }
+}
+
+impl Decide<CommandAggregate> for Command {
+    fn decide(self, aggregate: &CommandAggregate, _: &()) -> Result<CommandEvent, Rejected> {
+        match self {
+            Command::Record { value, expected_count } if aggregate.values.len() == expected_count => {
+                let mut values = aggregate.values.clone();
+                values.push(value);
+                Ok(CommandEvent::Recorded { values })
+            }
+            _ => Err(Rejected),
+        }
     }
 }
 
@@ -360,7 +361,7 @@ async fn the_constructor_needs_no_connection_and_closed_pool_errors_remain_unava
     );
 }
 
-/// The cap lives in the services: a value is accepted only while the stream is shorter.
+/// The cap lives in the rules: a value is accepted only while the stream is shorter.
 #[derive(Clone)]
 struct Cap(usize);
 
@@ -374,17 +375,7 @@ impl Aggregate for CappedAggregate {
     type Command = String;
     type Event = CommandEvent;
     type Error = Rejected;
-    type Services = Cap;
-
-    async fn handle(&mut self, value: String, cap: &Cap, sink: &EventSink<Self>) -> Result<(), Rejected> {
-        if self.values.len() >= cap.0 {
-            return Err(Rejected);
-        }
-        let mut values = self.values.clone();
-        values.push(value);
-        sink.write(CommandEvent::Recorded { values }, self).await;
-        Ok(())
-    }
+    type Rules = Cap;
 
     fn apply(&mut self, event: CommandEvent) {
         let CommandEvent::Recorded { values } = event;
@@ -392,8 +383,19 @@ impl Aggregate for CappedAggregate {
     }
 }
 
+impl Decide<CappedAggregate> for String {
+    fn decide(self, aggregate: &CappedAggregate, cap: &Cap) -> Result<CommandEvent, Rejected> {
+        if aggregate.values.len() >= cap.0 {
+            return Err(Rejected);
+        }
+        let mut values = aggregate.values.clone();
+        values.push(self);
+        Ok(CommandEvent::Recorded { values })
+    }
+}
+
 #[tokio::test]
-async fn services_decide_and_the_metadata_is_stored_with_every_event() {
+async fn rules_decide_and_the_metadata_is_stored_with_every_event() {
     let db = Database::new().await;
     let executor = PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(2));
     let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
@@ -406,7 +408,7 @@ async fn services_decide_and_the_metadata_is_stored_with_every_event() {
     assert_eq!(
         CommandExecutor::execute(&executor, "capped", "third".into()).await,
         Err(CommandGatewayError::Domain(Rejected)),
-        "the cap from the services rejects the third value"
+        "the cap from the rules rejects the third value"
     );
     CommandExecutor::execute(&executor, "other", "first".into()).await.unwrap();
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
@@ -500,7 +502,7 @@ async fn two_executors_with_their_own_locks_meet_only_in_the_database() {
     db.close().await;
 }
 
-/// An aggregate whose services cannot be cloned: the executor owns them, it never clones them per command.
+/// An aggregate whose rules cannot be cloned: the executor owns them, it never clones them per command.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 struct Counted(Vec<String>);
 
@@ -525,16 +527,17 @@ impl Aggregate for Counted {
     type Command = String;
     type Event = Counted1;
     type Error = std::convert::Infallible;
-    type Services = Counter;
-
-    async fn handle(&mut self, value: String, counter: &Counter, sink: &EventSink<Self>) -> Result<(), Self::Error> {
-        counter.0.fetch_add(1, Ordering::SeqCst);
-        sink.write(Counted1(value), self).await;
-        Ok(())
-    }
+    type Rules = Counter;
 
     fn apply(&mut self, event: Counted1) {
         self.0.push(event.0);
+    }
+}
+
+impl Decide<Counted> for String {
+    fn decide(self, _: &Counted, counter: &Counter) -> Result<Counted1, std::convert::Infallible> {
+        counter.0.fetch_add(1, Ordering::SeqCst);
+        Ok(Counted1(self))
     }
 }
 
@@ -552,7 +555,7 @@ impl TaskPlanner<Counted> for CountedTasks {
 }
 
 #[tokio::test]
-async fn services_that_are_not_clone_serve_the_executor_which_commits_event_snapshot_and_task_at_once() {
+async fn rules_that_are_not_clone_serve_the_executor_which_commits_event_snapshot_and_task_at_once() {
     let db = Database::new().await;
     let decided = Arc::new(AtomicUsize::new(0));
     let executor = PostgresCommandExecutor::<Counted>::new(db.pool.clone(), config(1), Counter(decided.clone()))
@@ -658,7 +661,7 @@ mod contracts {
             cqrsx::cqrs::command::locks::LockLimits::default(),
         );
         assert!(matches!(
-            executor.execute("command", vec![2]).await,
+            executor.execute("command", 2).await,
             Err(CommandGatewayError::Unavailable)
         ));
         assert_eq!(loads.load(Ordering::SeqCst), 1);
@@ -698,7 +701,7 @@ mod contracts {
             );
             if mode == 2 {
                 let id = id.clone();
-                let task = tokio::spawn(async move { executor.execute(&id, vec![10]).await });
+                let task = tokio::spawn(async move { executor.execute(&id, 10).await });
                 tokio::time::timeout(Duration::from_secs(10), durable.notified())
                     .await
                     .unwrap();
@@ -711,7 +714,7 @@ mod contracts {
                         .is_cancelled()
                 );
             } else {
-                let result = executor.execute(&id, if mode == 0 { vec![-7] } else { vec![10] }).await;
+                let result = executor.execute(&id, if mode == 0 { -7 } else { 10 }).await;
                 if mode == 0 {
                     assert!(matches!(result, Err(CommandGatewayError::Domain(Rejected))));
                 } else {

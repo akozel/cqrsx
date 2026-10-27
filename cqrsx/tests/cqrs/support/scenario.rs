@@ -6,8 +6,8 @@ use serde::Deserialize;
 use serde::Serialize;
 
 use cqrsx::cqrs::aggregate::Aggregate;
+use cqrsx::cqrs::command::decide::Decide;
 use cqrsx::cqrs::event::DomainEvent;
-use cqrsx::cqrs::event_sink::EventSink;
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct TestAggregate {
@@ -33,52 +33,7 @@ impl Aggregate for TestAggregate {
     type Command = TestCommand;
     type Event = TestEvent;
     type Error = TestError;
-    type Services = TestService;
-
-    async fn handle(
-        &mut self,
-        command: Self::Command,
-        _service: &Self::Services,
-        sink: &EventSink<Self>,
-    ) -> Result<(), Self::Error> {
-        match &command {
-            TestCommand::CreateTest(command) => {
-                sink.write(
-                    TestEvent::Created(Created {
-                        id: command.id.to_string(),
-                    }),
-                    self,
-                )
-                .await;
-            }
-
-            TestCommand::ConfirmTest(command) => {
-                for test in &self.tests {
-                    if test == &command.test_name {
-                        return Err("test already performed".into());
-                    }
-                }
-                sink.write(
-                    TestEvent::Tested(Tested {
-                        test_name: command.test_name.to_string(),
-                    }),
-                    self,
-                )
-                .await;
-            }
-
-            TestCommand::DoSomethingElse(command) => {
-                sink.write(
-                    TestEvent::SomethingElse(SomethingElse {
-                        description: command.description.clone(),
-                    }),
-                    self,
-                )
-                .await;
-            }
-        };
-        Ok(())
-    }
+    type Rules = TestService;
 
     fn apply(&mut self, event: Self::Event) {
         match event {
@@ -91,6 +46,31 @@ impl Aggregate for TestAggregate {
             TestEvent::SomethingElse(e) => {
                 self.description = e.description;
             }
+        }
+    }
+}
+
+impl Decide<TestAggregate> for TestCommand {
+    fn decide(self, aggregate: &TestAggregate, _service: &TestService) -> Result<TestEvent, TestError> {
+        match &self {
+            TestCommand::CreateTest(command) => Ok(TestEvent::Created(Created {
+                id: command.id.to_string(),
+            })),
+
+            TestCommand::ConfirmTest(command) => {
+                for test in &aggregate.tests {
+                    if test == &command.test_name {
+                        return Err("test already performed".into());
+                    }
+                }
+                Ok(TestEvent::Tested(Tested {
+                    test_name: command.test_name.to_string(),
+                }))
+            }
+
+            TestCommand::DoSomethingElse(command) => Ok(TestEvent::SomethingElse(SomethingElse {
+                description: command.description.clone(),
+            })),
         }
     }
 }
