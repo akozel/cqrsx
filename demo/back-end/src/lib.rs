@@ -1,13 +1,13 @@
 //! Encore back-end library: one module per part of the box office, each a directory with its clean-architecture
 //! layers inside (`domain`, `application`, `presentation`) and its root file next to it:
 //!
-//! - [`concert`]: the box office, the `Concert` aggregate: its use cases, what follows each of its facts (the
+//! - [`concert`]: the box office, the `Concert` aggregate: its commands, what follows each of its facts (the
 //!   tasks of a fan's ledger), the concert halls and the time machine;
 //! - [`fan`]: a fan's ticket ledger, the `Fan` aggregate: the tasks it runs (the ledger's steps, the e-mails), the
 //!   fan wallets;
 //! - [`operations`]: no aggregate: health, settings, the activity log and the operations over every read model
 //!   (Encore!, status, verify);
-//! - [`shared`]: what several modules need: the ids and the venue, the ports and the command pipeline, the HTTP
+//! - [`shared`]: what several modules need: the ids and the venue, the ports and the metadata of a command, the HTTP
 //!   error shape, PostgreSQL, MongoDB and the HTTP client of the external mail service.
 //!
 //! [`process`] starts and stops the binary: logging, configuration, connections, the HTTP server and

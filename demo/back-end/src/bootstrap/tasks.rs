@@ -1,15 +1,18 @@
 //! The outbox tasks: the policy of every task type and its handler, one line per task type. A fresh dispatcher
 //! (fresh handlers) is built for every worker and every worker restart; the mailers share one HTTP client to the
 //! external mail service, since a connection pool is meant to be shared.
-use super::{FanApp, WiringError};
+use super::WiringError;
 use crate::{
     config::Config,
-    fan::application::{
-        chain::CHAIN_RETRY_AFTER,
-        issue_refund::{IssueRefundHandler, IssueRefundV1},
-        record_cancellation::{RecordCancellationHandler, RecordCancellationV1},
-        record_ticket::{RecordTicketHandler, RecordTicketV1},
-        send_e_ticket::{SendETicketHandler, SendETicketV1},
+    fan::{
+        application::{
+            chain::CHAIN_RETRY_AFTER,
+            issue_refund::{IssueRefundHandler, IssueRefundV1},
+            record_cancellation::{RecordCancellationHandler, RecordCancellationV1},
+            record_ticket::{RecordTicketHandler, RecordTicketV1},
+            send_e_ticket::{SendETicketHandler, SendETicketV1},
+        },
+        domain::Fan,
     },
     process::Process,
     shared::{
@@ -20,11 +23,14 @@ use crate::{
         infrastructure::http_mailer::{HttpMailer, MailClientSettings},
     },
 };
-use cqrsx::task::{
-    adapter::boxed::BoxedTaskAdapter,
-    dispatcher::TaskDispatcher,
-    policy::{Policies, PolicyError, Retry, TaskPolicy},
-    runtime::dispatcher_factory::TaskDispatcherFactory,
+use cqrsx::{
+    postgres::command::PostgresCommandExecutor,
+    task::{
+        adapter::boxed::BoxedTaskAdapter,
+        dispatcher::TaskDispatcher,
+        policy::{Policies, PolicyError, Retry, TaskPolicy},
+        runtime::dispatcher_factory::TaskDispatcherFactory,
+    },
 };
 use std::sync::Arc;
 
@@ -55,10 +61,10 @@ pub fn mail_settings(config: &Config) -> MailClientSettings {
     }
 }
 
-/// The chain steps between the two aggregates and the e-mails they end in.
+/// The chain steps between the two aggregates, on the ledgers' executor, and the e-mails they end in.
 pub fn dispatcher(
     process: &Process,
-    fans: Arc<FanApp>,
+    fans: Arc<PostgresCommandExecutor<Fan>>,
     activity: Arc<ActivityHub>,
 ) -> Result<TaskDispatcherFactory<BoxedTaskAdapter>, WiringError> {
     let mail = mail_settings(&process.config);

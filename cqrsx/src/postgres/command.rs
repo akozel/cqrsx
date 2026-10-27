@@ -3,15 +3,15 @@ use crate::{
         CommitReport, CqrsFramework,
         aggregate::Aggregate,
         command::{
-            CommandExecutor, CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits, planner::TaskPlanner,
-            retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup,
+            CommandExecutor, CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits, observer::CommandObserver,
+            planner::TaskPlanner, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup,
         },
         store::persisted::PersistedEventStore,
     },
     postgres::outbox::PostgresEventRepositoryWithOutbox,
 };
 use sqlx::PgPool;
-use std::{collections::HashMap, num::NonZeroUsize};
+use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
 use thiserror::Error;
 
 /// Checked snapshot interval, optimistic-conflict policy and aggregate lock limits. Does not read env.
@@ -108,6 +108,14 @@ impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
             inner: self.inner.with_commit_wakeup(wakeup),
         }
     }
+
+    /// Tells `observer` about every command once its aggregate's lock is released, before the answer (see
+    /// [`CommandObserver`]).
+    pub fn with_observer(self, observer: Arc<dyn CommandObserver<A>>) -> Self {
+        Self {
+            inner: self.inner.with_observer(observer),
+        }
+    }
 }
 
 impl<A> CommandExecutor<A> for PostgresCommandExecutor<A>
@@ -202,5 +210,36 @@ mod tests {
             PostgresCommandConfig::new(0, retry, limits),
             Err(PostgresCommandConfigError::InvalidSnapshotInterval)
         );
+    }
+
+    /// Notes the outcome of every command.
+    #[derive(Default)]
+    struct Heard(std::sync::Mutex<Vec<&'static str>>);
+
+    impl CommandObserver<Quiet> for Heard {
+        fn command(&self, report: &crate::cqrs::command::observer::CommandReport<'_, Quiet>) {
+            use crate::cqrs::command::observer::Outcome;
+            self.0.lock().unwrap().push(match report.outcome {
+                Outcome::Unavailable => "unavailable",
+                Outcome::Accepted { .. } | Outcome::Rejected(_) | Outcome::Conflict => "ran",
+            });
+        }
+    }
+
+    #[tokio::test]
+    async fn the_preset_reports_its_commands_to_its_observer() {
+        // Nobody listens on port 1: the first acquire fails at once.
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(100))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .unwrap();
+        let config = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap();
+        let heard = Arc::new(Heard::default());
+        let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ()).with_observer(heard.clone());
+        assert_eq!(
+            executor.execute(&"quiet".into(), ()).await.map(|report| report.events.len()),
+            Err(CommandGatewayError::Unavailable)
+        );
+        assert_eq!(*heard.0.lock().unwrap(), ["unavailable"]);
     }
 }

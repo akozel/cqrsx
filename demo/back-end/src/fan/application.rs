@@ -3,7 +3,6 @@
 //! [`record_cancellation`], the e-mails [`send_e_ticket`] and [`issue_refund`]), what follows each of its facts
 //! ([`reactions`]), the read model and the wallet assembled from it. Task names are `[a-z0-9_]` only (decision
 //! D-05): the library's diagnostics print other names as `unknown`.
-pub mod app;
 pub mod chain;
 pub mod issue_refund;
 pub mod reactions;

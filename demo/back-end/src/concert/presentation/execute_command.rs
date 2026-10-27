@@ -3,12 +3,12 @@
 use crate::{
     bootstrap::AppState,
     concert::domain::{
-        ConcertCommand,
+        ConcertCommand, ConcertError,
         commands::{AnnounceConcert, BookSeat, CancelBooking},
     },
     shared::{
-        application::command_service::{CommandMetadata, CommandOutcome},
-        domain::FanId,
+        application::metadata::CommandMetadata,
+        domain::{ConcertId, FanId},
         presentation::{error::ApiError, parse_concert_id},
     },
 };
@@ -19,9 +19,13 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::NaiveDate;
-use cqrsx::cqrs::rejection::Rejection;
+use cqrsx::cqrs::{
+    command::{CommandExecutor, CommandGatewayError},
+    rejection::Rejection,
+};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use uuid::Uuid;
 
 /// Wire shape of a UI command. Internal `Fan` commands are deliberately not representable here.
 #[derive(Debug, Deserialize)]
@@ -75,26 +79,33 @@ pub async fn handle(
     let metadata = CommandMetadata::ui();
     let command = to_command(dto, &metadata)?;
     let command_id = metadata.causation.command_id;
-    let executed = match command {
-        ConcertCommand::AnnounceConcert(command) => state.concerts.announce_concert(&concert_id, command, metadata).await,
-        ConcertCommand::BookSeat(command) => state.concerts.book_seat(&concert_id, command, metadata).await,
-        ConcertCommand::CancelBooking(command) => state.concerts.cancel_booking(&concert_id, command, metadata).await,
-    };
+    let result = state
+        .concerts
+        .execute_with_metadata(&concert_id, command, metadata.to_map())
+        .await
+        .map(|report| report.tasks.iter().map(|task| task.format().to_string()).collect());
+    Ok(answer(result, command_id, &concert_id))
+}
+
+/// The answer to a command: `200` with the formats of the tasks its commit published, `422` with the code and the
+/// params of its rejection, `409` after a conflict, `503` when it did not run; every answer names the command and the
+/// concert.
+fn answer(result: Result<Vec<String>, CommandGatewayError<ConcertError>>, command_id: Uuid, concert_id: &ConcertId) -> Response {
     let base = json!({ "command_id": command_id, "concert_id": concert_id });
-    Ok(match executed.outcome {
+    match result {
         // Committed: the read models follow from the journal (D-17); the feed and the status tell when.
-        CommandOutcome::Accepted => (
+        Ok(tasks) => (
             StatusCode::OK,
-            Json(json!({ "outcome": "accepted", "command_id": command_id, "concert_id": concert_id, "tasks": executed.tasks })),
+            Json(json!({ "outcome": "accepted", "command_id": command_id, "concert_id": concert_id, "tasks": tasks })),
         )
             .into_response(),
-        CommandOutcome::Rejected(error) => {
+        Err(CommandGatewayError::Domain(error)) => {
             ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "rejected", error.code(), error.to_string())
                 .with_params(error.params())
                 .with_extra(base)
                 .into_response()
         }
-        CommandOutcome::Conflict => ApiError::new(
+        Err(CommandGatewayError::Conflict) => ApiError::new(
             StatusCode::CONFLICT,
             "conflict",
             "conflict",
@@ -102,12 +113,12 @@ pub async fn handle(
         )
         .with_extra(base)
         .into_response(),
-        CommandOutcome::Unavailable => {
+        Err(CommandGatewayError::Unavailable) => {
             ApiError::unavailable("the command did not run: the event store is unavailable or the concert is busy; retry")
                 .with_extra(base)
                 .into_response()
         }
-    })
+    }
 }
 
 #[cfg(test)]
@@ -164,6 +175,59 @@ mod tests {
                 &metadata
             )
             .is_err()
+        );
+    }
+
+    /// The body of a response, as JSON.
+    async fn body(response: Response) -> (StatusCode, Value) {
+        let status = response.status();
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX).await.unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap())
+    }
+
+    #[tokio::test]
+    async fn every_outcome_answers_with_its_status_and_shape() {
+        let (command_id, concert_id) = (Uuid::now_v7(), ConcertId::parse("c-1").unwrap());
+        let respond = |result| answer(result, command_id, &concert_id);
+        let seat = crate::shared::domain::venue::SeatId::parse("B4").unwrap();
+        let taken = ConcertError::SeatTaken { seat, by: "Fox".into() };
+        assert_eq!(
+            body(respond(Ok(vec!["encore_record_ticket v1".to_owned()]))).await,
+            (
+                StatusCode::OK,
+                json!({ "outcome": "accepted", "command_id": command_id, "concert_id": "c-1",
+                        "tasks": ["encore_record_ticket v1"] })
+            )
+        );
+        assert_eq!(
+            body(respond(Err(CommandGatewayError::Domain(taken)))).await,
+            (
+                StatusCode::UNPROCESSABLE_ENTITY,
+                json!({ "outcome": "rejected",
+                        "error": { "code": "seat_taken", "params": { "seat": "B4", "by": "Fox" },
+                                   "message": "seat B4 is already taken by Fox" },
+                        "command_id": command_id, "concert_id": "c-1" })
+            )
+        );
+        assert_eq!(
+            body(respond(Err(CommandGatewayError::Conflict))).await,
+            (
+                StatusCode::CONFLICT,
+                json!({ "outcome": "conflict",
+                        "error": { "code": "conflict", "params": {},
+                                   "message": "the concert changed concurrently; retries exhausted" },
+                        "command_id": command_id, "concert_id": "c-1" })
+            )
+        );
+        assert_eq!(
+            body(respond(Err(CommandGatewayError::Unavailable))).await,
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({ "outcome": "unavailable",
+                        "error": { "code": "unavailable", "params": {},
+                                   "message": "the command did not run: the event store is unavailable or the concert is busy; retry" },
+                        "command_id": command_id, "concert_id": "c-1" })
+            )
         );
     }
 }

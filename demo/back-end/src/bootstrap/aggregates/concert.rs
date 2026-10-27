@@ -1,11 +1,11 @@
 //! The box office: the `Concert` executor, whose decisions its reactions plan their tasks from, with the policies of
-//! the task types, and whose commits wake the concert halls' processor.
+//! the task types, whose commits wake the concert halls' processor and whose commands the activity feed reports.
 use super::command_config;
 use crate::{
-    bootstrap::{ConcertApp, WiringError},
+    bootstrap::WiringError,
     concert::domain::{Concert, ConcertRules},
+    operations::application::activity_observer::CommandActivityObserver,
     process::Process,
-    shared::application::{activity::ActivityHub, command_service::CommandService},
 };
 use cqrsx::{
     cqrs::{command::wakeup::CommitWakeup, reactions::ReactionsPlanner},
@@ -18,8 +18,8 @@ pub fn wire(
     process: &Process,
     policies: &Policies,
     wakeup: &CommitWakeup,
-    activity: &Arc<ActivityHub>,
-) -> Result<Arc<ConcertApp>, WiringError> {
+    observer: &Arc<CommandActivityObserver>,
+) -> Result<Arc<PostgresCommandExecutor<Concert>>, WiringError> {
     let config = &process.config;
     let executor = PostgresCommandExecutor::new(
         process.pool.clone(),
@@ -29,6 +29,7 @@ pub fn wire(
         },
     )
     .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
-    .with_commit_wakeup(wakeup.clone());
-    Ok(Arc::new(ConcertApp::new(CommandService::new(executor, activity.clone()))))
+    .with_commit_wakeup(wakeup.clone())
+    .with_observer(observer.clone());
+    Ok(Arc::new(executor))
 }

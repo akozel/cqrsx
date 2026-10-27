@@ -1,9 +1,114 @@
-//! The projection processors' reports as activity log entries: what the feed and the X-ray show of the
-//! read side. A processor calls the observer on its own task, so every method only publishes.
-use crate::shared::application::activity::ActivityHub;
-use cqrsx::cqrs::projection::processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt};
-use serde_json::json;
+//! The engine's reports as activity log entries: what the command executors did (`command.*`, one observer for every
+//! aggregate) and what the feed and the X-ray show of the read side (`projection.*`, an observer per read model). The
+//! modules write nothing for the feed: an entry names a command by what its derives say of it (`CommandInfo`: its
+//! type's name and its `#[label]` fields) and a rejection by its code and params (`Rejection`). An executor calls its
+//! observer on the caller's task and a processor on its own, so every method only publishes.
+use crate::shared::{
+    application::activity::ActivityHub,
+    domain::{ConcertId, FanId, FanLedgerId},
+};
+use cqrsx::cqrs::{
+    aggregate::Aggregate,
+    command::{
+        CommandInfo,
+        causation::{COMMAND_ID, CORRELATION_ID, SOURCE},
+        observer::{CommandObserver, CommandReport, Outcome},
+    },
+    projection::processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
+    rejection::Rejection,
+};
+use serde_json::{Value, json};
 use std::sync::Arc;
+
+/// The fan an aggregate's id belongs to, for the `fan_id` of a command entry whose command names none
+/// (`#[label] fan_id`): a ledger is one fan's, a concert nobody's.
+pub trait FanOf {
+    fn fan_of(&self) -> Option<FanId>;
+}
+
+impl FanOf for ConcertId {
+    fn fan_of(&self) -> Option<FanId> {
+        None
+    }
+}
+
+impl FanOf for FanLedgerId {
+    fn fan_of(&self) -> Option<FanId> {
+        Some(self.fan())
+    }
+}
+
+/// The observer of every command executor of this process: one entry per command, once its lock is released.
+pub struct CommandActivityObserver {
+    activity: Arc<ActivityHub>,
+}
+
+impl CommandActivityObserver {
+    pub fn new(activity: Arc<ActivityHub>) -> Self {
+        Self { activity }
+    }
+}
+
+impl<A> CommandObserver<A> for CommandActivityObserver
+where
+    A: Aggregate,
+    A::Command: CommandInfo,
+    A::Error: Rejection,
+    A::Id: FanOf,
+{
+    /// `command.accepted` with the formats of the tasks committed with the event, `command.rejected` with the code and
+    /// the params of the rejection, `command.failed` with a conflict or an unavailable store. Every entry names the
+    /// aggregate, the ids and the source of the command's metadata, the command's type and its fan: the command's
+    /// `fan_id` label, else the fan of the aggregate's id, else nobody.
+    fn command(&self, report: &CommandReport<'_, A>) {
+        let fan_id = report
+            .command
+            .labels()
+            .into_iter()
+            .find_map(|(key, fan)| (key == "fan_id").then_some(fan))
+            .or_else(|| report.aggregate_id.fan_of().map(|fan| fan.as_str().to_owned()));
+        let base = json!({
+            "aggregate_type": A::TYPE,
+            "aggregate_id": report.aggregate_id.to_string(),
+            "command_id": report.metadata.get(COMMAND_ID),
+            "correlation_id": report.metadata.get(CORRELATION_ID),
+            "source": report.metadata.get(SOURCE),
+            "command_type": report.command.name(),
+            "fan_id": fan_id,
+        });
+        let merge = |extra: Value| {
+            let mut map = base.as_object().cloned().unwrap_or_default();
+            if let Value::Object(extra) = extra {
+                map.extend(extra);
+            }
+            Value::Object(map)
+        };
+        match report.outcome {
+            Outcome::Accepted { tasks } => {
+                let formats: Vec<String> = tasks.iter().map(|task| task.format().to_string()).collect();
+                self.activity.publish("command.accepted", merge(json!({ "tasks": formats })));
+            }
+            Outcome::Rejected(error) => {
+                self.activity.publish(
+                    "command.rejected",
+                    merge(json!({ "code": error.code(), "params": error.params() })),
+                );
+            }
+            Outcome::Conflict => {
+                self.activity.publish(
+                    "command.failed",
+                    merge(json!({ "outcome": "conflict", "message": "concurrent change; retries exhausted" })),
+                );
+            }
+            Outcome::Unavailable => {
+                self.activity.publish(
+                    "command.failed",
+                    merge(json!({ "outcome": "unavailable", "message": "not run: storage unavailable or aggregate busy" })),
+                );
+            }
+        }
+    }
+}
 
 /// The observer of one read model's processor on this node.
 pub struct ActivityObserver {
@@ -85,8 +190,12 @@ impl ProjectionObserver for ActivityObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::cqrs::store::feed::Position;
-    use serde_json::Value;
+    use cqrsx::{
+        cqrs::{command::decide::Decide, event::DomainEvent, store::feed::Position},
+        task::{NewTask, format::TaskFormat},
+    };
+    use serde::{Deserialize, Serialize};
+    use std::collections::HashMap;
 
     fn entries(activity: &ActivityHub) -> Vec<(String, Value)> {
         activity
@@ -168,5 +277,247 @@ mod tests {
             ["acquired", "lost", "released"]
         );
         assert!(entries[5..].iter().all(|(_, fields)| fields["owner"] == "node-a"));
+    }
+
+    /// A hall of the tests: its id is a concert's; a booking names its fan by its label, an announcement nobody.
+    #[derive(Default, Serialize, Deserialize)]
+    struct Hall;
+
+    /// A ledger of the tests: one fan's, by its id; its command names no fan.
+    #[derive(Default, Serialize, Deserialize)]
+    struct Ledger;
+
+    #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+    struct Booked;
+
+    impl DomainEvent for Booked {
+        fn event_type(&self) -> String {
+            "booked".into()
+        }
+
+        fn event_version(&self) -> String {
+            "1".into()
+        }
+    }
+
+    #[derive(Debug, thiserror::Error, cqrsx::Rejection)]
+    enum Refused {
+        #[error("seat {seat} is taken")]
+        SeatTaken { seat: String },
+    }
+
+    #[derive(cqrsx::Command)]
+    struct Book {
+        seat: String,
+        #[label]
+        fan_id: String,
+    }
+
+    #[derive(cqrsx::Command)]
+    struct Announce {
+        artist: String,
+    }
+
+    #[derive(cqrsx::Commands)]
+    enum HallCommand {
+        Book(Book),
+        Announce(Announce),
+    }
+
+    #[derive(cqrsx::Command)]
+    struct Record {
+        seat: String,
+    }
+
+    impl Decide<Hall> for Book {
+        fn decide(self, _: &Hall, _: &()) -> Result<Booked, Refused> {
+            Err(Refused::SeatTaken { seat: self.seat })
+        }
+    }
+
+    impl Decide<Hall> for Announce {
+        fn decide(self, _: &Hall, _: &()) -> Result<Booked, Refused> {
+            let _ = self.artist;
+            Ok(Booked)
+        }
+    }
+
+    impl Decide<Ledger> for Record {
+        fn decide(self, _: &Ledger, _: &()) -> Result<Booked, Refused> {
+            let _ = self.seat;
+            Ok(Booked)
+        }
+    }
+
+    impl Aggregate for Hall {
+        const TYPE: &'static str = "Hall";
+        type Id = ConcertId;
+        type Command = HallCommand;
+        type Event = Booked;
+        type Error = Refused;
+        type Rules = ();
+
+        fn apply(&mut self, _: Booked) {}
+    }
+
+    impl Aggregate for Ledger {
+        const TYPE: &'static str = "Ledger";
+        type Id = FanLedgerId;
+        type Command = Record;
+        type Event = Booked;
+        type Error = Refused;
+        type Rules = ();
+
+        fn apply(&mut self, _: Booked) {}
+    }
+
+    fn hall() -> ConcertId {
+        ConcertId::parse("c-1").unwrap()
+    }
+
+    fn announce() -> HallCommand {
+        HallCommand::Announce(Announce { artist: "A".into() })
+    }
+
+    fn book(fan_id: &str) -> HallCommand {
+        HallCommand::Book(Book {
+            seat: "B4".into(),
+            fan_id: fan_id.into(),
+        })
+    }
+
+    /// The metadata of a UI command: one id in all three roles.
+    fn ui() -> HashMap<String, String> {
+        HashMap::from([
+            (COMMAND_ID.to_owned(), "id-1".to_owned()),
+            (CORRELATION_ID.to_owned(), "id-1".to_owned()),
+            ("causation_id".to_owned(), "id-1".to_owned()),
+            (SOURCE.to_owned(), "ui".to_owned()),
+            ("recorded_at".to_owned(), "2026-10-27T09:12:03.123456Z".to_owned()),
+        ])
+    }
+
+    #[test]
+    fn an_accepted_command_is_published_once_with_its_tasks_and_no_read_model_news() {
+        let activity = Arc::new(ActivityHub::new(8, 8));
+        let observer = CommandActivityObserver::new(activity.clone());
+        observer.command(&CommandReport::<Hall> {
+            aggregate_id: &hall(),
+            command: &announce(),
+            metadata: &ui(),
+            outcome: Outcome::Accepted { tasks: &[] },
+        });
+        let (entries, _) = activity.subscribe();
+        assert_eq!(entries.len(), 1, "{entries:?}");
+        assert_eq!(entries[0].kind, "command.accepted");
+        assert_eq!(entries[0].fields["tasks"], json!([]));
+        assert!(
+            !entries[0].fields.contains_key("warnings"),
+            "the read models follow from the journal"
+        );
+    }
+
+    #[test]
+    fn an_accepted_command_reports_the_tasks_its_commit_published() {
+        let activity = Arc::new(ActivityHub::new(8, 8));
+        let task = NewTask::from_payload(TaskFormat::new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
+        CommandActivityObserver::new(activity.clone()).command(&CommandReport::<Hall> {
+            aggregate_id: &hall(),
+            command: &announce(),
+            metadata: &ui(),
+            outcome: Outcome::Accepted { tasks: &[task] },
+        });
+        let (entries, _) = activity.subscribe();
+        assert_eq!(entries[0].fields["tasks"], json!(["encore_record_ticket v1"]));
+    }
+
+    #[test]
+    fn every_outcome_becomes_one_command_entry_with_the_command_and_its_metadata() {
+        let activity = Arc::new(ActivityHub::new(8, 8));
+        let observer = CommandActivityObserver::new(activity.clone());
+        let task = NewTask::from_payload(TaskFormat::new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
+        let refused = Refused::SeatTaken { seat: "B4".into() };
+        let metadata = ui();
+        for outcome in [
+            Outcome::Accepted { tasks: &[task] },
+            Outcome::Rejected(&refused),
+            Outcome::Conflict,
+            Outcome::Unavailable,
+        ] {
+            observer.command(&CommandReport::<Hall> {
+                aggregate_id: &hall(),
+                command: &book("fox"),
+                metadata: &metadata,
+                outcome,
+            });
+        }
+        let command = json!({ "aggregate_type": "Hall", "aggregate_id": "c-1", "command_id": "id-1",
+                               "correlation_id": "id-1", "source": "ui", "command_type": "Book", "fan_id": "fox" });
+        let with = |fields: Value| {
+            let mut entry = command.clone();
+            entry.as_object_mut().unwrap().extend(fields.as_object().unwrap().clone());
+            entry
+        };
+        assert_eq!(
+            entries(&activity),
+            [
+                (
+                    "command.accepted".to_owned(),
+                    with(json!({ "tasks": ["encore_record_ticket v1"] }))
+                ),
+                (
+                    "command.rejected".to_owned(),
+                    with(json!({ "code": "seat_taken", "params": { "seat": "B4" } }))
+                ),
+                (
+                    "command.failed".to_owned(),
+                    with(json!({ "outcome": "conflict", "message": "concurrent change; retries exhausted" }))
+                ),
+                (
+                    "command.failed".to_owned(),
+                    with(json!({ "outcome": "unavailable", "message": "not run: storage unavailable or aggregate busy" }))
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn the_fan_of_a_command_entry_is_its_label_else_the_fan_of_its_ledger_else_nobody() {
+        let activity = Arc::new(ActivityHub::new(8, 8));
+        let observer = CommandActivityObserver::new(activity.clone());
+        let metadata = HashMap::new();
+        for command in [book("fox"), announce()] {
+            observer.command(&CommandReport::<Hall> {
+                aggregate_id: &hall(),
+                command: &command,
+                metadata: &metadata,
+                outcome: Outcome::Conflict,
+            });
+        }
+        let ledger = FanLedgerId::parse("panda:c-1").unwrap();
+        observer.command(&CommandReport::<Ledger> {
+            aggregate_id: &ledger,
+            command: &Record { seat: "B4".into() },
+            metadata: &metadata,
+            outcome: Outcome::Conflict,
+        });
+        let entries = entries(&activity);
+        let named: Vec<(&Value, &Value, &Value)> = entries
+            .iter()
+            .map(|(_, fields)| (&fields["command_type"], &fields["aggregate_id"], &fields["fan_id"]))
+            .collect();
+        assert_eq!(
+            named,
+            [
+                (&json!("Book"), &json!("c-1"), &json!("fox")),
+                (&json!("Announce"), &json!("c-1"), &Value::Null),
+                (&json!("Record"), &json!("panda:c-1"), &json!("panda")),
+            ]
+        );
+        assert_eq!(
+            (&entries[2].1["command_id"], &entries[2].1["source"]),
+            (&Value::Null, &Value::Null),
+            "no metadata, no ids"
+        );
     }
 }

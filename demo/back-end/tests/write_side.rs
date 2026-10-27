@@ -4,13 +4,20 @@
 //! one concert wait for its lock instead of conflicting. The concert halls follow the journal through
 //! their projection processor: woken by the commits, rebuilt in place, healed and restored after a wipe.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
+use axum::{
+    body::Body,
+    http::{Request, StatusCode, header},
+};
 use chrono::NaiveDate;
 use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
-use cqrsx::task::format::TaskFormat;
+use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat};
 use cqrsx::{
     cqrs::{
+        CommitReport,
         aggregate::Aggregate,
-        command::{locks::LockLimits, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
+        command::{
+            CommandExecutor, CommandGatewayError, locks::LockLimits, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup,
+        },
         projection::{
             View, ViewProjection,
             checkpoint::{CheckpointKey, CheckpointStore},
@@ -31,24 +38,23 @@ use cqrsx::{
     },
 };
 use encore_backend::{
-    bootstrap::tasks::policies,
+    bootstrap::{self, routes::router, tasks::policies},
     concert::{
-        application::{app::ConcertApp, views::concert_hall::ConcertHallView},
+        application::views::concert_hall::ConcertHallView,
         domain::{
-            Concert, ConcertError, ConcertRules,
+            Concert, ConcertCommand, ConcertError, ConcertRules,
             commands::{AnnounceConcert, BookSeat, CancelBooking},
         },
     },
     config::Config,
+    process::Process,
     shared::{
-        application::{
-            activity::ActivityHub,
-            command_service::{CommandMetadata, CommandOutcome, CommandService},
-        },
+        application::metadata::CommandMetadata,
         domain::{ConcertId, FanId},
     },
 };
-use serde_json::Value;
+use http_body_util::BodyExt;
+use serde_json::{Value, json};
 use sqlx::{PgPool, Row};
 use std::{sync::Arc, time::Duration};
 use testcontainers::{
@@ -57,6 +63,7 @@ use testcontainers::{
     runners::AsyncRunner,
 };
 use tokio_util::sync::CancellationToken;
+use tower::ServiceExt;
 use uuid::Uuid;
 
 /// A free host port outside the ephemeral range, like the cqrsx fixtures: explicit mappings work on
@@ -73,6 +80,14 @@ fn lease_port() -> u16 {
         }
     }
     panic!("no free port")
+}
+
+/// The formats of the tasks an accepted command committed, none for a refused one: what the HTTP answer lists.
+fn committed(answer: &Result<CommitReport<Concert>, CommandGatewayError<ConcertError>>) -> Vec<String> {
+    match answer {
+        Ok(report) => report.tasks.iter().map(|task| task.format().to_string()).collect(),
+        Err(_) => Vec::new(),
+    }
 }
 
 /// The box office's reactions with the policies of the configuration without environment, as the process plans.
@@ -129,11 +144,9 @@ async fn database() -> (PgPool, testcontainers::ContainerAsync<GenericImage>) {
 #[tokio::test]
 async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_nothing() {
     let (pool, container) = database().await;
-    let activity = Arc::new(ActivityHub::new(64, 64));
     let config = PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default()).expect("config");
-    let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
+    let concerts = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
         .with_task_planner(concert_reactions());
-    let concerts = ConcertApp::new(CommandService::new(executor, activity));
     let concert_id = ConcertId::parse("test-2026").expect("concert id");
     let announce = AnnounceConcert {
         artist: "A".into(),
@@ -142,10 +155,13 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     };
     assert!(
         concerts
-            .announce_concert(&concert_id, announce, CommandMetadata::with_source("seed"))
+            .execute_with_metadata(
+                &concert_id,
+                ConcertCommand::AnnounceConcert(announce),
+                CommandMetadata::with_source("seed").to_map(),
+            )
             .await
-            .outcome
-            .is_accepted()
+            .is_ok()
     );
 
     let metadata = CommandMetadata::ui();
@@ -155,25 +171,27 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
         fan_name: "Alice".into(),
         booking_id: metadata.causation.command_id,
     };
-    let executed = concerts.book_seat(&concert_id, book, metadata.clone()).await;
-    assert!(executed.outcome.is_accepted());
-    assert_eq!(executed.tasks, vec!["encore_record_ticket v1".to_owned()]);
+    let executed = concerts
+        .execute_with_metadata(&concert_id, ConcertCommand::BookSeat(book), metadata.to_map())
+        .await;
+    assert!(executed.is_ok());
+    assert_eq!(committed(&executed), vec!["encore_record_ticket v1".to_owned()]);
 
     let rejected = concerts
-        .book_seat(
+        .execute_with_metadata(
             &concert_id,
-            BookSeat {
+            ConcertCommand::BookSeat(BookSeat {
                 seat: "B4".into(),
                 fan_id: FanId::parse("bob").expect("fan"),
                 fan_name: "Bob".into(),
                 booking_id: Uuid::now_v7(),
-            },
-            CommandMetadata::ui(),
+            }),
+            CommandMetadata::ui().to_map(),
         )
         .await;
     assert!(matches!(
-        rejected.outcome,
-        CommandOutcome::Rejected(ConcertError::SeatTaken { .. })
+        rejected,
+        Err(CommandGatewayError::Domain(ConcertError::SeatTaken { .. }))
     ));
 
     let events =
@@ -233,6 +251,162 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     container.stop().await.expect("stop");
 }
 
+/// `POST /api/concerts/{concert_id}/commands` on the real graph: its answer in its shape and status, and what the
+/// activity feed says of every command, a step of the ledger issued by the composition's task handlers included.
+async fn post_command(router: &axum::Router, concert_id: &str, command: Value) -> (StatusCode, Value) {
+    let request = Request::post(format!("/api/concerts/{concert_id}/commands"))
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(command.to_string()))
+        .expect("request");
+    let response = router.clone().oneshot(request).await.expect("response");
+    let status = response.status();
+    let body = response.into_body().collect().await.expect("body").to_bytes();
+    (status, serde_json::from_slice(&body).expect("JSON body"))
+}
+
+#[tokio::test]
+async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_command_with_its_values() {
+    let (pool, container) = database().await;
+    let mut mongo = mongodb::options::ClientOptions::parse("mongodb://127.0.0.1:1")
+        .await
+        .expect("options");
+    mongo.server_selection_timeout = Some(Duration::from_millis(50));
+    let process = Process {
+        config: Arc::new(Config::from_lookup(|_| None).expect("configuration")),
+        pool: pool.clone(),
+        history_pool: pool.clone(),
+        projection_pool: pool.clone(),
+        mongo: mongodb::Client::with_options(mongo).expect("client"),
+        shutdown: CancellationToken::new(),
+    };
+    let wiring = bootstrap::wire(&process).expect("wiring");
+    let router = router(wiring.state.clone());
+
+    let (status, announced) = post_command(
+        &router,
+        "http-2026",
+        json!({ "type": "AnnounceConcert", "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21" }),
+    )
+    .await;
+    let c1 = announced["command_id"].clone();
+    assert_eq!(
+        (status, &announced),
+        (
+            StatusCode::OK,
+            &json!({ "outcome": "accepted", "command_id": c1, "concert_id": "http-2026", "tasks": [] })
+        )
+    );
+    let (status, booked) = post_command(
+        &router,
+        "http-2026",
+        json!({ "type": "BookSeat", "seat": "A1", "fan_id": "fox", "fan_name": "Fox" }),
+    )
+    .await;
+    let c2 = booked["command_id"].clone();
+    assert_eq!(
+        (status, &booked),
+        (
+            StatusCode::OK,
+            &json!({ "outcome": "accepted", "command_id": c2, "concert_id": "http-2026",
+                     "tasks": ["encore_record_ticket v1"] })
+        )
+    );
+    let (status, taken) = post_command(
+        &router,
+        "http-2026",
+        json!({ "type": "BookSeat", "seat": "A1", "fan_id": "panda", "fan_name": "Panda" }),
+    )
+    .await;
+    let c3 = taken["command_id"].clone();
+    assert_eq!(
+        (status, &taken),
+        (
+            StatusCode::UNPROCESSABLE_ENTITY,
+            &json!({ "outcome": "rejected",
+                     "error": { "code": "seat_taken", "params": { "seat": "A1", "by": "Fox" },
+                                "message": "seat A1 is already taken by Fox" },
+                     "command_id": c3, "concert_id": "http-2026" })
+        )
+    );
+    let stored: Vec<Value> = sqlx::query_scalar("SELECT metadata FROM events WHERE aggregate_id = 'http-2026' ORDER BY sequence")
+        .fetch_all(&pool)
+        .await
+        .expect("events");
+    assert_eq!(
+        stored
+            .iter()
+            .map(|metadata| metadata["command_id"].clone())
+            .collect::<Vec<_>>(),
+        [c1.clone(), c2.clone()],
+        "the answer's command id is the event's; the rejected booking wrote nothing"
+    );
+
+    // The step of the ledger the booking published, run by the composition's handlers.
+    let row = sqlx::query(
+        "SELECT id, task_type, task_version, payload, metadata FROM transactional_outbox WHERE task_type = 'encore_record_ticket'",
+    )
+    .fetch_one(&pool)
+    .await
+    .expect("the booking's task");
+    let attempt = TaskAttempt::new(
+        row.get("id"),
+        TaskFormat::new(row.get::<String, _>("task_type"), row.get("task_version")).expect("format"),
+        row.get("payload"),
+        row.get("metadata"),
+        1,
+    )
+    .expect("attempt");
+    let mut dispatcher = (wiring.dispatcher)().expect("dispatcher");
+    dispatcher.dispatch(&attempt).await.expect("the step records the ticket");
+    let step: Value = sqlx::query_scalar("SELECT metadata FROM events WHERE aggregate_type = 'Fan'")
+        .fetch_one(&pool)
+        .await
+        .expect("the ledger's event");
+
+    let entries: Vec<(String, Value)> = wiring
+        .state
+        .activity
+        .subscribe()
+        .0
+        .iter()
+        .filter(|entry| entry.kind.starts_with("command."))
+        .map(|entry| (entry.kind.clone(), Value::Object(entry.fields.clone())))
+        .collect();
+    let entry = |kind: &str, fields: Value| (kind.to_owned(), fields);
+    assert_eq!(
+        entries,
+        [
+            entry(
+                "command.accepted",
+                json!({ "aggregate_type": "Concert", "aggregate_id": "http-2026", "command_id": c1, "correlation_id": c1,
+                        "source": "ui", "command_type": "AnnounceConcert", "fan_id": null, "tasks": [] })
+            ),
+            entry(
+                "command.accepted",
+                json!({ "aggregate_type": "Concert", "aggregate_id": "http-2026", "command_id": c2, "correlation_id": c2,
+                        "source": "ui", "command_type": "BookSeat", "fan_id": "fox",
+                        "tasks": ["encore_record_ticket v1"] })
+            ),
+            entry(
+                "command.rejected",
+                json!({ "aggregate_type": "Concert", "aggregate_id": "http-2026", "command_id": c3, "correlation_id": c3,
+                        "source": "ui", "command_type": "BookSeat", "fan_id": "panda", "code": "seat_taken",
+                        "params": { "seat": "A1", "by": "Fox" } })
+            ),
+            entry(
+                "command.accepted",
+                json!({ "aggregate_type": "Fan", "aggregate_id": "fox:http-2026", "command_id": step["command_id"],
+                        "correlation_id": c2, "source": "task:encore_record_ticket", "command_type": "RecordTicket",
+                        "fan_id": "fox", "tasks": ["encore_send_e_ticket v1"] })
+            ),
+        ]
+    );
+    assert!(Uuid::parse_str(c1.as_str().expect("a command id is text")).is_ok(), "{c1}");
+
+    pool.close().await;
+    container.stop().await.expect("stop");
+}
+
 /// Bookings and cancellations of one concert racing on two nodes (two executors, each with its own
 /// locks): whatever the optimistic check decided, every committed `SeatBooked` and `BookingCancelled` has
 /// exactly one task, and the task carries the booking of its own event.
@@ -244,10 +418,7 @@ async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_tas
             PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default()).expect("config");
         let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 40 })
             .with_task_planner(concert_reactions());
-        Arc::new(ConcertApp::new(CommandService::new(
-            executor,
-            Arc::new(ActivityHub::new(64, 64)),
-        )))
+        Arc::new(executor)
     };
     let nodes = [node(), node()];
     let concert_id = ConcertId::parse("race-2026").expect("concert id");
@@ -258,10 +429,13 @@ async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_tas
     };
     assert!(
         nodes[0]
-            .announce_concert(&concert_id, announce, CommandMetadata::with_source("seed"))
+            .execute_with_metadata(
+                &concert_id,
+                ConcertCommand::AnnounceConcert(announce),
+                CommandMetadata::with_source("seed").to_map(),
+            )
             .await
-            .outcome
-            .is_accepted()
+            .is_ok()
     );
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..40 {
@@ -279,21 +453,25 @@ async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_tas
                     fan_name: "Fan".into(),
                     booking_id: metadata.causation.command_id,
                 };
-                concerts.book_seat(&concert_id, book, metadata).await.outcome
+                concerts
+                    .execute_with_metadata(&concert_id, ConcertCommand::BookSeat(book), metadata.to_map())
+                    .await
             } else {
                 let cancel = CancelBooking {
                     seat,
                     fan_id,
                     cancellation_id: metadata.causation.command_id,
                 };
-                concerts.cancel_booking(&concert_id, cancel, metadata).await.outcome
+                concerts
+                    .execute_with_metadata(&concert_id, ConcertCommand::CancelBooking(cancel), metadata.to_map())
+                    .await
             }
         });
     }
     while let Some(outcome) = commands.join_next().await {
         match outcome.expect("command task") {
-            CommandOutcome::Accepted | CommandOutcome::Rejected(_) | CommandOutcome::Conflict => {}
-            CommandOutcome::Unavailable => panic!("the store stayed reachable"),
+            Ok(_) | Err(CommandGatewayError::Domain(_) | CommandGatewayError::Conflict) => {}
+            Err(CommandGatewayError::Unavailable) => panic!("the store stayed reachable"),
         }
     }
     let unmatched: i64 = sqlx::query_scalar(
@@ -330,10 +508,7 @@ async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() 
     let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
         .with_task_planner(concert_reactions());
-    let concerts = Arc::new(ConcertApp::new(CommandService::new(
-        executor,
-        Arc::new(ActivityHub::new(64, 64)),
-    )));
+    let concerts = Arc::new(executor);
     let concert_id = ConcertId::parse("hot-2026").expect("concert id");
     let announce = AnnounceConcert {
         artist: "A".into(),
@@ -342,10 +517,13 @@ async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() 
     };
     assert!(
         concerts
-            .announce_concert(&concert_id, announce, CommandMetadata::with_source("seed"))
+            .execute_with_metadata(
+                &concert_id,
+                ConcertCommand::AnnounceConcert(announce),
+                CommandMetadata::with_source("seed").to_map(),
+            )
             .await
-            .outcome
-            .is_accepted()
+            .is_ok()
     );
 
     let mut bookings = tokio::task::JoinSet::new();
@@ -359,12 +537,14 @@ async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() 
                 fan_name: "Fan".into(),
                 booking_id: metadata.causation.command_id,
             };
-            concerts.book_seat(&concert_id, book, metadata).await.outcome
+            concerts
+                .execute_with_metadata(&concert_id, ConcertCommand::BookSeat(book), metadata.to_map())
+                .await
         });
     }
     while let Some(outcome) = bookings.join_next().await {
         let outcome = outcome.expect("booking task");
-        assert!(outcome.is_accepted(), "{outcome:?}");
+        assert!(outcome.is_ok(), "{outcome:?}");
     }
     let events: i64 = sqlx::query_scalar("SELECT count(*) FROM events WHERE aggregate_id = 'hot-2026'")
         .fetch_one(&pool)
@@ -512,10 +692,7 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
         .with_task_planner(concert_reactions())
         .with_commit_wakeup(read.wakeup.clone());
-    let concerts = Arc::new(ConcertApp::new(CommandService::new(
-        executor,
-        Arc::new(ActivityHub::new(64, 64)),
-    )));
+    let concerts = Arc::new(executor);
     let announce = |id: &'static str| {
         let concerts = concerts.clone();
         async move {
@@ -526,10 +703,13 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
             };
             let concert_id = ConcertId::parse(id).expect("concert id");
             let outcome = concerts
-                .announce_concert(&concert_id, announce, CommandMetadata::with_source("seed"))
-                .await
-                .outcome;
-            assert!(outcome.is_accepted(), "{outcome:?}");
+                .execute_with_metadata(
+                    &concert_id,
+                    ConcertCommand::AnnounceConcert(announce),
+                    CommandMetadata::with_source("seed").to_map(),
+                )
+                .await;
+            assert!(outcome.is_ok(), "{outcome:?}");
         }
     };
     let book_all = |id: &'static str, seats: std::ops::Range<usize>| {
@@ -547,14 +727,17 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
                         booking_id: metadata.causation.command_id,
                     };
                     concerts
-                        .book_seat(&ConcertId::parse(id).expect("concert id"), book, metadata)
+                        .execute_with_metadata(
+                            &ConcertId::parse(id).expect("concert id"),
+                            ConcertCommand::BookSeat(book),
+                            metadata.to_map(),
+                        )
                         .await
-                        .outcome
                 });
             }
             while let Some(outcome) = bookings.join_next().await {
                 let outcome = outcome.expect("booking task");
-                assert!(outcome.is_accepted(), "{outcome:?}");
+                assert!(outcome.is_ok(), "{outcome:?}");
             }
         }
     };

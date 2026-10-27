@@ -7,8 +7,8 @@
 //! `infrastructure`). Every `use` tree is expanded to full paths and every other qualified path is collected, with
 //! comments and string literals removed first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
-//! the ledger's tasks. Of cqrsx a domain sees its contracts and their derive macros, a presentation only the rejection
-//! trait. `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and
+//! the ledger's tasks. Of cqrsx a domain sees its contracts and their derive macros, a presentation the command port,
+//! its outcomes and the rejection trait. `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and
 //! `testing.rs` compose the modules and are exempt. A few rules apply to production code only: test code may use test
 //! tooling. Relative paths (`super::`) are not resolved: one module reaches another only through `crate::`.
 use std::{
@@ -118,13 +118,6 @@ const EXCEPTIONS: &[Exception] = &[
         ],
         tests_only: true,
         why: "the test builds the composition's read side, which holds the concert halls too (05/10)",
-    },
-    Exception {
-        id: "I-5",
-        place: "shared/application/command_service.rs",
-        paths: &["crate::concert::domain"],
-        tests_only: true,
-        why: "the command pipeline is tested on the `Concert` aggregate until the file goes (05/08)",
     },
     Exception {
         id: "I-7",
@@ -254,8 +247,14 @@ fn externals(layer: Option<Layer>) -> Externals {
         Some(Layer::Presentation) => Externals {
             forbidden: &["sqlx", "mongodb"],
             test_only: &[],
-            // A refused command answers with its code and params (backlog 05/04): the rejection trait, nothing else.
-            cqrsx_allowed: Some(&["cqrsx::cqrs::rejection"]),
+            // The handler hands a command to the engine's command port and answers its outcome (backlog 05/08, design
+            // 04; 05/11 and 05/12 replace both with the engine's `execute` and its outcome); a refused command answers
+            // with its code and params (05/04): the port, its error and the rejection trait, nothing else.
+            cqrsx_allowed: Some(&[
+                "cqrsx::cqrs::command::CommandExecutor",
+                "cqrsx::cqrs::command::CommandGatewayError",
+                "cqrsx::cqrs::rejection",
+            ]),
         },
         Some(Layer::Infrastructure) | None => Externals {
             forbidden: &[],
@@ -717,7 +716,10 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ("concert/domain/x.rs", "use crate::concert::application::app::ConcertApp;\n"),
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
         ("concert/domain/x.rs", "use cqrsx::postgres::pool::connect_pool;\n"),
-        ("concert/presentation/x.rs", "use cqrsx::cqrs::command::CommandExecutor;\n"),
+        (
+            "concert/presentation/x.rs",
+            "use cqrsx::cqrs::command::planner::TaskPlanner;\n",
+        ),
         ("fan/application/x.rs", "use cqrsx::cqrs::testing::mem_store::MemStore;\n"),
         ("concert.rs", "use crate::fan::domain::Fan;\n"),
     ] {
@@ -819,6 +821,30 @@ fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
     ] {
         let broken = check(file, code);
         assert_eq!(broken.len(), 1, "{file}: {code}");
+        assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
+    }
+}
+
+/// Backlog 05/08: the HTTP handler hands a command to the engine's command port and answers its outcome; nothing
+/// else of the command path reaches a presentation.
+#[test]
+fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
+    let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
+    for code in [
+        "use cqrsx::cqrs::command::{CommandExecutor, CommandGatewayError};\n",
+        "fn f(e: cqrsx::cqrs::command::CommandGatewayError<()>) {}\n",
+    ] {
+        assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
+    }
+    for code in [
+        "use cqrsx::cqrs::command::CommandInfo;\n",
+        "use cqrsx::cqrs::command::observer::CommandObserver;\n",
+        "use cqrsx::cqrs::CommitReport;\n",
+        "use cqrsx::cqrs::testing::command::TestCommandExecutor;\n",
+        "use cqrsx::postgres::command::PostgresCommandExecutor;\n",
+    ] {
+        let broken = check("fan/presentation/x.rs", code);
+        assert_eq!(broken.len(), 1, "{code}");
         assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
     }
 }

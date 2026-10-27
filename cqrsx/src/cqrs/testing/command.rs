@@ -7,6 +7,7 @@ use crate::{
             CommandExecutor, CommandGatewayError,
             executor::CommandExecutorCore,
             locks::LockLimits,
+            observer::CommandObserver,
             planner::{Planning, TaskPlanner},
             retry::AggregateConflictRetryPolicy,
             wakeup::CommitWakeup,
@@ -22,13 +23,13 @@ use std::{
 };
 
 /// The production command path behind [`CommandExecutor`] over a test store: one [`CommandExecutorCore`]
-/// with aggregate locks, the default conflict retry, an optional task planner and commit wake-up, plus a
+/// with aggregate locks, the default conflict retry, an optional task planner, commit wake-up and observer, plus a
 /// record of the tasks the committed calls published.
 ///
 /// *Published* tasks are those of the calls that committed (`Ok`): what their commits report, i.e. what a
-/// transactional outbox would hold. Clones share the store, the locks, the planner, the wake-up and the
-/// record, so a use case can own one clone while the test inspects another; register the planner and the
-/// wake-up before cloning.
+/// transactional outbox would hold. Clones share the store, the locks, the planner, the wake-up, the observer and
+/// the record, so a use case can own one clone while the test inspects another; register the planner, the
+/// wake-up and the observer before cloning.
 ///
 /// Over a [`MemStore`] ([`new`](Self::new)) the commands only change the aggregates. Over a
 /// [`MemEventRepository`] ([`over_journal`](Self::over_journal)) they append to a journal that projection
@@ -149,6 +150,18 @@ impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
         Arc::get_mut(&mut self.inner)
             .expect("register the commit wake-up before cloning the executor")
             .set_commit_wakeup(wakeup);
+        self
+    }
+
+    /// Tells `observer` about every command of the executor and its clones, as the production executor does.
+    ///
+    /// # Panics
+    ///
+    /// When a clone of the executor exists.
+    pub fn with_observer(mut self, observer: Arc<dyn CommandObserver<A>>) -> Self {
+        Arc::get_mut(&mut self.inner)
+            .expect("register the observer before cloning the executor")
+            .set_observer(observer);
         self
     }
 
@@ -372,5 +385,46 @@ mod tests {
                 .with_task_planner(Notifier)
         }));
         assert!(late_planner.is_err(), "a planner registered after a clone is refused");
+    }
+
+    /// Notes `id value: outcome` for every command.
+    #[derive(Default)]
+    struct Outcomes(Mutex<Vec<String>>);
+
+    impl CommandObserver<Stack> for Outcomes {
+        fn command(&self, report: &crate::cqrs::command::observer::CommandReport<'_, Stack>) {
+            use crate::cqrs::command::observer::Outcome;
+            let outcome = match report.outcome {
+                Outcome::Accepted { tasks } => format!("accepted with {} tasks", tasks.len()),
+                Outcome::Rejected(error) => format!("rejected: {error}"),
+                Outcome::Conflict => "conflict".to_owned(),
+                Outcome::Unavailable => "unavailable".to_owned(),
+            };
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("{} {}: {outcome}", report.aggregate_id, report.command));
+        }
+    }
+
+    #[tokio::test]
+    async fn the_observer_hears_the_commands_of_every_clone_and_a_late_registration_is_refused() {
+        let outcomes = Arc::new(Outcomes::default());
+        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1)
+            .with_task_planner(Notifier)
+            .with_observer(outcomes.clone());
+        let use_case = executor.clone();
+        assert!(use_case.execute(&"s".into(), 1).await.is_ok());
+        assert_eq!(executor.execute(&"s".into(), 2).await, Err(CommandGatewayError::Domain(Full)));
+        assert_eq!(
+            *outcomes.0.lock().unwrap(),
+            ["s 1: accepted with 1 tasks", "s 2: rejected: full"]
+        );
+        let late = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            TestCommandExecutor::<Stack>::new(MemStore::<Stack>::default(), 1)
+                .clone()
+                .with_observer(outcomes.clone())
+        }));
+        assert!(late.is_err(), "an observer registered after a clone is refused");
     }
 }

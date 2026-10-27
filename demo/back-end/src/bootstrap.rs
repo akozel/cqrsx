@@ -20,8 +20,8 @@ use crate::{
     bootstrap::{ledger::PostgresLedger, read_models::ReadModels},
     concert::domain::Concert,
     config::Config,
-    fan::domain::Fan,
     operations::application::{
+        activity_observer::CommandActivityObserver,
         rebuild::{ReadSide, ReadSideLimits, RebuildService},
         verify::VerifyService,
     },
@@ -45,10 +45,6 @@ pub const ACTIVITY_CHANNEL_CAPACITY: usize = 1024;
 /// How many recent entries a new SSE subscriber receives in its `hello`.
 pub const ACTIVITY_BACKLOG: usize = 100;
 
-/// The box office over PostgreSQL.
-pub type ConcertApp = crate::concert::application::app::ConcertApp<PostgresCommandExecutor<Concert>>;
-/// The fan ledger over PostgreSQL.
-pub type FanApp = crate::fan::application::app::FanApp<PostgresCommandExecutor<Fan>>;
 /// The time machine over the PostgreSQL history, without snapshots.
 pub type TimeTravel = crate::concert::application::time_travel::TimeTravel<HistoryStore<Concert>>;
 
@@ -56,7 +52,8 @@ pub type TimeTravel = crate::concert::application::time_travel::TimeTravel<Histo
 #[derive(Clone)]
 pub struct AppState {
     pub config: Arc<Config>,
-    pub concerts: Arc<ConcertApp>,
+    /// The box office's executor: the HTTP handler hands it the commands.
+    pub concerts: Arc<PostgresCommandExecutor<Concert>>,
     pub activity: Arc<ActivityHub>,
     /// Encore!, the rebuild of one hall and the status of the projections.
     pub rebuild: Arc<dyn ReadSide>,
@@ -87,16 +84,17 @@ pub enum WiringError {
 }
 
 /// Builds the graph in dependency order: the read side (processors and their wake-ups), the policies of the task
-/// types, the aggregates whose commits wake the read side and whose reactions plan with the policies, the operations
-/// over the whole ledger, the task handlers.
+/// types, the aggregates whose commits wake the read side, whose reactions plan with the policies and whose commands
+/// the activity feed's observer reports, the operations over the whole ledger, the task handlers.
 pub fn wire(process: &Process) -> Result<Wiring, WiringError> {
     let config = process.config.clone();
     let activity = Arc::new(ActivityHub::new(ACTIVITY_CHANNEL_CAPACITY, ACTIVITY_BACKLOG));
 
     let read = projections::read_models(process, &activity);
     let policies = tasks::policies(&config)?;
-    let concerts = aggregates::concert::wire(process, &policies, &read.concert_wakeup, &activity)?;
-    let fans = aggregates::fan::wire(process, &policies, &read.fan_wakeup, &activity)?;
+    let commands = Arc::new(CommandActivityObserver::new(activity.clone()));
+    let concerts = aggregates::concert::wire(process, &policies, &read.concert_wakeup, &commands)?;
+    let fans = aggregates::fan::wire(process, &policies, &read.fan_wakeup, &commands)?;
 
     // Operations over the whole ledger: Encore! and the status, verify and the time machine.
     let rebuild: Arc<dyn ReadSide> = Arc::new(RebuildService::new(

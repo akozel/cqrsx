@@ -6,6 +6,7 @@ use cqrsx::{
         CommandExecutor, CommandGatewayError,
         causation::Causation,
         locks::LockLimits,
+        observer::{CommandObserver, CommandReport, Outcome},
         planner::{Decision, TaskPlanError, TaskPlanner},
         retry::AggregateConflictRetryPolicy,
     },
@@ -242,6 +243,64 @@ async fn planned_work_publishes_atomically_and_rejections_write_nothing() {
             ("accepted".to_owned(), 2, json!({ "value": "second" })),
         ],
         "one task per committed decision, none of the rejected one"
+    );
+    db.close().await;
+}
+
+/// What a report says: the id, the metadata and the ids and bodies of the tasks, or what became of the command.
+type Heard = (String, HashMap<String, String>, Result<Vec<(Uuid, Value)>, String>);
+
+/// Notes every report.
+#[derive(Default)]
+struct Reports(std::sync::Mutex<Vec<Heard>>);
+
+impl CommandObserver<CommandAggregate> for Reports {
+    fn command(&self, report: &CommandReport<'_, CommandAggregate>) {
+        let outcome = match report.outcome {
+            Outcome::Accepted { tasks } => Ok(tasks.iter().map(|task| (task.id(), task.payload().clone())).collect()),
+            Outcome::Rejected(error) => Err(format!("rejected: {error}")),
+            Outcome::Conflict => Err("conflict".to_owned()),
+            Outcome::Unavailable => Err("unavailable".to_owned()),
+        };
+        self.0
+            .lock()
+            .unwrap()
+            .push((report.aggregate_id.clone(), report.metadata.clone(), outcome));
+    }
+}
+
+#[tokio::test]
+async fn the_observer_reports_the_metadata_and_the_tasks_the_commit_stored() {
+    let db = Database::new().await;
+    let reports = Arc::new(Reports::default());
+    let executor = planned_executor(&db.pool, 1).with_observer(reports.clone());
+    let causation = Causation::root("integration");
+    executor
+        .execute_with_metadata(&"observed".into(), record("first", 0), causation.event_metadata())
+        .await
+        .unwrap();
+    assert_eq!(
+        executor.execute(&"observed".into(), Command::Reject).await,
+        Err(CommandGatewayError::Domain(Rejected))
+    );
+    let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
+        .get_events::<CommandAggregate>("observed")
+        .await
+        .unwrap();
+    let outbox: Vec<(Uuid, Value)> =
+        sqlx::query_as("SELECT id, payload FROM transactional_outbox WHERE aggregate_id = 'observed'")
+            .fetch_all(&db.pool)
+            .await
+            .unwrap();
+    let reports = std::mem::take(&mut *reports.0.lock().unwrap());
+    let [(id, metadata, accepted), rejected] = &reports[..] else {
+        panic!("one report per command: {reports:?}");
+    };
+    assert_eq!((id.as_str(), json!(metadata)), ("observed", events[0].metadata.clone()));
+    assert_eq!(accepted, &Ok(outbox), "the report's tasks are the outbox rows of the commit");
+    assert_eq!(
+        rejected,
+        &("observed".to_owned(), HashMap::new(), Err("rejected: rejected".to_owned()))
     );
     db.close().await;
 }

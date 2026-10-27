@@ -2,10 +2,7 @@
 //! `TicketRecorded` plans `encore_send_e_ticket` in the same commit ([reactions](super::reactions)).
 use crate::{
     fan::{
-        application::{
-            app::FanApp,
-            chain::{ChainStep, run_chain_step},
-        },
+        application::chain::{ChainStep, run_chain_step},
         domain::{Fan, FanCommand, commands::RecordTicket},
     },
     shared::domain::{
@@ -39,8 +36,9 @@ pub struct RecordTicketV1 {
     pub fan_name: String,
 }
 
+/// Runs the step on the ledgers' executor.
 pub struct RecordTicketHandler<E> {
-    pub fans: Arc<FanApp<E>>,
+    pub fans: Arc<E>,
 }
 
 impl<E: CommandExecutor<Fan>> TaskHandler<RecordTicketV1> for RecordTicketHandler<E> {
@@ -54,7 +52,7 @@ impl<E: CommandExecutor<Fan>> TaskHandler<RecordTicketV1> for RecordTicketHandle
             fan_name: payload.fan_name,
         });
         run_chain_step(
-            &self.fans,
+            self.fans.as_ref(),
             attempt,
             ChainStep {
                 concert_id: &payload.concert_id,

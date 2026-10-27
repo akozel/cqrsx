@@ -1,6 +1,7 @@
 use super::{
     CommandExecutor, CommandGatewayError,
     locks::{AggregateLockRegistry, LockLimits, LockRefused},
+    observer::{CommandObserver, CommandReport, Outcome},
     planner::{Planning, TaskPlanner},
     retry::retry_on_aggregate_conflict,
 };
@@ -10,7 +11,7 @@ use crate::cqrs::{
     command::{retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
     store::EventStore,
 };
-use std::{collections::HashMap, error::Error};
+use std::{collections::HashMap, error::Error, sync::Arc};
 
 /// The core of command execution for one aggregate type, independent of the store: the [`CqrsFramework`] it
 /// owns for its life holds the store, the rules and the task planner. `postgres::command::PostgresCommandExecutor`
@@ -27,22 +28,26 @@ use std::{collections::HashMap, error::Error};
 /// repeats clones of the command and of its metadata and plans its tasks again from its own decision
 /// ([`with_task_planner`](Self::with_task_planner)). A commit with events wakes the aggregate type's projection
 /// processors ([`with_commit_wakeup`](Self::with_commit_wakeup)), which read the journal themselves; then the
-/// command releases the lock and answers with what it committed.
+/// command releases the lock, tells the executor's observer what became of it
+/// ([`with_observer`](Self::with_observer)) and answers with what it committed.
 pub struct CommandExecutorCore<A: Aggregate, S: EventStore<A>> {
     framework: CqrsFramework<A, S>,
     retry_policy: AggregateConflictRetryPolicy,
     locks: AggregateLockRegistry,
     wakeup: Option<CommitWakeup>,
+    observer: Option<Arc<dyn CommandObserver<A>>>,
 }
 
 impl<A: Aggregate + 'static, S: EventStore<A>> CommandExecutorCore<A, S> {
-    /// An executor over `framework` with a lock registry of its own, bounded by `lock_limits`, that wakes nobody.
+    /// An executor over `framework` with a lock registry of its own, bounded by `lock_limits`, that wakes nobody and
+    /// tells nobody.
     pub fn new(framework: CqrsFramework<A, S>, retry_policy: AggregateConflictRetryPolicy, lock_limits: LockLimits) -> Self {
         Self {
             framework,
             retry_policy,
             locks: AggregateLockRegistry::new(lock_limits),
             wakeup: None,
+            observer: None,
         }
     }
 
@@ -63,8 +68,20 @@ impl<A: Aggregate + 'static, S: EventStore<A>> CommandExecutorCore<A, S> {
         self
     }
 
+    /// Tells `observer` about every command: once, after its attempts, once the aggregate's lock is released and the
+    /// wake-up sent, before the answer (see [`CommandObserver`]). One observer per executor: a second replaces the
+    /// first.
+    pub fn with_observer(mut self, observer: Arc<dyn CommandObserver<A>>) -> Self {
+        self.set_observer(observer);
+        self
+    }
+
     pub(crate) fn set_commit_wakeup(&mut self, wakeup: CommitWakeup) {
         self.wakeup = Some(wakeup);
+    }
+
+    pub(crate) fn set_observer(&mut self, observer: Arc<dyn CommandObserver<A>>) {
+        self.observer = Some(observer);
     }
 
     pub(crate) fn set_task_planner(&mut self, planning: Planning<A>) {
@@ -96,12 +113,34 @@ where
     /// Waits for the aggregate's lock, then runs the command with bounded conflict retry. The id's text (its
     /// `Display`) is formatted once, for the lock's key, and every attempt loads and plans with that text. Each
     /// attempt receives a clone of `metadata`, so a retried command commits exactly the metadata of its first
-    /// attempt, and plans its tasks from its own decision.
+    /// attempt, and plans its tasks from its own decision. Once the lock is released the observer, if any, hears the
+    /// command and its outcome; then the caller gets the answer.
     pub async fn execute_with_metadata(
         &self,
         id: &A::Id,
-        command: A::Command,
+        mut command: A::Command,
         metadata: HashMap<String, String>,
+    ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+        let answer = self.run(id, &mut command, &metadata).await;
+        if let Some(observer) = &self.observer {
+            observer.command(&CommandReport {
+                aggregate_id: id,
+                command: &command,
+                metadata: &metadata,
+                outcome: Outcome::of(&answer),
+            });
+        }
+        answer
+    }
+
+    /// The command under its aggregate's lock: every attempt and the wake-up; the lock is released when it returns.
+    /// Every attempt decides a clone of `command`; the command is borrowed `&mut`, which is `Send` for a command that
+    /// is `Send`, where a shared borrow held across an await would need it `Sync`.
+    async fn run(
+        &self,
+        id: &A::Id,
+        command: &mut A::Command,
+        metadata: &HashMap<String, String>,
     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
         // Held through every attempt and the wake-up.
         let lock = self
@@ -111,9 +150,8 @@ where
             .map_err(lock_refused::<A::Error>(A::TYPE))?;
         let key = lock.key().aggregate_id(); // the id's text, formatted once: every attempt borrows it
         let framework = &self.framework;
-        let metadata_ref = &metadata;
         let report = retry_on_aggregate_conflict(self.retry_policy, move || {
-            framework.attempt(id, key, command.clone(), metadata_ref.clone())
+            framework.attempt(id, key, command.clone(), metadata.clone())
         })
         .await
         .inspect_err(|error| log_aggregate_error(A::TYPE, error))
@@ -1467,5 +1505,299 @@ mod tests {
         assert_eq!(store.loads.lock().unwrap().last().map(String::as_str), Some("3-07"));
         assert_eq!("3".parse::<RoomId>(), Err("no room id: 3".to_owned()));
         assert_eq!("3-x".parse::<RoomId>(), Err("no room id: 3-x".to_owned()));
+    }
+
+    /// What a report says: the id, the command, the `source` of the metadata and the outcome (the values of an accepted
+    /// command's tasks).
+    type Report = (String, DummyCommand, Option<String>, String);
+
+    /// Notes every report.
+    #[derive(Default)]
+    struct Heard(Mutex<Vec<Report>>);
+
+    impl Heard {
+        fn taken(&self) -> Vec<Report> {
+            std::mem::take(&mut *self.0.lock().unwrap())
+        }
+    }
+
+    impl CommandObserver<DummyAggregate> for Heard {
+        fn command(&self, report: &CommandReport<'_, DummyAggregate>) {
+            let outcome = match report.outcome {
+                Outcome::Accepted { tasks } => format!(
+                    "accepted {:?}",
+                    tasks
+                        .iter()
+                        .map(|task| task.payload()["value"].as_str().unwrap_or_default().to_owned())
+                        .collect::<Vec<_>>()
+                ),
+                Outcome::Rejected(error) => format!("rejected: {error}"),
+                Outcome::Conflict => "conflict".to_owned(),
+                Outcome::Unavailable => "unavailable".to_owned(),
+            };
+            self.0.lock().unwrap().push((
+                report.aggregate_id.clone(),
+                report.command.clone(),
+                report.metadata.get("source").cloned(),
+                outcome,
+            ));
+        }
+    }
+
+    fn heard(id: &str, command: DummyCommand, source: Option<&str>, outcome: &str) -> Report {
+        (id.to_owned(), command, source.map(str::to_owned), outcome.to_owned())
+    }
+
+    #[tokio::test]
+    async fn the_observer_hears_every_outcome_once_with_the_id_the_command_and_its_metadata() {
+        let observer = Arc::new(Heard::default());
+        let accepting = dummy_executor(DummyStore::new(0), 1)
+            .with_task_planner(ValuePlanner::default())
+            .with_observer(observer.clone());
+        let source = HashMap::from([("source".to_owned(), "test".to_owned())]);
+        let report = accepting
+            .execute_with_metadata(&"a-1".into(), record("x"), source.clone())
+            .await
+            .unwrap();
+        assert_eq!(report.tasks.len(), 1);
+        assert_eq!(
+            accepting.execute(&"a-2".into(), DummyCommand::Reject).await,
+            Err(CommandGatewayError::Domain(DummyError))
+        );
+        let conflicting = dummy_executor(DummyStore::new(5), 2).with_observer(observer.clone());
+        assert_eq!(
+            conflicting.execute(&"a-3".into(), record("y")).await,
+            Err(CommandGatewayError::Conflict)
+        );
+        let failing = dummy_executor(
+            DummyStore::failing(|| AggregateError::DatabaseConnectionError(Box::new(io::Error::other("down")))),
+            1,
+        )
+        .with_observer(observer.clone());
+        assert_eq!(
+            failing.execute_with_metadata(&"a-4".into(), record("z"), source).await,
+            Err(CommandGatewayError::Unavailable)
+        );
+        assert_eq!(
+            observer.taken(),
+            [
+                heard("a-1", record("x"), Some("test"), r#"accepted ["x"]"#),
+                heard("a-2", DummyCommand::Reject, None, "rejected: rejected"),
+                heard("a-3", record("y"), None, "conflict"),
+                heard("a-4", record("z"), Some("test"), "unavailable"),
+            ],
+            "one report per command, after its last attempt"
+        );
+    }
+
+    /// Notes the state before every decision whose tasks a report names.
+    #[derive(Default)]
+    struct Totals(Mutex<Vec<Vec<serde_json::Value>>>);
+
+    impl CommandObserver<Tally> for Totals {
+        fn command(&self, report: &CommandReport<'_, Tally>) {
+            let Outcome::Accepted { tasks } = report.outcome else {
+                panic!("the tally accepts every command");
+            };
+            let before = tasks.iter().map(|task| task.payload()["before"].clone()).collect();
+            self.0.lock().unwrap().push(before);
+        }
+    }
+
+    #[tokio::test]
+    async fn the_observer_hears_the_tasks_of_the_attempt_that_committed() {
+        let store = TallyStore::new(2);
+        let (replaced, observer) = (Arc::new(Totals::default()), Arc::new(Totals::default()));
+        let executor = CommandExecutorCore::new(
+            CqrsFramework::new(store.clone(), ()),
+            no_delay_policy(3),
+            LockLimits::default(),
+        )
+        .with_task_planner(TallyPlanner { refuse_above: None })
+        .with_observer(replaced.clone())
+        .with_observer(observer.clone());
+        let report = executor.execute(&"tally".into(), 5).await.unwrap();
+        let attempts = store.attempts.lock().unwrap().clone();
+        assert_eq!(attempts.len(), 3, "two conflicts, then the commit");
+        assert_eq!(report.tasks, attempts[2]);
+        assert_eq!(
+            *observer.0.lock().unwrap(),
+            [vec![serde_json::json!(20)]],
+            "the tasks planned from the state the committing attempt loaded"
+        );
+        assert!(replaced.0.lock().unwrap().is_empty(), "a second observer replaces the first");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_refused_lock_is_reported_unavailable_and_loads_nothing() {
+        let load_gate = closed_gate();
+        let store = VersionedStore {
+            load_gate: Some(load_gate.clone()),
+            ..VersionedStore::default()
+        };
+        let observer = Arc::new(Heard::default());
+        let executor = Arc::new(
+            versioned_executor_with(&store, 1, LockLimits::new(Duration::from_millis(100), 1).unwrap())
+                .with_observer(observer.clone()),
+        );
+        // The holder keeps the key's lock while its load waits at the gate.
+        let holder = tokio::spawn({
+            let executor = executor.clone();
+            async move { executor.execute(&"aggregate".into(), record("holder")).await }
+        });
+        until(|| store.loads.load(Ordering::SeqCst) == 1).await;
+        // The clock is paused: the idle runtime advances it to the waiter's deadline.
+        assert_eq!(
+            executor.execute(&"aggregate".into(), record("refused")).await,
+            Err(CommandGatewayError::Unavailable)
+        );
+        assert_eq!(
+            observer.taken(),
+            [heard("aggregate", record("refused"), None, "unavailable")],
+            "the refusal is reported while the holder still waits"
+        );
+        load_gate.add_permits(1);
+        assert!(holder.await.unwrap().is_ok());
+        assert_eq!(observer.taken(), [heard("aggregate", record("holder"), None, "accepted []")]);
+        assert_eq!(store.loads.load(Ordering::SeqCst), 1, "the refused command loaded nothing");
+    }
+
+    /// Keeps the report of `first` until `second` has reported (at most five seconds), and notes whether the commit
+    /// wake-up had come by then.
+    struct Holding {
+        entered: Mutex<std::sync::mpsc::Sender<()>>,
+        second: Mutex<std::sync::mpsc::Sender<()>>,
+        second_reported: Mutex<std::sync::mpsc::Receiver<()>>,
+        woken: Mutex<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+        log: Mutex<Vec<String>>,
+    }
+
+    impl CommandObserver<DummyAggregate> for Holding {
+        fn command(&self, report: &CommandReport<'_, DummyAggregate>) {
+            if *report.command != record("first") {
+                self.log.lock().unwrap().push("second".to_owned());
+                self.second.lock().unwrap().send(()).unwrap();
+                return;
+            }
+            let woken = self
+                .woken
+                .lock()
+                .unwrap()
+                .as_mut()
+                .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()))
+                .is_ready();
+            self.entered.lock().unwrap().send(()).unwrap();
+            let second = self
+                .second_reported
+                .lock()
+                .unwrap()
+                .recv_timeout(Duration::from_secs(5))
+                .is_ok();
+            self.log
+                .lock()
+                .unwrap()
+                .push(format!("first: woken {woken}, the second reported meanwhile {second}"));
+        }
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn the_observer_runs_once_the_lock_is_released_and_the_wakeup_sent() {
+        use std::future::Future;
+        let wakeup = CommitWakeup::new();
+        let mut woken: std::pin::Pin<Box<dyn Future<Output = ()> + Send>> = Box::pin({
+            let wakeup = wakeup.clone();
+            async move { wakeup.wait().await }
+        });
+        let waiting = woken
+            .as_mut()
+            .poll(&mut std::task::Context::from_waker(std::task::Waker::noop()));
+        assert!(waiting.is_pending(), "the wait is registered before the command");
+        let (entered, first_entered) = std::sync::mpsc::channel();
+        let (second, second_reported) = std::sync::mpsc::channel();
+        let observer = Arc::new(Holding {
+            entered: Mutex::new(entered),
+            second: Mutex::new(second),
+            second_reported: Mutex::new(second_reported),
+            woken: Mutex::new(woken),
+            log: Mutex::default(),
+        });
+        let store = VersionedStore::default();
+        let executor = Arc::new(
+            versioned_executor(&store, 1)
+                .with_commit_wakeup(wakeup)
+                .with_observer(observer.clone()),
+        );
+        let first = tokio::spawn({
+            let executor = executor.clone();
+            async move { executor.execute(&"aggregate".into(), record("first")).await }
+        });
+        // A blocking wait: the observer blocks a worker, and a worker blocked outside the driver stalls the timers.
+        assert!(
+            first_entered.recv_timeout(Duration::from_secs(5)).is_ok(),
+            "the first command's observer is running"
+        );
+        // The default lock limits: a lock still held would refuse the second command after a second.
+        assert!(
+            executor.execute(&"aggregate".into(), record("second")).await.is_ok(),
+            "the next command of the key does not wait for the observer"
+        );
+        assert!(first.await.unwrap().is_ok());
+        assert_eq!(
+            *observer.log.lock().unwrap(),
+            ["second", "first: woken true, the second reported meanwhile true"]
+        );
+        assert_eq!(*store.journal.lock().unwrap(), ["first", "second"]);
+    }
+
+    #[tokio::test]
+    async fn the_reports_of_one_key_come_in_the_order_of_its_commits() {
+        let store = VersionedStore::default();
+        let observer = Arc::new(Heard::default());
+        let executor = Arc::new(versioned_executor(&store, 1).with_observer(observer.clone()));
+        let mut commands = tokio::task::JoinSet::new();
+        for index in 0..12 {
+            let executor = executor.clone();
+            commands.spawn(async move { executor.execute(&"aggregate".into(), record(&index.to_string())).await });
+        }
+        while let Some(result) = commands.join_next().await {
+            assert!(result.unwrap().is_ok());
+        }
+        let reported: Vec<String> = observer
+            .taken()
+            .into_iter()
+            .map(|(_, command, _, _)| match command {
+                DummyCommand::Record(value) => value,
+                DummyCommand::Reject => panic!("no rejection was sent"),
+            })
+            .collect();
+        assert_eq!(reported, *store.journal.lock().unwrap());
+    }
+
+    /// Panics on the report of `boom`.
+    struct Panicking;
+
+    impl CommandObserver<DummyAggregate> for Panicking {
+        fn command(&self, report: &CommandReport<'_, DummyAggregate>) {
+            if *report.command == record("boom") {
+                panic!("the observer panics");
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_panicking_observer_panics_its_caller_after_the_commit_and_the_lock_stays_free() {
+        let store = VersionedStore::default();
+        let executor = Arc::new(versioned_executor(&store, 1).with_observer(Arc::new(Panicking)));
+        let boom = tokio::spawn({
+            let executor = executor.clone();
+            async move { executor.execute(&"aggregate".into(), record("boom")).await }
+        });
+        assert!(boom.await.unwrap_err().is_panic());
+        assert_eq!(*store.journal.lock().unwrap(), ["boom"], "the commit stays");
+        assert!(
+            executor.execute(&"aggregate".into(), record("next")).await.is_ok(),
+            "the lock was released before the observer"
+        );
+        assert_eq!(*store.journal.lock().unwrap(), ["boom", "next"]);
     }
 }

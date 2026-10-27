@@ -2,10 +2,7 @@
 //! `TicketCancelled` plans `encore_issue_refund` in the same commit ([reactions](super::reactions)).
 use crate::{
     fan::{
-        application::{
-            app::FanApp,
-            chain::{ChainStep, run_chain_step},
-        },
+        application::chain::{ChainStep, run_chain_step},
         domain::{Fan, FanCommand, commands::RecordCancellation},
     },
     shared::domain::{ConcertId, FanId, venue::SeatId},
@@ -35,8 +32,9 @@ pub struct RecordCancellationV1 {
     pub refund: u32,
 }
 
+/// Runs the step on the ledgers' executor.
 pub struct RecordCancellationHandler<E> {
-    pub fans: Arc<FanApp<E>>,
+    pub fans: Arc<E>,
 }
 
 impl<E: CommandExecutor<Fan>> TaskHandler<RecordCancellationV1> for RecordCancellationHandler<E> {
@@ -47,7 +45,7 @@ impl<E: CommandExecutor<Fan>> TaskHandler<RecordCancellationV1> for RecordCancel
             refund: payload.refund,
         });
         run_chain_step(
-            &self.fans,
+            self.fans.as_ref(),
             attempt,
             ChainStep {
                 concert_id: &payload.concert_id,

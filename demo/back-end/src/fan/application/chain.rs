@@ -1,26 +1,24 @@
 //! The one step every ledger step performs ([`record_ticket`](super::record_ticket),
-//! [`record_cancellation`](super::record_cancellation)): metadata from the task, the internal `Fan` command, and the
-//! mapping of its outcome to a task result (PLAN.md §2.7). R9/R11 mean "already done" (redelivery), R10 means "too
-//! early, retry".
+//! [`record_cancellation`](super::record_cancellation)): metadata from the task, the internal `Fan` command on the
+//! ledger's executor, and the mapping of its outcome to a task result (PLAN.md §2.7). R9/R11 mean "already done"
+//! (redelivery), R10 means "too early, retry".
 use crate::{
-    fan::{
-        application::app::FanApp,
-        domain::{Fan, FanCommand, FanError},
-    },
+    fan::domain::{Fan, FanCommand, FanError},
     shared::{
-        application::command_service::{CommandMetadata, CommandOutcome},
+        application::metadata::CommandMetadata,
         domain::{ConcertId, FanId, FanLedgerId},
     },
 };
 use cqrsx::{
-    cqrs::command::CommandExecutor,
+    cqrs::command::{CommandExecutor, CommandGatewayError},
     task::{attempt::TaskAttempt, handler::TaskHandlerError},
 };
 use std::time::Duration;
 
 pub const CHAIN_RETRY_AFTER: Duration = Duration::from_secs(1);
 
-pub fn map_fan_outcome(outcome: CommandOutcome<FanError>) -> Result<(), TaskHandlerError> {
+/// The task result of the ledger's answer: accepted or already done, or retried after [`CHAIN_RETRY_AFTER`].
+pub fn map_fan_outcome(outcome: Result<(), CommandGatewayError<FanError>>) -> Result<(), TaskHandlerError> {
     let retry = |reason: &str| {
         Err(TaskHandlerError::Retry {
             reason: reason.to_owned(),
@@ -28,11 +26,11 @@ pub fn map_fan_outcome(outcome: CommandOutcome<FanError>) -> Result<(), TaskHand
         })
     };
     match outcome {
-        CommandOutcome::Accepted => Ok(()),
-        CommandOutcome::Rejected(FanError::AlreadyRecorded { .. } | FanError::AlreadyCancelled { .. }) => Ok(()),
-        CommandOutcome::Rejected(FanError::UnknownTicket { .. }) => retry("unknown_ticket"),
-        CommandOutcome::Conflict => retry("conflict"),
-        CommandOutcome::Unavailable => retry("unavailable"),
+        Ok(()) => Ok(()),
+        Err(CommandGatewayError::Domain(FanError::AlreadyRecorded { .. } | FanError::AlreadyCancelled { .. })) => Ok(()),
+        Err(CommandGatewayError::Domain(FanError::UnknownTicket { .. })) => retry("unknown_ticket"),
+        Err(CommandGatewayError::Conflict) => retry("conflict"),
+        Err(CommandGatewayError::Unavailable) => retry("unavailable"),
     }
 }
 
@@ -44,18 +42,18 @@ pub struct ChainStep<'a> {
     pub command: FanCommand,
 }
 
-/// Runs one chain step on behalf of `attempt`: the command continues the task's causation chain
-/// (cqrsx `Causation::from_task`) and runs on the fan's ledger for the concert (D-14). A malformed
-/// payload never reaches this point: the JSON adapter rejects it permanently, ids included.
+/// Runs one chain step on behalf of `attempt` on the ledgers' executor: the command continues the task's causation
+/// chain (cqrsx `Causation::from_task`) and runs on the fan's ledger for the concert (D-14). A malformed payload never
+/// reaches this point: the JSON adapter rejects it permanently, ids included.
 pub async fn run_chain_step<E: CommandExecutor<Fan>>(
-    fans: &FanApp<E>,
+    fans: &E,
     attempt: &TaskAttempt,
     step: ChainStep<'_>,
 ) -> Result<(), TaskHandlerError> {
     let metadata = CommandMetadata::from_task(attempt);
     let ledger = FanLedgerId::new(step.fan_id, step.concert_id);
-    let executed = fans.execute(&ledger, step.command, metadata).await;
-    map_fan_outcome(executed.outcome)
+    let answer = fans.execute_with_metadata(&ledger, step.command, metadata.to_map()).await;
+    map_fan_outcome(answer.map(|_| ()))
 }
 
 #[cfg(test)]
@@ -66,16 +64,21 @@ mod tests {
     #[test]
     fn outcomes_map_to_task_results_as_in_the_plan_table() {
         let id = Uuid::new_v4();
-        assert!(map_fan_outcome(CommandOutcome::Accepted).is_ok());
-        assert!(map_fan_outcome(CommandOutcome::Rejected(FanError::AlreadyRecorded { booking_id: id })).is_ok());
-        assert!(map_fan_outcome(CommandOutcome::Rejected(FanError::AlreadyCancelled { booking_id: id })).is_ok());
+        assert!(map_fan_outcome(Ok(())).is_ok());
+        assert!(map_fan_outcome(Err(CommandGatewayError::Domain(FanError::AlreadyRecorded { booking_id: id }))).is_ok());
+        assert!(
+            map_fan_outcome(Err(CommandGatewayError::Domain(FanError::AlreadyCancelled {
+                booking_id: id
+            })))
+            .is_ok()
+        );
         for (outcome, reason) in [
             (
-                CommandOutcome::Rejected(FanError::UnknownTicket { booking_id: id }),
+                Err(CommandGatewayError::Domain(FanError::UnknownTicket { booking_id: id })),
                 "unknown_ticket",
             ),
-            (CommandOutcome::Conflict, "conflict"),
-            (CommandOutcome::Unavailable, "unavailable"),
+            (Err(CommandGatewayError::Conflict), "conflict"),
+            (Err(CommandGatewayError::Unavailable), "unavailable"),
         ] {
             match map_fan_outcome(outcome) {
                 Err(TaskHandlerError::Retry { reason: r, retry_after }) => {

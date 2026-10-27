@@ -1,6 +1,6 @@
 //! One module per aggregate: its command executor with the locks and snapshots of the configuration, the
-//! commit wake-up of its read model's processor (see [`projections`](super::projections)) and the application
-//! service around it. A new aggregate gets a module like these two, listed here.
+//! commit wake-up of its read model's processor (see [`projections`](super::projections)) and the activity feed's
+//! observer of its commands. A new aggregate gets a module like these two, listed here.
 pub mod concert;
 pub mod fan;
 

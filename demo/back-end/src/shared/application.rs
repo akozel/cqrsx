@@ -1,9 +1,9 @@
-//! What the flows of several modules share: the command pipeline around the cqrsx command port (metadata, outcome,
-//! activity log), the names of the task policies, the activity log, and the ports to the outside world (the mail
-//! service, the read models). The adapters live in `shared::infrastructure`; tests use in-memory doubles.
+//! What the flows of several modules share: the metadata of a command, the names of the task policies, the activity
+//! log, and the ports to the outside world (the mail service, the read models). The adapters live in
+//! `shared::infrastructure`; tests use in-memory doubles.
 pub mod activity;
-pub mod command_service;
 pub mod mail;
+pub mod metadata;
 pub mod policies;
 pub mod read_model;
 #[cfg(test)]

@@ -6,6 +6,7 @@ use crate::{
     bootstrap::projections::checkpoint_keys,
     config::{Config, DEFAULT_MONGODB_POOL_SIZE, DEFAULT_NODE_NAME, outbox_default},
     operations::application::{
+        activity_observer::CommandActivityObserver,
         ledger::{EventLedgerStats, LedgerTotals},
         rebuild::{DEFAULT_MAX_PACE, DEFAULT_STATUS_TIMEOUT, ReadSide, ReadSideLimits, RebuildService},
     },
@@ -32,6 +33,12 @@ use mongodb::{Client, options::ClientOptions};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
+
+/// The activity feed's observer of the command executors, publishing to `activity`: what the composition registers
+/// with every executor, for the executors of the modules' tests.
+pub fn command_feed(activity: &Arc<ActivityHub>) -> Arc<CommandActivityObserver> {
+    Arc::new(CommandActivityObserver::new(activity.clone()))
+}
 
 /// The policies of the task types under [`config`]: six attempts, a step waits 1 s, an e-mail 1 s to 8 s.
 pub fn policies() -> cqrsx::task::policy::Policies {

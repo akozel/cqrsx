@@ -12,21 +12,32 @@
 //!   `STEP`) hold the same pauses.
 //!
 //! Every file is `key = value` lines sorted by key, every key once. The entries and the pauses come from today's
-//! producers: the command service, the projection observer, the rebuild service, the mail client and the task
-//! handlers.
+//! producers: the command observer, the projection observer, the rebuild service, the mail client and the task
+//! handlers. The values of the command entries on every outcome are pinned by a test of their own, written against
+//! the command service the observer replaced (backlog 05/08).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use axum::{Json, Router, http::StatusCode, routing::post};
 use chrono::NaiveDate;
 use cqrsx::{
     cqrs::{
-        CommitReport,
-        command::{CommandExecutor, CommandGatewayError},
+        AggregateError,
+        command::{
+            CommandExecutor,
+            observer::{CommandObserver, CommandReport, Outcome},
+        },
+        event::EventEnvelope,
         projection::{
             checkpoint::CheckpointStore,
             processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
         },
-        store::feed::Position,
-        testing::{command::TestCommandExecutor, mem_checkpoint_store::MemCheckpointStore, unavailable_store::UnavailableStore},
+        reactions::ReactionsPlanner,
+        store::{EventStore, feed::Position},
+        testing::{
+            command::TestCommandExecutor,
+            mem_checkpoint_store::MemCheckpointStore,
+            mem_store::{MemStore, MemStoreAggregateContext},
+            unavailable_store::UnavailableStore,
+        },
     },
     task::{
         NewTask,
@@ -41,17 +52,23 @@ use encore_backend::{
         projections::checkpoint_keys,
         tasks::{mail_settings, policies},
     },
-    concert::domain::{Concert, ConcertCommand, ConcertError, commands::AnnounceConcert},
+    concert::domain::{
+        Concert, ConcertCommand, ConcertError, ConcertEvent, ConcertRules,
+        commands::{AnnounceConcert, BookSeat, CancelBooking},
+    },
     config::{Config, duration_text},
     fan::application::{
-        app::FanApp,
         issue_refund::{IssueRefundHandler, IssueRefundV1},
         record_cancellation::{RecordCancellationHandler, RecordCancellationV1},
         record_ticket::{RecordTicketHandler, RecordTicketV1},
         send_e_ticket::{SendETicketHandler, SendETicketV1},
     },
+    fan::domain::{
+        Fan, FanCommand,
+        commands::{RecordCancellation, RecordTicket},
+    },
     operations::application::{
-        activity_observer::ActivityObserver,
+        activity_observer::{ActivityObserver, CommandActivityObserver},
         ledger::{EventLedgerStats, LedgerTotals},
         rebuild::{ReadSide, ReadSideLimits, RebuildService},
     },
@@ -60,11 +77,11 @@ use encore_backend::{
         application::{
             StorageError,
             activity::ActivityHub,
-            command_service::{CommandLabel, CommandMetadata, CommandService},
+            metadata::CommandMetadata,
             policies::{MAIL, STEP},
         },
         domain::{
-            ConcertId, FanId,
+            ConcertId, FanId, FanLedgerId,
             venue::{SeatId, Zone},
         },
         infrastructure::http_mailer::{HttpMailer, MailClientSettings},
@@ -76,9 +93,13 @@ use std::{
     cell::RefCell,
     collections::{BTreeMap, BTreeSet, HashMap, VecDeque},
     path::Path,
-    sync::{Arc, Mutex},
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
     time::Duration,
 };
+use tokio::sync::Semaphore;
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -206,20 +227,6 @@ fn the_golden_configuration_is_what_env_example_documents() {
 
 // --- activity feed -------------------------------------------------------------------------------------------
 
-/// Answers every command with the next of its results, oldest first.
-struct Scripted(Mutex<VecDeque<Result<CommitReport<Concert>, CommandGatewayError<ConcertError>>>>);
-
-impl CommandExecutor<Concert> for Scripted {
-    async fn execute_with_metadata(
-        &self,
-        _: &ConcertId,
-        _: ConcertCommand,
-        _: HashMap<String, String>,
-    ) -> Result<CommitReport<Concert>, CommandGatewayError<ConcertError>> {
-        self.0.lock().unwrap().pop_front().expect("a result for every command")
-    }
-}
-
 /// Totals and a lag for the rebuild service.
 struct Ledger;
 
@@ -327,37 +334,32 @@ fn variant_field(kind: &str) -> Option<&'static str> {
 async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
     let activity = Arc::new(ActivityHub::new(128, 128));
 
-    // The outcomes of a command (`command.*`), with a fan and without one.
+    // The executors' reports (`command.*`): every outcome, with a fan and without one.
     let task = NewTask::from_payload(TaskFormat::new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
-    let results = [
-        Ok(CommitReport {
-            events: Vec::new(),
-            tasks: vec![task],
-        }),
-        Ok(CommitReport {
-            events: Vec::new(),
-            tasks: Vec::new(),
-        }),
-        Err(CommandGatewayError::Domain(ConcertError::SoldOut)),
-        Err(CommandGatewayError::Conflict),
-        Err(CommandGatewayError::Unavailable),
-    ];
-    let commands = CommandService::<Concert, _>::new(Scripted(Mutex::new(results.into())), activity.clone());
-    let announce = || {
-        ConcertCommand::AnnounceConcert(AnnounceConcert {
-            artist: "Radiohead".into(),
-            city: "Tbilisi".into(),
-            date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
-        })
-    };
+    let sold_out = ConcertError::SoldOut;
+    let commands = CommandActivityObserver::new(activity.clone());
+    let announce = ConcertCommand::AnnounceConcert(AnnounceConcert {
+        artist: "Radiohead".into(),
+        city: "Tbilisi".into(),
+        date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
+    });
+    let booking = CommandMetadata::ui();
+    let book = book("B4", "fox", &booking);
     let concert_id = concert();
-    for fan_id in [Some("fox"), None, Some("fox"), Some("fox"), None] {
-        let label = CommandLabel {
-            aggregate_id: concert_id.as_str(),
-            command_type: if fan_id.is_some() { "BookSeat" } else { "AnnounceConcert" },
-            fan_id,
-        };
-        commands.run(&concert_id, label, announce(), CommandMetadata::ui()).await;
+    let metadata = booking.to_map();
+    for (command, outcome) in [
+        (&book, Outcome::Accepted { tasks: &[task] }),
+        (&announce, Outcome::Accepted { tasks: &[] }),
+        (&book, Outcome::Rejected(&sold_out)),
+        (&book, Outcome::Conflict),
+        (&announce, Outcome::Unavailable),
+    ] {
+        commands.command(&CommandReport::<Concert> {
+            aggregate_id: &concert_id,
+            command,
+            metadata: &metadata,
+            outcome,
+        });
     }
 
     // The projection processor's reports (`projection.*`).
@@ -467,6 +469,353 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
     assert_golden("activity_feed.txt", ACTIVITY_FEED, &render(shapes));
 }
 
+// --- command entries: the values -----------------------------------------------------------------------------
+
+/// The box office's store in memory with switches: every commit conflicts, every load fails, every load waits at a
+/// closed gate (holding the concert's lock).
+#[derive(Clone, Default)]
+struct Switched {
+    inner: MemStore<Concert>,
+    conflict: Arc<AtomicBool>,
+    unavailable: Arc<AtomicBool>,
+    gate: Arc<Mutex<Option<Arc<Semaphore>>>>,
+}
+
+impl Switched {
+    /// From now on every load waits for a permit of the returned gate.
+    fn close_gate(&self) -> Arc<Semaphore> {
+        let gate = Arc::new(Semaphore::new(0));
+        *self.gate.lock().unwrap() = Some(gate.clone());
+        gate
+    }
+}
+
+impl EventStore<Concert> for Switched {
+    type AC = MemStoreAggregateContext<Concert>;
+
+    async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {
+        self.inner.load_events(id).await
+    }
+
+    async fn load_aggregate(&self, id: &str) -> Result<Self::AC, AggregateError<ConcertError>> {
+        if self.unavailable.load(Ordering::SeqCst) {
+            return Err(AggregateError::DatabaseConnectionError("unreachable".into()));
+        }
+        let gate = self.gate.lock().unwrap().clone();
+        if let Some(gate) = gate {
+            gate.acquire().await.unwrap().forget();
+        }
+        self.inner.load_aggregate(id).await
+    }
+
+    async fn commit(
+        &self,
+        events: Vec<ConcertEvent>,
+        context: Self::AC,
+        metadata: HashMap<String, String>,
+        tasks: &[NewTask],
+    ) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {
+        if self.conflict.load(Ordering::SeqCst) {
+            return Err(AggregateError::AggregateConflict);
+        }
+        self.inner.commit(events, context, metadata, tasks).await
+    }
+}
+
+/// What produces the command entries: the executor of the box office over `Switched` and the one of the ledgers over
+/// memory, both planning with their reactions and reporting to the activity feed's observer as the process does.
+struct Feed {
+    concerts: TestCommandExecutor<Concert, Switched>,
+    fans: TestCommandExecutor<Fan>,
+}
+
+impl Feed {
+    fn new(store: Switched, activity: &Arc<ActivityHub>) -> Self {
+        let config = Config::from_lookup(|_| None).unwrap();
+        let policies = policies(&config).unwrap();
+        let observer = Arc::new(CommandActivityObserver::new(activity.clone()));
+        let concerts = TestCommandExecutor::new(
+            store,
+            ConcertRules {
+                ticket_limit: config.ticket_limit,
+            },
+        )
+        .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
+        .with_observer(observer.clone());
+        let fans = TestCommandExecutor::new(MemStore::default(), ())
+            .with_task_planner(ReactionsPlanner::<Fan>::new(policies))
+            .with_observer(observer);
+        Self { concerts, fans }
+    }
+
+    /// Runs `command` on the concert.
+    async fn concert(&self, command: ConcertCommand, metadata: CommandMetadata) {
+        let _ = self
+            .concerts
+            .execute_with_metadata(&concert(), command, metadata.to_map())
+            .await;
+    }
+
+    /// Runs `command` on Fox's ledger for the concert.
+    async fn fan(&self, command: FanCommand, metadata: CommandMetadata) {
+        let _ = self.fans.execute_with_metadata(&ledger(), command, metadata.to_map()).await;
+    }
+}
+
+fn ledger() -> FanLedgerId {
+    FanLedgerId::new(&fan(), &concert())
+}
+
+fn book(seat: &str, fan_id: &str, metadata: &CommandMetadata) -> ConcertCommand {
+    ConcertCommand::BookSeat(BookSeat {
+        seat: seat.into(),
+        fan_id: FanId::parse(fan_id).unwrap(),
+        fan_name: fan_id.to_uppercase(),
+        booking_id: metadata.causation.command_id,
+    })
+}
+
+fn cancel(seat: &str, fan_id: &str, metadata: &CommandMetadata) -> ConcertCommand {
+    ConcertCommand::CancelBooking(CancelBooking {
+        seat: seat.into(),
+        fan_id: FanId::parse(fan_id).unwrap(),
+        cancellation_id: metadata.causation.command_id,
+    })
+}
+
+/// The metadata of the command a task of `payload` issues, in the causation chain of `cause`.
+fn step<P: TaskPayload + Serialize>(payload: &P, cause: &CommandMetadata) -> CommandMetadata {
+    let attempt = TaskAttempt::new(
+        Uuid::now_v7(),
+        TaskFormat::of::<P>().unwrap(),
+        serde_json::to_value(payload).unwrap(),
+        json!({ "correlation_id": cause.causation.correlation_id }),
+        1,
+    )
+    .unwrap();
+    CommandMetadata::from_task(&attempt)
+}
+
+/// A `command.*` entry as the feed shows it: `kind`, the aggregate (type and id), the ids and the source of `metadata`,
+/// the command (type and fan) and the fields of its outcome.
+fn command_entry(
+    kind: &str,
+    aggregate: (&str, &str),
+    metadata: &CommandMetadata,
+    command: (&str, Value),
+    outcome: Value,
+) -> (String, Value) {
+    let mut fields = json!({
+        "aggregate_type": aggregate.0,
+        "aggregate_id": aggregate.1,
+        "command_id": metadata.causation.command_id,
+        "correlation_id": metadata.causation.correlation_id,
+        "source": metadata.causation.source,
+        "command_type": command.0,
+        "fan_id": command.1,
+    });
+    if let (Value::Object(fields), Value::Object(outcome)) = (&mut fields, outcome) {
+        fields.extend(outcome);
+    }
+    (kind.to_owned(), fields)
+}
+
+/// Every outcome of a command of both aggregates, and the values of its entry: accepted with and without tasks,
+/// rejected with its code and params, a conflict, an unreachable store, a refused lock; a fan from the command's label,
+/// from the ledger's id, nobody's.
+#[tokio::test(start_paused = true)]
+async fn command_entries_carry_their_values_on_every_outcome_of_both_aggregates() {
+    let activity = Arc::new(ActivityHub::new(64, 64));
+    let store = Switched::default();
+    let feed = Feed::new(store.clone(), &activity);
+    let concert_id = concert();
+    let box_office = ("Concert", concert_id.as_str());
+
+    let seed = CommandMetadata::with_source("seed");
+    let announce = ConcertCommand::AnnounceConcert(AnnounceConcert {
+        artist: "Radiohead".into(),
+        city: "Tbilisi".into(),
+        date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
+    });
+    feed.concert(announce, seed.clone()).await;
+    let booking = CommandMetadata::ui();
+    feed.concert(book("A1", "fox", &booking), booking.clone()).await;
+    let taken = CommandMetadata::ui();
+    feed.concert(book("A1", "panda", &taken), taken.clone()).await;
+    let cancellation = CommandMetadata::ui();
+    feed.concert(cancel("A1", "fox", &cancellation), cancellation.clone()).await;
+    let not_booked = CommandMetadata::ui();
+    feed.concert(cancel("A1", "panda", &not_booked), not_booked.clone()).await;
+    // Every attempt meets a concurrent change; the clock is paused, the backoff passes at once.
+    store.conflict.store(true, Ordering::SeqCst);
+    let conflict = CommandMetadata::ui();
+    feed.concert(book("B4", "fox", &conflict), conflict.clone()).await;
+    store.conflict.store(false, Ordering::SeqCst);
+    store.unavailable.store(true, Ordering::SeqCst);
+    let unreachable = CommandMetadata::ui();
+    feed.concert(cancel("A1", "owl", &unreachable), unreachable.clone()).await;
+    store.unavailable.store(false, Ordering::SeqCst);
+    // The holder keeps the concert's lock while its load waits at the gate; the next command waits for the lock as
+    // long as it may (the idle runtime advances the paused clock) and is refused.
+    let gate = store.close_gate();
+    let holding = CommandMetadata::ui();
+    let mut holder = Box::pin(feed.concert(book("C1", "cat", &holding), holding.clone()));
+    assert!(futures::poll!(holder.as_mut()).is_pending(), "the holder waits at the gate");
+    let refused = CommandMetadata::ui();
+    feed.concert(book("C2", "dog", &refused), refused.clone()).await;
+    gate.add_permits(1);
+    holder.await;
+
+    // The ledger: the steps of the chain, as the task handlers issue them.
+    let ticket = RecordTicketV1 {
+        booking_id: booking.causation.command_id,
+        concert_id: concert(),
+        seat: SeatId::parse("A1").unwrap(),
+        zone: Zone::Vip,
+        price: 120,
+        fan_id: fan(),
+        fan_name: "FOX".into(),
+    };
+    let record = || {
+        FanCommand::RecordTicket(RecordTicket {
+            booking_id: ticket.booking_id,
+            concert_id: ticket.concert_id.clone(),
+            seat: ticket.seat.clone(),
+            zone: ticket.zone,
+            price: ticket.price,
+            fan_name: ticket.fan_name.clone(),
+        })
+    };
+    let recorded = step(&ticket, &booking);
+    feed.fan(record(), recorded.clone()).await;
+    let redelivered = step(&ticket, &booking);
+    feed.fan(record(), redelivered.clone()).await;
+    let refund = RecordCancellationV1 {
+        booking_id: ticket.booking_id,
+        cancellation_id: cancellation.causation.command_id,
+        concert_id: concert(),
+        seat: ticket.seat.clone(),
+        fan_id: fan(),
+        refund: 120,
+    };
+    let refunded = step(&refund, &cancellation);
+    let record_cancellation = FanCommand::RecordCancellation(RecordCancellation {
+        booking_id: refund.booking_id,
+        cancellation_id: refund.cancellation_id,
+        refund: refund.refund,
+    });
+    feed.fan(record_cancellation, refunded.clone()).await;
+
+    let ledger_id = ledger();
+    let ledger = ("Fan", ledger_id.as_str());
+    let entries: Vec<(String, Value)> = activity
+        .subscribe()
+        .0
+        .iter()
+        .map(|entry| (entry.kind.clone(), Value::Object(entry.fields.clone())))
+        .collect();
+    let unavailable = json!({ "outcome": "unavailable", "message": "not run: storage unavailable or aggregate busy" });
+    assert_eq!(
+        entries,
+        [
+            command_entry(
+                "command.accepted",
+                box_office,
+                &seed,
+                ("AnnounceConcert", Value::Null),
+                json!({ "tasks": [] })
+            ),
+            command_entry(
+                "command.accepted",
+                box_office,
+                &booking,
+                ("BookSeat", json!("fox")),
+                json!({ "tasks": ["encore_record_ticket v1"] })
+            ),
+            command_entry(
+                "command.rejected",
+                box_office,
+                &taken,
+                ("BookSeat", json!("panda")),
+                json!({ "code": "seat_taken", "params": { "seat": "A1", "by": "FOX" } })
+            ),
+            command_entry(
+                "command.accepted",
+                box_office,
+                &cancellation,
+                ("CancelBooking", json!("fox")),
+                json!({ "tasks": ["encore_record_cancellation v1"] })
+            ),
+            command_entry(
+                "command.rejected",
+                box_office,
+                &not_booked,
+                ("CancelBooking", json!("panda")),
+                json!({ "code": "seat_not_booked", "params": { "seat": "A1" } })
+            ),
+            command_entry(
+                "command.failed",
+                box_office,
+                &conflict,
+                ("BookSeat", json!("fox")),
+                json!({ "outcome": "conflict", "message": "concurrent change; retries exhausted" })
+            ),
+            command_entry(
+                "command.failed",
+                box_office,
+                &unreachable,
+                ("CancelBooking", json!("owl")),
+                unavailable.clone()
+            ),
+            command_entry(
+                "command.failed",
+                box_office,
+                &refused,
+                ("BookSeat", json!("dog")),
+                unavailable
+            ),
+            command_entry(
+                "command.accepted",
+                box_office,
+                &holding,
+                ("BookSeat", json!("cat")),
+                json!({ "tasks": ["encore_record_ticket v1"] })
+            ),
+            command_entry(
+                "command.accepted",
+                ledger,
+                &recorded,
+                ("RecordTicket", json!("fox")),
+                json!({ "tasks": ["encore_send_e_ticket v1"] })
+            ),
+            command_entry(
+                "command.rejected",
+                ledger,
+                &redelivered,
+                ("RecordTicket", json!("fox")),
+                json!({ "code": "already_recorded", "params": { "booking_id": ticket.booking_id } })
+            ),
+            command_entry(
+                "command.accepted",
+                ledger,
+                &refunded,
+                ("RecordCancellation", json!("fox")),
+                json!({ "tasks": ["encore_issue_refund v1"] })
+            ),
+        ]
+    );
+    assert_eq!(
+        (recorded.causation.source.as_str(), refunded.causation.source.as_str()),
+        ("task:encore_record_ticket", "task:encore_record_cancellation"),
+        "a step's entry names its task as the source"
+    );
+    assert_eq!(
+        (recorded.causation.correlation_id, refunded.causation.correlation_id),
+        (booking.causation.correlation_id, cancellation.causation.correlation_id),
+        "and the correlation of the command that published the task"
+    );
+}
+
 // --- retry pauses --------------------------------------------------------------------------------------------
 
 /// The pause a failed attempt asks for.
@@ -496,10 +845,7 @@ async fn retry_pauses_by_attempt_are_the_golden_ones() {
         mailer: mailer(&settings, &activity),
     };
     // Chain steps: the fan ledger is unreachable.
-    let fans = Arc::new(FanApp::new(CommandService::new(
-        TestCommandExecutor::new(UnavailableStore, ()),
-        activity.clone(),
-    )));
+    let fans = Arc::new(TestCommandExecutor::new(UnavailableStore, ()));
     let mut record_ticket = RecordTicketHandler { fans: fans.clone() };
     let mut record_cancellation = RecordCancellationHandler { fans };
     let ticket = RecordTicketV1 {

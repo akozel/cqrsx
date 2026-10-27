@@ -2,15 +2,12 @@
 //! the tests of the ledger's tasks and reactions.
 use crate::{
     fan::{
-        application::{app::FanApp, record_ticket::RecordTicketV1},
+        application::record_ticket::RecordTicketV1,
         domain::{Fan, FanCommand, FanEvent, commands::RecordTicket, events::TicketRecorded},
     },
-    shared::{
-        application::{activity::ActivityHub, command_service::CommandService},
-        domain::{
-            ConcertId, FanId, FanLedgerId,
-            venue::{SeatId, Zone},
-        },
+    shared::domain::{
+        ConcertId, FanId, FanLedgerId,
+        venue::{SeatId, Zone},
     },
 };
 use cqrsx::{
@@ -24,15 +21,12 @@ use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-pub type TestFans = FanApp<TestCommandExecutor<Fan>>;
-
-/// The ledger, whose executor plans with its reactions as in production, and a clone of the executor (for the task
-/// records).
-pub fn fans(store: MemStore<Fan>) -> (Arc<TestFans>, TestCommandExecutor<Fan>) {
+/// The ledgers' executor, which plans with its reactions as in production, for the handlers, and a clone of it (for
+/// the task records).
+pub fn fans(store: MemStore<Fan>) -> (Arc<TestCommandExecutor<Fan>>, TestCommandExecutor<Fan>) {
     let executor =
         TestCommandExecutor::new(store, ()).with_task_planner(ReactionsPlanner::<Fan>::new(crate::testing::policies()));
-    let service = CommandService::new(executor.clone(), Arc::new(ActivityHub::new(16, 16)));
-    (Arc::new(FanApp::new(service)), executor)
+    (Arc::new(executor.clone()), executor)
 }
 
 /// The first claim of `payload`, carrying the correlation id of the command that published it.

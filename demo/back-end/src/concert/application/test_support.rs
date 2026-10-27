@@ -1,18 +1,15 @@
-//! A box office over a test event store, planning its tasks as in production, for the use-case tests; the facts
-//! and the command its reactions are tested with.
+//! A box office over a test event store, as the composition runs it (the reactions' planner and the activity feed's
+//! observer), for the tests of its flow; the facts and the command its reactions are tested with.
 use crate::{
-    concert::{
-        application::app::ConcertApp,
-        domain::{
-            Concert, ConcertCommand, ConcertError, ConcertEvent, ConcertRules,
-            commands::{AnnounceConcert, BookSeat, CancelBooking},
-            events::{BookingCancelled, SeatBooked},
-        },
+    concert::domain::{
+        Concert, ConcertCommand, ConcertError, ConcertEvent, ConcertRules,
+        commands::{AnnounceConcert, BookSeat, CancelBooking},
+        events::{BookingCancelled, SeatBooked},
     },
     shared::{
         application::{
             activity::{ActivityEntry, ActivityHub},
-            command_service::CommandService,
+            metadata::CommandMetadata,
         },
         domain::{
             ConcertId, FanId,
@@ -23,7 +20,8 @@ use crate::{
 use chrono::NaiveDate;
 use cqrsx::{
     cqrs::{
-        AggregateError,
+        AggregateError, CommitReport,
+        command::{CommandExecutor, CommandGatewayError},
         event::EventEnvelope,
         reactions::ReactionsPlanner,
         store::EventStore,
@@ -47,9 +45,12 @@ use std::{
 use tokio::sync::Semaphore;
 use uuid::Uuid;
 
+/// What the box office answers a command: what it committed, or why not.
+pub type Answer = Result<CommitReport<Concert>, CommandGatewayError<ConcertError>>;
+
 pub struct Harness<S: EventStore<Concert>> {
-    pub app: ConcertApp<TestCommandExecutor<Concert, S>>,
-    /// A clone of the executor the app runs its commands through: shares the store and the task records.
+    /// The box office's executor: its store, its reactions' planner, the activity feed's observer and the record of
+    /// the tasks it published.
     pub executor: TestCommandExecutor<Concert, S>,
     pub activity: Arc<ActivityHub>,
 }
@@ -59,20 +60,35 @@ where
     S: EventStore<Concert> + 'static,
     S::AC: Send,
 {
-    let executor = TestCommandExecutor::new(store, ConcertRules::default())
-        .with_task_planner(ReactionsPlanner::<Concert>::new(crate::testing::policies()));
     let activity = Arc::new(ActivityHub::new(64, 64));
-    let service = CommandService::new(executor.clone(), activity.clone());
-    Harness {
-        app: ConcertApp::new(service),
-        executor,
-        activity,
+    let executor = TestCommandExecutor::new(store, ConcertRules::default())
+        .with_task_planner(ReactionsPlanner::<Concert>::new(crate::testing::policies()))
+        .with_observer(crate::testing::command_feed(&activity));
+    Harness { executor, activity }
+}
+
+impl<S> Harness<S>
+where
+    S: EventStore<Concert> + 'static,
+    S::AC: Send,
+{
+    /// Runs `command` on the concert under `metadata`, as the HTTP handler does.
+    pub async fn execute(&self, concert_id: &ConcertId, command: ConcertCommand, metadata: CommandMetadata) -> Answer {
+        self.executor
+            .execute_with_metadata(concert_id, command, metadata.to_map())
+            .await
+    }
+
+    pub fn activity(&self) -> Vec<Arc<ActivityEntry>> {
+        self.activity.subscribe().0
     }
 }
 
-impl<S: EventStore<Concert>> Harness<S> {
-    pub fn activity(&self) -> Vec<Arc<ActivityEntry>> {
-        self.activity.subscribe().0
+/// The formats of the tasks an accepted command committed, none for a refused one: what the HTTP answer lists.
+pub fn committed(answer: &Answer) -> Vec<String> {
+    match answer {
+        Ok(report) => report.tasks.iter().map(|task| task.format().to_string()).collect(),
+        Err(_) => Vec::new(),
     }
 }
 
@@ -144,29 +160,29 @@ pub fn fan(id: &str) -> FanId {
     FanId::parse(id).unwrap()
 }
 
-pub fn announce() -> AnnounceConcert {
-    AnnounceConcert {
+pub fn announce() -> ConcertCommand {
+    ConcertCommand::AnnounceConcert(AnnounceConcert {
         artist: "Radiohead".into(),
         city: "Tbilisi".into(),
         date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
-    }
+    })
 }
 
-pub fn book(seat: &str, fan_id: &str, booking_id: Uuid) -> BookSeat {
-    BookSeat {
+pub fn book(seat: &str, fan_id: &str, booking_id: Uuid) -> ConcertCommand {
+    ConcertCommand::BookSeat(BookSeat {
         seat: seat.into(),
         fan_id: fan(fan_id),
         fan_name: fan_id.to_uppercase(),
         booking_id,
-    }
+    })
 }
 
-pub fn cancel(seat: &str, fan_id: &str, cancellation_id: Uuid) -> CancelBooking {
-    CancelBooking {
+pub fn cancel(seat: &str, fan_id: &str, cancellation_id: Uuid) -> ConcertCommand {
+    ConcertCommand::CancelBooking(CancelBooking {
         seat: seat.into(),
         fan_id: fan(fan_id),
         cancellation_id,
-    }
+    })
 }
 
 /// Fox's VIP seat A1 at 120, booked as `booking_id`.
