@@ -8,7 +8,8 @@
 //!   differ by an enumerated field the front-end reads has a line per value (`kind[field=value]`);
 //! - `retry_pauses.txt`: the pause a task asks the queue for after its attempt `n` failed (`<case>.<n>`): an e-mail
 //!   (`mail`), a step of the chain between the aggregates (`step`), and a handler that names no pause
-//!   (`redelivery`, bounds: the library's backoff is random within them).
+//!   (`redelivery`, bounds: the library's backoff is random within them). The policies of the task types (`MAIL`,
+//!   `STEP`) hold the same pauses.
 //!
 //! Every file is `key = value` lines sorted by key, every key once. The entries and the pauses come from today's
 //! producers: the command service, the projection observer, the rebuild service, the mail client and the task
@@ -36,7 +37,10 @@ use cqrsx::{
     },
 };
 use encore_backend::{
-    bootstrap::{projections::checkpoint_keys, tasks::mail_settings},
+    bootstrap::{
+        projections::checkpoint_keys,
+        tasks::{mail_settings, policies},
+    },
     concert::domain::{Concert, ConcertCommand, ConcertError, commands::AnnounceConcert},
     config::{Config, duration_text},
     fan::application::{
@@ -57,6 +61,7 @@ use encore_backend::{
             StorageError,
             activity::ActivityHub,
             command_service::{CommandLabel, CommandMetadata, CommandService},
+            policies::{MAIL, STEP},
         },
         domain::{
             ConcertId, FanId,
@@ -558,4 +563,27 @@ async fn retry_pauses_by_attempt_are_the_golden_ones() {
         lines.push((key.clone(), golden[key.as_str()].to_owned()));
     }
     assert_golden("retry_pauses.txt", RETRY_PAUSES, &render(lines));
+}
+
+/// The pauses of the task policies, in the lines of the golden file: an e-mail is `MAIL`, a step of the chain `STEP`,
+/// both under the configuration without environment. The handlers still ask for their pauses themselves (above); the
+/// policies hold the same ones for when the engine takes them over (backlog 05/09).
+#[test]
+fn the_task_policies_pause_as_the_golden_ones() {
+    let config = Config::from_lookup(|_| None).unwrap();
+    let policies = policies(&config).unwrap();
+    let mut lines = Vec::new();
+    for (case, name) in [("mail", MAIL), ("step", STEP)] {
+        let retry = policies.policy(name).unwrap().retry();
+        for n in 1..=8 {
+            lines.push((format!("{case}.{n}"), duration_text(retry.pause(n))));
+        }
+    }
+    let golden: String = RETRY_PAUSES
+        .lines()
+        .filter(|line| line.starts_with("mail.") || line.starts_with("step."))
+        .map(|line| format!("{line}\n"))
+        .collect();
+    assert_eq!(golden.lines().count(), 16, "eight attempts of each");
+    assert_golden("retry_pauses.txt", &golden, &render(lines));
 }

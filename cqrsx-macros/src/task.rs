@@ -1,10 +1,12 @@
-//! `#[derive(Task)]`: the stored type and version of a task's payload, its wire format.
-use crate::attribute::{Pairs, not_empty};
-use proc_macro2::{Literal, TokenStream};
+//! `#[derive(Task)]`: the stored type and version of a task's payload, its wire format, and the fields it keeps in its
+//! metadata.
+use crate::attribute::{Pairs, marked, not_empty};
+use proc_macro2::{Ident, Literal, TokenStream, TokenTree};
 use quote::quote;
-use syn::{DeriveInput, Error};
+use syn::{Attribute, Data, DeriveInput, Error, Field, LitStr, Meta, ext::IdentExt};
 
-/// `impl ::cqrsx::task::format::TaskPayload` with the `name` and the `version` of `#[task(name = "…", version = N)]`.
+/// `impl ::cqrsx::task::format::TaskPayload` with the `name` and the `version` of `#[task(name = "…", version = N)]`
+/// and, when the struct has fields `#[label]`, their names in field order as `LABELS`.
 pub(crate) fn expand_task(input: DeriveInput) -> syn::Result<TokenStream> {
     let attribute = Pairs::parse(&input.attrs, "task", &["name", "version"])?;
     let Some(span) = attribute.span else {
@@ -25,6 +27,8 @@ pub(crate) fn expand_task(input: DeriveInput) -> syn::Result<TokenStream> {
         return Err(Error::new(version.span(), "the task version must be positive"));
     }
     let number = Literal::i32_unsuffixed(number);
+    let labels = labels(&input)?;
+    let labels = (!labels.is_empty()).then(|| quote! { const LABELS: &'static [&'static str] = &[#(#labels),*]; });
     let ident = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
@@ -32,8 +36,82 @@ pub(crate) fn expand_task(input: DeriveInput) -> syn::Result<TokenStream> {
         impl #impl_generics ::cqrsx::task::format::TaskPayload for #ident #type_generics #where_clause {
             const TASK_TYPE: &'static str = #name;
             const TASK_VERSION: i32 = #number;
+            #labels
         }
     })
+}
+
+/// The names of the fields `#[label]`, in field order. A label is a named field of a struct whose key serde keeps:
+/// it moves from the body to the metadata under its name, so a serde attribute that renames or drops the key refuses.
+fn labels(input: &DeriveInput) -> syn::Result<Vec<LitStr>> {
+    let fields: Vec<&Field> = match &input.data {
+        Data::Struct(data) => data.fields.iter().collect(),
+        Data::Enum(data) => {
+            let fields = data.variants.iter().flat_map(|variant| &variant.fields);
+            return refuse_labels(
+                fields,
+                "`#[label]` goes on a field of a struct: a task's labels are its fields",
+            );
+        }
+        Data::Union(data) => {
+            return refuse_labels(
+                &data.fields.named,
+                "`#[label]` goes on a field of a struct: a task's labels are its fields",
+            );
+        }
+    };
+    let mut labels = Vec::new();
+    for field in fields {
+        let Some(attribute) = marked(&field.attrs, "label")? else {
+            continue;
+        };
+        let Some(name) = &field.ident else {
+            return Err(Error::new_spanned(attribute, "`#[label]` needs a named field"));
+        };
+        if let Some(key) = serde_key(&field.attrs, &["rename", "flatten", "skip", "skip_serializing"]) {
+            return Err(Error::new(
+                key.span(),
+                format!("a `#[label]` field moves to the metadata under its name: `#[serde({key})]` changes or drops it"),
+            ));
+        }
+        labels.push(LitStr::new(&name.unraw().to_string(), name.span()));
+    }
+    if !labels.is_empty()
+        && let Some(key) = serde_key(&input.attrs, &["rename_all"])
+    {
+        return Err(Error::new(
+            key.span(),
+            format!("the `#[label]` fields move to the metadata under their names: `#[serde({key})]` changes them"),
+        ));
+    }
+    Ok(labels)
+}
+
+/// Refuses the first of `fields` marked `#[label]` with `message`.
+fn refuse_labels<'a>(fields: impl IntoIterator<Item = &'a Field>, message: &str) -> syn::Result<Vec<LitStr>> {
+    for field in fields {
+        if let Some(attribute) = marked(&field.attrs, "label")? {
+            return Err(Error::new_spanned(attribute, message));
+        }
+    }
+    Ok(Vec::new())
+}
+
+/// The first of `keys` that a `#[serde(…)]` attribute of `attributes` gives: a key is an identifier at the top level of
+/// the attribute's list (`rename = "…"`, `rename(serialize = "…")`, `flatten`).
+fn serde_key(attributes: &[Attribute], keys: &[&str]) -> Option<Ident> {
+    attributes
+        .iter()
+        .filter(|attribute| attribute.path().is_ident("serde"))
+        .filter_map(|attribute| match &attribute.meta {
+            Meta::List(list) => Some(list.tokens.clone()),
+            _ => None,
+        })
+        .flatten()
+        .find_map(|tree| match tree {
+            TokenTree::Ident(ident) if keys.iter().any(|key| ident == key) => Some(ident),
+            _ => None,
+        })
 }
 
 #[cfg(test)]
@@ -74,6 +152,99 @@ mod tests {
             }
         };
         assert_eq!(generic.to_string(), expected.to_string());
+    }
+
+    #[test]
+    fn labelled_fields_are_the_labels_of_the_task_in_field_order() {
+        let expanded = expand_task(parse_quote! {
+            #[derive(Serialize)]
+            #[serde(deny_unknown_fields)]
+            #[task(name = "issue_refund", version = 1)]
+            pub struct IssueRefund {
+                pub cancellation_id: Uuid,
+                #[label]
+                #[serde(default)]
+                pub tenant: TenantId,
+                pub amount: u32,
+                #[label]
+                pub r#type: Kind,
+            }
+        })
+        .unwrap();
+        let expected = quote! {
+            #[automatically_derived]
+            impl ::cqrsx::task::format::TaskPayload for IssueRefund {
+                const TASK_TYPE: &'static str = "issue_refund";
+                const TASK_VERSION: i32 = 1;
+                const LABELS: &'static [&'static str] = &["tenant", "type"];
+            }
+        };
+        assert_eq!(expanded.to_string(), expected.to_string());
+        let renamed_without_labels = expand_task(parse_quote! {
+            #[serde(rename_all = "camelCase")]
+            #[task(name = "ship", version = 1)]
+            struct Ship { #[serde(rename = "to")] address: String }
+        })
+        .unwrap();
+        assert!(
+            !renamed_without_labels.to_string().contains("LABELS"),
+            "{renamed_without_labels}"
+        );
+    }
+
+    #[test]
+    fn a_label_is_refused_with_arguments_twice_without_a_name_off_a_struct_and_where_serde_renames_or_drops_it() {
+        assert_eq!(
+            refusal(parse_quote! { #[task(name = "ship", version = 1)] struct Ship { #[label(key = "x")] to: String } }),
+            "`#[label]` takes no arguments"
+        );
+        assert_eq!(
+            refusal(parse_quote! { #[task(name = "ship", version = 1)] struct Ship { #[label] #[label] to: String } }),
+            "`#[label]` is given twice"
+        );
+        assert_eq!(
+            refusal(parse_quote! { #[task(name = "ship", version = 1)] struct Ship(#[label] String); }),
+            "`#[label]` needs a named field"
+        );
+        assert_eq!(
+            refusal(parse_quote! { #[task(name = "ship", version = 1)] enum Ship { By { #[label] to: String } } }),
+            "`#[label]` goes on a field of a struct: a task's labels are its fields"
+        );
+        assert_eq!(
+            refusal(parse_quote! { #[task(name = "ship", version = 1)] union Ship { #[label] to: u32 } }),
+            "`#[label]` goes on a field of a struct: a task's labels are its fields"
+        );
+        assert!(expand_task(parse_quote! { #[task(name = "ship", version = 1)] enum Ship { By { to: String } } }).is_ok());
+        assert!(expand_task(parse_quote! { #[task(name = "ship", version = 1)] union Ship { to: u32 } }).is_ok());
+        assert!(
+            expand_task(parse_quote! { #[task(name = "ship", version = 1)] struct Ship { #[label] #[serde] to: String } })
+                .is_ok(),
+            "a serde attribute without a list names no key"
+        );
+        for (attribute, key) in [
+            (quote! { #[serde(rename = "destination")] }, "rename"),
+            (quote! { #[serde(rename(serialize = "destination"))] }, "rename"),
+            (quote! { #[serde(default, flatten)] }, "flatten"),
+            (quote! { #[serde(skip)] }, "skip"),
+            (quote! { #[serde(skip_serializing)] }, "skip_serializing"),
+        ] {
+            let input: DeriveInput = parse_quote! {
+                #[task(name = "ship", version = 1)]
+                struct Ship { #[label] #attribute to: String }
+            };
+            assert_eq!(
+                refusal(input),
+                format!("a `#[label]` field moves to the metadata under its name: `#[serde({key})]` changes or drops it")
+            );
+        }
+        assert_eq!(
+            refusal(parse_quote! {
+                #[serde(rename_all = "camelCase")]
+                #[task(name = "ship", version = 1)]
+                struct Ship { #[label] to: String }
+            }),
+            "the `#[label]` fields move to the metadata under their names: `#[serde(rename_all)]` changes them"
+        );
     }
 
     #[test]

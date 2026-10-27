@@ -8,6 +8,7 @@ pub mod dispatcher;
 pub mod executor;
 pub mod format;
 pub mod handler;
+pub mod policy;
 pub mod queue;
 #[cfg(feature = "worker")]
 pub mod runtime;
@@ -20,6 +21,11 @@ use serde_json::{Map, Value, json};
 use std::time::Duration;
 use thiserror::Error;
 use uuid::Uuid;
+
+/// The attempt budget of a task that sets none of its own: no [`with_max_attempts`](NewTask::with_max_attempts) and
+/// no policy of its type (`task::policy::Policies`).
+pub const DEFAULT_MAX_ATTEMPTS: i32 = 10;
+
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum TaskSchedule {
     #[default]
@@ -49,11 +55,18 @@ pub struct NewTask {
     max_attempts: i32,
 }
 impl NewTask {
+    /// A task of `payload`; the fields of `T::LABELS` move from its body to its metadata.
     pub fn new<T: TaskPayload>(payload: T) -> Result<Self, TaskValidationError> {
-        Self::from_payload(
+        let task = Self::from_payload(
             TaskFormat::of::<T>()?,
             serde_json::to_value(payload).map_err(|_| TaskValidationError::Serialization)?,
-        )
+        );
+        if T::LABELS.is_empty() {
+            return task;
+        }
+        let mut task = task?;
+        move_labels(T::LABELS, &mut task.payload, &mut task.metadata);
+        Ok(task)
     }
     /// Dynamic producers must still supply an object and a validated format.
     pub fn from_payload(format: TaskFormat, payload: Value) -> Result<Self, TaskValidationError> {
@@ -64,7 +77,7 @@ impl NewTask {
             payload,
             metadata: json!({}),
             schedule: TaskSchedule::Now,
-            max_attempts: 10,
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
     }
     pub fn scheduled(mut self, schedule: TaskSchedule) -> Result<Self, TaskValidationError> {
@@ -136,6 +149,30 @@ pub enum TaskValidationError {
     #[error("task schedule delay is not representable")]
     InvalidSchedule,
 }
+/// Moves the keys `labels` of the `payload` object to the `metadata` object; a key the payload lacks moves nothing.
+/// Both are objects: every constructor validates them.
+fn move_labels(labels: &[&str], payload: &mut Value, metadata: &mut Value) {
+    for label in labels {
+        if let Some(value) = payload.as_object_mut().and_then(|payload| payload.remove(*label)) {
+            metadata[*label] = value;
+        }
+    }
+}
+
+/// A copy of the `payload` object with the keys `labels` it lacks taken back from the `metadata` object: the body a
+/// labelled payload decodes from. Both are objects: every constructor validates them.
+fn restore_labels(labels: &[&str], payload: &Value, metadata: &Value) -> Value {
+    let mut restored = payload.clone();
+    for label in labels {
+        if restored.get(*label).is_none()
+            && let Some(value) = metadata.get(*label)
+        {
+            restored[*label] = value.clone();
+        }
+    }
+    restored
+}
+
 fn validate_payload(payload: &Value) -> Result<(), TaskValidationError> {
     if payload.is_object() {
         Ok(())
@@ -154,6 +191,7 @@ fn validate_metadata(metadata: &Value) -> Result<(), TaskValidationError> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task::attempt::TaskAttempt;
     use crate::task::format::TaskFormatError;
     use crate::task::test_support::DummyTask;
     use serde::{Serialize, Serializer};
@@ -194,6 +232,82 @@ mod tests {
             const TASK_VERSION: i32 = 1;
         }
         assert_eq!(NewTask::new(Broken), Err(TaskValidationError::Serialization));
+    }
+
+    #[test]
+    fn a_task_without_a_budget_of_its_own_gets_the_default_of_ten_attempts() {
+        assert_eq!(DEFAULT_MAX_ATTEMPTS, 10);
+        assert_eq!(
+            NewTask::new(DummyTask { value: "runtime" }).unwrap().max_attempts(),
+            DEFAULT_MAX_ATTEMPTS
+        );
+        let format = TaskFormat::new("dummy_task", 1).unwrap();
+        assert_eq!(
+            NewTask::from_payload(format, json!({})).unwrap().max_attempts(),
+            DEFAULT_MAX_ATTEMPTS
+        );
+    }
+
+    /// A payload whose tenant is kept in the task's metadata; `absent` is a label its body never has.
+    #[derive(Serialize)]
+    struct Labelled {
+        amount: u32,
+        tenant: &'static str,
+    }
+
+    impl TaskPayload for Labelled {
+        const TASK_TYPE: &'static str = "labelled";
+        const TASK_VERSION: i32 = 1;
+        const LABELS: &'static [&'static str] = &["tenant", "absent"];
+    }
+
+    #[test]
+    fn labels_move_from_the_body_to_the_metadata_and_an_unlabelled_task_is_as_before() {
+        let labelled = Labelled {
+            amount: 80,
+            tenant: "acme",
+        };
+        let task = NewTask::new(labelled).unwrap();
+        assert_eq!(task.payload(), &json!({ "amount": 80 }));
+        assert_eq!(
+            task.metadata(),
+            &json!({ "tenant": "acme" }),
+            "a label the body lacks moves nothing"
+        );
+        let unlabelled = NewTask::new(DummyTask { value: "runtime" }).unwrap();
+        assert_eq!(
+            (unlabelled.payload(), unlabelled.metadata()),
+            (&json!({ "value": "runtime" }), &json!({}))
+        );
+        let attempt = TaskAttempt::first(
+            &Labelled {
+                amount: 80,
+                tenant: "acme",
+            },
+            json!({ "correlation_id": "c-1" }),
+        )
+        .unwrap();
+        assert_eq!(attempt.payload(), &json!({ "amount": 80 }));
+        assert_eq!(attempt.metadata(), &json!({ "correlation_id": "c-1", "tenant": "acme" }));
+        let first = TaskAttempt::first(&DummyTask { value: "runtime" }, json!({ "correlation_id": "c-1" })).unwrap();
+        assert_eq!(
+            (first.payload(), first.metadata()),
+            (&json!({ "value": "runtime" }), &json!({ "correlation_id": "c-1" }))
+        );
+    }
+
+    #[test]
+    fn labels_return_to_a_copy_of_the_body_unless_it_has_them() {
+        let metadata = json!({ "tenant": "acme", "correlation_id": "c-1" });
+        assert_eq!(
+            restore_labels(Labelled::LABELS, &json!({ "amount": 80 }), &metadata),
+            json!({ "amount": 80, "tenant": "acme" }),
+            "only the labels come back, and a label the metadata lacks stays away"
+        );
+        assert_eq!(
+            restore_labels(Labelled::LABELS, &json!({ "amount": 80, "tenant": "body" }), &metadata),
+            json!({ "amount": 80, "tenant": "body" })
+        );
     }
 
     #[test]

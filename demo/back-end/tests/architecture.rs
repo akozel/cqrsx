@@ -127,19 +127,6 @@ const EXCEPTIONS: &[Exception] = &[
         why: "the command pipeline is tested on the `Concert` aggregate until the file goes (05/08)",
     },
     Exception {
-        id: "I-6",
-        place: "shared/application/tasks.rs",
-        paths: &[
-            "crate::fan::application::record_ticket",
-            "crate::fan::application::send_e_ticket",
-            "crate::fan::application::record_cancellation",
-            "crate::fan::application::issue_refund",
-        ],
-        tests_only: true,
-        why: "the formats and the queued JSON of the four task contracts are tested next to `new_task` until the file \
-              goes (05/07)",
-    },
-    Exception {
         id: "I-7",
         place: "shared/infrastructure/mongo_read_model.rs",
         paths: &[

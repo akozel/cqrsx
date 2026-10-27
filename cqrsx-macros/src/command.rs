@@ -1,8 +1,9 @@
 //! `#[derive(Command)]`: what an observer knows of one command besides its decision; `#[derive(Commands)]`: an
 //! aggregate's enum of commands, routed to the decision of each variant's type.
+use crate::attribute::marked;
 use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
-use syn::{Attribute, Data, DeriveInput, Error, Fields, Ident, LitStr, Meta, Type, ext::IdentExt, parse_quote, spanned::Spanned};
+use syn::{Data, DeriveInput, Error, Fields, Ident, LitStr, Type, ext::IdentExt, parse_quote, spanned::Spanned};
 
 /// `impl ::cqrsx::cqrs::command::CommandInfo` for a struct: the type's name, the field `#[command_id]` (at most one) and
 /// the fields `#[label]`, in field order, each as its name and its `Display`.
@@ -62,21 +63,6 @@ pub(crate) fn expand_command(input: DeriveInput) -> syn::Result<TokenStream> {
             }
         }
     })
-}
-
-/// The attribute `#[name]` of a field, `None` when it has none; one with arguments or given twice is refused.
-fn marked<'a>(attributes: &'a [Attribute], name: &str) -> syn::Result<Option<&'a Attribute>> {
-    let mut found = None;
-    for attribute in attributes.iter().filter(|attribute| attribute.path().is_ident(name)) {
-        if !matches!(attribute.meta, Meta::Path(_)) {
-            return Err(Error::new_spanned(attribute, format!("`#[{name}]` takes no arguments")));
-        }
-        if found.is_some() {
-            return Err(Error::new_spanned(attribute, format!("`#[{name}]` is given twice")));
-        }
-        found = Some(attribute);
-    }
-    Ok(found)
 }
 
 /// For an enum whose every variant carries one command type: `impl<A> ::cqrsx::cqrs::command::decide::Decide<A>` where

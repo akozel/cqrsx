@@ -33,6 +33,11 @@ use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
+/// The policies of the task types under [`config`]: six attempts, a step waits 1 s, an e-mail 1 s to 8 s.
+pub fn policies() -> cqrsx::task::policy::Policies {
+    crate::bootstrap::tasks::policies(&config()).unwrap()
+}
+
 /// A valid configuration with the demo defaults and databases nobody listens on.
 pub fn config() -> Config {
     Config {

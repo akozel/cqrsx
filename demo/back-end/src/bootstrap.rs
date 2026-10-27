@@ -4,7 +4,7 @@
 //!
 //! - [`aggregates`]: one module per aggregate: its command executor, which wakes its read model's processor;
 //! - [`projections`]: the read models: their collections, processors, verification and query ports;
-//! - [`tasks`]: the outbox task handlers;
+//! - [`tasks`]: the outbox tasks: the policy of every task type and its handler;
 //! - [`routes`]: the HTTP endpoints.
 //!
 //! [`read_models`] and [`ledger`] are what only the composition knows of every module: the read models the HTTP
@@ -34,7 +34,7 @@ use crate::{
 use cqrsx::{
     cqrs::projection::runtime::ProjectionRuntime,
     postgres::command::{PostgresCommandConfigError, PostgresCommandExecutor},
-    task::{adapter::boxed::BoxedTaskAdapter, runtime::dispatcher_factory::TaskDispatcherFactory},
+    task::{adapter::boxed::BoxedTaskAdapter, policy::PolicyError, runtime::dispatcher_factory::TaskDispatcherFactory},
 };
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -80,19 +80,23 @@ pub struct Wiring {
 pub enum WiringError {
     #[error("snapshot configuration: {0}")]
     Command(#[from] PostgresCommandConfigError),
+    #[error("task policies: {0}")]
+    Policy(#[from] PolicyError),
     #[error("mail service client: {0}")]
     MailClient(#[from] reqwest::Error),
 }
 
-/// Builds the graph in dependency order: the read side (processors and their wake-ups), the aggregates
-/// whose commits wake it, the operations over the whole ledger, the task handlers.
+/// Builds the graph in dependency order: the read side (processors and their wake-ups), the policies of the task
+/// types, the aggregates whose commits wake the read side and whose reactions plan with the policies, the operations
+/// over the whole ledger, the task handlers.
 pub fn wire(process: &Process) -> Result<Wiring, WiringError> {
     let config = process.config.clone();
     let activity = Arc::new(ActivityHub::new(ACTIVITY_CHANNEL_CAPACITY, ACTIVITY_BACKLOG));
 
     let read = projections::read_models(process, &activity);
-    let concerts = aggregates::concert::wire(process, &read.concert_wakeup, &activity)?;
-    let fans = aggregates::fan::wire(process, &read.fan_wakeup, &activity)?;
+    let policies = tasks::policies(&config)?;
+    let concerts = aggregates::concert::wire(process, &policies, &read.concert_wakeup, &activity)?;
+    let fans = aggregates::fan::wire(process, &policies, &read.fan_wakeup, &activity)?;
 
     // Operations over the whole ledger: Encore! and the status, verify and the time machine.
     let rebuild: Arc<dyn ReadSide> = Arc::new(RebuildService::new(

@@ -1,50 +1,20 @@
-//! What follows each fact of a fan's ledger: the planner of the `Fan` executor. It continues the two processes the
-//! box office starts: a ticket recorded in the ledger is mailed ([`send_e_ticket`]), a
-//! ticket cancelled in the ledger is refunded ([`issue_refund`]).
+//! What follows each fact of a fan's ledger: the reactions of `Fan`. They continue the two processes the box office
+//! starts: a ticket recorded in the ledger is mailed ([`SendETicketV1`]), a ticket cancelled in the ledger is
+//! refunded ([`IssueRefundV1`]).
 use crate::fan::{
-    application::{issue_refund, send_e_ticket},
+    application::{issue_refund::IssueRefundV1, send_e_ticket::SendETicketV1},
     domain::{Fan, FanEvent},
 };
-use cqrsx::{
-    cqrs::command::planner::{Decision, TaskPlanError, TaskPlanner},
-    task::NewTask,
-};
+use cqrsx::cqrs::reactions::{Decided, Reactions, Then};
 
-/// What follows each fact of a fan's ledger; `max_attempts` is the attempt budget of the tasks it plans.
-#[derive(Debug, Clone, Copy)]
-pub struct FanReactions {
-    pub max_attempts: i32,
-}
-
-/// The planner of the `Fan` executor; `max_attempts` is the attempt budget of the tasks it plans.
-pub fn fan_tasks(max_attempts: i32) -> impl TaskPlanner<Fan> {
-    FanReactions { max_attempts }
-}
-
-/// A ticket in the fan's ledger is mailed; a ticket cancelled in the fan's ledger is refunded. The delivery's
-/// tasks come first, the refund's after them.
-impl TaskPlanner<Fan> for FanReactions {
-    fn plan(&self, decision: &Decision<'_, Fan>) -> Result<Vec<NewTask>, TaskPlanError> {
-        let mut planned = Vec::new();
-        for event in decision.events {
-            if let FanEvent::TicketRecorded(recorded) = event {
-                planned.push(send_e_ticket::send_e_ticket(
-                    decision.aggregate_id,
-                    recorded,
-                    self.max_attempts,
-                )?);
-            }
+/// A ticket in the fan's ledger is mailed; a ticket cancelled in the fan's ledger is refunded. The fan is the
+/// ledger's.
+impl Reactions for Fan {
+    fn react(decided: &Decided<'_, Self>, then: &mut Then) {
+        match decided.event {
+            FanEvent::TicketRecorded(recorded) => then.task(SendETicketV1::of(decided.id, recorded)),
+            FanEvent::TicketCancelled(cancelled) => then.task(IssueRefundV1::of(decided.id, cancelled)),
         }
-        for event in decision.events {
-            if let FanEvent::TicketCancelled(cancelled) = event {
-                planned.push(issue_refund::issue_refund(
-                    decision.aggregate_id,
-                    cancelled,
-                    self.max_attempts,
-                )?);
-            }
-        }
-        Ok(planned)
     }
 }
 
@@ -61,15 +31,19 @@ mod tests {
             domain::{ConcertId, venue::SeatId},
         },
     };
+    use cqrsx::cqrs::reactions::ReactionsPlanner;
     use serde_json::json;
     use uuid::Uuid;
 
-    const REACTIONS: FanReactions = FanReactions { max_attempts: 6 };
+    /// The planner of the ledger's reactions, with the policies of the configuration.
+    fn reactions() -> ReactionsPlanner<Fan> {
+        ReactionsPlanner::new(crate::testing::policies())
+    }
 
     #[test]
     fn a_ticket_in_the_ledger_plans_its_e_ticket_for_the_ledgers_fan() {
         let booking_id = Uuid::from_u128(1);
-        let tasks = plan::<Fan, _>(&REACTIONS, &ledger(), &fan_command(), &[recorded(booking_id)]).unwrap();
+        let tasks = plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &[recorded(booking_id)]).unwrap();
         let [task] = &tasks[..] else {
             panic!("one e-ticket per recorded ticket: {tasks:?}");
         };
@@ -78,10 +52,7 @@ mod tests {
             &json!({ "booking_id": booking_id, "concert_id": "radiohead-2026-11-21", "seat": "B4", "fan_id": "fox",
                      "fan_name": "Fox", "price": 80 })
         );
-        assert_eq!(
-            task.metadata(),
-            &json!({ "concert_id": "radiohead-2026-11-21", "fan_id": "fox" })
-        );
+        assert_eq!(task.metadata(), &json!({}));
     }
 
     #[test]
@@ -94,7 +65,7 @@ mod tests {
             seat: SeatId::parse("B4").unwrap(),
             refund: 80,
         });
-        let tasks = plan::<Fan, _>(&REACTIONS, &ledger(), &fan_command(), &[cancelled]).unwrap();
+        let tasks = plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &[cancelled]).unwrap();
         assert_eq!(
             tasks.iter().map(|task| task.payload().clone()).collect::<Vec<_>>(),
             [
@@ -106,7 +77,7 @@ mod tests {
 
     #[test]
     fn every_reacting_fact_plans_one_task_through_the_aggregates_planner() {
-        let fan = fan_tasks(6);
+        let fan = reactions();
         assert_eq!(
             formats(&plan::<Fan, _>(&fan, &ledger(), &fan_command(), &[recorded(Uuid::nil())]).unwrap()),
             ["encore_send_e_ticket v1"]
@@ -115,7 +86,7 @@ mod tests {
 
     /// The delivery plans nothing for a cancelled ticket and the refund nothing for a recorded one: each fact plans
     /// only the task of its own process. The ledger is the decision's typed id, so a foreign one cannot reach the
-    /// planner.
+    /// reactions.
     #[test]
     fn each_fact_plans_only_its_own_task() {
         let ticket_cancelled = FanEvent::TicketCancelled(TicketCancelled {
@@ -126,11 +97,11 @@ mod tests {
             refund: 80,
         });
         assert_eq!(
-            formats(&plan::<Fan, _>(&REACTIONS, &ledger(), &fan_command(), &[ticket_cancelled]).unwrap()),
+            formats(&plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &[ticket_cancelled]).unwrap()),
             ["encore_issue_refund v1"]
         );
         assert_eq!(
-            formats(&plan::<Fan, _>(&REACTIONS, &ledger(), &fan_command(), &[recorded(Uuid::nil())]).unwrap()),
+            formats(&plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &[recorded(Uuid::nil())]).unwrap()),
             ["encore_send_e_ticket v1"]
         );
     }

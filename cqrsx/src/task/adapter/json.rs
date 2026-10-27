@@ -5,6 +5,7 @@ use crate::task::{
     attempt::TaskAttempt,
     format::{TaskFormat, TaskFormatError, TaskPayload},
     handler::{TaskHandler, TaskHandlerError},
+    restore_labels,
 };
 use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
@@ -63,7 +64,12 @@ where
                 reason: format!("unsupported task format for {}", self.safe_format()),
             });
         }
-        let payload = P::deserialize(delivery.payload()).map_err(|_| TaskHandlerError::Permanent {
+        let decoded = if P::LABELS.is_empty() {
+            P::deserialize(delivery.payload())
+        } else {
+            P::deserialize(&restore_labels(P::LABELS, delivery.payload(), delivery.metadata()))
+        };
+        let payload = decoded.map_err(|_| TaskHandlerError::Permanent {
             reason: format!("invalid {} task payload", self.safe_format()),
         })?;
         self.handler.handle(payload, delivery).await
@@ -314,5 +320,65 @@ mod tests {
             assert!(matches!(result, Err(TaskFormatError::InvalidVersion)));
         }
         assert!(calls.lock().unwrap().is_empty());
+    }
+
+    /// A payload whose tenant is kept in the task's metadata.
+    #[derive(Debug, PartialEq, Serialize, Deserialize)]
+    struct Labelled {
+        amount: u32,
+        tenant: String,
+    }
+
+    impl TaskPayload for Labelled {
+        const TASK_TYPE: &'static str = "labelled";
+        const TASK_VERSION: i32 = 1;
+        const LABELS: &'static [&'static str] = &["tenant"];
+    }
+
+    /// Records every payload it decodes.
+    struct Decoded(Arc<Mutex<Vec<Labelled>>>);
+
+    impl TaskHandler<Labelled> for Decoded {
+        async fn handle(&mut self, payload: Labelled, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+            self.0.lock().unwrap().push(payload);
+            Ok(())
+        }
+    }
+
+    #[tokio::test]
+    async fn a_labelled_payload_decodes_with_its_labels_from_the_metadata() {
+        let decoded = Arc::new(Mutex::new(Vec::new()));
+        let mut adapter = JsonTaskAdapter::<Labelled, _>::new(Decoded(decoded.clone())).unwrap();
+        let published = crate::task::NewTask::new(Labelled {
+            amount: 80,
+            tenant: "acme".into(),
+        })
+        .unwrap();
+        let format = TaskFormat::of::<Labelled>().unwrap();
+        let claim = |payload, metadata| TaskAttempt::new(Uuid::new_v4(), format.clone(), payload, metadata, 1).unwrap();
+        adapter
+            .invoke(&claim(published.payload().clone(), published.metadata().clone()))
+            .await
+            .unwrap();
+        // A body that still holds the key keeps its own value.
+        adapter
+            .invoke(&claim(json!({"amount": 5, "tenant": "body"}), json!({"tenant": "metadata"})))
+            .await
+            .unwrap();
+        let missing = adapter.invoke(&claim(json!({"amount": 5}), json!({}))).await.unwrap_err();
+        assert_eq!(missing.to_string(), "invalid labelled v1 task payload");
+        assert_eq!(
+            *decoded.lock().unwrap(),
+            [
+                Labelled {
+                    amount: 80,
+                    tenant: "acme".into()
+                },
+                Labelled {
+                    amount: 5,
+                    tenant: "body".into()
+                }
+            ]
+        );
     }
 }

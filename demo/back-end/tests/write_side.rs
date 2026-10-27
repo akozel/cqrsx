@@ -20,6 +20,7 @@ use cqrsx::{
             },
             repository::ViewRepository,
         },
+        reactions::ReactionsPlanner,
         store::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
         testing::{mem_checkpoint_store::MemCheckpointStore, mem_view_repository::MemViewRepository},
     },
@@ -30,13 +31,15 @@ use cqrsx::{
     },
 };
 use encore_backend::{
+    bootstrap::tasks::policies,
     concert::{
-        application::{app::ConcertApp, reactions, views::concert_hall::ConcertHallView},
+        application::{app::ConcertApp, views::concert_hall::ConcertHallView},
         domain::{
             Concert, ConcertError, ConcertRules,
             commands::{AnnounceConcert, BookSeat, CancelBooking},
         },
     },
+    config::Config,
     shared::{
         application::{
             activity::ActivityHub,
@@ -70,6 +73,12 @@ fn lease_port() -> u16 {
         }
     }
     panic!("no free port")
+}
+
+/// The box office's reactions with the policies of the configuration without environment, as the process plans.
+fn concert_reactions() -> ReactionsPlanner<Concert> {
+    let config = Config::from_lookup(|_| None).expect("configuration");
+    ReactionsPlanner::new(policies(&config).expect("policies"))
 }
 
 async fn database() -> (PgPool, testcontainers::ContainerAsync<GenericImage>) {
@@ -123,7 +132,7 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     let activity = Arc::new(ActivityHub::new(64, 64));
     let config = PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default()).expect("config");
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
-        .with_task_planner(reactions::concert_tasks(6));
+        .with_task_planner(concert_reactions());
     let concerts = ConcertApp::new(CommandService::new(executor, activity));
     let concert_id = ConcertId::parse("test-2026").expect("concert id");
     let announce = AnnounceConcert {
@@ -216,8 +225,8 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
     keys.sort_unstable();
     assert_eq!(
         keys,
-        ["causation_id", "command_id", "concert_id", "correlation_id", "fan_id"],
-        "the transactional_outbox.metadata keys are unchanged"
+        ["causation_id", "command_id", "correlation_id"],
+        "the transactional_outbox.metadata keys are the causation ids"
     );
 
     pool.close().await;
@@ -234,7 +243,7 @@ async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_tas
         let config =
             PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default()).expect("config");
         let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 40 })
-            .with_task_planner(reactions::concert_tasks(6));
+            .with_task_planner(concert_reactions());
         Arc::new(ConcertApp::new(CommandService::new(
             executor,
             Arc::new(ActivityHub::new(64, 64)),
@@ -320,7 +329,7 @@ async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() 
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
     let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
-        .with_task_planner(reactions::concert_tasks(6));
+        .with_task_planner(concert_reactions());
     let concerts = Arc::new(ConcertApp::new(CommandService::new(
         executor,
         Arc::new(ActivityHub::new(64, 64)),
@@ -501,7 +510,7 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
     let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).expect("config");
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
-        .with_task_planner(reactions::concert_tasks(6))
+        .with_task_planner(concert_reactions())
         .with_commit_wakeup(read.wakeup.clone());
     let concerts = Arc::new(ConcertApp::new(CommandService::new(
         executor,

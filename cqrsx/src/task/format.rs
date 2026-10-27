@@ -34,9 +34,50 @@ use thiserror::Error;
 ///     seat: String,
 /// }
 /// ```
+///
+/// A field marked `#[label]` is kept in the task's metadata, under its name, instead of its body: what is said of the
+/// task besides its business data (a tenant, say), never a copy of the body. [`NewTask::new`](crate::task::NewTask::new)
+/// moves it there, and the JSON adapter puts it back before it decodes the payload, so the handler gets the whole
+/// value:
+///
+/// ```
+/// use cqrsx::{Task, task::{NewTask, format::TaskPayload}};
+/// use serde::Serialize;
+/// use serde_json::json;
+///
+/// #[derive(Serialize, Task)]
+/// #[task(name = "issue_refund", version = 1)]
+/// struct IssueRefund {
+///     amount: u32,
+///     #[label]
+///     tenant: String,
+/// }
+///
+/// assert_eq!(IssueRefund::LABELS, ["tenant"]);
+/// let task = NewTask::new(IssueRefund { amount: 80, tenant: "acme".into() }).unwrap();
+/// assert_eq!(task.payload(), &json!({ "amount": 80 }));
+/// assert_eq!(task.metadata(), &json!({ "tenant": "acme" }));
+/// ```
+///
+/// A label moves under its field's name, so a serde attribute that renames or drops the key does not compile:
+///
+/// ```compile_fail
+/// # use cqrsx::Task;
+/// # use serde::Serialize;
+/// #[derive(Serialize, Task)]
+/// #[task(name = "issue_refund", version = 1)]
+/// struct IssueRefund {
+///     amount: u32,
+///     #[label]
+///     #[serde(rename = "tenant_id")]
+///     tenant: String,
+/// }
+/// ```
 pub trait TaskPayload: Serialize {
     const TASK_TYPE: &'static str;
     const TASK_VERSION: i32;
+    /// The fields kept in the task's metadata instead of its body, by name (`#[label]`); none by default.
+    const LABELS: &'static [&'static str] = &[];
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]

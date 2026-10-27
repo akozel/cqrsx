@@ -7,9 +7,11 @@
 //! The core then stamps every planned task with the command's causation and gives it an id derived from
 //! the command ([`Causation::task_id`]).
 //!
-//! A business process reads as one type that plans for every aggregate type it reacts to; an
-//! aggregate's executor registers one planner, a tuple of the processes that react to it. A planner is a
-//! plain function of a [`Decision`], so a test builds one by hand:
+//! An application writes the [`Reactions`](crate::cqrs::reactions::Reactions) of its aggregates: one `match` over
+//! the events, run by [`ReactionsPlanner`](crate::cqrs::reactions::ReactionsPlanner), a planner like any other. The
+//! planner, its [`Decision`] and the tuples stay the building block underneath: a business process may read as one
+//! type that plans for every aggregate type it reacts to, and an aggregate's executor registers one planner, a tuple
+//! of the processes that react to it. A planner is a plain function of a [`Decision`], so a test builds one by hand:
 //!
 //! ```
 //! use cqrsx::cqrs::{

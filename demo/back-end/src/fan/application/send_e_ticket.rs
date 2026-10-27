@@ -2,17 +2,13 @@
 use crate::{
     fan::domain::events::TicketRecorded,
     shared::{
-        application::{
-            mail::{Mail, Mailer},
-            tasks::new_task,
-        },
+        application::mail::{Mail, Mailer},
         domain::{ConcertId, FanId, FanLedgerId, venue::SeatId},
     },
 };
 use cqrsx::{
     Task,
     task::{
-        NewTask, TaskValidationError,
         attempt::TaskAttempt,
         handler::{TaskHandler, TaskHandlerError},
     },
@@ -32,18 +28,18 @@ pub struct SendETicketV1 {
     pub price: u32,
 }
 
-/// The e-ticket of a ticket the ledger recorded; the fan is the ledger's.
-pub fn send_e_ticket(ledger: &FanLedgerId, recorded: &TicketRecorded, max_attempts: i32) -> Result<NewTask, TaskValidationError> {
-    let fan_id = ledger.fan();
-    let payload = SendETicketV1 {
-        booking_id: recorded.booking_id,
-        concert_id: recorded.concert_id.clone(),
-        seat: recorded.seat.clone(),
-        fan_id: fan_id.clone(),
-        fan_name: recorded.fan_name.clone(),
-        price: recorded.price,
-    };
-    new_task(payload, &recorded.concert_id, &fan_id, max_attempts)
+impl SendETicketV1 {
+    /// The e-ticket of a ticket the ledger recorded; the fan is the ledger's.
+    pub fn of(ledger: &FanLedgerId, recorded: &TicketRecorded) -> Self {
+        Self {
+            booking_id: recorded.booking_id,
+            concert_id: recorded.concert_id.clone(),
+            seat: recorded.seat.clone(),
+            fan_id: ledger.fan(),
+            fan_name: recorded.fan_name.clone(),
+            price: recorded.price,
+        }
+    }
 }
 
 pub struct SendETicketHandler<M> {

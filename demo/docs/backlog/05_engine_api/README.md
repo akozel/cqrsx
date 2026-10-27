@@ -26,7 +26,7 @@
 | 04 | [Крейт `cqrsx-macros`: `Event`, `Events`, `Task`, `Rejection`](04_macros_crate.md) | средняя–высокая | средняя | 03 | сделано 2026-10-27: четыре derive, трейт `Rejection` в cqrsx, демо на derive |
 | 05 | [Команда решает сама: `Decide<A>`, `#[derive(Commands)]`, `type Rules`; `handle` и `EventSink` уходят](05_decide_commands.md) | высокая | высокая | 04 | сделано 2026-10-27: `Decide<A>`, `CommandInfo`, derive `Command`/`Commands`, синхронный `TestFramework` |
 | 06 | [Типизированный id агрегата: `type Id`](06_typed_aggregate_id.md) | средняя | средняя | 05 | сделано 2026-10-27: порт и `Decision` на `&A::Id`, текст id — один раз на команду |
-| 07 | [Реакции: `Reactions`, `Decided`, `then.task(..)`, политики по имени](07_reactions.md) | высокая | средняя | 06 | предложено |
+| 07 | [Реакции: `Reactions`, `Decided`, `then.task(..)`, политики по имени](07_reactions.md) | высокая | средняя | 06 | сделано 2026-10-27: реакции полным `match`, политики `STEP`/`MAIL`, `#[label]` задачи |
 | 08 | [Наблюдатели движка и лента активности в `operations`](08_observers_activity_feed.md) | высокая | средняя | 05, 07 | предложено |
 | 09 | [Задачи: `#[task_handler]`, `TaskContext`, зависимости, паузы по политике](09_task_handlers.md) | высокая | средняя–высокая | 07, 08 | предложено |
 | 10 | [Витрины: имя у витрины, три запроса движка, сверка в движке, без LWW](10_views.md) | средняя–высокая | средняя | 03 | предложено |

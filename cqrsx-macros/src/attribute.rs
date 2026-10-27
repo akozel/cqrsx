@@ -1,6 +1,6 @@
 //! The `#[name(key = literal, …)]` attributes of the derives.
 use proc_macro2::Span;
-use syn::{Attribute, Error, Lit, LitInt, LitStr, spanned::Spanned};
+use syn::{Attribute, Error, Lit, LitInt, LitStr, Meta, spanned::Spanned};
 
 /// The `key = literal` pairs of every `#[name(…)]` attribute of an item, in their order.
 pub(crate) struct Pairs {
@@ -65,6 +65,21 @@ pub(crate) fn not_empty(value: LitStr, message: &str) -> syn::Result<LitStr> {
         return Err(Error::new(value.span(), message));
     }
     Ok(value)
+}
+
+/// The attribute `#[name]` of a field, `None` when it has none; one with arguments or given twice is refused.
+pub(crate) fn marked<'a>(attributes: &'a [Attribute], name: &str) -> syn::Result<Option<&'a Attribute>> {
+    let mut found = None;
+    for attribute in attributes.iter().filter(|attribute| attribute.path().is_ident(name)) {
+        if !matches!(attribute.meta, Meta::Path(_)) {
+            return Err(Error::new_spanned(attribute, format!("`#[{name}]` takes no arguments")));
+        }
+        if found.is_some() {
+            return Err(Error::new_spanned(attribute, format!("`#[{name}]` is given twice")));
+        }
+        found = Some(attribute);
+    }
+    Ok(found)
 }
 
 #[cfg(test)]

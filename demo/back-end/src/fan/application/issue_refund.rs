@@ -2,17 +2,13 @@
 use crate::{
     fan::domain::events::TicketCancelled,
     shared::{
-        application::{
-            mail::{Mail, Mailer},
-            tasks::new_task,
-        },
+        application::mail::{Mail, Mailer},
         domain::{ConcertId, FanId, FanLedgerId, venue::SeatId},
     },
 };
 use cqrsx::{
     Task,
     task::{
-        NewTask, TaskValidationError,
         attempt::TaskAttempt,
         handler::{TaskHandler, TaskHandlerError},
     },
@@ -32,22 +28,18 @@ pub struct IssueRefundV1 {
     pub amount: u32,
 }
 
-/// The refund of a ticket the ledger cancelled; the fan is the ledger's.
-pub fn issue_refund(
-    ledger: &FanLedgerId,
-    cancelled: &TicketCancelled,
-    max_attempts: i32,
-) -> Result<NewTask, TaskValidationError> {
-    let fan_id = ledger.fan();
-    let payload = IssueRefundV1 {
-        cancellation_id: cancelled.cancellation_id,
-        booking_id: cancelled.booking_id,
-        concert_id: cancelled.concert_id.clone(),
-        seat: cancelled.seat.clone(),
-        fan_id: fan_id.clone(),
-        amount: cancelled.refund,
-    };
-    new_task(payload, &cancelled.concert_id, &fan_id, max_attempts)
+impl IssueRefundV1 {
+    /// The refund of a ticket the ledger cancelled; the fan is the ledger's.
+    pub fn of(ledger: &FanLedgerId, cancelled: &TicketCancelled) -> Self {
+        Self {
+            cancellation_id: cancelled.cancellation_id,
+            booking_id: cancelled.booking_id,
+            concert_id: cancelled.concert_id.clone(),
+            seat: cancelled.seat.clone(),
+            fan_id: ledger.fan(),
+            amount: cancelled.refund,
+        }
+    }
 }
 
 pub struct IssueRefundHandler<M> {

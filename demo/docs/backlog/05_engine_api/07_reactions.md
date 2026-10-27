@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Статус | предложено 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 2): политика привязана к типу задачи при регистрации, реакция её не называет |
+| Статус | сделано 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 2): политика привязана к типу задачи при регистрации, реакция её не называет |
 | Ценность | высокая: главный файл дизайна (04) — «случилось X — дальше Y» одним `match`, компилятор проверяет полноту |
 | Цена | средняя: новый компонент поверх `TaskPlanner`, политики задач, перевод планировщиков демо |
-| cqrsx | новый `src/cqrs/reactions.rs` (`Reactions`, `Decided`, `Then`, `ReactionsPlanner`), новый `src/task/policy.rs` (`PolicyName`, `Retry`, `TaskPolicy`, `Policies`), `cqrsx-macros` (`#[label]` в `#[derive(Task)]`), `src/cqrs/command/planner.rs` (без изменений контракта), `doc/components.md`, `README.md` |
-| demo | `concert/application/reactions.rs` (`impl Reactions for Concert`), `fan/application/reactions.rs`, `concert/application/fan_ledger.rs`, `fan/application/{record_ticket,send_e_ticket,record_cancellation,issue_refund}.rs` (конструкторы `::of`), `shared/application/policies.rs` (новый: `STEP`, `MAIL`), `shared/application/tasks.rs` (удаляется), `bootstrap/aggregates/*` (`ReactionsPlanner` и `Policies`), `tests/write_side.rs` |
+| cqrsx | новый `src/cqrs/reactions.rs` (`Reactions`, `Decided`, `Then`, `ReactionsPlanner`), новый `src/task/policy.rs` (`PolicyName`, `Retry`, `TaskPolicy`, `Policies`, `PolicyError`), `src/task.rs` (`DEFAULT_MAX_ATTEMPTS`, метки), `src/task/{format,attempt}.rs`, `src/task/adapter/json.rs` (метки, В-1 плана), `cqrsx-macros` (`#[label]` в `#[derive(Task)]`), `src/cqrs/command/planner.rs` (без изменений контракта), `doc/components.md`, `README.md` |
+| demo | `concert/application/reactions.rs` (`impl Reactions for Concert`), `fan/application/reactions.rs`, `concert/application/fan_ledger.rs`, `fan/application/{send_e_ticket,issue_refund}.rs` (конструкторы `::of`), `shared/application/policies.rs` (новый: `STEP`, `MAIL`), `shared/application/tasks.rs` (удаляется, тесты — в `bootstrap/tasks.rs`), `bootstrap/tasks.rs` (`policies`), `bootstrap.rs`, `bootstrap/aggregates/*` (`ReactionsPlanner` и `Policies`), `testing.rs`, тестовые помощники модулей, `tests/{write_side,contracts,architecture}.rs` |
 | Зависимости | 06 |
 | Гарантии | G-04, G-05, G-06, G-08, G-13, G-15, G-19 (бюджет попыток), G-33 (метаданные задач: только id причинности) |
 
@@ -28,20 +28,25 @@
   -> &HashMap<String, String>` только для чтения. `state` — состояние после события (ссылка на рабочую копию под
   блокировкой).
 - `Then`: `task(payload: impl TaskPayload)` (метаданные из полей `#[label]` задачи), `task_after(delay: Duration,
-  payload)` (`TaskSchedule::After`). Политику реакция не называет: она у типа задачи (решение пользователя
-  2026-10-27).
-- `ReactionsPlanner<A: Reactions>` — `impl TaskPlanner<A>`: строит `Decided` из `Decision` (D-02: ровно одно событие),
-  зовёт `A::react`, превращает `Then` в `Vec<NewTask>`: `max_attempts` — из политики типа задачи (реестр `Policies`
-  по формату; формат без политики — умолчание движка), ошибка сериализации → `TaskPlanError::Task` (отказ
-  «недоступно», G-08). Метаданные задачи — только поля `#[label]`; штамп причинности и id — ядро, как сейчас (G-13:
-  порядковый номер — по порядку `then.task(..)`).
+  payload)` (`TaskSchedule::After`); первая задача, которую не удалось построить, отказывает всему плану;
+  `into_tasks()` и `Decided::new(..)` — чтобы проверить реакцию отдельно. Политику реакция не называет: она у типа
+  задачи (решение пользователя 2026-10-27).
+- `ReactionsPlanner<A: Reactions>` — `impl TaskPlanner<A>`: строит `Decided` из `Decision` (D-02: ровно одно
+  событие; решение, собранное руками с другим числом событий, — `TaskPlanError::Application`), зовёт `A::react`,
+  превращает `Then` в `Vec<NewTask>`: `max_attempts` — из политики типа задачи (реестр `Policies` по формату; формат
+  без политики — умолчание движка `task::DEFAULT_MAX_ATTEMPTS` = 10, бывший литерал `NewTask::from_payload`), ошибка
+  сериализации → `TaskPlanError::Task` (отказ «недоступно», G-08). Метаданные задачи — только поля `#[label]`; штамп
+  причинности и id — ядро, как сейчас (G-13: порядковый номер — по порядку `then.task(..)`).
 - `task::policy`: `PolicyName` (строковая константа), `Retry::{fixed(d), backoff(base, max)}` с
   `pause(attempt) -> Duration` = `min(base · 2^(n−1), max)` — формула `MailClientSettings::retry_after` дословно, без
-  разброса; `TaskPolicy { retry, max_attempts }`; реестр `Policies` (`Arc`): значения по имени и привязка формата
-  задачи к имени; им делятся планировщик (здесь) и исполнитель задач (09). Привязка: в 11 — `.task(h).policy(MAIL)`
-  в корне модуля, до того — в `bootstrap`.
-- `#[derive(Task)]` понимает `#[label]`: значения таких полей `Then` кладёт в метаданные (дизайн 05). В демо полей с
-  `#[label]` нет; derive тестируется в cqrsx.
+  разброса; `TaskPolicy::new(retry, max_attempts)` (бюджет положителен); реестр `Policies` (`Arc`): значения по имени
+  (`with_policy`) и привязка формата задачи к объявленному имени (`with_task::<T>(name)`), чтение — `policy`,
+  `name_of`, `of`, `max_attempts`; отказы — `PolicyError`. Им делятся планировщик (здесь) и исполнитель задач (09).
+  Привязка: в 11 — `.task(h).policy(MAIL)` в корне модуля, до того — `bootstrap/tasks.rs::policies`.
+- `#[derive(Task)]` понимает `#[label]`: такие поля — `TaskPayload::LABELS`; `NewTask::new` переносит их из тела в
+  метаданные (значения JSON, без дублирования — дизайн 05), `JsonTaskAdapter` возвращает их в копию тела перед
+  разбором, `TaskAttempt::first` переносит так же. Derive отказывает, где serde меняет или убирает ключ поля. Без меток
+  путь задачи прежний. В демо полей с `#[label]` нет; derive тестируется в cqrsx.
 - `TaskPlanner`, `Decision`, кортежи остаются строительным блоком (задача 01: «блоки остаются для своих хранилищ и
   тестов cqrsx»); в README их больше нет (14).
 
@@ -60,15 +65,16 @@
   }
   ```
 
-  `fan/application/reactions.rs` — `TicketRecorded → then.task(SendETicket::of(..))`, `TicketCancelled →
-  then.task(IssueRefund::of(..))`.
+  `fan/application/reactions.rs` — `TicketRecorded → then.task(SendETicketV1::of(..))`, `TicketCancelled →
+  then.task(IssueRefundV1::of(..))`. Имена контрактов `…V1` остаются (В-2 плана): без суффикса `RecordTicket` и
+  `RecordCancellation` совпали бы с командами книжки в тех же файлах.
 - `shared/application/policies.rs`: `pub const STEP: PolicyName`, `pub const MAIL: PolicyName`. Значения и привязка
   типов — в `bootstrap` (до 11): `STEP` — `Retry::fixed(1 с)` для `encore_record_ticket` и
   `encore_record_cancellation`, `MAIL` — `Retry::backoff(ENCORE_TASK_RETRY_BASE_MS, ENCORE_TASK_RETRY_MAX_MS)` для
   `encore_send_e_ticket` и `encore_issue_refund`, обе с `ENCORE_TASK_MAX_ATTEMPTS`.
 - `shared/application/tasks.rs::new_task` и ключи `concert_id`/`fan_id` в метаданных задач удаляются (исключение
-  01); `impl TaskPlanner` в демо удаляются; `bootstrap/aggregates/*`: `.with_task_planner(ReactionsPlanner::<Concert>
-  ::new(policies.clone()))`.
+  01); тесты файла переезжают в `bootstrap/tasks.rs`; `impl TaskPlanner` в демо удаляются; `bootstrap/aggregates/*`:
+  `.with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))`, `policies` строит `wire()` один раз.
 - В этой задаче обработчики по-прежнему возвращают `retry_after` сами (почта — своя формула, шаги — 1 с): паузу по
   политике исполнитель начнёт считать в 09. Так коммит 07 не меняет поведения.
 
@@ -117,9 +123,32 @@ decided.id, cancelled))`. Добавить событие `SeatReserved` без 
 
 ## Критерии приёмки
 
-- [ ] `Reactions`, `Decided`, `Then`, `task_after`, политики в cqrsx с тестами.
-- [ ] Демо: реакции обоих агрегатов, конструкторы задач, `STEP`/`MAIL`; `TaskPlanner` в демо не используется;
+- [x] `Reactions`, `Decided`, `Then`, `task_after`, политики в cqrsx с тестами.
+- [x] Демо: реакции обоих агрегатов, конструкторы задач, `STEP`/`MAIL`; `TaskPlanner` в демо не используется;
       `new_task` удалён.
-- [ ] Эталон пауз проходит на политиках; JSON и метаданные задач не изменились (кроме исключения 01).
-- [ ] Типы задач привязаны к политикам (`bootstrap`, до 11); формат без политики получает умолчания движка.
-- [ ] `components.md`, guarantees.md.
+- [x] Эталон пауз проходит на политиках; JSON и метаданные задач не изменились (кроме исключения 01).
+- [x] Типы задач привязаны к политикам (`bootstrap`, до 11); формат без политики получает умолчания движка.
+- [x] `components.md`, guarantees.md.
+
+## Результат
+
+Сделано 2026-10-27.
+- **cqrsx:**
+  - `cqrs::reactions`: `Reactions::react(&Decided, &mut Then)` — полный `match` по событиям; `Decided { id, state
+    (после события), command, event, metadata() }`, `Decided::new`; `Then::{task, task_after, into_tasks}` — первая
+    задача, которую не удалось построить, отказывает плану; `ReactionsPlanner<A>` — `TaskPlanner<A>`: решение не с
+    одним событием — `TaskPlanError::Application`, бюджет — из политики типа задачи;
+  - `task::policy`: `PolicyName`, `Retry::{fixed, backoff}` (формула почты дословно, без разброса), `TaskPolicy::new`,
+    реестр `Policies` (`Arc`, `with_policy`, `with_task::<T>`, `of`, `max_attempts`), `PolicyError`;
+    `task::DEFAULT_MAX_ATTEMPTS` = 10 вместо литерала;
+  - `#[label]` в `#[derive(Task)]` → `TaskPayload::LABELS`: поле хранится в метаданных, не в теле (`NewTask::new`,
+    `TaskAttempt::first`), `JsonTaskAdapter` возвращает его перед разбором; derive отказывает, где serde меняет ключ.
+    Без меток путь задачи прежний.
+- **Демо:** реакции кассы и книжки — по одной ветке на событие; `fan_ledger` и `SendETicketV1::of`,
+  `IssueRefundV1::of` строят контракты без бюджета; `STEP`/`MAIL` в `shared/application/policies.rs`, значения и
+  привязка — `bootstrap/tasks.rs::policies`; `shared/application/tasks.rs` и `new_task` удалены, ключи `concert_id`,
+  `fan_id` в метаданных задач больше не пишутся (исключение 01).
+- **Неизменность:** тест строк четырёх задач написан и пройден до замены, после неё меняются только метаданные (два
+  ключа); политики дают паузы эталона `retry_pauses.txt`; эталоны 02 без изменений.
+- **Сверка утверждений:** 814 / 7 / 1 / 1 / 0 / 31.
+- **Тесты и покрытие (первый полный прогон):** cqrsx lib 349, интеграционные 245, doctest'ы 44 + 19, macros 38; демо 159 + 14; покрытие — workspace 97,77 %, cqrsx 97,68 %. Повторный прогон после правки покрытия — журнал, «Окончательные проверки».

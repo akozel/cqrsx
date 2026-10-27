@@ -17,18 +17,18 @@ consistency, ordering and retries.
   way to the read model, two nodes never apply at once, and a rebuild (the whole journal, one key, or a
   document that refused a gap) runs through the same workers without stopping the writes. The views and the
   checkpoint may live in MongoDB, next to each other (feature `mongodb`).
-- **Durable follow-ups, planned from the decision.** The aggregate decides events only; a task planner turns
-  each decision into the tasks that follow it, so a business process (a type that plans for every aggregate
-  it reacts to) reads in one place. Anything that must survive a crash is an outbox task: claimed under a
-  lease, retried with backoff, run by a worker pool that drains on shutdown.
+- **Durable follow-ups, planned from the decision.** The aggregate decides events only; its reactions say what
+  follows each event, one `match` the compiler checks for completeness, and the tasks commit with the event.
+  Anything that must survive a crash is an outbox task: claimed under a lease, retried with backoff (the
+  attempt budget is the policy of the task's type), run by a worker pool that drains on shutdown.
 - **Testable without a database.** A given/when/then framework for aggregates, an in-memory store and
   journal with an outbox, and a command executor that records the tasks a use case publishes and feeds the
   projection processors under test.
 
 ```text
-command ─► CommandExecutor ─► CqrsFramework ─► Aggregate ─► TaskPlanner ─► EventStore ──┐ one transaction:
-               │  aggregate lock                 (events)    (decision → tasks)        ├─ event, snapshot,
-               └─► CommitWakeup                                                         └─ outbox tasks
+command ─► CommandExecutor ─► CqrsFramework ─► Aggregate ─► Reactions ─► EventStore ──┐ one transaction:
+               │  aggregate lock                 (event)     (event → tasks)         ├─ event, snapshot,
+               └─► CommitWakeup                                                       └─ outbox tasks
 
 events (tx) ─► ProjectionProcessor (checkpoint, lease) ─► worker per key ─► ViewProjection ─► read model
                        ▲ CommitWakeup after a commit, or the poll
@@ -39,7 +39,7 @@ transactional_outbox ─► TaskRuntime ─► Worker ─► TaskDispatcher ─�
 ## Quick start
 
 A fan's ticket ledger: an aggregate with one command and one event, a read model and a follow-up task
-planned from the event. Everything below runs in memory, and the same types run unchanged on PostgreSQL.
+its reactions plan from the event. Everything below runs in memory, and the same types run unchanged on PostgreSQL.
 
 ```rust
 use cqrsx::cqrs::{
@@ -48,7 +48,6 @@ use cqrsx::cqrs::{
         CommandExecutor,
         causation::Causation,
         decide::Decide,
-        planner::{Decision, TaskPlanError, TaskPlanner},
         wakeup::CommitWakeup,
     },
     event::EventEnvelope,
@@ -57,12 +56,13 @@ use cqrsx::cqrs::{
         processor::{ProjectionProcessor, config::ProcessorConfig},
         repository::ViewRepository,
     },
+    reactions::{Decided, Reactions, ReactionsPlanner, Then},
     testing::{
         TestFramework, command::TestCommandExecutor, mem_checkpoint_store::MemCheckpointStore,
         mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository,
     },
 };
-use cqrsx::{Event, Events, Task, task::NewTask};
+use cqrsx::{Event, Events, Task, task::policy::Policies};
 use serde::{Deserialize, Serialize};
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
@@ -149,17 +149,14 @@ struct SendETicket {
     seat: String,
 }
 
-// The process that reacts to the ledger: every recorded ticket is mailed. The core runs the planner after
-// every decision with events, under the aggregate's lock, and commits its tasks with the events.
-struct TicketDelivery;
-
-impl TaskPlanner<Ledger> for TicketDelivery {
-    fn plan(&self, decision: &Decision<'_, Ledger>) -> Result<Vec<NewTask>, TaskPlanError> {
-        let mut tasks = Vec::new();
-        for LedgerEvent::TicketRecorded(recorded) in decision.events {
-            tasks.push(NewTask::new(SendETicket { seat: recorded.seat.clone() })?);
+// What follows each fact of the ledger: every recorded ticket is mailed. The core runs the reactions after
+// every decision, under the aggregate's lock, and commits their tasks with the event; a new event without a
+// branch does not compile.
+impl Reactions for Ledger {
+    fn react(decided: &Decided<'_, Self>, then: &mut Then) {
+        match decided.event {
+            LedgerEvent::TicketRecorded(recorded) => then.task(SendETicket { seat: recorded.seat.clone() }),
         }
-        Ok(tasks)
     }
 }
 
@@ -170,7 +167,7 @@ fn main() {
         .when(LedgerCommand::RecordTicket { seat: "A2".into() })
         .then_expect_error_message("ticket limit of 1 reached");
 
-    // The command path over an in-memory journal: aggregate locks, conflict retry, the task planner and a
+    // The command path over an in-memory journal: aggregate locks, conflict retry, the reactions and a
     // record of the tasks every commit published. A projection processor reads the same journal into the
     // wallets; the executor wakes it after every commit.
     let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -188,7 +185,8 @@ fn main() {
         let shutdown = CancellationToken::new();
         let running = tokio::spawn(processor.run(shutdown.clone()));
         let ledgers = TestCommandExecutor::<Ledger, _>::over_journal(journal.clone(), Rules { limit: 4 })
-            .with_task_planner(TicketDelivery)
+            // No policies: the tasks get the engine's attempt budget.
+            .with_task_planner(ReactionsPlanner::<Ledger>::new(Policies::default()))
             .with_commit_wakeup(wakeup);
 
         // Who caused the command travels in its metadata; the core stamps it on every task it plans.
@@ -237,6 +235,7 @@ use cqrsx::{
             processor::{ProjectionProcessor, config::ProcessorConfig},
             runtime::ProjectionRuntime,
         },
+        reactions::ReactionsPlanner,
     },
     host::{lifecycle, signal::shutdown_signal},
     logging::LoggingConfig,
@@ -250,10 +249,12 @@ use cqrsx::{
     },
     task::{
         adapter::boxed::BoxedTaskAdapter, attempt::TaskAttempt, dispatcher::TaskDispatcher,
-        handler::{TaskHandler, TaskHandlerError}, runtime::config::TaskRuntimeConfig,
+        handler::{TaskHandler, TaskHandlerError},
+        policy::{Policies, PolicyName, Retry, TaskPolicy},
+        runtime::config::TaskRuntimeConfig,
     },
 };
-use std::sync::Arc;
+use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
 /// The task handler. A task arrives at least once: the same one may come back after a crash or a
@@ -284,13 +285,16 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     .await?;
 
     // One executor per aggregate type and process: it owns the aggregate locks. Share it; a second
-    // executor of the same type behaves like another process. Its planner plans the tasks of every
-    // decision; a commit wakes the type's processors.
+    // executor of the same type behaves like another process. Its reactions plan the tasks of every
+    // decision, with the attempt budget of each task type's policy; a commit wakes the type's processors.
     let wakeup = CommitWakeup::new();
+    const MAIL: PolicyName = PolicyName::new("mail");
+    let mail = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 6)?;
+    let policies = Policies::default().with_policy(MAIL, mail)?.with_task::<SendETicket>(MAIL)?;
     let config = PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default())?;
     let ledgers = Arc::new(
         PostgresCommandExecutor::<Ledger>::new(pool.clone(), config, Rules { limit: 4 })
-            .with_task_planner(TicketDelivery)
+            .with_task_planner(ReactionsPlanner::<Ledger>::new(policies))
             .with_commit_wakeup(wakeup.clone()),
     );
 
@@ -394,10 +398,11 @@ concurrency: a larger buffer makes claims bigger but needs a lease for one more 
 
 ## Rules worth knowing
 
-- **The aggregate decides events, a planner plans tasks.** A `TaskPlanner` is a pure, synchronous function of
-  the decision (the state before and after, the command, the events, the metadata): it runs under the
-  aggregate's lock on every attempt, so it does no I/O, and data from outside comes in the command. An error
-  refuses the command with nothing written. One planner per executor; processes compose as a tuple.
+- **The aggregate decides events, its reactions plan tasks.** `Reactions::react` is a pure, synchronous
+  function of what was decided (the id, the state after the event, the command, the event, the metadata): it
+  runs under the aggregate's lock on every attempt, so it does no I/O, and data from outside comes in the
+  command. A task that cannot be built refuses the command with nothing written. The executor runs them through
+  `ReactionsPlanner`, a `TaskPlanner`; the attempt budget of a task is the policy of its type (`Policies`).
 - **The command id is a publication key.** With the causation keys in the metadata
   (`Causation::event_metadata`) the core stamps them on every planned task and derives the task's id from the
   command id, the aggregate and the task's format: every attempt plans the same ids, and the same command
@@ -436,7 +441,7 @@ concurrency: a larger buffer makes claims bigger but needs a lease for one more 
 | `cqrs::testing::TestFramework` | An aggregate's rules: `with(rules).given(events).when(command).then_expect_event(..)` or `then_expect_error_message(..)` |
 | `cqrs::testing::command::TestCommandExecutor` | A use case: the production command path, with locks, retry, the task planner and a commit wake-up, over `MemStore` or (`over_journal`) over a `MemEventRepository` that projection processors read; `take_published_tasks()` shows what the committed calls published |
 | `cqrs::testing::mem_event_repository::MemEventRepository::outbox` | The tasks published with the events of an aggregate type, each with the sequence of its event, by the rules of the PostgreSQL outbox |
-| `cqrs::command::planner::Decision` | A task planner on its own: build the decision by hand and call `plan` |
+| `cqrs::reactions::Decided` | An aggregate's reactions on their own: build what was decided by hand, react into a `Then` and look at its tasks |
 | `cqrs::testing::mem_view_repository::MemViewRepository` | A projection and the queries over it |
 | `cqrs::testing::mem_checkpoint_store::MemCheckpointStore` | A projection processor without a database, next to `MemEventRepository` and `MemViewRepository` (leases follow the Tokio clock, so a paused test clock drives them) |
 | `cqrs::testing::unavailable_store::UnavailableStore` | The storage-down path |

@@ -1,5 +1,5 @@
 //! Immutable handler-visible input without queue ownership credentials.
-use super::{validate_metadata, validate_payload};
+use super::{move_labels, validate_metadata, validate_payload};
 use crate::task::{
     TaskValidationError,
     format::{TaskFormat, TaskPayload},
@@ -38,11 +38,16 @@ impl TaskAttempt {
         })
     }
     /// The first claim of a new task carrying `payload` and `metadata`, with a random task ID;
-    /// for invoking task handlers outside the runtime, e.g. in their tests.
+    /// for invoking task handlers outside the runtime, e.g. in their tests. The fields of `P::LABELS` move from the
+    /// payload to the metadata, as in a published task.
     pub fn first<P: TaskPayload>(payload: &P, metadata: Value) -> Result<Self, TaskValidationError> {
         let format = TaskFormat::of::<P>()?;
         let payload = serde_json::to_value(payload).map_err(|_| TaskValidationError::Serialization)?;
-        Self::new(Uuid::new_v4(), format, payload, metadata, 1)
+        let mut attempt = Self::new(Uuid::new_v4(), format, payload, metadata, 1)?;
+        if !P::LABELS.is_empty() {
+            move_labels(P::LABELS, &mut attempt.payload, &mut attempt.metadata);
+        }
+        Ok(attempt)
     }
 
     /// Stable identity of the durable task across claims and redelivery.

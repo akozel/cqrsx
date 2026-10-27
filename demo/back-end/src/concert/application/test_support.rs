@@ -2,7 +2,7 @@
 //! and the command its reactions are tested with.
 use crate::{
     concert::{
-        application::{app::ConcertApp, reactions::concert_tasks},
+        application::app::ConcertApp,
         domain::{
             Concert, ConcertCommand, ConcertError, ConcertEvent, ConcertRules,
             commands::{AnnounceConcert, BookSeat, CancelBooking},
@@ -25,6 +25,7 @@ use cqrsx::{
     cqrs::{
         AggregateError,
         event::EventEnvelope,
+        reactions::ReactionsPlanner,
         store::EventStore,
         testing::{
             command::TestCommandExecutor,
@@ -58,7 +59,8 @@ where
     S: EventStore<Concert> + 'static,
     S::AC: Send,
 {
-    let executor = TestCommandExecutor::new(store, ConcertRules::default()).with_task_planner(concert_tasks(6));
+    let executor = TestCommandExecutor::new(store, ConcertRules::default())
+        .with_task_planner(ReactionsPlanner::<Concert>::new(crate::testing::policies()));
     let activity = Arc::new(ActivityHub::new(64, 64));
     let service = CommandService::new(executor.clone(), activity.clone());
     Harness {
@@ -190,7 +192,7 @@ pub fn cancelled_booking(booking_id: Uuid, cancellation_id: Uuid) -> ConcertEven
     })
 }
 
-/// Some box-office command: the planners never read it.
+/// Some box-office command: the reactions never read it.
 pub fn concert_command() -> ConcertCommand {
     ConcertCommand::BookSeat(BookSeat {
         seat: "A1".into(),

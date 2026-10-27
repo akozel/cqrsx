@@ -11,7 +11,10 @@ use cqrsx::{
     },
     task::{
         NewTask,
+        adapter::{TaskAdapter, json::JsonTaskAdapter},
+        attempt::TaskAttempt,
         format::{TaskFormat, TaskPayload},
+        handler::{TaskHandler, TaskHandlerError},
     },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -82,6 +85,58 @@ fn a_derived_task_has_its_format_and_publishes() {
         (task.format().to_string(), task.payload()),
         ("send_e_ticket v2".to_owned(), &json!({ "seat": "B4" }))
     );
+}
+
+/// A refund whose tenant and kind are said of the task, not part of its business data.
+#[derive(Debug, PartialEq, Serialize, Deserialize, Task)]
+#[serde(deny_unknown_fields)]
+#[task(name = "issue_refund", version = 1)]
+struct IssueRefund {
+    #[label]
+    tenant: String,
+    amount: u32,
+    #[label]
+    r#type: u8,
+}
+
+/// Hands the decoded refund to the test.
+struct Refunds(std::sync::Arc<std::sync::Mutex<Vec<IssueRefund>>>);
+
+impl TaskHandler<IssueRefund> for Refunds {
+    async fn handle(&mut self, refund: IssueRefund, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        self.0.lock().unwrap().push(refund);
+        Ok(())
+    }
+}
+
+#[tokio::test]
+async fn a_derived_task_keeps_its_labels_in_the_metadata() {
+    assert_eq!(IssueRefund::LABELS, ["tenant", "type"]);
+    let refund = || IssueRefund {
+        tenant: "acme".into(),
+        amount: 80,
+        r#type: 2,
+    };
+    let task = NewTask::new(refund()).unwrap();
+    assert_eq!(task.payload(), &json!({ "amount": 80 }));
+    assert_eq!(task.metadata(), &json!({ "tenant": "acme", "type": 2 }));
+    // The runtime claims the row as it was written; the adapter puts the labels back before it decodes.
+    let claim = TaskAttempt::new(
+        task.id(),
+        task.format().clone(),
+        task.payload().clone(),
+        task.metadata().clone(),
+        1,
+    )
+    .unwrap();
+    let decoded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+    let mut adapter = JsonTaskAdapter::new(Refunds(decoded.clone())).unwrap();
+    adapter.invoke(&claim).await.unwrap();
+    adapter
+        .invoke(&TaskAttempt::first(&refund(), json!({})).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(*decoded.lock().unwrap(), [refund(), refund()]);
 }
 
 #[derive(Debug, Serialize)]

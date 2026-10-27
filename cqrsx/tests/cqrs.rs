@@ -9,6 +9,8 @@ mod history;
 mod planning;
 #[path = "cqrs/projection.rs"]
 mod projection;
+#[path = "cqrs/reactions.rs"]
+mod reactions;
 #[path = "cqrs/support.rs"]
 mod support;
 #[path = "cqrs/testing.rs"]

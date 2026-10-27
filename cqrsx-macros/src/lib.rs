@@ -54,9 +54,13 @@ pub fn derive_events(input: TokenStream) -> TokenStream {
 
 /// The wire format of a task's payload: `#[task(name = "encore_record_cancellation", version = 1)]` on the type
 /// implements `cqrsx::task::format::TaskPayload` with them (`TASK_TYPE`, `TASK_VERSION`). A queued task keeps them, so
-/// they never change. A missing attribute or key, another key, a key given twice, a type that is not a string or is
-/// empty and a version that is not a positive `i32` do not compile. Examples: `cqrsx::task::format::TaskPayload`.
-#[proc_macro_derive(Task, attributes(task))]
+/// they never change. The fields of a struct marked `#[label]` are its `LABELS`, in field order: the task keeps them
+/// in its metadata, not in its body. A missing attribute or key, another key, a key given twice, a type that is not a
+/// string or is empty and a version that is not a positive `i32` do not compile; nor does a `#[label]` with arguments,
+/// twice, on a field without a name or off a struct, on a field whose key `#[serde(rename, flatten, skip,
+/// skip_serializing)]` changes or drops, or with `#[serde(rename_all)]` on the struct. Examples:
+/// `cqrsx::task::format::TaskPayload`.
+#[proc_macro_derive(Task, attributes(task, label))]
 pub fn derive_task(input: TokenStream) -> TokenStream {
     run(task::expand_task, input.into()).into()
 }

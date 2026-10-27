@@ -1,4 +1,5 @@
-//! Test tools the flows of several modules share: what a planner plans for a decision built by hand.
+//! Test tools the flows of several modules share: what a planner (the reactions' planner of an aggregate) plans for a
+//! decision built by hand.
 use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
@@ -8,7 +9,7 @@ use cqrsx::{
 };
 use std::collections::HashMap;
 
-/// What `planner` plans for `events` decided on `aggregate_id`, the decision built by hand (the planners
+/// What `planner` plans for `events` decided on `aggregate_id`, the decision built by hand (the reactions
 /// read neither the state nor the command).
 pub fn plan<A: Aggregate, P: TaskPlanner<A>>(
     planner: &P,

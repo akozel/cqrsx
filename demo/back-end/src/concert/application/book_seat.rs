@@ -64,8 +64,7 @@ mod tests {
         let id = json!(booking_id);
         assert_eq!(
             tasks[0].metadata(),
-            &json!({ "command_id": id, "correlation_id": id, "causation_id": id,
-                     "concert_id": "radiohead-2026-11-21", "fan_id": "fox" }),
+            &json!({ "command_id": id, "correlation_id": id, "causation_id": id }),
             "wire contract of transactional_outbox.metadata"
         );
         assert_eq!(
