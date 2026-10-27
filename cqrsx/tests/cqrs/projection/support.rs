@@ -19,7 +19,7 @@ use cqrsx::cqrs::{
             config::ProcessorConfig,
             observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
         },
-        repository::{ViewContext, ViewRepository},
+        repository::{StoredView, ViewContext, ViewRepository},
     },
     store::{
         EventStore, PersistenceError,
@@ -59,6 +59,7 @@ pub(crate) struct Balance {
 }
 
 impl View<Ledger> for Balance {
+    const NAME: &'static str = NAME;
     fn update(&mut self, event: &EventEnvelope<Ledger>) {
         self.total += i64::from(event.payload.0);
         self.history.push((event.sequence, event.payload.0));
@@ -200,18 +201,19 @@ impl Views {
     }
 
     /// Drops the document of `key`, as the demo's wipe does.
-    pub(crate) fn delete(&self, key: &str) {
+    pub(crate) async fn delete(&self, key: &str) {
         let kept: Vec<_> = self
             .inner
-            .list_all()
+            .list()
+            .await
             .unwrap()
             .into_iter()
-            .filter(|(context, _)| context.view_instance_id != key)
+            .filter(|stored| stored.id != key)
             .collect();
         self.inner.clear();
-        for (context, view) in kept {
+        for stored in kept {
             self.inner
-                .put(&context.view_instance_id, context.version, context.last_sequence, &view)
+                .put(&stored.id, stored.version, stored.last_sequence, &stored.view)
                 .unwrap();
         }
     }
@@ -262,6 +264,14 @@ impl ViewRepository<Balance, Ledger> for Views {
         let result = self.inner.update_view(view, context).await;
         self.in_flight.fetch_sub(1, Ordering::SeqCst);
         result
+    }
+
+    async fn list(&self) -> Result<Vec<StoredView<Balance>>, PersistenceError> {
+        self.inner.list().await
+    }
+
+    async fn range(&self, lower: &str, upper: &str) -> Result<Vec<StoredView<Balance>>, PersistenceError> {
+        self.inner.range(lower, upper).await
     }
 }
 
@@ -673,7 +683,7 @@ impl Harness {
 
     /// Starts a processor named [`NAME`] that reaches the checkpoint rows through `checkpoints`.
     pub(crate) fn node_isolated(&self, owner: &str, checkpoints: Arc<Checkpoints>) -> Node {
-        let projection = Arc::new(ViewProjection::new(self.views.clone()).with_name(NAME));
+        let projection = Arc::new(ViewProjection::new(self.views.clone()));
         let processor = ProjectionProcessor::new(NAME, self.journal.clone(), checkpoints, projection, self.config)
             .with_owner(owner)
             .with_observer(self.observer.clone())
@@ -693,7 +703,7 @@ impl Harness {
         config: ProcessorConfig,
         upcasters: Vec<Box<dyn cqrsx::cqrs::store::upcaster::EventUpcaster>>,
     ) -> Node {
-        let projection = Arc::new(ViewProjection::new(self.views.clone()).with_name(name));
+        let projection = Arc::new(ViewProjection::new(self.views.clone()));
         let processor = ProjectionProcessor::new(name, self.journal.clone(), self.checkpoints.clone(), projection, config)
             .with_owner(owner)
             .with_observer(self.observer.clone())

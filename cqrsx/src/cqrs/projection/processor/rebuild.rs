@@ -132,6 +132,7 @@ mod tests {
     struct Sequences(Vec<usize>);
 
     impl View<Ledger> for Sequences {
+        const NAME: &'static str = "sequences";
         fn update(&mut self, event: &EventEnvelope<Ledger>) {
             self.0.push(event.sequence);
         }
@@ -260,7 +261,7 @@ mod tests {
                     .unwrap();
                 let (view, context) = views.load_with_context("a").await.unwrap().unwrap();
                 assert_eq!((view, context.version, context.last_sequence), (Sequences(vec![1]), 6, 1));
-                assert_eq!(bounded.name(), std::any::type_name::<Sequences>());
+                assert_eq!(bounded.name(), Sequences::NAME);
             }
         });
         assert_eq!(rebuilder.rebuild("a", pace, CancellationToken::new()).await.unwrap(), 3);

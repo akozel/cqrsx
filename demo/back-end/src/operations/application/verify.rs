@@ -1,9 +1,63 @@
-//! 🔍 Verify (D-20): every read model against the history of its aggregate (see
-//! [`verification`](crate::operations::application::verification)). Documents behind the journal are
-//! counted apart; only a wrong document is a difference.
-use crate::{operations::application::verification::VerifiedReadModel, shared::application::StorageError};
+//! 🔍 Verify (D-20): every read model against the history of its aggregate, by the engine (cqrsx
+//! `projection::verify`). Documents behind the journal are counted apart; only a wrong document is a difference.
+use crate::shared::application::StorageError;
+use async_trait::async_trait;
+use cqrsx::cqrs::{
+    aggregate::Aggregate,
+    projection::{
+        View,
+        repository::ViewRepository,
+        verify::{Verification, verify},
+    },
+    store::repository::PersistedEventRepository,
+};
 use serde_json::{Map, Value, json};
-use std::sync::Arc;
+use std::{marker::PhantomData, sync::Arc};
+
+/// What verify needs from every read model, whatever its view type.
+#[async_trait]
+pub trait VerifiedReadModel: Send + Sync {
+    /// The collection name the API reports.
+    fn name(&self) -> &'static str;
+    async fn verify(&self) -> Result<Verification, StorageError>;
+}
+
+/// [`VerifiedReadModel`] for a view `V` of aggregate `A` in documents `R`, against the journal `J`: the engine's
+/// verify under the view's name.
+pub struct ProjectionVerification<J, R, V, A> {
+    journal: Arc<J>,
+    documents: Arc<R>,
+    phantom: PhantomData<fn() -> (V, A)>,
+}
+
+impl<J, R, V, A> ProjectionVerification<J, R, V, A> {
+    pub fn new(journal: Arc<J>, documents: Arc<R>) -> Self {
+        Self {
+            journal,
+            documents,
+            phantom: PhantomData,
+        }
+    }
+}
+
+#[async_trait]
+impl<J, R, V, A> VerifiedReadModel for ProjectionVerification<J, R, V, A>
+where
+    J: PersistedEventRepository + 'static,
+    R: ViewRepository<V, A> + 'static,
+    V: View<A> + PartialEq + 'static,
+    A: Aggregate + 'static,
+{
+    fn name(&self) -> &'static str {
+        V::NAME
+    }
+
+    async fn verify(&self) -> Result<Verification, StorageError> {
+        verify::<V, A>(&*self.journal, &*self.documents)
+            .await
+            .map_err(StorageError::new)
+    }
+}
 
 pub struct VerifyService {
     read_models: Vec<Arc<dyn VerifiedReadModel>>,
@@ -38,8 +92,7 @@ impl VerifyService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operations::application::verification::{Difference, Verification};
-    use async_trait::async_trait;
+    use cqrsx::cqrs::projection::verify::{Difference, Verification};
 
     struct Fixed(&'static str, Result<Verification, StorageError>);
 

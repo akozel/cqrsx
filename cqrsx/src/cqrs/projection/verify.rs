@@ -1,24 +1,80 @@
-//! Verify (D-20): every document of a read model against the fold of the part of its aggregate's history the
-//! document has applied. Under eventual consistency a document behind the journal is no error: it is counted
-//! apart, with the events it still has to take. Only a document that is not the fold of its own prefix, is
-//! ahead of its history or has no history at all is a difference.
+//! Verify (D-20): every document of a view against the fold of the part of its aggregate's history the document has
+//! applied. Under eventual consistency a document behind the journal is no error: it is counted apart, with the events
+//! it still has to take. Only a document that is not the fold of its own prefix, is ahead of its history or has no
+//! history at all is a difference.
 //!
 //! The documents are read first, the histories after them: a document only ever holds committed events, so a
 //! history read later is at least as long, and a command committed in between shows as behind, never as a
-//! false difference. Verify needs no lock and may run during Encore!: a document being rebuilt is a correct
+//! false difference. Verify needs no lock and may run during a rebuild: a document being rebuilt is a correct
 //! prefix of its history.
-use crate::shared::application::{
-    StorageError,
-    read_model::{ReadModelStore, Stored},
+//!
+//! ```
+//! # mod example {
+//! # use cqrsx::cqrs::{aggregate::Aggregate, command::decide::Decide, event::{DomainEvent, EventEnvelope}, projection::View};
+//! # use serde::{Deserialize, Serialize};
+//! # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+//! # pub struct Counted;
+//! # impl DomainEvent for Counted {
+//! #     fn event_type(&self) -> String { "counted".into() }
+//! #     fn event_version(&self) -> String { "1".into() }
+//! # }
+//! # #[derive(Debug, thiserror::Error)]
+//! # #[error("never")]
+//! # pub struct Never;
+//! # #[derive(Debug, Default, Clone, Serialize, Deserialize)]
+//! # pub struct Counter;
+//! # impl Aggregate for Counter {
+//! #     const TYPE: &'static str = "counter";
+//! #     type Id = String;
+//! #     type Command = ();
+//! #     type Event = Counted;
+//! #     type Error = Never;
+//! #     type Rules = ();
+//! #     fn apply(&mut self, _: Counted) {}
+//! # }
+//! # impl Decide<Counter> for () {
+//! #     fn decide(self, _: &Counter, _: &()) -> Result<Counted, Never> { Ok(Counted) }
+//! # }
+//! # #[derive(Debug, Default, PartialEq, Serialize, Deserialize)]
+//! # pub struct Total { pub count: usize }
+//! # impl View<Counter> for Total {
+//! #     const NAME: &'static str = "totals";
+//! #     fn update(&mut self, _: &EventEnvelope<Counter>) { self.count += 1; }
+//! # }
+//! # }
+//! # use example::{Counted, Counter, Total};
+//! # use cqrsx::cqrs::event::EventEnvelope;
+//! use cqrsx::cqrs::{
+//!     projection::verify::verify,
+//!     store::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+//!     testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
+//! };
+//!
+//! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
+//! # let event = |sequence| SerializedEvent::try_from(&EventEnvelope::<Counter> {
+//! #     aggregate_id: "c-1".into(), sequence, payload: Counted, metadata: Default::default() }).unwrap();
+//! let journal = MemEventRepository::default();
+//! journal.persist::<Counter>(&[event(1), event(2)], None).await?;
+//! let totals = MemViewRepository::<Total, Counter>::default();
+//! totals.put("c-1", 1, 1, &Total { count: 1 })?; // one event applied, one to go
+//!
+//! let verification = verify::<Total, Counter>(&journal, &totals).await?;
+//! assert_eq!((verification.checked, verification.behind_documents, verification.behind_events), (1, 1, 1));
+//! assert!(verification.differences.is_empty(), "behind is no difference");
+//! # Ok(()) }
+//! # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(example()).unwrap();
+//! ```
+use crate::cqrs::{
+    aggregate::Aggregate,
+    event::EventEnvelope,
+    projection::{
+        View,
+        repository::{StoredView, ViewRepository},
+    },
+    store::{PersistenceError, repository::PersistedEventRepository},
 };
-use async_trait::async_trait;
-use cqrsx::cqrs::{aggregate::Aggregate, event::EventEnvelope, projection::View, store::repository::PersistedEventRepository};
 use serde::Serialize;
-use std::{
-    collections::{BTreeMap, BTreeSet},
-    marker::PhantomData,
-    sync::Arc,
-};
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Keys of the journal read per page.
 const KEY_PAGE: usize = 100;
@@ -26,12 +82,14 @@ const KEY_PAGE: usize = 100;
 /// A document that is wrong, not merely behind.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Difference {
+    /// The view's name, [`View::NAME`].
     pub collection: &'static str,
     pub id: String,
     /// `differs` (not the fold of its prefix, or ahead of its history) or `unexpected` (no history).
     pub kind: &'static str,
 }
 
+/// What verify found in the documents of one view.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Verification {
     /// Keys of the journal checked.
@@ -42,40 +100,13 @@ pub struct Verification {
     pub differences: Vec<Difference>,
 }
 
-/// What verify needs from every read model, whatever its view type.
-#[async_trait]
-pub trait VerifiedReadModel: Send + Sync {
-    /// The collection name the API reports.
-    fn name(&self) -> &'static str;
-    async fn verify(&self) -> Result<Verification, StorageError>;
-}
-
-/// [`VerifiedReadModel`] for a view `V` of aggregate `A` in documents `R`, against the journal `J`.
-pub struct ProjectionVerification<J, R, V, A> {
-    name: &'static str,
-    journal: Arc<J>,
-    documents: Arc<R>,
-    phantom: PhantomData<fn() -> (V, A)>,
-}
-
-impl<J, R, V, A> ProjectionVerification<J, R, V, A> {
-    pub fn new(name: &'static str, journal: Arc<J>, documents: Arc<R>) -> Self {
-        Self {
-            name,
-            journal,
-            documents,
-            phantom: PhantomData,
-        }
-    }
-}
-
 enum Comparison {
     Same,
     Behind(usize),
     Differs,
 }
 
-fn compare<V: View<A> + PartialEq, A: Aggregate>(document: &Stored<V>, history: &[EventEnvelope<A>]) -> Comparison {
+fn compare<V: View<A> + PartialEq, A: Aggregate>(document: &StoredView<V>, history: &[EventEnvelope<A>]) -> Comparison {
     let Some(applied) = history.get(..document.last_sequence) else {
         return Comparison::Differs;
     };
@@ -92,93 +123,82 @@ fn compare<V: View<A> + PartialEq, A: Aggregate>(document: &Stored<V>, history: 
     }
 }
 
-#[async_trait]
-impl<J, R, V, A> VerifiedReadModel for ProjectionVerification<J, R, V, A>
-where
-    J: PersistedEventRepository + 'static,
-    R: ReadModelStore<V> + 'static,
-    V: View<A> + PartialEq + 'static,
-    A: Aggregate + 'static,
-{
-    fn name(&self) -> &'static str {
-        self.name
-    }
-
-    async fn verify(&self) -> Result<Verification, StorageError> {
-        let documents: BTreeMap<String, Stored<V>> = self
-            .documents
-            .list()
-            .await?
-            .into_iter()
-            .map(|document| (document.id.clone(), document))
-            .collect();
-        let mut result = Verification::default();
-        let mut keys = BTreeSet::new();
-        let mut after = String::new();
-        loop {
-            let page = self
-                .journal
-                .aggregate_ids_after::<A>(&after, KEY_PAGE)
-                .await
-                .map_err(StorageError::new)?;
-            let Some(last) = page.last().cloned() else {
-                break;
-            };
-            for key in page {
-                let history = self
-                    .journal
-                    .get_events::<A>(&key)
-                    .await
-                    .map_err(StorageError::new)?
-                    .into_iter()
-                    .map(EventEnvelope::<A>::try_from)
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(StorageError::new)?;
-                result.checked += 1;
-                let behind = match documents.get(&key).map(|document| compare(document, &history)) {
-                    None => history.len(),
-                    Some(Comparison::Same) => 0,
-                    Some(Comparison::Behind(events)) => events,
-                    Some(Comparison::Differs) => {
-                        result.differences.push(self.difference(&key, "differs"));
-                        0
-                    }
-                };
-                if behind > 0 {
-                    result.behind_documents += 1;
-                    result.behind_events += behind;
-                }
-                keys.insert(key);
-            }
-            after = last;
-        }
-        for id in documents.keys().filter(|id| !keys.contains(*id)) {
-            result.differences.push(self.difference(id, "unexpected"));
-        }
-        Ok(result)
+fn difference<V: View<A>, A: Aggregate>(id: &str, kind: &'static str) -> Difference {
+    Difference {
+        collection: V::NAME,
+        id: id.to_owned(),
+        kind,
     }
 }
 
-impl<J, R, V, A> ProjectionVerification<J, R, V, A> {
-    fn difference(&self, id: &str, kind: &'static str) -> Difference {
-        Difference {
-            collection: self.name,
-            id: id.to_owned(),
-            kind,
+/// Verifies every document of the view `V` in `documents` against the journal of `A`: see the [module](self). The
+/// documents are listed once, the journal is read key by key, a page of keys at a time; a failed read of either is
+/// the error.
+pub async fn verify<V, A>(
+    journal: &impl PersistedEventRepository,
+    documents: &impl ViewRepository<V, A>,
+) -> Result<Verification, PersistenceError>
+where
+    V: View<A> + PartialEq,
+    A: Aggregate,
+{
+    let documents: BTreeMap<String, StoredView<V>> = documents
+        .list()
+        .await?
+        .into_iter()
+        .map(|document| (document.id.clone(), document))
+        .collect();
+    let mut result = Verification::default();
+    let mut keys = BTreeSet::new();
+    let mut after = String::new();
+    loop {
+        let page = journal.aggregate_ids_after::<A>(&after, KEY_PAGE).await?;
+        let Some(last) = page.last().cloned() else {
+            break;
+        };
+        for key in page {
+            let history = journal
+                .get_events::<A>(&key)
+                .await?
+                .into_iter()
+                .map(EventEnvelope::<A>::try_from)
+                .collect::<Result<Vec<_>, _>>()?;
+            result.checked += 1;
+            let behind = match documents.get(&key).map(|document| compare(document, &history)) {
+                None => history.len(),
+                Some(Comparison::Same) => 0,
+                Some(Comparison::Behind(events)) => events,
+                Some(Comparison::Differs) => {
+                    result.differences.push(difference::<V, A>(&key, "differs"));
+                    0
+                }
+            };
+            if behind > 0 {
+                result.behind_documents += 1;
+                result.behind_events += behind;
+            }
+            keys.insert(key);
         }
+        after = last;
     }
+    for id in documents.keys().filter(|id| !keys.contains(*id)) {
+        result.differences.push(difference::<V, A>(id, "unexpected"));
+    }
+    Ok(result)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::cqrs::{
+    use crate::cqrs::{
         command::decide::Decide,
         event::DomainEvent,
+        projection::repository::ViewContext,
         store::serialized_event::SerializedEvent,
         testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
     };
     use serde::Deserialize;
+    use std::sync::Arc;
 
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Added(i64);
@@ -221,6 +241,7 @@ mod tests {
     }
 
     impl View<Counter> for Total {
+        const NAME: &'static str = "totals";
         fn update(&mut self, event: &EventEnvelope<Counter>) {
             self.sum += event.payload.0;
         }
@@ -261,11 +282,11 @@ mod tests {
         Arc::new(repository)
     }
 
-    async fn verify<R: ReadModelStore<Total> + 'static>(journal: Arc<MemEventRepository>, documents: Arc<R>) -> Verification {
-        ProjectionVerification::<_, _, Total, Counter>::new("totals", journal, documents)
-            .verify()
-            .await
-            .unwrap()
+    async fn verify<R: ViewRepository<Total, Counter> + 'static>(
+        journal: Arc<MemEventRepository>,
+        documents: Arc<R>,
+    ) -> Verification {
+        super::verify::<Total, Counter>(&*journal, &*documents).await.unwrap()
     }
 
     #[tokio::test]
@@ -335,12 +356,17 @@ mod tests {
         next: usize,
     }
 
-    #[async_trait]
-    impl ReadModelStore<Total> for CommitAfterListing {
-        async fn load(&self, id: &str) -> Result<Option<Stored<Total>>, StorageError> {
+    impl ViewRepository<Total, Counter> for CommitAfterListing {
+        async fn load(&self, id: &str) -> Result<Option<Total>, PersistenceError> {
             self.documents.load(id).await
         }
-        async fn list(&self) -> Result<Vec<Stored<Total>>, StorageError> {
+        async fn load_with_context(&self, id: &str) -> Result<Option<(Total, ViewContext)>, PersistenceError> {
+            self.documents.load_with_context(id).await
+        }
+        async fn update_view(&self, view: Total, context: ViewContext) -> Result<(), PersistenceError> {
+            self.documents.update_view(view, context).await
+        }
+        async fn list(&self) -> Result<Vec<StoredView<Total>>, PersistenceError> {
             let listed = self.documents.list().await;
             self.journal
                 .persist::<Counter>(&[event(self.id, self.next)], None)
@@ -348,8 +374,8 @@ mod tests {
                 .unwrap();
             listed
         }
-        async fn list_range(&self, lower: &str, upper: &str) -> Result<Vec<Stored<Total>>, StorageError> {
-            self.documents.list_range(lower, upper).await
+        async fn range(&self, lower: &str, upper: &str) -> Result<Vec<StoredView<Total>>, PersistenceError> {
+            self.documents.range(lower, upper).await
         }
     }
 
@@ -386,10 +412,10 @@ mod tests {
             serde_json::json!({}),
         );
         journal.persist::<Counter>(&[broken], None).await.unwrap();
-        let error = ProjectionVerification::<_, _, Total, Counter>::new("totals", journal, documents(&[]))
-            .verify()
+        let error = super::verify::<Total, Counter>(&*journal, &*documents(&[]))
             .await
             .unwrap_err();
-        assert!(!error.0.is_empty());
+        assert!(!error.to_string().is_empty());
+        assert!(matches!(error, PersistenceError::DeserializationError(_)));
     }
 }

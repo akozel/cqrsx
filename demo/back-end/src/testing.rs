@@ -1,7 +1,7 @@
 //! Test fixtures that need no running database: lazily connecting PostgreSQL pools and MongoDB
 //! clients (enough to wire the whole graph and exercise every branch that returns before
-//! storage), and in-memory doubles of the read-side ports (the read models are the cqrsx
-//! `MemViewRepository`, the checkpoints its `MemCheckpointStore`).
+//! storage), and the read side in memory (the read models are the cqrsx `MemViewRepository`, the
+//! checkpoints its `MemCheckpointStore`).
 use crate::{
     bootstrap::projections::checkpoint_keys,
     config::{Config, DEFAULT_MONGODB_POOL_SIZE, DEFAULT_NODE_NAME, outbox_default},
@@ -11,18 +11,14 @@ use crate::{
         rebuild::{DEFAULT_MAX_PACE, DEFAULT_STATUS_TIMEOUT, ReadSide, ReadSideLimits, RebuildService},
     },
     process::Process,
-    shared::application::{
-        StorageError,
-        activity::ActivityHub,
-        read_model::{ReadModelStore, Stored},
-    },
+    shared::application::{StorageError, activity::ActivityHub},
 };
 use async_trait::async_trait;
 use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
         command::locks::LockLimits,
-        projection::{View, checkpoint::CheckpointStore, processor::config::ProcessorConfig, repository::ViewRepository},
+        projection::{View, checkpoint::CheckpointStore, processor::config::ProcessorConfig, repository::StoredView},
         store::feed::Position,
         testing::{mem_checkpoint_store::MemCheckpointStore, mem_view_repository::MemViewRepository},
     },
@@ -106,14 +102,14 @@ pub async fn process() -> Process {
 }
 
 /// A read-model collection in memory holding `documents`, ordered by id like the MongoDB one.
-pub fn read_model<V: View<A>, A: Aggregate>(documents: impl IntoIterator<Item = Stored<V>>) -> Arc<MemViewRepository<V, A>> {
+pub fn read_model<V: View<A>, A: Aggregate>(documents: impl IntoIterator<Item = StoredView<V>>) -> MemViewRepository<V, A> {
     let repository = MemViewRepository::default();
     for document in documents {
         repository
             .put(&document.id, document.version, document.last_sequence, &document.view)
             .unwrap();
     }
-    Arc::new(repository)
+    repository
 }
 
 /// A ledger of fixed size whose readers are `lag` events behind.
@@ -135,8 +131,8 @@ impl EventLedgerStats for FixedLedger {
     }
 }
 
-/// The checkpoints of both read models in memory, for the router tests, which may not name cqrsx: they
-/// drive the rows as running processors would.
+/// The checkpoints of both read models in memory, for the router tests: they drive the rows as running
+/// processors would.
 #[derive(Clone, Default)]
 pub struct Checkpoints(MemCheckpointStore);
 
@@ -175,43 +171,5 @@ impl Checkpoints {
             },
             CancellationToken::new(),
         ))
-    }
-}
-
-#[async_trait]
-impl<V, A> ReadModelStore<V> for MemViewRepository<V, A>
-where
-    V: View<A> + 'static,
-    A: Aggregate + 'static,
-{
-    async fn load(&self, id: &str) -> Result<Option<Stored<V>>, StorageError> {
-        let found = self.load_with_context(id).await.map_err(StorageError::new)?;
-        Ok(found.map(|(view, context)| Stored {
-            id: context.view_instance_id,
-            version: context.version,
-            last_sequence: context.last_sequence,
-            view,
-        }))
-    }
-
-    async fn list(&self) -> Result<Vec<Stored<V>>, StorageError> {
-        let documents = self.list_all().map_err(StorageError::new)?;
-        Ok(documents
-            .into_iter()
-            .map(|(context, view)| Stored {
-                id: context.view_instance_id,
-                version: context.version,
-                last_sequence: context.last_sequence,
-                view,
-            })
-            .collect())
-    }
-
-    async fn list_range(&self, lower: &str, upper: &str) -> Result<Vec<Stored<V>>, StorageError> {
-        let all = ReadModelStore::list(self).await?;
-        Ok(all
-            .into_iter()
-            .filter(|document| lower <= document.id.as_str() && document.id.as_str() < upper)
-            .collect())
     }
 }

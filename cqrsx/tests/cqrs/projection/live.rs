@@ -458,6 +458,7 @@ async fn a_settling_owner_stops_on_shutdown_and_still_sees_a_commit_made_while_i
 struct Sources(Vec<String>);
 
 impl View<Ledger> for Sources {
+    const NAME: &'static str = "sources";
     fn update(&mut self, event: &EventEnvelope<Ledger>) {
         self.0.push(event.metadata.get("source").cloned().unwrap_or_default());
     }

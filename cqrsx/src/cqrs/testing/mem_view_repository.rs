@@ -3,7 +3,7 @@ use crate::cqrs::{
     aggregate::Aggregate,
     projection::{
         View,
-        repository::{ViewContext, ViewRepository},
+        repository::{StoredView, ViewContext, ViewRepository},
     },
     store::PersistenceError,
 };
@@ -27,9 +27,10 @@ struct Document {
 /// version 0 inserts and conflicts with an existing document, a later version updates only the
 /// document stored with exactly that version, and every write stores the next version together with
 /// the document's `last_sequence`. Conflicts are [`PersistenceError::OptimisticLockError`]. Because
-/// documents are JSON, `V` needs no `Clone` and serde failures surface as in a real store.
+/// documents are JSON, `V` needs no `Clone` and serde failures surface as in a real store. The queries
+/// order the documents by the bytes of their ids, as the PostgreSQL and MongoDB repositories do.
 ///
-/// Clones share the documents, so a test can seed or inspect the repository a projection uses.
+/// Clones share the documents, so a test can seed (`put`), wipe (`clear`) or query the repository a projection uses.
 pub struct MemViewRepository<V, A> {
     documents: Arc<Mutex<BTreeMap<String, Document>>>,
     phantom: PhantomData<fn() -> (V, A)>,
@@ -73,19 +74,6 @@ where
         Ok(())
     }
 
-    /// Every stored view with its context, ordered by view ID.
-    pub fn list_all(&self) -> Result<Vec<(ViewContext, V)>, PersistenceError> {
-        self.documents()
-            .iter()
-            .map(|(id, document)| {
-                Ok((
-                    ViewContext::new(id.clone(), document.version, document.last_sequence),
-                    V::deserialize(&document.payload)?,
-                ))
-            })
-            .collect()
-    }
-
     /// Drop every document.
     pub fn clear(&self) {
         self.documents().clear();
@@ -93,6 +81,22 @@ where
 
     fn documents(&self) -> MutexGuard<'_, BTreeMap<String, Document>> {
         self.documents.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// The documents whose id `within` accepts, in the order of the ids, decoded.
+    fn stored(&self, within: impl Fn(&str) -> bool) -> Result<Vec<StoredView<V>>, PersistenceError> {
+        self.documents()
+            .iter()
+            .filter(|(id, _)| within(id))
+            .map(|(id, document)| {
+                Ok(StoredView {
+                    id: id.clone(),
+                    version: document.version,
+                    last_sequence: document.last_sequence,
+                    view: V::deserialize(&document.payload)?,
+                })
+            })
+            .collect()
     }
 }
 
@@ -138,6 +142,14 @@ where
         );
         Ok(())
     }
+
+    async fn list(&self) -> Result<Vec<StoredView<V>>, PersistenceError> {
+        self.stored(|_| true)
+    }
+
+    async fn range(&self, lower: &str, upper: &str) -> Result<Vec<StoredView<V>>, PersistenceError> {
+        self.stored(|id| lower <= id && id < upper)
+    }
 }
 
 #[cfg(test)]
@@ -155,6 +167,7 @@ mod tests {
     struct Sequences(Vec<usize>);
 
     impl View<TestAggregate> for Sequences {
+        const NAME: &'static str = "sequences";
         fn update(&mut self, event: &EventEnvelope<TestAggregate>) {
             self.0.push(event.sequence);
         }
@@ -162,12 +175,13 @@ mod tests {
 
     type Repository = MemViewRepository<Sequences, TestAggregate>;
 
-    fn listed(repository: &Repository) -> Vec<(String, i64, usize, Sequences)> {
+    async fn listed(repository: &Repository) -> Vec<(String, i64, usize, Sequences)> {
         repository
-            .list_all()
+            .list()
+            .await
             .unwrap()
             .into_iter()
-            .map(|(context, view)| (context.view_instance_id, context.version, context.last_sequence, view))
+            .map(|stored| (stored.id, stored.version, stored.last_sequence, stored.view))
             .collect()
     }
 
@@ -200,7 +214,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(repository.load("a").await.unwrap(), Some(Sequences(vec![1, 2])));
-        assert_eq!(listed(&repository), [("a".into(), 2, 2, Sequences(vec![1, 2]))]);
+        assert_eq!(listed(&repository).await, [("a".into(), 2, 2, Sequences(vec![1, 2]))]);
     }
 
     #[tokio::test]
@@ -210,7 +224,7 @@ mod tests {
         repository.put("b", 4, 2, &Sequences(vec![2])).unwrap();
         repository.put("a", 7, 1, &Sequences(vec![1])).unwrap();
         assert_eq!(
-            listed(&seen_by_projection),
+            listed(&seen_by_projection).await,
             [("a".into(), 7, 1, Sequences(vec![1])), ("b".into(), 4, 2, Sequences(vec![2]))]
         );
         let projection = ViewProjection::new(Arc::new(seen_by_projection));
@@ -224,7 +238,53 @@ mod tests {
         let (view, context) = repository.load_with_context("b").await.unwrap().unwrap();
         assert_eq!((view, context), (Sequences(vec![2, 3]), ViewContext::new("b".into(), 5, 3)));
         repository.clear();
-        assert!(repository.list_all().unwrap().is_empty());
+        assert!(repository.list().await.unwrap().is_empty());
+    }
+
+    /// The ids of every repository's ordering test: in the order of their bytes (`F` < `f`; `-` < `:` < `;` < `_` < `y`).
+    const IDS: [&str; 8] = [
+        "Fox:muse-2027-01-16",
+        "fox-2:radiohead-2026-11-21",
+        "fox:muse-2027-01-16",
+        "fox:radiohead-2026-11-21",
+        "fox;",
+        "fox_1:c-1",
+        "foxy:c-1",
+        "panda:c-1",
+    ];
+
+    #[tokio::test]
+    async fn lists_every_document_and_a_range_of_ids_in_the_byte_order_of_the_ids() {
+        let repository = Repository::default();
+        assert!(repository.list().await.unwrap().is_empty());
+        assert!(repository.range("fox:", "fox;").await.unwrap().is_empty());
+        for (n, id) in IDS.iter().rev().enumerate() {
+            repository.put(id, n as i64 + 1, n, &Sequences((1..=n).collect())).unwrap();
+        }
+        let ids = |stored: Vec<StoredView<Sequences>>| stored.into_iter().map(|stored| stored.id).collect::<Vec<_>>();
+        assert_eq!(ids(repository.list().await.unwrap()), IDS);
+        assert_eq!(
+            ids(repository.range("fox:", "fox;").await.unwrap()),
+            ["fox:muse-2027-01-16", "fox:radiohead-2026-11-21"]
+        );
+        // The lower bound is in, the upper one out; an empty or inverted range holds nothing.
+        assert_eq!(
+            ids(repository.range("fox;", "foxy:c-1").await.unwrap()),
+            ["fox;", "fox_1:c-1"]
+        );
+        for (lower, upper) in [("fox;", "fox:"), ("fox;", "fox;"), ("zebra", "a")] {
+            assert!(repository.range(lower, upper).await.unwrap().is_empty(), "{lower}..{upper}");
+        }
+        let stored = repository.range("fox;", "fox_").await.unwrap();
+        assert_eq!(
+            stored,
+            [StoredView {
+                id: "fox;".into(),
+                version: 4,
+                last_sequence: 3,
+                view: Sequences(vec![1, 2, 3]),
+            }]
+        );
     }
 
     #[tokio::test]
@@ -248,7 +308,7 @@ mod tests {
             Err(PersistenceError::DeserializationError(_))
         ));
         assert!(matches!(
-            repository.list_all(),
+            repository.list().await,
             Err(PersistenceError::DeserializationError(_))
         ));
 
@@ -260,6 +320,7 @@ mod tests {
             }
         }
         impl View<TestAggregate> for Unserializable {
+            const NAME: &'static str = "unserializable";
             fn update(&mut self, _: &EventEnvelope<TestAggregate>) {}
         }
         let repository = MemViewRepository::<Unserializable, TestAggregate>::default();
@@ -270,6 +331,6 @@ mod tests {
                 .await
                 .is_err()
         );
-        assert!(repository.list_all().unwrap().is_empty());
+        assert!(repository.list().await.unwrap().is_empty());
     }
 }

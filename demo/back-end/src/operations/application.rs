@@ -4,5 +4,4 @@
 pub mod activity_observer;
 pub mod ledger;
 pub mod rebuild;
-pub mod verification;
 pub mod verify;

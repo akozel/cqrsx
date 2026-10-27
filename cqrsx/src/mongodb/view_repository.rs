@@ -4,7 +4,7 @@ use crate::{
         aggregate::Aggregate,
         projection::{
             View,
-            repository::{ViewContext, ViewRepository},
+            repository::{StoredView, ViewContext, ViewRepository},
         },
         store::PersistenceError,
     },
@@ -23,11 +23,12 @@ use std::marker::PhantomData;
 /// { _id: <view id>, version: <Int64>, last_sequence: <Int64>, view: <the view as BSON> }
 /// ```
 ///
-/// `version` is the optimistic version (1 after the first write) and `last_sequence` the last applied event
-/// of the view's aggregate (see `ViewContext`). A new document is inserted, and a duplicate `_id` is a
-/// conflict; an existing one is replaced only at the version it was read with. The collection needs no index
-/// beyond `_id`. The repository only writes and loads by id: the application queries the collection by this
-/// shape and drops it to wipe the read model.
+/// The collection is the view's name ([`View::NAME`]). `version` is the optimistic version (1 after the first
+/// write) and `last_sequence` the last applied event of the view's aggregate (see `ViewContext`). A new document is
+/// inserted, and a duplicate `_id` is a conflict; an existing one is replaced only at the version it was read with.
+/// The queries read by `_id`: one document (`find_one`), every document and a range of ids (`find` sorted by `_id`,
+/// the order of the ids' bytes), so the collection needs no index beyond `_id`. The application drops the
+/// collection to wipe the read model.
 ///
 /// ```no_run
 /// # mod example {
@@ -59,6 +60,7 @@ use std::marker::PhantomData;
 /// # #[derive(Debug, Default, Serialize, Deserialize)]
 /// # pub struct Total { pub count: usize }
 /// # impl View<Counter> for Total {
+/// #     const NAME: &'static str = "totals";
 /// #     fn update(&mut self, _: &EventEnvelope<Counter>) { self.count += 1; }
 /// # }
 /// # }
@@ -68,8 +70,8 @@ use std::marker::PhantomData;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = mongodb::Client::with_uri_str("mongodb://localhost:27017").await?;
-/// let totals = Arc::new(MongoViewRepository::<Total, Counter>::new(&client.database("read"), "totals"));
-/// let projection = ViewProjection::new(totals).with_name("totals");
+/// let totals = Arc::new(MongoViewRepository::<Total, Counter>::new(&client.database("read"))); // collection `totals`
+/// let projection = ViewProjection::new(totals);
 /// # Ok(()) }
 /// ```
 pub struct MongoViewRepository<V, A> {
@@ -77,11 +79,11 @@ pub struct MongoViewRepository<V, A> {
     _phantom: PhantomData<fn() -> (V, A)>,
 }
 
-impl<V, A> MongoViewRepository<V, A> {
-    /// The views live in `collection` of `database`.
-    pub fn new(database: &Database, collection: &str) -> Self {
+impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
+    /// The views live in the collection [`View::NAME`] of `database`.
+    pub fn new(database: &Database) -> Self {
         Self {
-            collection: database.collection(collection),
+            collection: database.collection(V::NAME),
             _phantom: PhantomData,
         }
     }
@@ -90,6 +92,8 @@ impl<V, A> MongoViewRepository<V, A> {
 /// The envelope of a stored view; every field is required.
 #[derive(Debug, Deserialize)]
 struct Stored {
+    #[serde(rename = "_id")]
+    id: String,
     version: i64,
     last_sequence: i64,
     view: Bson,
@@ -107,19 +111,43 @@ fn unreadable(error: bson::de::Error) -> PersistenceError {
     PersistenceError::DeserializationError(Box::new(error))
 }
 
+/// A stored document, decoded.
+fn decode<V: View<A>, A: Aggregate>(document: Document) -> Result<StoredView<V>, PersistenceError> {
+    let stored: Stored = bson::from_document(document).map_err(unreadable)?;
+    let last_sequence = applied_sequence(stored.last_sequence)?;
+    Ok(StoredView {
+        id: stored.id,
+        version: stored.version,
+        last_sequence,
+        view: bson::from_bson(stored.view).map_err(unreadable)?,
+    })
+}
+
 impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
     /// The view with its version and last applied event.
-    async fn stored(&self, view_id: &str) -> Result<Option<(V, i64, usize)>, PersistenceError> {
+    async fn stored(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
         let Some(document) = self.collection.find_one(doc! { "_id": view_id }).await.map_err(persistence)? else {
             return Ok(None);
         };
-        let stored: Stored = bson::from_document(document).map_err(unreadable)?;
-        let last_sequence = applied_sequence(stored.last_sequence)?;
-        Ok(Some((
-            bson::from_bson(stored.view).map_err(unreadable)?,
-            stored.version,
-            last_sequence,
-        )))
+        decode::<V, A>(document).map(Some)
+    }
+
+    /// The documents matching `filter`, ordered by `_id`, decoded.
+    async fn sorted(&self, filter: Document) -> Result<Vec<StoredView<V>>, PersistenceError> {
+        let mut cursor = self
+            .collection
+            .find(filter)
+            .sort(doc! { "_id": 1 })
+            .await
+            .map_err(persistence)?;
+        let mut documents = Vec::new();
+        while cursor.advance().await.map_err(persistence)? {
+            let document = cursor
+                .deserialize_current()
+                .map_err(|error| PersistenceError::DeserializationError(Box::new(error)))?;
+            documents.push(decode::<V, A>(document)?);
+        }
+        Ok(documents)
     }
 }
 
@@ -129,14 +157,14 @@ where
     A: Aggregate,
 {
     async fn load(&self, view_id: &str) -> Result<Option<V>, PersistenceError> {
-        Ok(self.stored(view_id).await?.map(|(view, ..)| view))
+        Ok(self.stored(view_id).await?.map(|stored| stored.view))
     }
 
     async fn load_with_context(&self, view_id: &str) -> Result<Option<(V, ViewContext)>, PersistenceError> {
-        Ok(self
-            .stored(view_id)
-            .await?
-            .map(|(view, version, last_sequence)| (view, ViewContext::new(view_id.to_owned(), version, last_sequence))))
+        Ok(self.stored(view_id).await?.map(|stored| {
+            let context = ViewContext::new(view_id.to_owned(), stored.version, stored.last_sequence);
+            (stored.view, context)
+        }))
     }
 
     async fn update_view(&self, view: V, context: ViewContext) -> Result<(), PersistenceError> {
@@ -168,6 +196,15 @@ where
         }
         Ok(())
     }
+
+    async fn list(&self) -> Result<Vec<StoredView<V>>, PersistenceError> {
+        self.sorted(doc! {}).await
+    }
+
+    /// A range scan on the `_id` index.
+    async fn range(&self, lower: &str, upper: &str) -> Result<Vec<StoredView<V>>, PersistenceError> {
+        self.sorted(doc! { "_id": { "$gte": lower, "$lt": upper } }).await
+    }
 }
 
 #[cfg(test)]
@@ -183,12 +220,13 @@ mod tests {
     }
 
     impl View<Ledger> for Huge {
+        const NAME: &'static str = "huge";
         fn update(&mut self, _: &EventEnvelope<Ledger>) {}
     }
 
     #[tokio::test]
     async fn an_unreachable_server_is_a_connection_error_and_a_view_bson_cannot_hold_is_unexpected() {
-        let views = MongoViewRepository::<Huge, Ledger>::new(&crate::mongodb::test_support::unreachable().await, "huge");
+        let views = MongoViewRepository::<Huge, Ledger>::new(&crate::mongodb::test_support::unreachable().await);
         assert!(matches!(views.load("a").await, Err(PersistenceError::ConnectionError(_))));
         assert!(matches!(
             views.load_with_context("a").await,
@@ -214,6 +252,16 @@ mod tests {
                 .update_view(Huge::default(), ViewContext::new("a".into(), i64::MAX, 2))
                 .await,
             Err(PersistenceError::UnknownError(_))
+        ));
+    }
+
+    #[tokio::test]
+    async fn an_unreachable_server_fails_a_listing_and_a_range_as_a_connection_error() {
+        let views = MongoViewRepository::<Huge, Ledger>::new(&crate::mongodb::test_support::unreachable().await);
+        assert!(matches!(views.list().await, Err(PersistenceError::ConnectionError(_))));
+        assert!(matches!(
+            views.range("fox:", "fox;").await,
+            Err(PersistenceError::ConnectionError(_))
         ));
     }
 

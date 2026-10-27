@@ -595,7 +595,7 @@ impl ReadSide {
             HALLS,
             Arc::new(PostgresEventRepository::new(self.pool.clone())),
             self.checkpoints.clone(),
-            Arc::new(ViewProjection::new(self.halls.clone()).with_name(HALLS)),
+            Arc::new(ViewProjection::new(self.halls.clone())),
             config,
         )
         .with_wakeup(self.wakeup.clone());
@@ -655,18 +655,19 @@ impl ReadSide {
     }
 
     /// Drops the document of `id`, as the X-ray's single delete does.
-    fn delete(&self, id: &str) {
+    async fn delete(&self, id: &str) {
         let kept: Vec<_> = self
             .halls
-            .list_all()
+            .list()
+            .await
             .expect("halls")
             .into_iter()
-            .filter(|(context, _)| context.view_instance_id != id)
+            .filter(|stored| stored.id != id)
             .collect();
         self.halls.clear();
-        for (context, view) in kept {
+        for stored in kept {
             self.halls
-                .put(&context.view_instance_id, context.version, context.last_sequence, &view)
+                .put(&stored.id, stored.version, stored.last_sequence, &stored.view)
                 .expect("put");
         }
     }
@@ -785,7 +786,7 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
     read.caught_up(&["early-2026", "hot-2026"], Duration::from_secs(10)).await;
 
     // A lost document is healed by the next booking of its concert, from the whole history.
-    read.delete("early-2026");
+    read.delete("early-2026").await;
     book_all("early-2026", 2..3).await;
     read.caught_up(&["early-2026", "hot-2026"], Duration::from_secs(10)).await;
 

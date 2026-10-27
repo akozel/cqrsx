@@ -136,6 +136,8 @@ struct Wallet {
 }
 
 impl View<Ledger> for Wallet {
+    const NAME: &'static str = "wallets"; // its collection or table and its projection's checkpoint row
+
     fn update(&mut self, event: &EventEnvelope<Ledger>) {
         let LedgerEvent::TicketRecorded(recorded) = &event.payload;
         self.seats.push(recorded.seat.clone());
@@ -176,7 +178,7 @@ fn main() {
         let (journal, wakeup) = (MemEventRepository::default(), CommitWakeup::new());
         let wallets = Arc::new(MemViewRepository::<Wallet, Ledger>::default());
         let processor = ProjectionProcessor::new(
-            "wallets",
+            Wallet::NAME,
             Arc::new(journal.clone()),
             Arc::new(MemCheckpointStore::default()),
             Arc::new(ViewProjection::new(wallets.clone())),
@@ -301,12 +303,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     );
 
     // The read side: a processor per read model reads the journal from its checkpoint row.
-    let wallets = Arc::new(PostgresViewRepository::<Wallet, Ledger>::new("wallets", pool.clone()));
+    let wallets = Arc::new(PostgresViewRepository::<Wallet, Ledger>::new(pool.clone())); // the table `wallets`
     let processor = ProjectionProcessor::new(
-        "wallets",                                            // the row: projection name + aggregate type
+        Wallet::NAME,                                         // the row: projection name + aggregate type
         Arc::new(PostgresEventRepository::new(pool.clone())),
         Arc::new(PostgresCheckpointStore::new(pool.clone())), // PROJECTION_CHECKPOINTS_SCHEMA
-        Arc::new(ViewProjection::new(wallets).with_name("wallets")),
+        Arc::new(ViewProjection::new(wallets)),
         ProcessorConfig::default(),
     )
     .with_wakeup(wakeup);
@@ -357,19 +359,20 @@ views and the checkpoint live in one MongoDB database. The application builds th
 use cqrsx::mongodb::{projection_checkpoints::MongoCheckpointStore, view_repository::MongoViewRepository};
 
 let read_db = mongodb::Client::with_options(options)?.database("read");
-let wallets = Arc::new(MongoViewRepository::<WalletView, Ledger>::new(&read_db, "wallets"));
+let wallets = Arc::new(MongoViewRepository::<Wallet, Ledger>::new(&read_db)); // the collection `wallets`
 let processor = ProjectionProcessor::new(
-    "wallets",
+    Wallet::NAME,
     Arc::new(PostgresEventRepository::new(pool.clone())), // the journal
     Arc::new(MongoCheckpointStore::new(&read_db)),       // collection `projection_checkpoints`
-    Arc::new(ViewProjection::new(wallets).with_name("wallets")),
+    Arc::new(ViewProjection::new(wallets)),
     ProcessorConfig::default(),
 )
 .with_wakeup(wakeup);
 ```
 
-A view is one document `{ _id: view id, version, last_sequence, view }`; the repository writes and loads by id,
-and the application queries the collection by that shape. Each checkpoint is one document, and every operation on
+A view is one document `{ _id: view id, version, last_sequence, view }`. Every view repository answers three queries:
+one document by id (`load_with_context`), every document (`list`) and a range of ids (`range`), in the order of the
+ids' bytes, alike in memory, in PostgreSQL and in MongoDB. Each checkpoint is one document, and every operation on
 it is one atomic statement by the server's clock (MongoDB 4.2 or later).
 
 ## Configuration

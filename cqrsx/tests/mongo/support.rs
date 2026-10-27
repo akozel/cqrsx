@@ -76,6 +76,7 @@ pub(crate) struct Balance {
 }
 
 impl View<Ledger> for Balance {
+    const NAME: &'static str = NAME;
     fn update(&mut self, event: &EventEnvelope<Ledger>) {
         self.total += i64::from(event.payload.0);
         self.history.push((event.sequence, event.payload.0));
@@ -90,7 +91,7 @@ pub(crate) fn key() -> CheckpointKey {
 }
 
 pub(crate) fn views(database: &Database) -> MongoViewRepository<Balance, Ledger> {
-    MongoViewRepository::new(database, NAME)
+    MongoViewRepository::new(database)
 }
 
 /// The history `1..=values` of one ledger, event `n` adding `n`.
@@ -169,7 +170,7 @@ impl Node {
         observer: &Arc<Recording>,
         wakeup: &CommitWakeup,
     ) -> Self {
-        let projection = Arc::new(ViewProjection::new(Arc::new(views(database))).with_name(NAME));
+        let projection = Arc::new(ViewProjection::new(Arc::new(views(database))));
         let processor = ProjectionProcessor::new(
             NAME,
             journal,

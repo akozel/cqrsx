@@ -41,8 +41,8 @@ impl ApiError {
         Self::new(StatusCode::SERVICE_UNAVAILABLE, "unavailable", "unavailable", message)
     }
 
-    /// The read-model or mail storage failed; the prefix tells it apart from the event store.
-    pub fn read_model_unavailable(error: StorageError) -> Self {
+    /// The read-model storage failed; the prefix tells it apart from the event store.
+    pub fn read_model_unavailable(error: impl std::fmt::Display) -> Self {
         Self::unavailable(format!("read model storage unavailable: {error}"))
     }
 

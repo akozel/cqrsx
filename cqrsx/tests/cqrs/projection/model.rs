@@ -140,7 +140,7 @@ async fn check(ops: Vec<Op>) -> Result<(), TestCaseError> {
             Op::Tick(millis) => h.run_for(Duration::from_millis(u64::from(millis))).await,
             Op::FailKey(k, times) => h.views.fail_next(KEYS[k], usize::from(times)),
             Op::DeleteDoc(k) => {
-                h.views.delete(KEYS[k]);
+                h.views.delete(KEYS[k]).await;
                 wiped.insert(KEYS[k], h.head().await);
             }
             Op::RequestKey(k) => h.checkpoints.request_rebuild_key(&key(), KEYS[k]).await.unwrap(),

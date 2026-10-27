@@ -403,6 +403,7 @@ mod tests {
     struct Total;
 
     impl View<Counter> for Total {
+        const NAME: &'static str = "totals";
         fn update(&mut self, _: &EventEnvelope<Counter>) {}
     }
 

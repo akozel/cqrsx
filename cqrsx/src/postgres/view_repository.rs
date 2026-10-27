@@ -8,7 +8,7 @@ use crate::cqrs::{
     aggregate::Aggregate,
     projection::{
         View,
-        repository::{ViewContext, ViewRepository},
+        repository::{StoredView, ViewContext, ViewRepository},
     },
     store::PersistenceError,
 };
@@ -21,6 +21,8 @@ pub struct PostgresViewRepository<V, A> {
     insert_sql: String,
     update_sql: String,
     select_sql: String,
+    list_sql: String,
+    range_sql: String,
     pool: Pool<Postgres>,
     _phantom: PhantomData<(V, A)>,
 }
@@ -30,9 +32,9 @@ where
     V: View<A>,
     A: Aggregate,
 {
-    /// Creates a new `PostgresViewRepository` that will store serialized views in a Postgres table named
-    /// identically to the `table_name` value provided. The application creates the table before use, with
-    /// this shape (`last_sequence` is the last applied event of the view's aggregate, see `ViewContext`):
+    /// Creates a new `PostgresViewRepository` that will store serialized views in a Postgres table named after
+    /// the view, [`View::NAME`]. The application creates the table before use, with this shape (`last_sequence` is
+    /// the last applied event of the view's aggregate, see `ViewContext`):
     ///
     /// ```sql
     /// CREATE TABLE my_view_table (
@@ -42,6 +44,10 @@ where
     ///     payload       json   NOT NULL
     /// );
     /// ```
+    ///
+    /// `list` and `range` order the ids by their bytes (`COLLATE "C"`), whatever the collation of the column, as
+    /// the other repositories do; a column declared `view_id text COLLATE "C" PRIMARY KEY` lets its index serve
+    /// them.
     ///
     /// ```
     /// # mod example {
@@ -123,6 +129,7 @@ where
     /// # pub struct MyView;
     /// #
     /// # impl View<MyAggregate> for MyView {
+    /// #     const NAME: &'static str = "my_view_table";
     /// #     fn update(&mut self, _event: &EventEnvelope<MyAggregate>) {
     /// #         todo!()
     /// #     }
@@ -135,20 +142,28 @@ where
     /// use cqrsx::postgres::view_repository::PostgresViewRepository;
     ///
     /// fn configure_view_repo(pool: Pool<Postgres>) -> PostgresViewRepository<MyView,MyAggregate> {
-    ///     PostgresViewRepository::new("my_view_table", pool)
+    ///     PostgresViewRepository::new(pool) // the table `my_view_table`
     /// }
     /// ```
-    pub fn new(table_name: &str, pool: Pool<Postgres>) -> Self {
+    pub fn new(pool: Pool<Postgres>) -> Self {
+        let table_name = V::NAME;
         let insert_sql = format!(
             "INSERT INTO {table_name} (payload, version, last_sequence, view_id) VALUES ( $1, $2, $3, $4 ) ON CONFLICT (view_id) DO NOTHING"
         );
         let update_sql =
             format!("UPDATE {table_name} SET payload= $1 , version= $2 , last_sequence= $3 WHERE view_id= $4 AND version= $5");
         let select_sql = format!("SELECT version, last_sequence, payload FROM {table_name} WHERE view_id= $1");
+        let list_sql =
+            format!(r#"SELECT view_id, version, last_sequence, payload FROM {table_name} ORDER BY view_id COLLATE "C""#);
+        let range_sql = format!(
+            r#"SELECT view_id, version, last_sequence, payload FROM {table_name} WHERE view_id COLLATE "C" >= $1 AND view_id COLLATE "C" < $2 ORDER BY view_id COLLATE "C""#
+        );
         Self {
             insert_sql,
             update_sql,
             select_sql,
+            list_sql,
+            range_sql,
             pool,
             _phantom: PhantomData,
         }
@@ -220,4 +235,32 @@ where
         }
         Ok(())
     }
+
+    async fn list(&self) -> Result<Vec<StoredView<V>>, PersistenceError> {
+        let rows = sqlx::query(&self.list_sql)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(PostgresRepositoryError::from)?;
+        rows.iter().map(stored_view).collect()
+    }
+
+    async fn range(&self, lower: &str, upper: &str) -> Result<Vec<StoredView<V>>, PersistenceError> {
+        let rows = sqlx::query(&self.range_sql)
+            .bind(lower)
+            .bind(upper)
+            .fetch_all(&self.pool)
+            .await
+            .map_err(PostgresRepositoryError::from)?;
+        rows.iter().map(stored_view).collect()
+    }
+}
+
+/// A row of `list` or `range`, decoded.
+fn stored_view<V: serde::de::DeserializeOwned>(row: &PgRow) -> Result<StoredView<V>, PersistenceError> {
+    Ok(StoredView {
+        id: row.get("view_id"),
+        version: row.get("version"),
+        last_sequence: decode_usize(row.get("last_sequence"))?,
+        view: serde_json::from_value(row.get("payload"))?,
+    })
 }

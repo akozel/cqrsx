@@ -7,6 +7,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
+use cqrsx::cqrs::projection::repository::{StoredView, ViewRepository};
 use serde_json::Value;
 
 pub async fn handle(State(state): State<AppState>, Path(concert_id): Path<String>) -> Result<Json<Value>, ApiError> {
@@ -14,11 +15,11 @@ pub async fn handle(State(state): State<AppState>, Path(concert_id): Path<String
     match state
         .read
         .halls
-        .load(concert_id.as_str())
+        .load_with_context(concert_id.as_str())
         .await
         .map_err(ApiError::read_model_unavailable)?
     {
-        Some(stored) => Ok(Json(stored_document(stored, "concert_id"))),
+        Some(found) => Ok(Json(stored_document(StoredView::from(found), "concert_id"))),
         None => Err(ApiError::not_found(
             "projection_missing",
             "no read model for this concert (wiped or never announced)",

@@ -269,7 +269,7 @@ async fn a_gap_heals_itself_from_the_journal_without_stalling_the_projection() {
     }
     let node = h.node("n1");
     let before = h.caught_up(&["a", "b"]).await;
-    h.views.delete("a"); // the wipe
+    h.views.delete("a").await; // the wipe
     let gate = h.views.gate_first("a"); // holds the healing rebuild's write, to look around meanwhile
     h.commit("a", 3).await;
     gate.reached().await;

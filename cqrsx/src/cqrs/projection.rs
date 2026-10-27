@@ -4,6 +4,7 @@ pub mod checkpoint;
 pub mod processor;
 pub mod repository;
 pub mod runtime;
+pub mod verify;
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
@@ -25,6 +26,11 @@ use std::{cmp::Ordering, fmt::Debug, marker::PhantomData, num::NonZeroUsize, syn
 /// events `1..=last_sequence` of its aggregate, and two writers of one document (two processes, a rebuild next to
 /// live delivery) meet at the same document only because the fold is the same.
 pub trait View<A: Aggregate>: Debug + Default + Serialize + DeserializeOwned + Send + Sync {
+    /// The name of the view: its collection or table, the name of its projection and of the projection's checkpoint
+    /// row ([`CheckpointKey::of`](checkpoint::CheckpointKey::of)). One view per name; the name is stored, so it never
+    /// changes.
+    const NAME: &'static str;
+
     /// Each implemented view is responsible for updating its state based on events passed via
     /// this method.
     fn update(&mut self, event: &EventEnvelope<A>);
@@ -35,7 +41,8 @@ pub trait View<A: Aggregate>: Debug + Default + Serialize + DeserializeOwned + S
 ///
 /// A document takes only the next event of its aggregate: events it has applied are skipped, a gap fails the
 /// batch before anything is written (`PersistenceError::SequenceGap`). Delivery may therefore repeat events and
-/// come from several processes without damaging the document.
+/// come from several processes without damaging the document. The projection is named after its view
+/// ([`View::NAME`]).
 pub struct ViewProjection<R, V, A>
 where
     R: ViewRepository<V, A>,
@@ -45,7 +52,6 @@ where
     view_repository: Arc<R>,
     error_observer: Option<Box<PersistenceErrorObserver>>,
     max_attempts: NonZeroUsize,
-    name: Option<String>,
     phantom: PhantomData<(V, A)>,
 }
 
@@ -75,6 +81,7 @@ where
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
+    /// # use cqrsx::cqrs::projection::repository::StoredView;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
     /// # pub enum MyEvents {
@@ -137,6 +144,7 @@ where
     /// # pub struct MyView;
     /// #
     /// # impl View<MyAggregate> for MyView {
+    /// #     const NAME: &'static str = "my_views";
     /// #     fn update(&mut self, _event: &EventEnvelope<MyAggregate>) {
     /// #         todo!()
     /// #     }
@@ -171,6 +179,14 @@ where
     /// #     ) -> Result<(), PersistenceError> {
     /// #         todo!()
     /// #     }
+    /// #
+    /// #     async fn list(&self) -> Result<Vec<StoredView<MyView>>, PersistenceError> {
+    /// #         todo!()
+    /// #     }
+    /// #
+    /// #     async fn range(&self, _lower: &str, _upper: &str) -> Result<Vec<StoredView<MyView>>, PersistenceError> {
+    /// #         todo!()
+    /// #     }
     /// # }
     /// # }
     /// # use example::MyAggregate;
@@ -189,7 +205,6 @@ where
             view_repository,
             error_observer: None,
             max_attempts: NonZeroUsize::new(16).unwrap(),
-            name: None,
             phantom: PhantomData,
         }
     }
@@ -221,6 +236,7 @@ where
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
+    /// # use cqrsx::cqrs::projection::repository::StoredView;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
     /// # pub enum MyEvents {
@@ -283,6 +299,7 @@ where
     /// # pub struct MyView;
     /// #
     /// # impl View<MyAggregate> for MyView {
+    /// #     const NAME: &'static str = "my_views";
     /// #     fn update(&mut self, _event: &EventEnvelope<MyAggregate>) {
     /// #         todo!()
     /// #     }
@@ -315,6 +332,14 @@ where
     /// #         _view: MyView,
     /// #         _context: ViewContext,
     /// #     ) -> Result<(), PersistenceError> {
+    /// #         todo!()
+    /// #     }
+    /// #
+    /// #     async fn list(&self) -> Result<Vec<StoredView<MyView>>, PersistenceError> {
+    /// #         todo!()
+    /// #     }
+    /// #
+    /// #     async fn range(&self, _lower: &str, _upper: &str) -> Result<Vec<StoredView<MyView>>, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// # }
@@ -352,6 +377,7 @@ where
     /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
+    /// # use cqrsx::cqrs::projection::repository::StoredView;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
     /// # pub enum MyEvents {
@@ -414,6 +440,7 @@ where
     /// # pub struct MyView;
     /// #
     /// # impl View<MyAggregate> for MyView {
+    /// #     const NAME: &'static str = "my_views";
     /// #     fn update(&mut self, _event: &EventEnvelope<MyAggregate>) {
     /// #         todo!()
     /// #     }
@@ -448,6 +475,14 @@ where
     /// #     ) -> Result<(), PersistenceError> {
     /// #         todo!()
     /// #     }
+    /// #
+    /// #     async fn list(&self) -> Result<Vec<StoredView<MyView>>, PersistenceError> {
+    /// #         todo!()
+    /// #     }
+    /// #
+    /// #     async fn range(&self, _lower: &str, _upper: &str) -> Result<Vec<StoredView<MyView>>, PersistenceError> {
+    /// #         todo!()
+    /// #     }
     /// # }
     /// # }
     /// # use example::MyAggregate;
@@ -469,12 +504,6 @@ where
     /// Limit optimistic view retries, including the first attempt (default: 16).
     pub fn with_max_attempts(mut self, attempts: NonZeroUsize) -> Self {
         self.max_attempts = attempts;
-        self
-    }
-
-    /// Name reported in the processor's failure reports (default: the type name of `V`).
-    pub fn with_name(mut self, name: impl Into<String>) -> Self {
-        self.name = Some(name.into());
         self
     }
 
@@ -582,8 +611,9 @@ where
     V: View<A>,
     A: Aggregate,
 {
+    /// The name of the view, [`View::NAME`]: what the processor's failure reports name.
     fn name(&self) -> String {
-        self.name.clone().unwrap_or_else(|| std::any::type_name::<V>().to_owned())
+        V::NAME.to_owned()
     }
 
     async fn handle(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
@@ -637,7 +667,10 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::store::persisted::tests::{TestAggregate, TestEvents};
+    use crate::cqrs::{
+        projection::repository::StoredView,
+        store::persisted::tests::{TestAggregate, TestEvents},
+    };
     use serde::{Deserialize, Serialize};
     use std::{ops::RangeInclusive, sync::Mutex};
 
@@ -645,6 +678,7 @@ mod tests {
     #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
     struct Projection(Vec<usize>);
     impl View<TestAggregate> for Projection {
+        const NAME: &'static str = "halls";
         fn update(&mut self, event: &EventEnvelope<TestAggregate>) {
             self.0.push(event.sequence);
         }
@@ -725,6 +759,12 @@ mod tests {
                 }
             }
         }
+        async fn list(&self) -> Result<Vec<StoredView<Projection>>, PersistenceError> {
+            panic!("ViewProjection never lists the documents")
+        }
+        async fn range(&self, _: &str, _: &str) -> Result<Vec<StoredView<Projection>>, PersistenceError> {
+            panic!("ViewProjection never lists the documents")
+        }
     }
     fn event(sequence: usize) -> EventEnvelope<TestAggregate> {
         EventEnvelope {
@@ -745,10 +785,9 @@ mod tests {
     }
 
     #[test]
-    fn a_projection_is_named_after_its_view_unless_named_explicitly() {
+    fn a_projection_is_named_after_its_view() {
         let projection = ViewProjection::<_, Projection, TestAggregate>::new(Arc::new(Repository::default()));
-        assert_eq!(projection.name(), std::any::type_name::<Projection>());
-        assert_eq!(projection.with_name("halls").name(), "halls");
+        assert_eq!(projection.name(), "halls");
     }
 
     #[tokio::test]
@@ -1033,8 +1072,7 @@ mod tests {
         #[tokio::test]
         async fn a_shared_projection_rebuilds_like_the_one_instance() {
             let repo = Repository::seeded("view", prefix(1..=3), 7, 3);
-            let shared: Arc<dyn RebuildableProjection<TestAggregate>> =
-                Arc::new(ViewProjection::new(repo.clone()).with_name("halls"));
+            let shared: Arc<dyn RebuildableProjection<TestAggregate>> = Arc::new(ViewProjection::new(repo.clone()));
             let boxed: Box<dyn RebuildableProjection<TestAggregate>> = Box::new(shared.clone());
             assert_eq!(boxed.name(), "halls");
             boxed.rebuild("view", &events(1..=4), 4).await.unwrap();

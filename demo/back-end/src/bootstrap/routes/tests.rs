@@ -1,7 +1,11 @@
 //! Router tests without a database: every branch that answers before storage is touched (validation, the
 //! error shape), the endpoints that need no storage, and the read side over in-memory checkpoints.
 use crate::{
-    bootstrap::{self, read_models::ReadModels, routes::router},
+    bootstrap::{
+        self,
+        read_models::{Documents, ReadModels},
+        routes::router,
+    },
     concert::{
         application::views::concert_hall::{ConcertHallView, ConcertSummary},
         domain::Concert,
@@ -10,7 +14,6 @@ use crate::{
         application::views::fan_wallet::{FanWalletView, TicketEntry, TicketEntryState},
         domain::Fan,
     },
-    shared::application::read_model::Stored,
     testing,
 };
 use axum::{
@@ -18,6 +21,7 @@ use axum::{
     body::Body,
     http::{Request, StatusCode, header},
 };
+use cqrsx::cqrs::projection::repository::StoredView;
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
 use std::{collections::BTreeMap, sync::Arc};
@@ -48,10 +52,10 @@ async fn app_reading(read: ReadModels) -> Router {
     router(wiring.state)
 }
 
-fn read_models(halls: Vec<Stored<ConcertHallView>>, wallets: Vec<Stored<FanWalletView>>) -> ReadModels {
+fn read_models(halls: Vec<StoredView<ConcertHallView>>, wallets: Vec<StoredView<FanWalletView>>) -> ReadModels {
     ReadModels {
-        halls: testing::read_model::<_, Concert>(halls),
-        wallets: testing::read_model::<_, Fan>(wallets),
+        halls: Arc::new(Documents::Memory(testing::read_model::<_, Concert>(halls))),
+        wallets: Arc::new(Documents::Memory(testing::read_model::<_, Fan>(wallets))),
     }
 }
 
@@ -335,14 +339,14 @@ async fn read_models_are_served_in_the_documented_shapes() {
         total_spent: price,
         last_sequence: 1,
     };
-    let stored = |id: &str, version: i64, view: FanWalletView| Stored {
+    let stored = |id: &str, version: i64, view: FanWalletView| StoredView {
         id: id.into(),
         version,
         last_sequence: 1,
         view,
     };
     let router = app_reading(read_models(
-        vec![Stored {
+        vec![StoredView {
             id: "c-1".into(),
             version: 3,
             last_sequence: 2,

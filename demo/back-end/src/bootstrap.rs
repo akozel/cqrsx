@@ -3,12 +3,12 @@
 //! component of its kind:
 //!
 //! - [`aggregates`]: one module per aggregate: its command executor, which wakes its read model's processor;
-//! - [`projections`]: the read models: their collections, processors, verification and query ports;
+//! - [`projections`]: the read models: their collections, processors and verification;
 //! - [`tasks`]: the outbox tasks: the policy of every task type and its handler, in one dispatcher;
 //! - [`routes`]: the HTTP endpoints.
 //!
 //! [`read_models`] and [`ledger`] are what only the composition knows of every module: the read models the HTTP
-//! queries use and the journals of every aggregate type.
+//! queries read through the engine's repositories and the journals of every aggregate type.
 pub mod aggregates;
 pub mod ledger;
 pub mod projections;

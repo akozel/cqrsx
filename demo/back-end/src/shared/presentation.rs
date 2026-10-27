@@ -4,10 +4,10 @@
 pub mod error;
 
 use crate::shared::{
-    application::read_model::Stored,
     domain::{ConcertId, FanId},
     presentation::error::ApiError,
 };
+use cqrsx::cqrs::projection::repository::StoredView;
 use serde::Serialize;
 use serde_json::{Value, json};
 
@@ -21,6 +21,6 @@ pub fn parse_fan_id(raw: &str) -> Result<FanId, ApiError> {
 }
 
 /// A stored read model as the API returns it: `{ <id_field>, version, view }`.
-pub fn stored_document<V: Serialize>(stored: Stored<V>, id_field: &str) -> Value {
+pub fn stored_document<V: Serialize>(stored: StoredView<V>, id_field: &str) -> Value {
     json!({ id_field: stored.id, "version": stored.version, "view": stored.view })
 }

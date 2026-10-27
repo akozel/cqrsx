@@ -1,14 +1,14 @@
 //! Use case "show a fan's wallet". A `fan_wallets` document is one ledger (a fan and a concert,
 //! D-14); the wallet the fan sees is assembled here from all of their ledgers. The ledgers of a fan
-//! sit in one `_id` range (`FanLedgerId::id_range`), so the read is a single range query on the
-//! `_id` index and needs nothing else.
+//! sit in one id range (`FanLedgerId::id_range`), so the read is one range query of the engine's
+//! repository (on the `_id` index in MongoDB) and needs nothing else.
 use crate::{
-    bootstrap::read_models::ReadModels,
-    fan::application::views::fan_wallet::FanWalletView,
-    shared::{
-        application::{StorageError, read_model::Stored},
-        domain::{FanId, FanLedgerId},
-    },
+    fan::{application::views::fan_wallet::FanWalletView, domain::Fan},
+    shared::domain::{FanId, FanLedgerId},
+};
+use cqrsx::cqrs::{
+    projection::repository::{StoredView, ViewRepository},
+    store::PersistenceError,
 };
 use serde::Serialize;
 
@@ -29,19 +29,21 @@ pub struct FanWallet {
     pub view: FanWalletView,
 }
 
-impl ReadModels {
-    /// `None` when the fan has no ledger yet (or the read models were wiped).
-    pub async fn wallet_of(&self, fan_id: &FanId) -> Result<Option<FanWallet>, StorageError> {
-        let (lower, upper) = FanLedgerId::id_range(fan_id);
-        let ledgers = self.wallets.list_range(&lower, &upper).await?;
-        Ok(assemble(fan_id, ledgers))
-    }
+/// The wallet of `fan_id` from its ledgers in `wallets`; `None` when the fan has no ledger yet (or the read models
+/// were wiped).
+pub async fn wallet_of(
+    wallets: &impl ViewRepository<FanWalletView, Fan>,
+    fan_id: &FanId,
+) -> Result<Option<FanWallet>, PersistenceError> {
+    let (lower, upper) = FanLedgerId::id_range(fan_id);
+    let ledgers = wallets.range(&lower, &upper).await?;
+    Ok(assemble(fan_id, ledgers))
 }
 
 /// Merges a fan's ledgers (given in id order). `booking_id` is unique across ledgers, so tickets
 /// never collide; the counters are sums; `last_sequence` is the maximum and only says "something
 /// changed", because sequences are per ledger.
-pub fn assemble(fan_id: &FanId, ledgers: Vec<Stored<FanWalletView>>) -> Option<FanWallet> {
+pub fn assemble(fan_id: &FanId, ledgers: Vec<StoredView<FanWalletView>>) -> Option<FanWallet> {
     if ledgers.is_empty() {
         return None;
     }
@@ -50,7 +52,7 @@ pub fn assemble(fan_id: &FanId, ledgers: Vec<Stored<FanWalletView>>) -> Option<F
         ..FanWalletView::default()
     };
     let mut refs = Vec::with_capacity(ledgers.len());
-    for Stored {
+    for StoredView {
         id,
         version,
         view: ledger,
@@ -92,17 +94,13 @@ pub fn assemble(fan_id: &FanId, ledgers: Vec<Stored<FanWalletView>>) -> Option<F
 mod tests {
     use super::*;
     use crate::{
-        concert::{application::views::concert_hall::ConcertHallView, domain::Concert},
-        fan::{
-            application::views::fan_wallet::{TicketEntry, TicketEntryState},
-            domain::Fan,
-        },
+        fan::application::views::fan_wallet::{TicketEntry, TicketEntryState},
         testing,
     };
     use std::collections::BTreeMap;
 
     /// A ledger document with one active ticket.
-    fn ledger(id: &str, version: i64, booking: &str, concert: &str, price: i64, sequence: i64) -> Stored<FanWalletView> {
+    fn ledger(id: &str, version: i64, booking: &str, concert: &str, price: i64, sequence: i64) -> StoredView<FanWalletView> {
         let ticket = TicketEntry {
             concert_id: concert.into(),
             seat: "B4".into(),
@@ -112,7 +110,7 @@ mod tests {
             sequence,
             changed_at: format!("2026-10-18T10:00:0{sequence}.000000Z"),
         };
-        Stored {
+        StoredView {
             id: id.into(),
             version,
             last_sequence: sequence as usize,
@@ -174,18 +172,20 @@ mod tests {
 
     #[tokio::test]
     async fn wallet_of_reads_only_the_fans_own_range() {
-        let read = ReadModels {
-            halls: testing::read_model::<ConcertHallView, Concert>(vec![]),
-            wallets: testing::read_model::<_, Fan>(vec![
-                ledger("fox-2:c-1", 1, "b-9", "c-1", 50, 1),
-                ledger("fox:c-1", 1, "b-1", "c-1", 80, 1),
-                ledger("fox_1:c-1", 1, "b-8", "c-1", 50, 1),
-                ledger("panda:c-1", 1, "b-7", "c-1", 50, 1),
-            ]),
-        };
-        let wallet = read.wallet_of(&fox()).await.unwrap().unwrap();
+        let wallets = testing::read_model::<_, Fan>(vec![
+            ledger("fox-2:c-1", 1, "b-9", "c-1", 50, 1),
+            ledger("fox:c-1", 1, "b-1", "c-1", 80, 1),
+            ledger("fox_1:c-1", 1, "b-8", "c-1", 50, 1),
+            ledger("panda:c-1", 1, "b-7", "c-1", 50, 1),
+        ]);
+        let wallet = wallet_of(&wallets, &fox()).await.unwrap().unwrap();
         assert_eq!(wallet.ledgers.len(), 1);
         assert_eq!((wallet.ledgers[0].concert_id.as_str(), wallet.view.total_spent), ("c-1", 80));
-        assert!(read.wallet_of(&FanId::parse("unicorn").unwrap()).await.unwrap().is_none());
+        assert!(
+            wallet_of(&wallets, &FanId::parse("unicorn").unwrap())
+                .await
+                .unwrap()
+                .is_none()
+        );
     }
 }

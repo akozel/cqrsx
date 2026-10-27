@@ -96,6 +96,7 @@ pub(crate) struct TestView {
 }
 
 impl View<TestAggregate> for TestView {
+    const NAME: &'static str = "test_view";
     fn update(&mut self, event: &EventEnvelope<TestAggregate>) {
         self.events.push(event.payload.clone());
     }

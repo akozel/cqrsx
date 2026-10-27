@@ -1,10 +1,10 @@
-//! What the flows of several modules share: the names of the task policies, the activity log, and the ports to the
-//! outside world (the mail service, the read models). The adapters live in `shared::infrastructure`; tests use
-//! in-memory doubles. The metadata of a command is cqrsx's (`CommandMetadata`).
+//! What the flows of several modules share: the names of the task policies, the activity log, and the port to the
+//! outside world (the mail service). The adapters live in `shared::infrastructure`; tests use in-memory doubles. The
+//! metadata of a command is cqrsx's (`CommandMetadata`), and so are the queries of the read models
+//! (`ViewRepository`).
 pub mod activity;
 pub mod mail;
 pub mod policies;
-pub mod read_model;
 #[cfg(test)]
 pub(crate) mod test_support;
 

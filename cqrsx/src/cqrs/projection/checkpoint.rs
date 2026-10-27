@@ -7,7 +7,7 @@
 //! means the lease was lost, and the owner stops at once. The lease compares against the clock of the
 //! store, so the clocks of the nodes do not matter; an owner keeps a conservative local deadline anchored
 //! before each request, as the task queue does.
-use crate::cqrs::store::feed::Position;
+use crate::cqrs::{aggregate::Aggregate, projection::View, store::feed::Position};
 use chrono::{DateTime, Utc};
 use std::{error::Error, future::Future, time::Duration};
 use thiserror::Error;
@@ -28,6 +28,11 @@ impl CheckpointKey {
             projection: projection.into(),
             aggregate_type,
         }
+    }
+
+    /// The row of the projection of the view `V` over the journal of `A`: the view's name and the aggregate's type.
+    pub fn of<V: View<A>, A: Aggregate>() -> Self {
+        Self::new(V::NAME, A::TYPE)
     }
 
     pub fn projection(&self) -> &str {
@@ -233,7 +238,23 @@ pub trait CheckpointStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cqrs::{aggregate::tests::Ledger, event::EventEnvelope};
+    use serde::{Deserialize, Serialize};
     use std::collections::HashSet;
+
+    #[test]
+    fn the_key_of_a_view_is_its_name_and_the_type_of_its_aggregate() {
+        #[derive(Debug, Default, Serialize, Deserialize)]
+        struct Wallets;
+        impl View<Ledger> for Wallets {
+            const NAME: &'static str = "wallets";
+            fn update(&mut self, _: &EventEnvelope<Ledger>) {}
+        }
+        assert_eq!(
+            CheckpointKey::of::<Wallets, Ledger>(),
+            CheckpointKey::new("wallets", Ledger::TYPE)
+        );
+    }
 
     #[test]
     fn keys_tokens_and_requests_describe_themselves() {

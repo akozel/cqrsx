@@ -8,7 +8,7 @@
 //! comments and string literals removed first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
 //! the ledger's tasks. Of cqrsx a domain sees its contracts and their derive macros, a presentation the command port,
-//! its outcomes and the rejection trait. `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and
+//! its outcomes, the rejection trait and the queries of the read models. `bootstrap.rs` with `bootstrap/`, `process.rs`, `main.rs`, `config.rs`, `lib.rs` and
 //! `testing.rs` compose the modules and are exempt. A few rules apply to production code only: test code may use test
 //! tooling. Relative paths (`super::`) are not resolved: one module reaches another only through `crate::`.
 use std::{
@@ -100,34 +100,7 @@ const EXCEPTIONS: &[Exception] = &[
         paths: &["crate::operations::presentation::projections::rebuild::refused"],
         tests_only: false,
         why: "the rebuild of one hall is the operations' rebuild service and answers its refusals as Encore! does, until \
-              the engine rebuilds a key (05/10, 05/11)",
-    },
-    Exception {
-        id: "I-4",
-        place: "fan/application/wallet.rs",
-        paths: &["crate::bootstrap::read_models::ReadModels"],
-        tests_only: false,
-        why: "the wallet is a query on the composition's read side until it reads through the engine (05/10)",
-    },
-    Exception {
-        id: "I-4",
-        place: "fan/application/wallet.rs",
-        paths: &[
-            "crate::concert::application::views::concert_hall::ConcertHallView",
-            "crate::concert::domain::Concert",
-        ],
-        tests_only: true,
-        why: "the test builds the composition's read side, which holds the concert halls too (05/10)",
-    },
-    Exception {
-        id: "I-7",
-        place: "shared/infrastructure/mongo_read_model.rs",
-        paths: &[
-            "crate::concert::application::views::concert_hall",
-            "crate::fan::application::views::fan_wallet",
-        ],
-        tests_only: true,
-        why: "the BSON round trip of both views until the adapter goes (05/10)",
+              the engine rebuilds a key (05/11)",
     },
 ];
 
@@ -250,12 +223,16 @@ fn externals(layer: Option<Layer>) -> Externals {
             // The handler hands a command to the engine's command port with the metadata of a UI command and answers
             // its outcome (backlog 05/08 and 05/09, design 04; 05/11 and 05/12 replace them with the engine's
             // `execute` from the source "ui" and its outcome); a refused command answers with its code and params
-            // (05/04): the port, its error, the command's metadata and the rejection trait, nothing else.
+            // (05/04): the port, its error, the command's metadata and the rejection trait. A read model is read
+            // through the engine's repository, a stored document is what it answers (05/10, design 06; 05/11 replaces
+            // them with the engine's `view::<V>()`). Nothing else.
             cqrsx_allowed: Some(&[
                 "cqrsx::cqrs::command::CommandExecutor",
                 "cqrsx::cqrs::command::CommandGatewayError",
                 "cqrsx::cqrs::command::metadata::CommandMetadata",
                 "cqrsx::cqrs::rejection",
+                "cqrsx::cqrs::projection::repository::StoredView",
+                "cqrsx::cqrs::projection::repository::ViewRepository",
             ]),
         },
         Some(Layer::Infrastructure) | None => Externals {
@@ -845,6 +822,30 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
         "use cqrsx::cqrs::CommitReport;\n",
         "use cqrsx::cqrs::testing::command::TestCommandExecutor;\n",
         "use cqrsx::postgres::command::PostgresCommandExecutor;\n",
+    ] {
+        let broken = check("fan/presentation/x.rs", code);
+        assert_eq!(broken.len(), 1, "{code}");
+        assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
+    }
+}
+
+/// Backlog 05/10: a presentation reads a read model through the engine's repository and answers its stored documents;
+/// nothing else of the read side reaches it.
+#[test]
+fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_the_read_side() {
+    let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
+    for code in [
+        "use cqrsx::cqrs::projection::repository::{StoredView, ViewRepository};\n",
+        "fn f(d: cqrsx::cqrs::projection::repository::StoredView<()>) {}\n",
+    ] {
+        assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
+    }
+    for code in [
+        "use cqrsx::cqrs::projection::ViewProjection;\n",
+        "use cqrsx::cqrs::projection::repository::ViewContext;\n",
+        "use cqrsx::cqrs::projection::verify::verify;\n",
+        "use cqrsx::mongodb::view_repository::MongoViewRepository;\n",
+        "use cqrsx::cqrs::testing::mem_view_repository::MemViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}");

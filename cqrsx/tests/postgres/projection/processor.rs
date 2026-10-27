@@ -48,6 +48,7 @@ struct Balance {
 }
 
 impl View<Ledger> for Balance {
+    const NAME: &'static str = NAME;
     fn update(&mut self, event: &EventEnvelope<Ledger>) {
         self.total += i64::from(event.payload.0);
         self.history.push((event.sequence, event.payload.0));
@@ -128,12 +129,12 @@ fn processor(
     observer: &Arc<Recording>,
     wakeup: &CommitWakeup,
 ) -> ProjectionProcessor<Ledger, PostgresEventRepository, PostgresCheckpointStore> {
-    let views = Arc::new(PostgresViewRepository::<Balance, Ledger>::new("ledger_view", pool.clone()));
+    let views = Arc::new(PostgresViewRepository::<Balance, Ledger>::new(pool.clone()));
     ProjectionProcessor::new(
         NAME,
         Arc::new(PostgresEventRepository::new(pool.clone())),
         Arc::new(PostgresCheckpointStore::new(pool.clone())),
-        Arc::new(ViewProjection::new(views).with_name(NAME)),
+        Arc::new(ViewProjection::new(views)),
         config(),
     )
     .with_owner(owner)
@@ -142,7 +143,7 @@ fn processor(
 }
 
 async fn create_views(pool: &PgPool) {
-    sqlx::raw_sql("CREATE TABLE ledger_view (view_id text PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
+    sqlx::raw_sql("CREATE TABLE balances (view_id text PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
         .execute(pool)
         .await
         .unwrap();
@@ -165,7 +166,7 @@ async fn fold(pool: &PgPool, id: &str) -> Option<Balance> {
 async fn caught_up(pool: &PgPool, keys: &[&str]) -> CheckpointStatus {
     let repository = PostgresEventRepository::new(pool.clone());
     let store = PostgresCheckpointStore::new(pool.clone());
-    let views = PostgresViewRepository::<Balance, Ledger>::new("ledger_view", pool.clone());
+    let views = PostgresViewRepository::<Balance, Ledger>::new(pool.clone());
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let status = store.status(Some(NAME)).await.unwrap().pop();
@@ -217,7 +218,7 @@ async fn forty_commands_over_five_ledgers_reach_the_checkpointed_view_in_order()
         (status.applied, status.owner.as_deref(), status.failures),
         (40, Some("node-a"), 0)
     );
-    let views = PostgresViewRepository::<Balance, Ledger>::new("ledger_view", db.pool.clone());
+    let views = PostgresViewRepository::<Balance, Ledger>::new(db.pool.clone());
     for id in keys {
         let balance = views.load(id).await.unwrap().unwrap();
         assert_eq!(balance.history, (1..=8).map(|n| (n, n as i32)).collect::<Vec<_>>());
@@ -257,7 +258,7 @@ async fn forty_parallel_commands_to_one_key_reach_the_view_in_commit_order() {
     }
     let status = caught_up(&db.pool, &["hot"]).await;
     assert_eq!((status.applied, status.failures), (40, 0));
-    let balance = PostgresViewRepository::<Balance, Ledger>::new("ledger_view", db.pool.clone())
+    let balance = PostgresViewRepository::<Balance, Ledger>::new(db.pool.clone())
         .load("hot")
         .await
         .unwrap()
@@ -363,7 +364,7 @@ async fn an_idle_writing_transaction_pauses_the_projection_without_skipping() {
         before.position,
         "nothing is skipped past the slow writer"
     );
-    let views = PostgresViewRepository::<Balance, Ledger>::new("ledger_view", db.pool.clone());
+    let views = PostgresViewRepository::<Balance, Ledger>::new(db.pool.clone());
     assert!(views.load("l2").await.unwrap().is_none());
     open.rollback().await.unwrap();
     let after = caught_up(&db.pool, &["l1", "l2"]).await;

@@ -3,6 +3,7 @@
 //! shape of one `fan_wallets` document (`tickets` keyed by `booking_id`, counters summed).
 use crate::{
     bootstrap::AppState,
+    fan::application::wallet::wallet_of,
     shared::presentation::{error::ApiError, parse_fan_id},
 };
 use axum::{
@@ -13,9 +14,7 @@ use serde_json::{Value, json};
 
 pub async fn handle(State(state): State<AppState>, Path(fan_id): Path<String>) -> Result<Json<Value>, ApiError> {
     let fan_id = parse_fan_id(&fan_id)?;
-    match state
-        .read
-        .wallet_of(&fan_id)
+    match wallet_of(&*state.read.wallets, &fan_id)
         .await
         .map_err(ApiError::read_model_unavailable)?
     {

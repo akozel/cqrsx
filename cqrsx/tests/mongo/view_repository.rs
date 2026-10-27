@@ -7,7 +7,7 @@ use cqrsx::cqrs::{
     event_handler::EventHandler,
     projection::{
         ViewProjection,
-        repository::{ViewContext, ViewRepository},
+        repository::{StoredView, ViewContext, ViewRepository},
     },
     store::PersistenceError,
 };
@@ -140,6 +140,74 @@ async fn missing_and_corrupt_documents_are_explicit() {
             history: vec![(1, 1)]
         })
     );
+    mongo.close().await;
+}
+
+/// The ids of every repository's ordering test: in the order of their bytes (`F` < `f`; `-` < `:` < `;` < `_` < `y`).
+const IDS: [&str; 8] = [
+    "Fox:muse-2027-01-16",
+    "fox-2:radiohead-2026-11-21",
+    "fox:muse-2027-01-16",
+    "fox:radiohead-2026-11-21",
+    "fox;",
+    "fox_1:c-1",
+    "foxy:c-1",
+    "panda:c-1",
+];
+
+/// Documents of the library's shape, inserted as they are stored, read back as stored views: every document, a range
+/// of ids, in the order of the ids' bytes.
+#[tokio::test]
+async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
+    let mongo = Mongo::new().await;
+    let views = views(&mongo.database);
+    assert!(views.list().await.unwrap().is_empty());
+    assert!(views.range("fox:", "fox;").await.unwrap().is_empty());
+    let collection = mongo.database.collection::<Document>(NAME);
+    for (n, id) in IDS.iter().rev().enumerate() {
+        let history: Vec<Bson> = (1..=n as i64)
+            .map(|s| Bson::Array(vec![Bson::Int64(s), Bson::Int32(1)]))
+            .collect();
+        collection
+            .insert_one(doc! { "_id": *id, "version": n as i64 + 1, "last_sequence": n as i64,
+            "view": { "total": n as i64, "history": history } })
+            .await
+            .unwrap();
+    }
+    let ids = |stored: Vec<StoredView<Balance>>| stored.into_iter().map(|stored| stored.id).collect::<Vec<_>>();
+    assert_eq!(ids(views.list().await.unwrap()), IDS);
+    assert_eq!(
+        ids(views.range("fox:", "fox;").await.unwrap()),
+        ["fox:muse-2027-01-16", "fox:radiohead-2026-11-21"]
+    );
+    // The lower bound is in, the upper one out; an empty or inverted range holds nothing.
+    assert_eq!(ids(views.range("fox;", "foxy:c-1").await.unwrap()), ["fox;", "fox_1:c-1"]);
+    for (lower, upper) in [("fox;", "fox:"), ("fox;", "fox;"), ("zebra", "a")] {
+        assert!(views.range(lower, upper).await.unwrap().is_empty(), "{lower}..{upper}");
+    }
+    assert_eq!(
+        views.range("fox;", "fox_").await.unwrap(),
+        [StoredView {
+            id: "fox;".into(),
+            version: 4,
+            last_sequence: 3,
+            view: Balance {
+                total: 3,
+                history: vec![(1, 1), (2, 1), (3, 1)]
+            },
+        }]
+    );
+    // A document that is no view fails the listing and every range that holds it.
+    collection
+        .insert_one(doc! { "_id": "zz-broken", "version": 1_i64, "last_sequence": -1_i64, "view": {} })
+        .await
+        .unwrap();
+    assert!(matches!(views.list().await, Err(PersistenceError::DeserializationError(_))));
+    assert!(matches!(
+        views.range("zz", "zz~").await,
+        Err(PersistenceError::DeserializationError(_))
+    ));
+    assert_eq!(ids(views.range("F", "zz").await.unwrap()), IDS);
     mongo.close().await;
 }
 

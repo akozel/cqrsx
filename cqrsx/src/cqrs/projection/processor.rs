@@ -50,6 +50,7 @@
 //! # #[derive(Debug, Default, Serialize, Deserialize)]
 //! # pub struct Total { pub count: usize }
 //! # impl View<Counter> for Total {
+//! #     const NAME: &'static str = "totals";
 //! #     fn update(&mut self, _: &EventEnvelope<Counter>) { self.count += 1; }
 //! # }
 //! # }

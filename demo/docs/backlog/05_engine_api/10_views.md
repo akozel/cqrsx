@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Статус | предложено 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 5): сверка переезжает в cqrsx |
+| Статус | сделано 2026-10-27; решение пользователя 2026-10-27 (README эпика, вопрос 5): сверка переезжает в cqrsx |
 | Ценность | средняя–высокая: витрина подключается одной строкой, HTTP читает её через движок, у демо нет своего кода запросов к MongoDB |
 | Цена | средняя: `View::NAME`, запросы `list`/`range` в трёх репозиториях, перенос сверки (391 строка) в cqrsx |
-| cqrsx | `src/cqrs/projection.rs` (`View::NAME`), `projection/repository.rs` (`list`, `range`, `StoredView`), `src/postgres/view_repository.rs`, `src/mongodb/view_repository.rs`, `src/cqrs/testing/mem_view_repository.rs`, новый `src/cqrs/projection/verify.rs`, `src/cqrs/projection/checkpoint.rs` (`CheckpointKey::of::<V, A>()`), `tests/postgres/projection.rs`, `tests/mongo/view_repository.rs`, `doc/components.md` |
-| demo | `concert/application/views/concert_hall.rs`, `fan/application/views/fan_wallet.rs` (без LWW), `fan/application/wallet.rs`, `operations/application/{verification.rs (удаляется), verify.rs}`, `shared/application/read_model.rs` (удаляется), `shared/infrastructure/mongo_read_model.rs` (удаляется), `bootstrap/{projections,read_models}.rs`, `concert/presentation/{get,list}.rs`, `fan/presentation/wallet.rs` |
+| cqrsx | `src/cqrs/projection.rs` (`View::NAME`, `ViewProjection` без `with_name`), `projection/repository.rs` (`list`, `range`, `StoredView`), `src/postgres/view_repository.rs` (`new(pool)`, два новых `SELECT … COLLATE "C"`), `src/mongodb/view_repository.rs` (`new(db)`), `src/cqrs/testing/mem_view_repository.rs` (без `list_all`), новый `src/cqrs/projection/verify.rs`, `src/cqrs/projection/checkpoint.rs` (`CheckpointKey::of::<V, A>()`), `src/cqrs/projection/processor{,/rebuild}.rs` (доктест, тест), `tests/postgres/{projection,projection/processor,support/repository}.rs`, `tests/mongo/{support,view_repository}.rs`, `tests/cqrs/projection/{support,live,rebuild,model}.rs`, `README.md`, `doc/components.md` |
+| demo | `concert/application/views/concert_hall.rs`, `fan/application/views/fan_wallet.rs` (без LWW), `fan/application/wallet.rs` (`wallet_of` над репозиторием), `operations/application{,/verify}.rs`, `operations/application/verification.rs` (удаляется), `shared/application{,/read_model}.rs` (`read_model.rs` удаляется), `shared/infrastructure{,/mongo_read_model}.rs` (`mongo_read_model.rs` удаляется), `shared/presentation{,/error}.rs`, `bootstrap{,/projections,/read_models}.rs`, `bootstrap/projections/{concert_halls,fan_wallets}.rs`, `bootstrap/routes/tests.rs`, `concert/presentation/{get,list}.rs`, `fan/presentation/wallet.rs`, `testing.rs`, `process.rs` (тест), `tests/{architecture,write_side}.rs` |
 | Зависимости | 03 |
 | Гарантии | G-23, G-24, G-25, G-26, G-28, G-32 |
 
@@ -46,6 +46,19 @@
   `get` → `load_with_context`, `list` → `list`, кошелёк → `range("fox:", "fox;")`. `ReadModelStore`, `Stored`,
   `MongoReadModel` удаляются; `stored_document` в `shared/presentation` принимает `StoredView`.
 - `operations/application/verify.rs` — тонкая обёртка над `cqrsx::…::verify` с прежним JSON.
+
+**Решения ревью плана (2026-10-27, `work/10-plan-review-r1.md`):**
+- до 11 `ReadModels` держит `Documents { MongoDb, #[cfg(test)] Memory }` (`bootstrap/read_models.rs`): `ViewRepository`
+  не превращается в `dyn`, а тесты маршрутов читают документы из памяти; перечисление делегирует трейту cqrsx;
+- allowlist presentation += `cqrsx::cqrs::projection::repository::{StoredView, ViewRepository}` (`tests/architecture.rs`,
+  с тестом на примерах); исключения И-4 и И-7 сняты, новых нет;
+- `MemViewRepository::list_all` удалён (его заменяет `list`), помощники тестов, удаляющие документ, — асинхронные;
+- `list`/`range` в PostgreSQL — `ORDER BY view_id COLLATE "C"`: байтовый порядок при любой сортировке столбца; тест — на
+  столбце с сортировкой ICU;
+- `verify::<V, A>(&journal, &documents) -> Result<Verification, PersistenceError>`, `Difference { collection: V::NAME,
+  id, kind }` как в демо; `wallet_of` — функция над `&impl ViewRepository<FanWalletView, Fan>`;
+  `read_model_unavailable(impl Display)` — тот же текст;
+- в обеих витринах `last_sequence = sequence`; запасная цена отмены в книжке остаётся (не LWW, полнота свёртки).
 
 ## Этапы
 
@@ -93,7 +106,25 @@ let wallets = wallets.range("fox:", "fox;").await?;                // кошел
 
 ## Критерии приёмки
 
-- [ ] `View::NAME`; `list`/`range`/`StoredView` в трёх репозиториях; `verify` в cqrsx.
-- [ ] Демо: витрины без LWW, HTTP через cqrsx; `ReadModelStore`, `MongoReadModel`, `verification.rs` удалены.
-- [ ] Тест «с LWW и без — один документ» и тесты порядка диапазона.
-- [ ] `components.md`, guarantees.md.
+- [x] `View::NAME`; `list`/`range`/`StoredView` в трёх репозиториях; `verify` в cqrsx.
+- [x] Демо: витрины без LWW, HTTP через cqrsx; `ReadModelStore`, `MongoReadModel`, `verification.rs` удалены.
+- [x] Тест «с LWW и без — один документ» и тесты порядка диапазона.
+- [x] `components.md`, guarantees.md.
+
+## Результат
+
+> **Результат (2026-10-27).** Имя витрины стоит один раз — `View::NAME`. По нему названы коллекция MongoDB и таблица
+> PostgreSQL (`MongoViewRepository::new(db)`, `PostgresViewRepository::new(pool)`), проекция (`ViewProjection` без
+> `with_name`) и строка закладки (`CheckpointKey::of::<V, A>()`).
+>
+> У `ViewRepository` три запроса — `load_with_context`, `list`, `range([lower, upper))` — с ответом `StoredView`, в
+> байтовом порядке id в памяти, PostgreSQL (`COLLATE "C"`, тест на столбце ICU) и MongoDB. Сверка D-20 — компонент
+> cqrsx `projection::verify` (перенос с шестью тестами).
+>
+> Демо:
+> - витрины без проверки LWW; документы те же: свёртка всех упорядоченных историй до пяти событий с проверкой и без
+>   совпадает, эталонный JSON зала и книжки — тесты этапа 0 на HEAD;
+> - HTTP читает через репозиторий cqrsx (до 11 — `Documents` в `bootstrap/read_models.rs`);
+> - `ReadModelStore`, `MongoReadModel` и `verification.rs` удалены, исключения И-4 и И-7 сняты.
+>
+> Операции MongoDB и SQL, которые исполняет демо, прежние. Покрытие — 97,64 % (workspace) и 97,49 % (cqrsx).
