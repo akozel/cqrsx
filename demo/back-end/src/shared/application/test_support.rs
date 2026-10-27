@@ -1,13 +1,44 @@
 //! Test tools the flows of several modules share: what a planner (the reactions' planner of an aggregate) plans for a
-//! decision built by hand.
+//! decision built by hand, and a mail service that records the letters.
+use crate::shared::application::mail::{Mail, MailService};
+use async_trait::async_trait;
 use cqrsx::{
     cqrs::{
         aggregate::Aggregate,
         command::planner::{Decision, TaskPlanError, TaskPlanner},
     },
-    task::NewTask,
+    task::{NewTask, context::TaskContext, result::TaskResult},
 };
-use std::collections::HashMap;
+use std::{collections::HashMap, sync::Mutex};
+
+/// A mail service that records every letter, with the id of the task that sent it, and answers `answer`.
+pub struct RecordingMailer {
+    pub sent: Mutex<Vec<(uuid::Uuid, Mail)>>,
+    pub answer: TaskResult,
+}
+
+impl RecordingMailer {
+    /// A mail service that delivers everything.
+    pub fn delivering() -> Self {
+        Self {
+            sent: Mutex::new(Vec::new()),
+            answer: TaskResult::Done,
+        }
+    }
+
+    /// The letters sent so far.
+    pub fn sent(&self) -> Vec<(uuid::Uuid, Mail)> {
+        self.sent.lock().unwrap().clone()
+    }
+}
+
+#[async_trait]
+impl MailService for RecordingMailer {
+    async fn send(&self, ctx: &TaskContext, mail: Mail) -> TaskResult {
+        self.sent.lock().unwrap().push((ctx.task_id(), mail));
+        self.answer.clone()
+    }
+}
 
 /// What `planner` plans for `events` decided on `aggregate_id`, the decision built by hand (the reactions
 /// read neither the state nor the command).

@@ -1,22 +1,16 @@
 //! Step 1 of refund: task `encore_record_cancellation` → `Fan.RecordCancellation`; the ledger's
 //! `TicketCancelled` plans `encore_issue_refund` in the same commit ([reactions](super::reactions)).
 use crate::{
-    fan::{
-        application::chain::{ChainStep, run_chain_step},
-        domain::{Fan, FanCommand, commands::RecordCancellation},
-    },
-    shared::domain::{ConcertId, FanId, venue::SeatId},
+    fan::domain::{Fan, FanCommand, FanError, commands::RecordCancellation},
+    shared::domain::{ConcertId, FanId, FanLedgerId, venue::SeatId},
 };
 use cqrsx::{
     Task,
-    cqrs::command::CommandExecutor,
-    task::{
-        attempt::TaskAttempt,
-        handler::{TaskHandler, TaskHandlerError},
-    },
+    cqrs::command::CommandGatewayError,
+    task::{context::TaskContext, result::TaskResult},
+    task_handler,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use uuid::Uuid;
 
 /// `Concert::BookingCancelled` → `Fan.RecordCancellation`: step one of the refund
@@ -32,28 +26,34 @@ pub struct RecordCancellationV1 {
     pub refund: u32,
 }
 
-/// Runs the step on the ledgers' executor.
-pub struct RecordCancellationHandler<E> {
-    pub fans: Arc<E>,
+impl RecordCancellationV1 {
+    /// The fan's ledger for the concert (D-14), where the cancellation goes.
+    pub fn ledger(&self) -> FanLedgerId {
+        FanLedgerId::new(&self.fan_id, &self.concert_id)
+    }
+
+    /// The internal `Fan` command the task asks for.
+    pub fn command(self) -> FanCommand {
+        FanCommand::RecordCancellation(RecordCancellation {
+            booking_id: self.booking_id,
+            cancellation_id: self.cancellation_id,
+            refund: self.refund,
+        })
+    }
 }
 
-impl<E: CommandExecutor<Fan>> TaskHandler<RecordCancellationV1> for RecordCancellationHandler<E> {
-    async fn handle(&mut self, payload: RecordCancellationV1, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        let command = FanCommand::RecordCancellation(RecordCancellation {
-            booking_id: payload.booking_id,
-            cancellation_id: payload.cancellation_id,
-            refund: payload.refund,
-        });
-        run_chain_step(
-            self.fans.as_ref(),
-            attempt,
-            ChainStep {
-                concert_id: &payload.concert_id,
-                fan_id: &payload.fan_id,
-                command,
-            },
-        )
-        .await
+/// The ledger records the cancellation (PLAN.md §2.7): R9 (already recorded) and R11 (already cancelled) mean
+/// "already done", a redelivery; R10 (the cancellation overtook its ticket) means "too early, retry"; a conflict and
+/// an unavailable ledger are retried. The command continues the task's causation chain.
+#[task_handler]
+pub async fn record_cancellation(task: RecordCancellationV1, ctx: &TaskContext) -> TaskResult {
+    let ledger = task.ledger();
+    match ctx.execute::<Fan>(&ledger, task.command()).await {
+        Err(CommandGatewayError::Domain(FanError::AlreadyRecorded { .. } | FanError::AlreadyCancelled { .. })) => {
+            TaskResult::done()
+        }
+        Err(CommandGatewayError::Domain(FanError::UnknownTicket { .. })) => TaskResult::retry("unknown_ticket"),
+        other => other.into(), // accepted: done; conflict, unavailable: retry
     }
 }
 
@@ -61,9 +61,8 @@ impl<E: CommandExecutor<Fan>> TaskHandler<RecordCancellationV1> for RecordCancel
 mod tests {
     use super::*;
     use crate::fan::application::{
-        chain::CHAIN_RETRY_AFTER,
-        record_ticket::RecordTicketHandler,
-        test_support::{attempt, fans, ledger, ticket},
+        record_ticket::record_ticket,
+        test_support::{attempt, fans, ledger, steps, ticket},
     };
     use cqrsx::cqrs::{store::EventStore, testing::mem_store::MemStore};
     use uuid::Uuid;
@@ -83,12 +82,13 @@ mod tests {
     #[tokio::test]
     async fn a_cancellation_that_overtook_its_ticket_is_retried_later() {
         let (fans, executor) = fans(MemStore::default());
-        let mut handler = RecordCancellationHandler { fans };
         let payload = cancellation(ticket().booking_id);
-        let result = handler.handle(payload.clone(), &attempt(&payload, Uuid::now_v7())).await;
+        let result = record_cancellation
+            .call(payload.clone(), &steps(&fans, attempt(&payload, Uuid::now_v7())))
+            .await;
         match result {
-            Err(TaskHandlerError::Retry { reason, retry_after }) => {
-                assert_eq!((reason.as_str(), retry_after), ("unknown_ticket", Some(CHAIN_RETRY_AFTER)));
+            TaskResult::Retry { reason } => {
+                assert_eq!(reason.as_str(), "unknown_ticket");
             }
             other => panic!("expected a retry (R10), got {other:?}"),
         }
@@ -103,15 +103,16 @@ mod tests {
         let store = MemStore::default();
         let (fans, executor) = fans(store.clone());
         let ticket = ticket();
-        RecordTicketHandler { fans: fans.clone() }
-            .handle(ticket.clone(), &attempt(&ticket, Uuid::now_v7()))
-            .await
-            .unwrap();
+        assert_eq!(
+            record_ticket
+                .call(ticket.clone(), &steps(&fans, attempt(&ticket, Uuid::now_v7())))
+                .await,
+            TaskResult::Done
+        );
         executor.take_published_tasks();
-        let mut handler = RecordCancellationHandler { fans };
         let payload = cancellation(ticket.booking_id);
-        let delivery = attempt(&payload, Uuid::now_v7());
-        handler.handle(payload.clone(), &delivery).await.unwrap();
+        let delivery = steps(&fans, attempt(&payload, Uuid::now_v7()));
+        assert_eq!(record_cancellation.call(payload.clone(), &delivery).await, TaskResult::Done);
         assert_eq!(store.load_events(ledger().as_str()).await.unwrap().len(), 2);
         let refunds = executor.take_published_tasks();
         assert_eq!(
@@ -123,7 +124,7 @@ mod tests {
             serde_json::json!(payload.cancellation_id)
         );
         assert_eq!(refunds[0].payload()["amount"], 80);
-        handler.handle(payload, &delivery).await.unwrap();
+        assert_eq!(record_cancellation.call(payload, &delivery).await, TaskResult::Done);
         assert_eq!(
             store.load_events(ledger().as_str()).await.unwrap().len(),
             2,

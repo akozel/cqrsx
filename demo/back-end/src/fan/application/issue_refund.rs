@@ -8,10 +8,8 @@ use crate::{
 };
 use cqrsx::{
     Task,
-    task::{
-        attempt::TaskAttempt,
-        handler::{TaskHandler, TaskHandlerError},
-    },
+    task::{context::TaskContext, result::TaskResult},
+    task_handler,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -42,10 +40,6 @@ impl IssueRefundV1 {
     }
 }
 
-pub struct IssueRefundHandler<M> {
-    pub mailer: M,
-}
-
 /// One refund per cancellation: the cancellation id is the mail's idempotency key.
 pub fn refund_mail(payload: &IssueRefundV1) -> Mail {
     Mail {
@@ -63,16 +57,20 @@ pub fn refund_mail(payload: &IssueRefundV1) -> Mail {
     }
 }
 
-impl<M: Mailer> TaskHandler<IssueRefundV1> for IssueRefundHandler<M> {
-    async fn handle(&mut self, payload: IssueRefundV1, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        self.mailer.send(attempt, refund_mail(&payload)).await
-    }
+/// Sends the refund; the mail service answers whether it was delivered (a repeat is delivered once) or is retried
+/// after the pause of the `MAIL` policy.
+#[task_handler]
+pub async fn issue_refund(task: IssueRefundV1, ctx: &TaskContext, mail: &Mailer) -> TaskResult {
+    mail.send(ctx, refund_mail(&task)).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::domain::{ConcertId, FanId, venue::SeatId};
+    use crate::shared::{
+        application::test_support::RecordingMailer,
+        domain::{ConcertId, FanId, venue::SeatId},
+    };
     use uuid::Uuid;
 
     #[test]
@@ -88,5 +86,24 @@ mod tests {
         assert_eq!(mail.id, "refund:00000000-0000-0000-0000-000000000002");
         assert_eq!((mail.kind, mail.amount), ("refund", 120));
         assert_eq!(mail.subject, "💸 Refund 120 € for radiohead-2026-11-21, seat A1");
+    }
+
+    #[tokio::test]
+    async fn a_refund_task_sends_the_mail_of_its_cancellation() {
+        let task = IssueRefundV1 {
+            cancellation_id: Uuid::from_u128(2),
+            booking_id: Uuid::from_u128(1),
+            concert_id: ConcertId::parse("radiohead-2026-11-21").unwrap(),
+            seat: SeatId::parse("A1").unwrap(),
+            fan_id: FanId::parse("fox").unwrap(),
+            amount: 120,
+        };
+        let ctx = TaskContext::new(
+            cqrsx::task::attempt::TaskAttempt::first(&task, serde_json::json!({})).unwrap(),
+            std::time::Duration::from_secs(1),
+        );
+        let mail = RecordingMailer::delivering();
+        assert_eq!(issue_refund.call(task.clone(), &ctx, &mail).await, TaskResult::Done);
+        assert_eq!(mail.sent(), [(ctx.task_id(), refund_mail(&task))]);
     }
 }

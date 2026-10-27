@@ -8,10 +8,8 @@ use crate::{
 };
 use cqrsx::{
     Task,
-    task::{
-        attempt::TaskAttempt,
-        handler::{TaskHandler, TaskHandlerError},
-    },
+    task::{context::TaskContext, result::TaskResult},
+    task_handler,
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
@@ -42,10 +40,6 @@ impl SendETicketV1 {
     }
 }
 
-pub struct SendETicketHandler<M> {
-    pub mailer: M,
-}
-
 /// One e-ticket per booking: the booking id is the mail's idempotency key.
 pub fn e_ticket_mail(payload: &SendETicketV1) -> Mail {
     Mail {
@@ -60,16 +54,20 @@ pub fn e_ticket_mail(payload: &SendETicketV1) -> Mail {
     }
 }
 
-impl<M: Mailer> TaskHandler<SendETicketV1> for SendETicketHandler<M> {
-    async fn handle(&mut self, payload: SendETicketV1, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        self.mailer.send(attempt, e_ticket_mail(&payload)).await
-    }
+/// Sends the e-ticket; the mail service answers whether it was delivered (a repeat is delivered once) or is retried
+/// after the pause of the `MAIL` policy.
+#[task_handler]
+pub async fn send_e_ticket(task: SendETicketV1, ctx: &TaskContext, mail: &Mailer) -> TaskResult {
+    mail.send(ctx, e_ticket_mail(&task)).await
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::shared::domain::{ConcertId, FanId, venue::SeatId};
+    use crate::shared::{
+        application::test_support::RecordingMailer,
+        domain::{ConcertId, FanId, venue::SeatId},
+    };
     use uuid::Uuid;
 
     #[test]
@@ -85,5 +83,33 @@ mod tests {
         assert_eq!(mail.id, "e_ticket:00000000-0000-0000-0000-000000000001");
         assert_eq!((mail.kind, mail.to_name.as_str(), mail.amount), ("e_ticket", "Fox", 80));
         assert_eq!(mail.subject, "🎫 Your e-ticket: radiohead-2026-11-21, seat B4");
+    }
+
+    #[tokio::test]
+    async fn an_e_ticket_task_sends_the_mail_of_its_booking() {
+        let task = SendETicketV1 {
+            booking_id: Uuid::from_u128(1),
+            concert_id: ConcertId::parse("radiohead-2026-11-21").unwrap(),
+            seat: SeatId::parse("B4").unwrap(),
+            fan_id: FanId::parse("fox").unwrap(),
+            fan_name: "Fox".into(),
+            price: 80,
+        };
+        let ctx = TaskContext::new(
+            cqrsx::task::attempt::TaskAttempt::first(&task, serde_json::json!({})).unwrap(),
+            std::time::Duration::from_secs(1),
+        );
+        let mail = RecordingMailer::delivering();
+        assert_eq!(send_e_ticket.call(task.clone(), &ctx, &mail).await, TaskResult::Done);
+        assert_eq!(mail.sent(), [(ctx.task_id(), e_ticket_mail(&task))]);
+        let refusing = RecordingMailer {
+            answer: TaskResult::retry("mailbox_busy"),
+            ..RecordingMailer::delivering()
+        };
+        assert_eq!(
+            send_e_ticket.call(task, &ctx, &refusing).await,
+            TaskResult::retry("mailbox_busy"),
+            "the mail service's answer is the task's"
+        );
     }
 }

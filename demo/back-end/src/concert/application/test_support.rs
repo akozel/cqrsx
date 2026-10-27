@@ -7,10 +7,7 @@ use crate::{
         events::{BookingCancelled, SeatBooked},
     },
     shared::{
-        application::{
-            activity::{ActivityEntry, ActivityHub},
-            metadata::CommandMetadata,
-        },
+        application::activity::{ActivityEntry, ActivityHub},
         domain::{
             ConcertId, FanId,
             venue::{SeatId, Zone},
@@ -21,7 +18,7 @@ use chrono::NaiveDate;
 use cqrsx::{
     cqrs::{
         AggregateError, CommitReport,
-        command::{CommandExecutor, CommandGatewayError},
+        command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata},
         event::EventEnvelope,
         reactions::ReactionsPlanner,
         store::EventStore,

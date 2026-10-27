@@ -1,10 +1,22 @@
 use super::*;
+use cqrsx::task::policy::{Policies, PolicyName, Retry, TaskPolicy};
+
+/// The policies of the queue's tests: the dummy task waits 300 s before its next attempt.
+fn dummy_waits_300_s() -> Policies {
+    const DUMMY: PolicyName = PolicyName::new("dummy");
+    Policies::default()
+        .with_policy(DUMMY, TaskPolicy::new(Retry::fixed(Duration::from_secs(300)), 10).unwrap())
+        .unwrap()
+        .with_task::<DummyTaskV1>(DUMMY)
+        .unwrap()
+}
 
 #[tokio::test]
 async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_failure() {
     let db = Database::new().await;
     let queue = Arc::new(PostgresTaskQueue::new(db.pool.clone()));
-    let service = Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()));
+    let service =
+        Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()).with_policies(dummy_waits_300_s()));
 
     let succeeded = new_task();
     enqueue(&db.pool, vec![succeeded.clone()]).await;
@@ -15,7 +27,7 @@ async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_fai
     assert_worker_state(&db.pool, succeeded.id(), "processing", 1, None).await;
     assert!(
         service
-            .execute_and_settle(&mut dispatcher(adapter(Ok(()))), first.clone(), Duration::from_secs(1))
+            .execute_and_settle(&dispatcher(adapter(TaskResult::Done)), first.clone(), Duration::from_secs(1))
             .await
             .unwrap()
             .is_applied()
@@ -40,10 +52,7 @@ async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_fai
     assert!(
         service
             .execute_and_settle(
-                &mut dispatcher(adapter(Err(TaskHandlerError::Retry {
-                    reason: "remote busy".into(),
-                    retry_after: Some(Duration::from_secs(300)),
-                }))),
+                &dispatcher(adapter(TaskResult::retry("remote busy"))),
                 first.clone(),
                 Duration::from_secs(1),
             )
@@ -70,7 +79,7 @@ async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_fai
     assert_worker_state(&db.pool, transient.id(), "processing", 2, Some("remote busy")).await;
     assert!(
         service
-            .execute_and_settle(&mut dispatcher(adapter(Ok(()))), second, Duration::from_secs(1))
+            .execute_and_settle(&dispatcher(adapter(TaskResult::Done)), second, Duration::from_secs(1))
             .await
             .unwrap()
             .is_applied()
@@ -83,10 +92,7 @@ async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_fai
     let claimed = claim(&queue).await.pop().unwrap();
     let exhausted_result = service
         .execute_and_settle(
-            &mut dispatcher(adapter(Err(TaskHandlerError::Retry {
-                reason: "still unavailable".into(),
-                retry_after: Some(Duration::ZERO),
-            }))),
+            &dispatcher(adapter(TaskResult::retry("still unavailable"))),
             claimed,
             Duration::from_secs(1),
         )
@@ -104,9 +110,7 @@ async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_fai
     let claimed = claim(&queue).await.pop().unwrap();
     let permanent_result = service
         .execute_and_settle(
-            &mut dispatcher(adapter(Err(TaskHandlerError::Permanent {
-                reason: "invalid address".into(),
-            }))),
+            &dispatcher(adapter(TaskResult::fail("invalid address"))),
             claimed,
             Duration::from_secs(1),
         )
@@ -177,7 +181,7 @@ async fn worker_test_aggregate_retries_timeouts_then_fails_at_attempt_limit() {
     let first = claim(&queue).await.pop().unwrap();
     assert!(
         service
-            .execute_and_settle(&mut dispatcher(HangingAdapter), first, Duration::from_millis(5))
+            .execute_and_settle(&dispatcher(HangingAdapter), first, Duration::from_millis(5))
             .await
             .unwrap()
             .is_applied()
@@ -190,7 +194,7 @@ async fn worker_test_aggregate_retries_timeouts_then_fails_at_attempt_limit() {
     let second = claim(&queue).await.pop().unwrap();
     assert!(
         service
-            .execute_and_settle(&mut dispatcher(HangingAdapter), second, Duration::from_millis(5))
+            .execute_and_settle(&dispatcher(HangingAdapter), second, Duration::from_millis(5))
             .await
             .unwrap()
             .is_applied()
@@ -208,11 +212,16 @@ async fn worker_test_aggregate_redelivers_after_success_without_acknowledgement(
     let task = new_task();
     enqueue(&db.pool, vec![task.clone()]).await;
     let deliveries = Arc::new(AtomicUsize::new(0));
-    let mut handler = CountingAdapter(deliveries.clone());
+    let handler = CountingAdapter(deliveries.clone());
 
     let first = claim(&queue).await.pop().unwrap();
-    handler.invoke(first.attempt()).await.unwrap();
-    let mut handler = dispatcher(handler);
+    assert_eq!(
+        handler
+            .invoke(&TaskContext::new(first.attempt().clone(), Duration::ZERO))
+            .await,
+        TaskResult::Done
+    );
+    let handler = dispatcher(handler);
     // The process stops after the side effect, before acknowledging ownership.
     assert_worker_state(&db.pool, task.id(), "processing", 1, None).await;
     expire(&db.pool, task.id()).await;
@@ -225,7 +234,7 @@ async fn worker_test_aggregate_redelivers_after_success_without_acknowledgement(
     assert!(!queue.settle(&first, SettlementRequest::Completed).await.unwrap().is_applied());
     assert!(
         service
-            .execute_and_settle(&mut handler, second, Duration::from_secs(1))
+            .execute_and_settle(&handler, second, Duration::from_secs(1))
             .await
             .unwrap()
             .is_applied()

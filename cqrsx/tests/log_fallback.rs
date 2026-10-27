@@ -26,16 +26,17 @@ use cqrsx::{
     task::{
         adapter::TaskAdapter,
         attempt::TaskAttempt,
+        context::TaskContext,
         dispatcher::TaskDispatcher,
         executor::default_executor::DefaultTaskExecutor,
         format::TaskFormat,
-        handler::TaskHandlerError,
         queue::{
             TaskProcessingError, TaskQueue,
             lease::{LeasedTask, TaskLease},
             settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
         },
-        runtime::{self, dispatcher_factory::TaskDispatcherFactory, worker_pool_config::TaskWorkerPoolConfig},
+        result::TaskResult,
+        runtime::{self, worker_pool_config::TaskWorkerPoolConfig},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -117,10 +118,8 @@ impl TaskAdapter for FailingAdapter {
     fn formats(&self) -> Vec<TaskFormat> {
         vec![format()]
     }
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        Err(TaskHandlerError::Permanent {
-            reason: "private_handler_reason".into(),
-        })
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
+        TaskResult::fail("private_handler_reason")
     }
 }
 struct Queue {
@@ -204,7 +203,6 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         ))),
         stop: stop.clone(),
     });
-    let factory: TaskDispatcherFactory<_> = Arc::new(|| TaskDispatcher::try_new(vec![FailingAdapter]));
     let config =
         TaskWorkerPoolConfig::new(1, 1, Duration::from_secs(1), Duration::from_secs(15), Duration::from_secs(60)).unwrap();
     tokio::time::timeout(
@@ -212,7 +210,7 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         runtime::supervisor::run(
             queue.clone(),
             Arc::new(DefaultTaskExecutor::new(queue, TaskStorageConfig::default())),
-            factory,
+            TaskDispatcher::try_new(vec![FailingAdapter]).unwrap(),
             config,
             stop,
         ),

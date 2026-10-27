@@ -2,16 +2,18 @@
 use cqrsx::task::{
     adapter::{TaskAdapter, json::JsonTaskAdapter},
     attempt::TaskAttempt,
+    context::TaskContext,
     dispatcher::TaskDispatcher,
     executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
     format::TaskFormat,
-    handler::{TaskHandler, TaskHandlerError},
+    handler::TaskHandler,
     queue::{
         TaskProcessingError, TaskQueue,
         lease::{LeasedTask, TaskLease},
         settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult},
         storage_config::TaskStorageConfig,
     },
+    result::TaskResult,
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -102,8 +104,8 @@ impl cqrsx::task::format::TaskPayload for Payload {
 }
 struct Handler;
 impl TaskHandler<Payload> for Handler {
-    async fn handle(&mut self, _: Payload, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        Ok(())
+    async fn handle(&self, _: Payload, _: &TaskContext) -> TaskResult {
+        TaskResult::Done
     }
 }
 fn dispatcher() -> TaskDispatcher<JsonTaskAdapter<Payload, Handler>> {
@@ -135,19 +137,22 @@ impl TaskExecutor for BorrowedExecutor<'_> {
     }
     async fn execute_and_settle<A: TaskAdapter>(
         &self,
-        dispatcher: &mut TaskDispatcher<A>,
+        dispatcher: &TaskDispatcher<A>,
         task: LeasedTask,
         timeout: Duration,
     ) -> Result<SettlementResult, TaskProcessingError> {
         suspend_once().await;
-        assert_eq!(dispatcher as *mut TaskDispatcher<A> as usize, self.dispatcher_address);
+        assert_eq!(dispatcher as *const TaskDispatcher<A> as usize, self.dispatcher_address);
         assert_eq!(
             task.attempt().metadata()["owned"].as_str().unwrap().as_ptr() as usize,
             self.payload_address
         );
         assert_eq!(task.lease().deadline(), self.deadline);
         assert_eq!(timeout, Duration::from_secs(15));
-        dispatcher.dispatch(task.attempt()).await.unwrap();
+        assert_eq!(
+            dispatcher.dispatch(task.attempt().clone(), Duration::ZERO).await,
+            TaskResult::Done
+        );
         self.calls.fetch_add(1, Ordering::SeqCst);
         Ok(SettlementResult::Completed)
     }
@@ -184,10 +189,10 @@ async fn all_four_port_futures_are_send_and_keep_original_inputs_across_pending(
             .retry_scheduled_count(),
         7
     );
-    let mut dispatcher = dispatcher();
+    let dispatcher = dispatcher();
     let executor = BorrowedExecutor {
         calls: &calls,
-        dispatcher_address: &mut dispatcher as *mut _ as usize,
+        dispatcher_address: &dispatcher as *const _ as usize,
         payload_address: task.attempt().metadata()["owned"].as_str().unwrap().as_ptr() as usize,
         deadline: task.lease().deadline(),
     };
@@ -195,7 +200,7 @@ async fn all_four_port_futures_are_send_and_keep_original_inputs_across_pending(
     assert_eq!(
         through_pending(TaskExecutor::execute_and_settle(
             &executor,
-            &mut dispatcher,
+            &dispatcher,
             task,
             Duration::from_secs(15)
         ))
@@ -231,7 +236,7 @@ async fn standard_constructor_supports_borrowed_queue_without_io() {
     assert_eq!(
         through_pending(TaskExecutor::execute_and_settle(
             &executor,
-            &mut dispatcher(),
+            &dispatcher(),
             leased(),
             Duration::from_secs(15)
         ))

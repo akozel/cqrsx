@@ -7,7 +7,6 @@ use crate::{
         commands::{AnnounceConcert, BookSeat, CancelBooking},
     },
     shared::{
-        application::metadata::CommandMetadata,
         domain::{ConcertId, FanId},
         presentation::{error::ApiError, parse_concert_id},
     },
@@ -20,7 +19,7 @@ use axum::{
 };
 use chrono::NaiveDate;
 use cqrsx::cqrs::{
-    command::{CommandExecutor, CommandGatewayError},
+    command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata},
     rejection::Rejection,
 };
 use serde::Deserialize;
@@ -76,7 +75,7 @@ pub async fn handle(
     let concert_id = parse_concert_id(&concert_id)?;
     let Json(raw) = body.map_err(|e| ApiError::invalid(format!("invalid JSON body: {e}")))?;
     let dto: CommandDto = serde_json::from_value(raw).map_err(|e| ApiError::invalid(format!("invalid command: {e}")))?;
-    let metadata = CommandMetadata::ui();
+    let metadata = CommandMetadata::root("ui");
     let command = to_command(dto, &metadata)?;
     let command_id = metadata.causation.command_id;
     let result = state
@@ -142,7 +141,7 @@ mod tests {
 
     #[test]
     fn booking_and_cancellation_ids_are_the_command_id() {
-        let metadata = CommandMetadata::ui();
+        let metadata = CommandMetadata::root("ui");
         let book = to_command(
             CommandDto::BookSeat {
                 seat: "B4".into(),

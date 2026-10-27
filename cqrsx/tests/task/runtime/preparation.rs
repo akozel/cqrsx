@@ -1,4 +1,7 @@
 use super::*;
+use cqrsx::task::{
+    dependencies::DependencyId, format::TaskPayload, handler::TaskHandler, handlers::TaskHandlers, policy::Policies,
+};
 
 #[tokio::test]
 async fn invalid_full_lease_budget_is_rejected_before_polling() {
@@ -7,13 +10,13 @@ async fn invalid_full_lease_budget_is_rejected_before_polling() {
         queue.clone(),
         TaskStorageConfig::new(Duration::from_secs(10)).unwrap(),
     ));
-    let factory: TaskDispatcherFactory<_> = Arc::new(|| TaskDispatcher::try_new(vec![adapter()]));
+    let dispatcher = TaskDispatcher::try_new(vec![adapter()]).unwrap();
     let shutdown = CancellationToken::new();
     assert!(
         run(
             queue.clone(),
             executor,
-            factory,
+            dispatcher,
             TaskWorkerPoolConfig::new(
                 TaskWorkerPoolConfig::default().concurrency(),
                 TaskWorkerPoolConfig::default().concurrency(),
@@ -31,85 +34,95 @@ async fn invalid_full_lease_budget_is_rejected_before_polling() {
     assert_eq!(queue.recovery_calls.load(Ordering::SeqCst), 0);
 }
 
+/// The dummy task, decoded.
+#[derive(serde::Serialize, serde::Deserialize)]
+struct Greeting {
+    value: String,
+}
+
+impl TaskPayload for Greeting {
+    const TASK_TYPE: &'static str = "dummy_task";
+    const TASK_VERSION: i32 = 1;
+}
+
+/// Greets with the salutation the assembly provides.
+struct Greeter(Arc<std::sync::Mutex<Vec<String>>>);
+
+impl TaskHandler<Greeting> for Greeter {
+    const DEPENDENCIES: &'static [DependencyId] = &[DependencyId::of::<String>()];
+
+    async fn handle(&self, task: Greeting, ctx: &TaskContext) -> TaskResult {
+        match ctx.dependency::<String>() {
+            Ok(salutation) => {
+                self.0.lock().unwrap().push(format!("{salutation}, {}", task.value));
+                TaskResult::Done
+            }
+            Err(missing) => TaskResult::fail(missing.to_string()),
+        }
+    }
+}
+
 #[tokio::test]
-async fn validates_every_workers_dispatcher_before_polling() {
-    struct OtherAdapter;
-
-    impl TaskAdapter for OtherAdapter {
-        fn formats(&self) -> Vec<TaskFormat> {
-            vec![TaskFormat::new("other", 1).unwrap()]
-        }
-
-        async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            Ok(())
-        }
-    }
-
-    enum RegistryAdapter {
-        Normal(Adapter),
-        Other(OtherAdapter),
-    }
-    impl TaskAdapter for RegistryAdapter {
-        fn formats(&self) -> Vec<TaskFormat> {
-            match self {
-                Self::Normal(adapter) => adapter.formats(),
-                Self::Other(adapter) => adapter.formats(),
-            }
-        }
-        async fn invoke(&mut self, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            match self {
-                Self::Normal(adapter) => adapter.invoke(attempt).await,
-                Self::Other(adapter) => adapter.invoke(attempt).await,
-            }
-        }
-    }
-    let calls = Arc::new(AtomicUsize::new(0));
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let calls = calls.clone();
-        move || {
-            if calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                TaskDispatcher::try_new(vec![RegistryAdapter::Normal(adapter())])
-            } else {
-                TaskDispatcher::try_new(vec![RegistryAdapter::Other(OtherAdapter)])
-            }
-        }
-    });
-    let queue = Arc::new(Queue::default());
-    let executor = Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()));
-    let shutdown = CancellationToken::new();
-    let result = run(
-        queue.clone(),
-        executor,
-        factory,
-        TaskWorkerPoolConfig::new(
-            2,
-            2,
-            TaskWorkerPoolConfig::default().poll_interval(),
-            TaskWorkerPoolConfig::default().handler_timeout(),
-            TaskWorkerPoolConfig::default().lease_duration(),
-        )
-        .unwrap(),
-        shutdown,
-    )
-    .await;
+async fn a_handler_without_its_dependency_is_refused_before_the_runtime_polls() {
+    let greeted = Arc::new(std::sync::Mutex::new(Vec::new()));
     assert_eq!(
-        result,
-        Err(TaskRuntimeError::WorkerSetup(WorkerSetupError::FormatsMismatch {
-            worker_index: 1
-        }))
+        TaskHandlers::new().handler(Greeter(greeted.clone())).build().err(),
+        Some(TaskDispatcherError::MissingDependency {
+            format: format(),
+            dependency: DependencyId::of::<String>().name(),
+        })
     );
-    assert_eq!(calls.load(Ordering::SeqCst), 2);
+    // Provided, the same handler runs through the runtime.
+    let dispatcher = TaskHandlers::new()
+        .handler(Greeter(greeted.clone()))
+        .provide(Arc::new(String::from("hello")))
+        .build()
+        .unwrap();
+    let queue = Arc::new(Queue::default());
+    let task = claimed();
+    let id = task.attempt().task_id();
+    queue.incoming.lock().unwrap().push_back(task);
+    let shutdown = CancellationToken::new();
+    let running = tokio::spawn(run(
+        queue.clone(),
+        Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())),
+        dispatcher,
+        worker_config(2, 2, Duration::from_millis(5)),
+        shutdown.clone(),
+    ));
+    wait_until(|| !queue.outcomes.lock().unwrap().is_empty()).await;
+    shutdown.cancel();
+    running.await.unwrap().unwrap();
+    assert_eq!(
+        *queue.outcomes.lock().unwrap(),
+        vec![(id, cqrsx::task::queue::settlement::SettlementRequest::Completed)]
+    );
+    assert_eq!(*greeted.lock().unwrap(), ["hello, runtime"]);
+}
+
+/// A handler no test may run.
+struct Untouchable;
+
+impl TaskAdapter for Untouchable {
+    fn formats(&self) -> Vec<TaskFormat> {
+        vec![format()]
+    }
+
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
+        panic!("cancelled startup must not run a handler")
+    }
 }
 
 #[tokio::test]
 async fn initially_cancelled_shutdown_does_not_build_workers_or_claim() {
     let queue = Arc::new(Queue::default());
+    queue.incoming.lock().unwrap().push_back(claimed());
     let shutdown = CancellationToken::new();
     shutdown.cancel();
-    run::<_, _, Adapter>(
+    run(
         queue.clone(),
         Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())),
-        Arc::new(|| panic!("cancelled startup must not build a dispatcher")),
+        TaskDispatcher::try_new(vec![Untouchable]).unwrap(),
         worker_config(2, 1, Duration::from_secs(1)),
         shutdown,
     )
@@ -120,31 +133,15 @@ async fn initially_cancelled_shutdown_does_not_build_workers_or_claim() {
 }
 
 #[tokio::test]
-async fn startup_factory_panic_cancels_the_host_without_polling_storage() {
-    let queue = Arc::new(Queue::default());
-    let shutdown = CancellationToken::new();
-    let supervisor = tokio::spawn(run::<_, _, Adapter>(
-        queue.clone(),
-        Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())),
-        Arc::new(|| panic!("injected startup factory panic")),
-        worker_config(1, 1, Duration::from_secs(1)),
-        shutdown.clone(),
-    ));
-    assert!(supervisor.await.unwrap_err().is_panic());
-    assert!(shutdown.is_cancelled());
-    assert!(queue.requested.lock().unwrap().is_empty());
-}
-
-#[tokio::test]
 async fn standard_assembly_polls_and_settles_through_the_original_queue_instance() {
     use cqrsx::task::runtime::{config::TaskRuntimeConfig, prepare};
     let queue = Arc::new(Queue::default());
     let task = claimed();
     let id = task.attempt().task_id();
     queue.incoming.lock().unwrap().push_back(task);
-    let factory: TaskDispatcherFactory<_> = Arc::new(|| TaskDispatcher::try_new(vec![adapter()]));
+    let dispatcher = TaskDispatcher::try_new(vec![adapter()]).unwrap();
     let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), worker_config(1, 1, Duration::from_millis(5))).unwrap();
-    let prepared = prepare(queue.clone(), factory, config).unwrap();
+    let prepared = prepare(queue.clone(), dispatcher, config, Policies::default());
     assert!(queue.requested.lock().unwrap().is_empty());
     assert!(queue.outcomes.lock().unwrap().is_empty());
     let shutdown = CancellationToken::new();
@@ -182,21 +179,10 @@ async fn a_boxed_adapter_dispatcher_runs_through_the_standard_runtime() {
     let task = claimed();
     let id = task.attempt().task_id();
     queue.incoming.lock().unwrap().push_back(task);
-    let builds = Arc::new(AtomicUsize::new(0));
-    let factory: TaskDispatcherFactory<BoxedTaskAdapter> = Arc::new({
-        let builds = builds.clone();
-        move || {
-            builds.fetch_add(1, Ordering::SeqCst);
-            TaskDispatcher::try_new(vec![BoxedTaskAdapter::new(adapter())])
-        }
-    });
+    // Two workers share the one dispatcher.
+    let dispatcher = TaskDispatcher::try_new(vec![BoxedTaskAdapter::new(adapter())]).unwrap();
     let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), worker_config(2, 1, Duration::from_millis(5))).unwrap();
-    let prepared = prepare(queue.clone(), factory, config).unwrap();
-    assert_eq!(
-        builds.load(Ordering::SeqCst),
-        2,
-        "preparation builds one dispatcher per worker"
-    );
+    let prepared = prepare(queue.clone(), dispatcher, config, Policies::default());
     let shutdown = CancellationToken::new();
     let running = tokio::spawn(prepared.run(shutdown.clone()));
     let settled = tokio::time::timeout(Duration::from_secs(2), async {

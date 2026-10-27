@@ -4,12 +4,16 @@
 //! replay-safe operation; delivery may be concurrent, out of order and repeated.
 pub mod adapter;
 pub mod attempt;
+pub mod context;
+pub mod dependencies;
 pub mod dispatcher;
 pub mod executor;
 pub mod format;
 pub mod handler;
+pub mod handlers;
 pub mod policy;
 pub mod queue;
+pub mod result;
 #[cfg(feature = "worker")]
 pub mod runtime;
 #[cfg(test)]

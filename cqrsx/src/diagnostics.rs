@@ -96,6 +96,17 @@ pub(crate) fn log_lock_refused(aggregate_type: &str, refused: crate::cqrs::comma
     );
 }
 
+/// A task handler ran a command of an aggregate type the assembly gave no executor: the command did not run, the task
+/// is retried. A wiring fault, hence `error`; no id, no payload.
+pub(crate) fn log_missing_executor(aggregate_type: &str) {
+    tracing::error!(
+        component = "task",
+        operation = "execute",
+        aggregate_type = safe_type(aggregate_type),
+        "no command executor for the task's command"
+    );
+}
+
 /// A projection failed for a batch of `jobs` of one key; logged once for the whole batch. `projection` is the
 /// processor's name, chosen by the application, never a payload. `operation` is `deliver` for a batch of
 /// live jobs and `rebuild` for the rebuild of a key.
@@ -229,6 +240,7 @@ pub(crate) mod test_support {
             // Prime shared callsites that parallel tests may register without a subscriber.
             super::log_command_failure("prime", "unexpected", &io::Error::other("prime"));
             super::log_lock_refused("prime", crate::cqrs::command::locks::LockRefused::TimedOut);
+            super::log_missing_executor("prime");
             super::log_projection_batch_failure("prime", "prime", "prime", 1, &io::Error::other("prime"));
             super::log_projection_batch_panic("prime", "prime", "prime", 1);
             super::log_projection_event("prime", "prime", "prime");

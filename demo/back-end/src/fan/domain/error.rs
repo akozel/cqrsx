@@ -3,7 +3,7 @@ use thiserror::Error;
 use uuid::Uuid;
 
 /// Technical rules R9–R11. Workflow steps map `AlreadyRecorded` / `AlreadyCancelled` to "already
-/// done" (task completed) and `UnknownTicket` to "too early, retry" (see `fan::application::chain`).
+/// done" (task completed) and `UnknownTicket` to "too early, retry" (see `fan::application::record_ticket`).
 /// The activity log reports them by their code, the variant in snake case, and the booking
 /// (`#[derive(Rejection)]`).
 #[derive(Debug, Clone, PartialEq, Eq, Error, Rejection)]

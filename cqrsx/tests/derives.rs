@@ -13,9 +13,15 @@ use cqrsx::{
         NewTask,
         adapter::{TaskAdapter, json::JsonTaskAdapter},
         attempt::TaskAttempt,
+        context::TaskContext,
+        dependencies::DependencyId,
+        dispatcher::TaskDispatcherError,
         format::{TaskFormat, TaskPayload},
-        handler::{TaskHandler, TaskHandlerError},
+        handler::TaskHandler,
+        handlers::TaskHandlers,
+        result::TaskResult,
     },
+    task_handler,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
@@ -103,9 +109,9 @@ struct IssueRefund {
 struct Refunds(std::sync::Arc<std::sync::Mutex<Vec<IssueRefund>>>);
 
 impl TaskHandler<IssueRefund> for Refunds {
-    async fn handle(&mut self, refund: IssueRefund, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn handle(&self, refund: IssueRefund, _: &TaskContext) -> TaskResult {
         self.0.lock().unwrap().push(refund);
-        Ok(())
+        TaskResult::Done
     }
 }
 
@@ -130,12 +136,15 @@ async fn a_derived_task_keeps_its_labels_in_the_metadata() {
     )
     .unwrap();
     let decoded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let mut adapter = JsonTaskAdapter::new(Refunds(decoded.clone())).unwrap();
-    adapter.invoke(&claim).await.unwrap();
-    adapter
-        .invoke(&TaskAttempt::first(&refund(), json!({})).unwrap())
-        .await
-        .unwrap();
+    let adapter = JsonTaskAdapter::new(Refunds(decoded.clone())).unwrap();
+    let context = |attempt| TaskContext::new(attempt, std::time::Duration::ZERO);
+    assert_eq!(adapter.invoke(&context(claim)).await, TaskResult::Done);
+    assert_eq!(
+        adapter
+            .invoke(&context(TaskAttempt::first(&refund(), json!({})).unwrap()))
+            .await,
+        TaskResult::Done
+    );
     assert_eq!(*decoded.lock().unwrap(), [refund(), refund()]);
 }
 
@@ -357,4 +366,85 @@ fn derived_commands_route_every_variant_to_its_decision_and_report_it() {
     // An enum without commands decides nothing; it only has to compile.
     let _: fn(NoCommand) -> Result<Counted, OverTheLimit> = |never| never.decide(&Tally(0), &0);
     let _: fn(&NoCommand) -> &'static str = |never| never.name();
+}
+
+/// What a task handler may be given besides its task: a port, by a trait object.
+trait Clock: Send + Sync {
+    fn now(&self) -> u64;
+}
+
+/// The handlers' dependency, by this type.
+type Time = dyn Clock;
+
+struct Fixed(u64);
+
+impl Clock for Fixed {
+    fn now(&self) -> u64 {
+        self.0
+    }
+}
+
+/// Stamps a refund with the time and the attempt, and asks for a retry with them as the reason.
+#[task_handler]
+async fn stamp_refund(refund: IssueRefund, clock: &Time, ctx: &TaskContext, prefix: &String) -> TaskResult {
+    TaskResult::retry(format!(
+        "{prefix} {} at {} on attempt {}",
+        refund.tenant,
+        clock.now(),
+        ctx.attempt().number()
+    ))
+}
+
+#[tokio::test]
+async fn a_task_handler_function_is_a_handler_with_its_context_and_its_dependencies() {
+    assert_eq!(
+        <stamp_refund as TaskHandler<IssueRefund>>::DEPENDENCIES,
+        [DependencyId::of::<Time>(), DependencyId::of::<String>()]
+    );
+    let refund = || IssueRefund {
+        tenant: "acme".into(),
+        amount: 80,
+        r#type: 2,
+    };
+    let ctx = TaskContext::new(TaskAttempt::first(&refund(), json!({})).unwrap(), std::time::Duration::ZERO);
+    // Called as a function, with its dependencies by hand.
+    assert_eq!(
+        stamp_refund.call(refund(), &Fixed(7), &ctx, &"refund".to_owned()).await,
+        TaskResult::retry("refund acme at 7 on attempt 1")
+    );
+    // Registered as a handler, with its dependencies from the assembly.
+    let clock: std::sync::Arc<Time> = std::sync::Arc::new(Fixed(9));
+    let dispatcher = TaskHandlers::new()
+        .handler(stamp_refund)
+        .provide(clock)
+        .provide(std::sync::Arc::new("stamped".to_owned()))
+        .build()
+        .unwrap();
+    let claim = TaskAttempt::first(&refund(), json!({})).unwrap();
+    assert_eq!(
+        dispatcher.dispatch(claim, std::time::Duration::ZERO).await,
+        TaskResult::retry("stamped acme at 9 on attempt 1")
+    );
+    // A context without the dependency: the handler fails the task and names it.
+    let bare = TaskContext::new(TaskAttempt::first(&refund(), json!({})).unwrap(), std::time::Duration::ZERO);
+    assert_eq!(
+        stamp_refund.handle(refund(), &bare).await,
+        TaskResult::fail(format!(
+            "the dependency `{}` is not provided",
+            DependencyId::of::<Time>().name()
+        ))
+    );
+    assert_eq!(format!("{stamp_refund:?}"), "stamp_refund");
+}
+
+#[test]
+fn assembly_refuses_a_task_handler_whose_dependency_nobody_provides() {
+    let clock: std::sync::Arc<Time> = std::sync::Arc::new(Fixed(9));
+    assert_eq!(
+        TaskHandlers::new().handler(stamp_refund).provide(clock).build().err(),
+        Some(TaskDispatcherError::MissingDependency {
+            format: TaskFormat::of::<IssueRefund>().unwrap(),
+            dependency: DependencyId::of::<String>().name(),
+        })
+    );
 }

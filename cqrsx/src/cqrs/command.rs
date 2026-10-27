@@ -1,7 +1,7 @@
 //! Command gateways: the executor contract and its outcomes, how a command decides ([`decide`]) and what is known
 //! of it ([`CommandInfo`]), the aggregate locks that order the commands of one aggregate, bounded
-//! optimistic-conflict retry, the causation metadata convention, the planning of a command's follow-up tasks
-//! from its decision and what an executor tells its [`observer`] about every command.
+//! optimistic-conflict retry, the causation metadata convention and a command's [`metadata`], the planning of a
+//! command's follow-up tasks from its decision and what an executor tells its [`observer`] about every command.
 use crate::cqrs::{CommitReport, aggregate::Aggregate};
 use std::{collections::HashMap, future::Future};
 use thiserror::Error;
@@ -10,6 +10,7 @@ pub mod causation;
 pub mod decide;
 pub mod executor;
 pub mod locks;
+pub mod metadata;
 pub mod observer;
 pub mod planner;
 pub mod retry;

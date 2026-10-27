@@ -1,6 +1,6 @@
 //! Platform ownership token and original conservative deadline.
 use crate::task::attempt::TaskAttempt;
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;
 use uuid::Uuid;
 
@@ -27,18 +27,25 @@ impl TaskLease {
     }
 }
 
-/// Platform ownership context; business handlers receive only attempt().
+/// Platform ownership context; business handlers receive only attempt(), shared with their context.
 #[derive(Clone, Debug)]
 pub struct LeasedTask {
-    attempt: TaskAttempt,
+    attempt: Arc<TaskAttempt>,
     lease: TaskLease,
 }
 impl LeasedTask {
     pub fn new(attempt: TaskAttempt, lease: TaskLease) -> Self {
-        Self { attempt, lease }
+        Self {
+            attempt: Arc::new(attempt),
+            lease,
+        }
     }
     pub fn attempt(&self) -> &TaskAttempt {
         &self.attempt
+    }
+    /// The attempt, shared with the handler's context without a copy.
+    pub(crate) fn shared_attempt(&self) -> Arc<TaskAttempt> {
+        self.attempt.clone()
     }
     pub fn lease(&self) -> &TaskLease {
         &self.lease

@@ -20,7 +20,7 @@ use cqrsx::cqrs::store::PersistenceError;
 use cqrsx::cqrs::store::repository::PersistedEventRepository;
 use cqrsx::cqrs::store::serialized_event::SerializedEvent;
 #[cfg(feature = "worker")]
-use cqrsx::task::runtime::{dispatcher_factory::TaskDispatcherFactory, worker_pool_config::TaskWorkerPoolConfig};
+use cqrsx::task::runtime::worker_pool_config::TaskWorkerPoolConfig;
 use cqrsx::{
     postgres::{
         EVENT_STORE_SCHEMA, PROJECTION_CHECKPOINTS_SCHEMA, REQUEUE_FAILED_OUTBOX_TASK, TRANSACTIONAL_OUTBOX_SCHEMA,
@@ -31,13 +31,14 @@ use cqrsx::{
     task::{
         NewTask, TaskSchedule,
         adapter::TaskAdapter,
+        context::TaskContext,
         dispatcher::TaskDispatcher,
         executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
         format::{TaskFormat, TaskPayload},
-        handler::TaskHandlerError,
         queue::{
             TaskProcessingError, TaskQueue, lease::LeasedTask, settlement::SettlementRequest, storage_config::TaskStorageConfig,
         },
+        result::TaskResult,
     },
 };
 use serde::{Deserialize, Serialize};

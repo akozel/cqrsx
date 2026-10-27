@@ -2,10 +2,12 @@
 
 use crate::task::{
     adapter::TaskAdapter,
-    attempt::TaskAttempt,
+    context::TaskContext,
+    dependencies::DependencyId,
     format::{TaskFormat, TaskFormatError, TaskPayload},
-    handler::{TaskHandler, TaskHandlerError},
+    handler::TaskHandler,
     restore_labels,
+    result::TaskResult,
 };
 use serde::de::DeserializeOwned;
 use std::marker::PhantomData;
@@ -14,18 +16,20 @@ use std::marker::PhantomData;
 ///
 /// Checks `P`'s format during construction. Each delivery must match that format
 /// and deserialize successfully before the operation is called. Structural
-/// failures are permanent, with sanitized expected type/version diagnostics;
+/// failures fail the task, with sanitized expected type/version diagnostics;
 /// payloads, metadata, actual arbitrary type names and serde errors are omitted.
 /// Decoding borrows the JSON value without cloning the whole payload. Unknown
 /// field handling follows `P`'s serde settings. Business results pass unchanged.
 ///
-/// The adapter owns the same mutable handler across deliveries. Register separate
-/// adapters for separate DTO versions, or use [`TaskAdapter`] for a custom
-/// multi-version handler. This adapter requires no optional runtime feature.
+/// One handler serves every delivery and every worker; its dependencies are the
+/// handler's ([`TaskHandler::DEPENDENCIES`]). Register separate adapters for separate
+/// DTO versions, or use [`TaskAdapter`] for a custom multi-version handler. This
+/// adapter requires no optional runtime feature.
 pub struct JsonTaskAdapter<P, H> {
     handler: H,
     format: TaskFormat,
-    payload: PhantomData<P>,
+    // `fn() -> P`: the adapter makes payloads, it holds none, so it is `Sync` whatever `P` is.
+    payload: PhantomData<fn() -> P>,
 }
 
 impl<P, H> JsonTaskAdapter<P, H>
@@ -58,37 +62,44 @@ where
         vec![self.format.clone()]
     }
 
-    async fn invoke(&mut self, delivery: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    fn dependencies(&self) -> Vec<DependencyId> {
+        H::DEPENDENCIES.to_vec()
+    }
+
+    async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
+        let delivery = ctx.attempt();
         if delivery.format() != &self.format {
-            return Err(TaskHandlerError::Permanent {
-                reason: format!("unsupported task format for {}", self.safe_format()),
-            });
+            return TaskResult::fail(format!("unsupported task format for {}", self.safe_format()));
         }
         let decoded = if P::LABELS.is_empty() {
             P::deserialize(delivery.payload())
         } else {
             P::deserialize(&restore_labels(P::LABELS, delivery.payload(), delivery.metadata()))
         };
-        let payload = decoded.map_err(|_| TaskHandlerError::Permanent {
-            reason: format!("invalid {} task payload", self.safe_format()),
-        })?;
-        self.handler.handle(payload, delivery).await
+        match decoded {
+            Ok(payload) => self.handler.handle(payload, ctx).await,
+            Err(_) => TaskResult::fail(format!("invalid {} task payload", self.safe_format())),
+        }
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::task::attempt::TaskAttempt;
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::{
         cell::Cell,
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU32, Ordering},
+        },
         time::Duration,
     };
     use uuid::Uuid;
 
-    // Neither this owned DTO nor its handler is Clone or Sync.
+    // This owned DTO is neither Clone nor Sync; the handler is shared.
     #[derive(Serialize, Deserialize)]
     struct Payload<const VERSION: i32> {
         value: String,
@@ -115,20 +126,21 @@ mod tests {
 
     struct RecordingAdapter {
         calls: Arc<Mutex<Vec<Call>>>,
-        count: Cell<u32>,
+        count: AtomicU32,
         delivery_address: usize,
-        result: Result<(), TaskHandlerError>,
+        result: TaskResult,
     }
 
     impl<const VERSION: i32> TaskHandler<Payload<VERSION>> for RecordingAdapter {
-        async fn handle(&mut self, payload: Payload<VERSION>, delivery: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            // Keep both the owned non-Sync DTO and borrowed delivery across await.
+        async fn handle(&self, payload: Payload<VERSION>, ctx: &TaskContext) -> TaskResult {
+            // Keep both the owned non-Sync DTO and the borrowed context across await.
             tokio::task::yield_now().await;
             payload.marker.set(1);
-            self.count.set(self.count.get() + 1);
+            let count = self.count.fetch_add(1, Ordering::SeqCst) + 1;
+            let delivery = ctx.attempt();
             self.calls.lock().unwrap().push(Call {
                 value: payload.value,
-                count: self.count.get(),
+                count,
                 id: delivery.task_id(),
                 attempt: delivery.number(),
                 format: delivery.format().clone(),
@@ -140,30 +152,35 @@ mod tests {
         }
     }
 
-    fn adapter(calls: &Arc<Mutex<Vec<Call>>>, delivery: &TaskAttempt, result: Result<(), TaskHandlerError>) -> RecordingAdapter {
+    fn adapter(calls: &Arc<Mutex<Vec<Call>>>, delivery: &TaskAttempt, result: TaskResult) -> RecordingAdapter {
         RecordingAdapter {
             calls: calls.clone(),
-            count: Cell::new(0),
+            count: AtomicU32::new(0),
             delivery_address: std::ptr::from_ref(delivery) as usize,
             result,
         }
     }
 
-    fn delivery(format: TaskFormat, payload: serde_json::Value) -> TaskAttempt {
-        TaskAttempt::new(Uuid::new_v4(), format, payload, json!({"correlation_id":"original"}), 3).unwrap()
+    fn delivery(format: TaskFormat, payload: serde_json::Value) -> Arc<TaskAttempt> {
+        Arc::new(TaskAttempt::new(Uuid::new_v4(), format, payload, json!({"correlation_id":"original"}), 3).unwrap())
+    }
+
+    /// The context of `attempt`, as the dispatcher builds it.
+    fn context(attempt: &Arc<TaskAttempt>) -> TaskContext {
+        TaskContext::new(attempt.clone(), Duration::from_secs(1))
     }
 
     #[tokio::test]
-    async fn decodes_owned_dto_preserves_original_delivery_and_mutable_handler_state() {
+    async fn decodes_owned_dto_preserves_original_delivery_and_shared_handler_state() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let task = delivery(
             TaskFormat::of::<Payload<1>>().unwrap(),
             json!({"value":"accepted", "future_field":{"locale":"en"}}),
         );
-        let mut adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &task, Ok(()))).unwrap();
+        let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &task, TaskResult::Done)).unwrap();
         assert_eq!(adapter.formats(), vec![task.format().clone()]);
         for _ in 0..2 {
-            adapter.invoke(&task).await.unwrap();
+            assert_eq!(adapter.invoke(&context(&task)).await, TaskResult::Done);
         }
         let calls = calls.lock().unwrap();
         assert_eq!(calls.len(), 2);
@@ -183,7 +200,7 @@ mod tests {
     async fn format_and_decode_failures_are_permanent_and_never_call_business_handler() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let base = delivery(TaskFormat::of::<Payload<1>>().unwrap(), json!({"value":"valid"}));
-        let mut adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &base, Ok(()))).unwrap();
+        let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &base, TaskResult::Done)).unwrap();
         for (format, payload, reason) in [
             (
                 TaskFormat::new("private_actual_type\nsecret@example.com", 1).unwrap(),
@@ -208,9 +225,9 @@ mod tests {
                 "invalid test_operation v1 task payload",
             ),
         ] {
-            let task = delivery(format, payload);
-            let error = adapter.invoke(&task).await.unwrap_err();
-            assert!(matches!(&error, TaskHandlerError::Permanent { reason: actual } if actual == reason));
+            let task = context(&delivery(format, payload));
+            let error = adapter.invoke(&task).await;
+            assert!(matches!(&error, TaskResult::Fail { reason: actual } if actual == reason));
             assert_eq!(error.to_string(), reason);
             assert!(!format!("{error:?}").contains("private_"));
         }
@@ -221,38 +238,13 @@ mod tests {
     async fn business_results_pass_through_without_retry_or_reason_changes() {
         let task = delivery(TaskFormat::of::<Payload<1>>().unwrap(), json!({"value":"valid"}));
         for result in [
-            Ok(()),
-            Err(TaskHandlerError::Retry {
-                reason: "business retry".into(),
-                retry_after: Some(Duration::from_secs(7)),
-            }),
-            Err(TaskHandlerError::Retry {
-                reason: "default backoff".into(),
-                retry_after: None,
-            }),
-            Err(TaskHandlerError::Permanent {
-                reason: "business rejection".into(),
-            }),
+            TaskResult::Done,
+            TaskResult::retry("business retry"),
+            TaskResult::fail("business rejection"),
         ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let mut adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &task, result.clone())).unwrap();
-            match (adapter.invoke(&task).await, result) {
-                (Ok(()), Ok(())) => {}
-                (
-                    Err(TaskHandlerError::Retry { reason, retry_after }),
-                    Err(TaskHandlerError::Retry {
-                        reason: expected,
-                        retry_after: delay,
-                    }),
-                ) => {
-                    assert_eq!(reason, expected);
-                    assert_eq!(retry_after, delay);
-                }
-                (Err(TaskHandlerError::Permanent { reason }), Err(TaskHandlerError::Permanent { reason: expected })) => {
-                    assert_eq!(reason, expected)
-                }
-                (actual, expected) => panic!("unexpected result: {actual:?}, expected {expected:?}"),
-            }
+            let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &task, result.clone())).unwrap();
+            assert_eq!(adapter.invoke(&context(&task)).await, result);
             assert_eq!(calls.lock().unwrap().len(), 1);
         }
     }
@@ -271,21 +263,21 @@ mod tests {
     }
     struct NeverCalled;
     impl TaskHandler<PrivatePayload> for NeverCalled {
-        async fn handle(&mut self, _: PrivatePayload, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn handle(&self, _: PrivatePayload, _: &TaskContext) -> TaskResult {
             panic!("invalid deliveries must not reach business code")
         }
     }
 
     #[tokio::test]
     async fn arbitrary_expected_types_and_serde_errors_are_not_exposed() {
-        let mut adapter = JsonTaskAdapter::<PrivatePayload, _>::new(NeverCalled).unwrap();
+        let adapter = JsonTaskAdapter::<PrivatePayload, _>::new(NeverCalled).unwrap();
         assert_eq!(adapter.formats(), vec![TaskFormat::of::<PrivatePayload>().unwrap()]);
         for (format, reason) in [
             (TaskFormat::of::<PrivatePayload>().unwrap(), "invalid unknown v4 task payload"),
             (TaskFormat::new("other", 4).unwrap(), "unsupported task format for unknown v4"),
         ] {
-            let task = delivery(format, json!({"private_payload_sentinel":"secret"}));
-            let error = adapter.invoke(&task).await.unwrap_err();
+            let task = context(&delivery(format, json!({"private_payload_sentinel":"secret"})));
+            let error = adapter.invoke(&task).await;
             assert_eq!(error.to_string(), reason);
             assert!(!format!("{error:?}").contains("private_"));
         }
@@ -298,7 +290,7 @@ mod tests {
         const TASK_VERSION: i32 = 1;
     }
     impl TaskHandler<EmptyType> for NeverCalled {
-        async fn handle(&mut self, _: EmptyType, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn handle(&self, _: EmptyType, _: &TaskContext) -> TaskResult {
             unreachable!("invalid format cannot construct an adapter")
         }
     }
@@ -313,9 +305,9 @@ mod tests {
         ));
         for invalid in [0, -1] {
             let result = if invalid == 0 {
-                JsonTaskAdapter::<Payload<0>, _>::new(adapter(&calls, &task, Ok(()))).map(|_| ())
+                JsonTaskAdapter::<Payload<0>, _>::new(adapter(&calls, &task, TaskResult::Done)).map(|_| ())
             } else {
-                JsonTaskAdapter::<Payload<-1>, _>::new(adapter(&calls, &task, Ok(()))).map(|_| ())
+                JsonTaskAdapter::<Payload<-1>, _>::new(adapter(&calls, &task, TaskResult::Done)).map(|_| ())
             };
             assert!(matches!(result, Err(TaskFormatError::InvalidVersion)));
         }
@@ -339,33 +331,41 @@ mod tests {
     struct Decoded(Arc<Mutex<Vec<Labelled>>>);
 
     impl TaskHandler<Labelled> for Decoded {
-        async fn handle(&mut self, payload: Labelled, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn handle(&self, payload: Labelled, _: &TaskContext) -> TaskResult {
             self.0.lock().unwrap().push(payload);
-            Ok(())
+            TaskResult::Done
         }
     }
 
     #[tokio::test]
     async fn a_labelled_payload_decodes_with_its_labels_from_the_metadata() {
         let decoded = Arc::new(Mutex::new(Vec::new()));
-        let mut adapter = JsonTaskAdapter::<Labelled, _>::new(Decoded(decoded.clone())).unwrap();
+        let adapter = JsonTaskAdapter::<Labelled, _>::new(Decoded(decoded.clone())).unwrap();
         let published = crate::task::NewTask::new(Labelled {
             amount: 80,
             tenant: "acme".into(),
         })
         .unwrap();
         let format = TaskFormat::of::<Labelled>().unwrap();
-        let claim = |payload, metadata| TaskAttempt::new(Uuid::new_v4(), format.clone(), payload, metadata, 1).unwrap();
-        adapter
-            .invoke(&claim(published.payload().clone(), published.metadata().clone()))
-            .await
-            .unwrap();
+        let claim = |payload, metadata| {
+            context(&Arc::new(
+                TaskAttempt::new(Uuid::new_v4(), format.clone(), payload, metadata, 1).unwrap(),
+            ))
+        };
+        assert_eq!(
+            adapter
+                .invoke(&claim(published.payload().clone(), published.metadata().clone()))
+                .await,
+            TaskResult::Done
+        );
         // A body that still holds the key keeps its own value.
-        adapter
-            .invoke(&claim(json!({"amount": 5, "tenant": "body"}), json!({"tenant": "metadata"})))
-            .await
-            .unwrap();
-        let missing = adapter.invoke(&claim(json!({"amount": 5}), json!({}))).await.unwrap_err();
+        assert_eq!(
+            adapter
+                .invoke(&claim(json!({"amount": 5, "tenant": "body"}), json!({"tenant": "metadata"})))
+                .await,
+            TaskResult::Done
+        );
+        let missing = adapter.invoke(&claim(json!({"amount": 5}), json!({}))).await;
         assert_eq!(missing.to_string(), "invalid labelled v1 task payload");
         assert_eq!(
             *decoded.lock().unwrap(),

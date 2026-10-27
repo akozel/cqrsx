@@ -4,7 +4,7 @@ use crate::task::{
     adapter::TaskAdapter,
     dispatcher::TaskDispatcher,
     executor::TaskExecutor,
-    handler::TaskHandlerError,
+    policy::Policies,
     queue::{
         TaskProcessingError, TaskQueue,
         lease::LeasedTask,
@@ -12,15 +12,21 @@ use crate::task::{
         settlement::{SettlementRequest, SettlementResult},
         storage_config::TaskStorageConfig,
     },
+    result::TaskResult,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep_until};
 /// Queue-backed executor with checked storage budgets and concrete queue ownership.
 /// Construction performs no I/O and reads no environment variables. Callers
 /// create shared ownership explicitly with `Arc::new` when needed.
+///
+/// A retry waits the pause of the task type's policy ([`with_policies`](Self::with_policies)), or the queue's
+/// [`redelivery_backoff`] for a type without one; the handler sees that pause in its context before it answers. A
+/// handler that times out and an attempt the lease cannot fit wait the redelivery backoff whatever the policy.
 pub struct DefaultTaskExecutor<Q: TaskQueue> {
     queue: Arc<Q>,
     storage_timeout: Duration,
+    policies: Policies,
 }
 
 impl<Q: TaskQueue> DefaultTaskExecutor<Q> {
@@ -28,7 +34,14 @@ impl<Q: TaskQueue> DefaultTaskExecutor<Q> {
         Self {
             queue,
             storage_timeout: config.storage_timeout(),
+            policies: Policies::default(),
         }
+    }
+
+    /// The same executor pausing every retry by the policy of its task's type.
+    pub fn with_policies(mut self, policies: Policies) -> Self {
+        self.policies = policies;
+        self
     }
 
     async fn settle_before(
@@ -58,7 +71,7 @@ impl<Q: TaskQueue> TaskExecutor for DefaultTaskExecutor<Q> {
 
     async fn execute_and_settle<A: TaskAdapter>(
         &self,
-        dispatcher: &mut TaskDispatcher<A>,
+        dispatcher: &TaskDispatcher<A>,
         task: LeasedTask,
         handler_timeout: Duration,
     ) -> Result<SettlementResult, TaskProcessingError> {
@@ -82,39 +95,42 @@ impl<Q: TaskQueue> TaskExecutor for DefaultTaskExecutor<Q> {
                 }
                 ExecutionPlan::AwaitRecovery => return Err(TaskProcessingError::LeaseBudgetExhausted),
             };
-        let result = tokio::select! {
+        // The pause of a retry, chosen before the handler runs so that its context can tell it.
+        let retry_pause = self.policies.pause(task.attempt().format(), task.attempt().number());
+        let outcome = tokio::select! {
             biased;
-            _ = sleep_until(handler_deadline) => Err(TaskHandlerError::Retry {
+            _ = sleep_until(handler_deadline) => SettlementRequest::Retry {
                 reason: "handler timed out".to_owned(),
-                retry_after: None,
-            }),
-            result = dispatcher.dispatch(task.attempt()) => result,
+                delay: redelivery_backoff(task.attempt().number()),
+            },
+            result = dispatcher.dispatch(task.shared_attempt(), retry_pause) => settlement_request(result, retry_pause),
         };
-        let fallback_delay = match &result {
-            Err(TaskHandlerError::Retry { retry_after: None, .. }) => redelivery_backoff(task.attempt().number()),
-            _ => Duration::ZERO,
-        };
-        let outcome = settlement_request(result, fallback_delay);
         // Retain a margin before local expiry; queue-side token and database
         // clock checks remain authoritative, including after clock changes.
         self.settle_before(&task, outcome, settlement_deadline).await
     }
 }
 
-fn settlement_request(result: Result<(), TaskHandlerError>, fallback_delay: Duration) -> SettlementRequest {
+fn settlement_request(result: TaskResult, retry_pause: Duration) -> SettlementRequest {
     match result {
-        Ok(()) => SettlementRequest::Completed,
-        Err(TaskHandlerError::Permanent { reason }) => SettlementRequest::Failed { reason },
-        Err(TaskHandlerError::Retry { reason, retry_after }) => SettlementRequest::Retry {
+        TaskResult::Done => SettlementRequest::Completed,
+        TaskResult::Fail { reason } => SettlementRequest::Failed { reason },
+        TaskResult::Retry { reason } => SettlementRequest::Retry {
             reason,
-            delay: retry_after.unwrap_or(fallback_delay),
+            delay: retry_pause,
         },
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use crate::task::{adapter::TaskAdapter, attempt::TaskAttempt, format::TaskFormat, queue::lease::LEASE_SAFETY_MARGIN};
+    use crate::task::{
+        adapter::TaskAdapter,
+        context::TaskContext,
+        format::TaskFormat,
+        policy::{PolicyName, Retry, TaskPolicy},
+        queue::lease::LEASE_SAFETY_MARGIN,
+    };
 
     use super::*;
     use crate::task::test_support::*;
@@ -133,12 +149,12 @@ mod tests {
             vec![format()]
         }
 
-        async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn invoke(&self, _: &TaskContext) -> TaskResult {
             self.calls.fetch_add(1, Ordering::SeqCst);
             if self.simulate_pause {
                 tokio::time::advance(Duration::from_secs(120)).await;
             }
-            Ok(())
+            TaskResult::Done
         }
     }
 
@@ -154,12 +170,12 @@ mod tests {
             calls: calls.clone(),
             simulate_pause: false,
         };
-        let mut dispatcher = dispatcher(adapter);
+        let dispatcher = dispatcher(adapter);
         let mut delayed = claimed();
         delayed = with_deadline(delayed, Instant::now() + Duration::from_secs(39));
         assert!(
             executor
-                .execute_and_settle(&mut dispatcher, delayed, Duration::from_secs(30))
+                .execute_and_settle(&dispatcher, delayed, Duration::from_secs(30))
                 .await
                 .unwrap()
                 .is_applied()
@@ -173,7 +189,7 @@ mod tests {
         expired = with_deadline(expired, Instant::now());
         assert_eq!(
             executor
-                .execute_and_settle(&mut dispatcher, expired, Duration::from_secs(30))
+                .execute_and_settle(&dispatcher, expired, Duration::from_secs(30))
                 .await,
             Err(TaskProcessingError::LeaseBudgetExhausted)
         );
@@ -192,14 +208,12 @@ mod tests {
             calls: calls.clone(),
             simulate_pause: false,
         };
-        let mut dispatcher = dispatcher(adapter);
+        let dispatcher = dispatcher(adapter);
         let mut task = claimed();
         task = with_deadline(task, Instant::now() + LEASE_SAFETY_MARGIN + Duration::from_secs(1));
         let started = Instant::now();
         assert_eq!(
-            executor
-                .execute_and_settle(&mut dispatcher, task, Duration::from_secs(30))
-                .await,
+            executor.execute_and_settle(&dispatcher, task, Duration::from_secs(30)).await,
             Err(TaskProcessingError::TimedOut)
         );
         assert_eq!(started.elapsed(), Duration::from_secs(1));
@@ -216,10 +230,10 @@ mod tests {
             calls: calls.clone(),
             simulate_pause: true,
         };
-        let mut dispatcher = dispatcher(adapter);
+        let dispatcher = dispatcher(adapter);
         assert_eq!(
             executor
-                .execute_and_settle(&mut dispatcher, claimed(), Duration::from_secs(30))
+                .execute_and_settle(&dispatcher, claimed(), Duration::from_secs(30))
                 .await,
             Err(TaskProcessingError::LeaseBudgetExhausted)
         );
@@ -233,7 +247,7 @@ mod tests {
         let executor = Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()));
         assert_eq!(
             executor
-                .execute_and_settle(&mut dispatcher(adapter()), claimed(), Duration::MAX)
+                .execute_and_settle(&dispatcher(adapter()), claimed(), Duration::MAX)
                 .await,
             Err(TaskProcessingError::InvalidExecutionBudget)
         );
@@ -251,7 +265,7 @@ mod tests {
         let started = Instant::now();
         assert_eq!(
             executor
-                .execute_and_settle(&mut dispatcher(adapter()), claimed(), Duration::from_secs(30))
+                .execute_and_settle(&dispatcher(adapter()), claimed(), Duration::from_secs(30))
                 .await,
             Err(TaskProcessingError::TimedOut)
         );
@@ -263,37 +277,23 @@ mod tests {
     async fn delivery_classifies_success_errors_and_timeout_and_preserves_ownership_result() {
         let queue = Arc::new(Queue::default());
         let executor = Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()));
-        for (result, hang) in [
-            (Ok(()), false),
-            (
-                Err(TaskHandlerError::Retry {
-                    reason: "throttle".into(),
-                    retry_after: Some(Duration::from_secs(300)),
-                }),
-                false,
-            ),
-            (
-                Err(TaskHandlerError::Retry {
-                    reason: "network".into(),
-                    retry_after: None,
-                }),
-                false,
-            ),
-            (
-                Err(TaskHandlerError::Permanent {
-                    reason: "invalid".into(),
-                }),
-                false,
-            ),
-            (Ok(()), true),
+        // The throttled task's type waits 300 s before its next attempt.
+        let throttled = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())
+            .with_policies(policies(Retry::fixed(Duration::from_secs(300))));
+        for (result, hang, executor) in [
+            (TaskResult::Done, false, executor.as_ref()),
+            (TaskResult::retry("throttle"), false, &throttled),
+            (TaskResult::retry("network"), false, executor.as_ref()),
+            (TaskResult::fail("invalid"), false, executor.as_ref()),
+            (TaskResult::Done, true, executor.as_ref()),
         ] {
             let mut task_adapter = adapter();
             task_adapter.result = result;
             task_adapter.hang = hang;
-            let mut dispatcher = dispatcher(task_adapter);
+            let dispatcher = dispatcher(task_adapter);
             assert!(
                 executor
-                    .execute_and_settle(&mut dispatcher, claimed(), Duration::from_secs(30))
+                    .execute_and_settle(&dispatcher, claimed(), Duration::from_secs(30))
                     .await
                     .unwrap()
                     .is_applied()
@@ -320,11 +320,11 @@ mod tests {
             );
             assert!(matches!(&outcomes[4].1, SettlementRequest::Retry { reason, .. } if reason == "handler timed out"));
         }
-        let mut dispatcher = dispatcher(adapter());
+        let dispatcher = dispatcher(adapter());
         queue.lost_owner.store(true, Ordering::SeqCst);
         assert!(
             !executor
-                .execute_and_settle(&mut dispatcher, claimed(), Duration::from_secs(30))
+                .execute_and_settle(&dispatcher, claimed(), Duration::from_secs(30))
                 .await
                 .unwrap()
                 .is_applied()
@@ -332,9 +332,116 @@ mod tests {
         queue.settle_error.store(true, Ordering::SeqCst);
         assert_eq!(
             executor
-                .execute_and_settle(&mut dispatcher, claimed(), Duration::from_secs(30))
+                .execute_and_settle(&dispatcher, claimed(), Duration::from_secs(30))
                 .await,
             Err(TaskProcessingError::Unavailable)
         );
+    }
+
+    /// The policies binding the dummy task's type to `retry`.
+    fn policies(retry: Retry) -> Policies {
+        const DUMMY: PolicyName = PolicyName::new("dummy");
+        Policies::default()
+            .with_policy(DUMMY, TaskPolicy::new(retry, 5).unwrap())
+            .unwrap()
+            .with_task::<DummyTask>(DUMMY)
+            .unwrap()
+    }
+
+    /// Answers retry and records the pause its context promised.
+    struct Promised(Arc<std::sync::Mutex<Vec<Duration>>>);
+
+    impl TaskAdapter for Promised {
+        fn formats(&self) -> Vec<TaskFormat> {
+            vec![format()]
+        }
+
+        async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
+            self.0.lock().unwrap().push(ctx.retry_pause());
+            TaskResult::retry("later")
+        }
+    }
+
+    /// The pause the handler was told and the delay its retry was settled with, for a claim of attempt 2.
+    async fn told_and_settled(executor: DefaultTaskExecutor<Queue>, queue: &Queue) -> (Duration, Duration) {
+        let promised = Arc::default();
+        executor
+            .execute_and_settle(
+                &dispatcher(Promised(Arc::clone(&promised))),
+                claimed(),
+                Duration::from_secs(30),
+            )
+            .await
+            .unwrap();
+        let told = promised.lock().unwrap()[0];
+        let SettlementRequest::Retry { delay, reason } = queue.outcomes.lock().unwrap().pop().unwrap().1 else {
+            panic!("a retry");
+        };
+        assert_eq!(reason, "later");
+        (told, delay)
+    }
+
+    #[tokio::test]
+    async fn a_retry_waits_the_pause_of_its_task_types_policy_which_the_handler_was_told() {
+        let queue = Arc::new(Queue::default());
+        let executor = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())
+            .with_policies(policies(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8))));
+        // The claim is attempt 2: the backoff's second pause.
+        assert_eq!(
+            told_and_settled(executor, &queue).await,
+            (Duration::from_secs(2), Duration::from_secs(2))
+        );
+    }
+
+    #[tokio::test]
+    async fn without_a_policy_a_retry_waits_the_redelivery_backoff_the_handler_was_told() {
+        let queue = Arc::new(Queue::default());
+        for executor in [
+            DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()),
+            DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()).with_policies(Policies::default()),
+        ] {
+            let (told, settled) = told_and_settled(executor, &queue).await;
+            assert_eq!(told, settled);
+            assert!(
+                (Duration::from_secs(8)..=Duration::from_secs(12)).contains(&settled),
+                "{settled:?}"
+            );
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_timeout_and_a_short_lease_wait_the_redelivery_backoff_even_under_a_policy() {
+        let queue = Arc::new(Queue::default());
+        let executor = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::new(Duration::from_secs(5)).unwrap())
+            .with_policies(policies(Retry::fixed(Duration::from_secs(300))));
+        let mut hanging = adapter();
+        hanging.hang = true;
+        executor
+            .execute_and_settle(&dispatcher(hanging), claimed(), Duration::from_secs(30))
+            .await
+            .unwrap();
+        let short = with_deadline(claimed(), Instant::now() + Duration::from_secs(39));
+        executor
+            .execute_and_settle(&dispatcher(adapter()), short, Duration::from_secs(30))
+            .await
+            .unwrap();
+        let outcomes = queue.outcomes.lock().unwrap();
+        let reasons_and_delays: Vec<(&str, Duration)> = outcomes
+            .iter()
+            .map(|(_, outcome)| match outcome {
+                SettlementRequest::Retry { reason, delay } => (reason.as_str(), *delay),
+                other => panic!("a retry, not {other:?}"),
+            })
+            .collect();
+        assert_eq!(
+            reasons_and_delays.iter().map(|(reason, _)| *reason).collect::<Vec<_>>(),
+            ["handler timed out", "insufficient lease budget before handler execution"]
+        );
+        for (_, delay) in reasons_and_delays {
+            assert!(
+                (Duration::from_secs(8)..=Duration::from_secs(12)).contains(&delay),
+                "{delay:?}"
+            );
+        }
     }
 }

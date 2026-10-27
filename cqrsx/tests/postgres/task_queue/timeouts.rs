@@ -88,7 +88,7 @@ async fn deadlines_after_committed_claim_or_settlement_preserve_durable_outcomes
     assert_eq!(owned.attempt().task_id(), task.id());
     assert_eq!(
         executor
-            .execute_and_settle(&mut dispatcher(adapter(Ok(()))), owned, Duration::from_secs(1))
+            .execute_and_settle(&dispatcher(adapter(TaskResult::Done)), owned, Duration::from_secs(1))
             .await,
         Err(TaskProcessingError::TimedOut)
     );
@@ -144,7 +144,7 @@ async fn delayed_batch_keeps_the_original_task_deadline_and_skips_expired_execut
     assert_eq!(
         executor
             .execute_and_settle(
-                &mut dispatcher(CountingAdapter(calls.clone())),
+                &dispatcher(CountingAdapter(calls.clone())),
                 old.clone(),
                 Duration::from_secs(1)
             )
@@ -176,7 +176,7 @@ async fn delayed_batch_keeps_the_original_task_deadline_and_skips_expired_execut
     );
     assert!(
         executor
-            .execute_and_settle(&mut dispatcher(CountingAdapter(calls.clone())), fresh, Duration::from_secs(1))
+            .execute_and_settle(&dispatcher(CountingAdapter(calls.clone())), fresh, Duration::from_secs(1))
             .await
             .unwrap()
             .is_applied()
@@ -214,7 +214,7 @@ async fn insufficient_remaining_lease_returns_task_to_retry_without_performing_i
     assert!(
         executor
             .execute_and_settle(
-                &mut dispatcher(CountingAdapter(calls.clone())),
+                &dispatcher(CountingAdapter(calls.clone())),
                 old.clone(),
                 Duration::from_secs(30)
             )
@@ -242,11 +242,7 @@ async fn insufficient_remaining_lease_returns_task_to_retry_without_performing_i
     assert_ne!(fresh.lease().lock_token(), old.lease().lock_token());
     assert!(
         executor
-            .execute_and_settle(
-                &mut dispatcher(CountingAdapter(calls.clone())),
-                fresh,
-                Duration::from_secs(30)
-            )
+            .execute_and_settle(&dispatcher(CountingAdapter(calls.clone())), fresh, Duration::from_secs(30))
             .await
             .unwrap()
             .is_applied()
@@ -401,7 +397,7 @@ async fn runtime_deadline_includes_connection_acquisition() {
     let held_connection = pool.acquire().await.unwrap();
     assert_eq!(
         executor
-            .execute_and_settle(&mut dispatcher(adapter(Ok(()))), owned.clone(), Duration::from_secs(1))
+            .execute_and_settle(&dispatcher(adapter(TaskResult::Done)), owned.clone(), Duration::from_secs(1))
             .await,
         Err(TaskProcessingError::TimedOut)
     );
@@ -437,15 +433,11 @@ async fn shutdown_after_committed_claim_or_settlement_preserves_durable_outcomes
             TaskStorageConfig::new(Duration::from_millis(300)).unwrap(),
         ));
         let calls = Arc::new(AtomicUsize::new(0));
-        let factory: TaskDispatcherFactory<_> = Arc::new({
-            let calls = calls.clone();
-            move || TaskDispatcher::try_new(vec![CountingAdapter(calls.clone())])
-        });
         let shutdown = CancellationToken::new();
         let worker = tokio::spawn(cqrsx::task::runtime::supervisor::run(
             queue.clone(),
             executor.clone(),
-            factory,
+            dispatcher(CountingAdapter(calls.clone())),
             TaskWorkerPoolConfig::new(
                 1,
                 1,
@@ -498,7 +490,7 @@ async fn shutdown_after_committed_claim_or_settlement_preserves_durable_outcomes
             assert_eq!(owned.attempt().task_id(), task.id());
             assert!(
                 executor
-                    .execute_and_settle(&mut dispatcher(adapter(Ok(()))), owned, Duration::from_secs(1))
+                    .execute_and_settle(&dispatcher(adapter(TaskResult::Done)), owned, Duration::from_secs(1))
                     .await
                     .unwrap()
                     .is_applied()

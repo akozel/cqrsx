@@ -1,5 +1,5 @@
 #[cfg(test)]
-use crate::task::runtime::dispatcher_factory::WorkerSetupError;
+use crate::task::runtime::worker_pool_config::TaskWorkerPoolConfigError;
 use crate::{host::error::HostError, task::runtime::TaskRuntimeError};
 use std::{future::Future, io};
 use tokio::task::JoinError;
@@ -257,7 +257,7 @@ mod tests {
         assert!(inbound_stopped.load(Ordering::SeqCst));
     }
     fn task_runtime_error() -> TaskRuntimeError {
-        TaskRuntimeError::WorkerSetup(WorkerSetupError::FormatsMismatch { worker_index: 7 })
+        TaskRuntimeError::Configuration(TaskWorkerPoolConfigError::LeaseTooShort)
     }
 
     #[tokio::test]
@@ -292,8 +292,8 @@ mod tests {
         release.send(()).unwrap();
         assert!(matches!(
             runtime.await.unwrap(),
-            Err(HostError::TaskRuntime(TaskRuntimeError::WorkerSetup(
-                WorkerSetupError::FormatsMismatch { worker_index: 7 }
+            Err(HostError::TaskRuntime(TaskRuntimeError::Configuration(
+                TaskWorkerPoolConfigError::LeaseTooShort
             )))
         ));
     }

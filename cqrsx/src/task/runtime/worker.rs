@@ -1,4 +1,4 @@
-//! One mutable dispatcher and cloned async-channel receiver per permanent Tokio task.
+//! A permanent Tokio task with the shared dispatcher and a cloned async-channel receiver.
 use crate::task::{
     adapter::TaskAdapter,
     dispatcher::TaskDispatcher,
@@ -13,7 +13,7 @@ use tracing::error;
 
 pub(super) async fn run_task_worker<E: TaskExecutor, A: TaskAdapter>(
     index: usize,
-    mut dispatcher: TaskDispatcher<A>,
+    dispatcher: Arc<TaskDispatcher<A>>,
     executor: Arc<E>,
     receiver: Receiver<LeasedTask>,
     capacity_available: Arc<Notify>,
@@ -35,7 +35,7 @@ pub(super) async fn run_task_worker<E: TaskExecutor, A: TaskAdapter>(
         }
         let id = task.attempt().task_id();
         // Graceful stop does not cancel the current invocation or settlement.
-        match executor.execute_and_settle(&mut dispatcher, task, handler_timeout).await {
+        match executor.execute_and_settle(&dispatcher, task, handler_timeout).await {
             Ok(SettlementResult::Failed(failed)) => crate::diagnostics::log_task_failure(&failed),
             Ok(SettlementResult::Completed | SettlementResult::RetryScheduled) => {}
             Ok(SettlementResult::OwnershipLost) => error!(task_id = %id, "task ownership lost"),
@@ -61,7 +61,7 @@ mod tests {
         let stop = CancellationToken::new();
         let index = run_task_worker(
             7,
-            dispatcher(adapter()),
+            Arc::new(dispatcher(adapter())),
             Arc::new(DefaultTaskExecutor::new(
                 queue.clone(),
                 crate::task::queue::storage_config::TaskStorageConfig::default(),
@@ -108,7 +108,7 @@ mod tests {
         sender.send(claimed()).await.unwrap();
         let index = run_task_worker(
             3,
-            dispatcher(CountingAdapter(calls.clone())),
+            Arc::new(dispatcher(CountingAdapter(calls.clone()))),
             Arc::new(DefaultTaskExecutor::new(
                 queue.clone(),
                 crate::task::queue::storage_config::TaskStorageConfig::default(),
@@ -168,7 +168,7 @@ mod tests {
         let stop = shutdown.clone();
         let mut worker = Box::pin(run_task_worker(
             0,
-            TaskDispatcher::try_new(vec![adapter()]).unwrap(),
+            Arc::new(TaskDispatcher::try_new(vec![adapter()]).unwrap()),
             Arc::new(DefaultTaskExecutor::new(
                 queue.clone(),
                 crate::task::queue::storage_config::TaskStorageConfig::default(),

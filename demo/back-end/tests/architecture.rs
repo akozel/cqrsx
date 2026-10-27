@@ -247,12 +247,14 @@ fn externals(layer: Option<Layer>) -> Externals {
         Some(Layer::Presentation) => Externals {
             forbidden: &["sqlx", "mongodb"],
             test_only: &[],
-            // The handler hands a command to the engine's command port and answers its outcome (backlog 05/08, design
-            // 04; 05/11 and 05/12 replace both with the engine's `execute` and its outcome); a refused command answers
-            // with its code and params (05/04): the port, its error and the rejection trait, nothing else.
+            // The handler hands a command to the engine's command port with the metadata of a UI command and answers
+            // its outcome (backlog 05/08 and 05/09, design 04; 05/11 and 05/12 replace them with the engine's
+            // `execute` from the source "ui" and its outcome); a refused command answers with its code and params
+            // (05/04): the port, its error, the command's metadata and the rejection trait, nothing else.
             cqrsx_allowed: Some(&[
                 "cqrsx::cqrs::command::CommandExecutor",
                 "cqrsx::cqrs::command::CommandGatewayError",
+                "cqrsx::cqrs::command::metadata::CommandMetadata",
                 "cqrsx::cqrs::rejection",
             ]),
         },
@@ -826,13 +828,14 @@ fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
 }
 
 /// Backlog 05/08: the HTTP handler hands a command to the engine's command port and answers its outcome; nothing
-/// else of the command path reaches a presentation.
+/// else of the command path reaches a presentation. Backlog 05/09: the metadata of the command is cqrsx's.
 #[test]
 fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
         "use cqrsx::cqrs::command::{CommandExecutor, CommandGatewayError};\n",
         "fn f(e: cqrsx::cqrs::command::CommandGatewayError<()>) {}\n",
+        "use cqrsx::cqrs::command::metadata::CommandMetadata;\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
     }

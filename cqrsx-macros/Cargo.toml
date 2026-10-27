@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
-description = "Derive macros of cqrsx: Command, Commands, Event, Events, Task and Rejection"
+description = "Derive macros of cqrsx (Command, Commands, Event, Events, Task, Rejection) and its #[task_handler] attribute"
 
 [lib]
 proc-macro = true
@@ -13,4 +13,4 @@ proc-macro = true
 heck = "0.5.0"
 proc-macro2 = "1.0.107"
 quote = "1.0.47"
-syn = "2.0.119"
+syn = { version = "2.0.119", features = ["full"] }

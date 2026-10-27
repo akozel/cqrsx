@@ -10,13 +10,14 @@ use axum::{
 };
 use chrono::NaiveDate;
 use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
-use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat};
+use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat, result::TaskResult};
 use cqrsx::{
     cqrs::{
         CommitReport,
         aggregate::Aggregate,
         command::{
-            CommandExecutor, CommandGatewayError, locks::LockLimits, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup,
+            CommandExecutor, CommandGatewayError, locks::LockLimits, metadata::CommandMetadata,
+            retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup,
         },
         projection::{
             View, ViewProjection,
@@ -48,10 +49,7 @@ use encore_backend::{
     },
     config::Config,
     process::Process,
-    shared::{
-        application::metadata::CommandMetadata,
-        domain::{ConcertId, FanId},
-    },
+    shared::domain::{ConcertId, FanId},
 };
 use http_body_util::BodyExt;
 use serde_json::{Value, json};
@@ -158,13 +156,13 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
             .execute_with_metadata(
                 &concert_id,
                 ConcertCommand::AnnounceConcert(announce),
-                CommandMetadata::with_source("seed").to_map(),
+                CommandMetadata::root("seed").to_map(),
             )
             .await
             .is_ok()
     );
 
-    let metadata = CommandMetadata::ui();
+    let metadata = CommandMetadata::root("ui");
     let book = BookSeat {
         seat: "B4".into(),
         fan_id: FanId::parse("alice").expect("fan"),
@@ -186,7 +184,7 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
                 fan_name: "Bob".into(),
                 booking_id: Uuid::now_v7(),
             }),
-            CommandMetadata::ui().to_map(),
+            CommandMetadata::root("ui").to_map(),
         )
         .await;
     assert!(matches!(
@@ -356,8 +354,11 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
         1,
     )
     .expect("attempt");
-    let mut dispatcher = (wiring.dispatcher)().expect("dispatcher");
-    dispatcher.dispatch(&attempt).await.expect("the step records the ticket");
+    assert_eq!(
+        wiring.dispatcher.dispatch(attempt, Duration::ZERO).await,
+        TaskResult::Done,
+        "the step records the ticket"
+    );
     let step: Value = sqlx::query_scalar("SELECT metadata FROM events WHERE aggregate_type = 'Fan'")
         .fetch_one(&pool)
         .await
@@ -432,7 +433,7 @@ async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_tas
             .execute_with_metadata(
                 &concert_id,
                 ConcertCommand::AnnounceConcert(announce),
-                CommandMetadata::with_source("seed").to_map(),
+                CommandMetadata::root("seed").to_map(),
             )
             .await
             .is_ok()
@@ -445,7 +446,7 @@ async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_tas
             let fan = index % 4;
             let seat = format!("A{}", fan + 1);
             let fan_id = FanId::parse(&format!("fan-{fan}")).expect("fan");
-            let metadata = CommandMetadata::ui();
+            let metadata = CommandMetadata::root("ui");
             if index % 8 < 4 {
                 let book = BookSeat {
                     seat,
@@ -520,7 +521,7 @@ async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() 
             .execute_with_metadata(
                 &concert_id,
                 ConcertCommand::AnnounceConcert(announce),
-                CommandMetadata::with_source("seed").to_map(),
+                CommandMetadata::root("seed").to_map(),
             )
             .await
             .is_ok()
@@ -530,7 +531,7 @@ async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() 
     for index in 0..20 {
         let (concerts, concert_id) = (concerts.clone(), concert_id.clone());
         bookings.spawn(async move {
-            let metadata = CommandMetadata::ui();
+            let metadata = CommandMetadata::root("ui");
             let book = BookSeat {
                 seat: format!("{}{}", ["A", "B", "C"][index / 8], index % 8 + 1),
                 fan_id: FanId::parse(&format!("fan-{index}")).expect("fan"),
@@ -706,7 +707,7 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
                 .execute_with_metadata(
                     &concert_id,
                     ConcertCommand::AnnounceConcert(announce),
-                    CommandMetadata::with_source("seed").to_map(),
+                    CommandMetadata::root("seed").to_map(),
                 )
                 .await;
             assert!(outcome.is_ok(), "{outcome:?}");
@@ -719,7 +720,7 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
             for index in seats {
                 let concerts = concerts.clone();
                 bookings.spawn(async move {
-                    let metadata = CommandMetadata::ui();
+                    let metadata = CommandMetadata::root("ui");
                     let book = BookSeat {
                         seat: format!("{}{}", ["A", "B", "C", "D", "E"][index / 8], index % 8 + 1),
                         fan_id: FanId::parse(&format!("fan-{index}")).expect("fan"),

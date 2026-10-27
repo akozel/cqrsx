@@ -1,25 +1,19 @@
 //! Step 1 of ticket delivery: task `encore_record_ticket` → `Fan.RecordTicket`; the ledger's
 //! `TicketRecorded` plans `encore_send_e_ticket` in the same commit ([reactions](super::reactions)).
 use crate::{
-    fan::{
-        application::chain::{ChainStep, run_chain_step},
-        domain::{Fan, FanCommand, commands::RecordTicket},
-    },
+    fan::domain::{Fan, FanCommand, FanError, commands::RecordTicket},
     shared::domain::{
-        ConcertId, FanId,
+        ConcertId, FanId, FanLedgerId,
         venue::{SeatId, Zone},
     },
 };
 use cqrsx::{
     Task,
-    cqrs::command::CommandExecutor,
-    task::{
-        attempt::TaskAttempt,
-        handler::{TaskHandler, TaskHandlerError},
-    },
+    cqrs::command::CommandGatewayError,
+    task::{context::TaskContext, result::TaskResult},
+    task_handler,
 };
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use uuid::Uuid;
 
 /// `Concert::SeatBooked` → `Fan.RecordTicket`: step one of ticket delivery
@@ -36,31 +30,37 @@ pub struct RecordTicketV1 {
     pub fan_name: String,
 }
 
-/// Runs the step on the ledgers' executor.
-pub struct RecordTicketHandler<E> {
-    pub fans: Arc<E>,
+impl RecordTicketV1 {
+    /// The fan's ledger for the concert (D-14), where the ticket goes.
+    pub fn ledger(&self) -> FanLedgerId {
+        FanLedgerId::new(&self.fan_id, &self.concert_id)
+    }
+
+    /// The internal `Fan` command the task asks for.
+    pub fn command(self) -> FanCommand {
+        FanCommand::RecordTicket(RecordTicket {
+            booking_id: self.booking_id,
+            concert_id: self.concert_id,
+            seat: self.seat,
+            zone: self.zone,
+            price: self.price,
+            fan_name: self.fan_name,
+        })
+    }
 }
 
-impl<E: CommandExecutor<Fan>> TaskHandler<RecordTicketV1> for RecordTicketHandler<E> {
-    async fn handle(&mut self, payload: RecordTicketV1, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        let command = FanCommand::RecordTicket(RecordTicket {
-            booking_id: payload.booking_id,
-            concert_id: payload.concert_id.clone(),
-            seat: payload.seat,
-            zone: payload.zone,
-            price: payload.price,
-            fan_name: payload.fan_name,
-        });
-        run_chain_step(
-            self.fans.as_ref(),
-            attempt,
-            ChainStep {
-                concert_id: &payload.concert_id,
-                fan_id: &payload.fan_id,
-                command,
-            },
-        )
-        .await
+/// The ledger records the ticket (PLAN.md §2.7): R9 (already recorded) and R11 (already cancelled) mean "already
+/// done", a redelivery; R10 (the ticket is not recorded yet) means "too early, retry"; a conflict and an unavailable
+/// ledger are retried. The command continues the task's causation chain.
+#[task_handler]
+pub async fn record_ticket(task: RecordTicketV1, ctx: &TaskContext) -> TaskResult {
+    let ledger = task.ledger();
+    match ctx.execute::<Fan>(&ledger, task.command()).await {
+        Err(CommandGatewayError::Domain(FanError::AlreadyRecorded { .. } | FanError::AlreadyCancelled { .. })) => {
+            TaskResult::done()
+        }
+        Err(CommandGatewayError::Domain(FanError::UnknownTicket { .. })) => TaskResult::retry("unknown_ticket"),
+        other => other.into(), // accepted: done; conflict, unavailable: retry
     }
 }
 
@@ -68,7 +68,7 @@ impl<E: CommandExecutor<Fan>> TaskHandler<RecordTicketV1> for RecordTicketHandle
 mod tests {
     use super::*;
     use crate::fan::{
-        application::test_support::{attempt, fans, ledger, ticket},
+        application::test_support::{attempt, fans, ledger, steps, ticket},
         domain::{FanEvent, events::TicketRecorded},
     };
     use cqrsx::cqrs::{store::EventStore, testing::mem_store::MemStore};
@@ -78,10 +78,9 @@ mod tests {
     async fn records_the_ticket_and_publishes_the_e_ticket_mail_task() {
         let store = MemStore::default();
         let (fans, executor) = fans(store.clone());
-        let mut handler = RecordTicketHandler { fans };
         let (payload, correlation_id) = (ticket(), uuid::Uuid::now_v7());
-        let delivery = attempt(&payload, correlation_id);
-        handler.handle(payload.clone(), &delivery).await.unwrap();
+        let delivery = steps(&fans, attempt(&payload, correlation_id));
+        assert_eq!(record_ticket.call(payload.clone(), &delivery).await, TaskResult::Done);
         let events = store.load_events(ledger().as_str()).await.unwrap();
         assert!(
             matches!(&events[0].payload, FanEvent::TicketRecorded(TicketRecorded { booking_id, .. }) if *booking_id == payload.booking_id)
@@ -106,10 +105,9 @@ mod tests {
     async fn a_redelivered_task_is_done_without_a_second_ticket() {
         let store = MemStore::default();
         let (fans, executor) = fans(store.clone());
-        let mut handler = RecordTicketHandler { fans };
-        let delivery = attempt(&ticket(), uuid::Uuid::now_v7());
-        handler.handle(ticket(), &delivery).await.unwrap();
-        handler.handle(ticket(), &delivery).await.unwrap();
+        let delivery = steps(&fans, attempt(&ticket(), uuid::Uuid::now_v7()));
+        assert_eq!(record_ticket.call(ticket(), &delivery).await, TaskResult::Done);
+        assert_eq!(record_ticket.call(ticket(), &delivery).await, TaskResult::Done);
         assert_eq!(
             store.load_events(ledger().as_str()).await.unwrap().len(),
             1,

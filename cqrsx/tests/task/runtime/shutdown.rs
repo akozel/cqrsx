@@ -12,7 +12,7 @@ async fn generic_custom_executor_uses_actual_budget_and_stalled_invocation_drain
         }
         async fn execute_and_settle<A: TaskAdapter>(
             &self,
-            _: &mut TaskDispatcher<A>,
+            _: &TaskDispatcher<A>,
             _: LeasedTask,
             _: Duration,
         ) -> Result<SettlementResult, TaskProcessingError> {
@@ -41,10 +41,21 @@ async fn generic_custom_executor_uses_actual_budget_and_stalled_invocation_drain
         budget: Duration::from_secs(60),
         active: AtomicUsize::new(0),
     });
-    let result = run::<_, _, Adapter>(
+    /// A handler budget validation keeps from running.
+    struct Unreachable;
+    impl TaskAdapter for Unreachable {
+        fn formats(&self) -> Vec<TaskFormat> {
+            vec![format()]
+        }
+        async fn invoke(&self, _: &TaskContext) -> TaskResult {
+            panic!("budget validation precedes any delivery")
+        }
+    }
+    queue.incoming.lock().unwrap().push_back(claimed());
+    let result = run(
         queue.clone(),
         invalid.clone(),
-        Arc::new(|| panic!("budget validation precedes factory")),
+        TaskDispatcher::try_new(vec![Unreachable]).unwrap(),
         config.clone(),
         stop.clone(),
     )
@@ -55,7 +66,6 @@ async fn generic_custom_executor_uses_actual_budget_and_stalled_invocation_drain
     assert!(queue.requested.lock().unwrap().is_empty());
     assert_eq!(queue.recovery_calls.load(Ordering::SeqCst), 0);
 
-    queue.incoming.lock().unwrap().push_back(claimed());
     let executor = Arc::new(Executor {
         budget: Duration::from_millis(10),
         active: AtomicUsize::new(0),
@@ -64,7 +74,7 @@ async fn generic_custom_executor_uses_actual_budget_and_stalled_invocation_drain
     let supervisor_task = tokio::spawn(run(
         queue,
         executor.clone(),
-        Arc::new(|| TaskDispatcher::try_new(vec![CountingAdapter(Arc::new(AtomicUsize::new(0)))])),
+        TaskDispatcher::try_new(vec![CountingAdapter(Arc::new(AtomicUsize::new(0)))]).unwrap(),
         config,
         stop.clone(),
     ));
@@ -81,41 +91,22 @@ async fn shutdown_drains_in_flight_work_and_invalid_worker_wiring_is_rejected() 
     let queue = Arc::new(Queue::default());
     let executor = Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()));
     let seen = Arc::new(AtomicUsize::new(0));
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let seen = seen.clone();
-        move || TaskDispatcher::try_new(vec![CountingAdapter(seen.clone())])
-    });
+    let dispatcher = || TaskDispatcher::try_new(vec![CountingAdapter(seen.clone())]).unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     let invalid =
         TaskWorkerPoolConfig::new(1, 1, Duration::from_secs(1), Duration::from_secs(30), Duration::from_secs(45)).unwrap();
     assert!(
-        run(
-            queue.clone(),
-            executor.clone(),
-            factory.clone(),
-            invalid,
-            shutdown.child_token()
-        )
-        .await
-        .is_err()
+        run(queue.clone(), executor.clone(), dispatcher(), invalid, shutdown.child_token())
+            .await
+            .is_err()
     );
-    assert!(
-        run(
-            queue.clone(),
-            Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())),
-            Arc::new(|| TaskDispatcher::<Adapter>::try_new(vec![])),
-            TaskWorkerPoolConfig::default(),
-            shutdown.child_token()
-        )
-        .await
-        .is_err()
-    );
+    assert!(TaskDispatcher::<Adapter>::try_new(vec![]).is_err());
     queue.incoming.lock().unwrap().push_back(claimed());
     let supervisor_task = tokio::spawn(run(
         queue.clone(),
         executor,
-        factory,
+        dispatcher(),
         TaskWorkerPoolConfig::default(),
         shutdown,
     ));
@@ -134,13 +125,12 @@ async fn shutdown_cancels_stalled_polling_and_bounds_stalled_acknowledgements() 
         queue.hang_settle.store(stage == "settle", Ordering::SeqCst);
         queue.incoming.lock().unwrap().push_back(claimed());
         let executor = Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()));
-        let factory: TaskDispatcherFactory<_> = Arc::new(|| TaskDispatcher::try_new(vec![adapter()]));
         let shutdown = CancellationToken::new();
         let stop = shutdown.clone();
         let supervisor_task = tokio::spawn(run(
             queue.clone(),
             executor,
-            factory,
+            TaskDispatcher::try_new(vec![adapter()]).unwrap(),
             TaskWorkerPoolConfig::default(),
             shutdown,
         ));
@@ -171,18 +161,16 @@ async fn shutdown_drain_uses_the_configured_settlement_budget() {
         queue.clone(),
         TaskStorageConfig::new(Duration::from_secs(10)).unwrap(),
     ));
-    let factory: TaskDispatcherFactory<_> = Arc::new(|| {
-        let mut task_adapter = adapter();
-        task_adapter.hang = true;
-        TaskDispatcher::try_new(vec![task_adapter])
-    });
+    let mut task_adapter = adapter();
+    task_adapter.hang = true;
+    let dispatcher = TaskDispatcher::try_new(vec![task_adapter]).unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     let started = tokio::time::Instant::now();
     let supervisor_task = tokio::spawn(run(
         queue.clone(),
         executor,
-        factory,
+        dispatcher,
         worker_config(128, 128, Duration::from_secs(1)),
         shutdown,
     ));
@@ -202,7 +190,7 @@ async fn cancellation_of_supervisor_aborts_owned_workers_without_detaching_them(
     let supervisor_task = tokio::spawn(
         prepared_runtime(
             queue.clone(),
-            io_factory(probe.clone()),
+            io_dispatcher(probe.clone()),
             worker_config(1, 1, Duration::from_secs(3600)),
         )
         .run(shutdown.clone()),
@@ -224,7 +212,7 @@ async fn shared_cancellation_stops_dequeue_while_supervisor_is_claiming() {
     let supervisor_task = tokio::spawn(run(
         queue.clone(),
         Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())),
-        io_factory(probe.clone()),
+        io_dispatcher(probe.clone()),
         // A claim for every freed slot, so that a claim is in flight after the second dequeue: this test is
         // about cancellation during a claim, not the refill level.
         worker_config(1, 2, Duration::from_secs(3600))
@@ -274,10 +262,7 @@ async fn cancellation_in_a_ready_claim_discards_the_batch_without_execution() {
     queue.incoming.lock().unwrap().push_back(claimed());
     let calls = Arc::new(AtomicUsize::new(0));
     let shutdown = CancellationToken::new();
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let calls = calls.clone();
-        move || TaskDispatcher::try_new(vec![CountingAdapter(calls.clone())])
-    });
+    let dispatcher = TaskDispatcher::try_new(vec![CountingAdapter(calls.clone())]).unwrap();
     let cancelling_queue = Arc::new(CancelAfterClaim {
         inner: queue.clone(),
         shutdown: shutdown.clone(),
@@ -287,7 +272,7 @@ async fn cancellation_in_a_ready_claim_discards_the_batch_without_execution() {
         run(
             cancelling_queue.clone(),
             Arc::new(DefaultTaskExecutor::new(cancelling_queue, TaskStorageConfig::default())),
-            factory,
+            dispatcher,
             worker_config(1, 1, Duration::from_secs(3600)),
             shutdown,
         ),

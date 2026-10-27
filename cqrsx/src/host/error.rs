@@ -1,6 +1,4 @@
 use crate::task::runtime::TaskRuntimeError;
-#[cfg(test)]
-use crate::task::runtime::dispatcher_factory::WorkerSetupError;
 use std::{fmt, io};
 use thiserror::Error;
 use tokio::task::JoinError;
@@ -88,16 +86,13 @@ mod tests {
 
     #[tokio::test]
     async fn io_and_dispatcher_diagnostics_preserve_sources_without_rendering_private_text() {
-        use crate::task::{dispatcher::TaskDispatcherError, format::TaskFormat};
+        use crate::task::runtime::worker_pool_config::TaskWorkerPoolConfigError;
 
         let (_, log) = crate::diagnostics::test_support::capture(async {
             for error in [
                 HostError::Inbound(io::Error::new(io::ErrorKind::PermissionDenied, "private_io_source")),
                 HostError::ShutdownSignal(io::Error::other("private_signal_source")),
-                HostError::TaskRuntime(TaskRuntimeError::WorkerSetup(WorkerSetupError::Build {
-                    worker_index: 3,
-                    source: TaskDispatcherError::DuplicateFormat(TaskFormat::new("private_format\nmail@example.com", 2).unwrap()),
-                })),
+                HostError::TaskRuntime(TaskRuntimeError::Configuration(TaskWorkerPoolConfigError::LeaseTooShort)),
             ] {
                 assert!(std::error::Error::source(&error).is_some());
                 assert!(!format!("{error:?} {error}").contains("private_"));
@@ -106,7 +101,7 @@ mod tests {
         })
         .await;
         assert!(log.contains("PermissionDenied"));
-        assert!(log.contains("unknown"));
+        assert!(log.contains("LeaseTooShort"));
         assert!(!log.contains("private_"));
         assert!(!log.contains("mail@example.com"));
     }

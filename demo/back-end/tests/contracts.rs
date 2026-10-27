@@ -6,15 +6,16 @@
 //!   plan of the connections) under a dotted name in lower case;
 //! - `activity_feed.txt`: every kind of activity entry and the keys of its JSON on the SSE stream; a kind whose entries
 //!   differ by an enumerated field the front-end reads has a line per value (`kind[field=value]`);
-//! - `retry_pauses.txt`: the pause a task asks the queue for after its attempt `n` failed (`<case>.<n>`): an e-mail
-//!   (`mail`), a step of the chain between the aggregates (`step`), and a handler that names no pause
-//!   (`redelivery`, bounds: the library's backoff is random within them). The policies of the task types (`MAIL`,
-//!   `STEP`) hold the same pauses.
+//! - `retry_pauses.txt`: the pause the task runtime waits after attempt `n` of a task failed (`<case>.<n>`): an
+//!   e-mail (`mail`), a step of the chain between the aggregates (`step`), and a task type without a policy
+//!   (`redelivery`, bounds: the library's backoff is random within them). The pauses are the policies of the task
+//!   types (`MAIL`, `STEP`), applied by the runtime (backlog 05/09).
 //!
 //! Every file is `key = value` lines sorted by key, every key once. The entries and the pauses come from today's
 //! producers: the command observer, the projection observer, the rebuild service, the mail client and the task
-//! handlers. The values of the command entries on every outcome are pinned by a test of their own, written against
-//! the command service the observer replaced (backlog 05/08).
+//! runtime. The values of the command entries on every outcome are pinned by a test of their own, written against
+//! the command service the observer replaced (backlog 05/08); the values of the task attempts' entries and the
+//! settlements of the tasks, by two tests written against the handlers that chose their own pauses (backlog 05/09).
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use axum::{Json, Router, http::StatusCode, routing::post};
 use chrono::NaiveDate;
@@ -23,9 +24,10 @@ use cqrsx::{
         AggregateError,
         command::{
             CommandExecutor,
+            metadata::CommandMetadata,
             observer::{CommandObserver, CommandReport, Outcome},
         },
-        event::EventEnvelope,
+        event::{DomainEvent, EventEnvelope},
         projection::{
             checkpoint::CheckpointStore,
             processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
@@ -41,16 +43,28 @@ use cqrsx::{
     },
     task::{
         NewTask,
+        adapter::boxed::BoxedTaskAdapter,
         attempt::TaskAttempt,
+        context::TaskContext,
+        dependencies::Dependencies,
+        dispatcher::TaskDispatcher,
+        executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
         format::{TaskFormat, TaskPayload},
-        handler::{TaskHandler, TaskHandlerError},
-        queue::retry::redelivery_backoff,
+        handler::TaskHandler,
+        queue::{
+            TaskProcessingError, TaskQueue,
+            lease::{LeasedTask, TaskLease},
+            retry::redelivery_backoff,
+            settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
+        },
+        result::TaskResult,
+        runtime::prepare,
     },
 };
 use encore_backend::{
     bootstrap::{
         projections::checkpoint_keys,
-        tasks::{mail_settings, policies},
+        tasks::{handlers, mailer, policies},
     },
     concert::domain::{
         Concert, ConcertCommand, ConcertError, ConcertEvent, ConcertRules,
@@ -58,10 +72,10 @@ use encore_backend::{
     },
     config::{Config, duration_text},
     fan::application::{
-        issue_refund::{IssueRefundHandler, IssueRefundV1},
-        record_cancellation::{RecordCancellationHandler, RecordCancellationV1},
-        record_ticket::{RecordTicketHandler, RecordTicketV1},
-        send_e_ticket::{SendETicketHandler, SendETicketV1},
+        issue_refund::IssueRefundV1,
+        record_cancellation::RecordCancellationV1,
+        record_ticket::RecordTicketV1,
+        send_e_ticket::{SendETicketV1, send_e_ticket},
     },
     fan::domain::{
         Fan, FanCommand,
@@ -77,14 +91,12 @@ use encore_backend::{
         application::{
             StorageError,
             activity::ActivityHub,
-            metadata::CommandMetadata,
             policies::{MAIL, STEP},
         },
         domain::{
             ConcertId, FanId, FanLedgerId,
             venue::{SeatId, Zone},
         },
-        infrastructure::http_mailer::{HttpMailer, MailClientSettings},
     },
 };
 use serde::Serialize;
@@ -268,8 +280,11 @@ async fn mail_service(statuses: impl IntoIterator<Item = u16>) -> String {
     url
 }
 
-fn mailer(settings: &MailClientSettings, activity: &Arc<ActivityHub>) -> HttpMailer {
-    HttpMailer::new(HttpMailer::client(settings).unwrap(), settings.clone(), activity.clone())
+/// The context of an attempt of an e-mail task as the task runtime builds it: the pause of the mail policy and the
+/// composition's mail service at the address of `config`, writing to `activity`.
+fn mail_context(attempt: TaskAttempt, config: &Config, activity: &Arc<ActivityHub>) -> TaskContext {
+    let pause = policies(config).unwrap().pause(attempt.format(), attempt.number());
+    TaskContext::new(attempt, pause).with_dependencies(Dependencies::default().provide(mailer(config, activity.clone()).unwrap()))
 }
 
 /// Attempt `number` of a task with `payload`, in the causation chain of a command.
@@ -343,7 +358,7 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
         city: "Tbilisi".into(),
         date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
     });
-    let booking = CommandMetadata::ui();
+    let booking = CommandMetadata::root("ui");
     let book = book("B4", "fox", &booking);
     let concert_id = concert();
     let metadata = booking.to_map();
@@ -427,22 +442,18 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
     wait_for(&activity, "rebuild.finished").await;
 
     // The attempts of an e-mail task (`task.attempt.*`): delivered, refused for now, rejected.
-    let settings = MailClientSettings {
-        base_url: mail_service([200, 503, 400]).await,
-        ..mail_settings(&Config::from_lookup(|_| None).unwrap())
-    };
-    let mut handler = SendETicketHandler {
-        mailer: mailer(&settings, &activity),
-    };
+    let config = config_with_mail(&mail_service([200, 503, 400]).await);
+    let handler = send_e_ticket;
+    let attempt = |payload: &SendETicketV1, number| mail_context(attempt(payload, number), &config, &activity);
     let payload = e_ticket();
-    assert!(handler.handle(payload.clone(), &attempt(&payload, 1)).await.is_ok());
+    assert!(handler.handle(payload.clone(), &attempt(&payload, 1)).await == TaskResult::Done);
     assert!(matches!(
         handler.handle(payload.clone(), &attempt(&payload, 2)).await,
-        Err(TaskHandlerError::Retry { .. })
+        TaskResult::Retry { .. }
     ));
     assert!(matches!(
         handler.handle(payload.clone(), &attempt(&payload, 3)).await,
-        Err(TaskHandlerError::Permanent { .. })
+        TaskResult::Fail { .. }
     ));
 
     let mut shapes: BTreeMap<String, String> = BTreeMap::new();
@@ -631,37 +642,37 @@ async fn command_entries_carry_their_values_on_every_outcome_of_both_aggregates(
     let concert_id = concert();
     let box_office = ("Concert", concert_id.as_str());
 
-    let seed = CommandMetadata::with_source("seed");
+    let seed = CommandMetadata::root("seed");
     let announce = ConcertCommand::AnnounceConcert(AnnounceConcert {
         artist: "Radiohead".into(),
         city: "Tbilisi".into(),
         date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
     });
     feed.concert(announce, seed.clone()).await;
-    let booking = CommandMetadata::ui();
+    let booking = CommandMetadata::root("ui");
     feed.concert(book("A1", "fox", &booking), booking.clone()).await;
-    let taken = CommandMetadata::ui();
+    let taken = CommandMetadata::root("ui");
     feed.concert(book("A1", "panda", &taken), taken.clone()).await;
-    let cancellation = CommandMetadata::ui();
+    let cancellation = CommandMetadata::root("ui");
     feed.concert(cancel("A1", "fox", &cancellation), cancellation.clone()).await;
-    let not_booked = CommandMetadata::ui();
+    let not_booked = CommandMetadata::root("ui");
     feed.concert(cancel("A1", "panda", &not_booked), not_booked.clone()).await;
     // Every attempt meets a concurrent change; the clock is paused, the backoff passes at once.
     store.conflict.store(true, Ordering::SeqCst);
-    let conflict = CommandMetadata::ui();
+    let conflict = CommandMetadata::root("ui");
     feed.concert(book("B4", "fox", &conflict), conflict.clone()).await;
     store.conflict.store(false, Ordering::SeqCst);
     store.unavailable.store(true, Ordering::SeqCst);
-    let unreachable = CommandMetadata::ui();
+    let unreachable = CommandMetadata::root("ui");
     feed.concert(cancel("A1", "owl", &unreachable), unreachable.clone()).await;
     store.unavailable.store(false, Ordering::SeqCst);
     // The holder keeps the concert's lock while its load waits at the gate; the next command waits for the lock as
     // long as it may (the idle runtime advances the paused clock) and is refused.
     let gate = store.close_gate();
-    let holding = CommandMetadata::ui();
+    let holding = CommandMetadata::root("ui");
     let mut holder = Box::pin(feed.concert(book("C1", "cat", &holding), holding.clone()));
     assert!(futures::poll!(holder.as_mut()).is_pending(), "the holder waits at the gate");
-    let refused = CommandMetadata::ui();
+    let refused = CommandMetadata::root("ui");
     feed.concert(book("C2", "dog", &refused), refused.clone()).await;
     gate.add_permits(1);
     holder.await;
@@ -818,36 +829,49 @@ async fn command_entries_carry_their_values_on_every_outcome_of_both_aggregates(
 
 // --- retry pauses --------------------------------------------------------------------------------------------
 
-/// The pause a failed attempt asks for.
-fn pause(result: Result<(), TaskHandlerError>) -> Duration {
-    match result {
-        Err(TaskHandlerError::Retry {
-            retry_after: Some(pause),
-            ..
-        }) => pause,
+/// The pause a failed attempt was settled with.
+fn pause(settled: &[(Uuid, SettlementRequest)], task: &LeasedTask) -> Duration {
+    match settled.iter().find(|(id, _)| *id == task.attempt().task_id()) {
+        Some((_, SettlementRequest::Retry { delay, .. })) => *delay,
         other => panic!("expected a retry with a pause, got {other:?}"),
     }
+}
+
+/// Runs the tasks of `queue` through the task runtime of the composition (`dispatcher`, the policies and the runtime
+/// settings of `config`) until `count` of them are settled; their settlements.
+async fn run_through_the_runtime(
+    queue: &Arc<MemQueue>,
+    dispatcher: TaskDispatcher<BoxedTaskAdapter>,
+    config: &Config,
+    count: usize,
+) -> Vec<(Uuid, SettlementRequest)> {
+    let runtime = prepare(
+        queue.clone(),
+        dispatcher,
+        config.task_runtime.clone(),
+        policies(config).unwrap(),
+    );
+    let shutdown = CancellationToken::new();
+    let running = tokio::spawn(runtime.run(shutdown.clone()));
+    tokio::time::timeout(Duration::from_secs(20), async {
+        while queue.settled.lock().unwrap().len() < count {
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+    })
+    .await
+    .expect("every task settled");
+    shutdown.cancel();
+    running.await.unwrap().unwrap();
+    queue.settled()
 }
 
 #[tokio::test]
 async fn retry_pauses_by_attempt_are_the_golden_ones() {
     let activity = Arc::new(ActivityHub::new(256, 256));
-    let config = Config::from_lookup(|_| None).unwrap();
     // E-mails: the provider refuses every delivery for now.
-    let settings = MailClientSettings {
-        base_url: mail_service(std::iter::repeat_n(503, 16)).await,
-        ..mail_settings(&config)
-    };
-    let mut e_ticket_handler = SendETicketHandler {
-        mailer: mailer(&settings, &activity),
-    };
-    let mut refund_handler = IssueRefundHandler {
-        mailer: mailer(&settings, &activity),
-    };
+    let config = config_with_mail(&mail_service(std::iter::repeat_n(503, 16)).await);
     // Chain steps: the fan ledger is unreachable.
     let fans = Arc::new(TestCommandExecutor::new(UnavailableStore, ()));
-    let mut record_ticket = RecordTicketHandler { fans: fans.clone() };
-    let mut record_cancellation = RecordCancellationHandler { fans };
     let ticket = RecordTicketV1 {
         booking_id: Uuid::now_v7(),
         concert_id: concert(),
@@ -874,25 +898,36 @@ async fn retry_pauses_by_attempt_are_the_golden_ones() {
         amount: 80,
     };
     let e_ticket = e_ticket();
+    // Attempt n of every task, all through the task runtime: its handlers, its policies, its settlements.
+    let queue = Arc::new(MemQueue::default());
+    let attempts: Vec<[LeasedTask; 4]> = (1..=8)
+        .map(|n| {
+            [
+                leased(&e_ticket, n),
+                leased(&refund, n),
+                leased(&ticket, n),
+                leased(&cancellation, n),
+            ]
+        })
+        .collect();
+    queue.incoming.lock().unwrap().extend(attempts.iter().flatten().cloned());
+    let dispatcher = handlers(fans, mailer(&config, activity.clone()).unwrap()).unwrap();
+    let settled = run_through_the_runtime(&queue, dispatcher, &config, 32).await;
 
     let mut lines = Vec::new();
-    for n in 1..=8 {
-        let mail = pause(e_ticket_handler.handle(e_ticket.clone(), &attempt(&e_ticket, n)).await);
-        let refund_mail = pause(refund_handler.handle(refund.clone(), &attempt(&refund, n)).await);
+    for (n, [e_ticket_attempt, refund_attempt, ticket_attempt, cancellation_attempt]) in (1..).zip(&attempts) {
+        let mail = pause(&settled, e_ticket_attempt);
+        let refund_mail = pause(&settled, refund_attempt);
         assert_eq!(refund_mail, mail, "attempt {n}: both e-mail tasks pause alike");
-        let step = pause(record_ticket.handle(ticket.clone(), &attempt(&ticket, n)).await);
-        let cancellation_step = pause(
-            record_cancellation
-                .handle(cancellation.clone(), &attempt(&cancellation, n))
-                .await,
-        );
+        let step = pause(&settled, ticket_attempt);
+        let cancellation_step = pause(&settled, cancellation_attempt);
         assert_eq!(cancellation_step, step, "attempt {n}: both chain steps pause alike");
         lines.push((format!("mail.{n}"), duration_text(mail)));
         lines.push((format!("step.{n}"), duration_text(step)));
     }
 
-    // Without a pause of the handler's the queue draws one within bounds the library has no function for: the golden
-    // bounds, checked by sampling. The draws fill the range: its lowest and highest tenth both occur.
+    // A task type without a policy waits a draw of the queue's backoff, within bounds the library has no function for:
+    // the golden bounds, checked by sampling. The draws fill the range: its lowest and highest tenth both occur.
     let golden = parse(RETRY_PAUSES);
     for n in 1..=8 {
         let key = format!("redelivery.{n}");
@@ -912,8 +947,7 @@ async fn retry_pauses_by_attempt_are_the_golden_ones() {
 }
 
 /// The pauses of the task policies, in the lines of the golden file: an e-mail is `MAIL`, a step of the chain `STEP`,
-/// both under the configuration without environment. The handlers still ask for their pauses themselves (above); the
-/// policies hold the same ones for when the engine takes them over (backlog 05/09).
+/// both under the configuration without environment; the runtime applies them (above).
 #[test]
 fn the_task_policies_pause_as_the_golden_ones() {
     let config = Config::from_lookup(|_| None).unwrap();
@@ -932,4 +966,394 @@ fn the_task_policies_pause_as_the_golden_ones() {
         .collect();
     assert_eq!(golden.lines().count(), 16, "eight attempts of each");
     assert_golden("retry_pauses.txt", &golden, &render(lines));
+}
+
+// --- task attempts: the values -------------------------------------------------------------------------------
+
+/// The outbox in memory: hands out the tasks it was given, oldest first, by format and up to the limit, under a lease
+/// from the claim; records every settlement request. Recovery finds nothing.
+#[derive(Default)]
+struct MemQueue {
+    incoming: Mutex<VecDeque<LeasedTask>>,
+    settled: Mutex<Vec<(Uuid, SettlementRequest)>>,
+}
+
+impl MemQueue {
+    fn settled(&self) -> Vec<(Uuid, SettlementRequest)> {
+        self.settled.lock().unwrap().clone()
+    }
+}
+
+impl TaskQueue for MemQueue {
+    async fn claim(
+        &self,
+        format: &TaskFormat,
+        _: &str,
+        limit: usize,
+        lease: Duration,
+    ) -> Result<Vec<LeasedTask>, TaskProcessingError> {
+        let deadline = tokio::time::Instant::now() + lease;
+        let mut incoming = self.incoming.lock().unwrap();
+        let (mut claimed, mut rest) = (Vec::new(), VecDeque::new());
+        while let Some(task) = incoming.pop_front() {
+            if claimed.len() < limit && task.attempt().format() == format {
+                claimed.push(LeasedTask::new(
+                    task.attempt().clone(),
+                    TaskLease::new(task.lease().lock_token(), deadline),
+                ));
+            } else {
+                rest.push_back(task);
+            }
+        }
+        *incoming = rest;
+        Ok(claimed)
+    }
+
+    async fn settle(&self, task: &LeasedTask, request: SettlementRequest) -> Result<SettlementResult, TaskProcessingError> {
+        let result = match &request {
+            SettlementRequest::Completed => SettlementResult::Completed,
+            SettlementRequest::Retry { .. } => SettlementResult::RetryScheduled,
+            SettlementRequest::Failed { .. } => SettlementResult::Failed(TaskFailure {
+                task_id: task.attempt().task_id(),
+                format: task.attempt().format().clone(),
+                attempt_number: task.attempt().number(),
+                cause: TaskFailureCause::PermanentRejection,
+            }),
+        };
+        self.settled.lock().unwrap().push((task.attempt().task_id(), request));
+        Ok(result)
+    }
+
+    async fn recover_expired(&self, _: usize) -> Result<LeaseRecoveryReport, TaskProcessingError> {
+        Ok(LeaseRecoveryReport::default())
+    }
+}
+
+/// Attempt `number` of a task with `payload` under a lease of a minute.
+fn leased<P: TaskPayload + Serialize>(payload: &P, number: i32) -> LeasedTask {
+    LeasedTask::new(
+        attempt(payload, number),
+        TaskLease::new(Uuid::new_v4(), tokio::time::Instant::now() + Duration::from_secs(60)),
+    )
+}
+
+/// The mail service, scripted: the status and the body of every answer, oldest first.
+async fn scripted_mail(answers: impl IntoIterator<Item = (u16, Value)>) -> String {
+    let script = Arc::new(Mutex::new(answers.into_iter().collect::<VecDeque<(u16, Value)>>()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let url = format!("http://{}", listener.local_addr().unwrap());
+    let app = Router::new().route(
+        "/mail",
+        post(move || {
+            let script = script.clone();
+            async move {
+                let (status, body) = script.lock().unwrap().pop_front().expect("an answer for every request");
+                (StatusCode::from_u16(status).unwrap(), Json(body))
+            }
+        }),
+    );
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    url
+}
+
+/// An address nobody listens on.
+async fn closed_mail() -> String {
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    format!("http://{}", listener.local_addr().unwrap())
+}
+
+/// The configuration without environment, with the mail service at `url`.
+fn config_with_mail(url: &str) -> Config {
+    Config::from_lookup(|name| (name == "ENCORE_MAIL_SERVICE_URL").then(|| url.to_owned())).unwrap()
+}
+
+/// The handlers of the composition with its mail service at the address of `config`, writing to `activity`; the
+/// steps of the ledger on a ledger nobody reaches.
+fn mail_dispatcher(config: &Config, activity: &Arc<ActivityHub>) -> TaskDispatcher<BoxedTaskAdapter> {
+    let fans = Arc::new(TestCommandExecutor::new(UnavailableStore, ()));
+    handlers(fans, mailer(config, activity.clone()).unwrap()).unwrap()
+}
+
+/// The handlers of the composition, the steps of the ledger on `fans`.
+fn step_dispatcher<E: CommandExecutor<Fan> + 'static>(fans: Arc<E>) -> TaskDispatcher<BoxedTaskAdapter> {
+    let config = Config::from_lookup(|_| None).unwrap();
+    handlers(fans, mailer(&config, Arc::new(ActivityHub::new(1, 1))).unwrap()).unwrap()
+}
+
+/// The executor of the task runtime over `queue`, with the storage budget and the policies of `config`.
+fn task_executor(queue: &Arc<MemQueue>, config: &Config) -> DefaultTaskExecutor<MemQueue> {
+    DefaultTaskExecutor::new(queue.clone(), config.task_runtime.storage().clone()).with_policies(policies(config).unwrap())
+}
+
+/// Runs `task` through `dispatcher` as a worker does and settles its result in the executor's queue.
+async fn run_attempt(
+    executor: &DefaultTaskExecutor<MemQueue>,
+    dispatcher: &TaskDispatcher<BoxedTaskAdapter>,
+    task: LeasedTask,
+    config: &Config,
+) {
+    let handler_timeout = config.task_runtime.worker_pool().handler_timeout();
+    executor.execute_and_settle(dispatcher, task, handler_timeout).await.unwrap();
+}
+
+/// The `task.attempt.*` entries of `activity`, each as its kind and its fields.
+fn attempt_entries(activity: &ActivityHub) -> Vec<(String, Value)> {
+    activity
+        .subscribe()
+        .0
+        .iter()
+        .filter(|entry| entry.kind.starts_with("task.attempt."))
+        .map(|entry| (entry.kind.clone(), Value::Object(entry.fields.clone())))
+        .collect()
+}
+
+/// An entry of attempt `task` of an e-mail with `inbox_id`: `kind` with the fields of every attempt and `extra`.
+fn attempt_entry(kind: &str, task: &LeasedTask, inbox_id: &str, extra: Value) -> (String, Value) {
+    let attempt = task.attempt();
+    let mut fields = json!({
+        "task_id": attempt.task_id(),
+        "format": attempt.format().to_string(),
+        "attempt": attempt.number(),
+        "correlation_id": attempt.metadata()["correlation_id"],
+        "inbox_id": inbox_id,
+    });
+    if let (Value::Object(fields), Value::Object(extra)) = (&mut fields, extra) {
+        fields.extend(extra);
+    }
+    (kind.to_owned(), fields)
+}
+
+/// Every answer of the mail service, through the executor of the runtime: the values of every `task.attempt.*` entry
+/// the mail client writes (the pause of a retry by the attempt's number, the provider's reason, a duplicate, the inbox
+/// id, the message of a rejection) and the settlement of every attempt, whose pause is the one the entry shows.
+#[tokio::test]
+async fn every_mail_attempt_is_logged_with_its_values_and_settled_with_the_pause_it_logs() {
+    let activity = Arc::new(ActivityHub::new(64, 64));
+    let ticket_mail = "e_ticket:00000000-0000-0000-0000-000000000001";
+    let refund_mail = "refund:00000000-0000-0000-0000-000000000002";
+    let config = config_with_mail(
+        &scripted_mail([
+            (200, json!({ "inbox_id": ticket_mail, "duplicate": false })),
+            (200, json!({ "inbox_id": ticket_mail, "duplicate": true })),
+            (200, json!({})),
+            (503, json!({ "reason_code": "mailbox_busy" })),
+            (503, json!("busy")),
+            (500, json!({})),
+            (429, json!({})),
+            (502, json!({})),
+            (400, json!({ "error": "bad address" })),
+        ])
+        .await,
+    );
+    let unreachable = config_with_mail(&closed_mail().await);
+    let mails = mail_dispatcher(&config, &activity);
+    let closed = mail_dispatcher(&unreachable, &activity);
+    let queue = Arc::new(MemQueue::default());
+    let executor = task_executor(&queue, &config);
+    let e_ticket = SendETicketV1 {
+        booking_id: Uuid::from_u128(1),
+        concert_id: concert(),
+        seat: seat(),
+        fan_id: fan(),
+        fan_name: "Fox".into(),
+        price: 80,
+    };
+    let refund = IssueRefundV1 {
+        cancellation_id: Uuid::from_u128(2),
+        booking_id: Uuid::from_u128(1),
+        concert_id: concert(),
+        seat: seat(),
+        fan_id: fan(),
+        amount: 80,
+    };
+    let delivered = leased(&e_ticket, 1);
+    let duplicate = leased(&e_ticket, 2);
+    let refunded = leased(&refund, 1);
+    let refused: Vec<LeasedTask> = (1..=5).map(|number| leased(&e_ticket, number)).collect();
+    let unreached = leased(&e_ticket, 3);
+    let rejected = leased(&e_ticket, 1);
+    for task in [&delivered, &duplicate, &refunded].into_iter().chain(&refused) {
+        run_attempt(&executor, &mails, task.clone(), &config).await;
+    }
+    run_attempt(&executor, &closed, unreached.clone(), &config).await;
+    run_attempt(&executor, &mails, rejected.clone(), &config).await;
+
+    let started = |task: &LeasedTask, inbox_id: &str| attempt_entry("task.attempt.started", task, inbox_id, json!({}));
+    let retried = |task: &LeasedTask, reason: &str, pause_ms: u64| {
+        attempt_entry(
+            "task.attempt.failed",
+            task,
+            ticket_mail,
+            json!({ "reason_code": reason, "retry": true, "retry_after_ms": pause_ms }),
+        )
+    };
+    let mut expected = vec![
+        started(&delivered, ticket_mail),
+        attempt_entry(
+            "task.attempt.succeeded",
+            &delivered,
+            ticket_mail,
+            json!({ "duplicate": false }),
+        ),
+        started(&duplicate, ticket_mail),
+        attempt_entry(
+            "task.attempt.succeeded",
+            &duplicate,
+            ticket_mail,
+            json!({ "duplicate": true }),
+        ),
+        started(&refunded, refund_mail),
+        attempt_entry(
+            "task.attempt.succeeded",
+            &refunded,
+            refund_mail,
+            json!({ "duplicate": false }),
+        ),
+    ];
+    let refusals = [
+        ("mailbox_busy", 1000),
+        ("mail_unavailable", 2000),
+        ("mail_unavailable", 4000),
+        ("mail_unavailable", 8000),
+        ("mail_unavailable", 8000),
+    ];
+    for (task, (reason, pause_ms)) in refused.iter().zip(refusals) {
+        expected.extend([started(task, ticket_mail), retried(task, reason, pause_ms)]);
+    }
+    expected.extend([
+        started(&unreached, ticket_mail),
+        retried(&unreached, "mail_unreachable", 4000),
+        started(&rejected, ticket_mail),
+        attempt_entry(
+            "task.attempt.failed",
+            &rejected,
+            ticket_mail,
+            json!({ "reason_code": "mail_rejected", "retry": false, "message": "mail service answered 400 Bad Request" }),
+        ),
+    ]);
+    let entries = attempt_entries(&activity);
+    assert_eq!(entries, expected);
+
+    let id = |task: &LeasedTask| task.attempt().task_id();
+    let retry = |task: &LeasedTask, reason: &str, seconds: u64| {
+        (
+            id(task),
+            SettlementRequest::Retry {
+                reason: reason.to_owned(),
+                delay: Duration::from_secs(seconds),
+            },
+        )
+    };
+    let mut settled = vec![
+        (id(&delivered), SettlementRequest::Completed),
+        (id(&duplicate), SettlementRequest::Completed),
+        (id(&refunded), SettlementRequest::Completed),
+    ];
+    for (task, (reason, pause_ms)) in refused.iter().zip(refusals) {
+        settled.push(retry(task, reason, pause_ms / 1000));
+    }
+    settled.extend([
+        retry(&unreached, "mail_unreachable", 4),
+        (
+            id(&rejected),
+            SettlementRequest::Failed {
+                reason: "mail service answered 400 Bad Request".into(),
+            },
+        ),
+    ]);
+    assert_eq!(queue.settled(), settled);
+    // The pause a retry was settled with is the one its entry shows.
+    let logged: Vec<Value> = entries
+        .iter()
+        .filter_map(|(_, fields)| fields.get("retry_after_ms").cloned())
+        .collect();
+    let applied: Vec<Value> = queue
+        .settled()
+        .iter()
+        .filter_map(|(_, request)| match request {
+            SettlementRequest::Retry { delay, .. } => Some(json!(delay.as_millis() as u64)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(logged, applied);
+}
+
+/// Every answer of the ledger to a step of the chain, through the executor of the runtime: R9 and R11 are done, R10
+/// and an unavailable ledger are retried after the step's pause, with the reasons the outbox keeps.
+#[tokio::test]
+async fn every_answer_of_the_ledger_settles_its_step_as_the_plan_table_says() {
+    let config = Config::from_lookup(|_| None).unwrap();
+    let store = MemStore::<Fan>::default();
+    let fans = Arc::new(
+        TestCommandExecutor::new(store.clone(), ()).with_task_planner(ReactionsPlanner::<Fan>::new(policies(&config).unwrap())),
+    );
+    let steps = step_dispatcher(fans.clone());
+    let unavailable = step_dispatcher(Arc::new(TestCommandExecutor::new(UnavailableStore, ())));
+    let queue = Arc::new(MemQueue::default());
+    let executor = task_executor(&queue, &config);
+    let ticket = RecordTicketV1 {
+        booking_id: Uuid::from_u128(1),
+        concert_id: concert(),
+        seat: seat(),
+        zone: Zone::Standard,
+        price: 80,
+        fan_id: fan(),
+        fan_name: "Fox".into(),
+    };
+    let cancellation = RecordCancellationV1 {
+        booking_id: Uuid::from_u128(1),
+        cancellation_id: Uuid::from_u128(2),
+        concert_id: concert(),
+        seat: seat(),
+        fan_id: fan(),
+        refund: 80,
+    };
+    let overtaking = leased(&cancellation, 3);
+    let recorded = leased(&ticket, 1);
+    let redelivered = leased(&ticket, 2);
+    let cancelled = leased(&cancellation, 4);
+    let cancelled_again = leased(&cancellation, 5);
+    let ticket_down = leased(&ticket, 1);
+    let cancellation_down = leased(&cancellation, 6);
+    for task in [&overtaking, &recorded, &redelivered, &cancelled, &cancelled_again] {
+        run_attempt(&executor, &steps, task.clone(), &config).await;
+    }
+    for task in [&ticket_down, &cancellation_down] {
+        run_attempt(&executor, &unavailable, task.clone(), &config).await;
+    }
+
+    let id = |task: &LeasedTask| task.attempt().task_id();
+    let retry = |task: &LeasedTask, reason: &str| {
+        (
+            id(task),
+            SettlementRequest::Retry {
+                reason: reason.to_owned(),
+                delay: Duration::from_secs(1),
+            },
+        )
+    };
+    assert_eq!(
+        queue.settled(),
+        [
+            retry(&overtaking, "unknown_ticket"),
+            (id(&recorded), SettlementRequest::Completed),
+            (id(&redelivered), SettlementRequest::Completed),
+            (id(&cancelled), SettlementRequest::Completed),
+            (id(&cancelled_again), SettlementRequest::Completed),
+            retry(&ticket_down, "unavailable"),
+            retry(&cancellation_down, "unavailable"),
+        ]
+    );
+    let events = store.load_events(ledger().as_str()).await.unwrap();
+    assert_eq!(
+        events.iter().map(|event| event.payload.event_type()).collect::<Vec<_>>(),
+        ["TicketRecorded", "TicketCancelled"],
+        "R9 and R11 wrote nothing"
+    );
+    let published: Vec<String> = fans
+        .take_published_tasks()
+        .iter()
+        .map(|task| task.format().to_string())
+        .collect();
+    assert_eq!(published, ["encore_send_e_ticket v1", "encore_issue_refund v1"]);
 }

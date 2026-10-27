@@ -19,8 +19,9 @@ consistency, ordering and retries.
   checkpoint may live in MongoDB, next to each other (feature `mongodb`).
 - **Durable follow-ups, planned from the decision.** The aggregate decides events only; its reactions say what
   follows each event, one `match` the compiler checks for completeness, and the tasks commit with the event.
-  Anything that must survive a crash is an outbox task: claimed under a lease, retried with backoff (the
-  attempt budget is the policy of the task's type), run by a worker pool that drains on shutdown.
+  Anything that must survive a crash is an outbox task: claimed under a lease, retried after the pause and within
+  the attempt budget of its type's policy, run by a worker pool that drains on shutdown; its handler is a function
+  of the task, its context and its dependencies (`#[task_handler]`).
 - **Testable without a database.** A given/when/then framework for aggregates, an in-memory store and
   journal with an outbox, and a command executor that records the tasks a use case publishes and feeds the
   projection processors under test.
@@ -248,27 +249,28 @@ use cqrsx::{
         view_repository::PostgresViewRepository,
     },
     task::{
-        adapter::boxed::BoxedTaskAdapter, attempt::TaskAttempt, dispatcher::TaskDispatcher,
-        handler::{TaskHandler, TaskHandlerError},
+        context::TaskContext,
+        handlers::TaskHandlers,
         policy::{Policies, PolicyName, Retry, TaskPolicy},
+        result::TaskResult,
         runtime::config::TaskRuntimeConfig,
     },
+    task_handler,
 };
 use std::{sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
 
-/// The task handler. A task arrives at least once: the same one may come back after a crash or a
-/// timeout, so the effect is keyed by the task id and repeating it is harmless.
-struct SendETicketHandler {
-    mailer: Mailer,
-}
+/// The handlers' dependency, by its type: the mail service, a trait object the process provides once.
+type Mailer = dyn MailService;
 
-impl TaskHandler<SendETicket> for SendETicketHandler {
-    async fn handle(&mut self, payload: SendETicket, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        self.mailer
-            .send(attempt.task_id(), &payload.seat)
-            .await
-            .map_err(|error| TaskHandlerError::Retry { reason: error.to_string(), retry_after: None })
+/// The task handler, a function: the task, its context, its dependencies. A task arrives at least once: the same one
+/// may come back after a crash or a timeout, so the effect is keyed by the task id and repeating it is harmless. A
+/// failed send is retried after the pause of the task type's policy; the handler names none.
+#[task_handler]
+async fn send_e_ticket(task: SendETicket, ctx: &TaskContext, mail: &Mailer) -> TaskResult {
+    match mail.send(ctx.task_id(), &task.seat).await {
+        Ok(()) => TaskResult::done(),
+        Err(error) => TaskResult::retry(error.to_string()),
     }
 }
 
@@ -289,12 +291,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     // decision, with the attempt budget of each task type's policy; a commit wakes the type's processors.
     let wakeup = CommitWakeup::new();
     const MAIL: PolicyName = PolicyName::new("mail");
-    let mail = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 6)?;
-    let policies = Policies::default().with_policy(MAIL, mail)?.with_task::<SendETicket>(MAIL)?;
+    let mail_policy = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 6)?;
+    let policies = Policies::default().with_policy(MAIL, mail_policy)?.with_task::<SendETicket>(MAIL)?;
     let config = PostgresCommandConfig::new(10, AggregateConflictRetryPolicy::default(), LockLimits::default())?;
     let ledgers = Arc::new(
         PostgresCommandExecutor::<Ledger>::new(pool.clone(), config, Rules { limit: 4 })
-            .with_task_planner(ReactionsPlanner::<Ledger>::new(policies))
+            .with_task_planner(ReactionsPlanner::<Ledger>::new(policies.clone()))
             .with_commit_wakeup(wakeup.clone()),
     );
 
@@ -309,12 +311,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )
     .with_wakeup(wakeup);
 
-    // The task handlers: a fresh set for every worker, one registration line per task type.
-    let mailer = Mailer::new()?;
-    let dispatcher = Arc::new(move || {
-        TaskDispatcher::try_new(vec![BoxedTaskAdapter::json(SendETicketHandler { mailer: mailer.clone() })?])
-    });
-    let runtime = prepare_task_runtime(pool.clone(), dispatcher, TaskRuntimeConfig::from_env()?)?;
+    // The task handlers: one line per task type, one set for every worker, their dependencies by type (the assembly
+    // refuses a handler whose dependency nobody provides); a retry waits the pause of its task type's policy.
+    let mail: Arc<Mailer> = Arc::new(HttpMailer::new()?);
+    let dispatcher = TaskHandlers::new().handler(send_e_ticket).provide(mail).build()?;
+    let runtime = prepare_task_runtime(pool.clone(), dispatcher, TaskRuntimeConfig::from_env()?, policies);
 
     // Serve until a signal: your inbound server, the task runtime and the read side side by side. On
     // the signal the processors finish what is in flight and release their checkpoint rows.
@@ -427,7 +428,10 @@ concurrency: a larger buffer makes claims bigger but needs a lease for one more 
 - **A projection gets a key's events in journal order**, possibly several commands per call;
   `max_batch = 1` turns the batches off.
 - **Task handlers are at-least-once.** Make the effect repeat-safe (the task id is a ready idempotency
-  key), answer `Retry` when it is worth another attempt and `Permanent` when it is not.
+  key), answer `TaskResult::retry` when it is worth another attempt and `TaskResult::fail` when it is not. The
+  pause before the next attempt is the policy of the task's type, applied by the runtime; the handler only tells it
+  (`ctx.retry_pause()`). A command to another aggregate is `ctx.execute::<A>(..)`: it continues the task's
+  causation, and its conflict or unavailability retries the task.
 - **One executor per aggregate type and process.** Two executors of one type order nothing between them;
   the store's optimistic check still decides, like between two processes.
 - **Do not cancel a command's future while its commit is in flight.** The events may land while the caller
@@ -445,7 +449,7 @@ concurrency: a larger buffer makes claims bigger but needs a lease for one more 
 | `cqrs::testing::mem_view_repository::MemViewRepository` | A projection and the queries over it |
 | `cqrs::testing::mem_checkpoint_store::MemCheckpointStore` | A projection processor without a database, next to `MemEventRepository` and `MemViewRepository` (leases follow the Tokio clock, so a paused test clock drives them) |
 | `cqrs::testing::unavailable_store::UnavailableStore` | The storage-down path |
-| `task::attempt::TaskAttempt::first(..)` | A task handler, called directly with a first claim |
+| `task::context::TaskContext::new(..)` | A task handler, called as the function it is (`handler.call(task, &ctx, &dependency)`), with a first claim (`TaskAttempt::first(..)`) and the pause of its retry; `with_executors` over a `TestCommandExecutor` for a handler that runs a command |
 
 ## Features
 

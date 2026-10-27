@@ -4,8 +4,8 @@
 //! and an attempt budget) comes from the application's configuration. [`Policies`] holds the values by name and binds
 //! every task type to one of them, so a reaction that plans a task never names a policy: the task's type has one. A
 //! type bound to no policy keeps the engine's defaults: [`DEFAULT_MAX_ATTEMPTS`] attempts and the queue's own
-//! redelivery backoff. The planner of the reactions reads the budget from here; the registry is shared (`Arc`), so a
-//! clone costs nothing.
+//! redelivery backoff. The planner of the reactions reads the budget from here, the executor of the task runtime the
+//! pause before a retry ([`Policies::pause`]); the registry is shared (`Arc`), so a clone costs nothing.
 //!
 //! ```
 //! use cqrsx::{
@@ -60,6 +60,7 @@
 use crate::task::{
     DEFAULT_MAX_ATTEMPTS,
     format::{TaskFormat, TaskFormatError, TaskPayload},
+    queue::retry::redelivery_backoff,
 };
 use std::{
     collections::{HashMap, hash_map::Entry},
@@ -209,6 +210,13 @@ impl Policies {
     pub fn max_attempts(&self, format: &TaskFormat) -> i32 {
         self.of(format).map_or(DEFAULT_MAX_ATTEMPTS, TaskPolicy::max_attempts)
     }
+
+    /// The pause after attempt `attempt` of the task type `format` failed: its policy's, or the queue's jittered
+    /// [`redelivery_backoff`] without one (a new draw on every call).
+    pub fn pause(&self, format: &TaskFormat, attempt: i32) -> Duration {
+        self.of(format)
+            .map_or_else(|| redelivery_backoff(attempt), |policy| policy.retry().pause(attempt))
+    }
 }
 
 /// Why a policy or a binding was refused.
@@ -352,6 +360,30 @@ mod tests {
             (6, 3, DEFAULT_MAX_ATTEMPTS)
         );
         assert_eq!(Policies::default().max_attempts(&step_format), DEFAULT_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn a_type_pauses_by_its_policy_and_a_type_without_one_by_the_redelivery_backoff() {
+        let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), 6).unwrap();
+        let mail = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 6).unwrap();
+        let policies = Policies::default()
+            .with_policy(STEP, step)
+            .unwrap()
+            .with_policy(MAIL, mail)
+            .unwrap()
+            .with_task::<Step>(STEP)
+            .unwrap()
+            .with_task::<Mail>(MAIL)
+            .unwrap();
+        let (step_format, mail_format) = (TaskFormat::of::<Step>().unwrap(), TaskFormat::of::<Mail>().unwrap());
+        let pauses = |format: &TaskFormat| (1..=6).map(|n| policies.pause(format, n).as_secs()).collect::<Vec<_>>();
+        assert_eq!(pauses(&step_format), [1; 6]);
+        assert_eq!(pauses(&mail_format), [1, 2, 4, 8, 8, 8]);
+        let unbound = TaskFormat::of::<Unbound>().unwrap();
+        for (attempt, low, high) in [(1, 4.0, 6.0), (3, 16.0, 24.0), (7, 240.0, 300.0)] {
+            let pause = policies.pause(&unbound, attempt).as_secs_f64();
+            assert!((low..=high).contains(&pause), "attempt {attempt}: {pause}");
+        }
     }
 
     #[test]

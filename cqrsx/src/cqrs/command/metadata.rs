@@ -1,16 +1,28 @@
-//! The metadata of a command: who issued it and how it relates to earlier work (the cqrsx causation keys
-//! `command_id`, `correlation_id`, `causation_id`, `source`), plus `recorded_at`. It travels through
-//! `execute_with_metadata` (decision D-04) and ends up in the `events.metadata` column of every committed event. Until
-//! the engine stamps it (backlog 05/11), the entry points build it: the HTTP handler for a UI command, the chain step
-//! for an internal one.
+//! The metadata of a command: who caused it ([`Causation`]) and when it was issued, stored with every event it
+//! commits.
+use crate::{cqrs::command::causation::Causation, task::attempt::TaskAttempt};
 use chrono::{SecondsFormat, Utc};
-use cqrsx::{cqrs::command::causation::Causation, task::attempt::TaskAttempt};
 use std::collections::HashMap;
 
-/// Who issued the command and how it relates to earlier work ([`Causation`]: for UI commands the
-/// three ids are equal; internal commands inherit the task's `correlation_id` and point
-/// `causation_id` at the task), plus when. `recorded_at` has a fixed width so the sidecar can
-/// sort it as text.
+/// Event metadata key of when the command was issued: RFC 3339 in UTC with microseconds, so every value has the same
+/// width and sorts as text (`2026-10-17T09:12:03.123456Z`).
+pub const RECORDED_AT: &str = "recorded_at";
+
+/// Who issued a command, how it relates to earlier work ([`Causation`]: for a root the three ids are equal; a command
+/// a task issues inherits the task's correlation id and points its causation id at the task), plus when
+/// ([`RECORDED_AT`]). Its map ([`to_map`](Self::to_map)) travels through
+/// [`execute_with_metadata`](crate::cqrs::command::CommandExecutor::execute_with_metadata) and is stored with every
+/// event the command commits; the core stamps the causation on the tasks it plans.
+///
+/// ```
+/// use cqrsx::cqrs::command::metadata::{CommandMetadata, RECORDED_AT};
+///
+/// let metadata = CommandMetadata::root("ui");
+/// let map = metadata.to_map();
+/// assert_eq!(map["source"], "ui");
+/// assert_eq!(map["command_id"], map["correlation_id"]);
+/// assert_eq!(map[RECORDED_AT].len(), "2026-10-17T09:12:03.123456Z".len());
+/// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CommandMetadata {
     pub causation: Causation,
@@ -22,18 +34,15 @@ impl CommandMetadata {
         Utc::now().to_rfc3339_opts(SecondsFormat::Micros, true)
     }
 
-    pub fn with_source(source: impl Into<String>) -> Self {
+    /// A command that starts a chain, issued by `source` (`"ui"` for the HTTP API).
+    pub fn root(source: impl Into<String>) -> Self {
         Self {
             causation: Causation::root(source),
             recorded_at: Self::now(),
         }
     }
 
-    pub fn ui() -> Self {
-        Self::with_source("ui")
-    }
-
-    /// Metadata of an internal command issued by an outbox task handler.
+    /// A command issued while handling `attempt` ([`Causation::from_task`]).
     pub fn from_task(attempt: &TaskAttempt) -> Self {
         Self {
             causation: Causation::from_task(attempt),
@@ -41,10 +50,10 @@ impl CommandMetadata {
         }
     }
 
-    /// What every committed event stores: the four causation keys and `recorded_at`.
+    /// What every committed event stores: the four causation keys and [`RECORDED_AT`].
     pub fn to_map(&self) -> HashMap<String, String> {
         let mut map = self.causation.event_metadata();
-        map.insert("recorded_at".to_owned(), self.recorded_at.clone());
+        map.insert(RECORDED_AT.to_owned(), self.recorded_at.clone());
         map
     }
 }
@@ -52,13 +61,13 @@ impl CommandMetadata {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::task::format::TaskFormat;
+    use crate::task::format::TaskFormat;
     use std::collections::BTreeSet;
     use uuid::Uuid;
 
     #[test]
     fn ui_metadata_uses_one_id_for_all_three_roles_and_fixed_width_time() {
-        let metadata = CommandMetadata::ui();
+        let metadata = CommandMetadata::root("ui");
         let causation = &metadata.causation;
         assert_eq!(causation.command_id, causation.correlation_id);
         assert_eq!(causation.command_id, causation.causation_id);

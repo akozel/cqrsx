@@ -1,15 +1,11 @@
 //! Bounded admission and coordination of polling, worker exits and shutdown.
-use super::{dispatcher_factory::build_checked_dispatcher, poller::Poller, worker_pool::WorkerPool};
+use super::{poller::Poller, worker_pool::WorkerPool};
 use crate::task::{
     adapter::TaskAdapter,
     dispatcher::TaskDispatcher,
     executor::TaskExecutor,
     queue::TaskQueue,
-    runtime::{
-        TaskRuntimeError,
-        dispatcher_factory::{TaskDispatcherFactory, WorkerSetupError},
-        worker_pool_config::TaskWorkerPoolConfig,
-    },
+    runtime::{TaskRuntimeError, worker_pool_config::TaskWorkerPoolConfig},
 };
 use std::sync::Arc;
 use tokio::{sync::Notify, time::MissedTickBehavior};
@@ -21,9 +17,9 @@ use uuid::Uuid;
 const RECOVERY_BATCH_LIMIT: usize = 32;
 /// One producer claims once fewer deliveries than the refill level wait, up to the free capacity of the
 /// bounded channel; at most C deliveries run and Q wait.
-/// Each worker owns its dispatcher for its entire Tokio task lifetime. Token cancellation
+/// Every worker shares the one dispatcher, and a worker restarted after a panic gets it again. Token cancellation
 /// stops admission/dequeue and drains only started invocations for a common H+S budget.
-/// Startup/restart errors cancel the supplied token before returning/draining. Pass a
+/// A configuration error cancels the supplied token before returning. Pass a
 /// child token to isolate a pool; clones share cancellation with the host. Dropping a
 /// token handle does not request shutdown: lifecycle owners should use a drop guard.
 /// Dropping/aborting this supervisor cancels the token and aborts its owned workers;
@@ -32,36 +28,26 @@ const RECOVERY_BATCH_LIMIT: usize = 32;
 pub async fn run<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapter + 'static>(
     queue: Arc<Q>,
     executor: Arc<E>,
-    factory: TaskDispatcherFactory<A>,
+    dispatcher: TaskDispatcher<A>,
     config: TaskWorkerPoolConfig,
     shutdown: CancellationToken,
 ) -> Result<(), TaskRuntimeError> {
     let _cancel_on_exit = shutdown.clone().drop_guard();
     config.validate_for_storage_timeout(executor.storage_timeout())?;
-    if shutdown.is_cancelled() {
-        return Ok(());
-    }
-    let first = factory().map_err(|source| WorkerSetupError::Build { worker_index: 0, source })?;
-    let formats = first.formats().to_vec();
-    let dispatchers = std::iter::once(Ok(first))
-        .chain((1..config.concurrency()).map(|index| build_checked_dispatcher(&factory, &formats, index)))
-        .collect::<Result<Vec<_>, _>>()?;
     run_prepared(
         super::RuntimeContext::new(queue, executor),
-        factory,
         config,
-        dispatchers,
+        Arc::new(dispatcher),
         shutdown,
     )
     .await
 }
 
-/// Shared execution engine for ready dispatchers and the low-level entry point.
+/// Shared execution engine for a ready dispatcher and the low-level entry point.
 pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapter + 'static>(
     context: super::RuntimeContext<Q, E>,
-    factory: TaskDispatcherFactory<A>,
     config: TaskWorkerPoolConfig,
-    dispatchers: Vec<TaskDispatcher<A>>,
+    dispatcher: Arc<TaskDispatcher<A>>,
     shutdown: CancellationToken,
 ) -> Result<(), TaskRuntimeError> {
     let _cancel_on_exit = shutdown.clone().drop_guard();
@@ -69,8 +55,8 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
         return Ok(());
     }
     let (queue, executor) = context.into_parts();
-    let formats = dispatchers[0].formats().to_vec();
-    let mut poller = Poller::new(queue, formats.clone(), executor.storage_timeout());
+    let formats = dispatcher.formats().to_vec();
+    let mut poller = Poller::new(queue, formats, executor.storage_timeout());
     let owner = Uuid::new_v4().to_string();
     let (sender, receiver) = async_channel::bounded(config.buffer_capacity());
     let capacity_available = Arc::new(Notify::new());
@@ -81,8 +67,8 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
         config.handler_timeout(),
         shutdown.clone(),
     );
-    for (index, dispatcher) in dispatchers.into_iter().enumerate() {
-        pool.spawn(index, dispatcher);
+    for index in 0..config.concurrency() {
+        pool.spawn(index, dispatcher.clone());
     }
     info!(concurrency = config.concurrency(), buffer_capacity = config.buffer_capacity(),
         buffer_refill_percent = config.buffer_refill_percent(),
@@ -90,75 +76,69 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
     let refill_level = config.buffer_refill_level();
     let mut interval = tokio::time::interval(config.poll_interval());
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
-    // All fallible runtime exits converge here rather than aborting healthy workers early.
-    let result = async {
-        loop {
-            tokio::select! {
-                biased;
-                _ = shutdown.cancelled() => break,
-                Some(exit) = pool.next_exit() => {
-                    let index = exit.index;
-                    error!(worker = index, tokio_task_id = %exit.tokio_task_id,
-                        panicked = exit.panicked, cancelled = exit.cancelled,
-                        owner = %owner, "task worker stopped; restarting");
-                    let dispatcher = build_checked_dispatcher(&factory, &formats, index)?;
-                    if shutdown.is_cancelled() {
-                        break;
-                    }
-                    pool.spawn(index, dispatcher);
+    loop {
+        tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => break,
+            Some(exit) = pool.next_exit() => {
+                let index = exit.index;
+                error!(worker = index, tokio_task_id = %exit.tokio_task_id,
+                    panicked = exit.panicked, cancelled = exit.cancelled,
+                    owner = %owner, "task worker stopped; restarting");
+                if shutdown.is_cancelled() {
+                    break;
                 }
-                _ = interval.tick() => {
-                    let recovery = tokio::select! {
-                        biased;
-                        _ = shutdown.cancelled() => break,
-                        result = poller.recover_expired(config.concurrency().min(RECOVERY_BATCH_LIMIT)) => result,
-                    };
-                    match recovery {
-                        Ok(report) => for failure in report.failures() { crate::diagnostics::log_task_failure(failure); },
-                        Err(error) => error!(error = %error, "task lease recovery failed"),
-                    }
+                pool.spawn(index, dispatcher.clone());
+            }
+            _ = interval.tick() => {
+                let recovery = tokio::select! {
+                    biased;
+                    _ = shutdown.cancelled() => break,
+                    result = poller.recover_expired(config.concurrency().min(RECOVERY_BATCH_LIMIT)) => result,
+                };
+                match recovery {
+                    Ok(report) => for failure in report.failures() { crate::diagnostics::log_task_failure(failure); },
+                    Err(error) => error!(error = %error, "task lease recovery failed"),
                 }
-                _ = capacity_available.notified() => {},
             }
-            // Claim once fewer than the refill level wait: one claim then fills the buffer instead
-            // of one claim per freed slot. The level is at most the capacity, so a full buffer waits too.
-            if sender.len() >= refill_level {
-                continue;
-            }
-            let limit = config.buffer_capacity() - sender.len();
-            // This is the only producer. While claim awaits, consumers can only
-            // reduce occupancy, so the returned batch fits without reservations.
-            let claimed = tokio::select! {
-                biased;
-                _ = shutdown.cancelled() => break,
-                result = poller.claim(&owner, limit, config.lease_duration()) => result,
-            };
-            match claimed {
-                Ok(tasks) => {
-                    if shutdown.is_cancelled() {
-                        break;
-                    }
-                    assert!(tasks.len() <= limit, "queue must honor the claim limit");
-                    for task in tasks {
-                        // TrySendError contains LeasedTask; never format it into
-                        // a panic or log because payload and lease token are private.
-                        assert!(
-                            sender.try_send(task).is_ok(),
-                            "single producer's claimed batch must fit an open queue"
-                        );
-                    }
-                }
-                Err(error) => error!(error = %error, "task claim failed"),
-            }
+            _ = capacity_available.notified() => {},
         }
-        Ok(())
+        // Claim once fewer than the refill level wait: one claim then fills the buffer instead
+        // of one claim per freed slot. The level is at most the capacity, so a full buffer waits too.
+        if sender.len() >= refill_level {
+            continue;
+        }
+        let limit = config.buffer_capacity() - sender.len();
+        // This is the only producer. While claim awaits, consumers can only
+        // reduce occupancy, so the returned batch fits without reservations.
+        let claimed = tokio::select! {
+            biased;
+            _ = shutdown.cancelled() => break,
+            result = poller.claim(&owner, limit, config.lease_duration()) => result,
+        };
+        match claimed {
+            Ok(tasks) => {
+                if shutdown.is_cancelled() {
+                    break;
+                }
+                assert!(tasks.len() <= limit, "queue must honor the claim limit");
+                for task in tasks {
+                    // TrySendError contains LeasedTask; never format it into
+                    // a panic or log because payload and lease token are private.
+                    assert!(
+                        sender.try_send(task).is_ok(),
+                        "single producer's claimed batch must fit an open queue"
+                    );
+                }
+            }
+            Err(error) => error!(error = %error, "task claim failed"),
+        }
     }
-    .await;
-    // Notify the host before waiting for healthy workers, retaining the original error.
+    // Notify the host before waiting for healthy workers.
     shutdown.cancel();
     pool.drain().await;
     drop(sender);
-    result
+    Ok(())
 }
 
 #[cfg(test)]
@@ -190,7 +170,6 @@ mod tests {
                 wait_until(|| queue.recovery_calls.load(Ordering::SeqCst) > 0).await;
                 stop.cancel();
             };
-            let factory: TaskDispatcherFactory<_> = Arc::new(|| TaskDispatcher::try_new(vec![adapter()]));
             let (result, ()) = tokio::join!(
                 super::run(
                     queue.clone(),
@@ -198,7 +177,7 @@ mod tests {
                         queue.clone(),
                         crate::task::queue::storage_config::TaskStorageConfig::default()
                     )),
-                    factory,
+                    TaskDispatcher::try_new(vec![adapter()]).unwrap(),
                     config.clone(),
                     stop.clone()
                 ),

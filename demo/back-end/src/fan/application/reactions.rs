@@ -114,12 +114,12 @@ mod tests {
                 domain::{Fan, FanCommand, commands::RecordCancellation},
             },
             shared::{
-                application::{activity::ActivityHub, metadata::CommandMetadata},
+                application::activity::ActivityHub,
                 domain::{ConcertId, FanId, FanLedgerId},
             },
         };
         use cqrsx::cqrs::{
-            command::{CommandExecutor, CommandGatewayError},
+            command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata},
             testing::{command::TestCommandExecutor, mem_store::MemStore, unavailable_store::UnavailableStore},
         };
         use std::sync::Arc;
@@ -140,7 +140,7 @@ mod tests {
                 &ConcertId::parse("radiohead-2026-11-21").unwrap(),
             );
             let executed = fans
-                .execute_with_metadata(&ledger, command, CommandMetadata::ui().to_map())
+                .execute_with_metadata(&ledger, command, CommandMetadata::root("ui").to_map())
                 .await;
             assert_eq!(executed, Err(CommandGatewayError::Unavailable));
             let (entries, _) = activity.subscribe();
@@ -157,7 +157,7 @@ mod tests {
             let activity = Arc::new(ActivityHub::new(8, 8));
             let fans =
                 TestCommandExecutor::<Fan>::new(MemStore::default(), ()).with_observer(crate::testing::command_feed(&activity));
-            fans.execute_with_metadata(&ledger(), fan_command(), CommandMetadata::ui().to_map())
+            fans.execute_with_metadata(&ledger(), fan_command(), CommandMetadata::root("ui").to_map())
                 .await
                 .unwrap();
             let cancellation = FanCommand::RecordCancellation(RecordCancellation {
@@ -165,7 +165,7 @@ mod tests {
                 cancellation_id: Uuid::now_v7(),
                 refund: 80,
             });
-            fans.execute_with_metadata(&ledger(), cancellation, CommandMetadata::ui().to_map())
+            fans.execute_with_metadata(&ledger(), cancellation, CommandMetadata::root("ui").to_map())
                 .await
                 .unwrap();
             let (entries, _) = activity.subscribe();

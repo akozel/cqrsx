@@ -66,8 +66,6 @@ pub enum ProcessError {
     MongoClient(mongodb::error::Error),
     #[error("cannot bind {addr}: {source}")]
     Bind { addr: SocketAddr, source: std::io::Error },
-    #[error("task runtime setup: {0}")]
-    TaskRuntime(String),
     #[error("the read side stopped: {0}")]
     Projections(String),
 }
@@ -106,9 +104,14 @@ impl Process {
             })?;
         tracing::info!("encore-backend listening on http://{}", self.config.http_addr);
         // The outbox task runtime on the main pool: claim, settlement and recovery are one statement
-        // each. Prepared here (no background work yet), started by `lifecycle::run`.
-        let runtime = prepare_task_runtime(self.pool.clone(), app.dispatcher, self.config.task_runtime.clone())
-            .map_err(|e| ProcessError::TaskRuntime(e.to_string()))?;
+        // each; a retry waits the pause of its task type's policy. Prepared here (no background work yet), started by
+        // `lifecycle::run`.
+        let runtime = prepare_task_runtime(
+            self.pool.clone(),
+            app.dispatcher,
+            self.config.task_runtime.clone(),
+            app.policies,
+        );
         let task_runtime = runtime.run(self.shutdown.clone());
         // axum 0.8: `with_graceful_shutdown` returns an `IntoFuture`, not a `Future`.
         let inbound = axum::serve(listener, routes::router(app.state))

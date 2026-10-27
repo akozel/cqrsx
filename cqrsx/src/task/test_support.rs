@@ -1,14 +1,15 @@
 use crate::task::{
     adapter::TaskAdapter,
     attempt::TaskAttempt,
+    context::TaskContext,
     dispatcher::TaskDispatcher,
     format::{TaskFormat, TaskPayload},
-    handler::TaskHandlerError,
     queue::{
         TaskProcessingError, TaskQueue,
         lease::{LeasedTask, TaskLease},
         settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
     },
+    result::TaskResult,
 };
 use serde::Serialize;
 use serde_json::json;
@@ -138,7 +139,7 @@ impl TaskQueue for Queue {
 }
 
 pub(crate) struct Adapter {
-    pub(crate) result: Result<(), TaskHandlerError>,
+    pub(crate) result: TaskResult,
     pub(crate) hang: bool,
 }
 
@@ -147,7 +148,7 @@ impl TaskAdapter for Adapter {
         vec![format()]
     }
 
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
         if self.hang {
             std::future::pending::<()>().await;
         }
@@ -157,7 +158,7 @@ impl TaskAdapter for Adapter {
 
 pub(crate) fn adapter() -> Adapter {
     Adapter {
-        result: Ok(()),
+        result: TaskResult::Done,
         hang: false,
     }
 }
@@ -171,9 +172,9 @@ impl TaskAdapter for CountingAdapter {
         vec![format()]
     }
 
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        TaskResult::Done
     }
 }
 

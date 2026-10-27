@@ -4,7 +4,7 @@
 //!
 //! - [`aggregates`]: one module per aggregate: its command executor, which wakes its read model's processor;
 //! - [`projections`]: the read models: their collections, processors, verification and query ports;
-//! - [`tasks`]: the outbox tasks: the policy of every task type and its handler;
+//! - [`tasks`]: the outbox tasks: the policy of every task type and its handler, in one dispatcher;
 //! - [`routes`]: the HTTP endpoints.
 //!
 //! [`read_models`] and [`ledger`] are what only the composition knows of every module: the read models the HTTP
@@ -34,7 +34,11 @@ use crate::{
 use cqrsx::{
     cqrs::projection::runtime::ProjectionRuntime,
     postgres::command::{PostgresCommandConfigError, PostgresCommandExecutor},
-    task::{adapter::boxed::BoxedTaskAdapter, policy::PolicyError, runtime::dispatcher_factory::TaskDispatcherFactory},
+    task::{
+        adapter::boxed::BoxedTaskAdapter,
+        dispatcher::{TaskDispatcher, TaskDispatcherError},
+        policy::{Policies, PolicyError},
+    },
 };
 use std::sync::Arc;
 use tokio_util::sync::CancellationToken;
@@ -65,11 +69,12 @@ pub struct AppState {
     pub shutdown: CancellationToken,
 }
 
-/// The wired application: the HTTP state, the task handlers for the outbox runtime and the projection
-/// processors that feed the read models from the journal.
+/// The wired application: the HTTP state, the task handlers and the policies of the task types for the outbox
+/// runtime, and the projection processors that feed the read models from the journal.
 pub struct Wiring {
     pub state: AppState,
-    pub dispatcher: TaskDispatcherFactory<BoxedTaskAdapter>,
+    pub dispatcher: TaskDispatcher<BoxedTaskAdapter>,
+    pub policies: Policies,
     pub projections: ProjectionRuntime,
 }
 
@@ -81,11 +86,13 @@ pub enum WiringError {
     Policy(#[from] PolicyError),
     #[error("mail service client: {0}")]
     MailClient(#[from] reqwest::Error),
+    #[error("task handlers: {0}")]
+    Handlers(#[from] TaskDispatcherError),
 }
 
 /// Builds the graph in dependency order: the read side (processors and their wake-ups), the policies of the task
 /// types, the aggregates whose commits wake the read side, whose reactions plan with the policies and whose commands
-/// the activity feed's observer reports, the operations over the whole ledger, the task handlers.
+/// the activity feed's observer reports, the operations over the whole ledger, the task handlers with the mail service.
 pub fn wire(process: &Process) -> Result<Wiring, WiringError> {
     let config = process.config.clone();
     let activity = Arc::new(ActivityHub::new(ACTIVITY_CHANNEL_CAPACITY, ACTIVITY_BACKLOG));
@@ -112,7 +119,7 @@ pub fn wire(process: &Process) -> Result<Wiring, WiringError> {
     let verify = Arc::new(VerifyService::new(read.verification));
     let time_travel = Arc::new(TimeTravel::new(event_history(process.history_pool.clone())));
 
-    let dispatcher = tasks::dispatcher(process, fans, activity.clone())?;
+    let dispatcher = tasks::handlers(fans, tasks::mailer(&config, activity.clone())?)?;
 
     Ok(Wiring {
         state: AppState {
@@ -126,6 +133,7 @@ pub fn wire(process: &Process) -> Result<Wiring, WiringError> {
             shutdown: process.shutdown.clone(),
         },
         dispatcher,
+        policies,
         projections: read.runtime,
     })
 }

@@ -2,23 +2,28 @@
 use cqrsx::task::{
     adapter::{TaskAdapter, json::JsonTaskAdapter},
     attempt::TaskAttempt,
+    context::TaskContext,
     dispatcher::TaskDispatcher,
     executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
     format::{TaskFormat, TaskPayload},
-    handler::{TaskHandler, TaskHandlerError},
+    handler::TaskHandler,
     queue::{
         TaskProcessingError, TaskQueue,
         lease::{LeasedTask, TaskLease},
         settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult},
         storage_config::TaskStorageConfig,
     },
+    result::TaskResult,
 };
 use serde::{Deserialize, Serialize};
 use std::{
     cell::Cell,
     future::Future,
     pin::pin,
-    sync::Arc,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
     task::{Context, Waker},
     time::Duration,
 };
@@ -39,77 +44,86 @@ impl TaskPayload for Payload {
     const TASK_TYPE: &'static str = "native_adapter";
     const TASK_VERSION: i32 = 1;
 }
-// Cell deliberately rules out Sync/Clone requirements on a borrowed handler.
+// The payload's Cell rules out Sync/Clone requirements on payloads; the handler borrows shared state.
 struct BorrowedHandler<'a> {
-    calls: &'a mut usize,
+    calls: &'a AtomicUsize,
     original: &'a TaskAttempt,
 }
 impl TaskHandler<Payload> for BorrowedHandler<'_> {
-    async fn handle(&mut self, payload: Payload, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn handle(&self, payload: Payload, ctx: &TaskContext) -> TaskResult {
         tokio::task::yield_now().await;
-        assert!(std::ptr::eq(attempt, self.original));
+        assert!(std::ptr::eq(ctx.attempt(), self.original));
         assert_eq!(payload.value, "owned");
         payload.mutable.set(1);
-        *self.calls += 1;
-        Ok(())
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        TaskResult::Done
     }
 }
 struct BorrowedAdapter<'a> {
-    calls: &'a mut usize,
+    calls: &'a AtomicUsize,
     original: &'a TaskAttempt,
-    state: Cell<usize>,
+    state: AtomicUsize,
 }
 impl TaskAdapter for BorrowedAdapter<'_> {
     fn formats(&self) -> Vec<TaskFormat> {
         vec![self.original.format().clone()]
     }
-    async fn invoke(&mut self, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
         tokio::task::yield_now().await;
-        assert!(std::ptr::eq(attempt, self.original));
-        self.state.set(self.state.get() + 1);
-        *self.calls += 1;
-        Ok(())
+        assert!(std::ptr::eq(ctx.attempt(), self.original));
+        self.state.fetch_add(1, Ordering::SeqCst);
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        TaskResult::Done
     }
 }
-fn attempt() -> TaskAttempt {
-    TaskAttempt::new(
-        uuid::Uuid::nil(),
-        TaskFormat::of::<Payload>().unwrap(),
-        serde_json::json!({"value":"owned"}),
-        serde_json::json!({"original":"metadata"}),
-        1,
+fn attempt() -> Arc<TaskAttempt> {
+    Arc::new(
+        TaskAttempt::new(
+            uuid::Uuid::nil(),
+            TaskFormat::of::<Payload>().unwrap(),
+            serde_json::json!({"value":"owned"}),
+            serde_json::json!({"original":"metadata"}),
+            1,
+        )
+        .unwrap(),
     )
-    .unwrap()
 }
 #[tokio::test]
-async fn native_invoke_and_dispatch_borrow_original_attempt_and_send_only_state_through_pending() {
+async fn native_invoke_and_dispatch_borrow_original_attempt_and_shared_state_through_pending() {
     let original = attempt();
-    let mut calls = 0;
+    let ctx = TaskContext::new(original.clone(), Duration::ZERO);
+    let calls = AtomicUsize::new(0);
     {
-        let mut adapter = BorrowedAdapter {
-            calls: &mut calls,
+        let adapter = BorrowedAdapter {
+            calls: &calls,
             original: &original,
-            state: Cell::new(0),
+            state: AtomicUsize::new(0),
         };
         for _ in 0..2 {
-            pending(TaskAdapter::invoke(&mut adapter, &original)).await.unwrap();
+            assert_eq!(pending(TaskAdapter::invoke(&adapter, &ctx)).await, TaskResult::Done);
         }
-        assert_eq!(adapter.state.get(), 2);
-        let mut dispatcher = TaskDispatcher::try_new(vec![adapter]).unwrap();
-        pending(dispatcher.dispatch(&original)).await.unwrap();
+        assert_eq!(adapter.state.load(Ordering::SeqCst), 2);
+        let dispatcher = TaskDispatcher::try_new(vec![adapter]).unwrap();
+        assert_eq!(
+            pending(dispatcher.dispatch(original.clone(), Duration::ZERO)).await,
+            TaskResult::Done
+        );
     }
-    assert_eq!(calls, 3);
+    assert_eq!(calls.load(Ordering::SeqCst), 3);
     {
-        let mut adapter = JsonTaskAdapter::<Payload, _>::new(BorrowedHandler {
-            calls: &mut calls,
+        let adapter = JsonTaskAdapter::<Payload, _>::new(BorrowedHandler {
+            calls: &calls,
             original: &original,
         })
         .unwrap();
-        pending(TaskAdapter::invoke(&mut adapter, &original)).await.unwrap();
-        let mut dispatcher = TaskDispatcher::try_new(vec![adapter]).unwrap();
-        pending(dispatcher.dispatch(&original)).await.unwrap();
+        assert_eq!(pending(TaskAdapter::invoke(&adapter, &ctx)).await, TaskResult::Done);
+        let dispatcher = TaskDispatcher::try_new(vec![adapter]).unwrap();
+        assert_eq!(
+            pending(dispatcher.dispatch(original.clone(), Duration::ZERO)).await,
+            TaskResult::Done
+        );
     }
-    assert_eq!(calls, 5);
+    assert_eq!(calls.load(Ordering::SeqCst), 5);
 }
 
 struct Queue;
@@ -130,20 +144,20 @@ impl TaskAdapter for Adapter {
     fn formats(&self) -> Vec<TaskFormat> {
         vec![TaskFormat::of::<Payload>().unwrap()]
     }
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
         tokio::task::yield_now().await;
-        Ok(())
+        TaskResult::Done
     }
 }
 #[tokio::test]
 async fn one_standard_executor_accepts_different_concrete_adapter_types() {
     let executor = DefaultTaskExecutor::new(Arc::new(Queue), TaskStorageConfig::default());
-    let mut first = TaskDispatcher::try_new(vec![Adapter]).unwrap();
-    let mut second = TaskDispatcher::try_new(vec![JsonTaskAdapter::<Payload, _>::new(OwnedHandler).unwrap()]).unwrap();
+    let first = TaskDispatcher::try_new(vec![Adapter]).unwrap();
+    let second = TaskDispatcher::try_new(vec![JsonTaskAdapter::<Payload, _>::new(OwnedHandler).unwrap()]).unwrap();
     macro_rules! execute {
         ($dispatcher:expr) => {{
             let task = LeasedTask::new(
-                attempt(),
+                (*attempt()).clone(),
                 TaskLease::new(uuid::Uuid::nil(), tokio::time::Instant::now() + Duration::from_secs(60)),
             );
             assert_eq!(
@@ -159,28 +173,29 @@ async fn one_standard_executor_accepts_different_concrete_adapter_types() {
             );
         }};
     }
-    execute!(&mut first);
-    execute!(&mut second);
+    execute!(&first);
+    execute!(&second);
 }
 struct OwnedHandler;
 impl TaskHandler<Payload> for OwnedHandler {
-    async fn handle(&mut self, payload: Payload, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn handle(&self, payload: Payload, _: &TaskContext) -> TaskResult {
         tokio::task::yield_now().await;
         payload.mutable.set(1);
-        Ok(())
+        TaskResult::Done
     }
 }
 
 #[tokio::test]
 async fn custom_adapter_converts_two_wire_versions_without_changing_routing() {
-    struct Versions<'a>(&'a mut Vec<String>);
+    struct Versions<'a>(&'a Mutex<Vec<String>>);
     impl TaskAdapter for Versions<'_> {
         fn formats(&self) -> Vec<TaskFormat> {
             (1..=2)
                 .map(|version| TaskFormat::new("custom_versioned", version).unwrap())
                 .collect()
         }
-        async fn invoke(&mut self, task: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
+            let task = ctx.attempt();
             let key = match task.format().task_version() {
                 1 => "old_value",
                 2 => "value",
@@ -189,13 +204,13 @@ async fn custom_adapter_converts_two_wire_versions_without_changing_routing() {
             let current = task.payload()[key].as_str().unwrap().to_owned();
             tokio::task::yield_now().await;
             assert_eq!(task.metadata()["original"], "metadata");
-            self.0.push(current);
-            Ok(())
+            self.0.lock().unwrap().push(current);
+            TaskResult::Done
         }
     }
-    let mut calls = Vec::new();
+    let calls = Mutex::new(Vec::new());
     {
-        let mut dispatcher = TaskDispatcher::try_new(vec![Versions(&mut calls)]).unwrap();
+        let dispatcher = TaskDispatcher::try_new(vec![Versions(&calls)]).unwrap();
         assert_eq!(
             dispatcher.formats().iter().map(TaskFormat::task_version).collect::<Vec<_>>(),
             [1, 2]
@@ -212,8 +227,8 @@ async fn custom_adapter_converts_two_wire_versions_without_changing_routing() {
                 1,
             )
             .unwrap();
-            pending(dispatcher.dispatch(&task)).await.unwrap();
+            assert_eq!(pending(dispatcher.dispatch(task, Duration::ZERO)).await, TaskResult::Done);
         }
     }
-    assert_eq!(calls, ["first", "second"]);
+    assert_eq!(*calls.lock().unwrap(), ["first", "second"]);
 }

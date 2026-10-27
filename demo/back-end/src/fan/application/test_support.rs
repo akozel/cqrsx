@@ -1,5 +1,6 @@
-//! A fan ledger over in-memory storage, task attempts and the facts and commands of decisions built by hand, for
-//! the tests of the ledger's tasks and reactions.
+//! A fan ledger over in-memory storage, task attempts and their contexts, and the facts and commands of decisions
+//! built by hand, for the tests of the ledger's tasks and reactions.
+use crate::shared::application::policies::CHAIN_RETRY_AFTER;
 use crate::{
     fan::{
         application::record_ticket::RecordTicketV1,
@@ -12,10 +13,15 @@ use crate::{
 };
 use cqrsx::{
     cqrs::{
+        command::CommandExecutor,
         reactions::ReactionsPlanner,
         testing::{command::TestCommandExecutor, mem_store::MemStore},
     },
-    task::{attempt::TaskAttempt, format::TaskPayload},
+    task::{
+        attempt::TaskAttempt,
+        context::{Executors, TaskContext},
+        format::TaskPayload,
+    },
 };
 use serde_json::json;
 use std::sync::Arc;
@@ -32,6 +38,11 @@ pub fn fans(store: MemStore<Fan>) -> (Arc<TestCommandExecutor<Fan>>, TestCommand
 /// The first claim of `payload`, carrying the correlation id of the command that published it.
 pub fn attempt<P: TaskPayload>(payload: &P, correlation_id: Uuid) -> TaskAttempt {
     TaskAttempt::first(payload, json!({ "correlation_id": correlation_id })).unwrap()
+}
+
+/// The context of a step of the ledger: `attempt`, the step's pause, `fans` as the ledgers' executor.
+pub fn steps<E: CommandExecutor<Fan> + 'static>(fans: &Arc<E>, attempt: TaskAttempt) -> TaskContext {
+    TaskContext::new(attempt, CHAIN_RETRY_AFTER).with_executors(Executors::default().with::<Fan, E>(fans.clone()).unwrap())
 }
 
 /// Fox's ledger for the Radiohead concert: the stream `ticket()` lands in.

@@ -1,60 +1,43 @@
 use super::*;
 
 #[tokio::test]
-async fn cancellation_during_restart_factory_does_not_start_a_replacement_worker() {
-    struct PanickingAdapter;
+async fn cancellation_before_a_restart_does_not_start_a_replacement_worker() {
+    /// Asks for shutdown and panics on its first delivery; counts the deliveries after it.
+    struct CancelThenPanic {
+        stop: CancellationToken,
+        deliveries: AtomicUsize,
+        after_panic: Arc<AtomicUsize>,
+    }
 
-    impl TaskAdapter for PanickingAdapter {
+    impl TaskAdapter for CancelThenPanic {
         fn formats(&self) -> Vec<TaskFormat> {
             vec![format()]
         }
-        async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            panic!("injected worker panic");
-        }
-    }
-
-    enum RestartAdapter {
-        Panicking(PanickingAdapter),
-        Counting(CountingAdapter),
-    }
-    impl TaskAdapter for RestartAdapter {
-        fn formats(&self) -> Vec<TaskFormat> {
-            match self {
-                Self::Panicking(adapter) => adapter.formats(),
-                Self::Counting(adapter) => adapter.formats(),
+        async fn invoke(&self, _: &TaskContext) -> TaskResult {
+            if self.deliveries.fetch_add(1, Ordering::SeqCst) == 0 {
+                self.stop.cancel();
+                panic!("injected worker panic");
             }
-        }
-        async fn invoke(&mut self, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            match self {
-                Self::Panicking(adapter) => adapter.invoke(attempt).await,
-                Self::Counting(adapter) => adapter.invoke(attempt).await,
-            }
+            self.after_panic.fetch_add(1, Ordering::SeqCst);
+            TaskResult::Done
         }
     }
     let queue = Arc::new(Queue::default());
     queue.incoming.lock().unwrap().extend([claimed(), claimed()]);
     let stop = CancellationToken::new();
-    let builds = Arc::new(AtomicUsize::new(0));
     let replacement_calls = Arc::new(AtomicUsize::new(0));
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let builds = builds.clone();
-        let stop = stop.clone();
-        let replacement_calls = replacement_calls.clone();
-        move || {
-            if builds.fetch_add(1, Ordering::SeqCst) == 0 {
-                TaskDispatcher::try_new(vec![RestartAdapter::Panicking(PanickingAdapter)])
-            } else {
-                stop.cancel();
-                TaskDispatcher::try_new(vec![RestartAdapter::Counting(CountingAdapter(replacement_calls.clone()))])
-            }
-        }
-    });
+    let dispatcher = TaskDispatcher::try_new(vec![CancelThenPanic {
+        stop: stop.clone(),
+        deliveries: AtomicUsize::new(0),
+        after_panic: replacement_calls.clone(),
+    }])
+    .unwrap();
     tokio::time::timeout(
         Duration::from_secs(5),
         run(
             queue.clone(),
             Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())),
-            factory,
+            dispatcher,
             worker_config(1, 1, Duration::from_secs(3600)),
             stop.clone(),
         ),
@@ -63,7 +46,6 @@ async fn cancellation_during_restart_factory_does_not_start_a_replacement_worker
     .unwrap()
     .unwrap();
     assert!(stop.is_cancelled());
-    assert_eq!(builds.load(Ordering::SeqCst), 2);
     assert_eq!(replacement_calls.load(Ordering::SeqCst), 0);
     assert!(queue.outcomes.lock().unwrap().is_empty());
 }
@@ -83,14 +65,12 @@ async fn supervisor_recovers_workers_and_survives_storage_errors_and_lost_acknow
         fn formats(&self) -> Vec<TaskFormat> {
             vec![format()]
         }
-        async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn invoke(&self, _: &TaskContext) -> TaskResult {
             assert_ne!(self.calls.fetch_add(1, Ordering::SeqCst), 0, "injected worker failure");
-            Ok(())
+            TaskResult::Done
         }
     }
-    let observed = calls.clone();
-    let factory: TaskDispatcherFactory<_> =
-        Arc::new(move || TaskDispatcher::try_new(vec![PanicOnce { calls: observed.clone() }]));
+    let dispatcher = TaskDispatcher::try_new(vec![PanicOnce { calls: calls.clone() }]).unwrap();
     let config = TaskWorkerPoolConfig::new(
         1,
         1,
@@ -101,7 +81,7 @@ async fn supervisor_recovers_workers_and_survives_storage_errors_and_lost_acknow
     .unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
-    let supervisor_task = tokio::spawn(run(queue.clone(), executor, factory, config, shutdown));
+    let supervisor_task = tokio::spawn(run(queue.clone(), executor, dispatcher, config, shutdown));
     wait_until(|| queue.recovery_calls.load(Ordering::SeqCst) >= 2).await;
     queue.claim_error.store(false, Ordering::SeqCst);
     queue.recovery_error.store(false, Ordering::SeqCst);
@@ -133,16 +113,12 @@ async fn storage_timeouts_allow_polling_and_free_worker_capacity_without_shutdow
             TaskStorageConfig::new(Duration::from_millis(5)).unwrap(),
         ));
         let calls = Arc::new(AtomicUsize::new(0));
-        let factory: TaskDispatcherFactory<_> = Arc::new({
-            let calls = calls.clone();
-            move || TaskDispatcher::try_new(vec![CountingAdapter(calls.clone())])
-        });
         let shutdown = CancellationToken::new();
         let stop = shutdown.clone();
         let supervisor_task = tokio::spawn(run(
             queue.clone(),
             executor,
-            factory,
+            TaskDispatcher::try_new(vec![CountingAdapter(calls.clone())]).unwrap(),
             TaskWorkerPoolConfig::new(
                 1,
                 1,
@@ -174,58 +150,6 @@ async fn storage_timeouts_allow_polling_and_free_worker_capacity_without_shutdow
 }
 
 #[tokio::test]
-async fn dispatcher_build_failures_are_typed_on_startup_and_restart() {
-    struct PanicAdapter;
-
-    impl TaskAdapter for PanicAdapter {
-        fn formats(&self) -> Vec<TaskFormat> {
-            vec![format()]
-        }
-        async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            panic!("injected worker failure");
-        }
-    }
-    for fail_on_restart in [false, true] {
-        let queue = Arc::new(Queue::default());
-        queue.incoming.lock().unwrap().push_back(claimed());
-        let calls = Arc::new(AtomicUsize::new(0));
-        let factory: TaskDispatcherFactory<_> = Arc::new(move || {
-            if fail_on_restart && calls.fetch_add(1, Ordering::SeqCst) == 0 {
-                TaskDispatcher::try_new(vec![PanicAdapter])
-            } else {
-                Err(TaskDispatcherError::Empty)
-            }
-        });
-        let executor = Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()));
-        let shutdown = CancellationToken::new();
-        let config = TaskWorkerPoolConfig::new(
-            1,
-            1,
-            Duration::from_millis(2),
-            Duration::from_secs(30),
-            Duration::from_secs(120),
-        )
-        .unwrap();
-        let error = tokio::time::timeout(
-            Duration::from_secs(2),
-            run(queue.clone(), executor, factory, config, shutdown),
-        )
-        .await
-        .unwrap()
-        .unwrap_err();
-        assert_eq!(
-            error,
-            TaskRuntimeError::WorkerSetup(WorkerSetupError::Build {
-                worker_index: 0,
-                source: TaskDispatcherError::Empty
-            })
-        );
-        assert_eq!(queue.requested.lock().unwrap().len(), usize::from(fail_on_restart));
-        assert!(queue.outcomes.lock().unwrap().is_empty());
-    }
-}
-
-#[tokio::test]
 async fn sequential_deliveries_preserve_dispatcher_state_and_tokio_task_identity() {
     let queue = Arc::new(Queue::default());
     queue.incoming.lock().unwrap().extend([claimed(), claimed()]);
@@ -235,7 +159,7 @@ async fn sequential_deliveries_preserve_dispatcher_state_and_tokio_task_identity
     let supervisor_task = tokio::spawn(
         prepared_runtime(
             queue.clone(),
-            io_factory(probe.clone()),
+            io_dispatcher(probe.clone()),
             worker_config(1, 1, Duration::from_millis(2)),
         )
         .run(shutdown),
@@ -256,9 +180,11 @@ async fn sequential_deliveries_preserve_dispatcher_state_and_tokio_task_identity
 }
 
 #[tokio::test]
-async fn panic_restarts_without_poll_tick_with_a_new_dispatcher_and_task() {
+async fn panic_restarts_without_poll_tick_with_the_shared_dispatcher_and_a_new_task() {
+    /// Panics on its first delivery; records the dispatcher and the Tokio task of every delivery.
     struct PanicFirstRegistry {
         dispatcher: usize,
+        deliveries: AtomicUsize,
         records: Arc<std::sync::Mutex<Vec<(usize, Id)>>>,
     }
 
@@ -266,140 +192,33 @@ async fn panic_restarts_without_poll_tick_with_a_new_dispatcher_and_task() {
         fn formats(&self) -> Vec<TaskFormat> {
             vec![format()]
         }
-        async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn invoke(&self, _: &TaskContext) -> TaskResult {
             self.records.lock().unwrap().push((self.dispatcher, tokio::task::id()));
-            assert_ne!(self.dispatcher, 0, "injected failure");
-            Ok(())
+            assert_ne!(self.deliveries.fetch_add(1, Ordering::SeqCst), 0, "injected failure");
+            TaskResult::Done
         }
     }
     let queue = Arc::new(Queue::default());
     queue.incoming.lock().unwrap().extend([claimed(), claimed()]);
     let records = Arc::new(std::sync::Mutex::new(Vec::new()));
     let built = Arc::new(AtomicUsize::new(0));
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let records = records.clone();
-        let built = built.clone();
-        move || {
-            TaskDispatcher::try_new(vec![PanicFirstRegistry {
-                dispatcher: built.fetch_add(1, Ordering::SeqCst),
-                records: records.clone(),
-            }])
-        }
-    });
+    let dispatcher = TaskDispatcher::try_new(vec![PanicFirstRegistry {
+        dispatcher: built.fetch_add(1, Ordering::SeqCst),
+        deliveries: AtomicUsize::new(0),
+        records: records.clone(),
+    }])
+    .unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     let supervisor_task =
-        tokio::spawn(prepared_runtime(queue.clone(), factory, worker_config(1, 1, Duration::from_secs(3600))).run(shutdown));
+        tokio::spawn(prepared_runtime(queue.clone(), dispatcher, worker_config(1, 1, Duration::from_secs(3600))).run(shutdown));
     wait_until(|| queue.outcomes.lock().unwrap().len() == 1).await;
     let records = records.lock().unwrap().clone();
-    assert_eq!(built.load(Ordering::SeqCst), 2);
-    assert_eq!((records[0].0, records[1].0), (0, 1));
+    assert_eq!(built.load(Ordering::SeqCst), 1);
+    assert_eq!((records[0].0, records[1].0), (0, 0));
     assert_ne!(records[0].1, records[1].1);
     assert_eq!(queue.recovery_calls.load(Ordering::SeqCst), 1);
     assert!(!stop.is_cancelled(), "a worker panic must not cancel the host");
     stop.cancel();
     supervisor_task.await.unwrap().unwrap();
-}
-
-#[tokio::test]
-async fn restart_factory_error_drains_healthy_operations_instead_of_aborting_them() {
-    for mismatch in [false, true] {
-        assert_restart_failure_drains(mismatch).await;
-    }
-}
-
-async fn assert_restart_failure_drains(mismatch: bool) {
-    struct OtherAdapter;
-
-    impl TaskAdapter for OtherAdapter {
-        fn formats(&self) -> Vec<TaskFormat> {
-            vec![TaskFormat::new("other", 1).unwrap()]
-        }
-        async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            panic!("mismatched dispatcher must never execute");
-        }
-    }
-    struct PanicOnDemand(Arc<tokio::sync::Semaphore>);
-
-    impl TaskAdapter for PanicOnDemand {
-        fn formats(&self) -> Vec<TaskFormat> {
-            vec![format()]
-        }
-        async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            self.0.acquire().await.unwrap().forget();
-            panic!("injected failure");
-        }
-    }
-
-    enum RestartAdapter {
-        Panic(PanicOnDemand),
-        Io(IoAdapter),
-        Other(OtherAdapter),
-    }
-    impl TaskAdapter for RestartAdapter {
-        fn formats(&self) -> Vec<TaskFormat> {
-            match self {
-                Self::Panic(adapter) => adapter.formats(),
-                Self::Io(adapter) => adapter.formats(),
-                Self::Other(adapter) => adapter.formats(),
-            }
-        }
-        async fn invoke(&mut self, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            match self {
-                Self::Panic(adapter) => adapter.invoke(attempt).await,
-                Self::Io(adapter) => adapter.invoke(attempt).await,
-                Self::Other(adapter) => adapter.invoke(attempt).await,
-            }
-        }
-    }
-    let queue = Arc::new(Queue::default());
-    queue.incoming.lock().unwrap().extend((0..5).map(|_| claimed()));
-    let probe = Arc::new(IoProbe::default());
-    let crash = Arc::new(tokio::sync::Semaphore::new(0));
-    let built = Arc::new(AtomicUsize::new(0));
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let probe = probe.clone();
-        let crash = crash.clone();
-        let built = built.clone();
-        move || match built.fetch_add(1, Ordering::SeqCst) {
-            0 => TaskDispatcher::try_new(vec![RestartAdapter::Panic(PanicOnDemand(crash.clone()))]),
-            1 => TaskDispatcher::try_new(vec![RestartAdapter::Io(IoAdapter {
-                probe: probe.clone(),
-                dispatcher: 1,
-                calls: 0,
-            })]),
-            _ if mismatch => TaskDispatcher::try_new(vec![RestartAdapter::Other(OtherAdapter)]),
-            _ => Err(TaskDispatcherError::Empty),
-        }
-    });
-    let parent = CancellationToken::new();
-    let shutdown = parent.child_token();
-    let supervisor_task = tokio::spawn(
-        prepared_runtime(queue.clone(), factory, worker_config(2, 2, Duration::from_secs(3600))).run(shutdown.clone()),
-    );
-    wait_until(|| probe.active.load(Ordering::SeqCst) == 1 && queue.incoming.lock().unwrap().len() == 1).await;
-    crash.add_permits(1);
-    wait_until(|| built.load(Ordering::SeqCst) == 3).await;
-    tokio::time::timeout(Duration::from_secs(1), shutdown.cancelled())
-        .await
-        .unwrap();
-    assert!(!parent.is_cancelled(), "the caller can isolate a pool with a child token");
-    assert!(
-        !supervisor_task.is_finished(),
-        "host notification must precede healthy worker drain"
-    );
-    assert_eq!(probe.active.load(Ordering::SeqCst), 1);
-    assert!(queue.outcomes.lock().unwrap().is_empty());
-    probe.gate.add_permits(1);
-    let expected = if mismatch {
-        TaskRuntimeError::WorkerSetup(WorkerSetupError::FormatsMismatch { worker_index: 0 })
-    } else {
-        TaskRuntimeError::WorkerSetup(WorkerSetupError::Build {
-            worker_index: 0,
-            source: TaskDispatcherError::Empty,
-        })
-    };
-    assert_eq!(supervisor_task.await.unwrap(), Err(expected));
-    assert_eq!(queue.outcomes.lock().unwrap().len(), 1);
-    assert_eq!(probe.calls.lock().unwrap().len(), 1);
 }

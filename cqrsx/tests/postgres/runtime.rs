@@ -1,11 +1,12 @@
-use cqrsx::task::attempt::TaskAttempt;
-use cqrsx::task::runtime::dispatcher_factory::WorkerSetupError;
 use std::sync::Mutex;
 
 use super::*;
 use cqrsx::{
     postgres::task_runtime::prepare_task_runtime,
-    task::{dispatcher::TaskDispatcherError, queue::storage_config::TaskStorageConfig, runtime::config::TaskRuntimeConfig},
+    task::{
+        dispatcher::TaskDispatcherError, policy::Policies, queue::storage_config::TaskStorageConfig,
+        runtime::config::TaskRuntimeConfig,
+    },
 };
 
 struct DummyHandler(Arc<Mutex<Vec<(Uuid, String)>>>);
@@ -15,13 +16,13 @@ impl TaskAdapter for DummyHandler {
         vec![format()]
     }
 
-    async fn invoke(&mut self, delivery: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        let payload =
-            serde_json::from_value::<DummyTaskV1>(delivery.payload().clone()).map_err(|_| TaskHandlerError::Permanent {
-                reason: "invalid dummy task payload".to_owned(),
-            })?;
+    async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
+        let delivery = ctx.attempt();
+        let Ok(payload) = serde_json::from_value::<DummyTaskV1>(delivery.payload().clone()) else {
+            return TaskResult::fail("invalid dummy task payload");
+        };
         self.0.lock().unwrap().push((delivery.task_id(), payload.value));
-        Ok(())
+        TaskResult::Done
     }
 }
 
@@ -33,10 +34,7 @@ async fn two_live_workers_complete_every_supported_task_and_quarantine_bad_paylo
     let bad = NewTask::from_payload(format(), json!({})).unwrap();
     enqueue(&db.pool, vec![first.clone(), second.clone(), bad.clone()]).await;
     let handled = Arc::new(Mutex::new(Vec::new()));
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let handled = handled.clone();
-        move || TaskDispatcher::try_new(vec![DummyHandler(handled.clone())])
-    });
+    let dispatcher = || TaskDispatcher::try_new(vec![DummyHandler(handled.clone())]).unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     let config = TaskWorkerPoolConfig::new(
@@ -48,18 +46,11 @@ async fn two_live_workers_complete_every_supported_task_and_quarantine_bad_paylo
     )
     .unwrap();
     let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), config).unwrap();
-    // A startup failure must leave existing durable work unclaimed.
-    let failed =
-        prepare_task_runtime::<DummyHandler>(db.pool.clone(), Arc::new(|| Err(TaskDispatcherError::Empty)), config.clone());
-    assert!(matches!(
-        failed,
-        Err(WorkerSetupError::Build {
-            worker_index: 0,
-            source: TaskDispatcherError::Empty,
-        })
-    ));
-    let left = prepare_task_runtime(db.pool.clone(), factory.clone(), config.clone()).unwrap();
-    let right = prepare_task_runtime(db.pool.clone(), factory, config).unwrap();
+    // A startup failure must leave existing durable work unclaimed: a dispatcher that cannot be built never runs.
+    let failed = TaskDispatcher::<DummyHandler>::try_new(vec![]);
+    assert!(matches!(failed, Err(TaskDispatcherError::Empty)));
+    let left = prepare_task_runtime(db.pool.clone(), dispatcher(), config.clone(), Policies::default());
+    let right = prepare_task_runtime(db.pool.clone(), dispatcher(), config, Policies::default());
     for task in [&first, &second, &bad] {
         assert_worker_state(&db.pool, task.id(), "pending", 0, None).await;
     }
@@ -103,9 +94,9 @@ async fn one_worker_pool_routes_two_registered_task_types() {
             vec![TaskFormat::new("audit", 1).unwrap()]
         }
 
-        async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn invoke(&self, _: &TaskContext) -> TaskResult {
             self.0.fetch_add(1, Ordering::SeqCst);
-            Ok(())
+            TaskResult::Done
         }
     }
 
@@ -126,30 +117,25 @@ async fn one_worker_pool_routes_two_registered_task_types() {
                 Self::Audit(adapter) => adapter.formats(),
             }
         }
-        async fn invoke(&mut self, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
             match self {
-                Self::Dummy(adapter) => adapter.invoke(attempt).await,
-                Self::Audit(adapter) => adapter.invoke(attempt).await,
+                Self::Dummy(adapter) => adapter.invoke(ctx).await,
+                Self::Audit(adapter) => adapter.invoke(ctx).await,
             }
         }
     }
     let handled = Arc::new(Mutex::new(Vec::new()));
     let audited = Arc::new(AtomicUsize::new(0));
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let handled = handled.clone();
-        let audited = audited.clone();
-        move || {
-            TaskDispatcher::try_new(vec![
-                WorkerAdapter::Dummy(DummyHandler(handled.clone())),
-                WorkerAdapter::Audit(AuditHandler(audited.clone())),
-            ])
-        }
-    });
+    let dispatcher = TaskDispatcher::try_new(vec![
+        WorkerAdapter::Dummy(DummyHandler(handled.clone())),
+        WorkerAdapter::Audit(AuditHandler(audited.clone())),
+    ])
+    .unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     let prepared = prepare_task_runtime(
         db.pool.clone(),
-        factory,
+        dispatcher,
         TaskRuntimeConfig::new(
             TaskStorageConfig::default(),
             TaskWorkerPoolConfig::new(
@@ -162,8 +148,8 @@ async fn one_worker_pool_routes_two_registered_task_types() {
             .unwrap(),
         )
         .unwrap(),
-    )
-    .unwrap();
+        Policies::default(),
+    );
     for task in [&dummy, &audit, &unknown] {
         assert_worker_state(&db.pool, task.id(), "pending", 0, None).await;
     }
@@ -244,10 +230,7 @@ async fn old_terminal_tasks_are_retained_while_old_pending_and_processing_tasks_
     assert!(recovered.failures().is_empty());
     assert_eq!(terminal_history(&db.pool, &terminal).await, before);
     let handled = Arc::new(AtomicUsize::new(0));
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let handled = handled.clone();
-        move || TaskDispatcher::try_new(vec![CountingAdapter(handled.clone())])
-    });
+    let dispatcher = TaskDispatcher::try_new(vec![CountingAdapter(handled.clone())]).unwrap();
     let workers = TaskWorkerPoolConfig::new(
         1,
         1,
@@ -257,7 +240,7 @@ async fn old_terminal_tasks_are_retained_while_old_pending_and_processing_tasks_
     )
     .unwrap();
     let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), workers).unwrap();
-    let prepared = prepare_task_runtime(db.pool.clone(), factory, config).unwrap();
+    let prepared = prepare_task_runtime(db.pool.clone(), dispatcher, config, Policies::default());
     let shutdown = CancellationToken::new();
     let runtime = tokio::spawn(prepared.run(shutdown.clone()));
     let progress = tokio::time::timeout(Duration::from_secs(10), async {

@@ -11,7 +11,7 @@ async fn bounded_admission_is_independent_of_concurrency_and_shutdown_leaves_que
         let supervisor_task = tokio::spawn(
             prepared_runtime(
                 queue.clone(),
-                io_factory(probe.clone()),
+                io_dispatcher(probe.clone()),
                 // A claim for every freed slot, so that the buffer fills: this test is about the bound and
                 // shutdown, not the refill level.
                 worker_config(c, q, Duration::from_millis(2))
@@ -21,7 +21,7 @@ async fn bounded_admission_is_independent_of_concurrency_and_shutdown_leaves_que
             .run(shutdown),
         );
         wait_until(|| probe.active.load(Ordering::SeqCst) == c && queue.incoming.lock().unwrap().len() == 20 - c - q).await;
-        assert_eq!(probe.built.load(Ordering::SeqCst), c);
+        assert_eq!(probe.built.load(Ordering::SeqCst), 1, "the workers share one dispatcher");
         assert_eq!(probe.peak.load(Ordering::SeqCst), c);
         assert!(queue.claim_limits.lock().unwrap().iter().all(|&limit| limit <= q));
         let calls = queue.claim_limits.lock().unwrap().len();
@@ -66,7 +66,7 @@ async fn claim_limits_while_one_worker_drains_a_buffer_of_four(percent: u8, step
     .unwrap()
     .with_buffer_refill_percent(percent)
     .unwrap();
-    let supervisor_task = tokio::spawn(prepared_runtime(queue.clone(), io_factory(probe.clone()), config).run(shutdown));
+    let supervisor_task = tokio::spawn(prepared_runtime(queue.clone(), io_dispatcher(probe.clone()), config).run(shutdown));
     for (step, expected) in steps.iter().enumerate() {
         if step > 0 {
             probe.gate.add_permits(1);
@@ -142,7 +142,7 @@ async fn consumers_free_capacity_during_claim_without_parallel_claims_or_overflo
     let supervisor_task = tokio::spawn(run(
         paused_queue.clone(),
         Arc::new(DefaultTaskExecutor::new(paused_queue.clone(), TaskStorageConfig::default())),
-        io_factory(probe.clone()),
+        io_dispatcher(probe.clone()),
         // A claim for every freed slot: this test is about a dequeue racing a claim, not the refill level.
         worker_config(1, 2, Duration::from_secs(3600))
             .with_buffer_refill_percent(100)
@@ -190,10 +190,10 @@ async fn thousand_tasks_are_each_executed_and_settled_successfully() {
         fn formats(&self) -> Vec<TaskFormat> {
             vec![format()]
         }
-        async fn invoke(&mut self, delivery: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            self.0.lock().unwrap().push(delivery.task_id());
+        async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
+            self.0.lock().unwrap().push(ctx.task_id());
             tokio::task::yield_now().await;
-            Ok(())
+            TaskResult::Done
         }
     }
     let tasks: Vec<_> = (0..1000).map(|_| claimed()).collect();
@@ -202,16 +202,13 @@ async fn thousand_tasks_are_each_executed_and_settled_successfully() {
     let queue = Arc::new(Queue::default());
     queue.incoming.lock().unwrap().extend(tasks);
     let executed = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let factory: TaskDispatcherFactory<_> = Arc::new({
-        let executed = executed.clone();
-        move || TaskDispatcher::try_new(vec![RecordingAdapter(executed.clone())])
-    });
+    let dispatcher = TaskDispatcher::try_new(vec![RecordingAdapter(executed.clone())]).unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     let supervisor_task = tokio::spawn(
         prepared_runtime(
             queue.clone(),
-            factory,
+            dispatcher,
             // More deliveries than C+Q exercises batch admission and Notify refill.
             worker_config(16, 32, Duration::from_secs(3600)),
         )
@@ -250,7 +247,7 @@ async fn thousand_io_workers_wait_concurrently_on_one_runtime_thread() {
     let supervisor_task = tokio::spawn(
         prepared_runtime(
             queue.clone(),
-            io_factory(probe.clone()),
+            io_dispatcher(probe.clone()),
             worker_config(1000, 1000, Duration::from_millis(2)),
         )
         .run(shutdown),

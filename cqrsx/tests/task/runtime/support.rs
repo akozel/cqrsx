@@ -14,15 +14,16 @@ use uuid::Uuid;
 use cqrsx::task::{
     adapter::TaskAdapter,
     attempt::TaskAttempt,
+    context::TaskContext,
     dispatcher::TaskDispatcher,
     format::{TaskFormat, TaskPayload},
-    handler::TaskHandlerError,
     queue::{
         TaskProcessingError, TaskQueue,
         lease::{LeasedTask, TaskLease},
         settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
         storage_config::TaskStorageConfig,
     },
+    result::TaskResult,
 };
 
 #[derive(Serialize)]
@@ -141,7 +142,7 @@ impl TaskQueue for Queue {
 }
 
 pub(crate) struct Adapter {
-    pub(crate) result: Result<(), TaskHandlerError>,
+    pub(crate) result: TaskResult,
     pub(crate) hang: bool,
 }
 
@@ -150,7 +151,7 @@ impl TaskAdapter for Adapter {
         vec![format()]
     }
 
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
         if self.hang {
             std::future::pending::<()>().await;
         }
@@ -160,7 +161,7 @@ impl TaskAdapter for Adapter {
 
 pub(crate) fn adapter() -> Adapter {
     Adapter {
-        result: Ok(()),
+        result: TaskResult::Done,
         hang: false,
     }
 }
@@ -174,9 +175,9 @@ impl TaskAdapter for CountingAdapter {
         vec![format()]
     }
 
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        TaskResult::Done
     }
 }
 
@@ -185,7 +186,7 @@ pub(crate) fn with_deadline(task: LeasedTask, deadline: tokio::time::Instant) ->
     LeasedTask::new(task.attempt().clone(), TaskLease::new(token, deadline))
 }
 #[cfg(feature = "worker")]
-use cqrsx::task::runtime::{dispatcher_factory::TaskDispatcherFactory, worker_pool_config::TaskWorkerPoolConfig};
+use cqrsx::task::{policy::Policies, runtime::worker_pool_config::TaskWorkerPoolConfig};
 use tokio::task::Id;
 pub(super) async fn wait_until(condition: impl Fn() -> bool) {
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -223,36 +224,36 @@ impl Drop for ActiveCall<'_> {
 pub(super) struct IoAdapter {
     pub(super) probe: Arc<IoProbe>,
     pub(super) dispatcher: usize,
-    pub(super) calls: usize,
+    pub(super) calls: AtomicUsize,
 }
 
 impl TaskAdapter for IoAdapter {
     fn formats(&self) -> Vec<TaskFormat> {
         vec![format()]
     }
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
         let active = self.probe.active.fetch_add(1, Ordering::SeqCst) + 1;
         let _active = ActiveCall(&self.probe.active);
         self.probe.peak.fetch_max(active, Ordering::SeqCst);
-        self.calls += 1;
+        let calls = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
         self.probe
             .calls
             .lock()
             .unwrap()
-            .push((self.dispatcher, tokio::task::id(), self.calls));
+            .push((self.dispatcher, tokio::task::id(), calls));
         self.probe.gate.acquire().await.unwrap().forget();
-        Ok(())
+        TaskResult::Done
     }
 }
-pub(super) fn io_factory(probe: Arc<IoProbe>) -> TaskDispatcherFactory<IoAdapter> {
-    Arc::new(move || {
-        let dispatcher = probe.built.fetch_add(1, Ordering::SeqCst);
-        TaskDispatcher::try_new(vec![IoAdapter {
-            probe: probe.clone(),
-            dispatcher,
-            calls: 0,
-        }])
-    })
+/// The one dispatcher of the workers over an `IoAdapter`; `probe.built` counts the dispatchers built.
+pub(super) fn io_dispatcher(probe: Arc<IoProbe>) -> TaskDispatcher<IoAdapter> {
+    let dispatcher = probe.built.fetch_add(1, Ordering::SeqCst);
+    TaskDispatcher::try_new(vec![IoAdapter {
+        probe: probe.clone(),
+        dispatcher,
+        calls: AtomicUsize::new(0),
+    }])
+    .unwrap()
 }
 pub(super) fn worker_config(c: usize, q: usize, poll: Duration) -> TaskWorkerPoolConfig {
     TaskWorkerPoolConfig::new(c, q, poll, Duration::from_secs(30), Duration::from_secs(120)).unwrap()
@@ -260,13 +261,13 @@ pub(super) fn worker_config(c: usize, q: usize, poll: Duration) -> TaskWorkerPoo
 
 pub(super) fn prepared_runtime<Q: TaskQueue + 'static, A: TaskAdapter + 'static>(
     queue: Arc<Q>,
-    factory: TaskDispatcherFactory<A>,
+    dispatcher: TaskDispatcher<A>,
     config: TaskWorkerPoolConfig,
 ) -> cqrsx::task::runtime::TaskRuntime<Q, A> {
     cqrsx::task::runtime::prepare(
         queue,
-        factory,
+        dispatcher,
         cqrsx::task::runtime::config::TaskRuntimeConfig::new(TaskStorageConfig::default(), config).unwrap(),
+        Policies::default(),
     )
-    .unwrap()
 }

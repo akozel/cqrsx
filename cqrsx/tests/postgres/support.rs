@@ -1,5 +1,4 @@
 use super::*;
-use cqrsx::task::attempt::TaskAttempt;
 
 /// The database of one test: a PostgreSQL container with the cqrsx schemas.
 pub(super) type Database = crate::postgres_container::Postgres;
@@ -100,7 +99,7 @@ pub(super) async fn enqueue(pool: &PgPool, tasks: Vec<NewTask>) {
 }
 
 pub(super) struct TestAdapter {
-    pub(super) outcome: Result<(), TaskHandlerError>,
+    pub(super) outcome: TaskResult,
 }
 
 impl TaskAdapter for TestAdapter {
@@ -108,12 +107,12 @@ impl TaskAdapter for TestAdapter {
         vec![format()]
     }
 
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
         self.outcome.clone()
     }
 }
 
-pub(super) fn adapter(outcome: Result<(), TaskHandlerError>) -> TestAdapter {
+pub(super) fn adapter(outcome: TaskResult) -> TestAdapter {
     TestAdapter { outcome }
 }
 
@@ -124,7 +123,7 @@ impl TaskAdapter for HangingAdapter {
         vec![format()]
     }
 
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
         std::future::pending().await
     }
 }
@@ -136,9 +135,9 @@ impl TaskAdapter for CountingAdapter {
         vec![format()]
     }
 
-    async fn invoke(&mut self, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
         self.0.fetch_add(1, Ordering::SeqCst);
-        Ok(())
+        TaskResult::Done
     }
 }
 pub(super) async fn row(pool: &PgPool, id: Uuid) -> sqlx::postgres::PgRow {

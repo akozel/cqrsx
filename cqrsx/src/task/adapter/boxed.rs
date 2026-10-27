@@ -2,20 +2,23 @@
 
 use crate::task::{
     adapter::{TaskAdapter, json::JsonTaskAdapter},
-    attempt::TaskAttempt,
+    context::TaskContext,
+    dependencies::DependencyId,
     format::{TaskFormat, TaskFormatError, TaskPayload},
-    handler::{TaskHandler, TaskHandlerError},
+    handler::TaskHandler,
+    result::TaskResult,
 };
 use serde::de::DeserializeOwned;
 use std::{future::Future, pin::Pin};
 
-type InvokeFuture<'a> = Pin<Box<dyn Future<Output = Result<(), TaskHandlerError>> + Send + 'a>>;
+type InvokeFuture<'a> = Pin<Box<dyn Future<Output = TaskResult> + Send + 'a>>;
 
 /// Object-safe shadow of [`TaskAdapter`]: the same contract with a boxed future. Method names
 /// differ from the original so the blanket implementation never makes a call ambiguous.
-trait DynTaskAdapter: Send {
+trait DynTaskAdapter: Send + Sync {
     fn dyn_formats(&self) -> Vec<TaskFormat>;
-    fn dyn_invoke<'a>(&'a mut self, attempt: &'a TaskAttempt) -> InvokeFuture<'a>;
+    fn dyn_dependencies(&self) -> Vec<DependencyId>;
+    fn dyn_invoke<'a>(&'a self, ctx: &'a TaskContext) -> InvokeFuture<'a>;
 }
 
 impl<T: TaskAdapter> DynTaskAdapter for T {
@@ -23,8 +26,12 @@ impl<T: TaskAdapter> DynTaskAdapter for T {
         self.formats()
     }
 
-    fn dyn_invoke<'a>(&'a mut self, attempt: &'a TaskAttempt) -> InvokeFuture<'a> {
-        Box::pin(self.invoke(attempt))
+    fn dyn_dependencies(&self) -> Vec<DependencyId> {
+        self.dependencies()
+    }
+
+    fn dyn_invoke<'a>(&'a self, ctx: &'a TaskContext) -> InvokeFuture<'a> {
+        Box::pin(self.invoke(ctx))
     }
 }
 
@@ -32,8 +39,8 @@ impl<T: TaskAdapter> DynTaskAdapter for T {
 /// [`TaskDispatcher`](crate::task::dispatcher::TaskDispatcher) can route to handlers of different
 /// types without an application-owned enum.
 ///
-/// Formats and results pass through unchanged; the wrapped adapter keeps its mutable state across
-/// invocations. The cost is one allocation per invocation. Wrapped adapters must be `'static`.
+/// Formats, dependencies and results pass through unchanged; the wrapped adapter is shared like any
+/// other. The cost is one allocation per invocation. Wrapped adapters must be `'static`.
 pub struct BoxedTaskAdapter(Box<dyn DynTaskAdapter>);
 
 impl BoxedTaskAdapter {
@@ -57,19 +64,29 @@ impl TaskAdapter for BoxedTaskAdapter {
         self.0.dyn_formats()
     }
 
-    async fn invoke(&mut self, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-        self.0.dyn_invoke(attempt).await
+    fn dependencies(&self) -> Vec<DependencyId> {
+        self.0.dyn_dependencies()
+    }
+
+    async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
+        self.0.dyn_invoke(ctx).await
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::dispatcher::{TaskDispatcher, TaskDispatcherError};
+    use crate::task::{
+        attempt::TaskAttempt,
+        dispatcher::{TaskDispatcher, TaskDispatcherError},
+    };
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::{
-        sync::{Arc, Mutex},
+        sync::{
+            Arc, Mutex,
+            atomic::{AtomicU32, Ordering},
+        },
         time::Duration,
     };
     use uuid::Uuid;
@@ -94,46 +111,47 @@ mod tests {
 
     type Calls = Arc<Mutex<Vec<String>>>;
 
-    /// Counts its own invocations in `&mut self` and records them with the decoded payload.
+    /// Counts its own invocations and records them with the decoded payload.
     struct Recorder {
         calls: Calls,
-        count: u32,
-        result: Result<(), TaskHandlerError>,
+        count: AtomicU32,
+        result: TaskResult,
     }
 
     impl Recorder {
         fn new(calls: &Calls) -> Self {
-            Self::returning(calls, Ok(()))
+            Self::returning(calls, TaskResult::Done)
         }
 
-        fn returning(calls: &Calls, result: Result<(), TaskHandlerError>) -> Self {
+        fn returning(calls: &Calls, result: TaskResult) -> Self {
             Self {
                 calls: calls.clone(),
-                count: 0,
+                count: AtomicU32::new(0),
                 result,
             }
+        }
+
+        fn next(&self) -> u32 {
+            self.count.fetch_add(1, Ordering::SeqCst) + 1
         }
     }
 
     impl TaskHandler<Greeting> for Recorder {
-        async fn handle(&mut self, payload: Greeting, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+        async fn handle(&self, payload: Greeting, _: &TaskContext) -> TaskResult {
             tokio::task::yield_now().await;
-            self.count += 1;
-            self.calls
-                .lock()
-                .unwrap()
-                .push(format!("greeting {} #{}", payload.name, self.count));
+            let count = self.next();
+            self.calls.lock().unwrap().push(format!("greeting {} #{count}", payload.name));
             self.result.clone()
         }
     }
 
     impl TaskHandler<Invoice> for Recorder {
-        async fn handle(&mut self, payload: Invoice, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
-            self.count += 1;
+        async fn handle(&self, payload: Invoice, _: &TaskContext) -> TaskResult {
+            let count = self.next();
             self.calls
                 .lock()
                 .unwrap()
-                .push(format!("invoice {} #{}", payload.amount, self.count));
+                .push(format!("invoice {} #{count}", payload.amount));
             self.result.clone()
         }
     }
@@ -145,7 +163,7 @@ mod tests {
     #[tokio::test]
     async fn one_dispatcher_routes_differently_typed_adapters_by_format_in_registration_order() {
         let calls = Calls::default();
-        let mut dispatcher = TaskDispatcher::try_new(vec![
+        let dispatcher = TaskDispatcher::try_new(vec![
             BoxedTaskAdapter::json::<Invoice, _>(Recorder::new(&calls)).unwrap(),
             BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&calls)).unwrap(),
         ])
@@ -159,7 +177,7 @@ mod tests {
             attempt::<Invoice>(json!({ "amount": 80 })),
             attempt::<Greeting>(json!({ "name": "panda" })),
         ] {
-            dispatcher.dispatch(&task).await.unwrap();
+            assert_eq!(dispatcher.dispatch(task, Duration::ZERO).await, TaskResult::Done);
         }
         assert_eq!(
             *calls.lock().unwrap(),
@@ -187,7 +205,7 @@ mod tests {
         }
         struct NeverCalled;
         impl TaskHandler<Unversioned> for NeverCalled {
-            async fn handle(&mut self, _: Unversioned, _: &TaskAttempt) -> Result<(), TaskHandlerError> {
+            async fn handle(&self, _: Unversioned, _: &TaskContext) -> TaskResult {
                 unreachable!("an invalid format cannot construct an adapter")
             }
         }
@@ -200,23 +218,15 @@ mod tests {
 
     #[tokio::test]
     async fn handler_results_pass_through_unchanged() {
-        for result in [
-            Ok(()),
-            Err(TaskHandlerError::Retry {
-                reason: "later".into(),
-                retry_after: Some(Duration::from_secs(7)),
-            }),
-            Err(TaskHandlerError::Retry {
-                reason: "default backoff".into(),
-                retry_after: None,
-            }),
-            Err(TaskHandlerError::Permanent {
-                reason: "rejected".into(),
-            }),
-        ] {
+        for result in [TaskResult::Done, TaskResult::retry("later"), TaskResult::fail("rejected")] {
             let calls = Calls::default();
-            let mut adapter = BoxedTaskAdapter::json::<Greeting, _>(Recorder::returning(&calls, result.clone())).unwrap();
-            let actual = adapter.invoke(&attempt::<Greeting>(json!({ "name": "fox" }))).await;
+            let adapter = BoxedTaskAdapter::json::<Greeting, _>(Recorder::returning(&calls, result.clone())).unwrap();
+            let actual = adapter
+                .invoke(&TaskContext::new(
+                    attempt::<Greeting>(json!({ "name": "fox" })),
+                    Duration::ZERO,
+                ))
+                .await;
             assert_eq!(format!("{actual:?}"), format!("{result:?}"));
             assert_eq!(calls.lock().unwrap().len(), 1);
         }
@@ -232,13 +242,13 @@ mod tests {
             fn formats(&self) -> Vec<TaskFormat> {
                 vec![TaskFormat::new("legacy", 1).unwrap(), TaskFormat::new("legacy", 2).unwrap()]
             }
-            async fn invoke(&mut self, attempt: &TaskAttempt) -> Result<(), TaskHandlerError> {
-                self.seen.lock().unwrap().push(attempt.format().to_string());
-                Ok(())
+            async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
+                self.seen.lock().unwrap().push(ctx.attempt().format().to_string());
+                TaskResult::Done
             }
         }
         let seen = Calls::default();
-        let mut dispatcher = TaskDispatcher::try_new(vec![
+        let dispatcher = TaskDispatcher::try_new(vec![
             BoxedTaskAdapter::new(MultiVersion { seen: seen.clone() }),
             BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&seen)).unwrap(),
         ])
@@ -253,7 +263,7 @@ mod tests {
                 1,
             )
             .unwrap();
-            dispatcher.dispatch(&task).await.unwrap();
+            assert_eq!(dispatcher.dispatch(task, Duration::ZERO).await, TaskResult::Done);
         }
         assert_eq!(*seen.lock().unwrap(), ["legacy v2", "legacy v1"]);
     }

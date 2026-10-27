@@ -60,7 +60,7 @@ impl<E: TaskExecutor + 'static> WorkerPool<E> {
         })
     }
 
-    pub(super) fn spawn<A: TaskAdapter + 'static>(&mut self, index: usize, dispatcher: TaskDispatcher<A>) {
+    pub(super) fn spawn<A: TaskAdapter + 'static>(&mut self, index: usize, dispatcher: Arc<TaskDispatcher<A>>) {
         let handle = self.workers.spawn(run_task_worker(
             index,
             dispatcher,
@@ -134,7 +134,7 @@ mod tests {
         for cancel in [false, true] {
             let (sender, mut pool) = idle_pool();
             assert!(pool.next_exit().await.is_none());
-            pool.spawn(42, TaskDispatcher::try_new(vec![adapter()]).unwrap());
+            pool.spawn(42, Arc::new(TaskDispatcher::try_new(vec![adapter()]).unwrap()));
             let id = *pool.worker_indices.keys().next().unwrap();
             if cancel {
                 pool.stop.cancel();
@@ -157,7 +157,7 @@ mod tests {
     #[tokio::test]
     async fn observing_an_aborted_worker_preserves_cancellation_and_removes_its_index() {
         let (_sender, mut pool) = idle_pool();
-        pool.spawn(7, TaskDispatcher::try_new(vec![adapter()]).unwrap());
+        pool.spawn(7, Arc::new(TaskDispatcher::try_new(vec![adapter()]).unwrap()));
         let id = *pool.worker_indices.keys().next().unwrap();
         pool.workers.abort_all();
         let exit = tokio::time::timeout(Duration::from_secs(5), pool.next_exit())
@@ -183,7 +183,7 @@ mod tests {
             }
             async fn execute_and_settle<A: TaskAdapter>(
                 &self,
-                _: &mut TaskDispatcher<A>,
+                _: &TaskDispatcher<A>,
                 _: LeasedTask,
                 _: Duration,
             ) -> Result<SettlementResult, TaskProcessingError> {
@@ -204,7 +204,7 @@ mod tests {
             handler_timeout: Duration::from_millis(20),
             stop,
         };
-        pool.spawn(0, TaskDispatcher::try_new(vec![adapter()]).unwrap());
+        pool.spawn(0, Arc::new(TaskDispatcher::try_new(vec![adapter()]).unwrap()));
         sender.send(claimed()).await.unwrap();
         wait_until(|| probe.load(Ordering::SeqCst) == 1).await;
         let started = tokio::time::Instant::now();

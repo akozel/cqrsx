@@ -135,16 +135,13 @@ mod tests {
     /// and the activity feed's observer. What each command publishes with its event, what the feed says of it, and the
     /// races of cancellations and rebookings on one concert.
     mod engine {
-        use crate::{
-            concert::{
-                application::test_support::{ProbeStore, announce, book, cancel, committed, concert_id, harness, poll_once},
-                domain::{ConcertError, ConcertEvent},
-            },
-            shared::application::metadata::CommandMetadata,
+        use crate::concert::{
+            application::test_support::{ProbeStore, announce, book, cancel, committed, concert_id, harness, poll_once},
+            domain::{ConcertError, ConcertEvent},
         };
         use cqrsx::{
             cqrs::{
-                command::CommandGatewayError,
+                command::{CommandGatewayError, metadata::CommandMetadata},
                 store::EventStore,
                 testing::{mem_store::MemStore, unavailable_store::UnavailableStore},
             },
@@ -159,17 +156,27 @@ mod tests {
         #[tokio::test]
         async fn every_command_is_logged_with_its_type_and_its_fan() {
             let h = harness(MemStore::default());
-            h.execute(&concert_id(), announce(), CommandMetadata::ui()).await.unwrap();
-            h.execute(&concert_id(), book("A1", "fox", Uuid::now_v7()), CommandMetadata::ui())
+            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
+                .await
+                .unwrap();
+            h.execute(&concert_id(), book("A1", "fox", Uuid::now_v7()), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
             // Refused: the feed below says so.
             let _ = h
-                .execute(&concert_id(), book("A1", "panda", Uuid::now_v7()), CommandMetadata::ui())
+                .execute(
+                    &concert_id(),
+                    book("A1", "panda", Uuid::now_v7()),
+                    CommandMetadata::root("ui"),
+                )
                 .await;
-            h.execute(&concert_id(), cancel("A1", "fox", Uuid::now_v7()), CommandMetadata::ui())
-                .await
-                .unwrap();
+            h.execute(
+                &concert_id(),
+                cancel("A1", "fox", Uuid::now_v7()),
+                CommandMetadata::root("ui"),
+            )
+            .await
+            .unwrap();
             let logged: Vec<(String, Value, Value)> = h
                 .activity()
                 .iter()
@@ -195,7 +202,7 @@ mod tests {
         #[tokio::test]
         async fn an_announcement_publishes_no_task_and_is_logged() {
             let h = harness(MemStore::default());
-            let executed = h.execute(&concert_id(), announce(), CommandMetadata::ui()).await;
+            let executed = h.execute(&concert_id(), announce(), CommandMetadata::root("ui")).await;
             assert!(executed.is_ok());
             assert!(committed(&executed).is_empty());
             assert!(h.executor.take_published_tasks().is_empty());
@@ -210,8 +217,10 @@ mod tests {
         #[tokio::test]
         async fn a_second_announcement_is_rejected_and_logged_with_its_code() {
             let h = harness(MemStore::default());
-            h.execute(&concert_id(), announce(), CommandMetadata::ui()).await.unwrap();
-            let executed = h.execute(&concert_id(), announce(), CommandMetadata::ui()).await;
+            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
+                .await
+                .unwrap();
+            let executed = h.execute(&concert_id(), announce(), CommandMetadata::root("ui")).await;
             assert_eq!(executed, Err(CommandGatewayError::Domain(ConcertError::AlreadyAnnounced)));
             let log = h.activity();
             assert_eq!(log[1].kind, "command.rejected");
@@ -222,8 +231,10 @@ mod tests {
         async fn a_booking_publishes_record_ticket_with_the_price_of_the_fact_and_its_causation() {
             let store = MemStore::default();
             let h = harness(store.clone());
-            h.execute(&concert_id(), announce(), CommandMetadata::ui()).await.unwrap();
-            let metadata = CommandMetadata::ui();
+            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
+                .await
+                .unwrap();
+            let metadata = CommandMetadata::root("ui");
             let booking_id = metadata.causation.command_id;
             let executed = h
                 .execute(&concert_id(), book("a1", "fox", booking_id), metadata.clone())
@@ -262,9 +273,11 @@ mod tests {
         #[tokio::test]
         async fn an_unknown_seat_is_rejected_and_publishes_no_task() {
             let h = harness(MemStore::default());
-            h.execute(&concert_id(), announce(), CommandMetadata::ui()).await.unwrap();
+            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
+                .await
+                .unwrap();
             let executed = h
-                .execute(&concert_id(), book("Z9", "fox", Uuid::now_v7()), CommandMetadata::ui())
+                .execute(&concert_id(), book("Z9", "fox", Uuid::now_v7()), CommandMetadata::root("ui"))
                 .await;
             assert_eq!(
                 executed,
@@ -278,13 +291,19 @@ mod tests {
         async fn a_taken_seat_is_rejected_and_writes_nothing() {
             let store = MemStore::default();
             let h = harness(store.clone());
-            h.execute(&concert_id(), announce(), CommandMetadata::ui()).await.unwrap();
-            h.execute(&concert_id(), book("B4", "fox", Uuid::now_v7()), CommandMetadata::ui())
+            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
+                .await
+                .unwrap();
+            h.execute(&concert_id(), book("B4", "fox", Uuid::now_v7()), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
             h.executor.take_published_tasks();
             let executed = h
-                .execute(&concert_id(), book("B4", "panda", Uuid::now_v7()), CommandMetadata::ui())
+                .execute(
+                    &concert_id(),
+                    book("B4", "panda", Uuid::now_v7()),
+                    CommandMetadata::root("ui"),
+                )
                 .await;
             assert!(matches!(
                 executed,
@@ -299,13 +318,15 @@ mod tests {
             let store = ProbeStore::default();
             let h = harness(store.clone());
             let booking_id = Uuid::now_v7();
-            h.execute(&concert_id(), announce(), CommandMetadata::ui()).await.unwrap();
-            h.execute(&concert_id(), book("A1", "fox", booking_id), CommandMetadata::ui())
+            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
+                .await
+                .unwrap();
+            h.execute(&concert_id(), book("A1", "fox", booking_id), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
             h.executor.take_published_tasks();
             let loads = store.loads();
-            let metadata = CommandMetadata::ui();
+            let metadata = CommandMetadata::root("ui");
             let cancellation_id = metadata.causation.command_id;
             let executed = h.execute(&concert_id(), cancel("a1", "fox", cancellation_id), metadata).await;
             assert!(executed.is_ok());
@@ -321,13 +342,19 @@ mod tests {
         #[tokio::test]
         async fn cancelling_somebody_elses_ticket_publishes_no_task() {
             let h = harness(MemStore::default());
-            h.execute(&concert_id(), announce(), CommandMetadata::ui()).await.unwrap();
-            h.execute(&concert_id(), book("B4", "fox", Uuid::now_v7()), CommandMetadata::ui())
+            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
+                .await
+                .unwrap();
+            h.execute(&concert_id(), book("B4", "fox", Uuid::now_v7()), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
             h.executor.take_published_tasks();
             let executed = h
-                .execute(&concert_id(), cancel("B4", "panda", Uuid::now_v7()), CommandMetadata::ui())
+                .execute(
+                    &concert_id(),
+                    cancel("B4", "panda", Uuid::now_v7()),
+                    CommandMetadata::root("ui"),
+                )
                 .await;
             assert_eq!(executed, Err(CommandGatewayError::Domain(ConcertError::NotYourTicket)));
             assert!(committed(&executed).is_empty());
@@ -338,7 +365,11 @@ mod tests {
         async fn an_unavailable_ledger_makes_the_cancellation_unavailable_and_it_is_logged() {
             let h = harness(UnavailableStore);
             let executed = h
-                .execute(&concert_id(), cancel("B4", "fox", Uuid::now_v7()), CommandMetadata::ui())
+                .execute(
+                    &concert_id(),
+                    cancel("B4", "fox", Uuid::now_v7()),
+                    CommandMetadata::root("ui"),
+                )
                 .await;
             assert_eq!(executed, Err(CommandGatewayError::Unavailable));
             assert!(committed(&executed).is_empty());
@@ -357,9 +388,11 @@ mod tests {
         async fn a_cancellation_queued_behind_a_rebooking_refunds_the_booking_it_cancels() {
             let store = ProbeStore::default();
             let h = harness(store.clone());
-            h.execute(&concert_id(), announce(), CommandMetadata::ui()).await.unwrap();
+            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
+                .await
+                .unwrap();
             let first = Uuid::now_v7();
-            h.execute(&concert_id(), book("A1", "fox", first), CommandMetadata::ui())
+            h.execute(&concert_id(), book("A1", "fox", first), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
             h.executor.take_published_tasks();
@@ -397,7 +430,7 @@ mod tests {
         }
 
         fn metadata_of(command_id: Uuid) -> CommandMetadata {
-            let mut metadata = CommandMetadata::ui();
+            let mut metadata = CommandMetadata::root("ui");
             let causation = &mut metadata.causation;
             (causation.command_id, causation.correlation_id, causation.causation_id) = (command_id, command_id, command_id);
             metadata
@@ -409,7 +442,9 @@ mod tests {
         async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_events() {
             let store = MemStore::default();
             let h = Arc::new(harness(store.clone()));
-            h.execute(&concert_id(), announce(), CommandMetadata::ui()).await.unwrap();
+            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
+                .await
+                .unwrap();
             let mut commands = tokio::task::JoinSet::new();
             for round in 0..24 {
                 let h = h.clone();

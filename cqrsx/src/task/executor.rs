@@ -9,8 +9,8 @@ use crate::task::{
 };
 use std::{future::Future, time::Duration};
 /// Native Send execution boundary. Implement with ordinary `async fn`, without
-/// async_trait. The dispatcher is borrowed mutably and the leased task is owned;
-/// neither a Clone nor a Sync dispatcher is required. Implementations may borrow
+/// async_trait. The dispatcher is shared by every worker and the leased task is owned;
+/// no Clone dispatcher is required. Implementations may borrow
 /// non-'static state; runtime spawn boundaries require 'static. Non-Send state
 /// cannot survive an await:
 /// ```compile_fail
@@ -19,7 +19,7 @@ use std::{future::Future, time::Duration};
 /// struct Executor;
 /// impl TaskExecutor for Executor {
 ///     fn storage_timeout(&self) -> Duration { Duration::from_secs(6) }
-///     async fn execute_and_settle<A: TaskAdapter>(&self, _: &mut TaskDispatcher<A>, _: LeasedTask, _: Duration)
+///     async fn execute_and_settle<A: TaskAdapter>(&self, _: &TaskDispatcher<A>, _: LeasedTask, _: Duration)
 ///         -> Result<SettlementResult, TaskProcessingError> {
 ///         let state = std::rc::Rc::new(());
 ///         std::future::pending::<()>().await;
@@ -37,7 +37,7 @@ pub trait TaskExecutor: Send + Sync {
     /// to the durable queue. The handler never owns or renews platform leases.
     fn execute_and_settle<A: TaskAdapter>(
         &self,
-        dispatcher: &mut TaskDispatcher<A>,
+        dispatcher: &TaskDispatcher<A>,
         task: LeasedTask,
         handler_timeout: Duration,
     ) -> impl Future<Output = Result<SettlementResult, TaskProcessingError>> + Send;

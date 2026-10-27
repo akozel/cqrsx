@@ -7,8 +7,8 @@
 //!   fan wallets;
 //! - [`operations`]: no aggregate: health, settings, the activity log and the operations over every read model
 //!   (Encore!, status, verify);
-//! - [`shared`]: what several modules need: the ids and the venue, the ports and the metadata of a command, the HTTP
-//!   error shape, PostgreSQL, MongoDB and the HTTP client of the external mail service.
+//! - [`shared`]: what several modules need: the ids and the venue, the ports and the names of the task policies, the
+//!   HTTP error shape, PostgreSQL, MongoDB and the HTTP client of the external mail service.
 //!
 //! [`process`] starts and stops the binary: logging, configuration, connections, the HTTP server and
 //! the task runtime. [`bootstrap`] is the composition root shared by the binary and the tests: one

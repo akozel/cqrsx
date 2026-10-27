@@ -1,43 +1,41 @@
-//! The outbox tasks: the policy of every task type and its handler, one line per task type. A fresh dispatcher
-//! (fresh handlers) is built for every worker and every worker restart; the mailers share one HTTP client to the
-//! external mail service, since a connection pool is meant to be shared.
-use super::WiringError;
+//! The outbox tasks: the policy of every task type and its handler, one line per task type. One dispatcher (one set
+//! of handlers) serves every worker and every worker restart; the handlers share one mail client, with one HTTP
+//! client to the external mail service, since a connection pool is meant to be shared.
 use crate::{
     config::Config,
     fan::{
         application::{
-            chain::CHAIN_RETRY_AFTER,
-            issue_refund::{IssueRefundHandler, IssueRefundV1},
-            record_cancellation::{RecordCancellationHandler, RecordCancellationV1},
-            record_ticket::{RecordTicketHandler, RecordTicketV1},
-            send_e_ticket::{SendETicketHandler, SendETicketV1},
+            issue_refund::{IssueRefundV1, issue_refund},
+            record_cancellation::{RecordCancellationV1, record_cancellation},
+            record_ticket::{RecordTicketV1, record_ticket},
+            send_e_ticket::{SendETicketV1, send_e_ticket},
         },
         domain::Fan,
     },
-    process::Process,
     shared::{
         application::{
             activity::ActivityHub,
-            policies::{MAIL, STEP},
+            mail::Mailer,
+            policies::{CHAIN_RETRY_AFTER, MAIL, STEP},
         },
         infrastructure::http_mailer::{HttpMailer, MailClientSettings},
     },
 };
 use cqrsx::{
-    postgres::command::PostgresCommandExecutor,
+    cqrs::command::CommandExecutor,
     task::{
         adapter::boxed::BoxedTaskAdapter,
-        dispatcher::TaskDispatcher,
+        dispatcher::{TaskDispatcher, TaskDispatcherError},
+        handlers::TaskHandlers,
         policy::{Policies, PolicyError, Retry, TaskPolicy},
-        runtime::dispatcher_factory::TaskDispatcherFactory,
     },
 };
 use std::sync::Arc;
 
 /// The policies of the four task types, from the configuration: a step of the chain waits [`CHAIN_RETRY_AFTER`]
 /// between attempts, an e-mail backs off from `ENCORE_TASK_RETRY_BASE_MS` to `ENCORE_TASK_RETRY_MAX_MS`; both get
-/// `ENCORE_TASK_MAX_ATTEMPTS` attempts. The reactions of both aggregates plan with them; the pause is still the one
-/// the handlers ask for (backlog 05/09 hands it to the policies).
+/// `ENCORE_TASK_MAX_ATTEMPTS` attempts. The reactions of both aggregates plan with them, and the task runtime pauses
+/// every retry by them.
 pub fn policies(config: &Config) -> Result<Policies, PolicyError> {
     let attempts = config.task_max_attempts;
     let mail = Retry::backoff(config.task_retry_base, config.task_retry_max);
@@ -50,39 +48,42 @@ pub fn policies(config: &Config) -> Result<Policies, PolicyError> {
         .with_task::<IssueRefundV1>(MAIL)
 }
 
-/// The client of the external mail service: its address, a request timeout that ends before the handler's, and the
-/// backoff an e-mail task asks for after a refused delivery.
+/// The client of the external mail service: its address and a request timeout that ends before the handler's.
 pub fn mail_settings(config: &Config) -> MailClientSettings {
     MailClientSettings {
         base_url: config.mail_service_url.clone(),
         timeout: config.mail_request_timeout(),
-        retry_base: config.task_retry_base,
-        retry_max: config.task_retry_max,
     }
 }
 
-/// The chain steps between the two aggregates, on the ledgers' executor, and the e-mails they end in.
-pub fn dispatcher(
-    process: &Process,
-    fans: Arc<PostgresCommandExecutor<Fan>>,
-    activity: Arc<ActivityHub>,
-) -> Result<TaskDispatcherFactory<BoxedTaskAdapter>, WiringError> {
-    let mail = mail_settings(&process.config);
-    let http = HttpMailer::client(&mail)?;
-    Ok(Arc::new(move || {
-        let mailer = || HttpMailer::new(http.clone(), mail.clone(), activity.clone());
-        TaskDispatcher::try_new(vec![
-            BoxedTaskAdapter::json(RecordTicketHandler { fans: fans.clone() })?,
-            BoxedTaskAdapter::json(RecordCancellationHandler { fans: fans.clone() })?,
-            BoxedTaskAdapter::json(SendETicketHandler { mailer: mailer() })?,
-            BoxedTaskAdapter::json(IssueRefundHandler { mailer: mailer() })?,
-        ])
-    }))
+/// The mail service of the process, one for every worker, reporting every attempt to `activity`.
+pub fn mailer(config: &Config, activity: Arc<ActivityHub>) -> Result<Arc<Mailer>, reqwest::Error> {
+    let settings = mail_settings(config);
+    let client = HttpMailer::client(&settings)?;
+    Ok(Arc::new(HttpMailer::new(client, settings, activity)))
+}
+
+/// The handlers of the four task types, in one dispatcher every worker shares: the chain steps between the two
+/// aggregates run their commands on `fans`, the e-mails they end in go through `mail`. Until the modules register
+/// their tasks themselves (backlog 05/11).
+pub fn handlers<E: CommandExecutor<Fan> + 'static>(
+    fans: Arc<E>,
+    mail: Arc<Mailer>,
+) -> Result<TaskDispatcher<BoxedTaskAdapter>, TaskDispatcherError> {
+    TaskHandlers::new()
+        .handler(record_ticket)
+        .handler(record_cancellation)
+        .handler(send_e_ticket)
+        .handler(issue_refund)
+        .provide(mail)
+        .executor(fans)
+        .build()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::application::test_support::RecordingMailer;
     use crate::{
         concert::domain::{
             Concert, ConcertCommand, ConcertRules,
@@ -100,7 +101,7 @@ mod tests {
     use chrono::NaiveDate;
     use cqrsx::{
         cqrs::{
-            command::{CommandExecutor, causation::Causation},
+            command::causation::Causation,
             reactions::ReactionsPlanner,
             testing::{command::TestCommandExecutor, mem_store::MemStore},
         },
@@ -119,6 +120,13 @@ mod tests {
             TaskFormat::of::<SendETicketV1>().unwrap(),
             TaskFormat::of::<IssueRefundV1>().unwrap(),
         ]
+    }
+
+    /// The mail client's former backoff after a refused delivery (`MailClientSettings::retry_after` until backlog
+    /// 05/09), word for word: the oracle the mail policy is compared with.
+    fn mail_client_backoff(base: Duration, max: Duration, attempt: i32) -> Duration {
+        let exponent = u32::try_from(attempt.max(1) - 1).unwrap_or(u32::MAX).min(16);
+        base.saturating_mul(2u32.saturating_pow(exponent)).min(max)
     }
 
     #[test]
@@ -195,10 +203,10 @@ mod tests {
         assert_eq!(policies(&config).unwrap_err(), PolicyError::MaxAttempts(0));
     }
 
-    /// The mail policy pauses exactly as the mail client asks today, and the step policy as a step does: the
-    /// formula is the client's, word for word.
+    /// The mail policy pauses exactly as the mail client asked until it stopped choosing its pauses (backlog 05/09), and
+    /// the step policy as a step did.
     #[test]
-    fn the_mail_policy_pauses_as_the_mail_client_asks() {
+    fn the_mail_policy_pauses_as_the_mail_client_did() {
         let attempts: Vec<i32> = (-3..=40).chain([i32::MIN, i32::MAX]).collect();
         for (base, max) in [
             (Duration::from_secs(1), Duration::from_secs(8)),
@@ -210,11 +218,10 @@ mod tests {
             let mut config = crate::testing::config();
             (config.task_retry_base, config.task_retry_max) = (base, max);
             let mail = policies(&config).unwrap().policy(MAIL).unwrap().retry();
-            let client = mail_settings(&config);
             for &attempt in &attempts {
                 assert_eq!(
                     mail.pause(attempt),
-                    client.retry_after(attempt),
+                    mail_client_backoff(base, max, attempt),
                     "{base:?} to {max:?}, attempt {attempt}"
                 );
             }
@@ -403,14 +410,31 @@ mod tests {
     fn the_mail_settings_come_from_the_configuration() {
         let mut config = crate::testing::config();
         config.mail_service_url = "http://mail:8025".into();
-        config.task_retry_base = Duration::from_millis(300);
-        config.task_retry_max = Duration::from_secs(5);
         let settings = mail_settings(&config);
         assert_eq!(settings.base_url, "http://mail:8025");
         assert_eq!(settings.timeout, config.mail_request_timeout());
+    }
+
+    /// The four task types have one handler each, in one dispatcher: the steps need the ledgers' executor, the e-mails
+    /// the mail service, which the assembly refuses to leave out.
+    #[tokio::test]
+    async fn the_four_task_types_have_one_handler_each_with_the_mailer_and_the_ledgers_executor() {
+        let fans = Arc::new(TestCommandExecutor::new(MemStore::<Fan>::default(), ()));
+        let mail: Arc<Mailer> = Arc::new(RecordingMailer::delivering());
+        let dispatcher = handlers(fans.clone(), mail.clone()).unwrap();
+        assert_eq!(dispatcher.formats(), formats());
+        let without_mail = TaskHandlers::new()
+            .handler(send_e_ticket)
+            .executor(fans)
+            .build()
+            .err()
+            .unwrap();
         assert_eq!(
-            (settings.retry_base, settings.retry_max),
-            (Duration::from_millis(300), Duration::from_secs(5))
+            without_mail.to_string(),
+            "the handler of encore_send_e_ticket v1 needs `dyn encore_backend::shared::application::mail::MailService`, \
+             which nothing provides"
         );
+        let mailer = mailer(&crate::testing::config(), Arc::new(ActivityHub::new(1, 1))).unwrap();
+        assert!(handlers(Arc::new(TestCommandExecutor::new(MemStore::<Fan>::default(), ())), mailer).is_ok());
     }
 }

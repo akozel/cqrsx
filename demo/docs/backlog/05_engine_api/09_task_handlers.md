@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Статус | предложено 2026-10-27; решения пользователя 2026-10-27 (README эпика): общий обработчик без фабрики (вопрос 3), политика по типу задачи (вопрос 2), наблюдателя задач в движке пока нет (вопрос 4) |
+| Статус | сделано 2026-10-27; решения пользователя 2026-10-27 (README эпика): общий обработчик без фабрики (вопрос 3), политика по типу задачи (вопрос 2), наблюдателя задач в движке пока нет (вопрос 4) |
 | Ценность | высокая: обработчик — функция рядом с задачей, следующая команда — `ctx.execute`, повторы и паузы считает движок |
 | Цена | средняя–высокая: контракт `TaskHandler` меняется (общий обработчик без фабрики), контекст задачи, реестр зависимостей, атрибутный макрос |
-| cqrsx | `src/task/handler.rs` (`TaskHandler::handle(&self, task, &TaskContext) -> TaskResult`), новый `src/task/context.rs` (`TaskContext`, `Executors`), новый `src/task/dependencies.rs` (`Dependencies`), `src/task/adapter/{json,boxed}.rs` (`&self`), `src/task/dispatcher.rs`, `src/task/runtime/{dispatcher_factory (удаляется), supervisor, worker_pool, worker}.rs` (общий диспетчер), `src/task/executor/default_executor.rs` (пауза по политике), `src/postgres/task_runtime.rs`, `cqrsx-macros` (`#[task_handler]`), `tests/task/**`, `tests/postgres/{runtime,task_queue/*}.rs`, `doc/components.md` |
-| demo | `fan/application/{record_ticket,send_e_ticket,record_cancellation,issue_refund}.rs`, `fan/application/chain.rs` (удаляется), `shared/application/{mail.rs, metadata.rs (удаляется)}`, `shared/infrastructure/http_mailer.rs` (без своей формулы паузы), `bootstrap/tasks.rs`, `config.rs` |
+| cqrsx | `src/task/handler.rs` (`TaskHandler::handle(&self, task, &TaskContext) -> TaskResult`), новые `src/task/{result,context,dependencies,handlers}.rs` (`TaskResult`; `TaskContext`, `Executors`; `Dependencies`, `DependencyId`; `TaskHandlers`), новый `src/cqrs/command/metadata.rs` (`CommandMetadata` из демо), `src/task/adapter{,/json,/boxed}.rs` (`&self`), `src/task/dispatcher.rs`, `src/task/runtime{,/supervisor,/worker_pool,/worker}.rs` (общий диспетчер; `dispatcher_factory.rs` удалён), `src/task/executor{,/default_executor}.rs` (пауза по политике), `src/task/policy.rs` (`Policies::pause`), `src/task/queue/lease.rs` (попытка в `Arc`), `src/postgres/task_runtime.rs`, `src/host/{error,lifecycle}.rs` (тесты), `src/diagnostics.rs`, `cqrsx-macros` (`#[task_handler]`, `syn` с `full`), `tests/{task/**,postgres/{runtime,task_queue/*},derives,log_fallback}.rs`, `README.md`, `doc/components.md` |
+| demo | `fan/application/{record_ticket,send_e_ticket,record_cancellation,issue_refund}.rs`, `fan/application.rs` (тест таблицы), `fan/application/test_support.rs`, `fan/application/chain.rs` (удаляется), `shared/application/{mail.rs, policies.rs, test_support.rs, metadata.rs (удаляется)}`, `shared/infrastructure/http_mailer.rs` (без своей формулы паузы), `bootstrap{,/tasks}.rs`, `process.rs`, `concert/presentation/execute_command.rs` и тесты на `CommandMetadata` cqrsx, `tests/{contracts,write_side,architecture}.rs` |
 | Зависимости | 07, 08 |
 | Гарантии | G-14, G-16, G-17, G-18, G-19, G-21, G-22, G-36 (`task.attempt.*`) |
 
@@ -57,6 +57,27 @@
   `Mailer::send(&self, ctx, mail)`. `ENCORE_TASK_RETRY_*` читает политика `MAIL` (07).
 - `bootstrap/tasks.rs`: `TaskHandlers::new().handler(record_ticket).policy(STEP).handler(…).provide(mail)
   .executors(fans).build()?` — временная сборка до 11; привязка типов задач к политикам переезжает сюда из 07.
+
+**Решения ревью плана (2026-10-27, `work/09-plan-review-r1.md`):**
+- привязка типа задачи к политике остаётся в `bootstrap::tasks::policies` (07), рантайм получает `policies`
+  (`prepare_task_runtime(pool, dispatcher, config, policies)`); `.task(h).policy(P)` — модуль задачи 11;
+- `ExecuteFailed` не вводится: `ctx.execute` отвечает `Result<CommitReport<A>, CommandGatewayError<A::Error>>`, как
+  исполнитель; `From<Result<_, CommandGatewayError<E: Rejection>>> for TaskResult`: принято — готово, конфликт и
+  недоступно — повтор (`conflict`, `unavailable`), отказ — отказ задачи с кодом;
+- оба обработчика шагов разбирают все три кода книжки, как `map_fan_outcome`: R9 и R11 — готово, R10 — повтор
+  `unknown_ticket`;
+- `TaskContext` без параметра времени жизни (`ctx: &TaskContext` в `async fn`), `LeasedTask` хранит попытку в `Arc`;
+- `#[task_handler]` даёт одноимённое значение с методом `call` (функция как написана), тест зовёт
+  `send_e_ticket.call(task, &ctx, &mail)`; почтовые обработчики берут и `ctx`;
+- `TaskResult` — `Done | Retry { reason } | Fail { reason }` с конструкторами `TaskResult::done()`, `retry(..)`,
+  `fail(..)`, заменяет `TaskHandlerError`;
+- исполнителя типа нет в контексте — `Unavailable` и запись в журнал; зависимость, которой нет в контексте, собранном
+  руками, — отказ задачи;
+- `CommandMetadata` — в cqrsx (`cqrs::command::metadata`), `ui()` → `root("ui")`, allowlist presentation +=
+  `CommandMetadata`;
+- `WorkerSetupError` и `TaskRuntimeError::WorkerSetup` удалены целиком, `prepare` без `Result`;
+- `TaskHandlers` — `task/handlers.rs`, `.executor(..)` по одному на тип агрегата; `CHAIN_RETRY_AFTER` — в
+  `shared/application/policies.rs`; контракты `…V1` не переименовываются.
 
 ## Этапы
 
@@ -124,9 +145,42 @@ pub async fn record_cancellation(task: RecordCancellation, ctx: &TaskContext) ->
 
 ## Критерии приёмки
 
-- [ ] `TaskHandler` с `&self` и `TaskContext`; `TaskResult`; `Dependencies`; `Executors`; `#[task_handler]` с
+- [x] `TaskHandler` с `&self` и `TaskContext`; `TaskResult`; `Dependencies`; `Executors`; `#[task_handler]` с
       тестами и `compile_fail`.
-- [ ] Рантайм с общим диспетчером; фабрика удалена; проверка зависимостей при сборке.
-- [ ] Пауза по политике в исполнителе; эталон пауз проходит через рантайм.
-- [ ] Демо: четыре функции-обработчика; `chain.rs`, `metadata.rs`, формула паузы почты удалены.
-- [ ] `components.md`, guarantees.md.
+- [x] Рантайм с общим диспетчером; фабрика удалена; проверка зависимостей при сборке.
+- [x] Пауза по политике в исполнителе; эталон пауз проходит через рантайм.
+- [x] Демо: четыре функции-обработчика; `chain.rs`, `metadata.rs`, формула паузы почты удалены.
+- [x] `components.md`, guarantees.md.
+
+## Результат
+
+Сделано 2026-10-27.
+- **cqrsx:**
+  - `TaskHandler<P>::handle(&self, task, &TaskContext) -> TaskResult` (`Done | Retry { reason } | Fail { reason }`, без
+    паузы), `DEPENDENCIES`. `TaskHandlerError` удалён.
+  - `TaskContext`: `task_id`, `attempt`, `retry_pause`, `dependency::<T>()`, `execute::<A>` с
+    `CommandMetadata::from_task`. Ответ `execute` — `CommandGatewayError`, `From` в `TaskResult`.
+  - `Dependencies` по типу, trait object тоже. `Executors` — по одному на тип агрегата.
+  - `TaskHandlers` собирает один диспетчер и отказывает зависимости без `.provide`.
+  - `#[task_handler]`: функция становится одноимённым значением с методом `call`.
+  - Рантайм: один `Arc<TaskDispatcher>` на воркеры, перезапуск с ним же. Фабрика, `WorkerSetupError` и ошибки
+    запуска удалены; `prepare(queue, dispatcher, config, policies)`.
+  - Исполнитель паузит повтор по политике типа (`Policies::pause`); таймаут и нехватка аренды —
+    `redelivery_backoff`.
+  - `CommandMetadata` переехал из демо в `cqrs::command::metadata`.
+- **Демо:**
+  - `record_ticket`, `record_cancellation`, `send_e_ticket`, `issue_refund` — функции рядом с контрактами;
+  - `chain.rs` и `metadata.rs` удалены;
+  - `MailService`, `type Mailer = dyn MailService`;
+  - клиент почты без формулы паузы, `retry_after_ms` — `ctx.retry_pause()`;
+  - сборка — `bootstrap::tasks::handlers`.
+- **Неизменность:**
+  - значения записей `task.attempt.*` и паузы очереди на каждой ветке почты (S0-1), исходы и паузы шагов (S0-2) —
+    тесты, написанные и пройденные до замены, после неё утверждения не менялись;
+  - эталон пауз проходит через рантайм;
+  - эталоны 02 без изменений.
+- **Сверка утверждений:** 803 / 24 / 31 / 7 / 6 / 37.
+- **Тесты и покрытие:**
+  - cqrsx: lib 374, интеграционные 245, doctest'ы 51 + 22, macros 44;
+  - демо: 145 + 7 + 9 + 5, sidecar 14;
+  - покрытие: workspace 97,75 %, cqrsx 97,62 %.
