@@ -204,6 +204,11 @@ where
         self
     }
 
+    #[cfg(test)]
+    pub(crate) fn settings(&self) -> (&str, &ProcessorConfig) {
+        (&self.owner, &self.config)
+    }
+
     pub fn name(&self) -> &str {
         &self.name
     }

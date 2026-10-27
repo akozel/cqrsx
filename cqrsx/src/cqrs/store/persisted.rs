@@ -417,6 +417,15 @@ where
         }
     }
 
+    /// The interval of the snapshots, `None` without snapshots.
+    #[cfg(test)]
+    pub(crate) fn snapshot_interval(&self) -> Option<usize> {
+        match self.snapshot_policy {
+            SnapshotPolicy::Disabled => None,
+            SnapshotPolicy::Every(interval) => Some(interval),
+        }
+    }
+
     async fn load_events_after(
         &self,
         aggregate_id: &str,

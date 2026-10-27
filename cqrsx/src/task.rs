@@ -18,6 +18,7 @@ pub mod result;
 pub mod runtime;
 #[cfg(test)]
 pub(crate) mod test_support;
+pub mod testing;
 
 use crate::task::format::{TaskFormat, TaskFormatError, TaskPayload};
 use chrono::{DateTime, Utc};

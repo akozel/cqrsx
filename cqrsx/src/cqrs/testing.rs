@@ -4,7 +4,10 @@
 //!
 //! A `TestFramework` should be used to build a comprehensive set of aggregate tests to verify
 //! your application logic: given the events of the history, when a command decides, then one event or
-//! the rejection. It is synchronous: no runtime is needed.
+//! the rejection. It is synchronous: no runtime is needed. The stores in memory of the submodules stand in for the
+//! databases; the task queue over the outbox of [`mem_event_repository::MemEventRepository`] is
+//! [`MemTaskQueue`](crate::task::testing::mem_task_queue::MemTaskQueue), and the engine in memory
+//! (`engine::Cqrs::in_memory`) assembles all of them.
 //!
 //! ```rust
 //! # mod example {

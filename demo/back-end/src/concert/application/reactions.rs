@@ -132,12 +132,12 @@ mod tests {
     }
 
     /// The box office through a test engine, as the HTTP handler runs it: the executor with the reactions' planner
-    /// and the activity feed's observer. What each command publishes with its event, what the feed says of it, and the
-    /// races of cancellations and rebookings on one concert.
+    /// and the activity feed's observer. What each command publishes with its event and what the feed says of it; the
+    /// races of cancellations and rebookings on one concert run on the engine in memory (`application/tests.rs`).
     mod engine {
         use crate::concert::{
-            application::test_support::{ProbeStore, announce, book, cancel, committed, concert_id, harness, poll_once},
-            domain::{ConcertError, ConcertEvent},
+            application::test_support::{ProbeStore, announce, book, cancel, committed, concert_id, harness},
+            domain::ConcertError,
         };
         use cqrsx::{
             cqrs::{
@@ -148,7 +148,6 @@ mod tests {
             task::format::TaskFormat,
         };
         use serde_json::{Value, json};
-        use std::{collections::HashMap, sync::Arc};
         use uuid::Uuid;
 
         /// What the activity feed names every command of the box office by: its type and the fan it is for, accepted
@@ -379,111 +378,6 @@ mod tests {
                 (1, "command.failed", Some("unavailable")),
                 "the command ran and failed: nothing is read before it any more"
             );
-        }
-
-        /// The stale read the pre-read allowed: a cancellation that waits in the concert's lock line behind a
-        /// cancellation and a rebooking of the same seat refunds the booking it cancels, not the one that held
-        /// the seat when it was submitted.
-        #[tokio::test]
-        async fn a_cancellation_queued_behind_a_rebooking_refunds_the_booking_it_cancels() {
-            let store = ProbeStore::default();
-            let h = harness(store.clone());
-            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
-                .await
-                .unwrap();
-            let first = Uuid::now_v7();
-            h.execute(&concert_id(), book("A1", "fox", first), CommandMetadata::root("ui"))
-                .await
-                .unwrap();
-            h.executor.take_published_tasks();
-            // The first cancellation holds the lock while its load waits at the gate; the rebooking and the
-            // second cancellation queue behind it in this order.
-            let gate = store.close_gate();
-            let (id, cancel_first, second, cancel_second) = (concert_id(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
-            let mut first_cancellation = Box::pin(h.execute(&id, cancel("A1", "fox", cancel_first), metadata_of(cancel_first)));
-            assert!(poll_once(first_cancellation.as_mut()).await.is_none());
-            let mut rebooking = Box::pin(h.execute(&id, book("A1", "fox", second), metadata_of(second)));
-            assert!(poll_once(rebooking.as_mut()).await.is_none());
-            let mut second_cancellation =
-                Box::pin(h.execute(&id, cancel("A1", "fox", cancel_second), metadata_of(cancel_second)));
-            assert!(poll_once(second_cancellation.as_mut()).await.is_none());
-            gate.add_permits(3);
-            let (one, two, three) = tokio::join!(first_cancellation, rebooking, second_cancellation);
-            assert!(one.is_ok() && two.is_ok() && three.is_ok());
-            let refunded: Vec<_> = h
-                .executor
-                .take_published_tasks()
-                .into_iter()
-                .filter(|task| task.format().task_type() == "encore_record_cancellation")
-                .map(|task| {
-                    (
-                        task.payload()["cancellation_id"].clone(),
-                        task.payload()["booking_id"].clone(),
-                    )
-                })
-                .collect();
-            assert_eq!(
-                refunded,
-                [(json!(cancel_first), json!(first)), (json!(cancel_second), json!(second))],
-                "every cancellation refunds the booking its own decision cancelled"
-            );
-        }
-
-        fn metadata_of(command_id: Uuid) -> CommandMetadata {
-            let mut metadata = CommandMetadata::root("ui");
-            let causation = &mut metadata.causation;
-            (causation.command_id, causation.correlation_id, causation.causation_id) = (command_id, command_id, command_id);
-            metadata
-        }
-
-        /// Many cancellations and rebookings of one seat at once: whatever the interleaving, every published
-        /// cancellation task carries the booking of the `BookingCancelled` its own command committed.
-        #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-        async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_events() {
-            let store = MemStore::default();
-            let h = Arc::new(harness(store.clone()));
-            h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
-                .await
-                .unwrap();
-            let mut commands = tokio::task::JoinSet::new();
-            for round in 0..24 {
-                let h = h.clone();
-                commands.spawn(async move {
-                    let id = Uuid::now_v7();
-                    if round % 2 == 0 {
-                        h.execute(&concert_id(), book("A1", "fox", id), metadata_of(id)).await
-                    } else {
-                        h.execute(&concert_id(), cancel("A1", "fox", id), metadata_of(id)).await
-                    }
-                });
-            }
-            while let Some(result) = commands.join_next().await {
-                // Accepted or refused: the events below say which.
-                let _ = result.unwrap();
-            }
-            let cancelled: HashMap<String, Uuid> = store
-                .load_events(concert_id().as_str())
-                .await
-                .unwrap()
-                .into_iter()
-                .filter_map(|event| match event.payload {
-                    ConcertEvent::BookingCancelled(cancelled) => {
-                        Some((event.metadata["command_id"].clone(), cancelled.booking_id))
-                    }
-                    _ => None,
-                })
-                .collect();
-            let tasks: Vec<_> = h
-                .executor
-                .take_published_tasks()
-                .into_iter()
-                .filter(|task| task.format().task_type() == "encore_record_cancellation")
-                .collect();
-            assert_eq!(tasks.len(), cancelled.len(), "one task per committed cancellation");
-            for task in tasks {
-                let command_id = task.metadata()["command_id"].as_str().unwrap().to_owned();
-                assert_eq!(task.payload()["booking_id"], json!(cancelled[&command_id]));
-            }
         }
     }
 }

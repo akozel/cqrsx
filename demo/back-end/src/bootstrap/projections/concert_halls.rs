@@ -4,10 +4,10 @@ use crate::{
     concert::{application::views::concert_hall::ConcertHallView, domain::Concert},
     operations::application::verify::ProjectionVerification,
     process::Process,
-    shared::application::activity::ActivityHub,
 };
 use cqrsx::{
     cqrs::command::wakeup::CommitWakeup,
+    engine::build::Registrations,
     mongodb::{projection_checkpoints::MongoCheckpointStore, view_repository::MongoViewRepository},
     postgres::event_repository::PostgresEventRepository,
 };
@@ -19,7 +19,7 @@ pub fn wire(
     read_db: &Database,
     checkpoints: &Arc<MongoCheckpointStore>,
     wakeup: &CommitWakeup,
-    activity: &Arc<ActivityHub>,
+    registrations: &Registrations,
 ) -> ReadModel<ConcertHallView, Concert> {
     let repository = Arc::new(MongoViewRepository::new(read_db));
     ReadModel {
@@ -27,7 +27,7 @@ pub fn wire(
             Arc::new(PostgresEventRepository::new(process.history_pool.clone())),
             repository.clone(),
         )),
-        processor: processor(process, repository.clone(), checkpoints, wakeup, activity),
+        processor: processor(process, repository.clone(), checkpoints, wakeup, registrations),
         repository,
     }
 }

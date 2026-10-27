@@ -34,12 +34,11 @@ use std::{
     future::Future,
     pin::Pin,
     sync::{
-        Arc, Mutex,
+        Arc,
         atomic::{AtomicUsize, Ordering},
     },
     task::Poll,
 };
-use tokio::sync::Semaphore;
 use uuid::Uuid;
 
 /// What the box office answers a command: what it committed, or why not.
@@ -89,25 +88,16 @@ pub fn committed(answer: &Answer) -> Vec<String> {
     }
 }
 
-/// An in-memory store that counts the aggregate loads and, once its gate is closed, makes every load wait
-/// for a permit: a command holds the concert's lock while its load waits.
+/// An in-memory store that counts the aggregate loads.
 #[derive(Clone, Default)]
 pub struct ProbeStore {
     inner: MemStore<Concert>,
     loads: Arc<AtomicUsize>,
-    gate: Arc<Mutex<Option<Arc<Semaphore>>>>,
 }
 
 impl ProbeStore {
     pub fn loads(&self) -> usize {
         self.loads.load(Ordering::SeqCst)
-    }
-
-    /// From now on every load waits for a permit of the returned gate.
-    pub fn close_gate(&self) -> Arc<Semaphore> {
-        let gate = Arc::new(Semaphore::new(0));
-        *self.gate.lock().unwrap() = Some(gate.clone());
-        gate
     }
 }
 
@@ -120,10 +110,6 @@ impl EventStore<Concert> for ProbeStore {
 
     async fn load_aggregate(&self, id: &str) -> Result<Self::AC, AggregateError<ConcertError>> {
         self.loads.fetch_add(1, Ordering::SeqCst);
-        let gate = self.gate.lock().unwrap().clone();
-        if let Some(gate) = gate {
-            gate.acquire().await.unwrap().forget();
-        }
         self.inner.load_aggregate(id).await
     }
 

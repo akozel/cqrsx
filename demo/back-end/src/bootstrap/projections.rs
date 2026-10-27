@@ -1,7 +1,8 @@
 //! One module per read model: its MongoDB collection (the view's name, `View::NAME`), the projection processor that
 //! feeds it from the journal of its aggregate type and the verification of it. The index collects them for the
 //! aggregates (whose executors wake the processors after a commit, see [`aggregates`](super::aggregates)), the
-//! operations and the HTTP queries. A new read model gets a module like these two, listed here.
+//! operations and the HTTP queries. A new read model gets a module like these two, listed here; its module registers
+//! the view (`Module::view`).
 pub mod concert_halls;
 pub mod fan_wallets;
 
@@ -9,9 +10,8 @@ use crate::{
     bootstrap::read_models::{Documents, ReadModels},
     concert::{application::views::concert_hall::ConcertHallView, domain::Concert},
     fan::{application::views::fan_wallet::FanWalletView, domain::Fan},
-    operations::application::{activity_observer::ActivityObserver, verify::VerifiedReadModel},
+    operations::application::verify::VerifiedReadModel,
     process::Process,
-    shared::application::activity::ActivityHub,
 };
 use cqrsx::{
     cqrs::{
@@ -21,6 +21,7 @@ use cqrsx::{
             View, ViewProjection, checkpoint::CheckpointKey, processor::ProjectionProcessor, runtime::ProjectionRuntime,
         },
     },
+    engine::build::Registrations,
     mongodb::{projection_checkpoints::MongoCheckpointStore, view_repository::MongoViewRepository},
     postgres::event_repository::PostgresEventRepository,
 };
@@ -61,13 +62,13 @@ pub fn checkpoint_keys() -> Vec<CheckpointKey> {
     ]
 }
 
-/// Every read model and its checkpoint live in `ENCORE_READ_DB`.
-pub fn read_models(process: &Process, activity: &Arc<ActivityHub>) -> ReadSideWiring {
+/// Every read model and its checkpoint live in `ENCORE_READ_DB`; the activity log observes their processors.
+pub fn read_models(process: &Process, registrations: &Registrations) -> ReadSideWiring {
     let read_db = process.mongo.database(&process.config.read_db);
     let checkpoints = Arc::new(MongoCheckpointStore::new(&read_db));
     let (concert_wakeup, fan_wakeup) = (CommitWakeup::new(), CommitWakeup::new());
-    let halls = concert_halls::wire(process, &read_db, &checkpoints, &concert_wakeup, activity);
-    let wallets = fan_wallets::wire(process, &read_db, &checkpoints, &fan_wakeup, activity);
+    let halls = concert_halls::wire(process, &read_db, &checkpoints, &concert_wakeup, registrations);
+    let wallets = fan_wallets::wire(process, &read_db, &checkpoints, &fan_wakeup, registrations);
     ReadSideWiring {
         queries: ReadModels {
             halls: Arc::new(Documents::MongoDb(halls.repository)),
@@ -84,33 +85,33 @@ pub fn read_models(process: &Process, activity: &Arc<ActivityHub>) -> ReadSideWi
 }
 
 /// A read model's processor: the projection of the view `V` under its name (the name the feed and the checkpoint
-/// carry), the journal of `A` through the projection pool, this node as the owner.
+/// carry), the journal of `A` through the projection pool, the configuration and this node of the engine's settings,
+/// the observer the modules registered.
 pub fn processor<V, A>(
     process: &Process,
     repository: Arc<MongoViewRepository<V, A>>,
     checkpoints: &Arc<MongoCheckpointStore>,
     wakeup: &CommitWakeup,
-    activity: &Arc<ActivityHub>,
+    registrations: &Registrations,
 ) -> Processor<A>
 where
     V: View<A> + 'static,
     A: Aggregate + 'static,
 {
-    let config = &process.config;
-    ProjectionProcessor::new(
+    let settings = registrations.settings();
+    let processor = ProjectionProcessor::new(
         V::NAME,
         Arc::new(PostgresEventRepository::new(process.projection_pool.clone())),
         checkpoints.clone(),
         Arc::new(ViewProjection::new(repository)),
-        config.projection,
-    )
-    .with_observer(Arc::new(ActivityObserver::new(
-        V::NAME,
-        config.node_name.clone(),
-        activity.clone(),
-    )))
-    .with_wakeup(wakeup.clone())
-    .with_owner(config.node_name.clone())
+        settings.processor,
+    );
+    let processor = match registrations.projection_observer(V::NAME) {
+        Some(observer) => processor.with_observer(observer),
+        None => processor,
+    };
+    let owner = settings.node_name.clone().unwrap_or_else(|| process.config.node_name.clone());
+    processor.with_wakeup(wakeup.clone()).with_owner(owner)
 }
 
 #[cfg(test)]

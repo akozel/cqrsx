@@ -1,6 +1,9 @@
 //! Test tools the flows of several modules share: what a planner (the reactions' planner of an aggregate) plans for a
 //! decision built by hand, and a mail service that records the letters.
-use crate::shared::application::mail::{Mail, MailService};
+use crate::shared::application::{
+    activity::ActivityHub,
+    mail::{Mail, MailService},
+};
 use async_trait::async_trait;
 use cqrsx::{
     cqrs::{
@@ -30,11 +33,27 @@ impl RecordingMailer {
     pub fn sent(&self) -> Vec<(uuid::Uuid, Mail)> {
         self.sent.lock().unwrap().clone()
     }
+
+    /// The kinds of the letters sent so far, in order.
+    pub fn kinds(&self) -> Vec<&'static str> {
+        self.sent().iter().map(|(_, mail)| mail.kind).collect()
+    }
+
+    /// The letters a provider keeps: one per idempotency key (`Mail::id`), in the order of the first send.
+    pub fn letters(&self) -> Vec<Mail> {
+        let mut letters: Vec<Mail> = Vec::new();
+        for (_, mail) in self.sent() {
+            if !letters.iter().any(|letter| letter.id == mail.id) {
+                letters.push(mail);
+            }
+        }
+        letters
+    }
 }
 
 #[async_trait]
 impl MailService for RecordingMailer {
-    async fn send(&self, ctx: &TaskContext, mail: Mail) -> TaskResult {
+    async fn send(&self, ctx: &TaskContext, _: &ActivityHub, mail: Mail) -> TaskResult {
         self.sent.lock().unwrap().push((ctx.task_id(), mail));
         self.answer.clone()
     }

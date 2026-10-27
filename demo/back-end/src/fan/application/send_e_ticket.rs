@@ -2,7 +2,10 @@
 use crate::{
     fan::domain::events::TicketRecorded,
     shared::{
-        application::mail::{Mail, Mailer},
+        application::{
+            activity::ActivityHub,
+            mail::{Mail, Mailer},
+        },
         domain::{ConcertId, FanId, FanLedgerId, venue::SeatId},
     },
 };
@@ -54,11 +57,11 @@ pub fn e_ticket_mail(payload: &SendETicketV1) -> Mail {
     }
 }
 
-/// Sends the e-ticket; the mail service answers whether it was delivered (a repeat is delivered once) or is retried
-/// after the pause of the `MAIL` policy.
+/// Sends the e-ticket, reporting the attempt to the activity log; the mail service answers whether it was delivered (a
+/// repeat is delivered once) or is retried after the pause of the `MAIL` policy.
 #[task_handler]
-pub async fn send_e_ticket(task: SendETicketV1, ctx: &TaskContext, mail: &Mailer) -> TaskResult {
-    mail.send(ctx, e_ticket_mail(&task)).await
+pub async fn send_e_ticket(task: SendETicketV1, ctx: &TaskContext, mail: &Mailer, activity: &ActivityHub) -> TaskResult {
+    mail.send(ctx, activity, e_ticket_mail(&task)).await
 }
 
 #[cfg(test)]
@@ -100,14 +103,18 @@ mod tests {
             std::time::Duration::from_secs(1),
         );
         let mail = RecordingMailer::delivering();
-        assert_eq!(send_e_ticket.call(task.clone(), &ctx, &mail).await, TaskResult::Done);
+        let activity = ActivityHub::new(1, 1);
+        assert_eq!(
+            send_e_ticket.call(task.clone(), &ctx, &mail, &activity).await,
+            TaskResult::Done
+        );
         assert_eq!(mail.sent(), [(ctx.task_id(), e_ticket_mail(&task))]);
         let refusing = RecordingMailer {
             answer: TaskResult::retry("mailbox_busy"),
             ..RecordingMailer::delivering()
         };
         assert_eq!(
-            send_e_ticket.call(task, &ctx, &refusing).await,
+            send_e_ticket.call(task, &ctx, &refusing, &activity).await,
             TaskResult::retry("mailbox_busy"),
             "the mail service's answer is the task's"
         );

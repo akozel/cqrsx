@@ -1,89 +1,75 @@
-//! The outbox tasks: the policy of every task type and its handler, one line per task type. One dispatcher (one set
-//! of handlers) serves every worker and every worker restart; the handlers share one mail client, with one HTTP
-//! client to the external mail service, since a connection pool is meant to be shared.
+//! The outbox tasks: the policy of every task type and its handler, as the `fan` module registers them. One dispatcher
+//! (one set of handlers) serves every worker and every worker restart; the e-mails go through the module's mail
+//! service, with one HTTP client to the external mail service, since a connection pool is meant to be shared.
 use crate::{
+    bootstrap::{self, WiringError},
+    concert,
     config::Config,
-    fan::{
-        application::{
-            issue_refund::{IssueRefundV1, issue_refund},
-            record_cancellation::{RecordCancellationV1, record_cancellation},
-            record_ticket::{RecordTicketV1, record_ticket},
-            send_e_ticket::{SendETicketV1, send_e_ticket},
-        },
-        domain::Fan,
-    },
+    fan,
+    fan::domain::Fan,
+    operations,
     shared::{
-        application::{
-            activity::ActivityHub,
-            mail::Mailer,
-            policies::{CHAIN_RETRY_AFTER, MAIL, STEP},
-        },
-        infrastructure::http_mailer::{HttpMailer, MailClientSettings},
+        application::{activity::ActivityHub, mail::Mailer},
+        infrastructure::http_mailer::MailClientSettings,
     },
 };
 use cqrsx::{
     cqrs::command::CommandExecutor,
-    task::{
-        adapter::boxed::BoxedTaskAdapter,
-        dispatcher::{TaskDispatcher, TaskDispatcherError},
-        handlers::TaskHandlers,
-        policy::{Policies, PolicyError, Retry, TaskPolicy},
-    },
+    engine::{Cqrs, setup::SetupError},
+    task::{adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, policy::Policies},
 };
 use std::sync::Arc;
 
-/// The policies of the four task types, from the configuration: a step of the chain waits [`CHAIN_RETRY_AFTER`]
-/// between attempts, an e-mail backs off from `ENCORE_TASK_RETRY_BASE_MS` to `ENCORE_TASK_RETRY_MAX_MS`; both get
-/// `ENCORE_TASK_MAX_ATTEMPTS` attempts. The reactions of both aggregates plan with them, and the task runtime pauses
-/// every retry by them.
-pub fn policies(config: &Config) -> Result<Policies, PolicyError> {
-    let attempts = config.task_max_attempts;
-    let mail = Retry::backoff(config.task_retry_base, config.task_retry_max);
-    Policies::default()
-        .with_policy(STEP, TaskPolicy::new(Retry::fixed(CHAIN_RETRY_AFTER), attempts)?)?
-        .with_policy(MAIL, TaskPolicy::new(mail, attempts)?)?
-        .with_task::<RecordTicketV1>(STEP)?
-        .with_task::<RecordCancellationV1>(STEP)?
-        .with_task::<SendETicketV1>(MAIL)?
-        .with_task::<IssueRefundV1>(MAIL)
+/// The policies of the four task types under the configuration, as the `fan` module declares them: a step of the chain
+/// waits [`CHAIN_RETRY_AFTER`](crate::shared::application::policies::CHAIN_RETRY_AFTER) between attempts, an e-mail
+/// backs off from `ENCORE_TASK_RETRY_BASE_MS` to `ENCORE_TASK_RETRY_MAX_MS`; both get `ENCORE_TASK_MAX_ATTEMPTS`
+/// attempts. The reactions of both aggregates plan with them, and the task runtime pauses every retry by them.
+pub fn policies(config: &Config) -> Result<Policies, WiringError> {
+    Ok(bootstrap::modules(config)?.registrations()?.policies().clone())
 }
 
-/// The client of the external mail service: its address and a request timeout that ends before the handler's.
-pub fn mail_settings(config: &Config) -> MailClientSettings {
-    MailClientSettings {
-        base_url: config.mail_service_url.clone(),
-        timeout: config.mail_request_timeout(),
-    }
+/// The client of the external mail service under the configuration: its address and a request timeout that ends
+/// before the handler's.
+pub fn mail_settings(config: &Config) -> Result<MailClientSettings, SetupError> {
+    fan::mail_settings(&bootstrap::setup(config).map_err(SetupError::failed)?)
 }
 
-/// The mail service of the process, one for every worker, reporting every attempt to `activity`.
-pub fn mailer(config: &Config, activity: Arc<ActivityHub>) -> Result<Arc<Mailer>, reqwest::Error> {
-    let settings = mail_settings(config);
-    let client = HttpMailer::client(&settings)?;
-    Ok(Arc::new(HttpMailer::new(client, settings, activity)))
+/// The mail service of the process under the configuration, one for every worker.
+pub fn mailer(config: &Config) -> Result<Arc<Mailer>, SetupError> {
+    fan::mailer(&bootstrap::setup(config).map_err(SetupError::failed)?)
 }
 
-/// The handlers of the four task types, in one dispatcher every worker shares: the chain steps between the two
-/// aggregates run their commands on `fans`, the e-mails they end in go through `mail`. Until the modules register
-/// their tasks themselves (backlog 05/11).
+/// The handlers of the four task types the `fan` module registers, in one dispatcher every worker shares: the chain
+/// steps between the two aggregates run their commands on `fans`, the e-mails they end in go through `mail` and are
+/// reported to `activity`.
 pub fn handlers<E: CommandExecutor<Fan> + 'static>(
     fans: Arc<E>,
     mail: Arc<Mailer>,
-) -> Result<TaskDispatcher<BoxedTaskAdapter>, TaskDispatcherError> {
-    TaskHandlers::new()
-        .handler(record_ticket)
-        .handler(record_cancellation)
-        .handler(send_e_ticket)
-        .handler(issue_refund)
+    activity: Arc<ActivityHub>,
+) -> Result<TaskDispatcher<BoxedTaskAdapter>, WiringError> {
+    let modules = Cqrs::in_memory()
+        .module(concert::module)
+        .module(fan::module)
+        .module(operations::module)
         .provide(mail)
-        .executor(fans)
-        .build()
+        .provide(activity);
+    Ok(modules.registrations()?.take_task_handlers().executor(fans).build()?)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::shared::application::test_support::RecordingMailer;
+    use crate::{
+        bootstrap::Wiring,
+        fan::application::{
+            issue_refund::IssueRefundV1,
+            record_cancellation::RecordCancellationV1,
+            record_ticket::RecordTicketV1,
+            send_e_ticket::{SendETicketV1, send_e_ticket},
+        },
+        shared::application::policies::{CHAIN_RETRY_AFTER, MAIL, STEP},
+    };
     use crate::{
         concert::domain::{
             Concert, ConcertCommand, ConcertRules,
@@ -106,6 +92,13 @@ mod tests {
             testing::{command::TestCommandExecutor, mem_store::MemStore},
         },
         task::{TaskSchedule, format::TaskFormat},
+    };
+    use cqrsx::{
+        engine::build::BuildError,
+        task::{
+            handlers::TaskHandlers,
+            policy::{PolicyError, Retry, TaskPolicy},
+        },
     };
     use serde::{Serialize, de::DeserializeOwned};
     use serde_json::json;
@@ -200,7 +193,10 @@ mod tests {
             )
         );
         config.task_max_attempts = 0;
-        assert_eq!(policies(&config).unwrap_err(), PolicyError::MaxAttempts(0));
+        assert!(matches!(
+            policies(&config).unwrap_err(),
+            WiringError::Modules(BuildError::Policy(PolicyError::MaxAttempts(0)))
+        ));
     }
 
     /// The mail policy pauses exactly as the mail client asked until it stopped choosing its pauses (backlog 05/09), and
@@ -410,7 +406,7 @@ mod tests {
     fn the_mail_settings_come_from_the_configuration() {
         let mut config = crate::testing::config();
         config.mail_service_url = "http://mail:8025".into();
-        let settings = mail_settings(&config);
+        let settings = mail_settings(&config).unwrap();
         assert_eq!(settings.base_url, "http://mail:8025");
         assert_eq!(settings.timeout, config.mail_request_timeout());
     }
@@ -421,7 +417,8 @@ mod tests {
     async fn the_four_task_types_have_one_handler_each_with_the_mailer_and_the_ledgers_executor() {
         let fans = Arc::new(TestCommandExecutor::new(MemStore::<Fan>::default(), ()));
         let mail: Arc<Mailer> = Arc::new(RecordingMailer::delivering());
-        let dispatcher = handlers(fans.clone(), mail.clone()).unwrap();
+        let activity = Arc::new(ActivityHub::new(1, 1));
+        let dispatcher = handlers(fans.clone(), mail.clone(), activity.clone()).unwrap();
         assert_eq!(dispatcher.formats(), formats());
         let without_mail = TaskHandlers::new()
             .handler(send_e_ticket)
@@ -434,7 +431,39 @@ mod tests {
             "the handler of encore_send_e_ticket v1 needs `dyn encore_backend::shared::application::mail::MailService`, \
              which nothing provides"
         );
-        let mailer = mailer(&crate::testing::config(), Arc::new(ActivityHub::new(1, 1))).unwrap();
-        assert!(handlers(Arc::new(TestCommandExecutor::new(MemStore::<Fan>::default(), ())), mailer).is_ok());
+        let mailer = mailer(&crate::testing::config()).unwrap();
+        assert!(
+            handlers(
+                Arc::new(TestCommandExecutor::new(MemStore::<Fan>::default(), ())),
+                mailer,
+                activity
+            )
+            .is_ok()
+        );
+    }
+
+    /// The e-mail handlers report every attempt to the activity log: an assembly without its hub is refused before a
+    /// worker could run one, whether it assembles the handlers itself or the engine does.
+    #[test]
+    fn an_assembly_without_the_activity_hub_is_refused() {
+        let mail: Arc<Mailer> = Arc::new(RecordingMailer::delivering());
+        let without_hub = TaskHandlers::new()
+            .handler(send_e_ticket)
+            .provide(mail)
+            .build()
+            .err()
+            .unwrap();
+        assert_eq!(
+            without_hub.to_string(),
+            "the handler of encore_send_e_ticket v1 needs `encore_backend::shared::application::activity::ActivityHub`, \
+             which nothing provides"
+        );
+        let without_operations = Cqrs::in_memory().module(concert::module).module(fan::module).build();
+        assert_eq!(
+            without_operations.err().unwrap().to_string(),
+            "task handlers: the handler of encore_send_e_ticket v1 needs \
+             `encore_backend::shared::application::activity::ActivityHub`, which nothing provides"
+        );
+        let _: Option<Wiring> = None;
     }
 }

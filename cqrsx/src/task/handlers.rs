@@ -71,6 +71,15 @@ impl TaskHandlers {
         Self::default()
     }
 
+    /// The handlers of `adapters` with `dependencies`: what the modules of an engine registered.
+    pub(crate) fn assembled(adapters: Vec<BoxedTaskAdapter>, dependencies: Dependencies) -> Self {
+        Self {
+            adapters,
+            dependencies,
+            ..Self::default()
+        }
+    }
+
     /// `handler` for the tasks of its payload type `P`, decoded from JSON
     /// ([`JsonTaskAdapter`](super::adapter::json::JsonTaskAdapter)).
     pub fn handler<P, H>(mut self, handler: H) -> Self

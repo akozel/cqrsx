@@ -25,8 +25,8 @@ pub struct ReadModels {
 }
 
 /// Where the documents of one read model live: the collection of the read database in the process (the repository
-/// its projection processor writes through), memory in the router tests. Until the engine serves its views (backlog
-/// 05/11) the queries reach the one or the other through this enum, by delegation.
+/// its projection processor writes through), memory in the router tests. Until the engine serves the views of the
+/// process (backlog 05/12) the queries reach the one or the other through this enum, by delegation.
 pub enum Documents<V, A> {
     MongoDb(Arc<MongoViewRepository<V, A>>),
     #[cfg(test)]

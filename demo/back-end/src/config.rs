@@ -2,7 +2,10 @@
 //!
 //! Parsing happens once at start-up, so this is the one place where a hard failure with a clear
 //! message is acceptable; everything after `Config::from_env` is free of `unwrap`/`expect`.
-use crate::operations::application::rebuild::{DEFAULT_MAX_PACE, DEFAULT_SLOW_PACE, DEFAULT_STATUS_TIMEOUT};
+use crate::{
+    operations::application::rebuild::{DEFAULT_MAX_PACE, DEFAULT_SLOW_PACE, DEFAULT_STATUS_TIMEOUT},
+    shared::infrastructure::http_mailer::MailClientSettings,
+};
 use cqrsx::{
     cqrs::{
         command::locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits, LockLimitsError},
@@ -477,11 +480,7 @@ impl Config {
     /// ends with a retry of its own rather than as a timed-out handler: one second earlier, never
     /// below one second.
     pub fn mail_request_timeout(&self) -> Duration {
-        self.task_runtime
-            .worker_pool()
-            .handler_timeout()
-            .saturating_sub(Duration::from_secs(1))
-            .max(Duration::from_secs(1))
+        MailClientSettings::request_timeout(self.task_runtime.worker_pool().handler_timeout())
     }
 }
 

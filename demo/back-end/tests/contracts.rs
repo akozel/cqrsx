@@ -284,7 +284,11 @@ async fn mail_service(statuses: impl IntoIterator<Item = u16>) -> String {
 /// composition's mail service at the address of `config`, writing to `activity`.
 fn mail_context(attempt: TaskAttempt, config: &Config, activity: &Arc<ActivityHub>) -> TaskContext {
     let pause = policies(config).unwrap().pause(attempt.format(), attempt.number());
-    TaskContext::new(attempt, pause).with_dependencies(Dependencies::default().provide(mailer(config, activity.clone()).unwrap()))
+    TaskContext::new(attempt, pause).with_dependencies(
+        Dependencies::default()
+            .provide(mailer(config).unwrap())
+            .provide(activity.clone()),
+    )
 }
 
 /// Attempt `number` of a task with `payload`, in the causation chain of a command.
@@ -911,7 +915,7 @@ async fn retry_pauses_by_attempt_are_the_golden_ones() {
         })
         .collect();
     queue.incoming.lock().unwrap().extend(attempts.iter().flatten().cloned());
-    let dispatcher = handlers(fans, mailer(&config, activity.clone()).unwrap()).unwrap();
+    let dispatcher = handlers(fans, mailer(&config).unwrap(), activity.clone()).unwrap();
     let settled = run_through_the_runtime(&queue, dispatcher, &config, 32).await;
 
     let mut lines = Vec::new();
@@ -1071,13 +1075,13 @@ fn config_with_mail(url: &str) -> Config {
 /// steps of the ledger on a ledger nobody reaches.
 fn mail_dispatcher(config: &Config, activity: &Arc<ActivityHub>) -> TaskDispatcher<BoxedTaskAdapter> {
     let fans = Arc::new(TestCommandExecutor::new(UnavailableStore, ()));
-    handlers(fans, mailer(config, activity.clone()).unwrap()).unwrap()
+    handlers(fans, mailer(config).unwrap(), activity.clone()).unwrap()
 }
 
 /// The handlers of the composition, the steps of the ledger on `fans`.
 fn step_dispatcher<E: CommandExecutor<Fan> + 'static>(fans: Arc<E>) -> TaskDispatcher<BoxedTaskAdapter> {
     let config = Config::from_lookup(|_| None).unwrap();
-    handlers(fans, mailer(&config, Arc::new(ActivityHub::new(1, 1))).unwrap()).unwrap()
+    handlers(fans, mailer(&config).unwrap(), Arc::new(ActivityHub::new(1, 1))).unwrap()
 }
 
 /// The executor of the task runtime over `queue`, with the storage budget and the policies of `config`.

@@ -2,11 +2,11 @@
 
 | | |
 |---|---|
-| Статус | предложено 2026-10-27 |
+| Статус | сделано 2026-10-27 |
 | Ценность | высокая: модуль-плагин описывает, что подключает; тест сценария «забронировал, отменил, прогнал задачи, проверил письма» без баз |
 | Цена | высокая: новый слой сборки движка над существующими компонентами; бэкенд в памяти; очередь задач в памяти как публичный инструмент |
-| cqrsx | новый `src/engine.rs` и `src/engine/{module,setup,build,memory,outcome,views}.rs` (`Cqrs`, `Module`, `Setup`, `Backend`, `MemoryBackend`, `Outcome`, `Views`), новый `src/task/testing/mem_task_queue.rs` (`MemTaskQueue`), `src/cqrs/testing.rs` (реэкспорт), `tests/engine/*` (новые), `doc/components.md`, `README.md` |
-| demo | `concert.rs`, `fan.rs`, `operations.rs` (корни модулей), `shared/application/policies.rs`, `testing.rs` (`test_app()`), `concert/application/tests.rs` (сценарии на движке в памяти), `bootstrap/*` (регистрирует из модулей, до 12) |
+| cqrsx | новые `src/engine.rs` и `src/engine/{build,module,setup,outcome,views,memory}.rs` (`Cqrs`, `Builder`, `BuildError`, `Registrations`, `Module`, `TaskEntry`, `Setup`, `Settings`, `Source`, `Outcome`, `ViewQuery`, `Views`; бэкенд в памяти — закрытый `MemoryBackend`, без открытого трейта `Backend`), `src/task/testing{,/mem_task_queue}.rs` (`MemTaskQueue`), `src/cqrs/testing/mem_event_repository.rs` (столбцы доставки outbox, `count_after`, `hold_loads`), `src/cqrs/command/observer.rs` (`AnyCommandObserver`), `src/task/{context,dependencies,handlers}.rs` (доступ движка), `tests/engine{,/scenario}.rs`, `doc/components.md`, `README.md` |
+| demo | `concert.rs`, `fan.rs`, `operations.rs` (корни модулей), `shared/application/{mail,policies,test_support}.rs`, `shared/infrastructure/http_mailer.rs` (хаб ленты — зависимость обработчиков писем), `fan/application/{send_e_ticket,issue_refund}.rs`, `operations/application/activity_observer.rs` (`AnyCommandObserver`), `testing.rs` (`test_app()`), `concert/application/tests.rs` (сценарии и гонки на движке в памяти), `concert/application/{reactions,test_support}.rs`, `bootstrap{.rs,/aggregates*,/projections*,/tasks.rs,/read_models.rs}` (строится из `Registrations`, до 12), `config.rs` (формула таймаута почты), `tests/{contracts,architecture}.rs` (помощники и тексты) |
 | Зависимости | 07, 09, 10 |
 | Гарантии | G-01, G-05, G-09, G-11, G-12, G-14, G-15, G-23, G-26 |
 
@@ -121,8 +121,34 @@ async fn a_cancellation_refunds_the_fan() {
 
 ## Критерии приёмки
 
-- [ ] `Module`, `Setup`, `Cqrs::in_memory()`, `build`-проверки, `execute`, `view`, `views()`, `run_tasks`,
+- [x] `Module`, `Setup`, `Cqrs::in_memory()`, `build`-проверки, `execute`, `view`, `views()`, `run_tasks`,
       `catch_up`; `MemTaskQueue` публичный.
-- [ ] Интеграционный сценарий cqrsx на движке в памяти; сценарии демо на `test_app()`.
-- [ ] Корни модулей демо по дизайну 07; `bootstrap` строится из модулей.
-- [ ] `components.md` (раздел «Engine», словарь), guarantees.md (G-11 закрыт).
+- [x] Интеграционный сценарий cqrsx на движке в памяти; сценарии демо на `test_app()`.
+- [x] Корни модулей демо по дизайну 07; `bootstrap` строится из модулей.
+- [x] `components.md` (раздел «Engine», словарь), guarantees.md (G-11 закрыт).
+
+## Результат
+
+**Результат (2026-10-27).** В cqrsx появился движок `engine`.
+
+- Модуль (`Module`) регистрирует агрегат с правилами и реакциями, витрины, задачи с политиками
+  (`.task(h).policy(P)`), зависимости и наблюдателей всех команд и процессоров.
+- `Cqrs::in_memory().module(..).provide(..).build()` собирает существующие компоненты над хранилищами в памяти:
+  `CommandExecutorCore` с `ReactionsPlanner`, `CommitWakeup` на тип, процессор на витрину, общий диспетчер,
+  `Executors`, `Policies`.
+- Сборка отказывает второй регистрации агрегата (G-11 закрыт), витрине дважды, политике без объявления, обработчику
+  без зависимости и т. д.
+- `cqrs.from("ui").execute::<A>(..)` ставит причинность из `#[command_id]` или нового v7.
+- `view::<V>()` и `views()` дают запросы и операции витрин.
+- В памяти `run_tasks()` прогоняет цепочки задач до конца, а `catch_up()` догоняет витрины.
+- `MemTaskQueue` — очередь задач в памяти по правилам PostgreSQL над outbox `MemEventRepository`, с часами Tokio и
+  хуком `lose_settlements`.
+
+Демо: корни модулей `concert`, `fan`, `operations`.
+- `test_app()` и сценарии без баз: отмена возвращает деньги, повторная доставка после потерянного подтверждения, отмена
+  раньше билета, витрины догоняют журнал; гонки отмен переехали на движок без ослабления.
+- Бутстрап до 12 строит PostgreSQL-проводку из регистраций модулей.
+- Хаб ленты — зависимость обработчиков писем, проверяется при сборке.
+
+Эталоны 02, SQL, HTTP не менялись. Сверка утверждений: 907 / 5 / 1 / 0 / 0 / 45. Покрытие — 98,00 % (workspace) и
+97,88 % (cqrsx). Бюджет строк `engine` превышен: 1073 против 655.

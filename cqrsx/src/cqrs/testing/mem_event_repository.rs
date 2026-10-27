@@ -11,13 +11,14 @@ use crate::{
             snapshot::{SerializedSnapshot, SnapshotUpdate},
         },
     },
-    task::NewTask,
+    task::{NewTask, testing::mem_task_queue::Delivery},
 };
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
     sync::{Arc, Mutex, MutexGuard, PoisonError},
 };
+use tokio::{sync::Semaphore, time::Instant};
 
 /// A stored event with the position of the commit that wrote it.
 #[derive(Debug)]
@@ -43,13 +44,22 @@ pub struct OutboxEntry {
     pub task: NewTask,
 }
 
+/// A row of the outbox: the task, the aggregate type and the event it was published with, and the columns of its
+/// delivery, which a task queue over the journal reads and writes (`MemTaskQueue`).
+#[derive(Debug)]
+pub(crate) struct OutboxRow {
+    pub(crate) aggregate_type: String,
+    pub(crate) entry: OutboxEntry,
+    pub(crate) delivery: Delivery,
+}
+
 #[derive(Debug, Default)]
 struct Journal {
     last_position: u64,
     rows: Vec<Row>,
     snapshots: HashMap<(String, String), Snapshot>,
-    /// The outbox in commit order, with the aggregate type of every entry.
-    outbox: Vec<(String, OutboxEntry)>,
+    /// The outbox in commit order.
+    outbox: Vec<OutboxRow>,
 }
 
 /// Events and snapshots in memory with the rules of `postgres::event_repository::PostgresEventRepository`
@@ -60,7 +70,10 @@ struct Journal {
 /// and `aggregate_ids_after` behave like the journal of one PostgreSQL aggregate type. The snapshot is
 /// kept per aggregate (PostgreSQL keys it by `last_sequence` as well), which decides the same conflicts.
 ///
-/// Clones share the journal, so a test can commit through one handle and read through another.
+/// Clones share the journal, so a test can commit through one handle and read through another. The outbox rows keep
+/// the columns of their delivery, which `task::testing::mem_task_queue::MemTaskQueue` claims and settles: the outbox and
+/// the task queue are one table, as in PostgreSQL. [`hold_loads`](Self::hold_loads) makes the loads of the aggregates
+/// wait for a test, so that a command can hold its aggregate's lock while others queue behind it.
 ///
 /// ```
 /// # mod example {
@@ -116,6 +129,7 @@ struct Journal {
 #[derive(Clone, Debug, Default)]
 pub struct MemEventRepository {
     journal: Arc<Mutex<Journal>>,
+    gate: Arc<Mutex<Option<Arc<Semaphore>>>>,
 }
 
 impl MemEventRepository {
@@ -129,9 +143,39 @@ impl MemEventRepository {
         self.journal()
             .outbox
             .iter()
-            .filter(|(aggregate_type, _)| aggregate_type == A::TYPE)
-            .map(|(_, entry)| entry.clone())
+            .filter(|row| row.aggregate_type == A::TYPE)
+            .map(|row| row.entry.clone())
             .collect()
+    }
+
+    /// Runs `operation` on the rows of the outbox, in commit order, under the journal's lock: one statement of a task
+    /// queue over the journal.
+    pub(crate) fn with_outbox<T>(&self, operation: impl FnOnce(&mut [OutboxRow]) -> T) -> T {
+        operation(&mut self.journal().outbox)
+    }
+
+    /// How many events of aggregate type `A` lie above `after`, counted up to `cap` (at least 1): how far a reader
+    /// whose checkpoint is `after` is behind, as `PostgresEventRepository::count_after` counts it.
+    pub async fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> Result<u64, PersistenceError> {
+        if cap == 0 {
+            return Err(PersistenceError::UnknownError("count cap must be positive".into()));
+        }
+        let journal = self.journal();
+        let behind = journal
+            .rows
+            .iter()
+            .filter(|row| row.event.aggregate_type == A::TYPE && row.position > after)
+            .count();
+        Ok(u64::try_from(behind).unwrap_or(u64::MAX).min(cap))
+    }
+
+    /// From now on every read of a snapshot, which begins every load of an aggregate by a store with snapshots, waits
+    /// for a permit of the returned gate: a command holds its aggregate's lock while its load waits, and the commands
+    /// behind it queue. The rest of the journal does not wait; a closed gate lets every load through.
+    pub fn hold_loads(&self) -> Arc<Semaphore> {
+        let gate = Arc::new(Semaphore::new(0));
+        *self.gate.lock().unwrap_or_else(PoisonError::into_inner) = Some(gate.clone());
+        gate
     }
 
     /// The events of type `A` in journal order: by position, aggregate id and sequence.
@@ -181,6 +225,13 @@ impl PersistedEventRepository for MemEventRepository {
     }
 
     async fn get_snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
+        let gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        // A closed gate lets every load through.
+        if let Some(gate) = gate
+            && let Ok(permit) = gate.acquire().await
+        {
+            permit.forget();
+        }
         Ok(self
             .journal()
             .snapshots
@@ -203,7 +254,8 @@ impl PersistedEventRepository for MemEventRepository {
 
     /// The outbox by the PostgreSQL rules: tasks need an event in the same write, a task id is published
     /// once (the primary key: a second one refuses the whole write), and a write that conflicts publishes
-    /// nothing. Unlike PostgreSQL several events may share a write; its tasks get the last event's sequence.
+    /// nothing. Unlike PostgreSQL several events may share a write; its tasks get the last event's sequence. A task
+    /// is pending from the write on, available at once, after its delay or at its time, by the Tokio clock.
     async fn persist_with_tasks<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
@@ -222,7 +274,7 @@ impl PersistedEventRepository for MemEventRepository {
         };
         let mut ids = HashSet::new();
         for task in tasks {
-            if !ids.insert(task.id()) || journal.outbox.iter().any(|(_, entry)| entry.task.id() == task.id()) {
+            if !ids.insert(task.id()) || journal.outbox.iter().any(|row| row.entry.task.id() == task.id()) {
                 return Err(PersistenceError::UnknownError(
                     "duplicate task id: the outbox already holds it".into(),
                 ));
@@ -273,13 +325,18 @@ impl PersistedEventRepository for MemEventRepository {
             );
         }
         if let Some(event) = last_event {
+            let now = Instant::now();
             for task in tasks {
                 let entry = OutboxEntry {
                     aggregate_id: event.aggregate_id.clone(),
                     aggregate_sequence: event.sequence,
                     task: task.clone(),
                 };
-                journal.outbox.push((A::TYPE.to_owned(), entry));
+                journal.outbox.push(OutboxRow {
+                    aggregate_type: A::TYPE.to_owned(),
+                    delivery: Delivery::pending(&entry.task, now),
+                    entry,
+                });
             }
         }
         Ok(())
@@ -341,7 +398,7 @@ mod tests {
         event::EventEnvelope,
         store::{EventStore, persisted::PersistedEventStore, persisted::tests::TestAggregate},
     };
-    use std::collections::HashMap;
+    use std::{collections::HashMap, future::Future};
 
     fn delta(id: &str, sequence: usize, value: i32) -> SerializedEvent {
         SerializedEvent::try_from(&EventEnvelope::<Ledger> {
@@ -540,6 +597,52 @@ mod tests {
         let page = journal.feed_after::<Ledger>(Position::START, 10).await.unwrap();
         assert_eq!(keys(&page), [(1, "x", 1), (1, "x", 2), (2, "x", 3)]);
         assert_eq!(journal.get_events_after::<Ledger>("x", 2).await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn count_after_counts_the_events_of_a_type_above_a_position_up_to_the_cap() {
+        let journal = MemEventRepository::default();
+        journal
+            .persist::<Ledger>(&[delta("a", 1, 1), delta("a", 2, 2)], None)
+            .await
+            .unwrap();
+        journal.persist::<TestAggregate>(&[delta("z", 1, 1)], None).await.unwrap();
+        journal.persist::<Ledger>(&[delta("b", 1, 1)], None).await.unwrap();
+        let mut counted = Vec::new();
+        for (after, cap) in [(0, 10), (1, 10), (3, 10), (0, 2)] {
+            counted.push(journal.count_after::<Ledger>(Position::new(after), cap).await.unwrap());
+        }
+        assert_eq!(counted, [3, 1, 0, 2], "above the position, of its type, up to the cap");
+        assert_eq!(journal.count_after::<TestAggregate>(Position::START, 10).await.unwrap(), 1);
+        assert!(matches!(
+            journal.count_after::<Ledger>(Position::START, 0).await,
+            Err(PersistenceError::UnknownError(error)) if error.to_string() == "count cap must be positive"
+        ));
+    }
+
+    #[tokio::test]
+    async fn held_loads_wait_for_a_permit_and_the_rest_of_the_journal_does_not() {
+        let journal = MemEventRepository::default();
+        journal.persist::<Ledger>(&[delta("a", 1, 3)], None).await.unwrap();
+        let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(journal.clone(), 10);
+        let gate = journal.hold_loads();
+        let mut load = Box::pin(store.load_aggregate("a"));
+        let waiting = std::future::poll_fn(|cx| std::task::Poll::Ready(load.as_mut().poll(cx).is_pending())).await;
+        assert!(waiting, "the load waits at the gate");
+        assert_eq!(
+            journal.get_events::<Ledger>("a").await.unwrap().len(),
+            1,
+            "the events do not wait"
+        );
+        assert_eq!(journal.feed_after::<Ledger>(Position::START, 10).await.unwrap().len(), 1);
+        gate.add_permits(1);
+        assert_eq!(load.await.unwrap().aggregate.balance, 3);
+        gate.close();
+        assert_eq!(
+            store.load_aggregate("a").await.unwrap().aggregate.balance,
+            3,
+            "a closed gate lets every load through"
+        );
     }
 
     fn task(n: u8) -> NewTask {

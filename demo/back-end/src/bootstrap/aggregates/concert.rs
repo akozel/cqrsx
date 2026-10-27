@@ -1,35 +1,28 @@
-//! The box office: the `Concert` executor, whose decisions its reactions plan their tasks from, with the policies of
-//! the task types, whose commits wake the concert halls' processor and whose commands the activity feed reports.
+//! The box office: the `Concert` executor with the rules of the `concert` module, whose reactions plan their tasks with
+//! the policies of the task types, whose commits wake the concert halls' processor and whose commands the activity log
+//! observes.
 use super::command_config;
-use crate::{
-    bootstrap::WiringError,
-    concert::domain::{Concert, ConcertRules},
-    operations::application::activity_observer::CommandActivityObserver,
-    process::Process,
-};
+use crate::{bootstrap::WiringError, concert::domain::Concert, process::Process};
 use cqrsx::{
-    cqrs::{command::wakeup::CommitWakeup, reactions::ReactionsPlanner},
+    cqrs::{aggregate::Aggregate, command::wakeup::CommitWakeup, reactions::ReactionsPlanner},
+    engine::build::Registrations,
     postgres::command::PostgresCommandExecutor,
-    task::policy::Policies,
 };
 use std::sync::Arc;
 
 pub fn wire(
     process: &Process,
-    policies: &Policies,
+    registrations: &mut Registrations,
     wakeup: &CommitWakeup,
-    observer: &Arc<CommandActivityObserver>,
 ) -> Result<Arc<PostgresCommandExecutor<Concert>>, WiringError> {
-    let config = &process.config;
-    let executor = PostgresCommandExecutor::new(
-        process.pool.clone(),
-        command_config(config)?,
-        ConcertRules {
-            ticket_limit: config.ticket_limit,
-        },
-    )
-    .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
-    .with_commit_wakeup(wakeup.clone())
-    .with_observer(observer.clone());
+    let rules = registrations
+        .take_rules::<Concert>()
+        .ok_or(WiringError::NotRegistered(Concert::TYPE))?;
+    let mut executor = PostgresCommandExecutor::new(process.pool.clone(), command_config(registrations.settings())?, rules)
+        .with_task_planner(ReactionsPlanner::<Concert>::new(registrations.policies().clone()))
+        .with_commit_wakeup(wakeup.clone());
+    if let Some(observer) = registrations.command_observer::<Concert>() {
+        executor = executor.with_observer(observer);
+    }
     Ok(Arc::new(executor))
 }

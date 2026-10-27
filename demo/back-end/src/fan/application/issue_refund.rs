@@ -2,7 +2,10 @@
 use crate::{
     fan::domain::events::TicketCancelled,
     shared::{
-        application::mail::{Mail, Mailer},
+        application::{
+            activity::ActivityHub,
+            mail::{Mail, Mailer},
+        },
         domain::{ConcertId, FanId, FanLedgerId, venue::SeatId},
     },
 };
@@ -57,11 +60,11 @@ pub fn refund_mail(payload: &IssueRefundV1) -> Mail {
     }
 }
 
-/// Sends the refund; the mail service answers whether it was delivered (a repeat is delivered once) or is retried
-/// after the pause of the `MAIL` policy.
+/// Sends the refund, reporting the attempt to the activity log; the mail service answers whether it was delivered (a
+/// repeat is delivered once) or is retried after the pause of the `MAIL` policy.
 #[task_handler]
-pub async fn issue_refund(task: IssueRefundV1, ctx: &TaskContext, mail: &Mailer) -> TaskResult {
-    mail.send(ctx, refund_mail(&task)).await
+pub async fn issue_refund(task: IssueRefundV1, ctx: &TaskContext, mail: &Mailer, activity: &ActivityHub) -> TaskResult {
+    mail.send(ctx, activity, refund_mail(&task)).await
 }
 
 #[cfg(test)]
@@ -103,7 +106,11 @@ mod tests {
             std::time::Duration::from_secs(1),
         );
         let mail = RecordingMailer::delivering();
-        assert_eq!(issue_refund.call(task.clone(), &ctx, &mail).await, TaskResult::Done);
+        let activity = ActivityHub::new(1, 1);
+        assert_eq!(
+            issue_refund.call(task.clone(), &ctx, &mail, &activity).await,
+            TaskResult::Done
+        );
         assert_eq!(mail.sent(), [(ctx.task_id(), refund_mail(&task))]);
     }
 }

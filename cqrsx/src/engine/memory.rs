@@ -1,0 +1,186 @@
+//! The engine in memory: its stores, and what a test does with them: run the tasks, let the views catch up.
+use crate::{
+    cqrs::testing::{mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository},
+    engine::Cqrs,
+    task::{
+        executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
+        queue::TaskQueue,
+        testing::mem_task_queue::MemTaskQueue,
+    },
+};
+use std::{sync::Arc, sync::PoisonError, time::Duration};
+
+/// The stores of the engine in memory: the journal with its outbox, the task queue over that outbox, the checkpoints
+/// of the processors; every view has a repository of its own.
+pub(crate) struct MemoryBackend {
+    pub(crate) journal: MemEventRepository,
+    pub(crate) queue: Arc<MemTaskQueue>,
+    pub(crate) checkpoints: Arc<MemCheckpointStore>,
+}
+
+impl MemoryBackend {
+    pub(crate) fn new() -> Self {
+        let journal = MemEventRepository::default();
+        Self {
+            queue: Arc::new(MemTaskQueue::new(journal.clone())),
+            journal,
+            checkpoints: Arc::default(),
+        }
+    }
+}
+
+impl Cqrs {
+    /// The journal: the events, the snapshots and the outbox of every aggregate type.
+    pub fn journal(&self) -> &MemEventRepository {
+        &self.memory.journal
+    }
+
+    /// The task queue over the journal's outbox: every task with its delivery.
+    pub fn outbox(&self) -> &MemTaskQueue {
+        &self.memory.queue
+    }
+
+    /// Runs the tasks until none is due: every task due now, those they publish included, one at a time, by type in the
+    /// order of their registration, then by when they became due, each attempt as the task runtime runs it (the
+    /// handler's timeout, the pause of a retry by the policy of its type). Expired leases return first; a delayed task
+    /// and a retry wait for the Tokio clock. The answer is the number of attempts.
+    pub async fn run_tasks(&self) -> usize {
+        let Some(dispatcher) = &self.dispatcher else {
+            return 0;
+        };
+        let (queue, settings) = (&self.memory.queue, &self.settings);
+        let executor =
+            DefaultTaskExecutor::new(queue.clone(), settings.task_storage.clone()).with_policies(self.policies.clone());
+        let mut attempts = 0;
+        loop {
+            let _ = queue.recover_expired(isize::MAX as usize).await;
+            let before = attempts;
+            for format in dispatcher.formats() {
+                let claim = || queue.claim(format, &self.owner, 1, settings.task_lease);
+                while let Some(task) = claim().await.ok().and_then(|mut tasks| tasks.pop()) {
+                    let _ = executor.execute_and_settle(dispatcher, task, settings.handler_timeout).await;
+                    attempts += 1;
+                }
+            }
+            if attempts == before {
+                return attempts;
+            }
+        }
+    }
+
+    /// Starts the projection processors on the first call, then waits until every view has applied the journal of its
+    /// aggregate type to its head.
+    pub async fn catch_up(&self) {
+        let processors = std::mem::take(&mut *self.processors.lock().unwrap_or_else(PoisonError::into_inner));
+        if !processors.is_empty() {
+            tokio::spawn(processors.run(self.shutdown.clone()));
+        }
+        for name in self.views.names() {
+            while self.views().lag(&name).await.map_or(true, |lag| lag > 0) {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::{
+        cqrs::{
+            command::causation::{CAUSATION_ID, CORRELATION_ID, SOURCE},
+            store::repository::PersistedEventRepository,
+        },
+        engine::{Cqrs, test_support::*},
+        task::testing::mem_task_queue::TaskStatus,
+    };
+    use std::{sync::atomic::Ordering, time::Duration};
+
+    fn statuses(cqrs: &Cqrs) -> Vec<(String, TaskStatus, i32)> {
+        let tasks = cqrs.outbox().tasks();
+        tasks
+            .into_iter()
+            .map(|task| (task.entry.task.format().to_string(), task.status, task.attempts))
+            .collect()
+    }
+
+    /// G-14, G-15, G-19: the chain runs to its end across both aggregates, its step continues the causation of the
+    /// booking, and a retry waits the pause of its policy.
+    #[tokio::test(start_paused = true)]
+    async fn run_tasks_runs_a_chain_across_two_aggregates_to_its_end_and_leaves_a_paused_retry_for_the_clock() {
+        let (cqrs, mailbox) = engine();
+        mailbox.refusals.store(1, Ordering::SeqCst);
+        let booked = cqrs
+            .from("ui")
+            .execute::<Show>(&"s-1".into(), book("A1", "fox"))
+            .await
+            .unwrap();
+        let _ = cqrs.from("ui").execute::<Show>(&"s-1".into(), book("A1", "panda")).await;
+        assert_eq!(cqrs.run_tasks().await, 2, "the step and the first attempt of its e-mail");
+        assert_eq!(
+            statuses(&cqrs),
+            [
+                ("record_ticket v1".to_owned(), TaskStatus::Completed, 1),
+                ("mail_ticket v1".to_owned(), TaskStatus::Pending, 1)
+            ],
+            "only the booking that committed published a task"
+        );
+        assert!(mailbox.sent().is_empty());
+        assert_eq!(cqrs.run_tasks().await, 0, "the retry waits a second (MAIL)");
+        tokio::time::advance(Duration::from_secs(1)).await;
+        assert_eq!(cqrs.run_tasks().await, 1);
+        assert_eq!(mailbox.sent(), ["fox:A1"]);
+        let step = &cqrs.outbox().tasks()[0].entry.task;
+        let recorded = cqrs.journal().get_events::<Wallet>("fox").await.unwrap();
+        let metadata = &recorded[0].metadata;
+        let correlation = booked.tasks[0].metadata()[CORRELATION_ID].clone();
+        assert_eq!(
+            (&metadata[CORRELATION_ID], &metadata[CAUSATION_ID], &metadata[SOURCE]),
+            (
+                &correlation,
+                &serde_json::json!(step.id()),
+                &serde_json::json!("task:record_ticket")
+            )
+        );
+    }
+
+    /// G-16: the process stops after the effects and before the acknowledgements; both tasks come back once their
+    /// leases run out. The step is done by R9 and publishes nothing twice; the e-mail goes out again.
+    #[tokio::test(start_paused = true)]
+    async fn a_step_redelivered_after_a_lost_acknowledgement_is_done_and_publishes_nothing_twice() {
+        let (cqrs, mailbox) = engine();
+        cqrs.from("ui")
+            .execute::<Show>(&"s-1".into(), book("A1", "fox"))
+            .await
+            .unwrap();
+        cqrs.outbox().lose_settlements(true);
+        assert_eq!(cqrs.run_tasks().await, 2);
+        cqrs.outbox().lose_settlements(false);
+        tokio::time::advance(cqrs.settings().task_lease).await;
+        assert_eq!(cqrs.run_tasks().await, 0, "returned, they wait the redelivery backoff");
+        tokio::time::advance(Duration::from_secs(6)).await;
+        assert_eq!(cqrs.run_tasks().await, 2, "both again");
+        assert_eq!(
+            statuses(&cqrs),
+            [
+                ("record_ticket v1".to_owned(), TaskStatus::Completed, 2),
+                ("mail_ticket v1".to_owned(), TaskStatus::Completed, 2)
+            ],
+            "one e-mail task: one ticket"
+        );
+        assert_eq!(mailbox.sent(), ["fox:A1", "fox:A1"], "at least once");
+        cqrs.catch_up().await;
+        let tickets = cqrs.view::<Tickets>().get(&"fox").await.unwrap().unwrap();
+        assert_eq!(tickets.view.seats, ["A1"]);
+    }
+
+    #[tokio::test]
+    async fn an_engine_without_task_types_runs_none() {
+        let cqrs = Cqrs::in_memory().module(shows).build().unwrap();
+        cqrs.from("ui")
+            .execute::<Show>(&"s-1".into(), book("A1", "fox"))
+            .await
+            .unwrap();
+        assert_eq!(cqrs.run_tasks().await, 0);
+        assert_eq!(statuses(&cqrs), [("record_ticket v1".to_owned(), TaskStatus::Pending, 0)]);
+    }
+}

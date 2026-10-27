@@ -1,6 +1,6 @@
-//! Test fixtures that need no running database: lazily connecting PostgreSQL pools and MongoDB
-//! clients (enough to wire the whole graph and exercise every branch that returns before
-//! storage), and the read side in memory (the read models are the cqrsx `MemViewRepository`, the
+//! Test fixtures that need no running database: the box office on the engine in memory ([`test_app`]), lazily
+//! connecting PostgreSQL pools and MongoDB clients (enough to wire the whole graph and exercise every branch that
+//! returns before storage), and the read side in memory (the read models are the cqrsx `MemViewRepository`, the
 //! checkpoints its `MemCheckpointStore`).
 use crate::{
     bootstrap::projections::checkpoint_keys,
@@ -11,7 +11,7 @@ use crate::{
         rebuild::{DEFAULT_MAX_PACE, DEFAULT_STATUS_TIMEOUT, ReadSide, ReadSideLimits, RebuildService},
     },
     process::Process,
-    shared::application::{StorageError, activity::ActivityHub},
+    shared::application::{StorageError, activity::ActivityHub, mail::Mailer, test_support::RecordingMailer},
 };
 use async_trait::async_trait;
 use cqrsx::{
@@ -22,6 +22,7 @@ use cqrsx::{
         store::feed::Position,
         testing::{mem_checkpoint_store::MemCheckpointStore, mem_view_repository::MemViewRepository},
     },
+    engine::Cqrs,
     postgres::{event_repository::DEFAULT_COUNT_AFTER_CAP, pool::StatementTimeout},
     task::runtime::config::TaskRuntimeConfig,
 };
@@ -29,6 +30,21 @@ use mongodb::{Client, options::ClientOptions};
 use sqlx::{PgPool, postgres::PgPoolOptions};
 use std::{num::NonZeroU32, sync::Arc, time::Duration};
 use tokio_util::sync::CancellationToken;
+
+/// The box office on the engine in memory: the modules `concert`, `fan` and `operations` as the process registers
+/// them, with a mail service that records the letters instead of the module's (a test's `provide` wins).
+pub fn test_app() -> (Cqrs, Arc<RecordingMailer>) {
+    let mail = Arc::new(RecordingMailer::delivering());
+    let mailer: Arc<Mailer> = mail.clone();
+    let cqrs = Cqrs::in_memory()
+        .module(crate::concert::module)
+        .module(crate::fan::module)
+        .module(crate::operations::module)
+        .provide(mailer)
+        .build()
+        .expect("the modules assemble");
+    (cqrs, mail)
+}
 
 /// The activity feed's observer of the command executors, publishing to `activity`: what the composition registers
 /// with every executor, for the executors of the modules' tests.

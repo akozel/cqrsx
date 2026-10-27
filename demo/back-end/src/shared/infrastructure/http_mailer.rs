@@ -28,7 +28,7 @@ use cqrsx::{
 use reqwest::StatusCode;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map, Value, json};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
 use uuid::Uuid;
 
 #[derive(Clone, Debug)]
@@ -37,6 +37,15 @@ pub struct MailClientSettings {
     pub base_url: String,
     /// Per-request timeout; must end before the task runtime's handler timeout.
     pub timeout: Duration,
+}
+
+impl MailClientSettings {
+    /// The timeout of a request under a handler that may run `handler_timeout`: a second less, at least a second.
+    pub fn request_timeout(handler_timeout: Duration) -> Duration {
+        handler_timeout
+            .saturating_sub(Duration::from_secs(1))
+            .max(Duration::from_secs(1))
+    }
 }
 
 /// `POST /mail` body. `task_id` and `attempt` are client references the provider stores with the
@@ -75,7 +84,6 @@ enum Failure {
 pub struct HttpMailer {
     client: reqwest::Client,
     settings: MailClientSettings,
-    activity: Arc<ActivityHub>,
 }
 
 impl HttpMailer {
@@ -84,12 +92,8 @@ impl HttpMailer {
         reqwest::Client::builder().timeout(settings.timeout).build()
     }
 
-    pub fn new(client: reqwest::Client, settings: MailClientSettings, activity: Arc<ActivityHub>) -> Self {
-        Self {
-            client,
-            settings,
-            activity,
-        }
+    pub fn new(client: reqwest::Client, settings: MailClientSettings) -> Self {
+        Self { client, settings }
     }
 
     async fn post(&self, attempt: &TaskAttempt, mail: &Mail) -> Result<Delivered, Failure> {
@@ -147,7 +151,7 @@ fn with(base: &Map<String, Value>, extra: Value) -> Value {
 
 #[async_trait]
 impl MailService for HttpMailer {
-    async fn send(&self, ctx: &TaskContext, mail: Mail) -> TaskResult {
+    async fn send(&self, ctx: &TaskContext, activity: &ActivityHub, mail: Mail) -> TaskResult {
         let attempt = ctx.attempt();
         let number = attempt.number();
         let base: Map<String, Value> = [
@@ -163,10 +167,10 @@ impl MailService for HttpMailer {
         .into_iter()
         .map(|(key, value)| (key.to_owned(), value))
         .collect();
-        self.activity.publish("task.attempt.started", Value::Object(base.clone()));
+        activity.publish("task.attempt.started", Value::Object(base.clone()));
         match self.post(attempt, &mail).await {
             Ok(delivered) => {
-                self.activity.publish(
+                activity.publish(
                     "task.attempt.succeeded",
                     with(
                         &base,
@@ -177,7 +181,7 @@ impl MailService for HttpMailer {
             }
             Err(Failure::Retry(reason)) => {
                 let retry_after = ctx.retry_pause();
-                self.activity.publish(
+                activity.publish(
                     "task.attempt.failed",
                     with(
                         &base,
@@ -187,7 +191,7 @@ impl MailService for HttpMailer {
                 TaskResult::retry(reason)
             }
             Err(Failure::Permanent(reason)) => {
-                self.activity.publish(
+                activity.publish(
                     "task.attempt.failed",
                     with(
                         &base,
@@ -205,7 +209,10 @@ mod tests {
     use super::*;
     use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
     use cqrsx::task::{format::TaskFormat, policy::Retry};
-    use std::{collections::VecDeque, sync::Mutex};
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
 
     /// The pauses of the `MAIL` policy under the demo defaults: what the task runtime tells an attempt.
     const MAIL_PAUSE: Retry = Retry::backoff(Duration::from_secs(1), Duration::from_secs(8));
@@ -246,10 +253,10 @@ mod tests {
         MailClientSettings { base_url, timeout }
     }
 
-    fn mailer(settings: MailClientSettings) -> (HttpMailer, Arc<ActivityHub>) {
-        let activity = Arc::new(ActivityHub::new(32, 32));
+    fn mailer(settings: MailClientSettings) -> (HttpMailer, ActivityHub) {
+        let activity = ActivityHub::new(32, 32);
         let client = HttpMailer::client(&settings).unwrap();
-        (HttpMailer::new(client, settings, activity.clone()), activity)
+        (HttpMailer::new(client, settings), activity)
     }
 
     /// Attempt `number` of an e-ticket task, told the pause of the `MAIL` policy.
@@ -298,9 +305,9 @@ mod tests {
         let url = serve(script.clone()).await;
         let (mailer, activity) = mailer(settings(url, Duration::from_secs(2)));
         let first = attempt(1);
-        assert_eq!(mailer.send(&first, mail()).await, TaskResult::Done);
-        assert_eq!(mailer.send(&attempt(2), mail()).await, TaskResult::Done);
-        assert_eq!(mailer.send(&attempt(3), mail()).await, TaskResult::Done);
+        assert_eq!(mailer.send(&first, &activity, mail()).await, TaskResult::Done);
+        assert_eq!(mailer.send(&attempt(2), &activity, mail()).await, TaskResult::Done);
+        assert_eq!(mailer.send(&attempt(3), &activity, mail()).await, TaskResult::Done);
 
         let requests = script.requests.lock().unwrap();
         assert_eq!(requests.len(), 3);
@@ -356,7 +363,7 @@ mod tests {
             ("mail_unavailable", 8),
         ];
         for (number, (reason, _)) in (1..).zip(expected) {
-            match mailer.send(&attempt(number), mail()).await {
+            match mailer.send(&attempt(number), &activity, mail()).await {
                 TaskResult::Retry { reason: actual } => {
                     assert_eq!(actual, reason, "attempt {number}");
                 }
@@ -388,7 +395,7 @@ mod tests {
             .push_back((400, json!({ "error": "bad address" }), Duration::ZERO));
         let url = serve(script).await;
         let (mailer, activity) = mailer(settings(url, Duration::from_secs(2)));
-        match mailer.send(&attempt(1), mail()).await {
+        match mailer.send(&attempt(1), &activity, mail()).await {
             TaskResult::Fail { reason } => assert_eq!(reason, "mail service answered 400 Bad Request"),
             other => panic!("expected a permanent failure, got {other:?}"),
         }
@@ -409,7 +416,7 @@ mod tests {
         drop(closed);
         let (unreachable, refused) = mailer(settings(url, Duration::from_secs(2)));
         assert!(matches!(
-            unreachable.send(&attempt(1), mail()).await,
+            unreachable.send(&attempt(1), &refused, mail()).await,
             TaskResult::Retry { reason } if reason == "mail_unreachable"
         ));
         assert_eq!(entries(&refused)[1].1["retry_after_ms"], 1000);
@@ -423,7 +430,7 @@ mod tests {
         let url = serve(script).await;
         let (impatient, late) = mailer(settings(url, Duration::from_millis(50)));
         assert!(matches!(
-            impatient.send(&attempt(3), mail()).await,
+            impatient.send(&attempt(3), &late, mail()).await,
             TaskResult::Retry { reason } if reason == "mail_unreachable"
         ));
         assert_eq!(entries(&late)[1].1["retry_after_ms"], 4000);

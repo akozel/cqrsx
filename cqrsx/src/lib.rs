@@ -2,6 +2,7 @@
 //!
 //! - [`cqrs`]: aggregates, commands, event persistence, projections and testing tools.
 //! - [`task`]: durable work, handlers, adapters, queues and the optional worker runtime.
+//! - [`engine`]: an application of modules assembled from these components: commands, views and tasks; in memory.
 //! - `postgres`: PostgreSQL adapters, atomic outbox publication and canonical SQL assets.
 //! - `mongodb`: optional MongoDB read side: read-model documents and projection checkpoints.
 //! - `host`: optional process signals and coordinated component shutdown.
@@ -22,6 +23,7 @@
 
 pub mod cqrs;
 mod diagnostics;
+pub mod engine;
 mod env;
 #[cfg(feature = "host")]
 pub mod host;

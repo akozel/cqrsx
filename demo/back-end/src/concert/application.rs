@@ -5,5 +5,7 @@ pub mod fan_ledger;
 pub mod reactions;
 #[cfg(test)]
 mod test_support;
+#[cfg(test)]
+mod tests;
 pub mod time_travel;
 pub mod views;

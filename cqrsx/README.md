@@ -23,8 +23,9 @@ consistency, ordering and retries.
   the attempt budget of its type's policy, run by a worker pool that drains on shutdown; its handler is a function
   of the task, its context and its dependencies (`#[task_handler]`).
 - **Testable without a database.** A given/when/then framework for aggregates, an in-memory store and
-  journal with an outbox, and a command executor that records the tasks a use case publishes and feeds the
-  projection processors under test.
+  journal with an outbox and its task queue, a command executor that records the tasks a use case publishes, and
+  the engine in memory: the modules of an application assembled as the process assembles them, whose tasks run to
+  the end of their chains and whose views catch up with the journal on demand.
 
 ```text
 command ─► CommandExecutor ─► CqrsFramework ─► Aggregate ─► Reactions ─► EventStore ──┐ one transaction:
@@ -445,6 +446,8 @@ concurrency: a larger buffer makes claims bigger but needs a lease for one more 
 
 | Tool | For |
 |---|---|
+| `engine::Cqrs::in_memory()` | An application end to end: `.module(root)…build()` assembles the modules over stores in memory (a test's `.provide` replaces a module's dependency); `cqrs.from("ui").execute::<A>(..)`, then `run_tasks()` (the due tasks to the end of their chains; a retry waits for the Tokio clock), `catch_up()` and `view::<V>().get(..)` |
+| `task::testing::mem_task_queue::MemTaskQueue` | The task queue over the outbox of a `MemEventRepository`, by the rules of the PostgreSQL queue and the Tokio clock; `tasks()` shows every delivery, `lose_settlements(true)` a process that stops before its acknowledgements |
 | `cqrs::testing::TestFramework` | An aggregate's rules: `with(rules).given(events).when(command).then_expect_event(..)` or `then_expect_error_message(..)` |
 | `cqrs::testing::command::TestCommandExecutor` | A use case: the production command path, with locks, retry, the task planner and a commit wake-up, over `MemStore` or (`over_journal`) over a `MemEventRepository` that projection processors read; `take_published_tasks()` shows what the committed calls published |
 | `cqrs::testing::mem_event_repository::MemEventRepository::outbox` | The tasks published with the events of an aggregate type, each with the sequence of its event, by the rules of the PostgreSQL outbox |

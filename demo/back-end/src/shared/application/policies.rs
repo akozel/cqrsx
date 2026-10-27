@@ -1,6 +1,6 @@
 //! The names of the task policies: what a task of each type waits before its next attempt and how many attempts it
-//! gets. The values come from the configuration, and the composition binds every task type to one of them
-//! ([`policies`](crate::bootstrap::tasks::policies)) until the modules register their tasks themselves (backlog 05/11).
+//! gets. The `fan` module declares their values from its variables and binds every task type to one of them
+//! ([`fan::module`](crate::fan::module)).
 //! A reaction never names a policy: the type of its task has one; nor does a handler: the task runtime pauses a retry
 //! by the policy of its task's type.
 use cqrsx::task::policy::PolicyName;

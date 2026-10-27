@@ -3,40 +3,19 @@
 //! modules write nothing for the feed: an entry names a command by what its derives say of it (`CommandInfo`: its
 //! type's name and its `#[label]` fields) and a rejection by its code and params (`Rejection`). An executor calls its
 //! observer on the caller's task and a processor on its own, so every method only publishes.
-use crate::shared::{
-    application::activity::ActivityHub,
-    domain::{ConcertId, FanId, FanLedgerId},
-};
+use crate::shared::{application::activity::ActivityHub, domain::FanLedgerId};
 use cqrsx::cqrs::{
     aggregate::Aggregate,
     command::{
         CommandInfo,
         causation::{COMMAND_ID, CORRELATION_ID, SOURCE},
-        observer::{CommandObserver, CommandReport, Outcome},
+        observer::{self, AnyCommandReport, AnyOutcome, CommandObserver, CommandReport},
     },
     projection::processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
     rejection::Rejection,
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
-
-/// The fan an aggregate's id belongs to, for the `fan_id` of a command entry whose command names none
-/// (`#[label] fan_id`): a ledger is one fan's, a concert nobody's.
-pub trait FanOf {
-    fn fan_of(&self) -> Option<FanId>;
-}
-
-impl FanOf for ConcertId {
-    fn fan_of(&self) -> Option<FanId> {
-        None
-    }
-}
-
-impl FanOf for FanLedgerId {
-    fn fan_of(&self) -> Option<FanId> {
-        Some(self.fan())
-    }
-}
 
 /// The observer of every command executor of this process: one entry per command, once its lock is released.
 pub struct CommandActivityObserver {
@@ -49,27 +28,24 @@ impl CommandActivityObserver {
     }
 }
 
-impl<A> CommandObserver<A> for CommandActivityObserver
-where
-    A: Aggregate,
-    A::Command: CommandInfo,
-    A::Error: Rejection,
-    A::Id: FanOf,
-{
+impl observer::AnyCommandObserver for CommandActivityObserver {
     /// `command.accepted` with the formats of the tasks committed with the event, `command.rejected` with the code and
     /// the params of the rejection, `command.failed` with a conflict or an unavailable store. Every entry names the
     /// aggregate, the ids and the source of the command's metadata, the command's type and its fan: the command's
-    /// `fan_id` label, else the fan of the aggregate's id, else nobody.
-    fn command(&self, report: &CommandReport<'_, A>) {
+    /// `fan_id` label, else the fan of the aggregate's id when it is a fan's ledger, else nobody.
+    fn command(&self, report: &AnyCommandReport<'_>) {
         let fan_id = report
             .command
             .labels()
             .into_iter()
             .find_map(|(key, fan)| (key == "fan_id").then_some(fan))
-            .or_else(|| report.aggregate_id.fan_of().map(|fan| fan.as_str().to_owned()));
+            .or_else(|| {
+                let ledger = report.id.downcast_ref::<FanLedgerId>();
+                ledger.map(|ledger| ledger.fan().as_str().to_owned())
+            });
         let base = json!({
-            "aggregate_type": A::TYPE,
-            "aggregate_id": report.aggregate_id.to_string(),
+            "aggregate_type": report.aggregate_type,
+            "aggregate_id": report.aggregate_id,
             "command_id": report.metadata.get(COMMAND_ID),
             "correlation_id": report.metadata.get(CORRELATION_ID),
             "source": report.metadata.get(SOURCE),
@@ -84,29 +60,41 @@ where
             Value::Object(map)
         };
         match report.outcome {
-            Outcome::Accepted { tasks } => {
+            AnyOutcome::Accepted { tasks } => {
                 let formats: Vec<String> = tasks.iter().map(|task| task.format().to_string()).collect();
                 self.activity.publish("command.accepted", merge(json!({ "tasks": formats })));
             }
-            Outcome::Rejected(error) => {
+            AnyOutcome::Rejected(error) => {
                 self.activity.publish(
                     "command.rejected",
                     merge(json!({ "code": error.code(), "params": error.params() })),
                 );
             }
-            Outcome::Conflict => {
+            AnyOutcome::Conflict => {
                 self.activity.publish(
                     "command.failed",
                     merge(json!({ "outcome": "conflict", "message": "concurrent change; retries exhausted" })),
                 );
             }
-            Outcome::Unavailable => {
+            AnyOutcome::Unavailable => {
                 self.activity.publish(
                     "command.failed",
                     merge(json!({ "outcome": "unavailable", "message": "not run: storage unavailable or aggregate busy" })),
                 );
             }
         }
+    }
+}
+
+/// The same observer as the observer of one executor of its own (the tests of the modules' flows).
+impl<A> CommandObserver<A> for CommandActivityObserver
+where
+    A: Aggregate,
+    A::Command: CommandInfo,
+    A::Error: Rejection,
+{
+    fn command(&self, report: &CommandReport<'_, A>) {
+        observer::AnyCommandObserver::command(self, &AnyCommandReport::of(report));
     }
 }
 
@@ -190,6 +178,8 @@ impl ProjectionObserver for ActivityObserver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::shared::domain::ConcertId;
+    use cqrsx::cqrs::command::observer::Outcome;
     use cqrsx::{
         cqrs::{command::decide::Decide, event::DomainEvent, store::feed::Position},
         task::{NewTask, format::TaskFormat},

@@ -30,7 +30,7 @@
 | 08 | [Наблюдатели движка и лента активности в `operations`](08_observers_activity_feed.md) | высокая | средняя | 05, 07 | сделано 2026-10-27: `CommandObserver` в ядре, лента — наблюдатель в `operations`, прослойки демо удалены |
 | 09 | [Задачи: `#[task_handler]`, `TaskContext`, зависимости, паузы по политике](09_task_handlers.md) | высокая | средняя–высокая | 07, 08 | сделано 2026-10-27: обработчики-функции, общий диспетчер, пауза по политике в исполнителе |
 | 10 | [Витрины: имя у витрины, три запроса движка, сверка в движке, без LWW](10_views.md) | средняя–высокая | средняя | 03 | сделано 2026-10-27: `View::NAME`, `list`/`range`, `verify` в cqrsx, витрины без LWW |
-| 11 | [Модуль и движок в памяти: `Module`, `Cqrs::in_memory()`, `run_tasks()`](11_module_and_in_memory_engine.md) | высокая | высокая | 07, 09, 10 | предложено |
+| 11 | [Модуль и движок в памяти: `Module`, `Cqrs::in_memory()`, `run_tasks()`](11_module_and_in_memory_engine.md) | высокая | высокая | 07, 09, 10 | сделано 2026-10-27: `engine` в памяти, `MemTaskQueue`, корни модулей, сценарии на `test_app()` |
 | 12 | [Движок на PostgreSQL и MongoDB: `Cqrs::from_env("ENCORE")`, `.serve()`; `config.rs`, `process.rs`, `bootstrap/` удаляются](12_engine_on_postgres_and_mongodb.md) | высокая | высокая | 11 | предложено |
 | 13 | [Замер «до → после» и построчное сравнение контрактов](13_measurement_before_after.md) | высокая | низкая–средняя | 12 | предложено |
 | 14 | [Документация: README cqrsx, `components.md`, PLAN.md, API_MAPPING; дизайн переезжает в cqrsx](14_documentation.md) | средняя–высокая | низкая–средняя | 12, 13 | предложено |

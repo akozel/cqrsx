@@ -92,9 +92,14 @@ impl<A: Aggregate + 'static, S: EventStore<A>> CommandExecutorCore<A, S> {
         &self.framework
     }
 
-    #[cfg(all(test, feature = "postgres"))]
+    #[cfg(test)]
     pub(crate) fn lock_limits(&self) -> LockLimits {
         self.locks.limits()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn retry_policy(&self) -> AggregateConflictRetryPolicy {
+        self.retry_policy
     }
 }
 

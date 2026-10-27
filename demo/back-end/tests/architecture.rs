@@ -85,7 +85,7 @@ const EXCEPTIONS: &[Exception] = &[
         place: "*/presentation",
         paths: &["crate::bootstrap::AppState"],
         tests_only: false,
-        why: "the state of the routes is the composition's until the engine serves the modules (05/11, 05/12)",
+        why: "the state of the routes is the composition's until the engine serves the modules (05/12)",
     },
     Exception {
         id: "I-2",
@@ -100,7 +100,7 @@ const EXCEPTIONS: &[Exception] = &[
         paths: &["crate::operations::presentation::projections::rebuild::refused"],
         tests_only: false,
         why: "the rebuild of one hall is the operations' rebuild service and answers its refusals as Encore! does, until \
-              the engine rebuilds a key (05/11)",
+              the HTTP API asks the engine to rebuild a key (05/12)",
     },
 ];
 
@@ -221,11 +221,11 @@ fn externals(layer: Option<Layer>) -> Externals {
             forbidden: &["sqlx", "mongodb"],
             test_only: &[],
             // The handler hands a command to the engine's command port with the metadata of a UI command and answers
-            // its outcome (backlog 05/08 and 05/09, design 04; 05/11 and 05/12 replace them with the engine's
-            // `execute` from the source "ui" and its outcome); a refused command answers with its code and params
-            // (05/04): the port, its error, the command's metadata and the rejection trait. A read model is read
-            // through the engine's repository, a stored document is what it answers (05/10, design 06; 05/11 replaces
-            // them with the engine's `view::<V>()`). Nothing else.
+            // its outcome (backlog 05/08 and 05/09, design 04; 05/12 replaces them with the engine's `execute` from
+            // the source "ui" and its outcome); a refused command answers with its code and params (05/04): the port,
+            // its error, the command's metadata and the rejection trait. A read model is read through the engine's
+            // repository, a stored document is what it answers (05/10, design 06; 05/12 replaces them with the
+            // engine's `view::<V>()`). Nothing else.
             cqrsx_allowed: Some(&[
                 "cqrsx::cqrs::command::CommandExecutor",
                 "cqrsx::cqrs::command::CommandGatewayError",
@@ -904,9 +904,10 @@ fn the_checker_sees_grouped_imports_inline_paths_and_ignores_comments_and_string
     );
 }
 
-/// G-11 (backlog 05/02) until the engine refuses a second registration of an aggregate (05/11): the process builds one
-/// command executor per aggregate type, in that aggregate's module of the composition root, and the root builds each
-/// once. The HTTP commands and the task handlers' commands to one aggregate share it, and with it the locks; a second
+/// G-11 (backlog 05/02; since 05/11 the engine refuses a second registration of an aggregate type, which the
+/// composition reads its aggregates from) until the engine builds the executors of the process (05/12): the process
+/// builds one command executor per aggregate type, in that aggregate's module of the composition root, and the root
+/// builds each once. The HTTP commands and the task handlers' commands to one aggregate share it, and with it the locks; a second
 /// executor of one type would be another process to them, meeting the first only at the optimistic check.
 #[test]
 fn the_process_builds_one_command_executor_per_aggregate_type() {

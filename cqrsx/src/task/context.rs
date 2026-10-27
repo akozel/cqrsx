@@ -153,7 +153,7 @@ type Answer<A> = Result<CommitReport<A>, CommandGatewayError<<A as Aggregate>::E
 type AnswerFuture<'a, A> = Pin<Box<dyn Future<Output = Answer<A>> + Send + 'a>>;
 
 /// A command executor of `A` behind one type: one allocation per command.
-trait ErasedExecutor<A: Aggregate + 'static>: Send + Sync {
+pub(crate) trait ErasedExecutor<A: Aggregate + 'static>: Send + Sync {
     fn run<'a>(&'a self, id: &'a A::Id, command: A::Command, metadata: HashMap<String, String>) -> AnswerFuture<'a, A>;
 }
 
@@ -184,7 +184,8 @@ impl Executors {
         Ok(self)
     }
 
-    fn get<A: Aggregate + 'static>(&self) -> Option<&Arc<dyn ErasedExecutor<A>>> {
+    /// The executor of `A`, if one is registered: what `TaskContext::execute` and the engine's `execute` run.
+    pub(crate) fn get<A: Aggregate + 'static>(&self) -> Option<&Arc<dyn ErasedExecutor<A>>> {
         self.0.get(&TypeId::of::<A>())?.downcast_ref()
     }
 }
