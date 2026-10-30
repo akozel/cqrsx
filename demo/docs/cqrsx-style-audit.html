@@ -1,0 +1,503 @@
+<!doctype html>
+<html lang="ru">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Аудит cqrsx по правилам кода</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<style>
+/* Layout: one reading column for prose, full-width finding tables that scroll sideways on phones. */
+:root {
+  --bg: #f3f5f7; --surface: #ffffff; --frame: #eef2f6; --ink: #131920; --ink-2: #465263; --muted: #6c7787;
+  --rule: #d4dbe3; --accent: #0a6e8a; --accent-soft: #e0eff4; --code-bg: #edf1f5;
+  --ok: #1e7a3c; --ok-soft: #e3f3e8; --warn: #8f5400; --warn-soft: #fbf0de; --crit: #b42f2f; --crit-soft: #fbe7e7;
+  --font-display: "IBM Plex Sans Condensed", "Arial Narrow", system-ui, sans-serif;
+  --font-body: "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  --text-col: 72ch; --wide: 1180px;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+    --rule: #2c343e; --accent: #4cb6d4; --accent-soft: #15303a; --code-bg: #1d242d;
+    --ok: #5cc27a; --ok-soft: #16281c; --warn: #e3a23b; --warn-soft: #2e2413; --crit: #ef6b6b; --crit-soft: #331b1d;
+    color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+  --rule: #2c343e; --accent: #4cb6d4; --accent-soft: #15303a; --code-bg: #1d242d;
+  --ok: #5cc27a; --ok-soft: #16281c; --warn: #e3a23b; --warn-soft: #2e2413; --crit: #ef6b6b; --crit-soft: #331b1d;
+  color-scheme: dark;
+}
+* { box-sizing: border-box; }
+body { background: var(--bg); color: var(--ink); font: 16px/1.6 var(--font-body); margin: 0;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px)); padding-block: 0 64px; }
+.page { max-width: var(--wide); margin: 0 auto; display: grid; gap: 52px; }
+.prose { max-width: var(--text-col); display: grid; gap: 12px; }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; }
+h1 { font-size: clamp(2.1rem, 5vw, 3rem); line-height: 1.05; font-weight: 600; }
+h2 { font-size: 1.7rem; line-height: 1.15; font-weight: 600; }
+h3 { font-size: 1.2rem; font-weight: 600; }
+p { margin: 0; }
+ul, ol { margin: 0; padding-left: 1.3em; display: grid; gap: 6px; }
+section { display: grid; gap: 16px; min-width: 0; }
+code { font-family: var(--font-mono); font-size: 0.86em; background: var(--code-bg); padding: 0.05em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+a:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+.hero { display: grid; gap: 16px; padding-top: 48px; }
+.lede { font-size: 1.1rem; color: var(--ink-2); max-width: var(--text-col); }
+.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.92rem; }
+.toc a { text-decoration: none; border-bottom: 1px solid var(--rule); color: var(--ink-2); }
+.summary { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 12px; margin: 0; }
+.summary > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px; display: grid; gap: 4px; align-content: start; }
+.summary dt { font-family: var(--font-display); font-size: 2rem; font-weight: 600; line-height: 1; font-variant-numeric: tabular-nums; }
+.summary dd { margin: 0; font-size: 0.95rem; color: var(--ink-2); }
+.v { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.04em;
+  text-transform: uppercase; padding: 2px 8px; border-radius: 999px; white-space: nowrap; border: 1px solid; }
+.v::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: currentColor; }
+.v-risk { color: var(--crit); background: var(--crit-soft); border-color: color-mix(in srgb, var(--crit) 35%, transparent); }
+.v-fix { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
+.v-clean { color: var(--ok); background: var(--ok-soft); border-color: color-mix(in srgb, var(--ok) 35%, transparent); }
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+table { border-collapse: collapse; width: 100%; font-size: 0.9rem; min-width: 940px; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; border-bottom: 1.5px solid var(--ink-2); background: var(--surface); }
+tbody tr:last-child td { border-bottom: 0; }
+td.rule { width: 7%; font-family: var(--font-mono); font-size: 0.82rem; color: var(--ink-2); white-space: nowrap; }
+td.where { width: 19%; font-size: 0.84rem; color: var(--ink-2); }
+td.what { width: 36%; }
+td.fix { width: 30%; }
+td.api { width: 8%; font-size: 0.84rem; color: var(--ink-2); }
+tr.group td { background: var(--frame); font-family: var(--font-display); font-weight: 600; font-size: 1rem; color: var(--ink); }
+.steps { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 14px; }
+.steps > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 14px; display: grid; gap: 8px; align-content: start; }
+.steps h3 { font-size: 1.05rem; }
+.steps p { color: var(--ink-2); font-size: 0.92rem; }
+.steps ul { font-size: 0.9rem; gap: 4px; }
+.foot { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; max-width: var(--text-col); }
+</style>
+<body>
+<main class="page">
+
+<header class="hero">
+  <p class="eyebrow">cqrsx · HEAD e995a53 · 2026-10-30</p>
+  <h1>Аудит cqrsx по правилам кода</h1>
+  <p class="lede">Проверка <code>cqrsx</code> и <code>cqrsx-macros</code> по <code>.claude/rules/rust-style.md</code> — 34 правилам,
+  принятым 2026-10-30 на основе Google Rust Style Guide. Demo не проверялся. Код не изменён. Номера в таблицах — номера правил.</p>
+  <nav class="toc" aria-label="Разделы">
+    <a href="#risk">Риск</a><a href="#panic">Panic</a><a href="#locks">Mutex</a><a href="#copies">Копирования</a>
+    <a href="#api">API и типы</a><a href="#names">Имена</a><a href="#modules">Модули</a><a href="#style">Стиль</a>
+    <a href="#docs">Документация</a><a href="#outside">Вне правил</a><a href="#rejected">Отклонено</a><a href="#plan">Порядок</a>
+  </nav>
+</header>
+
+<section aria-labelledby="sum">
+  <h2 id="sum">Итог</h2>
+  <dl class="summary">
+    <div><dt>11</dt><dd>находок с риском: падение программы или неверное поведение уже сегодня</dd></div>
+    <div><dt>43</dt><dd>места в рабочем коде, где возможен panic (правила 6–7)</dd></div>
+    <div><dt>18</dt><dd>лишних копирований данных: все семь старых F1–F7 подтвердились, 11 новых</dd></div>
+    <div><dt>16</dt><dd>мест, где отравленный mutex восстанавливается молча, без лога</dd></div>
+    <div><dt>84</dt><dd>механических правок по lints: 42 типа без <code>Debug</code>, 42 метода builder без <code>#[must_use]</code></dd></div>
+    <div><dt>≈130</dt><dd>публичных функций и типов и ≈26 модулей без документации; 5 комментариев неверны</dd></div>
+  </dl>
+  <div class="prose">
+    <p>Как проверял: clippy с lints из правил по коду библиотеки без тестов; ручной разбор в четырёх областях (ядро и макросы, проекции и
+    MongoDB, задачи и host, engine и PostgreSQL); затем каждую находку с риском и выборочно остальные перечитал по коду.
+    Время и пропускную способность не измерял: про копирования сказано, что и сколько раз копируется, а не насколько это медленно.</p>
+    <p>Что в порядке: <code>unsafe</code> нет; glob-импортов, <code>for_each</code>, склейки строк через <code>+</code> нет; все семь
+    derive-макросов реализуют обычные публичные трейты и сообщают ошибки как ошибки компиляции (правило 33);
+    <code>catch_unwind</code> в доставке проекций стоит ровно на границе с пользовательским обработчиком (правило 11).</p>
+  </div>
+</section>
+
+<section aria-labelledby="risk">
+  <h2 id="risk">Риск: падения и неверное поведение</h2>
+  <p class="prose">Эти места стоит исправить первыми: они либо роняют процесс, либо уже сейчас ведут себя не так, как задумано.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Правило</th><th>Где</th><th>Что не так</th><th>Исправление</th><th>API</th></tr></thead>
+    <tbody>
+      <tr><td class="rule">6.1</td><td class="where"><code>cqrs/store/persisted.rs:397</code>, <code>:31</code></td>
+        <td class="what"><span class="v v-risk">риск</span> <code>new_snapshot_store(repo, 0)</code> принимается, после чего каждый commit делит на ноль (<code>current_sequence % 0</code>). Оба рабочих вызова (<code>engine.rs:237</code>, <code>postgres/command.rs:85</code>) держат <code>NonZeroUsize</code> и отбрасывают его через <code>.get()</code>. Clippy этого не видит.</td>
+        <td class="fix"><code>SnapshotPolicy::Every(NonZeroUsize)</code>, конструктор принимает <code>NonZeroUsize</code>. Тогда и <code>PostgresCommandConfig::new</code> становится безошибочным: уходят <code>PostgresCommandConfigError</code> и <code>expect</code> в <code>engine.rs:270</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">8, 11</td><td class="where"><code>task/executor/default_executor.rs:106</code>, <code>task/runtime/supervisor.rs:83</code></td>
+        <td class="what"><span class="v v-risk">риск</span> panic обработчика задачи не перехватывается. Worker погибает, supervisor запускает новый, а задача остаётся без settlement до истечения lease. Тест <code>tests/task/runtime/supervision.rs:183</code> закрепляет это как задуманное поведение.</td>
+        <td class="fix">Обернуть <code>dispatch</code> тем же <code>unwinding</code>, что у проекций (<code>delivery.rs:426</code>, вынести в общий модуль): <code>error!</code> без payload и settlement <code>Retry</code>. Перезапуск worker остаётся последней защитой. Тест меняется.</td><td class="api">нет, поведение</td></tr>
+      <tr><td class="rule">7</td><td class="where"><code>task/runtime/supervisor.rs:124</code>, <code>:128</code></td>
+        <td class="what"><span class="v v-risk">риск</span> Два <code>assert!</code> проверяют контракт <code>TaskQueue</code>: задач не больше <code>limit</code>, <code>try_send</code> проходит. <code>TaskQueue</code> реализует пользователь библиотеки, так что ошибка в его адаптере роняет supervisor.</td>
+        <td class="fix"><code>error!</code> с названием нарушения; лишняя задача отбрасывается, через восстановление lease она вернётся.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">6, 7</td><td class="where"><code>postgres/view_repository.rs:187</code>, <code>:202–204</code>, <code>:261–264</code></td>
+        <td class="what"><span class="v v-risk">риск</span> <code>Row::get</code> паникует, если колонки нет или тип не совпал (например, <code>version integer</code> в таблице витрины). Это внешние данные; код работает в обработчике проекций и в запросах.</td>
+        <td class="fix"><code>try_get</code> с переводом в <code>DeserializationError</code>, как <code>row_decode_error</code> в <code>event_repository/read.rs</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">вне правил</td><td class="where"><code>task.rs:92</code></td>
+        <td class="what"><span class="v v-risk">риск</span> <code>NewTask::with_metadata</code> заменяет metadata целиком и теряет labels, которые <code>NewTask::new</code> туда перенёс из payload. Обработчик потом не может декодировать задачу. В документации об этом ни слова.</td>
+        <td class="fix">Сливать с существующими labels или возвращать ошибку, если labels есть; описать в документации. Рядом уже есть метод, который дописывает ключи.</td><td class="api">поведение</td></tr>
+      <tr><td class="rule">21</td><td class="where"><code>engine/serve.rs:46–47</code></td>
+        <td class="what"><span class="v v-risk">риск</span> <code>other =&gt;</code> по нашему <code>BuildError</code> прячет <code>DatabaseUrl</code>, <code>MongoUri</code> и <code>ViewsWithoutJournal</code>. Это тоже неверная конфигурация, но сообщение выходит без префикса <code>invalid configuration:</code>, который обещает документация <code>built()</code>.</td>
+        <td class="fix">Перечислить варианты.</td><td class="api">текст ошибки</td></tr>
+      <tr><td class="rule">21</td><td class="where"><code>task.rs:44</code></td>
+        <td class="what"><span class="v v-risk">риск</span> <code>_ =&gt; Ok(())</code> в <code>TaskSchedule::validate</code>: новый вариант расписания пройдёт без проверки.</td>
+        <td class="fix"><code>Self::After(_) | Self::Now | Self::At(_) =&gt; Ok(())</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">21</td><td class="where"><code>cqrs/projection/processor/delivery.rs:327–335</code>, <code>:362–373</code></td>
+        <td class="what"><span class="v v-risk">риск</span> <code>_</code> и <code>else None</code> по <code>Work</code>: с новым вариантом <code>take_while</code> насчитает 0 и worker будет раздавать пустые пакеты, а при объединении задание молча пропадёт.</td>
+        <td class="fix">Сопоставлять <code>Work</code> полностью.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">21</td><td class="where"><code>task/queue/settlement.rs:48</code>, <code>:53</code></td>
+        <td class="what"><span class="v v-risk">риск</span> <code>!matches!(self, Self::OwnershipLost)</code> и <code>_ =&gt; None</code>: новый вариант молча станет «применённым» и без ошибки.</td>
+        <td class="fix">Перечислить варианты.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">21</td><td class="where"><code>postgres/outbox/write.rs:72</code>, <code>:118–121</code>; <code>engine/build.rs:264–272</code></td>
+        <td class="what"><span class="v v-fix">важно</span> <code>_</code> и <code>matches!</code> по <code>SnapshotWrite</code>; <code>if views == Views::Postgres {…} else {"MongoDB"}</code> назовёт любое новое хранилище «MongoDB».</td>
+        <td class="fix"><code>Insert{..} | Update{..}</code>; <code>match views { Memory =&gt; …, Postgres =&gt; …, MongoDb =&gt; … }</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">34</td><td class="where"><code>cqrs/projection.rs:211–219</code></td>
+        <td class="what"><span class="v v-fix">важно</span> Документация <code>set_error_observer</code> неверна: «queries are infallible», ошибки «simply ignored». На деле они возвращаются как <code>Err</code> из <code>load</code>, <code>handle</code> и <code>rebuild</code>.</td>
+        <td class="fix">Переписать.</td><td class="api">нет</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="panic">
+  <h2 id="panic">Panic: остальные места (правила 6–8)</h2>
+  <div class="prose">
+    <p>Кроме мест из раздела «Риск». Почти всё убирается механически: константы нужного типа, итераторы и <code>get()</code> вместо индексов,
+    <code>Err</code> с <code>error!</code> для внутренних инвариантов.</p>
+    <p>Хранилища из <code>cqrs::testing</code> (<code>MemEventRepository</code>, <code>MemTaskQueue</code>, <code>MemViewRepository</code>,
+    <code>MemCheckpointStore</code>) работают внутри <code>Cqrs::in_memory()</code>, поэтому исключение правила 8 для них не действует. Оно покрывает
+    только помощники для проверок (<code>TestFramework</code>, validator) и <code>MemStore</code>, который engine не использует.</p>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Правило</th><th>Где</th><th>Что не так</th><th>Исправление</th><th>API</th></tr></thead>
+    <tbody>
+      <tr><td class="rule">6.2</td><td class="where"><code>cqrs/command/retry.rs:73</code>, <code>task/queue/storage_config.rs:18</code>, <code>task/runtime/config.rs:56</code>, <code>task/runtime/worker_pool_config.rs:52</code>, <code>cqrs/projection.rs:207</code></td>
+        <td class="what"><code>Default</code> вызывает проверяющий <code>new(…)</code> с константами и <code>expect</code>; <code>NonZeroUsize::new(16).unwrap()</code>.</td>
+        <td class="fix">Константы нужного типа (<code>const …: NonZeroUsize = NonZeroUsize::new(16).unwrap();</code>), <code>Default</code> собирает структуру из них без проверки.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">6.1</td><td class="where"><code>cqrs/command/retry.rs:94</code>, <code>cqrs/projection.rs:532</code>; <code>retry.rs:52</code></td>
+        <td class="what"><code>unreachable!</code> после цикла попыток; <code>debug_assert!(retry &gt; 0)</code>, а <code>retry - 1</code> при нуле переполняется.</td>
+        <td class="fix">Цикл сам возвращает последний результат; число попыток — <code>NonZeroUsize</code>; <code>saturating_sub(1)</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">7</td><td class="where"><code>cqrs/store/upcaster.rs:145</code>, <code>:58</code>; <code>task/policy.rs:83</code></td>
+        <td class="what">Ввод пользователя библиотеки: <code>NumericVersionUpcaster::new</code> падает на неверной строке версии; <code>split().next().unwrap()</code>; <code>assert!</code> в <code>PolicyName::new</code> (в <code>const</code> это ошибка сборки, а при вызове во время работы — panic).</td>
+        <td class="fix"><code>try_new</code> → <code>Result</code>; разбор через образец; <code>const fn new(name) -&gt; Option&lt;Self&gt;</code>, как у <code>NonZero::new</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">6.3</td><td class="where"><code>delivery.rs:158</code>, <code>:262</code>; <code>processor/rebuild.rs:20</code>; <code>task/runtime/worker_pool.rs:51</code>; <code>worker_pool_config.rs:131</code></td>
+        <td class="what">Внутренние инварианты через <code>expect</code>: semaphore не закрывается, зарезервированный буфер на месте, у worker есть индекс, уровень дозаполнения влезает в <code>usize</code>.</td>
+        <td class="fix"><code>Err</code> и <code>error!</code>; уровень дозаполнения считать в <code>usize</code> с <code>min(buffer_capacity)</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">7</td><td class="where"><code>processor/owner.rs:710</code>, <code>:826–830</code>, <code>:862</code>; <code>task/dispatcher.rs:129</code>; <code>task/runtime/poller.rs:41</code>; <code>processor/rebuild.rs:100</code>; <code>cqrs/projection.rs:561</code></td>
+        <td class="what">Индексы после <code>position()</code>, индекс из соседней таблицы, <code>% count</code>, срезы <code>[1..]</code> и <code>[..prefix]</code>.</td>
+        <td class="fix"><code>iter_mut().find()</code>, entry API, <code>iter().cycle().skip(start)</code>, <code>split_first</code>, <code>get(..prefix)</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">7</td><td class="where"><code>task.rs:161</code>, <code>:174</code></td>
+        <td class="what"><code>metadata[label] = …</code> по <code>serde_json::Value</code> паникует, если значение не объект. Конструкторы это гарантируют, но clippy увидел только одно из двух мест.</td>
+        <td class="fix"><code>as_object_mut()</code> и <code>entry(…).or_insert(…)</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">6.1</td><td class="where"><code>cqrs/command/causation.rs:141–149</code></td>
+        <td class="what">Собственный <code>uuid_v5</code> на <code>sha1</code> со срезом <code>&amp;digest[..16]</code>. Тест уже сверяет его с эталонами crate <code>uuid</code>.</td>
+        <td class="fix">Feature <code>v5</code> у <code>uuid</code> и <code>Uuid::new_v5</code>: те же id, без своей функции, среза и прямой зависимости <code>sha1</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">7</td><td class="where"><code>cqrs/testing/mem_event_repository.rs:354–355</code>; <code>task/testing/mem_task_queue.rs:168–169</code>, <code>:213</code>, <code>:294</code></td>
+        <td class="what">Индексы в хранилищах, на которых работает <code>Cqrs::in_memory()</code>.</td>
+        <td class="fix">Как выше.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">7</td><td class="where"><code>cqrsx-macros/src/command.rs:82</code>, <code>event.rs:49</code></td>
+        <td class="what"><code>unnamed[0]</code> после проверки <code>len() == 1</code>.</td>
+        <td class="fix">Образец по срезу или <code>first()</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">8</td><td class="where"><code>cqrs/testing/validator.rs:106–110</code>, <code>:204–209</code>, <code>:412–418</code></td>
+        <td class="what">Публичные помощники для проверок паникуют законно, но без раздела <code># Panics</code>, а у <code>assert_eq!</code> нет сообщения.</td>
+        <td class="fix">Добавить <code># Panics</code> и сообщения.</td><td class="api">нет</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="locks">
+  <h2 id="locks">Mutex (правило 10)</h2>
+  <div class="prose">
+    <p>Отравленный mutex восстанавливается через <code>unwrap_or_else(PoisonError::into_inner)</code> в 16 местах, без лога и без
+    <code>clear_poison()</code>. Общего помощника нет: есть четыре локальных и вызовы прямо в коде.</p>
+    <p>Под всеми этими блокировками выполняется одна операция с контейнером, без пользовательского кода и <code>.await</code>, так что продолжать
+    работу правильно. Не хватает только помощника, который пишет <code>error!</code> с названием блокировки и вызывает <code>clear_poison()</code>.</p>
+    <p>Места: <code>cqrs/command/locks.rs:123</code>; <code>processor/delivery.rs:103</code>; <code>processor/lease.rs:33</code>,
+    <code>:103</code>; <code>engine.rs:351</code>; <code>engine/memory.rs:129</code>; <code>engine/serve.rs:83</code>;
+    <code>engine/setup.rs:97</code>, <code>:104</code>; <code>mem_event_repository.rs:137</code>, <code>:177</code>, <code>:228</code>;
+    <code>mem_view_repository.rs:83</code>; <code>mem_checkpoint_store.rs:127</code>; <code>cqrs/testing/command.rs:175</code>,
+    <code>:215</code>.</p>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Правило</th><th>Где</th><th>Что не так</th><th>Исправление</th><th>API</th></tr></thead>
+    <tbody>
+      <tr><td class="rule">10</td><td class="where"><code>cqrs/testing/mem_view_repository.rs:87–100</code></td>
+        <td class="what">Под mutex документов для каждого документа в <code>list</code> и <code>range</code> вызывается <code>V::deserialize</code>, то есть пользовательский тип.</td>
+        <td class="fix">Скопировать значения, отпустить блокировку, потом декодировать (так уже делает <code>load_with_context</code>).</td><td class="api">нет</td></tr>
+      <tr><td class="rule">10</td><td class="where"><code>processor/delivery.rs:102</code></td>
+        <td class="what">Комментарий «Nothing panics under this mutex» противоречит <code>expect</code> под этой же блокировкой в строке 264.</td>
+        <td class="fix">Уйдёт вместе с правкой <code>expect</code>.</td><td class="api">нет</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="copies">
+  <h2 id="copies">Копирования и владение (правила 1–5)</h2>
+  <p class="prose">Находки F1–F7 из аудита 2026-10-28 перепроверены на текущем коде, все подтвердились; места указаны по HEAD e995a53.
+  Влияние на скорость не измерялось.</p>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Правило</th><th>Где</th><th>Что не так</th><th>Исправление</th><th>API</th></tr></thead>
+    <tbody>
+      <tr class="group"><td colspan="5">На каждое событие, команду или задачу</td></tr>
+      <tr><td class="rule">1, 2 · F1</td><td class="where"><code>processor/delivery.rs:62</code>, <code>:361–384</code>; <code>owner.rs:727–729</code></td>
+        <td class="what"><code>Work::Apply(Arc&lt;[EventEnvelope]&gt;)</code> никто не делит: один производитель, одно задание. При пакете из двух и больше заданий каждое событие глубоко копируется в <code>joined</code> (id, payload, metadata).</td>
+        <td class="fix"><code>Work::Apply(Vec&lt;…&gt;)</code>; объединять через <code>mem::take</code> и <code>append</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">2 · F2</td><td class="where"><code>task.rs:169</code>; <code>task/adapter/json.rs:77</code></td>
+        <td class="what">Задача с labels при каждой доставке копирует весь payload, даже если все labels уже на месте. Комментарий <code>json.rs:21</code> утверждает обратное.</td>
+        <td class="fix">Декодировать без копии: <code>MapDeserializer</code> по полям payload плюс недостающие labels из metadata.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">2 · F4</td><td class="where"><code>cqrs/store/persisted.rs:546–562</code>; <code>cqrs.rs:482</code>; <code>command/executor.rs:159</code></td>
+        <td class="what">Metadata копируется в каждое событие, а на пути executor дважды за попытку; id агрегата копируется дважды за commit.</td>
+        <td class="fix">Передать карту в последний envelope без копии; id так же.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">5 · F7</td><td class="where"><code>cqrs/store/serialized_event.rs:84–89</code>; <code>persisted.rs:476–485</code></td>
+        <td class="what">Replay сначала собирает все декодированные события в <code>Vec</code>, потом обходит их один раз.</td>
+        <td class="fix">Декодировать и применять по одному.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">2</td><td class="where"><code>postgres/event_repository/write.rs:103–104</code></td>
+        <td class="what"><code>serde_json::to_value(&amp;event.payload)</code> и <code>(&amp;event.metadata)</code> — две глубокие копии <code>Value</code> на каждое записанное событие, плюс шаг с ошибкой, которая не может случиться.</td>
+        <td class="fix"><code>.bind(&amp;event.payload)</code>, как в <code>outbox/write.rs:85–86</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">2, 3</td><td class="where"><code>cqrs/event.rs:143–145</code>; <code>cqrsx-macros/src/event.rs:59</code>; <code>serialized_event.rs:119–123</code></td>
+        <td class="what"><code>DomainEvent::event_type</code> и <code>event_version</code> возвращают <code>String</code>, собранный из константы <code>&amp;'static str</code>. Две строки на событие, чтобы сравнить их с текстом из базы.</td>
+        <td class="fix">Возвращать <code>&amp;'static str</code>, как <code>CommandInfo::name</code> и <code>Rejection::code</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">2</td><td class="where"><code>command/metadata.rs:54–57</code>; <code>engine/outcome.rs:55</code>, <code>:64</code>; <code>task/context.rs:137</code></td>
+        <td class="what"><code>to_map(&amp;self)</code> копирует <code>recorded_at</code> и <code>source</code>, хотя все вызывающие сразу выбрасывают metadata. Две строки на команду.</td>
+        <td class="fix">Добавить <code>into_map(self)</code>.</td><td class="api">да, новый метод</td></tr>
+      <tr><td class="rule">2</td><td class="where"><code>postgres/outbox/write.rs:25</code>, <code>:31</code>, <code>:46</code>, <code>:50</code></td>
+        <td class="what"><code>append_snapshot(&amp;SnapshotWrite)</code> копирует payload снимка (всё состояние агрегата) и id при каждой записи снимка.</td>
+        <td class="fix">Передать снимок по значению: <code>persist_one</code> и так им владеет.</td><td class="api">нет</td></tr>
+      <tr class="group"><td colspan="5">Запросы, проекции, in-memory</td></tr>
+      <tr><td class="rule">2, 5</td><td class="where"><code>engine/views.rs:107</code>, <code>:151</code>, <code>:195–205</code>, <code>:258</code>, <code>:304</code>, <code>:318</code></td>
+        <td class="what"><code>Operations::key()</code> при каждом поиске по имени собирает <code>CheckpointKey</code> (копию <code>V::NAME</code>) для каждой зарегистрированной витрины; <code>catch_up</code> опрашивает <code>lag</code> раз в 1 мс. <code>names()</code> возвращает <code>Vec&lt;String&gt;</code>, который только обходят.</td>
+        <td class="fix"><code>name()</code> и <code>aggregate_type()</code> → <code>&amp;'static str</code>; ключ собирать только для запросов к checkpoint.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">2 · F3</td><td class="where"><code>cqrs/testing/mem_event_repository.rs:182–191</code>, <code>:345–364</code>, <code>:377–390</code></td>
+        <td class="what">Feed копирует под блокировкой все события типа, а уже потом отбирает страницу; id копируются по событию до удаления повторов. Это in-memory engine.</td>
+        <td class="fix">Отбирать по ссылкам, копировать только страницу.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">2 · F5</td><td class="where"><code>owner.rs:692–693</code>, <code>:642</code>; <code>delivery.rs:170</code></td>
+        <td class="what">Для поиска существующего ключа строится <code>String</code>; id копируется перед каждым декодированием, а нужен только при ошибке.</td>
+        <td class="fix">Поиск по <code>&amp;str</code>; копировать в ветке ошибки.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">2, 3</td><td class="where"><code>cqrs/projection.rs:510</code>, <code>:523</code>, <code>:555</code>, <code>:560</code>; <code>mongodb/view_repository.rs:165</code></td>
+        <td class="what"><code>load_or_default(view_id: String)</code> выделяет строку на каждую попытку, хотя она нужна, только если документа нет; в 560 — ещё раз. В MongoDB <code>to_owned()</code> при владении <code>stored.id</code>.</td>
+        <td class="fix">Принимать <code>&amp;str</code>, <code>to_owned()</code> внутри <code>unwrap_or_else</code>; переместить <code>stored.id</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">2</td><td class="where"><code>owner.rs:826</code>; <code>projection/verify.rs:149</code></td>
+        <td class="what">Ключ копируется на успешном пути ради ссылки; id всех документов копируются в ключи карты, значения которой уже их содержат.</td>
+        <td class="fix">Брать ссылки.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">2</td><td class="where"><code>cqrs/testing/mem_store.rs:284–290</code></td>
+        <td class="what">Каждый commit копирует всю историю агрегата и вставляет её заново (только тесты).</td>
+        <td class="fix"><code>entry(id).or_default().extend(…)</code> под одной блокировкой.</td><td class="api">нет</td></tr>
+      <tr class="group"><td colspan="5">Владение и сборка engine</td></tr>
+      <tr><td class="rule">1</td><td class="where"><code>engine/setup.rs:14</code>; <code>engine/module.rs:26</code></td>
+        <td class="what"><code>Arc&lt;dyn Fn…&gt;</code> никогда не клонируется: значение просто переходит из builder в setup и из module в engine.</td>
+        <td class="fix"><code>Box&lt;dyn Fn… + Send + Sync&gt;</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">1, 19</td><td class="where"><code>task/dispatcher.rs:126</code>; <code>task/runtime.rs:63</code>; <code>postgres/task_runtime.rs:20</code></td>
+        <td class="what"><code>impl Into&lt;Arc&lt;TaskAttempt&gt;&gt;</code> и <code>impl Into&lt;Arc&lt;TaskDispatcher&gt;&gt;</code>: рабочие вызовы уже передают <code>Arc</code>, <code>Arc::new</code> экономят только тесты.</td>
+        <td class="fix">Принимать <code>Arc&lt;…&gt;</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">2</td><td class="where"><code>task/handlers.rs:117</code>; <code>engine.rs:229</code>; <code>engine/build.rs:282</code></td>
+        <td class="what"><code>executors.clone().with(…)</code> поднимает счётчик ссылок, и <code>Arc::make_mut</code> копирует всю карту executors при каждой регистрации; <code>setup.engine().clone()</code> копирует <code>Settings</code> перед поглощением <code>setup</code>. Только при сборке.</td>
+        <td class="fix"><code>insert(&amp;mut self, …)</code> или <code>mem::take</code>; <code>Setup::into_parts(self)</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">3, 4</td><td class="where"><code>cqrs/store.rs:55</code>; <code>cqrs.rs:468</code>, <code>:473</code></td>
+        <td class="what"><code>AggregateContext::aggregate(&amp;mut self) -&gt; &amp;mut A</code>, а оба вызывающих только читают.</td>
+        <td class="fix"><code>fn aggregate(&amp;self) -&gt; &amp;A</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">3</td><td class="where">lint <code>needless_pass_by_value</code>, 15 мест</td>
+        <td class="what">Конфигурации по значению (<code>postgres/command.rs:83</code>, <code>default_executor.rs:33</code>), <code>sqlx::Error</code> по значению (<code>postgres/task_queue.rs:32</code>), семь <code>expand_*(input: DeriveInput)</code> в макросах, metadata в <code>persisted.rs:550</code> (F4), четыре в помощниках для тестов.</td>
+        <td class="fix">Маленьким конфигурациям — <code>Copy</code>, остальным — ссылку.</td><td class="api">местами</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="api">
+  <h2 id="api">API и типы (правила 12–20)</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Правило</th><th>Где</th><th>Что не так</th><th>Исправление</th><th>API</th></tr></thead>
+    <tbody>
+      <tr><td class="rule">12</td><td class="where"><code>processor/owner.rs:465</code>, <code>:498</code>, <code>:849</code></td>
+        <td class="what"><code>spawn_rebuild(key, Duration::ZERO, RebuildReason::Requested, false, Vec::new())</code>: что значит <code>false</code>, из вызова не понять. pace, reason, bool и waiters встречаются только в трёх сочетаниях.</td>
+        <td class="fix"><code>enum RebuildJob { Requested, Cursor { pace }, Healed { waiter } }</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">13</td><td class="where"><code>cqrs/store/serialized_event.rs:33–41</code>; <code>postgres/event_repository/read.rs:203</code></td>
+        <td class="what"><code>SerializedEvent::new</code> принимает 7 позиционных аргументов, из них 4 <code>String</code> и 2 <code>Value</code>; перестановка двух соседних компилируется.</td>
+        <td class="fix">Удалить <code>new</code>: поля публичные, литерал структуры с именами.</td><td class="api">да</td></tr>
+      <tr><td class="rule">13</td><td class="where"><code>cqrs/store/upcaster.rs:15</code>, <code>:155</code></td>
+        <td class="what"><code>can_upcast(event_type: &amp;str, event_version: &amp;str)</code> — ровно пример из правила 13.</td>
+        <td class="fix"><code>EventFormat { event_type, event_version }</code> по образцу <code>TaskFormat</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">13</td><td class="where"><code>processor/owner.rs:66–73</code>, <code>:261</code>, <code>:278–283</code>; <code>processor.rs:300</code>; <code>lease.rs:111</code></td>
+        <td class="what"><code>operation</code> и <code>category</code> — оба <code>&amp;'static str</code> из закрытых наборов, передаются рядом; признак обработчика вычисляется как <code>operation == "feed" || …</code>.</td>
+        <td class="fix"><code>enum Operation</code> с <code>as_str()</code>; по желанию <code>enum Category</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">13</td><td class="where"><code>projection/verify.rs:89</code></td>
+        <td class="what"><code>Difference.kind: &amp;'static str</code> из двух значений.</td>
+        <td class="fix"><code>enum DifferenceKind</code> с serde rename.</td><td class="api">да</td></tr>
+      <tr><td class="rule">14</td><td class="where"><code>cqrs/command.rs:156</code>; <code>cqrsx-macros/src/command.rs:61</code>, <code>:149</code></td>
+        <td class="what"><code>labels() -&gt; Vec&lt;(&amp;'static str, String)&gt;</code> в публичном трейте; demo разбирает кортеж.</td>
+        <td class="fix"><code>Label { name, value }</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">14</td><td class="where"><code>projection/repository.rs:17–18</code>, <code>:44–53</code>; <code>engine/views.rs:131</code></td>
+        <td class="what"><code>load_with_context -&gt; (V, ViewContext)</code>: MongoDB собирает <code>StoredView</code> и разбирает, engine собирает обратно через <code>From&lt;(V, ViewContext)&gt;</code>.</td>
+        <td class="fix">Возвращать <code>Option&lt;StoredView&lt;V&gt;&gt;</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">14</td><td class="where"><code>engine/module.rs:31</code>, <code>:45</code>; <code>engine/build.rs:309</code>, <code>:329–331</code>; <code>processor/owner.rs:57</code>, <code>:159</code>, <code>:585</code>, <code>:872</code></td>
+        <td class="what"><code>Vec&lt;(PolicyName, Retry, i32)&gt;</code>; псевдоним <code>TaskRegistration</code> для кортежа; итог перестройки — <code>(String, Result&lt;…&gt;)</code>, хотя рядом есть именованный <code>LiveOutcome</code>.</td>
+        <td class="fix"><code>PolicyEntry</code>, <code>TaskRegistration { adapter, binding }</code>, <code>RebuildOutcome { aggregate_id, result }</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">14</td><td class="where"><code>engine.rs:176</code> и <code>describe()</code> в settings, setup, postgres, mongodb; <code>engine/module.rs:26</code>, <code>:131</code></td>
+        <td class="what"><code>describe() -&gt; Vec&lt;(String, String)&gt;</code>, отсортированный по ключу; <code>observe_projections(Fn(&amp;'static str, &amp;str))</code> — имя витрины и имя узла позиционно, <code>|owner, projection|</code> компилируется.</td>
+        <td class="fix"><code>BTreeMap&lt;String, String&gt;</code>; структура с именованными полями для наблюдателя.</td><td class="api">да</td></tr>
+      <tr><td class="rule">14</td><td class="where"><code>cqrs/testing/mem_checkpoint_store.rs:49</code>, <code>:89–91</code></td>
+        <td class="what"><code>type RowKey = (String, String)</code> — псевдоним, который выражает смысл; каждая операция выделяет две строки ради поиска.</td>
+        <td class="fix">Ключ — <code>CheckpointKey</code> (derive <code>Ord</code>).</td><td class="api">нет</td></tr>
+      <tr><td class="rule">15</td><td class="where"><code>upcaster.rs:43–45</code>; <code>engine/postgres.rs:227</code>; <code>cqrs.rs:519–526</code></td>
+        <td class="what"><code>NumericVersion::supersedes</code> повторяет выведенный <code>PartialOrd</code> (тот же порядок полей); <code>statement_timeout_text</code> — подобие <code>Display</code>; ручной <code>Default</code> у <code>CommitReport</code>, хотя derive добавил бы только <code>A: Default</code>, который у агрегата и так есть.</td>
+        <td class="fix"><code>&gt;</code>; <code>impl Display for StatementTimeout</code>; <code>#[derive(Default)]</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">16</td><td class="where">lint <code>missing_debug_implementations</code>, 42 типа</td>
+        <td class="what">Публичные типы без <code>Debug</code>: <code>CqrsFramework</code>, <code>Cqrs</code>, executors, observers, repositories, runtimes, builders.</td>
+        <td class="fix">derive, где можно; иначе ручной с <code>finish_non_exhaustive()</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">18</td><td class="where"><code>processor.rs:143</code>, <code>:168</code>; <code>rebuild.rs:25</code>, <code>:55</code>; <code>delivery.rs:109–110</code></td>
+        <td class="what"><code>Arc&lt;dyn RebuildableProjection&gt;</code>, <code>dyn EventHandler</code>, <code>dyn Rebuilder</code> держат по одному значению; единственный рабочий вызов (<code>engine.rs:370</code>) стирает тип конкретной <code>ViewProjection</code>.</td>
+        <td class="fix">Обсудить: generic-параметр у processor; <code>ProjectionRuntime</code> и так стирает типы processors.</td><td class="api">да</td></tr>
+      <tr><td class="rule">19</td><td class="where"><code>cqrs/aggregate.rs:226–253</code>; <code>mongodb/projection_checkpoints.rs:119</code>; <code>engine/settings.rs:517</code>, <code>:521</code></td>
+        <td class="what"><code>AggregateKey</code> публичный с <code>impl Into&lt;String&gt;</code>, хотя нужен только реестру блокировок внутри crate; внутренние <code>literal(impl Into&lt;Bson&gt;)</code> и <code>invalid(impl Into&lt;String&gt;)</code>.</td>
+        <td class="fix"><code>pub(crate)</code> и конкретные типы.</td><td class="api">да</td></tr>
+      <tr><td class="rule">20</td><td class="where">lint <code>return_self_not_must_use</code>, 42 метода</td>
+        <td class="what">Методы builder, возвращающие <code>Self</code>, без <code>#[must_use]</code>: <code>engine/build.rs</code> (7), <code>engine/module.rs</code> (6), <code>task/handlers.rs</code> (4), <code>processor.rs</code> (4) и другие.</td>
+        <td class="fix"><code>#[must_use]</code> на тип builder закрывает все его методы сразу.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">20</td><td class="where"><code>host/lifecycle.rs:90</code>; <code>engine/setup.rs:37</code>, <code>:87</code>; <code>cqrs/testing.rs:519</code>; <code>causation.rs:110</code>, <code>:123</code>; <code>task/policy.rs:122</code>, <code>:210</code>, <code>:216</code></td>
+        <td class="what"><code>Stopped</code> несёт итоги host и read side, но <code>run_with_processors(..).await;</code> молча их теряет. Также <code>Setup::invalid</code> (если не вернуть результат как <code>Err</code>, ничего не отказывает), validator, <code>stamp_task</code> и чистые функции политик.</td>
+        <td class="fix"><code>#[must_use = "…"]</code>.</td><td class="api">нет</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="names">
+  <h2 id="names">Имена (правила 22–25)</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Правило</th><th>Где</th><th>Что не так</th><th>Исправление</th><th>API</th></tr></thead>
+    <tbody>
+      <tr><td class="rule">22</td><td class="where"><code>LockLimits::new</code>, <code>AggregateConflictRetryPolicy::new</code>, <code>PostgresCommandConfig::new</code>, <code>engine/settings.rs:212</code>, <code>engine/postgres.rs:117</code>, <code>outbox/write_plan.rs:73</code>, конфигурации processor и задач</td>
+        <td class="what">Конструкторы, возвращающие <code>Result</code>, называются <code>new</code>.</td>
+        <td class="fix"><code>try_new</code>; где проверка сводится к «не ноль» — принимать <code>NonZero*</code> и оставить <code>new</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">22</td><td class="where"><code>cqrs/store/persisted.rs:235</code>, <code>:397</code></td>
+        <td class="what"><code>new_event_store</code> и <code>new_snapshot_store</code> вместо <code>new</code>.</td>
+        <td class="fix"><code>new(repo)</code> и <code>with_snapshots(NonZeroUsize)</code> (вместе с первой находкой из «Риска»).</td><td class="api">да</td></tr>
+      <tr><td class="rule">22</td><td class="where"><code>cqrs/store/repository.rs:22</code>, <code>:28</code>, <code>:35</code>; <code>mem_store.rs:212</code></td>
+        <td class="what"><code>get_events</code>, <code>get_events_after</code>, <code>get_snapshot</code> рядом с <code>feed_after</code> и <code>head</code>; устаревший <code>MemStore::get_events</code> отдаёт <code>RwLock</code> наружу.</td>
+        <td class="fix"><code>events</code>, <code>events_after</code>, <code>snapshot</code>; устаревший метод удалить — совместимость не держим.</td><td class="api">да</td></tr>
+      <tr><td class="rule">22, 24</td><td class="where"><code>cqrs/store.rs:25</code>; <code>task.rs:87</code>; <code>cqrs/testing.rs:150</code>; <code>validator.rs:305</code></td>
+        <td class="what">Ассоциированный тип <code>EventStore::AC</code>; метод builder <code>scheduled</code> рядом с <code>with_metadata</code>; конструктор <code>TestFramework::with</code>; <code>inspect_result(self)</code> поглощает <code>self</code>.</td>
+        <td class="fix"><code>Context</code>; <code>with_schedule</code>; <code>new</code>; <code>into_result</code>.</td><td class="api">да</td></tr>
+      <tr><td class="rule">24</td><td class="where"><code>engine/mongodb.rs:65</code>, <code>:81</code>, <code>:86</code>, <code>:121</code></td>
+        <td class="what"><code>app_name</code>, хотя рядом (<code>PoolPlan</code>) — <code>application_name</code>.</td>
+        <td class="fix">Одно имя.</td><td class="api">да</td></tr>
+      <tr><td class="rule">25</td><td class="where"><code>cqrs/testing/command.rs</code>; <code>mongodb/projection_checkpoints.rs</code></td>
+        <td class="what">Файлы названы не по главному типу (<code>TestCommandExecutor</code>, <code>MongoCheckpointStore</code>).</td>
+        <td class="fix"><code>command_executor.rs</code>, <code>checkpoint_store.rs</code>.</td><td class="api">пути</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="modules">
+  <h2 id="modules">Модули (правило 26)</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Правило</th><th>Где</th><th>Что не так</th><th>Исправление</th><th>API</th></tr></thead>
+    <tbody>
+      <tr><td class="rule">26</td><td class="where"><code>cqrs.rs:35–526</code></td>
+        <td class="what"><code>CqrsFramework</code> (около 450 строк с doctests), <code>CommitReport</code> и 335 строк их тестов в родительском модуле.</td>
+        <td class="fix"><code>cqrs/framework.rs</code> и re-export; <code>AggregateError</code> оставить.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">26</td><td class="where"><code>cqrs/projection.rs:39–624</code></td>
+        <td class="what"><code>ViewProjection</code>, <code>apply_contiguous</code>, их реализации, doctests и большая часть тестов (строки 667–1168).</td>
+        <td class="fix"><code>projection/view_projection.rs</code>; в родителе <code>View</code>, <code>RebuildableProjection</code>.</td><td class="api">пути</td></tr>
+      <tr><td class="rule">26</td><td class="where"><code>engine.rs:208–431</code></td>
+        <td class="what">Около 220 строк сборки (<code>install_aggregate</code>, <code>executor</code>, <code>install_view</code>, <code>processor</code>…), плюс enum <code>Executor</code> с реализацией и адаптер <code>Commands</code>.</td>
+        <td class="fix">Сборку — в <code>engine/build.rs</code>; <code>Executor</code> и <code>Commands</code> — в <code>engine/executor.rs</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">26</td><td class="where"><code>task.rs:49–137</code>, <code>:156–193</code></td>
+        <td class="what"><code>NewTask</code> (около 90 строк) и помощники labels и проверок в родителе.</td>
+        <td class="fix"><code>task/new_task.rs</code> и <code>task/labels.rs</code>; в родителе <code>TaskValidationError</code> и константы.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">26</td><td class="where"><code>cqrs/projection/processor.rs:254–318</code></td>
+        <td class="what"><code>Context</code> и цикл захвата ключей; <code>owner.rs</code> берёт его через <code>super::Context</code>.</td>
+        <td class="fix"><code>processor/claim.rs</code>.</td><td class="api">нет</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="style">
+  <h2 id="style">Стиль кода (правила 27–31)</h2>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Правило</th><th>Где</th><th>Что не так</th><th>Исправление</th><th>API</th></tr></thead>
+    <tbody>
+      <tr><td class="rule">29</td><td class="where"><code>owner.rs:727</code>; <code>verify.rs:184</code>; <code>persisted.rs:534</code>; <code>engine/build.rs:309</code>; <code>cqrsx-macros/src/attribute.rs:20</code>, <code>:73</code></td>
+        <td class="what">Цепочки итераторов в заголовке <code>for</code>.</td>
+        <td class="fix">Сначала связать цепочку с переменной.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">29</td><td class="where"><code>command/planner.rs:257–266</code>; <code>task/dispatcher.rs:87–97</code>; <code>mem_task_queue.rs:210–233</code>; <code>owner.rs:382–384</code>; <code>engine/build.rs:316–326</code>; <code>delivery.rs:370–381</code>; <code>cqrsx-macros/src/task.rs:103–114</code></td>
+        <td class="what">Цепочки, которые меняют внешнее состояние (<code>ordinals</code>, строки очереди, <code>self</code>) или содержат условия и ранний выход; <code>set.insert(id).then_some(()).ok_or(..)?</code> прячет вставку в условие.</td>
+        <td class="fix">Обычный <code>for</code>; <code>if !registered.insert(id) { return Err(..) }</code>.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">30</td><td class="where"><code>logging.rs:27</code>; <code>task/handlers.rs:92</code>, <code>:119</code>; <code>env.rs:9</code>; <code>engine/views.rs:230</code>; <code>owner.rs:729</code></td>
+        <td class="what">Тип результата <code>.parse()</code> и <code>.into()</code> на строке не виден; <code>events.into()</code> прячет превращение <code>Vec</code> в <code>Arc&lt;[…]&gt;</code>.</td>
+        <td class="fix"><code>parse::&lt;LevelFilter&gt;()</code>, <code>TaskDispatcherError::from(..)</code> и т. п.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">28</td><td class="where">около 25 мест: <code>store.rs:59</code>, <code>:62</code>; <code>diagnostics.rs:26</code>, <code>:89</code>, <code>:195</code>; <code>dispatcher.rs:20</code>, <code>:30</code>; <code>worker_pool.rs:21</code>; <code>supervisor.rs:38</code>; <code>host/signal.rs:9</code>; <code>outbox/write_plan.rs:32</code>, <code>:75</code>; <code>engine/views.rs:63–69</code>…</td>
+        <td class="what">Типы записаны полным путём, хотя импортированы или их легко импортировать (например, <code>crate::cqrs::store::PersistenceError</code> внутри <code>store.rs</code>).</td>
+        <td class="fix">Импортировать.</td><td class="api">нет</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="docs">
+  <h2 id="docs">Документация (правило 34)</h2>
+  <div class="prose">
+    <p>Без документации: около 130 публичных функций и типов и около 26 модулей без <code>//!</code>. Варианты enum и поля не считались.
+    По областям: ядро — 9 элементов и 8 модулей; проекции и MongoDB — 27 и 3; задачи, host, logging — 69 из 187 и 9; engine и PostgreSQL — 24 и 6.</p>
+    <p>Больше всего описаний не хватает у точек расширения: <code>TaskAdapter::formats</code> и <code>invoke</code>, <code>TaskQueue::claim</code>,
+    <code>settle</code> и <code>recover_expired</code>, <code>TaskFormat</code>, геттеры <code>ProcessorConfig</code>. Конструкторы <code>from_env</code>
+    конфигураций хранилища, пула workers и runtime не называют переменные <code>OUTBOX_*</code>, которые читают.</p>
+  </div>
+  <div class="tablewrap"><table>
+    <thead><tr><th>Правило</th><th>Где</th><th>Что не так</th><th>Исправление</th><th>API</th></tr></thead>
+    <tbody>
+      <tr><td class="rule">34</td><td class="where"><code>serialized_event.rs:112</code>; <code>diagnostics.rs:99–101</code>; <code>task/adapter/json.rs:21</code>; <code>upcaster.rs:11–17</code></td>
+        <td class="what">Неверные комментарии: «A serialized version of a snapshot» над <code>TryFrom</code> для envelope; описание другой функции; «decoding never clones» (неверно для labels, F2); опечатки «upcast and event», «the the».</td>
+        <td class="fix">Исправить.</td><td class="api">нет</td></tr>
+      <tr><td class="rule">34</td><td class="where"><code>SerializedEvent::new</code>, <code>NumericVersionUpcaster::new</code>, <code>ViewProjection::new</code>, <code>ViewContext::new</code>, <code>TaskContext::with_dependencies</code>, <code>with_executors</code>, <code>postgres/event_repository.rs:40</code>, <code>:98</code>, <code>validator.rs:5</code></td>
+        <td class="what">Комментарии только пересказывают имя.</td>
+        <td class="fix">Сказать, что и зачем, или удалить.</td><td class="api">нет</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<section aria-labelledby="outside">
+  <h2 id="outside">Вне правил</h2>
+  <ul class="prose">
+    <li><code>Cqrs::describe()</code> публичный и отдаёт <code>DATABASE_URL</code> и <code>MONGODB_URI</code> целиком, с паролем. Сейчас его читают только тесты,
+      но первый же вывод в лог раскроет пароль. Стоит маскировать пароль в URL.</li>
+    <li><code>host/lifecycle.rs:122</code> форматирует <code>JoinError</code> через <code>to_string()</code>. Его <code>Display</code> в tokio включает
+      сообщение panic, а правило в <code>host/error.rs:24–25</code> это запрещает.</li>
+    <li>In-memory engine (<code>Cqrs::in_memory()</code>) работает на хранилищах из модуля <code>cqrs::testing</code>. По дереву кажется, что это
+      код только для тестов, а это рабочий backend. Стоит вынести их, например, в <code>memory</code>: тогда граница правила 8 станет видна по пути.</li>
+    <li>Пустой каталог <code>cqrsx/src/cqrs/event_handler/delivery/</code> на диске, модулем не является.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="rejected">
+  <h2 id="rejected">Отклонено при проверке</h2>
+  <ul class="prose">
+    <li>Префикс <code>Mem</code> в <code>MemStore</code>, <code>MemEventRepository</code> и других — общепринятое сокращение (<code>std::mem</code>), правило 24 его допускает. <code>read_db</code> — тоже.</li>
+    <li><code>Arc&lt;TaskAttempt&gt;</code> живёт внутри одного вызова и мог бы стать ссылкой, но тогда <code>TaskContext</code> получит lifetime, и это заденет
+      каждый обработчик задач и макрос <code>#[task_handler]</code>. Выигрыш — один счётчик ссылок на задачу, это не стоит смены API.</li>
+    <li>Ручные <code>Clone</code>, <code>Debug</code> и <code>PartialEq</code> у <code>EventEnvelope</code>, <code>CommitReport</code>, <code>PersistedEventStore</code>,
+      <code>DependencyId</code> — исключение правила 15 (лишние ограничения на generic или скрытие данных).</li>
+    <li>Ручной <code>FromRow</code> в очереди задач: derive требует feature <code>derive</code> у sqlx, а она выключена.</li>
+    <li><code>Vec</code> из <code>TaskQueue::claim</code>, <code>TaskPlanner::plan</code>, <code>list</code>/<code>range</code> строится в любом случае или должен пережить блокировку (исключение правила 5).</li>
+    <li><code>_</code> по чужим enum (ошибки sqlx и MongoDB, <code>syn</code> в макросах) и в <code>HostError::log</code>, где следом идёт полный ручной <code>Debug</code>.</li>
+    <li>Позиционные <code>Duration</code> и размеры в конфигурациях (<code>TaskWorkerPoolConfig::new</code>, <code>PostgresSettings::new</code>) — правило 13 настройки не трогает. <code>ViewContext::new(version: i64, last_sequence: usize)</code> — перестановка не скомпилируется.</li>
+    <li><code>payload</code> и <code>metadata</code> (оба <code>Value</code>) рядом в <code>NewTask</code> и событиях: путаницы не видно, решать для всего crate сразу, если появится.</li>
+  </ul>
+</section>
+
+<section aria-labelledby="plan">
+  <h2 id="plan">Порядок исправлений</h2>
+  <p class="prose">Каждый шаг — отдельное изменение с тестами по <code>CLAUDE.md</code>. Lints включаются в <code>[lints]</code> файла <code>cqrsx/Cargo.toml</code> в том же
+  изменении, где число их срабатываний доходит до нуля.</p>
+  <div class="steps">
+    <div><h3>1. Риск</h3><p>Одиннадцать находок из первого раздела. Малые и местные, кроме panic обработчика задач: он меняет поведение и тест.</p></div>
+    <div><h3>2. Panic и mutex</h3><p>Остальные 43 места и общий помощник для блокировок.</p>
+      <ul><li>lints: <code>unwrap_used</code>, <code>expect_used</code>, <code>panic</code>, <code>unreachable</code>, <code>todo</code>, <code>unimplemented</code>, <code>indexing_slicing</code></li>
+      <li><code>clippy.toml</code> с разрешениями для тестов; <code>#![allow]</code> только на помощниках для проверок</li></ul></div>
+    <div><h3>3. Копирования</h3><p>Сначала то, что на каждое событие и задачу: F1, F2, F4, <code>write.rs</code>, <code>DomainEvent</code> → <code>&amp;'static str</code>, <code>into_map</code>, снимки. Затем F3, F5–F7 и запросы витрин. Число аллокаций снять до и после.</p></div>
+    <div><h3>4. Имена и API</h3><p><code>try_new</code>, <code>get_*</code>, <code>AC</code>, <code>with_schedule</code>, конструкторы хранилища событий, кортежи → структуры, <code>EventFormat</code>, <code>RebuildJob</code>. Вместе с правками demo.</p></div>
+    <div><h3>5. Debug и must_use</h3><p>84 механические правки.</p>
+      <ul><li>lints: <code>missing_debug_implementations</code>, <code>return_self_not_must_use</code>, <code>needless_pass_by_value</code></li><li><code>unsafe_code = "forbid"</code></li></ul></div>
+    <div><h3>6. Модули, стиль, документация</h3><p>Разнести пять родительских модулей, переписать цепочки, импортировать типы, описать точки расширения и исправить неверные комментарии.</p></div>
+  </div>
+</section>
+
+<p class="foot">Правила: <code>.claude/rules/rust-style.md</code>. Порядок проверки: skill <code>rust-style-review</code>. Предыдущий аудит <code>/workspace/cqrsx-google-rust-audit.md</code> (2026-10-28) этим отчётом заменён.</p>
+</main>
+</body>
+</html>

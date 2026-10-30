@@ -1,0 +1,68 @@
+---
+name: rust-style-review
+description: Check Rust code of this repository (cqrsx, cqrsx-macros, demo) against the project's code guidelines in .claude/rules/rust-style.md, report verified findings by rule and, when asked, fix them and enable the matching lints. Use when the user asks for a guidelines, style or code-quality review or audit of the Rust code.
+---
+
+# Rust style review
+
+The rules are in `.claude/rules/rust-style.md`; read them first and cite their numbers in every finding.
+Argument: a path, a crate or `diff` (changed lines and their callers only); default `cqrsx`. The demo is outside
+the Cargo workspace: run its commands from `demo/`.
+
+## 1. Lints
+
+Run clippy with the guideline lints that are not yet in `[lints]` of the crate's `Cargo.toml` (drop those that
+are). `--lib` keeps test code out:
+
+```bash
+cargo clippy --locked -p cqrsx --lib --all-features --message-format=short -- \
+  -W missing_debug_implementations -W clippy::needless_pass_by_value -W clippy::return_self_not_must_use \
+  -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::unreachable -W clippy::todo \
+  -W clippy::unimplemented -W clippy::indexing_slicing -W clippy::wildcard_enum_match_arm
+```
+
+| Lint | Rule | Note |
+|---|---|---|
+| `unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`, `indexing_slicing` | 6–8 | hits in `cqrs::testing` are allowed |
+| `needless_pass_by_value` | 3 | |
+| `return_self_not_must_use` | 20 | |
+| `missing_debug_implementations` | 16 | |
+| `wildcard_enum_match_arm` | 21 | hint only: `_` on a foreign enum is fine |
+
+`assert!` outside tests has no lint: search for it. Default clippy (`-D warnings`) already covers rule 4
+(`ptr_arg`, `borrowed_box`), rule 9 (`unnecessary_unwrap`), rules 15–16 (`should_implement_trait`,
+`new_without_default`) and rule 22 (`wrong_self_convention`).
+
+## 2. What lints cannot see
+
+Go through the code for the rest, outside `#[cfg(test)]`:
+
+- `.clone()` of owned data (2) and `Arc` in signatures and fields (1): is a borrow enough?
+- functions returning `Vec` that callers only walk (5);
+- functions taking several parameters of the same primitive type, mixed ids and numbers (13); tuples in
+  signatures (14);
+- traits with one implementation and no generic or `dyn` use (17); `impl Into<T>` outside entry API (19);
+- `PoisonError`, `lock()` and `catch_unwind` (10, 11);
+- parent modules, `foo.rs` next to `foo/`, and what they implement (26); file names repeating their path (25);
+- chains in `for` headers or mutating outer state (29); undocumented modules, types and methods (34).
+
+## 3. Verify
+
+Read every site and its callers before reporting it. Drop what a rule's exception covers and say which
+exception. A finding names: rule, `file:line`, what is wrong, the fix, and whether the fix changes the public
+API. Never promise a speed-up without a measurement.
+
+## 4. Report
+
+A short result goes in the chat. A full audit is a standalone HTML report in `demo/docs/`: a summary table by
+rule (count, cost of the fix), then findings grouped by rule.
+
+## 5. Fix (only when asked)
+
+- Fix one rule group at a time. Run what `CLAUDE.md` requires before finishing (fmt, clippy, tests, coverage).
+- When a group reaches zero hits, enable its lints in the same change, in `[lints]` of the crate's `Cargo.toml`
+  (`unsafe_code = "forbid"` belongs there too). Keep test code allowed: `clippy.toml` in the crate root with
+  `allow-unwrap-in-tests`, `allow-expect-in-tests`, `allow-panic-in-tests`, `allow-indexing-slicing-in-tests`;
+  `#![allow(..)]` on the `cqrs::testing` module and at the root of each integration-test crate.
+- Then drop those lints from the command in step 1 and record the change in this skill.
+- Propose the commit message; commit only when the user asks.

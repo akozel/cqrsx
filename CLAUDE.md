@@ -17,6 +17,13 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
 - `cqrsx/doc/components.md` — architecture and naming contract. Read it before adding components.
 - `demo/PLAN.md` — plan for the demo application (not yet a workspace member).
 
+## Code guidelines
+
+Rust code follows `.claude/rules/rust-style.md`: the Google Rust Style Guide adapted to this project
+(no panics outside tests, borrow before clone, newtypes only for values easy to mix up, a parent module
+holds its contract, no `#[non_exhaustive]`), with the list of Google rules not adopted. `/rust-style-review`
+checks code against it.
+
 ## Tests and coverage
 
 Every change ships with tests. Cover new code paths, including error branches, with unit tests
