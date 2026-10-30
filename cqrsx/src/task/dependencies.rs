@@ -39,6 +39,7 @@ use thiserror::Error;
 ///
 /// A clone is cheap: the dependencies are shared (`Arc`).
 #[derive(Clone, Default)]
+#[must_use]
 pub struct Dependencies(Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>);
 
 impl Dependencies {

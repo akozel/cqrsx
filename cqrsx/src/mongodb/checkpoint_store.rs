@@ -20,7 +20,7 @@ use ::mongodb::{
 };
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
-use std::{error::Error, time::Duration};
+use std::{error::Error, fmt, time::Duration};
 use uuid::Uuid;
 
 /// The collection of the checkpoint documents in the read database.
@@ -41,6 +41,15 @@ pub const PROJECTION_CHECKPOINTS_COLLECTION: &str = "projection_checkpoints";
 /// repeated after a lost reply is counted once and never refused. Needs MongoDB 4.2 or later.
 pub struct MongoCheckpointStore {
     collection: Collection<Document>,
+}
+
+// By hand: the collection's own `Debug` prints the whole client; its name is enough.
+impl fmt::Debug for MongoCheckpointStore {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MongoCheckpointStore")
+            .field("collection", &self.collection.name())
+            .finish_non_exhaustive()
+    }
 }
 
 impl MongoCheckpointStore {
@@ -576,6 +585,10 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_server_fails_every_operation_with_a_logged_storage_error() {
         let store = MongoCheckpointStore::new(&crate::mongodb::test_support::unreachable().await);
+        assert_eq!(
+            format!("{store:?}"),
+            format!("MongoCheckpointStore {{ collection: {PROJECTION_CHECKPOINTS_COLLECTION:?}, .. }}")
+        );
         let key = CheckpointKey::new("halls", "Concert");
         let token = LeaseToken::new(Uuid::new_v4());
         let (_, log) = diagnostics::test_support::capture(async {

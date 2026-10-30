@@ -15,7 +15,13 @@ proc-macro2 = "1.0.107"
 quote = "1.0.47"
 syn = { version = "2.0.119", features = ["full"] }
 
-# No panics outside tests (rules 6–8 of .claude/rules/rust-style.md); tests are allowed by clippy.toml.
+# Rules of .claude/rules/rust-style.md: every public type is `Debug` (16), no `unsafe` (32).
+[lints.rust]
+missing_debug_implementations = "deny"
+unsafe_code = "forbid"
+
+# No panics outside tests (rules 6–8); tests are allowed by clippy.toml. A function that only reads an argument
+# borrows it (3); a builder method's result is used (20).
 [lints.clippy]
 unwrap_used = "deny"
 expect_used = "deny"
@@ -24,3 +30,5 @@ unreachable = "deny"
 todo = "deny"
 unimplemented = "deny"
 indexing_slicing = "deny"
+needless_pass_by_value = "deny"
+return_self_not_must_use = "deny"

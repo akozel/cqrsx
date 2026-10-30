@@ -10,7 +10,7 @@ use crate::task::{
     result::TaskResult,
 };
 use serde::de::DeserializeOwned;
-use std::marker::PhantomData;
+use std::{fmt, marker::PhantomData};
 
 /// Adapt a typed operation to the dispatcher and executor interface.
 ///
@@ -30,6 +30,15 @@ pub struct JsonTaskAdapter<P, H> {
     format: TaskFormat,
     // `fn() -> P`: the adapter makes payloads, it holds none, so it is `Sync` whatever `P` is.
     payload: PhantomData<fn() -> P>,
+}
+
+// By hand: the handler need not be `Debug`.
+impl<P, H> fmt::Debug for JsonTaskAdapter<P, H> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("JsonTaskAdapter")
+            .field("format", &self.format)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<P, H> JsonTaskAdapter<P, H>
@@ -179,6 +188,10 @@ mod tests {
         );
         let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &task, TaskResult::Done)).unwrap();
         assert_eq!(adapter.formats(), vec![task.format().clone()]);
+        assert_eq!(
+            format!("{adapter:?}"),
+            r#"JsonTaskAdapter { format: TaskFormat { task_type: "test_operation", task_version: 1 }, .. }"#
+        );
         for _ in 0..2 {
             assert_eq!(adapter.invoke(&context(&task)).await, TaskResult::Done);
         }

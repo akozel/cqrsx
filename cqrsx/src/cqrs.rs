@@ -50,6 +50,7 @@ use std::{collections::HashMap, error, fmt};
 /// life, the projection processors read the events from the journal and the task runtime claims the tasks
 /// from the outbox.
 ///
+#[must_use]
 pub struct CqrsFramework<A, ES>
 where
     A: Aggregate,
@@ -58,6 +59,20 @@ where
     store: ES,
     rules: A::Rules,
     planning: Option<Planning<A>>,
+}
+
+// By hand: the store and the rules need not be `Debug`.
+impl<A, ES> fmt::Debug for CqrsFramework<A, ES>
+where
+    A: Aggregate,
+    ES: EventStore<A>,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CqrsFramework")
+            .field("aggregate_type", &A::TYPE)
+            .field("task_planner", &self.planning.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<A, ES> CqrsFramework<A, ES>

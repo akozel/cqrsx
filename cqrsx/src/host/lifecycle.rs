@@ -87,6 +87,7 @@ where
 /// What stopped the components of a process ([`run_with_processors`]): the host's outcome, as [`run`] reports it, and
 /// the read side's.
 #[derive(Debug)]
+#[must_use = "the host's and the read side's failures are lost unless they are checked"]
 pub struct Stopped {
     pub host: Result<(), HostError>,
     pub read_side: Result<(), ReadSideStopped>,

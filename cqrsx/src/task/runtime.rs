@@ -26,7 +26,7 @@ use crate::task::{
     },
 };
 #[cfg(feature = "worker")]
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 #[cfg(feature = "worker")]
 use thiserror::Error;
 #[cfg(feature = "worker")]
@@ -42,6 +42,18 @@ pub struct TaskRuntime<Q: TaskQueue, A> {
     context: RuntimeContext<Q, DefaultTaskExecutor<Q>>,
     config: TaskWorkerPoolConfig,
     dispatcher: Arc<TaskDispatcher<A>>,
+}
+
+// By hand: the queue need not be `Debug`.
+#[cfg(feature = "worker")]
+impl<Q: TaskQueue, A> fmt::Debug for TaskRuntime<Q, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TaskRuntime")
+            .field("config", &self.config)
+            .field("executor", &self.context.executor)
+            .field("dispatcher", &self.dispatcher)
+            .finish_non_exhaustive()
+    }
 }
 
 #[cfg(feature = "worker")]
@@ -163,6 +175,19 @@ mod tests {
         assert_eq!(Arc::strong_count(&prepared.dispatcher), 1);
         assert_eq!(dropped.load(Ordering::SeqCst), 0);
         assert_no_storage(&queue);
+        let printed = format!("{prepared:?}");
+        let executor = format!(
+            "executor: DefaultTaskExecutor {{ storage_timeout: 6s, policies: {:?}, .. }}",
+            Policies::default()
+        );
+        assert!(
+            printed.starts_with("TaskRuntime { config: TaskWorkerPoolConfig {"),
+            "{printed}"
+        );
+        assert!(
+            printed.contains(&executor) && printed.contains("dispatcher: TaskDispatcher {"),
+            "{printed}"
+        );
         drop(prepared);
         assert_eq!(dropped.load(Ordering::SeqCst), 1);
         assert_no_storage(&queue);

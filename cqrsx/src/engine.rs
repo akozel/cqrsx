@@ -73,6 +73,7 @@ use crate::{
 use std::{
     any::{Any, TypeId, type_name},
     collections::{BTreeMap, HashMap},
+    fmt,
     sync::{Arc, Mutex},
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
@@ -107,6 +108,21 @@ pub struct Cqrs {
     shutdown: CancellationToken,
     /// Cancels `shutdown` when the engine is dropped.
     _stop: DropGuard,
+}
+
+// By hand: the settings and what the modules described hold the database URLs with their passwords; the stores, the
+// executors, the observers and the processors are not printed either.
+impl fmt::Debug for Cqrs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Cqrs")
+            .field("owner", &self.owner)
+            .field("aggregates", &self.commands.len())
+            .field("views", &self.views().keys())
+            .field("policies", &self.policies)
+            .field("dependencies", &self.dependencies)
+            .field("dispatcher", &self.dispatcher)
+            .finish_non_exhaustive()
+    }
 }
 
 /// Where the engine keeps the journal, the snapshots, the outbox and the task queue.
@@ -457,6 +473,27 @@ mod tests {
         let stopping = cqrs.stopping();
         drop(cqrs);
         assert!(stopping.is_cancelled(), "a dropped engine has stopped");
+    }
+
+    #[tokio::test]
+    async fn an_engine_and_its_entry_points_print_what_they_hold_but_never_a_url() {
+        let (cqrs, _) = engine().await;
+        let printed = format!("{cqrs:?}");
+        let head = format!(
+            "Cqrs {{ owner: {:?}, aggregates: 2, views: {:?}, ",
+            cqrs.owner,
+            cqrs.views().keys()
+        );
+        assert!(printed.starts_with(&head), "{printed}");
+        assert!(printed.contains("dispatcher: Some(TaskDispatcher {"), "{printed}");
+        assert!(!printed.contains("://"), "no URL of a store: {printed}");
+        assert_eq!(format!("{:?}", cqrs.from("ui")), r#"Source { source: "ui", .. }"#);
+        assert_eq!(format!("{:?}", cqrs.view::<Hall>()), "ViewQuery { registered: true, .. }");
+        assert_eq!(format!("{:?}", cqrs.view::<String>()), "ViewQuery { registered: false, .. }");
+        assert_eq!(
+            format!("{:?}", cqrs.views()),
+            format!("Views {{ keys: {:?}, .. }}", cqrs.views().keys())
+        );
     }
 
     #[tokio::test]

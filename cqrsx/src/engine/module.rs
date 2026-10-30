@@ -19,6 +19,7 @@ use crate::{
 use serde::de::DeserializeOwned;
 use std::{
     any::{Any, TypeId},
+    fmt,
     sync::Arc,
 };
 
@@ -63,6 +64,7 @@ pub(crate) struct PolicyBinding {
 /// - the observers of every command and every processor of the engine ([`observe_commands`](Self::observe_commands),
 ///   [`observe_projections`](Self::observe_projections)), e.g. for an activity feed;
 /// - with the feature `http`, its HTTP routes, served with the routes of every module (`routes`).
+#[must_use = "a module takes effect once its root returns it to the engine's builder"]
 pub struct Module {
     pub(crate) name: &'static str,
     pub(crate) aggregates: Vec<AggregateEntry>,
@@ -74,6 +76,23 @@ pub struct Module {
     pub(crate) projection_observers: Vec<ProjectionObservers>,
     #[cfg(feature = "http")]
     pub(crate) routes: Option<axum::Router<Arc<Cqrs>>>,
+}
+
+// By hand: the registrations hold closures and trait objects; they print as what they name.
+impl fmt::Debug for Module {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let aggregates: Vec<&str> = self.aggregates.iter().map(|aggregate| aggregate.name).collect();
+        let views: Vec<&str> = self.views.iter().map(|view| view.name).collect();
+        let policies: Vec<PolicyName> = self.policies.iter().map(|policy| policy.name).collect();
+        f.debug_struct("Module")
+            .field("name", &self.name)
+            .field("aggregates", &aggregates)
+            .field("views", &views)
+            .field("policies", &policies)
+            .field("tasks", &self.tasks.len())
+            .field("dependencies", &self.dependencies)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Module {
@@ -165,6 +184,7 @@ impl Module {
 }
 
 /// A task type of [`Module::task`], bound to a policy or to none.
+#[derive(Debug)]
 #[must_use = "a task type is registered by `policy` or `without_policy`"]
 pub struct TaskEntry {
     module: Module,

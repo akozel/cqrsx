@@ -9,9 +9,9 @@ use crate::{
         command::{CommandGatewayError, CommandInfo},
         rejection::Rejection,
     },
-    task::NewTask,
+    task::{NewTask, format::TaskFormat},
 };
-use std::{any::Any, collections::HashMap};
+use std::{any::Any, collections::HashMap, fmt};
 
 /// Hears every command an executor ran, e.g. for an activity feed
 /// ([`CommandExecutorCore::with_observer`](super::executor::CommandExecutorCore::with_observer) and the presets'
@@ -129,6 +129,34 @@ pub enum Outcome<'a, A: Aggregate> {
     Unavailable,
 }
 
+// By hand: the command need not be `Debug`, and the metadata is the caller's data, so neither is printed.
+impl<A: Aggregate> fmt::Debug for CommandReport<'_, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommandReport")
+            .field("aggregate_type", &A::TYPE)
+            .field("aggregate_id", &format_args!("{}", self.aggregate_id))
+            .field("outcome", &self.outcome)
+            .finish_non_exhaustive()
+    }
+}
+
+// By hand: a derive would require `A` to be `Debug`. The tasks print as their formats, never their payloads.
+impl<A: Aggregate> fmt::Debug for Outcome<'_, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Accepted { tasks } => f.debug_struct("Accepted").field("tasks", &formats(tasks)).finish(),
+            Self::Rejected(error) => f.debug_tuple("Rejected").field(error).finish(),
+            Self::Conflict => f.write_str("Conflict"),
+            Self::Unavailable => f.write_str("Unavailable"),
+        }
+    }
+}
+
+/// The formats of `tasks`: what a report prints of its tasks, whose payloads and metadata it never prints.
+fn formats(tasks: &[NewTask]) -> Vec<&TaskFormat> {
+    tasks.iter().map(NewTask::format).collect()
+}
+
 impl<'a, A: Aggregate> Outcome<'a, A> {
     /// The outcome `answer` reports.
     pub(crate) fn of(answer: &'a Result<CommitReport<A>, CommandGatewayError<A::Error>>) -> Self {
@@ -169,6 +197,30 @@ pub enum AnyOutcome<'a> {
     Rejected(&'a dyn Rejection),
     Conflict,
     Unavailable,
+}
+
+// By hand: the command prints as its name, the typed id and the metadata are not printed.
+impl fmt::Debug for AnyCommandReport<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AnyCommandReport")
+            .field("aggregate_type", &self.aggregate_type)
+            .field("aggregate_id", &self.aggregate_id)
+            .field("command", &self.command.name())
+            .field("outcome", &self.outcome)
+            .finish_non_exhaustive()
+    }
+}
+
+// By hand: a rejection prints as its code.
+impl fmt::Debug for AnyOutcome<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Accepted { tasks } => f.debug_struct("Accepted").field("tasks", &formats(tasks)).finish(),
+            Self::Rejected(rejection) => f.debug_tuple("Rejected").field(&rejection.code()).finish(),
+            Self::Conflict => f.write_str("Conflict"),
+            Self::Unavailable => f.write_str("Unavailable"),
+        }
+    }
 }
 
 impl<'a> AnyCommandReport<'a> {
@@ -334,6 +386,46 @@ mod tests {
                 format!(r#"{head}: rejected: seat_taken {{"seat":"B4"}}"#),
                 format!("{head}: conflict"),
                 format!("{head}: unavailable"),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_report_prints_its_aggregate_and_outcome_but_neither_the_metadata_nor_the_task_payloads() {
+        let task = NewTask::from_payload(TaskFormat::new("notify", 1).unwrap(), json!({ "card": "4111" })).unwrap();
+        let metadata = HashMap::from([("token".to_owned(), "t0k3n".to_owned())]);
+        let printed: Vec<(String, String)> = [
+            Outcome::Accepted {
+                tasks: std::slice::from_ref(&task),
+            },
+            Outcome::Rejected(&SeatTaken),
+            Outcome::Conflict,
+            Outcome::Unavailable,
+        ]
+        .into_iter()
+        .map(|outcome| {
+            let report = CommandReport::<Hall> {
+                aggregate_id: &7,
+                command: &Book,
+                metadata: &metadata,
+                outcome,
+            };
+            (format!("{report:?}"), format!("{:?}", AnyCommandReport::of(&report)))
+        })
+        .collect();
+        let typed = r#"CommandReport { aggregate_type: "hall", aggregate_id: 7, outcome: "#;
+        let erased = r#"AnyCommandReport { aggregate_type: "hall", aggregate_id: "7", command: "Book", outcome: "#;
+        let accepted = r#"Accepted { tasks: [TaskFormat { task_type: "notify", task_version: 1 }] }"#;
+        assert_eq!(
+            printed,
+            [
+                (format!("{typed}{accepted}, .. }}"), format!("{erased}{accepted}, .. }}")),
+                (
+                    format!("{typed}Rejected(SeatTaken), .. }}"),
+                    format!(r#"{erased}Rejected("seat_taken"), .. }}"#)
+                ),
+                (format!("{typed}Conflict, .. }}"), format!("{erased}Conflict, .. }}")),
+                (format!("{typed}Unavailable, .. }}"), format!("{erased}Unavailable, .. }}")),
             ]
         );
     }

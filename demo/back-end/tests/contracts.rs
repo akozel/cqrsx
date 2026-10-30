@@ -1185,7 +1185,7 @@ fn step_dispatcher<E: CommandExecutor<Fan> + 'static>(fans: Arc<E>) -> TaskDispa
 
 /// The executor of the task runtime over `queue`, with the storage budget and the policies of `config`.
 fn task_executor(queue: &Arc<MemQueue>, config: &Config) -> DefaultTaskExecutor<MemQueue> {
-    DefaultTaskExecutor::new(queue.clone(), config.settings().task_storage().clone()).with_policies(policies(config).unwrap())
+    DefaultTaskExecutor::new(queue.clone(), *config.settings().task_storage()).with_policies(policies(config).unwrap())
 }
 
 /// Runs `task` through `dispatcher` as a worker does and settles its result in the executor's queue.

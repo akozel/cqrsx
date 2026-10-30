@@ -66,7 +66,7 @@ pub(super) async fn recover_expired(queue: &PostgresTaskQueue, limit: usize) -> 
     .bind(i64::try_from(limit).map_err(|_| TaskProcessingError::from(QueueRequestError::InvalidLimit))?)
     .fetch_all(&queue.pool)
     .await
-    .map_err(|error| storage_error(error, "recover_expired"))?;
+    .map_err(|error| storage_error(&error, "recover_expired"))?;
     let processed_count = rows.len();
     let failed = rows
         .into_iter()

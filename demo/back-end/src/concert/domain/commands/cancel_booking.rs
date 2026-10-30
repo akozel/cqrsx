@@ -70,7 +70,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(vec![announced(), booked("A1", "fox", "Fox", booking_id)])
             .when(cancel("A1", "fox", cancellation_id))
-            .then_expect_event(ConcertEvent::BookingCancelled(BookingCancelled {
+            .then_expect_event(&ConcertEvent::BookingCancelled(BookingCancelled {
                 seat: SeatId::parse("A1").unwrap(),
                 fan_id: fan("fox"),
                 booking_id,
@@ -84,7 +84,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given_no_previous_events()
             .when(cancel("B4", "fox", Uuid::new_v4()))
-            .then_expect_error(ConcertError::ConcertNotFound);
+            .then_expect_error(&ConcertError::ConcertNotFound);
     }
 
     #[test]
@@ -92,7 +92,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(cancel("Z9", "fox", Uuid::new_v4()))
-            .then_expect_error(ConcertError::UnknownSeat { seat: "Z9".into() });
+            .then_expect_error(&ConcertError::UnknownSeat { seat: "Z9".into() });
     }
 
     #[test]
@@ -100,7 +100,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(cancel("B4", "fox", Uuid::new_v4()))
-            .then_expect_error(ConcertError::SeatNotBooked {
+            .then_expect_error(&ConcertError::SeatNotBooked {
                 seat: SeatId::parse("B4").unwrap(),
             });
     }
@@ -110,6 +110,6 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(vec![announced(), booked("B4", "fox", "Fox", Uuid::new_v4())])
             .when(cancel("B4", "panda", Uuid::new_v4()))
-            .then_expect_error(ConcertError::NotYourTicket);
+            .then_expect_error(&ConcertError::NotYourTicket);
     }
 }

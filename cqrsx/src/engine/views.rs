@@ -16,7 +16,7 @@ use crate::{
 use std::{
     any::{Any, TypeId, type_name},
     collections::HashMap,
-    fmt::Display,
+    fmt::{self, Display},
     future::Future,
     pin::Pin,
     sync::Arc,
@@ -211,6 +211,15 @@ pub struct ViewQuery<'a, V> {
     queries: Option<&'a dyn Queries<V>>,
 }
 
+// By hand: the queries are a trait object; what matters is whether the engine has the view.
+impl<V> fmt::Debug for ViewQuery<'_, V> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ViewQuery")
+            .field("registered", &self.queries.is_some())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<V: 'static> ViewQuery<'_, V> {
     /// The document of the aggregate `id` (its `Display`).
     pub async fn get(&self, id: &impl Display) -> Result<Option<StoredView<V>>, PersistenceError> {
@@ -249,6 +258,13 @@ pub enum ViewsError {
 /// rebuild its processor takes, the verification of its documents, how far it is behind.
 pub struct Views<'a> {
     cqrs: &'a Cqrs,
+}
+
+// By hand: the engine is not printed with its views, only their keys.
+impl fmt::Debug for Views<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Views").field("keys", &self.keys()).finish_non_exhaustive()
+    }
 }
 
 impl Views<'_> {

@@ -7,7 +7,7 @@ use syn::{Data, DeriveInput, Error, Fields, Ident, LitStr, Type, ext::IdentExt, 
 
 /// `impl ::cqrsx::cqrs::command::CommandInfo` for a struct: the type's name, the field `#[command_id]` (at most one) and
 /// the fields `#[label]`, in field order, each as its name and its `Display`.
-pub(crate) fn expand_command(input: DeriveInput) -> syn::Result<TokenStream> {
+pub(crate) fn expand_command(input: &DeriveInput) -> syn::Result<TokenStream> {
     let Data::Struct(data) = &input.data else {
         return Err(Error::new_spanned(
             &input.ident,
@@ -68,7 +68,7 @@ pub(crate) fn expand_command(input: DeriveInput) -> syn::Result<TokenStream> {
 /// For an enum whose every variant carries one command type: `impl<A> ::cqrsx::cqrs::command::decide::Decide<A>` where
 /// every variant's type decides `A` (a `match` that hands each variant to its type's `decide`), and
 /// `impl ::cqrsx::cqrs::command::CommandInfo` by the same delegation, where every variant's type has it.
-pub(crate) fn expand_commands(input: DeriveInput) -> syn::Result<TokenStream> {
+pub(crate) fn expand_commands(input: &DeriveInput) -> syn::Result<TokenStream> {
     let Data::Enum(data) = &input.data else {
         return Err(Error::new_spanned(
             &input.ident,
@@ -167,7 +167,7 @@ mod tests {
 
     #[test]
     fn a_command_reports_its_name_its_id_field_and_its_labels_in_field_order() {
-        let expanded = expand_command(parse_quote! {
+        let expanded = expand_command(&parse_quote! {
             #[derive(Clone)]
             pub struct CancelBooking {
                 pub seat: String,
@@ -202,11 +202,11 @@ mod tests {
 
     #[test]
     fn a_command_without_attributes_has_no_id_and_no_labels_and_a_generic_one_keeps_its_parameters() {
-        let expanded = expand_command(parse_quote! { struct r#Ping; }).unwrap().to_string();
+        let expanded = expand_command(&parse_quote! { struct r#Ping; }).unwrap().to_string();
         assert!(expanded.contains("\"Ping\""), "{expanded}");
         assert!(expanded.contains(":: core :: option :: Option :: None"), "{expanded}");
         assert!(expanded.contains(":: std :: vec ! []"), "{expanded}");
-        let generic = expand_command(parse_quote! { struct Wrap<'a, T: Clone>(&'a T) where T: Send; }).unwrap();
+        let generic = expand_command(&parse_quote! { struct Wrap<'a, T: Clone>(&'a T) where T: Send; }).unwrap();
         let expected = quote! {
             impl<'a, T: Clone> ::cqrsx::cqrs::command::CommandInfo for Wrap<'a, T> where T: Send
         };
@@ -216,42 +216,42 @@ mod tests {
     #[test]
     fn the_command_attributes_are_refused_where_they_mean_nothing() {
         assert_eq!(
-            refusal(expand_command(parse_quote! { enum Command { A } })),
+            refusal(expand_command(&parse_quote! { enum Command { A } })),
             "`#[derive(Command)]` goes on a struct: an enum of commands derives `Commands`"
         );
         assert_eq!(
             refusal(expand_command(
-                parse_quote! { struct Book { #[command_id] booking_id: Uuid, #[command_id] other: Uuid } }
+                &parse_quote! { struct Book { #[command_id] booking_id: Uuid, #[command_id] other: Uuid } }
             )),
             "only one field is the command id"
         );
         assert_eq!(
             refusal(expand_command(
-                parse_quote! { struct Book { #[command_id] #[command_id] booking_id: Uuid } }
+                &parse_quote! { struct Book { #[command_id] #[command_id] booking_id: Uuid } }
             )),
             "`#[command_id]` is given twice"
         );
         assert_eq!(
             refusal(expand_command(
-                parse_quote! { struct Book { #[label(key = "fan")] fan_id: FanId } }
+                &parse_quote! { struct Book { #[label(key = "fan")] fan_id: FanId } }
             )),
             "`#[label]` takes no arguments"
         );
         assert_eq!(
             refusal(expand_command(
-                parse_quote! { struct Book { #[command_id = 1] booking_id: Uuid } }
+                &parse_quote! { struct Book { #[command_id = 1] booking_id: Uuid } }
             )),
             "`#[command_id]` takes no arguments"
         );
         assert_eq!(
-            refusal(expand_command(parse_quote! { struct Book(#[label] FanId); })),
+            refusal(expand_command(&parse_quote! { struct Book(#[label] FanId); })),
             "`#[command_id]` and `#[label]` need a named field"
         );
     }
 
     #[test]
     fn an_enum_of_commands_routes_every_variant_to_its_decision_and_its_info() {
-        let expanded = expand_commands(parse_quote! {
+        let expanded = expand_commands(&parse_quote! {
             #[derive(Clone)]
             pub enum ConcertCommand {
                 BookSeat(BookSeat),
@@ -312,7 +312,7 @@ mod tests {
 
     #[test]
     fn a_generic_enum_of_commands_keeps_its_parameters_and_bounds_next_to_the_aggregate() {
-        let expanded = expand_commands(parse_quote! {
+        let expanded = expand_commands(&parse_quote! {
             enum Wrapped<'a, T: Clone> where T: Send { One(Note<'a, T>) }
         })
         .unwrap()
@@ -336,7 +336,7 @@ mod tests {
 
     #[test]
     fn an_enum_of_commands_without_variants_decides_nothing() {
-        let expanded = expand_commands(parse_quote! { enum Nothing {} }).unwrap().to_string();
+        let expanded = expand_commands(&parse_quote! { enum Nothing {} }).unwrap().to_string();
         let decide = quote! { let _ = (state, rules); match self {} };
         assert!(expanded.contains(&decide.to_string()), "{expanded}");
         assert!(
@@ -349,16 +349,16 @@ mod tests {
     fn every_variant_carries_one_command_type_and_commands_go_on_an_enum() {
         let message = "every variant carries one command type: `Variant(CommandType)`";
         assert_eq!(
-            refusal(expand_commands(parse_quote! { enum Command { Book { seat: String } } })),
+            refusal(expand_commands(&parse_quote! { enum Command { Book { seat: String } } })),
             message
         );
-        assert_eq!(refusal(expand_commands(parse_quote! { enum Command { Book } })), message);
+        assert_eq!(refusal(expand_commands(&parse_quote! { enum Command { Book } })), message);
         assert_eq!(
-            refusal(expand_commands(parse_quote! { enum Command { Book(BookSeat, Seat) } })),
+            refusal(expand_commands(&parse_quote! { enum Command { Book(BookSeat, Seat) } })),
             message
         );
         assert_eq!(
-            refusal(expand_commands(parse_quote! { struct BookSeat; })),
+            refusal(expand_commands(&parse_quote! { struct BookSeat; })),
             "`#[derive(Commands)]` goes on an enum of command types: a struct command derives `Command`"
         );
     }

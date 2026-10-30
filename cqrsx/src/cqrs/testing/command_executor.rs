@@ -20,6 +20,7 @@ use crate::{
 };
 use std::{
     collections::HashMap,
+    fmt,
     sync::{Arc, Mutex},
 };
 
@@ -109,9 +110,19 @@ use std::{
 /// #     tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(future)
 /// # }
 /// ```
+#[must_use]
 pub struct TestCommandExecutor<A: Aggregate, S: EventStore<A> = MemStore<A>> {
     inner: Arc<CommandExecutorCore<A, S>>,
     published: Arc<Mutex<Vec<NewTask>>>,
+}
+
+// By hand: the published tasks are not printed, their payloads are the application's data.
+impl<A: Aggregate, S: EventStore<A>> fmt::Debug for TestCommandExecutor<A, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TestCommandExecutor")
+            .field("executor", &self.inner)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
@@ -308,6 +319,19 @@ mod tests {
                 .map(|Pushed(value)| Ok(NewTask::new(Notify { value: *value })?))
                 .collect()
         }
+    }
+
+    #[test]
+    fn an_executor_prints_its_framework_and_settings_but_not_its_tasks() {
+        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1).with_task_planner(Notifier);
+        assert_eq!(
+            format!("{executor:?}"),
+            format!(
+                "TestCommandExecutor {{ executor: CommandExecutorCore {{ framework: CqrsFramework {{ aggregate_type: \"stack\", \
+                 task_planner: true, .. }}, retry_policy: {:?}, commit_wakeup: false, observer: false, .. }}, .. }}",
+                AggregateConflictRetryPolicy::default()
+            )
+        );
     }
 
     #[tokio::test]

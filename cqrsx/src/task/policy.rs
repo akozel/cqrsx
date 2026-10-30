@@ -115,6 +115,7 @@ impl Retry {
     }
 
     /// The pause after attempt `attempt` failed (the first attempt is 1).
+    #[must_use]
     pub fn pause(&self, attempt: i32) -> Duration {
         match self.0 {
             Pause::Fixed(pause) => pause,
@@ -203,12 +204,14 @@ impl Policies {
     }
 
     /// The attempt budget of the task type `format`: its policy's, or [`DEFAULT_MAX_ATTEMPTS`] without one.
+    #[must_use]
     pub fn max_attempts(&self, format: &TaskFormat) -> i32 {
         self.of(format).map_or(DEFAULT_MAX_ATTEMPTS, TaskPolicy::max_attempts)
     }
 
     /// The pause after attempt `attempt` of the task type `format` failed: its policy's, or the queue's jittered
     /// [`redelivery_backoff`] without one (a new draw on every call).
+    #[must_use]
     pub fn pause(&self, format: &TaskFormat, attempt: i32) -> Duration {
         self.of(format)
             .map_or_else(|| redelivery_backoff(attempt), |policy| policy.retry().pause(attempt))

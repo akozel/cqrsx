@@ -3,7 +3,7 @@
 use crate::cqrs::store::serialized_event::{EventFormat, SerializedEvent};
 use serde_json::Value;
 use std::{
-    fmt::{Display, Formatter},
+    fmt::{self, Debug, Display, Formatter},
     num::ParseIntError,
     str::FromStr,
 };
@@ -130,6 +130,16 @@ pub struct NumericVersionUpcaster {
     transform: Box<EventPayloadTransform>,
 }
 
+// By hand: the transform is a closure.
+impl Debug for NumericVersionUpcaster {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("NumericVersionUpcaster")
+            .field("event_type", &self.event_type)
+            .field("target_version", &self.target_version)
+            .finish_non_exhaustive()
+    }
+}
+
 impl NumericVersionUpcaster {
     /// Upcasts the events of `event_type` older than `target_version` with `transform`; a `target_version` that is not
     /// a numeric version (see [`NumericVersion`]) is refused.
@@ -226,6 +236,10 @@ mod test {
         assert!(!can_upcast("EventX", "2.4.0"));
         assert!(!can_upcast("EventX", "3.0.0"));
         assert!(!can_upcast("EventX", "not_a_version"));
+        assert_eq!(
+            format!("{upcaster:?}"),
+            r#"NumericVersionUpcaster { event_type: "EventX", target_version: NumericVersion { major_version: 2, minor_version: 3, patch: 4 }, .. }"#
+        );
     }
 
     #[test]

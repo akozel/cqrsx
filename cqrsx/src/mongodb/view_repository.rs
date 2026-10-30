@@ -15,7 +15,7 @@ use ::mongodb::{
     bson::{self, Bson, Document, doc},
 };
 use serde::Deserialize;
-use std::marker::PhantomData;
+use std::{fmt, marker::PhantomData};
 
 /// Stores serialized read-model views in a MongoDB collection, one document per view:
 ///
@@ -77,6 +77,15 @@ use std::marker::PhantomData;
 pub struct MongoViewRepository<V, A> {
     collection: Collection<Document>,
     _phantom: PhantomData<fn() -> (V, A)>,
+}
+
+// By hand: the collection's own `Debug` prints the whole client; its name is enough.
+impl<V, A> fmt::Debug for MongoViewRepository<V, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MongoViewRepository")
+            .field("collection", &self.collection.name())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
@@ -224,6 +233,7 @@ mod tests {
     #[tokio::test]
     async fn an_unreachable_server_is_a_connection_error_and_a_view_bson_cannot_hold_is_unexpected() {
         let views = MongoViewRepository::<Huge, Ledger>::new(&crate::mongodb::test_support::unreachable().await);
+        assert_eq!(format!("{views:?}"), r#"MongoViewRepository { collection: "huge", .. }"#);
         assert!(matches!(views.load("a").await, Err(PersistenceError::ConnectionError(_))));
         assert!(matches!(
             views.load_with_context("a").await,

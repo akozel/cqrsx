@@ -68,6 +68,17 @@ pub struct TaskDispatcher<A> {
     executors: Executors,
 }
 
+// By hand: the adapters need not be `Debug`; the formats name what they handle.
+impl<A> fmt::Debug for TaskDispatcher<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TaskDispatcher")
+            .field("formats", &self.formats)
+            .field("dependencies", &self.dependencies)
+            .field("executors", &self.executors)
+            .finish_non_exhaustive()
+    }
+}
+
 impl<A: TaskAdapter> TaskDispatcher<A> {
     /// A dispatcher over `adapters`, without dependencies or executors: an adapter that needs a dependency is refused.
     pub fn try_new(adapters: Vec<A>) -> Result<Self, TaskDispatcherError> {

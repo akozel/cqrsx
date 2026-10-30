@@ -2,7 +2,7 @@ use std::time::Duration;
 use thiserror::Error;
 const DEFAULT_STORAGE_TIMEOUT_MS: u64 = 6_000;
 /// Validated end-to-end storage budget. Defaults do not read the environment.
-#[derive(Clone, Debug)]
+#[derive(Clone, Copy, Debug)]
 pub struct TaskStorageConfig {
     storage_timeout: Duration,
 }

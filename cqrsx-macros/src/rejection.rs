@@ -8,7 +8,7 @@ use syn::{Data, DeriveInput, Error, Fields, Ident, LitStr, ext::IdentExt};
 /// `impl ::cqrsx::cqrs::rejection::Rejection` for an enum of rejections: the code of a variant is its name in snake
 /// case unless `#[rejection(code = "…")]` gives it, its params are its named fields as a JSON object (a unit variant
 /// has `{}`).
-pub(crate) fn expand_rejection(input: DeriveInput) -> syn::Result<TokenStream> {
+pub(crate) fn expand_rejection(input: &DeriveInput) -> syn::Result<TokenStream> {
     let Data::Enum(data) = &input.data else {
         return Err(Error::new_spanned(
             &input.ident,
@@ -73,7 +73,7 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
-    fn refusal(input: DeriveInput) -> String {
+    fn refusal(input: &DeriveInput) -> String {
         expand_rejection(input)
             .err()
             .map(|error| error.to_string())
@@ -82,7 +82,7 @@ mod tests {
 
     #[test]
     fn a_rejection_reports_the_variant_in_snake_case_and_its_named_fields() {
-        let expanded = expand_rejection(parse_quote! {
+        let expanded = expand_rejection(&parse_quote! {
             #[derive(Debug, thiserror::Error)]
             pub enum ConcertError {
                 #[error("this concert has not been announced")]
@@ -118,7 +118,7 @@ mod tests {
 
     #[test]
     fn a_generic_rejection_keeps_its_parameters_and_bounds() {
-        let expanded = expand_rejection(parse_quote! { enum Refused<T: Clone> where T: Send { Late { by: T } } }).unwrap();
+        let expanded = expand_rejection(&parse_quote! { enum Refused<T: Clone> where T: Send { Late { by: T } } }).unwrap();
         let expected = quote! {
             #[automatically_derived]
             impl<T: Clone> ::cqrsx::cqrs::rejection::Rejection for Refused<T> where T: Send {
@@ -135,7 +135,7 @@ mod tests {
 
     #[test]
     fn a_code_attribute_overrides_the_variant_name() {
-        let expanded = expand_rejection(parse_quote! {
+        let expanded = expand_rejection(&parse_quote! {
             enum ConcertError {
                 #[rejection(code = "r1_not_announced")]
                 ConcertNotFound,
@@ -152,7 +152,7 @@ mod tests {
 
     #[test]
     fn a_raw_field_name_is_reported_without_its_prefix() {
-        let expanded = expand_rejection(parse_quote! { enum ConcertError { Wrong { r#type: String } } })
+        let expanded = expand_rejection(&parse_quote! { enum ConcertError { Wrong { r#type: String } } })
             .unwrap()
             .to_string();
         assert!(
@@ -165,7 +165,7 @@ mod tests {
 
     #[test]
     fn an_enum_of_rejections_without_variants_matches_nothing() {
-        let expanded = expand_rejection(parse_quote! { enum Never {} }).unwrap();
+        let expanded = expand_rejection(&parse_quote! { enum Never {} }).unwrap();
         let expected = quote! {
             #[automatically_derived]
             impl ::cqrsx::cqrs::rejection::Rejection for Never {
@@ -179,7 +179,7 @@ mod tests {
     #[test]
     fn a_tuple_variant_is_refused() {
         assert_eq!(
-            refusal(parse_quote! { enum ConcertError { SoldOut, SeatTaken(SeatId, String) } }),
+            refusal(&parse_quote! { enum ConcertError { SoldOut, SeatTaken(SeatId, String) } }),
             "`#[derive(Rejection)]` reports named fields as params: a tuple variant has no names"
         );
     }
@@ -190,30 +190,30 @@ mod tests {
             parse_quote! { struct TicketLimit { limit: u32 } },
             parse_quote! { union TicketLimit { limit: u32 } },
         ] {
-            assert_eq!(refusal(input), "`#[derive(Rejection)]` goes on an enum of rejections");
+            assert_eq!(refusal(&input), "`#[derive(Rejection)]` goes on an enum of rejections");
         }
     }
 
     #[test]
     fn the_rejection_attribute_goes_on_a_variant_and_takes_a_code() {
         assert_eq!(
-            refusal(parse_quote! { #[rejection(code = "x")] enum ConcertError { SoldOut } }),
+            refusal(&parse_quote! { #[rejection(code = "x")] enum ConcertError { SoldOut } }),
             "`#[rejection]` goes on a variant"
         );
         assert_eq!(
-            refusal(parse_quote! { enum ConcertError { #[rejection(name = "x")] SoldOut } }),
+            refusal(&parse_quote! { enum ConcertError { #[rejection(name = "x")] SoldOut } }),
             "unknown key in `#[rejection]`: expected `code`"
         );
         assert_eq!(
-            refusal(parse_quote! { enum ConcertError { #[rejection(code = "")] SoldOut } }),
+            refusal(&parse_quote! { enum ConcertError { #[rejection(code = "")] SoldOut } }),
             "a rejection code must not be empty"
         );
         assert_eq!(
-            refusal(parse_quote! { enum ConcertError { #[rejection(code = "x", code = "y")] SoldOut } }),
+            refusal(&parse_quote! { enum ConcertError { #[rejection(code = "x", code = "y")] SoldOut } }),
             "`code` is given twice"
         );
         assert_eq!(
-            refusal(parse_quote! { enum ConcertError { #[rejection(code = 1)] SoldOut } }),
+            refusal(&parse_quote! { enum ConcertError { #[rejection(code = 1)] SoldOut } }),
             "`code` takes a string literal"
         );
     }
@@ -221,7 +221,7 @@ mod tests {
     #[test]
     fn two_variants_with_one_code_are_refused() {
         assert_eq!(
-            refusal(parse_quote! { enum ConcertError { SoldOut, #[rejection(code = "sold_out")] NoSeatsLeft } }),
+            refusal(&parse_quote! { enum ConcertError { SoldOut, #[rejection(code = "sold_out")] NoSeatsLeft } }),
             "the code `sold_out` is reported by `SoldOut` already"
         );
     }

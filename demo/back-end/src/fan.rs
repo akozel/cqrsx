@@ -110,8 +110,7 @@ mod tests {
                 worker.lease_duration(),
             )
             .unwrap();
-            let runtime =
-                TaskRuntimeConfig::try_new(demo.storage().clone(), worker).expect("a one-second handler timeout validates");
+            let runtime = TaskRuntimeConfig::try_new(*demo.storage(), worker).expect("a one-second handler timeout validates");
             let waits_less = LockLimits::try_new(Duration::from_millis(500), 128).unwrap();
             settings = Settings::try_new(settings.snapshot_every(), waits_less, settings.processor(), runtime).unwrap();
         }

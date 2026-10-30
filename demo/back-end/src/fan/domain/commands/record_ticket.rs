@@ -59,7 +59,7 @@ mod tests {
         TestFramework::<Fan>::new(())
             .given_no_previous_events()
             .when(record(id))
-            .then_expect_event(recorded(id));
+            .then_expect_event(&recorded(id));
     }
 
     #[test]
@@ -68,6 +68,6 @@ mod tests {
         TestFramework::<Fan>::new(())
             .given(vec![recorded(id)])
             .when(record(id))
-            .then_expect_error(FanError::AlreadyRecorded { booking_id: id });
+            .then_expect_error(&FanError::AlreadyRecorded { booking_id: id });
     }
 }

@@ -13,6 +13,7 @@ use crate::{
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
+    fmt,
     marker::PhantomData,
     sync::{Arc, Mutex, MutexGuard},
 };
@@ -45,6 +46,15 @@ impl<V, A> Default for MemViewRepository<V, A> {
             documents: Arc::default(),
             phantom: PhantomData,
         }
+    }
+}
+
+// By hand: a derive would require the view and the aggregate to be `Debug`; the documents are JSON.
+impl<V, A> fmt::Debug for MemViewRepository<V, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemViewRepository")
+            .field("documents", &self.documents)
+            .finish()
     }
 }
 
@@ -199,6 +209,10 @@ mod tests {
     #[tokio::test]
     async fn inserts_at_version_zero_and_updates_only_the_stored_version() {
         let repository = Repository::default();
+        assert_eq!(
+            format!("{repository:?}"),
+            "MemViewRepository { documents: Mutex { data: {}, poisoned: false, .. } }"
+        );
         assert_eq!(repository.load("a").await.unwrap(), None);
         repository
             .update_view(Sequences(vec![1]), ViewContext::new("a".into(), 0, 1))

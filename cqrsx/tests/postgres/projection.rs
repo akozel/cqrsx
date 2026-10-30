@@ -42,6 +42,15 @@ async fn test_valid_view_repository() {
     let pool = db.pool.clone();
     create_view(&pool).await;
     let repo = PostgresViewRepository::<TestView, TestAggregate>::new(pool.clone());
+    let printed = format!("{repo:?}");
+    assert!(
+        printed.starts_with(r#"PostgresViewRepository { insert_sql: "INSERT INTO "#),
+        "{printed}"
+    );
+    assert!(
+        printed.contains(r#"", pool: Pool { size: "#),
+        "the pool is printed last: {printed}"
+    );
     let test_view_id = uuid::Uuid::new_v4().to_string();
 
     let view = TestView {

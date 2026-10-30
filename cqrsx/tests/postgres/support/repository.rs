@@ -102,8 +102,8 @@ impl View<TestAggregate> for TestView {
     }
 }
 
-pub(crate) fn test_serialized_event(id: &str, sequence: usize, event: TestEvent) -> SerializedEvent {
-    let payload: Value = serde_json::to_value(&event).unwrap();
+pub(crate) fn test_serialized_event(id: &str, sequence: usize, event: &TestEvent) -> SerializedEvent {
+    let payload: Value = serde_json::to_value(event).unwrap();
     SerializedEvent {
         aggregate_id: id.to_string(),
         sequence,

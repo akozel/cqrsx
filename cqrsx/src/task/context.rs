@@ -53,6 +53,7 @@ use uuid::Uuid;
 /// assert!(ctx.dependency::<String>().is_err());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
+#[must_use]
 pub struct TaskContext {
     attempt: Arc<TaskAttempt>,
     retry_pause: Duration,

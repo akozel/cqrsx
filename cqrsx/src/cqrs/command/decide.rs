@@ -112,11 +112,11 @@ use crate::cqrs::aggregate::Aggregate;
 /// TestFramework::<Shelf>::new(Capacity(1))
 ///     .given(vec![ShelfEvent::Put("jam".into())])
 ///     .when(ShelfCommand::Put(Put { item: "tea".into() }))
-///     .then_expect_error(ShelfError::Full);
+///     .then_expect_error(&ShelfError::Full);
 /// TestFramework::<Shelf>::new(Capacity(1))
 ///     .given(vec![ShelfEvent::Put("jam".into())])
 ///     .when(ShelfCommand::Take(Take { item: "jam".into() }))
-///     .then_expect_event(ShelfEvent::Taken("jam".into()));
+///     .then_expect_event(&ShelfEvent::Taken("jam".into()));
 /// ```
 ///
 /// Every variant carries one command type, and a struct variant does not compile:

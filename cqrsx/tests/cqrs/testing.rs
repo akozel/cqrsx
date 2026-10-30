@@ -2,16 +2,28 @@ use crate::support::ledger::*;
 use cqrsx::cqrs::testing::TestFramework;
 
 #[test]
+fn a_framework_prints_its_history_and_a_validator_its_result() {
+    let framework = TestFramework::<Ledger>::new(Services::default()).given(vec![Delta(4)]);
+    assert_eq!(
+        format!("{framework:?}"),
+        r#"TestFramework { aggregate_type: "ledger", events: [Delta(4)], .. }"#
+    );
+    let validator = framework.when(Command::Adjust(-1));
+    assert_eq!(format!("{validator:?}"), "AggregateResultValidator { result: Ok(Delta(-1)) }");
+    validator.then_expect_event(&Delta(-1));
+}
+
+#[test]
 fn typed_errors_and_success_can_be_inspected() {
     TestFramework::<Ledger>::new(Services::default())
         .given(vec![Delta(4)])
         .and(vec![Delta(3)])
         .when(Command::Adjust(-7))
-        .then_expect_event(Delta(-7));
+        .then_expect_event(&Delta(-7));
     TestFramework::<Ledger>::new(Services::default())
         .given_no_previous_events()
         .when(Command::Adjust(-1))
-        .then_expect_error(Rejected);
+        .then_expect_error(&Rejected);
     assert_eq!(
         TestFramework::<Ledger>::new(Services::default())
             .given_no_previous_events()
@@ -36,7 +48,7 @@ mod given {
             .when(CustomerCommand::AddCustomerName {
                 name: "John Doe".to_string(),
             })
-            .then_expect_event(CustomerEvent::NameAdded {
+            .then_expect_event(&CustomerEvent::NameAdded {
                 name: "John Doe".to_string(),
             });
     }
@@ -60,7 +72,7 @@ mod given {
             .when(CustomerCommand::UpdateEmail {
                 new_email: "john.doe@example.com".to_string(),
             })
-            .then_expect_event(CustomerEvent::EmailUpdated {
+            .then_expect_event(&CustomerEvent::EmailUpdated {
                 new_email: "john.doe@example.com".to_string(),
             });
     }
@@ -75,7 +87,7 @@ mod given {
             .when(CustomerCommand::UpdateEmail {
                 new_email: "john.doe@example.com".to_string(),
             })
-            .then_expect_event(CustomerEvent::EmailUpdated {
+            .then_expect_event(&CustomerEvent::EmailUpdated {
                 new_email: "john.doe@example.com".to_string(),
             });
     }
@@ -88,7 +100,7 @@ mod framework {
         TestFramework::<TestAggregate>::new(TestService)
             .given_no_previous_events()
             .when(TestCommand::CreateTest(CreateTest { id: "created".into() }))
-            .then_expect_event(TestEvent::Created(Created { id: "created".into() }));
+            .then_expect_event(&TestEvent::Created(Created { id: "created".into() }));
 
         TestFramework::<TestAggregate>::new(TestService)
             .given(vec![TestEvent::Created(Created { id: "created".into() })])
@@ -98,7 +110,7 @@ mod framework {
             .when(TestCommand::DoSomethingElse(DoSomethingElse {
                 description: "changed".into(),
             }))
-            .then_expect_event(TestEvent::SomethingElse(SomethingElse {
+            .then_expect_event(&TestEvent::SomethingElse(SomethingElse {
                 description: "changed".into(),
             }));
 
@@ -129,7 +141,7 @@ mod validators {
             .when(TestCommand::ConfirmTest(ConfirmTest {
                 test_name: test_name.to_string(),
             }))
-            .then_expect_event(TestEvent::Tested(Tested {
+            .then_expect_event(&TestEvent::Tested(Tested {
                 test_name: test_name.to_string(),
             }));
 
@@ -155,7 +167,7 @@ mod validators {
             .when(TestCommand::ConfirmTest(ConfirmTest {
                 test_name: test_name.to_string(),
             }))
-            .then_expect_event(TestEvent::Tested(Tested {
+            .then_expect_event(&TestEvent::Tested(Tested {
                 test_name: test_name.to_string(),
             }));
     }

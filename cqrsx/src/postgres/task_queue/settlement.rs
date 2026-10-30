@@ -91,11 +91,11 @@ pub(super) async fn settle(
         RETURNING o.status
     "#).bind(task.attempt().task_id()).bind(task.lease().lock_token()).bind(parameters.status).bind(milliseconds(parameters.delay, QueueRequestError::InvalidRetryDelay)?)
         .bind(parameters.last_error.map(|reason| reason.chars().take(2048).collect::<String>()))
-        .fetch_optional(&queue.pool).await.map_err(|error| storage_error(error, "settle"))?;
+        .fetch_optional(&queue.pool).await.map_err(|error| storage_error(&error, "settle"))?;
     let status = row
         .map(|row| row.try_get::<String, _>("status"))
         .transpose()
-        .map_err(|error| storage_error(error, "settle"))?;
+        .map_err(|error| storage_error(&error, "settle"))?;
     settlement_result(task.attempt(), status.as_deref(), parameters.failure_cause)
 }
 

@@ -123,7 +123,7 @@ use crate::{
     },
     task::{NewTask, TaskValidationError, format::TaskFormat},
 };
-use std::{collections::HashMap, error::Error};
+use std::{collections::HashMap, error::Error, fmt};
 
 /// What one attempt of a command decided: everything its follow-up tasks may be planned from.
 pub struct Decision<'a, A: Aggregate> {
@@ -141,6 +141,18 @@ pub struct Decision<'a, A: Aggregate> {
     pub metadata: &'a HashMap<String, String>,
     /// The causation in `metadata` ([`Causation::from_event_metadata`]); the core stamps it on every task.
     pub causation: Option<&'a Causation>,
+}
+
+// By hand: the states and the command need not be `Debug`, and the metadata is the caller's data.
+impl<A: Aggregate> fmt::Debug for Decision<'_, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Decision")
+            .field("aggregate_type", &A::TYPE)
+            .field("aggregate_id", &format_args!("{}", self.aggregate_id))
+            .field("events", &self.events)
+            .field("causation", &self.causation)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The follow-up tasks of one aggregate type, planned from every attempt's [`Decision`] under the
@@ -387,6 +399,25 @@ mod tests {
             metadata: &HashMap::new(),
             causation: None,
         })
+    }
+
+    #[test]
+    fn a_decision_prints_its_aggregate_events_and_causation_but_not_the_metadata() {
+        let (before, after) = (Counter(0), Counter(1));
+        let metadata = HashMap::from([("token".to_owned(), "t0k3n".to_owned())]);
+        let decision = Decision::<Counter> {
+            aggregate_id: &"c-1".into(),
+            before: &before,
+            after: &after,
+            command: &1,
+            events: &[Counted(1)],
+            metadata: &metadata,
+            causation: None,
+        };
+        assert_eq!(
+            format!("{decision:?}"),
+            r#"Decision { aggregate_type: "counter", aggregate_id: c-1, events: [Counted(1)], causation: None, .. }"#
+        );
     }
 
     fn values(tasks: &[NewTask]) -> Vec<u64> {

@@ -41,7 +41,8 @@ pub const DEFAULT_COUNT_AFTER_CAP: u64 = 100_000;
 ///
 /// A clone shares the pool and the SQL texts, which are built once when the repository is: a command
 /// executor builds its repository once and gives every command a clone.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
+#[must_use]
 pub struct PostgresEventRepository {
     pool: Pool<Postgres>,
     query_factory: Arc<SqlQueryFactory>,

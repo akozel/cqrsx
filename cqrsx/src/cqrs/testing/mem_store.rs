@@ -13,6 +13,7 @@ use crate::{
 };
 use std::{
     collections::HashMap,
+    fmt,
     sync::{Arc, RwLock},
 };
 
@@ -180,7 +181,7 @@ impl<A: Aggregate> EventStore<A> for MemStore<A> {
         let aggregate_id = context.aggregate_id;
         let current_sequence = context.current_sequence;
         crate::cqrs::store::checked_counter_add(current_sequence, events.len())?;
-        let wrapped_events = Self::wrap_events(&aggregate_id, current_sequence, events, metadata);
+        let wrapped_events = Self::wrap_events(&aggregate_id, current_sequence, events, &metadata);
         let new_events_qty = wrapped_events.len();
         if new_events_qty == 0 {
             return Ok(Vec::default());
@@ -202,7 +203,7 @@ impl<A: Aggregate> MemStore<A> {
         aggregate_id: &str,
         current_sequence: usize,
         resultant_events: Vec<A::Event>,
-        base_metadata: HashMap<String, String>,
+        base_metadata: &HashMap<String, String>,
     ) -> Vec<EventEnvelope<A>> {
         resultant_events
             .into_iter()
@@ -232,6 +233,16 @@ where
     pub aggregate: A,
     /// The last committed event sequence number for this aggregate instance.
     pub current_sequence: usize,
+}
+
+// By hand: the aggregate need not be `Debug`.
+impl<A: Aggregate> fmt::Debug for MemStoreAggregateContext<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("MemStoreAggregateContext")
+            .field("aggregate_id", &self.aggregate_id)
+            .field("current_sequence", &self.current_sequence)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<A> AggregateContext<A> for MemStoreAggregateContext<A>
@@ -377,6 +388,10 @@ mod tests {
         let initial_events = event_store.load_events(id).await.unwrap();
         assert_eq!(0, initial_events.len());
         let agg_context = event_store.load_aggregate(id).await.unwrap();
+        assert_eq!(
+            format!("{agg_context:?}"),
+            r#"MemStoreAggregateContext { aggregate_id: "test_id_A", current_sequence: 0, .. }"#
+        );
 
         event_store
             .commit(

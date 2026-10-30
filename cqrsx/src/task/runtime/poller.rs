@@ -94,7 +94,7 @@ mod tests {
         let first = claimed();
         let first_id = first.attempt().task_id();
         let mut second = claimed();
-        second = with_format(second, TaskFormat::new("second", 1).unwrap());
+        second = with_format(&second, TaskFormat::new("second", 1).unwrap());
         let second_format = second.attempt().format().clone();
         queue.incoming.lock().unwrap().extend([first, second]);
         let mut poller = Poller::new(queue.clone(), vec![format(), second_format], Duration::from_secs(3));
@@ -113,7 +113,7 @@ mod tests {
         let queue = Arc::new(Queue::default());
         let future = TaskFormat::new("future", 2).unwrap();
         let mut second = claimed();
-        second = with_format(second, future.clone());
+        second = with_format(&second, future.clone());
         queue.incoming.lock().unwrap().extend([claimed(), second]);
         let mut poller = Poller::new(queue.clone(), vec![format(), future.clone()], Duration::from_secs(6));
         assert_eq!(poller.formats, vec![format(), future.clone()]);

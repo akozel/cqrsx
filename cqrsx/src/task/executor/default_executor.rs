@@ -17,7 +17,7 @@ use crate::{
     },
     unwinding::{Panicked, unwinding},
 };
-use std::{sync::Arc, time::Duration};
+use std::{fmt, sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep_until};
 
 /// The reason a retry of a handler that panicked is settled with: fixed, since the panic's message may hold the payload.
@@ -35,10 +35,21 @@ pub const HANDLER_PANICKED: &str = "handler panicked";
 /// the lease token) and the attempt is settled as a retry with the reason [`HANDLER_PANICKED`] after the policy's
 /// pause, as if the handler had answered retry; the worker lives on. A handler that always panics spends the task's
 /// attempt budget and the task fails.
+#[must_use]
 pub struct DefaultTaskExecutor<Q: TaskQueue> {
     queue: Arc<Q>,
     storage_timeout: Duration,
     policies: Policies,
+}
+
+// By hand: the queue need not be `Debug`.
+impl<Q: TaskQueue> fmt::Debug for DefaultTaskExecutor<Q> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("DefaultTaskExecutor")
+            .field("storage_timeout", &self.storage_timeout)
+            .field("policies", &self.policies)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<Q: TaskQueue> DefaultTaskExecutor<Q> {
@@ -193,7 +204,7 @@ mod tests {
         };
         let dispatcher = dispatcher(adapter);
         let mut delayed = claimed();
-        delayed = with_deadline(delayed, Instant::now() + Duration::from_secs(39));
+        delayed = with_deadline(&delayed, Instant::now() + Duration::from_secs(39));
         assert!(
             executor
                 .execute_and_settle(&dispatcher, delayed, Duration::from_secs(30))
@@ -207,7 +218,7 @@ mod tests {
                 if reason == "insufficient lease budget before handler execution")
         );
         let mut expired = claimed();
-        expired = with_deadline(expired, Instant::now());
+        expired = with_deadline(&expired, Instant::now());
         assert_eq!(
             executor
                 .execute_and_settle(&dispatcher, expired, Duration::from_secs(30))
@@ -231,7 +242,7 @@ mod tests {
         };
         let dispatcher = dispatcher(adapter);
         let mut task = claimed();
-        task = with_deadline(task, Instant::now() + LEASE_SAFETY_MARGIN + Duration::from_secs(1));
+        task = with_deadline(&task, Instant::now() + LEASE_SAFETY_MARGIN + Duration::from_secs(1));
         let started = Instant::now();
         assert_eq!(
             executor.execute_and_settle(&dispatcher, task, Duration::from_secs(30)).await,
@@ -485,7 +496,7 @@ mod tests {
             .execute_and_settle(&dispatcher(hanging), claimed(), Duration::from_secs(30))
             .await
             .unwrap();
-        let short = with_deadline(claimed(), Instant::now() + Duration::from_secs(39));
+        let short = with_deadline(&claimed(), Instant::now() + Duration::from_secs(39));
         executor
             .execute_and_settle(&dispatcher(adapter()), short, Duration::from_secs(30))
             .await

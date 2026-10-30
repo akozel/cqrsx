@@ -19,6 +19,7 @@ use std::time::Duration;
 /// that pool's `StatementTimeout` (a session setting, see `postgres::pool`); with `Unlimited`, a
 /// statement the runtime's storage timeout has given up on may still finish later, which the token
 /// and expiry fencing keeps safe.
+#[derive(Debug)]
 pub struct PostgresTaskQueue {
     pool: PgPool,
 }
@@ -29,8 +30,8 @@ impl PostgresTaskQueue {
     }
 }
 
-fn storage_error(error: sqlx::Error, operation: &'static str) -> TaskProcessingError {
-    crate::diagnostics::log_sqlx_failure(operation, &error);
+fn storage_error(error: &sqlx::Error, operation: &'static str) -> TaskProcessingError {
+    crate::diagnostics::log_sqlx_failure(operation, error);
     TaskProcessingError::Unavailable
 }
 

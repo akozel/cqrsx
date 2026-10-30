@@ -4,7 +4,7 @@ use crate::cqrs::{
     projection::{checkpoint::CheckpointStore, processor::ProjectionProcessor},
     store::repository::PersistedEventRepository,
 };
-use std::{collections::HashMap, future::Future, pin::Pin};
+use std::{collections::HashMap, fmt, future::Future, pin::Pin};
 use thiserror::Error;
 use tokio::task::JoinSet;
 use tokio_util::sync::CancellationToken;
@@ -17,8 +17,19 @@ type Start = Box<dyn FnOnce(CancellationToken) -> Pin<Box<dyn Future<Output = ()
 /// panics (an observer that panics, a bug) stops the others, so the read side never runs half: the error
 /// names it.
 #[derive(Default)]
+#[must_use = "the processors run only while `run` runs"]
 pub struct ProjectionRuntime {
     processors: Vec<(String, Start)>,
+}
+
+// By hand: a processor prints as its name; how it starts is a closure.
+impl fmt::Debug for ProjectionRuntime {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let names: Vec<&str> = self.processors.iter().map(|(name, _)| name.as_str()).collect();
+        f.debug_struct("ProjectionRuntime")
+            .field("processors", &names)
+            .finish_non_exhaustive()
+    }
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]

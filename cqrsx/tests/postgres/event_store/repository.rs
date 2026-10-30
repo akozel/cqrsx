@@ -77,7 +77,7 @@ async fn custom_tables_keep_the_event_and_snapshot_contracts() {
     .await
     .unwrap();
     let repository = PostgresEventRepository::new(db.pool.clone()).with_tables("custom_events", "custom_snapshots");
-    let mut event = test_serialized_event("custom", 1, TestEvent::Created(Created { id: "custom".into() }));
+    let mut event = test_serialized_event("custom", 1, &TestEvent::Created(Created { id: "custom".into() }));
     event.metadata = serde_json::json!({});
     let aggregate = serde_json::json!({"id": "custom", "description": "", "tests": []});
     repository
@@ -124,11 +124,11 @@ async fn event_repositories() {
     event_repo
         .persist::<TestAggregate>(
             &[
-                test_serialized_event(&id, 1, TestEvent::Created(Created { id: id.clone() })),
+                test_serialized_event(&id, 1, &TestEvent::Created(Created { id: id.clone() })),
                 test_serialized_event(
                     &id,
                     2,
-                    TestEvent::Tested(Tested {
+                    &TestEvent::Tested(Tested {
                         test_name: "a test was run".to_string(),
                     }),
                 ),
@@ -148,14 +148,14 @@ async fn event_repositories() {
                 test_serialized_event(
                     &id,
                     3,
-                    TestEvent::SomethingElse(SomethingElse {
+                    &TestEvent::SomethingElse(SomethingElse {
                         description: "this should not persist".to_string(),
                     }),
                 ),
                 test_serialized_event(
                     &id,
                     2,
-                    TestEvent::SomethingElse(SomethingElse {
+                    &TestEvent::SomethingElse(SomethingElse {
                         description: "bad sequence number".to_string(),
                     }),
                 ),

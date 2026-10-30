@@ -128,7 +128,7 @@ use crate::{
     },
     diagnostics,
 };
-use std::sync::Arc;
+use std::{fmt, sync::Arc};
 use tokio::{sync::Semaphore, time::Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
@@ -166,6 +166,7 @@ impl Operation {
 
 /// Feeds one projection from the journal of aggregate type `A`: see the [module](self) documentation.
 /// Built once per projection and process, run until its shutdown token is cancelled.
+#[must_use = "a processor feeds its projection only while `run` runs"]
 pub struct ProjectionProcessor<A: Aggregate, R, C> {
     name: String,
     owner: String,
@@ -176,6 +177,19 @@ pub struct ProjectionProcessor<A: Aggregate, R, C> {
     observer: Arc<dyn ProjectionObserver>,
     wakeup: CommitWakeup,
     config: ProcessorConfig,
+}
+
+// By hand: the journal, the checkpoint store, the projection and the observer need not be `Debug`.
+impl<A: Aggregate, R, C> fmt::Debug for ProjectionProcessor<A, R, C> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ProjectionProcessor")
+            .field("name", &self.name)
+            .field("aggregate_type", &A::TYPE)
+            .field("owner", &self.owner)
+            .field("upcasters", &self.upcasters.len())
+            .field("config", &self.config)
+            .finish_non_exhaustive()
+    }
 }
 
 /// The observer of a processor nobody observes.

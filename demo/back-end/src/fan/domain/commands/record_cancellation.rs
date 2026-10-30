@@ -49,7 +49,7 @@ mod tests {
         TestFramework::<Fan>::new(())
             .given(vec![recorded(id)])
             .when(cancel(id, cancellation_id))
-            .then_expect_event(cancelled(id, cancellation_id));
+            .then_expect_event(&cancelled(id, cancellation_id));
     }
 
     #[test]
@@ -58,7 +58,7 @@ mod tests {
         TestFramework::<Fan>::new(())
             .given_no_previous_events()
             .when(cancel(id, Uuid::new_v4()))
-            .then_expect_error(FanError::UnknownTicket { booking_id: id });
+            .then_expect_error(&FanError::UnknownTicket { booking_id: id });
     }
 
     #[test]
@@ -68,6 +68,6 @@ mod tests {
         TestFramework::<Fan>::new(())
             .given(vec![recorded(id), cancelled(id, cancellation_id)])
             .when(cancel(id, cancellation_id))
-            .then_expect_error(FanError::AlreadyCancelled { booking_id: id });
+            .then_expect_error(&FanError::AlreadyCancelled { booking_id: id });
     }
 }

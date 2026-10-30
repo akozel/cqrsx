@@ -98,7 +98,7 @@ impl TaskQueue for Queue {
         let mut result = Vec::new();
         while result.len() < limit && incoming.front().is_some_and(|message| message.attempt().format() == format) {
             let mut task = incoming.pop_front().unwrap();
-            task = with_deadline(task, lease_deadline);
+            task = with_deadline(&task, lease_deadline);
             result.push(task);
         }
         Ok(result)
@@ -181,7 +181,7 @@ impl TaskAdapter for CountingAdapter {
     }
 }
 
-pub(crate) fn with_deadline(task: LeasedTask, deadline: tokio::time::Instant) -> LeasedTask {
+pub(crate) fn with_deadline(task: &LeasedTask, deadline: tokio::time::Instant) -> LeasedTask {
     let token = task.lease().lock_token();
     LeasedTask::new(task.attempt().clone(), TaskLease::new(token, deadline))
 }
@@ -249,7 +249,7 @@ impl TaskAdapter for IoAdapter {
 pub(super) fn io_dispatcher(probe: Arc<IoProbe>) -> TaskDispatcher<IoAdapter> {
     let dispatcher = probe.built.fetch_add(1, Ordering::SeqCst);
     TaskDispatcher::try_new(vec![IoAdapter {
-        probe: probe.clone(),
+        probe,
         dispatcher,
         calls: AtomicUsize::new(0),
     }])

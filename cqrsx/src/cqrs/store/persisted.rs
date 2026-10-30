@@ -15,9 +15,9 @@ use crate::{
     },
     task::NewTask,
 };
-use std::{collections::HashMap, marker::PhantomData, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashMap, fmt, marker::PhantomData, num::NonZeroUsize, sync::Arc};
 
-#[derive(Clone, Copy, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum SnapshotPolicy {
     Disabled,
     /// A snapshot every this many events: never zero, so a commit never divides by it.
@@ -49,6 +49,7 @@ impl SnapshotPolicy {
 /// This defaults to an event-sourced store (i.e., events are the single source of truth),
 /// and can use snapshots when a large number of events belong to one aggregate instance. A clone shares the
 /// upcasters and clones the repository.
+#[must_use]
 pub struct PersistedEventStore<R, A>
 where
     R: PersistedEventRepository,
@@ -58,6 +59,21 @@ where
     snapshot_policy: SnapshotPolicy,
     event_upcasters: Arc<[Box<dyn EventUpcaster>]>,
     _phantom: PhantomData<A>,
+}
+
+// By hand: the repository need not be `Debug`, and the upcasters are trait objects.
+impl<R, A> fmt::Debug for PersistedEventStore<R, A>
+where
+    R: PersistedEventRepository,
+    A: Aggregate + Send + Sync,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PersistedEventStore")
+            .field("aggregate_type", &A::TYPE)
+            .field("snapshot_policy", &self.snapshot_policy)
+            .field("upcasters", &self.event_upcasters.len())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<R, A> Clone for PersistedEventStore<R, A>
@@ -540,6 +556,10 @@ where
     }
 
     /// Method to wrap a set of events with the additional metadata needed for persistence and publishing
+    #[expect(
+        clippy::needless_pass_by_value,
+        reason = "F4 of epic 06 (ticket 04) moves the map into the event instead of copying it"
+    )]
     fn wrap_events(
         aggregate_id: &str,
         last_sequence: usize,
@@ -569,6 +589,17 @@ pub struct EventStoreAggregateContext<A: Aggregate> {
     pub current_sequence: usize,
     /// The last committed snapshot version for this aggregate instance.
     pub snapshot_version: Option<usize>,
+}
+
+// By hand: the aggregate need not be `Debug`.
+impl<A: Aggregate> fmt::Debug for EventStoreAggregateContext<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EventStoreAggregateContext")
+            .field("aggregate_id", &self.aggregate_id)
+            .field("current_sequence", &self.current_sequence)
+            .field("snapshot_version", &self.snapshot_version)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<A: Aggregate> EventStoreAggregateContext<A> {
@@ -861,6 +892,16 @@ pub(in crate::cqrs) mod tests {
             assert_eq!(0, agg_context.current_sequence);
             assert_eq!(TEST_AGGREGATE_ID, agg_context.aggregate_id);
             assert_eq!(TestAggregate::default(), agg_context.aggregate);
+            assert_eq!(
+                format!("{agg_context:?}"),
+                format!(
+                    "EventStoreAggregateContext {{ aggregate_id: {TEST_AGGREGATE_ID:?}, current_sequence: 0, snapshot_version: None, .. }}"
+                )
+            );
+            assert_eq!(
+                format!("{:?}", store.with_snapshots(super::every(3))),
+                r#"PersistedEventStore { aggregate_type: "TestAggregate", snapshot_policy: Every(3), upcasters: 0, .. }"#
+            );
         }
 
         #[tokio::test]

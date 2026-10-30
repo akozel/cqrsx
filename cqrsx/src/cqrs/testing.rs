@@ -122,7 +122,7 @@
 //!     .when(CustomerCommand::AddCustomerName{
 //!             name: "John Doe".to_string()
 //!         })
-//!     .then_expect_event(CustomerEvent::NameAdded{
+//!     .then_expect_event(&CustomerEvent::NameAdded{
 //!         name: "John Doe".to_string()
 //!     });
 //! # }
@@ -137,12 +137,24 @@ pub mod unavailable_store;
 pub mod validator;
 
 use crate::cqrs::{aggregate::Aggregate, command::decide::Decide, testing::validator::AggregateResultValidator};
+use std::fmt;
 
 /// A framework for rigorously testing the aggregate logic, one of the *most important*
 /// parts of any DDD system: the history it is given, the command that decides on its fold.
+#[must_use = "a test checks nothing until `when` decides a command and its validator checks the result"]
 pub struct TestFramework<A: Aggregate> {
     rules: A::Rules,
     events: Vec<A::Event>,
+}
+
+// By hand: the rules need not be `Debug`.
+impl<A: Aggregate> fmt::Debug for TestFramework<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("TestFramework")
+            .field("aggregate_type", &A::TYPE)
+            .field("events", &self.events)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<A: Aggregate> TestFramework<A> {
@@ -239,7 +251,6 @@ impl<A: Aggregate> TestFramework<A> {
     /// let framework = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events();
     /// ```
-    #[must_use]
     pub fn given_no_previous_events(self) -> Self {
         self.given(Vec::new())
     }
@@ -331,7 +342,6 @@ impl<A: Aggregate> TestFramework<A> {
     /// let framework = TestFramework::<MyAggregate>::new(MyService)
     ///     .given(vec![MyEvents::SomethingWasDone]);
     /// ```
-    #[must_use]
     pub fn given(self, events: Vec<A::Event>) -> Self {
         Self { events, ..self }
     }
@@ -423,7 +433,6 @@ impl<A: Aggregate> TestFramework<A> {
     ///     .given(vec![MyEvents::SomethingWasDone])
     ///     .and(vec![MyEvents::SomethingElseWasDone]);
     /// ```
-    #[must_use]
     pub fn and(mut self, events: Vec<A::Event>) -> Self {
         self.events.extend(events);
         self

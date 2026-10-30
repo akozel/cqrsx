@@ -25,7 +25,7 @@ use sqlx::PgPool;
 /// and share it, the tasks come with every write. Reads delegate to a plain
 /// PostgreSQL repository on the same pool. A clone shares the pool and the SQL
 /// texts.
-#[derive(Clone)]
+#[derive(Clone, Debug)]
 pub struct PostgresEventRepositoryWithOutbox {
     pool: PgPool,
     reader: PostgresEventRepository,

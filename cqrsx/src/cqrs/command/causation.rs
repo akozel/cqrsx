@@ -107,6 +107,7 @@ impl Causation {
     /// `task` with the three ids in its metadata, replacing only those keys. The core calls it on
     /// every planned task, after the planner's [`NewTask::with_metadata`], which replaces the whole
     /// object. The source is not stamped: the task's format already says what it is.
+    #[must_use = "the stamped task is the one returned"]
     pub fn stamp_task(&self, mut task: NewTask) -> NewTask {
         task.merge_metadata(Map::from_iter([
             (COMMAND_ID.to_owned(), Value::String(self.command_id.to_string())),
@@ -120,6 +121,7 @@ impl Causation {
     /// a UUID v5 over [`TASK_ID_NAMESPACE`], the aggregate type and id, the command id, the format and
     /// the ordinal. Every attempt of the command plans the same ids, and the same command id on the same
     /// aggregate a second time collides with the first one's tasks in the outbox.
+    #[must_use]
     pub fn task_id(&self, aggregate_type: &str, aggregate_id: &str, format: &TaskFormat, ordinal: usize) -> Uuid {
         // Every variable-length field is length-prefixed, so no two inputs share a name.
         let mut name = Vec::with_capacity(64 + aggregate_type.len() + aggregate_id.len() + format.task_type().len());

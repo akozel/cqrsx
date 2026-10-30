@@ -40,6 +40,7 @@ use crate::{
 use std::any::TypeId;
 use std::{
     collections::HashSet,
+    fmt,
     sync::{Arc, Mutex},
 };
 use thiserror::Error;
@@ -143,6 +144,7 @@ struct Stores {
 /// What an engine is built from: its settings (given, or read from the variables when it is built, with the
 /// application's defaults), the roots of its modules and the variables they read, its stores, and the dependencies
 /// the builder provides instead of theirs (a test replaces a module's by type).
+#[must_use = "an engine is made by `build`"]
 pub struct Builder {
     settings: Option<Settings>,
     prefix: String,
@@ -151,6 +153,20 @@ pub struct Builder {
     stores: Stores,
     modules: Vec<ModuleRoot>,
     dependencies: Dependencies,
+}
+
+// By hand: the settings hold the database URLs with their passwords, the stores hold pools and clients, the variables
+// and the module roots are closures; none of them is printed.
+impl fmt::Debug for Builder {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Builder")
+            .field("prefix", &self.prefix)
+            .field("defaults", &self.defaults)
+            .field("views", &self.stores.views)
+            .field("modules", &self.modules.len())
+            .field("dependencies", &self.dependencies)
+            .finish_non_exhaustive()
+    }
 }
 
 impl Builder {
@@ -485,7 +501,10 @@ mod tests {
                 observer::{AnyCommandReport, AnyOutcome},
                 retry::AggregateConflictRetryPolicy,
             },
-            projection::processor::config::{DeliveryLimits, ProcessorConfig},
+            projection::{
+                View,
+                processor::config::{DeliveryLimits, ProcessorConfig},
+            },
         },
         engine::test_support::*,
         task::{
@@ -678,6 +697,56 @@ mod tests {
             .unwrap();
         cqrs.run_tasks().await;
         assert_eq!(mailbox.sent(), ["fox:A1"], "the letter went to the mailbox of the test");
+    }
+
+    #[test]
+    fn a_builder_a_setup_and_a_module_print_what_they_name_but_never_a_url() {
+        let secret = |_: &str| Some("postgres://shop:s3cret@db/shop".to_owned());
+        let builder = Cqrs::from_lookup("SHOP", secret).module(shows).module(wallets);
+        assert_eq!(
+            format!("{builder:?}"),
+            format!(
+                "Builder {{ prefix: \"SHOP\", defaults: {:?}, views: Memory, modules: 2, dependencies: Dependencies {{ count: 0 }}, .. }}",
+                Defaults::LIBRARY
+            )
+        );
+        let setup = Setup::new("SHOP", secret, Settings::default());
+        setup.describe("shop.url", "postgres://shop:s3cret@db/shop");
+        assert_eq!(format!("{setup:?}"), r#"Setup { prefix: "SHOP", .. }"#);
+        assert_eq!(
+            format!("{:?}", wallets(&setup).unwrap()),
+            r#"Module { name: "wallets", aggregates: ["wallet"], views: ["tickets"], policies: [PolicyName("step"), PolicyName("mail")], tasks: 2, dependencies: Dependencies { count: 1 }, .. }"#
+        );
+        let entry = Module::new("mail").task(SendMail);
+        let printed = format!("{entry:?}");
+        assert!(
+            printed.starts_with(r#"TaskEntry { module: Module { name: "mail""#),
+            "{printed}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_processor_and_the_read_side_print_their_names() {
+        let mut cqrs = Cqrs::in_memory().module(shows).registrations().unwrap().cqrs;
+        let checkpoints = Arc::new(crate::cqrs::testing::mem_checkpoint_store::MemCheckpointStore::default());
+        let documents = Arc::new(MemViewRepository::<Hall, Show>::default());
+        let journal = Arc::new(cqrs.memory.journal.clone());
+        let processor = cqrs.processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
+        assert_eq!(
+            format!("{processor:?}"),
+            format!(
+                "ProjectionProcessor {{ name: {:?}, aggregate_type: {:?}, owner: {:?}, upcasters: 0, config: {:?}, .. }}",
+                Hall::NAME,
+                Show::TYPE,
+                cqrs.owner,
+                ProcessorConfig::default()
+            )
+        );
+        let read_side = ProjectionRuntime::new().with_processor(processor);
+        assert_eq!(
+            format!("{read_side:?}"),
+            format!("ProjectionRuntime {{ processors: [{:?}], .. }}", Hall::NAME)
+        );
     }
 
     #[tokio::test]

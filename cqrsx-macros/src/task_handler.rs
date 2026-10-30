@@ -8,7 +8,7 @@ use syn::{Error, FnArg, ItemFn, PatType, ReturnType, Type, TypeReference};
 /// `::cqrsx::task::handler::TaskHandler<T>`. The first parameter is the task, by value; a parameter `&TaskContext` is
 /// the attempt's context, wherever it stands; every other parameter `&D` is a dependency, taken from the context by
 /// its type and listed in `DEPENDENCIES` for the assembly to check.
-pub(crate) fn expand_task_handler(attribute: TokenStream, function: ItemFn) -> syn::Result<TokenStream> {
+pub(crate) fn expand_task_handler(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream> {
     if !attribute.is_empty() {
         return Err(Error::new_spanned(attribute, "`#[task_handler]` takes no arguments"));
     }
@@ -121,15 +121,15 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
-    fn refusal(attribute: TokenStream, function: ItemFn) -> String {
+    fn refusal(attribute: &TokenStream, function: &ItemFn) -> String {
         expand_task_handler(attribute, function).unwrap_err().to_string()
     }
 
     #[test]
     fn a_handler_function_becomes_a_value_with_its_call_and_its_handler() {
         let expanded = expand_task_handler(
-            TokenStream::new(),
-            parse_quote! {
+            &TokenStream::new(),
+            &parse_quote! {
                 /// Refunds a cancellation.
                 #[allow(clippy::needless_pass_by_value)]
                 pub async fn issue_refund(task: IssueRefund, ctx: &TaskContext, mail: &Mailer) -> TaskResult {
@@ -178,8 +178,8 @@ mod tests {
     #[test]
     fn the_context_and_the_dependencies_are_found_by_type_in_any_order() {
         let expanded = expand_task_handler(
-            TokenStream::new(),
-            parse_quote! {
+            &TokenStream::new(),
+            &parse_quote! {
                 async fn audit(entry: Entry, clock: &dyn Clock, context: &cqrsx::task::context::TaskContext, log: &Log) -> TaskResult {
                     TaskResult::done()
                 }
@@ -201,8 +201,8 @@ mod tests {
             "a private function, a private value: {expanded}"
         );
         let alone = expand_task_handler(
-            TokenStream::new(),
-            parse_quote! { pub(crate) async fn ping(task: Ping) -> TaskResult { TaskResult::done() } },
+            &TokenStream::new(),
+            &parse_quote! { pub(crate) async fn ping(task: Ping) -> TaskResult { TaskResult::done() } },
         )
         .unwrap()
         .to_string();
@@ -261,12 +261,12 @@ mod tests {
             ),
         ];
         for (attribute, function, message) in cases {
-            assert_eq!(refusal(attribute, function), message);
+            assert_eq!(refusal(&attribute, &function), message);
         }
         let mut method: ItemFn = parse_quote! { async fn ping(task: Ping) -> TaskResult { todo!() } };
         method.sig.inputs.push(parse_quote! { &self });
         assert_eq!(
-            refusal(TokenStream::new(), method),
+            refusal(&TokenStream::new(), &method),
             "a task handler is a function, not a method"
         );
     }
@@ -275,8 +275,8 @@ mod tests {
     fn a_function_that_is_not_async_is_refused() {
         assert_eq!(
             refusal(
-                TokenStream::new(),
-                parse_quote! { fn ping(task: Ping) -> TaskResult { TaskResult::done() } }
+                &TokenStream::new(),
+                &parse_quote! { fn ping(task: Ping) -> TaskResult { TaskResult::done() } }
             ),
             "a task handler is an `async fn`"
         );

@@ -366,15 +366,15 @@ fn derived_commands_route_every_variant_to_its_decision_and_report_it() {
     TestFramework::<Tally>::new(5)
         .given(vec![Counted::Added(3)])
         .when(add(2))
-        .then_expect_event(Counted::Added(2));
+        .then_expect_event(&Counted::Added(2));
     TestFramework::<Tally>::new(5)
         .given(vec![Counted::Added(3)])
         .when(add(3))
-        .then_expect_error(OverTheLimit);
+        .then_expect_error(&OverTheLimit);
     TestFramework::<Tally>::new(5)
         .given(vec![Counted::Added(3)])
         .when(TallyCommand::Reset(Reset { by: "ops".into() }))
-        .then_expect_event(Counted::Reset);
+        .then_expect_event(&Counted::Reset);
     let reset = TallyCommand::Reset(Reset { by: "ops".into() });
     assert_eq!(
         [

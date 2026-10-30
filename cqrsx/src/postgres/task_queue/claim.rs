@@ -80,7 +80,7 @@ pub(super) async fn claim(
     .bind(milliseconds(lease_duration, QueueRequestError::InvalidLeaseDuration)?)
     .fetch_all(&queue.pool)
     .await
-    .map_err(|error| storage_error(error, "claim"))?;
+    .map_err(|error| storage_error(&error, "claim"))?;
     // The claim is committed. A row that is not a valid delivery stays leased and comes back through
     // lease recovery, attempt counted, until it fails; the rest of the batch is delivered. (Rolling
     // the batch back would hand the same row out first on every poll and block its format.)

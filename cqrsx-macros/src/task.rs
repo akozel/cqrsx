@@ -7,7 +7,7 @@ use syn::{Attribute, Data, DeriveInput, Error, Field, LitStr, Meta, ext::IdentEx
 
 /// `impl ::cqrsx::task::format::TaskPayload` with the `name` and the `version` of `#[task(name = "…", version = N)]`
 /// and, when the struct has fields `#[label]`, their names in field order as `LABELS`.
-pub(crate) fn expand_task(input: DeriveInput) -> syn::Result<TokenStream> {
+pub(crate) fn expand_task(input: &DeriveInput) -> syn::Result<TokenStream> {
     let attribute = Pairs::parse(&input.attrs, "task", &["name", "version"])?;
     let Some(span) = attribute.span else {
         return Err(Error::new_spanned(
@@ -27,7 +27,7 @@ pub(crate) fn expand_task(input: DeriveInput) -> syn::Result<TokenStream> {
         return Err(Error::new(version.span(), "the task version must be positive"));
     }
     let number = Literal::i32_unsuffixed(number);
-    let labels = labels(&input)?;
+    let labels = labels(input)?;
     let labels = (!labels.is_empty()).then(|| quote! { const LABELS: &'static [&'static str] = &[#(#labels),*]; });
     let ident = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
@@ -119,13 +119,13 @@ mod tests {
     use super::*;
     use syn::parse_quote;
 
-    fn refusal(input: DeriveInput) -> String {
+    fn refusal(input: &DeriveInput) -> String {
         expand_task(input).err().map(|error| error.to_string()).unwrap_or_default()
     }
 
     #[test]
     fn a_task_gets_the_type_and_the_version_of_its_attribute() {
-        let expanded = expand_task(parse_quote! {
+        let expanded = expand_task(&parse_quote! {
             #[derive(Serialize)]
             #[task(name = "encore_record_cancellation", version = 1)]
             pub struct RecordCancellation { pub refund: u32 }
@@ -139,7 +139,7 @@ mod tests {
             }
         };
         assert_eq!(expanded.to_string(), expected.to_string());
-        let generic = expand_task(parse_quote! {
+        let generic = expand_task(&parse_quote! {
             #[task(version = 2_000_000_000, name = "greeting")]
             struct Greeting<'a, T> where T: Clone { text: &'a T }
         })
@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn labelled_fields_are_the_labels_of_the_task_in_field_order() {
-        let expanded = expand_task(parse_quote! {
+        let expanded = expand_task(&parse_quote! {
             #[derive(Serialize)]
             #[serde(deny_unknown_fields)]
             #[task(name = "issue_refund", version = 1)]
@@ -180,7 +180,7 @@ mod tests {
             }
         };
         assert_eq!(expanded.to_string(), expected.to_string());
-        let renamed_without_labels = expand_task(parse_quote! {
+        let renamed_without_labels = expand_task(&parse_quote! {
             #[serde(rename_all = "camelCase")]
             #[task(name = "ship", version = 1)]
             struct Ship { #[serde(rename = "to")] address: String }
@@ -195,29 +195,29 @@ mod tests {
     #[test]
     fn a_label_is_refused_with_arguments_twice_without_a_name_off_a_struct_and_where_serde_renames_or_drops_it() {
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", version = 1)] struct Ship { #[label(key = "x")] to: String } }),
+            refusal(&parse_quote! { #[task(name = "ship", version = 1)] struct Ship { #[label(key = "x")] to: String } }),
             "`#[label]` takes no arguments"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", version = 1)] struct Ship { #[label] #[label] to: String } }),
+            refusal(&parse_quote! { #[task(name = "ship", version = 1)] struct Ship { #[label] #[label] to: String } }),
             "`#[label]` is given twice"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", version = 1)] struct Ship(#[label] String); }),
+            refusal(&parse_quote! { #[task(name = "ship", version = 1)] struct Ship(#[label] String); }),
             "`#[label]` needs a named field"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", version = 1)] enum Ship { By { #[label] to: String } } }),
+            refusal(&parse_quote! { #[task(name = "ship", version = 1)] enum Ship { By { #[label] to: String } } }),
             "`#[label]` goes on a field of a struct: a task's labels are its fields"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", version = 1)] union Ship { #[label] to: u32 } }),
+            refusal(&parse_quote! { #[task(name = "ship", version = 1)] union Ship { #[label] to: u32 } }),
             "`#[label]` goes on a field of a struct: a task's labels are its fields"
         );
-        assert!(expand_task(parse_quote! { #[task(name = "ship", version = 1)] enum Ship { By { to: String } } }).is_ok());
-        assert!(expand_task(parse_quote! { #[task(name = "ship", version = 1)] union Ship { to: u32 } }).is_ok());
+        assert!(expand_task(&parse_quote! { #[task(name = "ship", version = 1)] enum Ship { By { to: String } } }).is_ok());
+        assert!(expand_task(&parse_quote! { #[task(name = "ship", version = 1)] union Ship { to: u32 } }).is_ok());
         assert!(
-            expand_task(parse_quote! { #[task(name = "ship", version = 1)] struct Ship { #[label] #[serde] to: String } })
+            expand_task(&parse_quote! { #[task(name = "ship", version = 1)] struct Ship { #[label] #[serde] to: String } })
                 .is_ok(),
             "a serde attribute without a list names no key"
         );
@@ -233,12 +233,12 @@ mod tests {
                 struct Ship { #[label] #attribute to: String }
             };
             assert_eq!(
-                refusal(input),
+                refusal(&input),
                 format!("a `#[label]` field moves to the metadata under its name: `#[serde({key})]` changes or drops it")
             );
         }
         assert_eq!(
-            refusal(parse_quote! {
+            refusal(&parse_quote! {
                 #[serde(rename_all = "camelCase")]
                 #[task(name = "ship", version = 1)]
                 struct Ship { #[label] to: String }
@@ -250,7 +250,7 @@ mod tests {
     #[test]
     fn a_task_without_its_attribute_is_refused() {
         assert_eq!(
-            refusal(parse_quote! { #[derive(Serialize)] struct Ship; }),
+            refusal(&parse_quote! { #[derive(Serialize)] struct Ship; }),
             "`#[derive(Task)]` needs `#[task(name = \"…\", version = N)]`"
         );
     }
@@ -258,23 +258,23 @@ mod tests {
     #[test]
     fn the_task_attribute_needs_a_type_and_a_positive_version() {
         assert_eq!(
-            refusal(parse_quote! { #[task(version = 1)] struct Ship; }),
+            refusal(&parse_quote! { #[task(version = 1)] struct Ship; }),
             "`#[task]` needs `name`"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship")] struct Ship; }),
+            refusal(&parse_quote! { #[task(name = "ship")] struct Ship; }),
             "`#[task]` needs `version`"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "", version = 1)] struct Ship; }),
+            refusal(&parse_quote! { #[task(name = "", version = 1)] struct Ship; }),
             "the task type must not be empty"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", version = 0)] struct Ship; }),
+            refusal(&parse_quote! { #[task(name = "ship", version = 0)] struct Ship; }),
             "the task version must be positive"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", version = 3_000_000_000)] struct Ship; }),
+            refusal(&parse_quote! { #[task(name = "ship", version = 3_000_000_000)] struct Ship; }),
             "number too large to fit in target type"
         );
     }
@@ -282,19 +282,19 @@ mod tests {
     #[test]
     fn the_task_attribute_refuses_unknown_keys_repeated_keys_and_other_literals() {
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", version = 1, policy = "mail")] struct Ship; }),
+            refusal(&parse_quote! { #[task(name = "ship", version = 1, policy = "mail")] struct Ship; }),
             "unknown key in `#[task]`: expected `name` or `version`"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", name = "boat", version = 1)] struct Ship; }),
+            refusal(&parse_quote! { #[task(name = "ship", name = "boat", version = 1)] struct Ship; }),
             "`name` is given twice"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = "ship", version = "1")] struct Ship; }),
+            refusal(&parse_quote! { #[task(name = "ship", version = "1")] struct Ship; }),
             "`version` takes an integer literal"
         );
         assert_eq!(
-            refusal(parse_quote! { #[task(name = 1, version = 1)] struct Ship; }),
+            refusal(&parse_quote! { #[task(name = 1, version = 1)] struct Ship; }),
             "`name` takes a string literal"
         );
     }

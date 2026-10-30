@@ -6,7 +6,7 @@ use crate::{
 use std::{
     collections::BTreeMap,
     error::Error,
-    fmt::Display,
+    fmt::{self, Display},
     str::FromStr,
     sync::{Arc, Mutex},
     time::Duration,
@@ -26,6 +26,14 @@ pub struct Setup {
     described: Mutex<BTreeMap<String, String>>,
 }
 
+// By hand: the settings and what the modules described may hold database URLs with their passwords, and the variables
+// are a closure; only the prefix is printed.
+impl fmt::Debug for Setup {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Setup").field("prefix", &self.prefix).finish_non_exhaustive()
+    }
+}
+
 /// A variable of a module that cannot be read, or a resource the module could not make.
 #[derive(Debug, Error)]
 pub enum SetupError {
@@ -37,6 +45,7 @@ pub enum SetupError {
 
 impl SetupError {
     /// A resource the module could not make, e.g. a client of its own.
+    #[must_use = "return it as `Err`"]
     pub fn failed(error: impl Error + Send + Sync + 'static) -> Self {
         Self::Failed(Box::new(error))
     }
@@ -87,6 +96,7 @@ impl Setup {
     }
 
     /// A value of the variable `name` the module refuses, e.g. `must be positive`.
+    #[must_use = "return it as `Err`"]
     pub fn invalid(&self, name: &str, message: impl Into<String>) -> SetupError {
         SetupError::Invalid {
             variable: self.variable(name),

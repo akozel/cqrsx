@@ -100,6 +100,7 @@ SELECT projection_name, aggregate_type, position::text AS position, applied, reb
  ORDER BY projection_name, aggregate_type";
 
 /// The checkpoint store over the process's pool. Needs PostgreSQL 18 (`RETURNING old`).
+#[derive(Debug)]
 pub struct PostgresCheckpointStore {
     pool: PgPool,
 }

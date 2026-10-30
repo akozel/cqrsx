@@ -58,7 +58,8 @@ use std::sync::Arc;
 /// assert!(TaskHandlers::new().handler(send_e_ticket).build().is_err());
 /// # Ok::<(), Box<dyn std::error::Error>>(())
 /// ```
-#[derive(Default)]
+#[derive(Debug, Default)]
+#[must_use]
 pub struct TaskHandlers {
     adapters: Vec<BoxedTaskAdapter>,
     dependencies: Dependencies,

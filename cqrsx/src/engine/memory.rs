@@ -103,8 +103,7 @@ impl Cqrs {
 
     async fn run_due<Q: TaskQueue + 'static>(&self, queue: &Arc<Q>, dispatcher: &TaskDispatcher<BoxedTaskAdapter>) -> usize {
         let settings = &self.settings;
-        let executor =
-            DefaultTaskExecutor::new(queue.clone(), settings.task_storage().clone()).with_policies(self.policies.clone());
+        let executor = DefaultTaskExecutor::new(queue.clone(), *settings.task_storage()).with_policies(self.policies.clone());
         let mut attempts = 0;
         loop {
             let _ = queue.recover_expired(isize::MAX as usize).await;

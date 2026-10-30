@@ -8,6 +8,7 @@ use crate::{
     diagnostics,
     engine::Cqrs,
 };
+use std::fmt;
 use uuid::Uuid;
 
 /// What became of a command: accepted with the tasks committed with its event, rejected by its aggregate, a conflict
@@ -18,6 +19,13 @@ pub type Outcome<A> = Result<CommitReport<A>, CommandGatewayError<<A as Aggregat
 pub struct Source<'a> {
     cqrs: &'a Cqrs,
     source: String,
+}
+
+// By hand: the engine is not printed with every entry point.
+impl fmt::Debug for Source<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Source").field("source", &self.source).finish_non_exhaustive()
+    }
 }
 
 impl Source<'_> {

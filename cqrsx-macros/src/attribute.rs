@@ -87,13 +87,13 @@ mod tests {
     use super::*;
     use syn::{DeriveInput, parse_quote};
 
-    fn pairs(input: DeriveInput) -> syn::Result<Pairs> {
+    fn pairs(input: &DeriveInput) -> syn::Result<Pairs> {
         Pairs::parse(&input.attrs, "event", &["name", "version"])
     }
 
     #[test]
     fn pairs_gather_the_keys_of_every_attribute_of_their_name() {
-        let found = pairs(parse_quote! {
+        let found = pairs(&parse_quote! {
             #[serde(rename = "x")]
             #[event(name = "Booked")]
             #[event(version = 2)]
@@ -117,7 +117,7 @@ mod tests {
             found.integer("name").err().map(|error| error.to_string()),
             Some("`name` takes an integer literal".to_owned())
         );
-        let none = pairs(parse_quote! { #[serde(rename = "x")] struct Booked; }).unwrap();
+        let none = pairs(&parse_quote! { #[serde(rename = "x")] struct Booked; }).unwrap();
         assert!(none.span.is_none());
         assert!(none.string("name").unwrap().is_none());
         assert!(none.integer("version").unwrap().is_none());
@@ -125,7 +125,7 @@ mod tests {
 
     #[test]
     fn pairs_refuse_unknown_keys_repeated_keys_and_values_that_are_not_literals() {
-        let error = |input: DeriveInput| pairs(input).err().map(|error| error.to_string());
+        let error = |input: DeriveInput| pairs(&input).err().map(|error| error.to_string());
         assert_eq!(
             error(parse_quote! { #[event(title = "Booked")] struct Booked; }),
             Some("unknown key in `#[event]`: expected `name` or `version`".to_owned())

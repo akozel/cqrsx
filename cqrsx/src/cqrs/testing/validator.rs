@@ -4,13 +4,24 @@
 //! code guidelines), so the panic lints are allowed here.
 #![allow(clippy::panic)]
 use crate::cqrs::aggregate::Aggregate;
+use std::fmt;
 
 /// Validation object for the `TestFramework` package.
+#[must_use = "the result is checked only by a `then_expect_*` method"]
 pub struct AggregateResultValidator<A>
 where
     A: Aggregate,
 {
     result: Result<A::Event, A::Error>,
+}
+
+// By hand: a derive would require `A` itself to be `Debug`, not only its event and its error.
+impl<A: Aggregate> fmt::Debug for AggregateResultValidator<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("AggregateResultValidator")
+            .field("result", &self.result)
+            .finish()
+    }
 }
 
 impl<A: Aggregate> AggregateResultValidator<A> {
@@ -107,14 +118,14 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     ///     .given_no_previous_events()
     ///     .when(MyCommands::DoSomething);
     ///
-    /// validator.then_expect_event(MyEvents::SomethingWasDone);
+    /// validator.then_expect_event(&MyEvents::SomethingWasDone);
     /// # }
     /// ```
-    pub fn then_expect_event(self, expected_event: A::Event) {
+    pub fn then_expect_event(self, expected_event: &A::Event) {
         let event = self.result.unwrap_or_else(|err| {
             panic!("expected success, received aggregate error: '{err}'");
         });
-        assert_eq!(event, expected_event, "the command decided another event");
+        assert_eq!(&event, expected_event, "the command decided another event");
     }
 
     /// Verifies that the command was rejected with an error whose message is `error_message`.
@@ -425,15 +436,15 @@ where
     ///     .when(MyCommands::BadCommand);
     ///
     /// let expected = MyUserError("the expected error message".to_string());
-    /// validator.then_expect_error(expected);
+    /// validator.then_expect_error(&expected);
     /// ```
-    pub fn then_expect_error(self, expected_error: A::Error) {
+    pub fn then_expect_error(self, expected_error: &A::Error) {
         match self.result {
             Ok(event) => {
                 panic!("expected error, received event: '{event:?}'");
             }
             Err(err) => {
-                assert_eq!(err, expected_error, "the command was rejected with another error");
+                assert_eq!(&err, expected_error, "the command was rejected with another error");
             }
         }
     }
@@ -447,7 +458,7 @@ mod contract_tests {
     #[test]
     #[should_panic(expected = "expected error, received event")]
     fn typed_error_validator_rejects_success() {
-        AggregateResultValidator::<Ledger>::new(Ok(Delta(0))).then_expect_error(Rejected);
+        AggregateResultValidator::<Ledger>::new(Ok(Delta(0))).then_expect_error(&Rejected);
     }
     /// An aggregate whose errors carry a message, so two errors can differ.
     #[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
@@ -476,12 +487,12 @@ mod contract_tests {
     #[test]
     #[should_panic(expected = "assertion `left == right` failed")]
     fn typed_error_validator_checks_expected_payload() {
-        AggregateResultValidator::<Messaged>::new(Err(Message("actual error"))).then_expect_error(Message("expected error"));
+        AggregateResultValidator::<Messaged>::new(Err(Message("actual error"))).then_expect_error(&Message("expected error"));
     }
     #[test]
     #[should_panic(expected = "assertion `left == right` failed")]
     fn event_validator_checks_payload_not_just_count() {
-        AggregateResultValidator::<Ledger>::new(Ok(Delta(2))).then_expect_event(Delta(1));
+        AggregateResultValidator::<Ledger>::new(Ok(Delta(2))).then_expect_event(&Delta(1));
     }
     #[test]
     #[should_panic(expected = "assertion `left == right` failed")]
@@ -494,6 +505,13 @@ mod contract_tests {
 mod inspection_tests {
     use super::*;
     use crate::cqrs::aggregate::tests::{Ledger, Rejected};
+    #[test]
+    fn a_validator_prints_its_result() {
+        let validator = AggregateResultValidator::<Ledger>::new(Err(Rejected));
+        assert_eq!(format!("{validator:?}"), "AggregateResultValidator { result: Err(Rejected) }");
+        validator.then_expect_error(&Rejected);
+    }
+
     #[test]
     fn constructor_retains_the_typed_error() {
         assert_eq!(

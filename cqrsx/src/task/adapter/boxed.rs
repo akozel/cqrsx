@@ -9,7 +9,7 @@ use crate::task::{
     result::TaskResult,
 };
 use serde::de::DeserializeOwned;
-use std::{future::Future, pin::Pin};
+use std::{fmt, future::Future, pin::Pin};
 
 type InvokeFuture<'a> = Pin<Box<dyn Future<Output = TaskResult> + Send + 'a>>;
 
@@ -42,6 +42,16 @@ impl<T: TaskAdapter> DynTaskAdapter for T {
 /// Formats, dependencies and results pass through unchanged; the wrapped adapter is shared like any
 /// other. The cost is one allocation per invocation. Wrapped adapters must be `'static`.
 pub struct BoxedTaskAdapter(Box<dyn DynTaskAdapter>);
+
+// By hand: the wrapped adapter is a trait object; it prints as the formats it handles and what it depends on.
+impl fmt::Debug for BoxedTaskAdapter {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("BoxedTaskAdapter")
+            .field("formats", &self.0.dyn_formats())
+            .field("dependencies", &self.0.dyn_dependencies())
+            .finish_non_exhaustive()
+    }
+}
 
 impl BoxedTaskAdapter {
     /// Erase the type of `adapter`.
@@ -171,6 +181,19 @@ mod tests {
         assert_eq!(
             dispatcher.formats(),
             [TaskFormat::of::<Invoice>().unwrap(), TaskFormat::of::<Greeting>().unwrap()]
+        );
+        let invoice = r#"TaskFormat { task_type: "invoice", task_version: 2 }"#;
+        let greeting = r#"TaskFormat { task_type: "greeting", task_version: 1 }"#;
+        assert_eq!(
+            format!("{dispatcher:?}"),
+            format!(
+                "TaskDispatcher {{ formats: [{invoice}, {greeting}], dependencies: Dependencies {{ count: 0 }}, \
+                 executors: Executors {{ count: 0 }}, .. }}"
+            )
+        );
+        assert_eq!(
+            format!("{:?}", BoxedTaskAdapter::json::<Invoice, _>(Recorder::new(&calls)).unwrap()),
+            format!("BoxedTaskAdapter {{ formats: [{invoice}], dependencies: [], .. }}")
         );
         for task in [
             attempt::<Greeting>(json!({ "name": "fox" })),

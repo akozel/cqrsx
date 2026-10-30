@@ -6,7 +6,7 @@ use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Error, Fields};
 
 /// `impl ::cqrsx::cqrs::event::EventKind` with the `name` and the `version` of `#[event(name = "…", version = "…")]`.
-pub(crate) fn expand_event(input: DeriveInput) -> syn::Result<TokenStream> {
+pub(crate) fn expand_event(input: &DeriveInput) -> syn::Result<TokenStream> {
     let attribute = Pairs::parse(&input.attrs, "event", &["name", "version"])?;
     let Some(span) = attribute.span else {
         return Err(Error::new_spanned(
@@ -35,7 +35,7 @@ pub(crate) fn expand_event(input: DeriveInput) -> syn::Result<TokenStream> {
 
 /// `impl ::cqrsx::cqrs::event::DomainEvent` for an enum whose every variant carries one event type: the name and
 /// the version of a value are the `EventKind` of its variant's type.
-pub(crate) fn expand_events(input: DeriveInput) -> syn::Result<TokenStream> {
+pub(crate) fn expand_events(input: &DeriveInput) -> syn::Result<TokenStream> {
     let Data::Enum(data) = &input.data else {
         return Err(Error::new_spanned(
             &input.ident,
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn an_event_type_gets_the_name_and_the_version_of_its_attribute() {
-        let expanded = expand_event(parse_quote! {
+        let expanded = expand_event(&parse_quote! {
             #[derive(Clone)]
             #[event(name = "BookingCancelled", version = "1.0")]
             pub struct BookingCancelled { pub seat: String }
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn a_generic_event_type_keeps_its_parameters_and_bounds() {
-        let expanded = expand_event(parse_quote! {
+        let expanded = expand_event(&parse_quote! {
             #[event(version = "2", name = "Wrapped")]
             enum Wrapped<'a, T: Clone> where T: Send { One(&'a T) }
         })
@@ -125,7 +125,7 @@ mod tests {
     #[test]
     fn an_event_type_without_its_attribute_is_refused() {
         assert_eq!(
-            refusal(expand_event(parse_quote! { #[serde(tag = "type")] struct Booked; })),
+            refusal(expand_event(&parse_quote! { #[serde(tag = "type")] struct Booked; })),
             "`#[derive(Event)]` needs `#[event(name = \"…\", version = \"…\")]`"
         );
     }
@@ -133,22 +133,22 @@ mod tests {
     #[test]
     fn the_event_attribute_needs_a_name_and_a_version_that_are_not_empty() {
         assert_eq!(
-            refusal(expand_event(parse_quote! { #[event(version = "1.0")] struct Booked; })),
+            refusal(expand_event(&parse_quote! { #[event(version = "1.0")] struct Booked; })),
             "`#[event]` needs `name`"
         );
         assert_eq!(
-            refusal(expand_event(parse_quote! { #[event(name = "Booked")] struct Booked; })),
+            refusal(expand_event(&parse_quote! { #[event(name = "Booked")] struct Booked; })),
             "`#[event]` needs `version`"
         );
         assert_eq!(
             refusal(expand_event(
-                parse_quote! { #[event(name = "", version = "1.0")] struct Booked; }
+                &parse_quote! { #[event(name = "", version = "1.0")] struct Booked; }
             )),
             "the event name must not be empty"
         );
         assert_eq!(
             refusal(expand_event(
-                parse_quote! { #[event(name = "Booked", version = "")] struct Booked; }
+                &parse_quote! { #[event(name = "Booked", version = "")] struct Booked; }
             )),
             "the event version must not be empty"
         );
@@ -158,25 +158,25 @@ mod tests {
     fn the_event_attribute_refuses_unknown_keys_repeated_keys_and_other_literals() {
         assert_eq!(
             refusal(expand_event(
-                parse_quote! { #[event(name = "Booked", type = "x")] struct Booked; }
+                &parse_quote! { #[event(name = "Booked", type = "x")] struct Booked; }
             )),
             "unknown key in `#[event]`: expected `name` or `version`"
         );
         assert_eq!(
             refusal(expand_event(
-                parse_quote! { #[event(name = "Booked", version = "1.0", version = "2.0")] struct Booked; }
+                &parse_quote! { #[event(name = "Booked", version = "1.0", version = "2.0")] struct Booked; }
             )),
             "`version` is given twice"
         );
         assert_eq!(
             refusal(expand_event(
-                parse_quote! { #[event(name = "Booked", version = 1)] struct Booked; }
+                &parse_quote! { #[event(name = "Booked", version = 1)] struct Booked; }
             )),
             "`version` takes a string literal"
         );
         assert_eq!(
             refusal(expand_event(
-                parse_quote! { #[event(name = 7, version = "1.0")] struct Booked; }
+                &parse_quote! { #[event(name = 7, version = "1.0")] struct Booked; }
             )),
             "`name` takes a string literal"
         );
@@ -184,7 +184,7 @@ mod tests {
 
     #[test]
     fn an_enum_of_events_takes_the_name_and_the_version_from_each_payload() {
-        let expanded = expand_events(parse_quote! {
+        let expanded = expand_events(&parse_quote! {
             #[serde(tag = "type")]
             pub enum ConcertEvent {
                 SeatBooked(SeatBooked),
@@ -216,7 +216,7 @@ mod tests {
 
     #[test]
     fn an_enum_of_events_keeps_its_parameters_and_bounds() {
-        let expanded = expand_events(parse_quote! { enum Either<T: Send> where T: Sync { One(T) } }).unwrap();
+        let expanded = expand_events(&parse_quote! { enum Either<T: Send> where T: Sync { One(T) } }).unwrap();
         let expected = quote! {
             #[automatically_derived]
             impl<T: Send> ::cqrsx::cqrs::event::DomainEvent for Either<T> where T: Sync {
@@ -233,7 +233,7 @@ mod tests {
 
     #[test]
     fn an_enum_of_events_without_variants_matches_nothing() {
-        let expanded = expand_events(parse_quote! { enum Never {} }).unwrap();
+        let expanded = expand_events(&parse_quote! { enum Never {} }).unwrap();
         let expected = quote! {
             #[automatically_derived]
             impl ::cqrsx::cqrs::event::DomainEvent for Never {
@@ -253,7 +253,7 @@ mod tests {
             parse_quote! { enum E { A(A), Cancelled() } },
         ] {
             assert_eq!(
-                refusal(expand_events(input)),
+                refusal(expand_events(&input)),
                 "every variant carries one event type: `Variant(EventType)`"
             );
         }
@@ -266,7 +266,7 @@ mod tests {
             parse_quote! { union ConcertEvent { seat: u32 } },
         ] {
             assert_eq!(
-                refusal(expand_events(input)),
+                refusal(expand_events(&input)),
                 "`#[derive(Events)]` goes on an enum of event types"
             );
         }

@@ -14,7 +14,7 @@ use crate::cqrs::{
 };
 use serde_json::Value;
 use sqlx::{Pool, Postgres, Row, postgres::PgRow};
-use std::marker::PhantomData;
+use std::{fmt, marker::PhantomData};
 
 /// Stores serialized read-model views in a PostgreSQL table with optimistic versions and the last applied
 /// event of each document's aggregate.
@@ -26,6 +26,21 @@ pub struct PostgresViewRepository<V, A> {
     range_sql: String,
     pool: Pool<Postgres>,
     _phantom: PhantomData<(V, A)>,
+}
+
+// By hand: a derive would require the view and the aggregate to be `Debug`. The pool prints its size and options,
+// never its URL.
+impl<V, A> fmt::Debug for PostgresViewRepository<V, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PostgresViewRepository")
+            .field("insert_sql", &self.insert_sql)
+            .field("update_sql", &self.update_sql)
+            .field("select_sql", &self.select_sql)
+            .field("list_sql", &self.list_sql)
+            .field("range_sql", &self.range_sql)
+            .field("pool", &self.pool)
+            .finish()
+    }
 }
 
 impl<V, A> PostgresViewRepository<V, A>

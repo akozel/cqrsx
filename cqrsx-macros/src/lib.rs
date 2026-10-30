@@ -88,26 +88,26 @@ pub fn derive_rejection(input: TokenStream) -> TokenStream {
 /// `cqrsx::task::handler::TaskHandler`.
 #[proc_macro_attribute]
 pub fn task_handler(attribute: TokenStream, item: TokenStream) -> TokenStream {
-    run_attribute(task_handler::expand_task_handler, attribute.into(), item.into()).into()
+    run_attribute(task_handler::expand_task_handler, &attribute.into(), item.into()).into()
 }
 
 /// Parses the function an attribute is on and expands it with the attribute's arguments; a function that does not
 /// parse and a refused expansion become a `compile_error!` at their place.
 fn run_attribute(
-    expand: fn(TokenStream2, ItemFn) -> syn::Result<TokenStream2>,
-    attribute: TokenStream2,
+    expand: fn(&TokenStream2, &ItemFn) -> syn::Result<TokenStream2>,
+    attribute: &TokenStream2,
     item: TokenStream2,
 ) -> TokenStream2 {
     syn::parse2(item)
-        .and_then(|function| expand(attribute, function))
+        .and_then(|function| expand(attribute, &function))
         .unwrap_or_else(syn::Error::into_compile_error)
 }
 
 /// Parses a derive input and expands it; an input that does not parse and a refused expansion become a
 /// `compile_error!` at their place.
-fn run(expand: fn(DeriveInput) -> syn::Result<TokenStream2>, input: TokenStream2) -> TokenStream2 {
+fn run(expand: fn(&DeriveInput) -> syn::Result<TokenStream2>, input: TokenStream2) -> TokenStream2 {
     syn::parse2(input)
-        .and_then(expand)
+        .and_then(|input| expand(&input))
         .unwrap_or_else(syn::Error::into_compile_error)
 }
 
@@ -116,13 +116,13 @@ mod tests {
     use super::*;
     use quote::quote;
 
-    fn named(input: DeriveInput) -> syn::Result<TokenStream2> {
-        let ident = input.ident;
+    fn named(input: &DeriveInput) -> syn::Result<TokenStream2> {
+        let ident = &input.ident;
         Ok(quote! { const _: &str = stringify!(#ident); })
     }
 
-    fn refused(input: DeriveInput) -> syn::Result<TokenStream2> {
-        Err(syn::Error::new_spanned(input.ident, "refused"))
+    fn refused(input: &DeriveInput) -> syn::Result<TokenStream2> {
+        Err(syn::Error::new_spanned(&input.ident, "refused"))
     }
 
     #[test]
@@ -133,26 +133,26 @@ mod tests {
         );
     }
 
-    fn named_function(attribute: TokenStream2, function: ItemFn) -> syn::Result<TokenStream2> {
-        let ident = function.sig.ident;
+    fn named_function(attribute: &TokenStream2, function: &ItemFn) -> syn::Result<TokenStream2> {
+        let ident = &function.sig.ident;
         Ok(quote! { const _: &str = stringify!(#ident #attribute); })
     }
 
-    fn refused_function(_: TokenStream2, function: ItemFn) -> syn::Result<TokenStream2> {
-        Err(syn::Error::new_spanned(function.sig.ident, "refused"))
+    fn refused_function(_: &TokenStream2, function: &ItemFn) -> syn::Result<TokenStream2> {
+        Err(syn::Error::new_spanned(&function.sig.ident, "refused"))
     }
 
     #[test]
     fn run_attribute_expands_a_parsed_function_and_reports_an_error_as_compile_error() {
         assert_eq!(
-            run_attribute(named_function, quote! { x }, quote! { async fn seat() {} }).to_string(),
+            run_attribute(named_function, &quote! { x }, quote! { async fn seat() {} }).to_string(),
             quote! { const _: &str = stringify!(seat x); }.to_string()
         );
         assert_eq!(
-            run_attribute(refused_function, TokenStream2::new(), quote! { fn seat() {} }).to_string(),
+            run_attribute(refused_function, &TokenStream2::new(), quote! { fn seat() {} }).to_string(),
             quote! { ::core::compile_error! { "refused" } }.to_string()
         );
-        let unparsable = run_attribute(named_function, TokenStream2::new(), quote! { struct Seat; }).to_string();
+        let unparsable = run_attribute(named_function, &TokenStream2::new(), quote! { struct Seat; }).to_string();
         assert!(unparsable.starts_with(":: core :: compile_error !"), "{unparsable}");
     }
 

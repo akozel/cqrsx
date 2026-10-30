@@ -163,6 +163,7 @@ pub enum SettingsError {
 /// - The stores: [`postgres`](Self::postgres) (pools), [`mongodb`](Self::mongodb) (the client and the database of the
 ///   views); the HTTP API: [`http_addr`](Self::http_addr); the name of the connections.
 #[derive(Clone, Debug)]
+#[must_use]
 pub struct Settings {
     prefix: String,
     application_name: String,
@@ -988,7 +989,7 @@ mod tests {
     #[test]
     fn every_variable_of_the_engine_is_read_once_under_its_prefix() {
         let read = std::sync::Mutex::new(Vec::new());
-        Settings::from_lookup(
+        let settings = Settings::from_lookup(
             "SHOP",
             |name| {
                 read.lock().unwrap().push(name.to_owned());
@@ -997,6 +998,7 @@ mod tests {
             &Defaults::LIBRARY,
         )
         .unwrap();
+        assert_eq!(settings.prefix(), "SHOP");
         let mut read = read.into_inner().unwrap();
         read.sort();
         let mut expected: Vec<String> = variables()

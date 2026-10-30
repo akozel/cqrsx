@@ -78,7 +78,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(book("b4", "fox", "Fox", id))
-            .then_expect_event(ConcertEvent::SeatBooked(SeatBooked {
+            .then_expect_event(&ConcertEvent::SeatBooked(SeatBooked {
                 seat: SeatId::parse("B4").unwrap(),
                 zone: Zone::Standard,
                 price: 80,
@@ -93,7 +93,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given_no_previous_events()
             .when(book("B4", "fox", "Fox", Uuid::new_v4()))
-            .then_expect_error(ConcertError::ConcertNotFound);
+            .then_expect_error(&ConcertError::ConcertNotFound);
     }
 
     #[test]
@@ -101,7 +101,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(book("Z9", "fox", "Fox", Uuid::new_v4()))
-            .then_expect_error(ConcertError::UnknownSeat { seat: "Z9".into() });
+            .then_expect_error(&ConcertError::UnknownSeat { seat: "Z9".into() });
     }
 
     /// Sold-out wins over "seat taken": on a full hall even a taken seat is reported as sold out.
@@ -110,7 +110,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(full_house())
             .when(book("B4", "fox", "Fox", Uuid::new_v4()))
-            .then_expect_error(ConcertError::SoldOut);
+            .then_expect_error(&ConcertError::SoldOut);
     }
 
     #[test]
@@ -118,7 +118,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(vec![announced(), booked("B4", "fox", "Fox", Uuid::new_v4())])
             .when(book("B4", "panda", "Panda", Uuid::new_v4()))
-            .then_expect_error(ConcertError::SeatTaken {
+            .then_expect_error(&ConcertError::SeatTaken {
                 seat: SeatId::parse("B4").unwrap(),
                 by: "Fox".into(),
             });
@@ -136,7 +136,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(history.clone())
             .when(book("A5", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()))
-            .then_expect_error(ConcertError::TicketLimit { limit: 4 });
+            .then_expect_error(&ConcertError::TicketLimit { limit: 4 });
         // Another fan is unaffected.
         assert!(
             TestFramework::<Concert>::new(rules())

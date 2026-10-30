@@ -43,7 +43,7 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given_no_previous_events()
             .when(announce())
-            .then_expect_event(announced());
+            .then_expect_event(&announced());
     }
 
     #[test]
@@ -51,6 +51,6 @@ mod tests {
         TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(announce())
-            .then_expect_error(ConcertError::AlreadyAnnounced);
+            .then_expect_error(&ConcertError::AlreadyAnnounced);
     }
 }

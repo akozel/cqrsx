@@ -139,7 +139,7 @@ mod tests {
     fn combined_defaults_and_independent_overrides_use_existing_settings_once() {
         let default = TaskRuntimeConfig::default();
         assert!(
-            TaskRuntimeConfig::try_new(default.storage().clone(), default.worker_pool().clone()).is_ok(),
+            TaskRuntimeConfig::try_new(*default.storage(), default.worker_pool().clone()).is_ok(),
             "the defaults fit together"
         );
         assert_eq!(default.worker_pool().concurrency(), 128);

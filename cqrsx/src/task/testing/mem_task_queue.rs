@@ -171,7 +171,7 @@ fn take<K: Ord>(
     taken
 }
 
-fn reason(text: String) -> Option<String> {
+fn reason(text: &str) -> Option<String> {
     Some(text.chars().take(MAX_REASON_CHARS).collect())
 }
 
@@ -264,11 +264,11 @@ impl TaskQueue for MemTaskQueue {
                 }
                 SettlementRequest::Failed { reason: text } => {
                     delivery.status = TaskStatus::Failed;
-                    delivery.last_error = reason(text);
+                    delivery.last_error = reason(&text);
                     failure(attempt, TaskFailureCause::PermanentRejection)
                 }
                 SettlementRequest::Retry { delay, reason: text } => {
-                    delivery.last_error = reason(text);
+                    delivery.last_error = reason(&text);
                     if delivery.attempts >= row.entry.task.max_attempts() {
                         delivery.status = TaskStatus::Failed;
                         failure(attempt, TaskFailureCause::AttemptLimitReached)

@@ -11,7 +11,7 @@ use crate::cqrs::{
     command::{retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
     store::EventStore,
 };
-use std::{collections::HashMap, error::Error, sync::Arc};
+use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 
 /// The core of command execution for one aggregate type, independent of the store: the [`CqrsFramework`] it
 /// owns for its life holds the store, the rules and the task planner. `postgres::command::PostgresCommandExecutor`
@@ -30,12 +30,24 @@ use std::{collections::HashMap, error::Error, sync::Arc};
 /// processors ([`with_commit_wakeup`](Self::with_commit_wakeup)), which read the journal themselves; then the
 /// command releases the lock, tells the executor's observer what became of it
 /// ([`with_observer`](Self::with_observer)) and answers with what it committed.
+#[must_use]
 pub struct CommandExecutorCore<A: Aggregate, S: EventStore<A>> {
     framework: CqrsFramework<A, S>,
     retry_policy: AggregateConflictRetryPolicy,
     locks: AggregateLockRegistry,
     wakeup: Option<CommitWakeup>,
     observer: Option<Arc<dyn CommandObserver<A>>>,
+}
+
+impl<A: Aggregate, S: EventStore<A>> fmt::Debug for CommandExecutorCore<A, S> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CommandExecutorCore")
+            .field("framework", &self.framework)
+            .field("retry_policy", &self.retry_policy)
+            .field("commit_wakeup", &self.wakeup.is_some())
+            .field("observer", &self.observer.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<A: Aggregate + 'static, S: EventStore<A>> CommandExecutorCore<A, S> {

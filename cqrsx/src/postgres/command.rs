@@ -11,10 +11,10 @@ use crate::{
     postgres::outbox::PostgresEventRepositoryWithOutbox,
 };
 use sqlx::PgPool;
-use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
+use std::{collections::HashMap, fmt, num::NonZeroUsize, sync::Arc};
 
 /// Snapshot interval, optimistic-conflict policy and aggregate lock limits. Does not read env.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PostgresCommandConfig {
     snapshot_interval: NonZeroUsize,
     conflict_retry: AggregateConflictRetryPolicy,
@@ -63,8 +63,18 @@ type PostgresStore<A> = PersistedEventStore<PostgresEventRepositoryWithOutbox, A
 /// requiring repeatable event application.
 ///
 /// For custom stores, use [`CommandExecutorCore::new`] with a framework of your own instead.
+#[must_use]
 pub struct PostgresCommandExecutor<A: Aggregate> {
     inner: CommandExecutorCore<A, PostgresStore<A>>,
+}
+
+// By hand: a derive would require `A` to be `Debug`.
+impl<A: Aggregate> fmt::Debug for PostgresCommandExecutor<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PostgresCommandExecutor")
+            .field("executor", &self.inner)
+            .finish()
+    }
 }
 
 impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
@@ -184,14 +194,33 @@ mod tests {
     #[tokio::test]
     async fn the_core_takes_the_lock_limits_of_the_config() {
         let pool = sqlx::postgres::PgPoolOptions::new()
-            .connect_lazy("postgres://nobody@localhost/none")
+            .connect_lazy("postgres://nobody:s3cret@localhost/none")
             .unwrap();
         let limits = LockLimits::try_new(Duration::from_millis(5), 2).unwrap();
         let config = PostgresCommandConfig::new(NonZeroUsize::MIN, AggregateConflictRetryPolicy::default(), limits);
-        let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ())
+        let executor = PostgresCommandExecutor::<Quiet>::new(pool.clone(), config, ())
             .with_task_planner(NoTasks)
             .with_commit_wakeup(CommitWakeup::new());
         assert_eq!(executor.inner.lock_limits(), limits);
+        let printed = format!("{executor:?}");
+        assert!(
+            printed.starts_with(
+                r#"PostgresCommandExecutor { executor: CommandExecutorCore { framework: CqrsFramework { aggregate_type: "quiet", task_planner: true, .. }"#
+            ),
+            "{printed}"
+        );
+        assert!(printed.contains("commit_wakeup: true"), "{printed}");
+        let stores = [
+            format!(
+                "{:?}",
+                crate::postgres::checkpoint_store::PostgresCheckpointStore::new(pool.clone())
+            ),
+            format!("{:?}", crate::postgres::task_queue::PostgresTaskQueue::new(pool.clone())),
+            format!("{:?}", PostgresEventRepositoryWithOutbox::new(pool)),
+        ];
+        for printed in stores {
+            assert!(printed.contains("pool: Pool {") && !printed.contains("s3cret"), "{printed}");
+        }
     }
 
     /// The interval is a `NonZeroUsize`: a zero interval, which made every commit divide by zero, does not compile.

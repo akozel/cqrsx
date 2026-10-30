@@ -100,7 +100,7 @@ impl TaskQueue for Queue {
             && incoming.front().is_some_and(|message| message.attempt().format() == format)
         {
             let mut task = incoming.pop_front().unwrap();
-            task = with_deadline(task, lease_deadline);
+            task = with_deadline(&task, lease_deadline);
             result.push(task);
         }
         Ok(result)
@@ -183,12 +183,12 @@ impl TaskAdapter for CountingAdapter {
     }
 }
 
-pub(crate) fn with_deadline(task: LeasedTask, deadline: tokio::time::Instant) -> LeasedTask {
+pub(crate) fn with_deadline(task: &LeasedTask, deadline: tokio::time::Instant) -> LeasedTask {
     let token = task.lease().lock_token();
     LeasedTask::new(task.attempt().clone(), TaskLease::new(token, deadline))
 }
 #[cfg(feature = "worker")]
-pub(crate) fn with_format(task: LeasedTask, format: TaskFormat) -> LeasedTask {
+pub(crate) fn with_format(task: &LeasedTask, format: TaskFormat) -> LeasedTask {
     let d = task.attempt();
     LeasedTask::new(
         TaskAttempt::new(d.task_id(), format, d.payload().clone(), d.metadata().clone(), d.number()).unwrap(),

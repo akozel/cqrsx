@@ -17,7 +17,13 @@ use crate::cqrs::{
 };
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
-use std::{cmp::Ordering, fmt::Debug, marker::PhantomData, num::NonZeroUsize, sync::Arc};
+use std::{
+    cmp::Ordering,
+    fmt::{self, Debug},
+    marker::PhantomData,
+    num::NonZeroUsize,
+    sync::Arc,
+};
 
 /// A `View` represents a materialized view, generally serialized for persistence, that is updated by a projection.
 /// This is the data of a CQRS read model.
@@ -46,6 +52,7 @@ const DEFAULT_MAX_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
 /// batch before anything is written (`PersistenceError::SequenceGap`). Delivery may therefore repeat events and
 /// come from several processes without damaging the document. The projection is named after its view
 /// ([`View::NAME`]).
+#[must_use]
 pub struct ViewProjection<R, V, A>
 where
     R: ViewRepository<V, A>,
@@ -56,6 +63,22 @@ where
     error_observer: Option<Box<PersistenceErrorObserver>>,
     max_attempts: NonZeroUsize,
     phantom: PhantomData<(V, A)>,
+}
+
+// By hand: the repository need not be `Debug`, and the error observer is a closure.
+impl<R, V, A> Debug for ViewProjection<R, V, A>
+where
+    R: ViewRepository<V, A>,
+    V: View<A>,
+    A: Aggregate,
+{
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ViewProjection")
+            .field("view", &V::NAME)
+            .field("max_attempts", &self.max_attempts)
+            .field("error_observer", &self.error_observer.is_some())
+            .finish_non_exhaustive()
+    }
 }
 
 impl<R, V, A> ViewProjection<R, V, A>
@@ -798,6 +821,10 @@ mod tests {
     fn a_projection_is_named_after_its_view() {
         let projection = ViewProjection::<_, Projection, TestAggregate>::new(Arc::new(Repository::default()));
         assert_eq!(projection.name(), "halls");
+        assert_eq!(
+            format!("{projection:?}"),
+            r#"ViewProjection { view: "halls", max_attempts: 16, error_observer: false, .. }"#
+        );
     }
 
     #[tokio::test]

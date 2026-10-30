@@ -150,7 +150,7 @@ use crate::{
     },
     task::{NewTask, TaskSchedule, TaskValidationError, format::TaskPayload, policy::Policies},
 };
-use std::{collections::HashMap, marker::PhantomData, time::Duration};
+use std::{collections::HashMap, fmt, marker::PhantomData, time::Duration};
 
 /// What follows each event of the aggregate: the tasks of one decision, planned through `then` in order. A pure,
 /// synchronous function of `decided` (see the [module](self)).
@@ -170,6 +170,17 @@ pub struct Decided<'a, A: Aggregate> {
     /// The one event the command decided.
     pub event: &'a A::Event,
     metadata: &'a HashMap<String, String>,
+}
+
+// By hand: the state and the command need not be `Debug`, and the metadata is the caller's data.
+impl<A: Aggregate> fmt::Debug for Decided<'_, A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Decided")
+            .field("aggregate_type", &A::TYPE)
+            .field("id", &format_args!("{}", self.id))
+            .field("event", &self.event)
+            .finish_non_exhaustive()
+    }
 }
 
 impl<'a, A: Aggregate> Decided<'a, A> {
@@ -244,6 +255,13 @@ impl Then {
 pub struct ReactionsPlanner<A> {
     policies: Policies,
     aggregate: PhantomData<fn() -> A>,
+}
+
+// By hand: a derive would require `A` to be `Debug`.
+impl<A> fmt::Debug for ReactionsPlanner<A> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("ReactionsPlanner").field("policies", &self.policies).finish()
+    }
 }
 
 impl<A: Reactions> ReactionsPlanner<A> {
@@ -462,7 +480,7 @@ mod tests {
     }
 
     /// What the planner plans for `events` decided by `sale` on till `t-1`, which had rung up 5 before.
-    fn plan(sale: Sale, events: &[Sale], metadata: &HashMap<String, String>) -> Result<Vec<NewTask>, TaskPlanError> {
+    fn plan(sale: &Sale, events: &[Sale], metadata: &HashMap<String, String>) -> Result<Vec<NewTask>, TaskPlanError> {
         let before = Till { total: 5 };
         let mut after = before.clone();
         for event in events {
@@ -472,7 +490,7 @@ mod tests {
             aggregate_id: &"t-1".into(),
             before: &before,
             after: &after,
-            command: &sale,
+            command: sale,
             events,
             metadata,
             causation: None,
@@ -486,7 +504,7 @@ mod tests {
     #[test]
     fn a_reaction_sees_the_id_the_state_after_the_event_the_command_the_event_and_the_metadata() {
         let metadata = HashMap::from([("source".to_owned(), "ui".to_owned())]);
-        let tasks = plan(Sale::Rung(3), &[Sale::Rung(3)], &metadata).unwrap();
+        let tasks = plan(&Sale::Rung(3), &[Sale::Rung(3)], &metadata).unwrap();
         let [receipt] = &tasks[..] else {
             panic!("one receipt: {tasks:?}");
         };
@@ -511,10 +529,10 @@ mod tests {
 
     #[test]
     fn a_decision_without_exactly_one_event_is_refused() {
-        let none = plan(Sale::Burst, &[], &HashMap::new()).unwrap_err();
+        let none = plan(&Sale::Burst, &[], &HashMap::new()).unwrap_err();
         assert!(matches!(&none, TaskPlanError::Application(_)));
         assert_eq!(none.to_string(), "a reaction sees one event, the decision has 0");
-        let two = plan(Sale::Burst, &[Sale::Burst, Sale::Burst], &HashMap::new()).unwrap_err();
+        let two = plan(&Sale::Burst, &[Sale::Burst, Sale::Burst], &HashMap::new()).unwrap_err();
         assert_eq!(two.to_string(), "a reaction sees one event, the decision has 2");
     }
 
@@ -558,7 +576,7 @@ mod tests {
 
     #[test]
     fn task_after_schedules_after_its_delay_and_task_plans_now() {
-        let tasks = plan(Sale::Later(90), &[Sale::Later(90)], &HashMap::new()).unwrap();
+        let tasks = plan(&Sale::Later(90), &[Sale::Later(90)], &HashMap::new()).unwrap();
         assert_eq!(formats(&tasks), ["pong v1", "ping v1"]);
         assert_eq!(
             (tasks[0].schedule(), tasks[1].schedule()),
@@ -569,7 +587,7 @@ mod tests {
 
     #[test]
     fn the_policy_of_a_task_type_sets_its_budget_and_a_type_without_one_keeps_the_default() {
-        let tasks = plan(Sale::Burst, &[Sale::Burst], &HashMap::new()).unwrap();
+        let tasks = plan(&Sale::Burst, &[Sale::Burst], &HashMap::new()).unwrap();
         assert_eq!(
             tasks.iter().map(NewTask::max_attempts).collect::<Vec<_>>(),
             [6, DEFAULT_MAX_ATTEMPTS, 6]
@@ -593,14 +611,29 @@ mod tests {
     }
 
     #[test]
+    fn a_decision_prints_its_aggregate_and_event_and_a_planner_its_policies() {
+        let metadata = HashMap::from([("token".to_owned(), "t0k3n".to_owned())]);
+        let (id, till) = ("t-1".into(), Till::default());
+        let decided = Decided::<Till>::new(&id, &till, &Sale::Burst, &Sale::Burst, &metadata);
+        assert_eq!(
+            format!("{decided:?}"),
+            format!(r#"Decided {{ aggregate_type: "{}", id: t-1, event: Burst, .. }}"#, Till::TYPE)
+        );
+        assert_eq!(
+            format!("{:?}", ReactionsPlanner::<Till>::new(Policies::default())),
+            format!("ReactionsPlanner {{ policies: {:?} }}", Policies::default())
+        );
+    }
+
+    #[test]
     fn the_first_task_that_cannot_be_built_refuses_the_plan() {
         let mut counting = Then::default();
         counting.task(Counted);
         assert_eq!(COUNTED.load(Ordering::SeqCst), 1, "building a task serializes it");
-        let broken = plan(Sale::Broken, &[Sale::Broken], &HashMap::new()).unwrap_err();
+        let broken = plan(&Sale::Broken, &[Sale::Broken], &HashMap::new()).unwrap_err();
         assert!(matches!(broken, TaskPlanError::Task(TaskValidationError::Serialization)));
         assert_eq!(COUNTED.load(Ordering::SeqCst), 1, "nothing after the refused task is built");
-        let overdue = plan(Sale::Overdue, &[Sale::Overdue], &HashMap::new()).unwrap_err();
+        let overdue = plan(&Sale::Overdue, &[Sale::Overdue], &HashMap::new()).unwrap_err();
         assert!(matches!(overdue, TaskPlanError::Task(TaskValidationError::InvalidSchedule)));
         let mut then = Then::default();
         then.task(Unserializable);

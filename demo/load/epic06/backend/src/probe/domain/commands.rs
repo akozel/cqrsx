@@ -22,7 +22,7 @@ mod tests {
         TestFramework::<Probe>::new(ProbeRules { tasks: 3 })
             .given(vec![ProbeEvent::Pinged(Pinged { tasks: 0 })])
             .when(Ping)
-            .then_expect_event(ProbeEvent::Pinged(Pinged { tasks: 3 }));
+            .then_expect_event(&ProbeEvent::Pinged(Pinged { tasks: 3 }));
         assert_eq!((Ping.name(), Ping.labels(), Ping.command_id()), ("Ping", vec![], None));
     }
 }
