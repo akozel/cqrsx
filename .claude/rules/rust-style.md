@@ -11,6 +11,11 @@ application code where API rules are strong recommendations and simplicity beats
 are not listed here are not adopted. `/rust-style-review` checks code against these rules; findings cite the
 rule numbers.
 
+**Where the rules apply** (retrospective of epic 06, 2026-10-30): to new code and to code changed for another reason.
+No sweeps that rewrite old code only to satisfy a style rule (names, Debug, imports, chains, module moves): their
+cost is high and their benefit for an unreleased library with one consumer is low. A defect (a panic, a lost value,
+a wrong result, a wrong doc) is fixed wherever it is found. Lints in `[lints]` keep the enforced rules for every line.
+
 ## Ownership and borrowing
 
 1. `Arc`/`Rc` only when unique ownership with borrowing would be unreasonably complex. Sharing between tasks
@@ -58,8 +63,10 @@ rule numbers.
 14. Named fields instead of tuples and multi-field tuple structs, except newtypes and very local code.
 15. Standard traits instead of look-alike methods (`FromStr`, `Display`, `From`); `#[derive]` when it fits. A
     manual impl is fine where derive would add wrong bounds on generic parameters (`CommitReport`).
-16. Every public type implements `Debug`; other traits are added when needed. Option structs and types with
-    `new()` implement `Default`.
+16. Every public type implements `Debug` (the lint requires it): derive where the fields allow; otherwise a short
+    manual impl with the identifying fields and `finish_non_exhaustive()`, never a secret. A manual `Debug` gets a test
+    only when it hides a secret. Other traits are added when needed. Option structs and types with `new()`
+    implement `Default`.
 17. A trait exists only for generic code, `impl Trait`/`dyn Trait`, or to extend a foreign type (suffix `Ext`);
     never to group methods.
 18. Generics by default; `dyn` for heterogeneous sets (handlers of different types, observers).

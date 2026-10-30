@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-30, `5715a12` |
 | Ценность | высокая: каждое место — падение процесса или неверное поведение уже сейчас |
 | Цена | низкая–средняя: правки местные; одна (panic обработчика задач) меняет поведение и тест |
 | cqrsx | `cqrs/store/persisted.rs`, `postgres/command.rs`, `engine.rs`, `task/executor/default_executor.rs`, `task/runtime/supervisor.rs`, `postgres/view_repository.rs`, `task.rs`, `engine/serve.rs`, `cqrs/projection/processor/delivery.rs`, `task/queue/settlement.rs`, `postgres/outbox/write.rs`, `engine/build.rs`, `cqrs/projection.rs`; общий модуль для `unwinding` |

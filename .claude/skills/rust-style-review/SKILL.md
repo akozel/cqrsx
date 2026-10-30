@@ -53,7 +53,9 @@ Go through the code for the rest, outside `#[cfg(test)]`:
 ## 3. Verify
 
 Read every site and its callers before reporting it. Drop what a rule's exception covers and say which
-exception. A finding names: rule, `file:line`, what is wrong, the fix, and whether the fix changes the public
+exception. Sort every finding into a **defect** (a panic, a lost value, a wrong result, a wrong doc, a measurable cost)
+or **style** (names, types that only read better, Debug, imports, chains, module layout): the rules file says style
+applies to new and changed code only. A finding names: rule, `file:line`, what is wrong, the fix, and whether the fix changes the public
 API. Never promise a speed-up without a measurement.
 
 ## 4. Report
@@ -63,6 +65,8 @@ rule (count, cost of the fix), then findings grouped by rule.
 
 ## 5. Fix (only when asked)
 
+- Fix defects. Style findings in old code are not swept: they are fixed when the file is changed for another
+  reason; propose a style change of old code only when its benefit is concrete, with the cost in files and lines.
 - Fix one rule group at a time. Run what `CLAUDE.md` requires before finishing (fmt, clippy, tests, coverage).
 - When a group reaches zero hits, enable its lints in the same change, in `[lints]` of the crate's `Cargo.toml`
   (`unsafe_code = "forbid"` belongs there too). Test code stays allowed: `clippy.toml` at the workspace root

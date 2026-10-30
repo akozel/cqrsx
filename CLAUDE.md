@@ -22,7 +22,8 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
 Rust code follows `.claude/rules/rust-style.md`: the Google Rust Style Guide adapted to this project
 (no panics outside tests, borrow before clone, newtypes only for values easy to mix up, a parent module
 holds its contract, no `#[non_exhaustive]`), with the list of Google rules not adopted. `/rust-style-review`
-checks code against it.
+checks code against it. The rules apply to new and changed code: old code is not rewritten only for style,
+defects are fixed wherever found.
 
 ## Tests and coverage
 
