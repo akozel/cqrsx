@@ -84,12 +84,11 @@ struct Transaction {
     events: u64,
 }
 
-/// A dispatched page: its keys in order, its transactions and the receipts still to come.
+/// A dispatched page: its transactions and the receipts still to come.
 struct Page {
     no: u64,
     last_position: Position,
     events: u64,
-    keys: Vec<String>,
     transactions: Vec<Transaction>,
     pending: usize,
     failed: Vec<(usize, Failure)>,
@@ -97,7 +96,9 @@ struct Page {
 
 struct LiveOutcome {
     page: u64,
+    /// The key's index in the page, as its transactions name it.
     key: usize,
+    aggregate_id: String,
     last_sequence: usize,
     events: usize,
     result: Result<Done, DeliveryError>,
@@ -659,7 +660,7 @@ where
         if let Some((position, key)) = poison {
             let no = self.page_no();
             let failure = Failure {
-                key: Some(key.clone()),
+                key: Some(key),
                 handler: "journal".to_owned(),
                 operation: "page",
                 category: "deserialization",
@@ -669,7 +670,6 @@ where
                 no,
                 last_position: position,
                 events: 0,
-                keys: vec![key],
                 transactions: Vec::new(),
                 pending: 0,
                 failed: vec![(0, failure)],
@@ -689,11 +689,8 @@ where
         let mut groups: Vec<Vec<EventEnvelope<A>>> = Vec::new();
         let mut transactions: Vec<Transaction> = Vec::new();
         for (position, event) in decoded {
-            let idx = *index.entry(event.aggregate_id.clone()).or_insert_with(|| {
-                keys.push(event.aggregate_id.clone());
-                groups.push(Vec::new());
-                keys.len() - 1
-            });
+            // A new key gets the next index, and no group yet.
+            let idx = *index.entry(event.aggregate_id.clone()).or_insert(groups.len());
             match transactions.last_mut() {
                 Some(transaction) if transaction.position == position => {
                     if !transaction.keys.contains(&idx) {
@@ -707,7 +704,13 @@ where
                     events: 1,
                 }),
             }
-            groups[idx].push(event);
+            match groups.get_mut(idx) {
+                Some(group) => group.push(event),
+                None => {
+                    keys.push(event.aggregate_id.clone());
+                    groups.push(vec![event]);
+                }
+            }
         }
         let mut slots = Vec::with_capacity(keys.len());
         for key in &keys {
@@ -719,18 +722,19 @@ where
             no,
             last_position,
             events,
-            keys,
             transactions,
             pending: slots.len(),
             failed: Vec::new(),
         });
-        for (key, (slot, events)) in slots.into_iter().zip(groups).enumerate() {
+        let deliveries = keys.into_iter().zip(slots).zip(groups).enumerate();
+        for (key, ((aggregate_id, slot), events)) in deliveries {
             let (last_sequence, count) = (events.last().map_or(0, |event| event.sequence), events.len());
             let receipt = slot.deliver(events.into());
             self.outcomes.spawn(async move {
                 LiveOutcome {
                     page: no,
                     key,
+                    aggregate_id,
                     last_sequence,
                     events: count,
                     result: receipt.outcome().await,
@@ -820,14 +824,14 @@ where
 
     async fn on_live(&mut self, joined: Result<LiveOutcome, JoinError>) -> Result<(), Interrupt> {
         let Ok(outcome) = joined else { return Ok(()) }; // a receipt task cannot panic or be cancelled
-        let Some(index) = self.pages.iter().position(|page| page.no == outcome.page) else {
+        let Some(page) = self.pages.iter_mut().find(|page| page.no == outcome.page) else {
             return Ok(());
         };
-        let key = self.pages[index].keys[outcome.key].clone();
-        let position = self.pages[index].last_position;
+        let key = outcome.aggregate_id;
+        let position = page.last_position;
         match outcome.result {
             Ok(_) => {
-                self.pages[index].pending -= 1;
+                page.pending -= 1;
                 self.ctx.observer.applied(&Applied {
                     aggregate_id: &key,
                     last_sequence: outcome.last_sequence,
@@ -859,7 +863,6 @@ where
                     category: delivery_category(&error),
                     position,
                 };
-                let page = &mut self.pages[index];
                 page.pending -= 1;
                 page.failed.push((outcome.key, failure));
                 self.failed_keys.insert(key);

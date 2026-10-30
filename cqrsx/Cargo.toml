@@ -41,3 +41,13 @@ log = "0.4.34"
 testcontainers = "0.28.0"
 tokio = { version = "1.53.1", features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
+
+# No panics outside tests (rules 6–8 of .claude/rules/rust-style.md); tests are allowed by clippy.toml.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"

@@ -142,9 +142,8 @@ fn uuid_v5(namespace: &Uuid, name: &[u8]) -> Uuid {
     let mut hash = Sha1::new();
     hash.update(namespace.as_bytes());
     hash.update(name);
-    let digest = hash.finalize();
-    let mut bytes = [0; 16];
-    bytes.copy_from_slice(&digest[..16]);
+    let digest: [u8; 20] = hash.finalize().into();
+    let [bytes @ .., _, _, _, _] = digest;
     uuid::Builder::from_sha1_bytes(bytes).into_uuid()
 }
 

@@ -20,7 +20,7 @@
 //! use std::time::Duration;
 //!
 //! /// E-mails back off from one second to eight.
-//! const MAIL: PolicyName = PolicyName::new("mail");
+//! const MAIL: PolicyName = PolicyName::new("mail").unwrap();
 //!
 //! #[derive(Serialize, Task)]
 //! #[task(name = "issue_refund", version = 1)]
@@ -46,12 +46,13 @@
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! A policy name is never empty; a constant with an empty one does not compile:
+//! A policy name is never empty: [`PolicyName::new`] is `None` for an empty one, so a constant with an empty one does
+//! not compile:
 //!
 //! ```compile_fail
 //! use cqrsx::task::policy::PolicyName;
 //!
-//! const NONE: PolicyName = PolicyName::new("");
+//! const NONE: PolicyName = PolicyName::new("").unwrap();
 //!
 //! fn main() {
 //!     println!("{NONE}");
@@ -69,19 +70,14 @@ use std::{
     time::Duration,
 };
 
-/// The name of a task policy: a constant of the application (`const MAIL: PolicyName = PolicyName::new("mail");`).
+/// The name of a task policy: a constant of the application (`const MAIL: PolicyName = PolicyName::new("mail").unwrap();`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PolicyName(&'static str);
 
 impl PolicyName {
-    /// A name that is not empty; in a constant, an empty one does not compile.
-    ///
-    /// # Panics
-    ///
-    /// When `name` is empty.
-    pub const fn new(name: &'static str) -> Self {
-        assert!(!name.is_empty(), "a policy name is not empty");
-        Self(name)
+    /// A name that is not empty, `None` for an empty one. A constant unwraps it, so an empty name does not compile.
+    pub const fn new(name: &'static str) -> Option<Self> {
+        if name.is_empty() { None } else { Some(Self(name)) }
     }
 
     pub const fn as_str(&self) -> &'static str {
@@ -239,8 +235,8 @@ mod tests {
     use super::*;
     use serde::Serialize;
 
-    const STEP: PolicyName = PolicyName::new("step");
-    const MAIL: PolicyName = PolicyName::new("mail");
+    const STEP: PolicyName = PolicyName::new("step").unwrap();
+    const MAIL: PolicyName = PolicyName::new("mail").unwrap();
 
     #[derive(Serialize)]
     struct Step {}
@@ -412,13 +408,16 @@ mod tests {
     #[test]
     fn a_policy_name_is_its_text() {
         assert_eq!((MAIL.as_str(), MAIL.to_string()), ("mail", "mail".to_owned()));
-        assert_eq!(PolicyName::new(std::hint::black_box("mail")), MAIL, "built at run time too");
+        assert_eq!(
+            PolicyName::new(std::hint::black_box("mail")),
+            Some(MAIL),
+            "built at run time too"
+        );
         assert_ne!(MAIL, STEP);
     }
 
     #[test]
-    #[should_panic(expected = "a policy name is not empty")]
     fn an_empty_policy_name_is_refused() {
-        PolicyName::new(std::hint::black_box(""));
+        assert_eq!(PolicyName::new(std::hint::black_box("")), None);
     }
 }

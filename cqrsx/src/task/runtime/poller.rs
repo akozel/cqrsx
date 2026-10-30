@@ -34,11 +34,17 @@ impl<Q: TaskQueue> Poller<Q> {
         let count = self.formats.len();
         let start = self.next_format_start;
         self.next_format_start = start.wrapping_add(1);
-        for offset in 0..count {
+        // Every format once, starting one further each call.
+        let rotation = self
+            .formats
+            .iter()
+            .cycle()
+            .skip(start.checked_rem(count).unwrap_or(0))
+            .take(count);
+        for format in rotation {
             if claimed.len() == limit {
                 break;
             }
-            let format = &self.formats[start.wrapping_add(offset) % count];
             let result = timeout_at(deadline, self.queue.claim(format, owner, limit - claimed.len(), lease))
                 .await
                 .unwrap_or(Err(TaskProcessingError::TimedOut));

@@ -14,8 +14,11 @@ pub enum TaskStorageConfigError {
     InvalidStorageTimeout,
 }
 impl Default for TaskStorageConfig {
+    /// A storage timeout of six seconds.
     fn default() -> Self {
-        Self::new(Duration::from_millis(DEFAULT_STORAGE_TIMEOUT_MS)).expect("valid default storage timeout")
+        Self {
+            storage_timeout: Duration::from_millis(DEFAULT_STORAGE_TIMEOUT_MS),
+        }
     }
 }
 impl TaskStorageConfig {
@@ -100,6 +103,7 @@ mod tests {
             TaskStorageConfig::from_lookup(|_| None).unwrap().storage_timeout(),
             Duration::from_secs(6)
         );
+        assert_eq!(TaskStorageConfig::default().storage_timeout(), Duration::from_secs(6));
         assert_eq!(
             TaskStorageConfig::from_lookup(|_| Some("750".into()))
                 .unwrap()

@@ -245,8 +245,8 @@ impl View<Show> for Hall {
     }
 }
 
-const STEP: PolicyName = PolicyName::new("step");
-const MAIL: PolicyName = PolicyName::new("mail");
+const STEP: PolicyName = PolicyName::new("step").unwrap();
+const MAIL: PolicyName = PolicyName::new("mail").unwrap();
 
 /// The box office: the shows and their halls.
 fn box_office(_: &Setup) -> Result<Module, SetupError> {

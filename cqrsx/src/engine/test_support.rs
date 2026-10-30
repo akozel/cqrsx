@@ -313,9 +313,9 @@ impl View<Wallet> for Tickets {
 }
 
 /// A step of the chain waits a second.
-pub(crate) const STEP: PolicyName = PolicyName::new("step");
+pub(crate) const STEP: PolicyName = PolicyName::new("step").unwrap();
 /// An e-mail backs off from a second to eight.
-pub(crate) const MAIL: PolicyName = PolicyName::new("mail");
+pub(crate) const MAIL: PolicyName = PolicyName::new("mail").unwrap();
 
 /// The box office: the shows and their halls.
 pub(crate) fn shows(_: &Setup) -> Result<Module, SetupError> {

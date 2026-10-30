@@ -11,6 +11,7 @@ use crate::{
         },
     },
     engine::{Cqrs, Journal},
+    locking::lock,
     task::{
         adapter::boxed::BoxedTaskAdapter,
         dispatcher::TaskDispatcher,
@@ -22,7 +23,7 @@ use crate::{
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
-    sync::{Arc, PoisonError},
+    sync::Arc,
     time::Duration,
 };
 
@@ -126,7 +127,7 @@ impl Cqrs {
     /// Starts the projection processors on the first call, then waits until every view has applied the journal of its
     /// aggregate type to its head.
     pub async fn catch_up(&self) {
-        let processors = std::mem::take(&mut *self.processors.lock().unwrap_or_else(PoisonError::into_inner));
+        let processors = std::mem::take(&mut *lock(&self.processors, "engine processors"));
         if !processors.is_empty() {
             tokio::spawn(processors.run(self.shutdown.clone()));
         }

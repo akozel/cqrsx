@@ -446,7 +446,7 @@ mod tests {
         }
     }
 
-    const STEP: PolicyName = PolicyName::new("step");
+    const STEP: PolicyName = PolicyName::new("step").unwrap();
 
     /// Pings are steps of six attempts; pongs and receipts have no policy.
     fn policies() -> Policies {

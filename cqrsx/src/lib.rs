@@ -29,6 +29,7 @@ pub mod engine;
 mod env;
 #[cfg(feature = "host")]
 pub mod host;
+mod locking;
 #[cfg(feature = "logging")]
 pub mod logging;
 #[cfg(feature = "mongodb")]

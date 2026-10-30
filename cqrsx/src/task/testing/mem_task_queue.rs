@@ -158,17 +158,17 @@ fn checked_limit(limit: usize) -> Result<usize, TaskProcessingError> {
     Ok(limit)
 }
 
-/// The indices of the `rows` that `selected` keeps, ordered by `key` and cut to `limit`.
+/// The `rows` that `selected` keeps, ordered by `key` and cut to `limit`.
 fn take<K: Ord>(
-    rows: &[OutboxRow],
+    rows: &mut [OutboxRow],
     selected: impl Fn(&OutboxRow) -> bool,
     key: impl Fn(&OutboxRow) -> K,
     limit: usize,
-) -> Vec<usize> {
-    let mut indices: Vec<usize> = (0..rows.len()).filter(|&index| selected(&rows[index])).collect();
-    indices.sort_by_key(|&index| key(&rows[index]));
-    indices.truncate(limit);
-    indices
+) -> Vec<&mut OutboxRow> {
+    let mut taken: Vec<&mut OutboxRow> = rows.iter_mut().filter(|row| selected(row)).collect();
+    taken.sort_by_key(|row| key(row));
+    taken.truncate(limit);
+    taken
 }
 
 fn reason(text: String) -> Option<String> {
@@ -209,8 +209,7 @@ impl TaskQueue for MemTaskQueue {
             let order = |row: &OutboxRow| (row.delivery.available_at, row.entry.task.id());
             take(rows, ready, order, limit)
                 .into_iter()
-                .map(|index| {
-                    let row = &mut rows[index];
+                .map(|row| {
                     let (task, delivery) = (&row.entry.task, &mut row.delivery);
                     let token = Uuid::new_v4();
                     delivery.status = TaskStatus::Processing;
@@ -290,8 +289,8 @@ impl TaskQueue for MemTaskQueue {
             let expired = |row: &OutboxRow| row.delivery.lease.as_ref().is_some_and(|lease| lease.until <= now);
             let order = |row: &OutboxRow| (row.delivery.lease.as_ref().map(|lease| lease.until), row.entry.task.id());
             let (mut retried, mut failures) = (0, Vec::new());
-            for index in take(rows, expired, order, limit) {
-                let row = &mut rows[index];
+            let taken = take(rows, expired, order, limit);
+            for row in taken {
                 let (task, delivery) = (&row.entry.task, &mut row.delivery);
                 delivery.lease = None;
                 delivery.last_error = Some(LEASE_EXPIRED.to_owned());

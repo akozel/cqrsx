@@ -405,7 +405,7 @@ mod tests {
 
     /// The policies binding the dummy task's type to `retry`.
     fn policies(retry: Retry) -> Policies {
-        const DUMMY: PolicyName = PolicyName::new("dummy");
+        const DUMMY: PolicyName = PolicyName::new("dummy").unwrap();
         Policies::default()
             .with_policy(DUMMY, TaskPolicy::new(retry, 5).unwrap())
             .unwrap()

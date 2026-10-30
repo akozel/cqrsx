@@ -97,7 +97,8 @@ pub enum TaskRuntimeError {
     Configuration(#[from] TaskWorkerPoolConfigError),
 }
 
-#[cfg(all(test, feature = "worker"))]
+#[cfg(test)]
+#[cfg(feature = "worker")]
 mod tests {
     use super::*;
     use crate::task::{

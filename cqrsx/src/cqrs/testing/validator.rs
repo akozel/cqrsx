@@ -1,5 +1,8 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
+//! The checks of [`TestFramework`](super::TestFramework): a test helper whose panic is the failed check (rule 8 of the
+//! code guidelines), so the panic lints are allowed here.
+#![allow(clippy::panic)]
 use crate::cqrs::aggregate::Aggregate;
 
 /// Validation object for the `TestFramework` package.
@@ -12,6 +15,10 @@ where
 
 impl<A: Aggregate> AggregateResultValidator<A> {
     /// Verifies that the command decided the expected event.
+    ///
+    /// # Panics
+    ///
+    /// When the command was rejected or decided another event: the check failed.
     ///
     /// ```
     /// # mod example {
@@ -107,11 +114,14 @@ impl<A: Aggregate> AggregateResultValidator<A> {
         let event = self.result.unwrap_or_else(|err| {
             panic!("expected success, received aggregate error: '{err}'");
         });
-        assert_eq!(event, expected_event);
+        assert_eq!(event, expected_event, "the command decided another event");
     }
 
-    /// Verifies that the result is a `UserError` and returns the internal error payload for
-    /// further validation.
+    /// Verifies that the command was rejected with an error whose message is `error_message`.
+    ///
+    /// # Panics
+    ///
+    /// When the command decided an event or was rejected with another message: the check failed.
     ///
     /// ```
     /// # mod example {
@@ -206,7 +216,11 @@ impl<A: Aggregate> AggregateResultValidator<A> {
             Ok(event) => {
                 panic!("expected error, received event: '{event:?}'");
             }
-            Err(err) => assert_eq!(err.to_string(), error_message.to_string()),
+            Err(err) => assert_eq!(
+                err.to_string(),
+                error_message,
+                "the command was rejected with another message"
+            ),
         }
     }
 
@@ -317,6 +331,10 @@ where
 {
     /// Verifies that the result is the expected error.
     ///
+    /// # Panics
+    ///
+    /// When the command decided an event or was rejected with another error: the check failed.
+    ///
     /// > Note that the configured Error *must* implement `std::cmp::PartialEq`.
     ///
     /// ```
@@ -415,7 +433,7 @@ where
                 panic!("expected error, received event: '{event:?}'");
             }
             Err(err) => {
-                assert_eq!(err, expected_error);
+                assert_eq!(err, expected_error, "the command was rejected with another error");
             }
         }
     }

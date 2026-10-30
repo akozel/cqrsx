@@ -176,8 +176,8 @@ impl Reactions for Wallet {
     }
 }
 
-const STEP: PolicyName = PolicyName::new("step");
-const MAIL: PolicyName = PolicyName::new("mail");
+const STEP: PolicyName = PolicyName::new("step").unwrap();
+const MAIL: PolicyName = PolicyName::new("mail").unwrap();
 
 /// Steps wait a second and get six attempts, mails back off and get three; reminders keep the engine's defaults.
 fn policies() -> Policies {

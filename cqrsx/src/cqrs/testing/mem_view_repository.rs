@@ -1,17 +1,20 @@
 //! An in-memory view repository with the version rules of the PostgreSQL one.
-use crate::cqrs::{
-    aggregate::Aggregate,
-    projection::{
-        View,
-        repository::{StoredView, ViewContext, ViewRepository},
+use crate::{
+    cqrs::{
+        aggregate::Aggregate,
+        projection::{
+            View,
+            repository::{StoredView, ViewContext, ViewRepository},
+        },
+        store::PersistenceError,
     },
-    store::PersistenceError,
+    locking::lock,
 };
 use serde_json::Value;
 use std::{
     collections::BTreeMap,
     marker::PhantomData,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard},
 };
 
 /// One stored document: its optimistic version, the last applied event of its aggregate and the view as JSON.
@@ -80,20 +83,26 @@ where
     }
 
     fn documents(&self) -> MutexGuard<'_, BTreeMap<String, Document>> {
-        self.documents.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.documents, "in-memory view documents")
     }
 
-    /// The documents whose id `within` accepts, in the order of the ids, decoded.
+    /// The documents whose id `within` accepts, in the order of the ids, decoded. They are copied out first: decoding
+    /// runs the view's own code, never under the lock.
     fn stored(&self, within: impl Fn(&str) -> bool) -> Result<Vec<StoredView<V>>, PersistenceError> {
-        self.documents()
+        let documents: Vec<(String, Document)> = self
+            .documents()
             .iter()
             .filter(|(id, _)| within(id))
+            .map(|(id, document)| (id.clone(), document.clone()))
+            .collect();
+        documents
+            .into_iter()
             .map(|(id, document)| {
                 Ok(StoredView {
-                    id: id.clone(),
+                    id,
                     version: document.version,
                     last_sequence: document.last_sequence,
-                    view: V::deserialize(&document.payload)?,
+                    view: V::deserialize(document.payload)?,
                 })
             })
             .collect()

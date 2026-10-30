@@ -48,15 +48,16 @@ pub enum TaskWorkerPoolConfigError {
     LeaseTooShort,
 }
 impl Default for TaskWorkerPoolConfig {
+    /// The defaults above, valid as [`new`](Self::new) checks them (a test does).
     fn default() -> Self {
-        Self::new(
-            DEFAULT_CONCURRENCY as usize,
-            DEFAULT_BUFFER_CAPACITY as usize,
-            Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
-            Duration::from_secs(DEFAULT_HANDLER_TIMEOUT_SECS),
-            Duration::from_secs(DEFAULT_LEASE_SECS),
-        )
-        .expect("valid default worker pool limits")
+        Self {
+            concurrency: DEFAULT_CONCURRENCY as usize,
+            buffer_capacity: DEFAULT_BUFFER_CAPACITY as usize,
+            poll_interval: Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
+            handler_timeout: Duration::from_secs(DEFAULT_HANDLER_TIMEOUT_SECS),
+            lease_duration: Duration::from_secs(DEFAULT_LEASE_SECS),
+            buffer_refill_percent: DEFAULT_BUFFER_REFILL_PERCENT as u8,
+        }
     }
 }
 impl TaskWorkerPoolConfig {
@@ -128,7 +129,8 @@ impl TaskWorkerPoolConfig {
     #[cfg(feature = "worker")]
     pub(super) fn buffer_refill_level(&self) -> usize {
         let level = (self.buffer_capacity as u128 * u128::from(self.buffer_refill_percent)).div_ceil(100);
-        usize::try_from(level).expect("the refill level never exceeds the buffer capacity")
+        // At most the capacity, as the percent is at most 100.
+        usize::try_from(level).map_or(self.buffer_capacity, |level| level.min(self.buffer_capacity))
     }
     pub fn from_env() -> Result<Self, TaskWorkerPoolConfigError> {
         Self::from_lookup(|name| std::env::var(name).ok())
@@ -236,6 +238,12 @@ mod tests {
     #[test]
     fn defaults_and_independent_environment_overrides() {
         let default = TaskWorkerPoolConfig::from_lookup(|_| None).unwrap();
+        let built = TaskWorkerPoolConfig::default();
+        assert_eq!(
+            format!("{built:?}"),
+            format!("{default:?}"),
+            "Default builds what the validated defaults give"
+        );
         assert_eq!(default.concurrency(), 128);
         assert_eq!(default.buffer_capacity(), 128);
         assert_eq!(default.lease_duration(), Duration::from_secs(60));
@@ -251,7 +259,7 @@ mod tests {
                     "OUTBOX_HANDLER_TIMEOUT_SECS" => "10",
                     "OUTBOX_LEASE_SECS" => "120",
                     "OUTBOX_QUEUE_REFILL_PERCENT" => "100",
-                    _ => unreachable!(),
+                    _ => panic!("unexpected variable {name}"),
                 }
                 .into(),
             )

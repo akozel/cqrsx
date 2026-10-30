@@ -14,3 +14,13 @@ heck = "0.5.0"
 proc-macro2 = "1.0.107"
 quote = "1.0.47"
 syn = { version = "2.0.119", features = ["full"] }
+
+# No panics outside tests (rules 6–8 of .claude/rules/rust-style.md); tests are allowed by clippy.toml.
+[lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"

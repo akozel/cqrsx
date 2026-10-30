@@ -125,8 +125,12 @@ impl<A: TaskAdapter> TaskDispatcher<A> {
     /// retry would get (`retry_pause`), the dependencies and the executors.
     pub async fn dispatch(&self, attempt: impl Into<Arc<TaskAttempt>>, retry_pause: Duration) -> TaskResult {
         let ctx = TaskContext::shared(attempt.into(), retry_pause, self.dependencies.clone(), self.executors.clone());
-        match self.routes.get(ctx.attempt().format()) {
-            Some(index) => self.adapters[*index].invoke(&ctx).await,
+        match self
+            .routes
+            .get(ctx.attempt().format())
+            .and_then(|&index| self.adapters.get(index))
+        {
+            Some(adapter) => adapter.invoke(&ctx).await,
             None => TaskResult::fail("unsupported task format"),
         }
     }

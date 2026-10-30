@@ -291,7 +291,7 @@ mod tests {
     }
     impl TaskHandler<EmptyType> for NeverCalled {
         async fn handle(&self, _: EmptyType, _: &TaskContext) -> TaskResult {
-            unreachable!("invalid format cannot construct an adapter")
+            panic!("invalid format cannot construct an adapter")
         }
     }
 

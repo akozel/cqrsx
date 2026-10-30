@@ -261,7 +261,7 @@ mod tests {
 
     impl TaskHandler<Unversioned> for UnversionedHandler {
         async fn handle(&self, _: Unversioned, _: &TaskContext) -> TaskResult {
-            unreachable!("an invalid format cannot be registered")
+            panic!("an invalid format cannot be registered")
         }
     }
 

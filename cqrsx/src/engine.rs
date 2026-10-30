@@ -61,6 +61,7 @@ use crate::{
         settings::Settings,
         views::{CheckpointOps, Counts, Registry},
     },
+    locking::get_mut,
     task::{
         adapter::boxed::BoxedTaskAdapter,
         context::Executors,
@@ -72,7 +73,7 @@ use crate::{
 use std::{
     any::{Any, TypeId, type_name},
     collections::HashMap,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex},
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
 
@@ -343,7 +344,7 @@ impl Cqrs {
         K: Counts + 'static,
     {
         let processor = self.processor::<V, A, _, _, _>(feed, checkpoints, documents.clone());
-        let processors = self.processors.get_mut().unwrap_or_else(PoisonError::into_inner);
+        let processors = get_mut(&mut self.processors, "engine processors");
         *processors = std::mem::take(processors).with_processor(processor);
         self.views.register::<V, A, _, _, _>(documents, history, counter);
     }

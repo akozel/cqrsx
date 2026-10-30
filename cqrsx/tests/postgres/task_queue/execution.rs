@@ -3,7 +3,7 @@ use cqrsx::task::policy::{Policies, PolicyName, Retry, TaskPolicy};
 
 /// The policies of the queue's tests: the dummy task waits 300 s before its next attempt.
 fn dummy_waits_300_s() -> Policies {
-    const DUMMY: PolicyName = PolicyName::new("dummy");
+    const DUMMY: PolicyName = PolicyName::new("dummy").unwrap();
     Policies::default()
         .with_policy(DUMMY, TaskPolicy::new(Retry::fixed(Duration::from_secs(300)), 10).unwrap())
         .unwrap()

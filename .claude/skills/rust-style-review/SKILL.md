@@ -17,19 +17,23 @@ are). `--lib` keeps test code out:
 ```bash
 cargo clippy --locked -p cqrsx --lib --all-features --message-format=short -- \
   -W missing_debug_implementations -W clippy::needless_pass_by_value -W clippy::return_self_not_must_use \
-  -W clippy::unwrap_used -W clippy::expect_used -W clippy::panic -W clippy::unreachable -W clippy::todo \
-  -W clippy::unimplemented -W clippy::indexing_slicing -W clippy::wildcard_enum_match_arm
+  -W clippy::wildcard_enum_match_arm
 ```
+
+Already in `[lints]` of `cqrsx` and `cqrsx-macros` as `deny` (epic 06, ticket 03), so plain `cargo clippy` reports them:
+`unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`, `indexing_slicing` (rules 6–8). Tests
+are allowed by `clippy.toml` at the workspace root; the assertion helpers (`cqrs::testing::validator`, `MemStore`) and
+the integration-test crates allow them with `#![allow(..)]`.
 
 | Lint | Rule | Note |
 |---|---|---|
-| `unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`, `indexing_slicing` | 6–8 | hits in `cqrs::testing` are allowed |
 | `needless_pass_by_value` | 3 | |
 | `return_self_not_must_use` | 20 | |
 | `missing_debug_implementations` | 16 | |
 | `wildcard_enum_match_arm` | 21 | hint only: `_` on a foreign enum is fine |
 
-`assert!` outside tests has no lint: search for it. Default clippy (`-D warnings`) already covers rule 4
+`assert!` outside tests has no lint: search for it, and for `serde_json::Value[..] = …` and sqlx `Row::get`, which
+panic but are no indexing to clippy. Default clippy (`-D warnings`) already covers rule 4
 (`ptr_arg`, `borrowed_box`), rule 9 (`unnecessary_unwrap`), rules 15–16 (`should_implement_trait`,
 `new_without_default`) and rule 22 (`wrong_self_convention`).
 
@@ -61,8 +65,10 @@ rule (count, cost of the fix), then findings grouped by rule.
 
 - Fix one rule group at a time. Run what `CLAUDE.md` requires before finishing (fmt, clippy, tests, coverage).
 - When a group reaches zero hits, enable its lints in the same change, in `[lints]` of the crate's `Cargo.toml`
-  (`unsafe_code = "forbid"` belongs there too). Keep test code allowed: `clippy.toml` in the crate root with
-  `allow-unwrap-in-tests`, `allow-expect-in-tests`, `allow-panic-in-tests`, `allow-indexing-slicing-in-tests`;
-  `#![allow(..)]` on the `cqrs::testing` module and at the root of each integration-test crate.
+  (`unsafe_code = "forbid"` belongs there too). Test code stays allowed: `clippy.toml` at the workspace root
+  (`allow-unwrap-in-tests`, `allow-expect-in-tests`, `allow-panic-in-tests`, `allow-indexing-slicing-in-tests`);
+  `#![allow(..)]` only on the assertion helpers and at the root of each integration-test crate. Clippy counts as
+  test code only `#[test]` functions and modules under a plain `#[cfg(test)]`: write `#[cfg(test)] #[cfg(feature =
+  "…")]`, not `#[cfg(all(test, …))]`, and `panic!` instead of `unreachable!` in tests (no setting allows it).
 - Then drop those lints from the command in step 1 and record the change in this skill.
 - Propose the commit message; commit only when the user asks.

@@ -792,15 +792,15 @@ pub(in crate::cqrs) mod tests {
             _: crate::cqrs::store::feed::Position,
             _: usize,
         ) -> Result<Vec<crate::cqrs::store::feed::FeedEntry>, PersistenceError> {
-            unreachable!()
+            panic!("not called by these tests")
         }
 
         async fn head<A: Aggregate>(&self) -> Result<crate::cqrs::store::feed::Position, PersistenceError> {
-            unreachable!()
+            panic!("not called by these tests")
         }
 
         async fn aggregate_ids_after<A: Aggregate>(&self, _: &str, _: usize) -> Result<Vec<String>, PersistenceError> {
-            unreachable!()
+            panic!("not called by these tests")
         }
     }
 

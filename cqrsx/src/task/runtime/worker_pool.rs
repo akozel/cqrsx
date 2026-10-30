@@ -1,6 +1,9 @@
 //! Ownership, observation and bounded drain of permanent Tokio workers.
 use super::worker::run_task_worker;
-use crate::task::{adapter::TaskAdapter, dispatcher::TaskDispatcher, executor::TaskExecutor, queue::lease::LeasedTask};
+use crate::{
+    diagnostics,
+    task::{adapter::TaskAdapter, dispatcher::TaskDispatcher, executor::TaskExecutor, queue::lease::LeasedTask},
+};
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use tokio::{
     sync::Notify,
@@ -42,22 +45,25 @@ impl<E: TaskExecutor + 'static> WorkerPool<E> {
         }
     }
 
+    /// The next worker that ended, `None` once none is left. A worker without a registered index (a bug, logged) is not
+    /// reported, so the supervisor does not restart it.
     pub(super) async fn next_exit(&mut self) -> Option<WorkerExit> {
-        let exit = self.workers.join_next_with_id().await?;
-        let (tokio_task_id, panicked, cancelled) = match &exit {
-            Ok((id, _)) => (*id, false, false),
-            Err(error) => (error.id(), error.is_panic(), error.is_cancelled()),
-        };
-        let index = self
-            .worker_indices
-            .remove(&tokio_task_id)
-            .expect("every worker has a registered index");
-        Some(WorkerExit {
-            index,
-            tokio_task_id,
-            panicked,
-            cancelled,
-        })
+        loop {
+            let exit = self.workers.join_next_with_id().await?;
+            let (tokio_task_id, panicked, cancelled) = match &exit {
+                Ok((id, _)) => (*id, false, false),
+                Err(error) => (error.id(), error.is_panic(), error.is_cancelled()),
+            };
+            if let Some(index) = self.worker_indices.remove(&tokio_task_id) {
+                return Some(WorkerExit {
+                    index,
+                    tokio_task_id,
+                    panicked,
+                    cancelled,
+                });
+            }
+            diagnostics::log_broken_invariant("task", "every worker of the pool has a registered index");
+        }
     }
 
     pub(super) fn spawn<A: TaskAdapter + 'static>(&mut self, index: usize, dispatcher: Arc<TaskDispatcher<A>>) {
@@ -170,6 +176,15 @@ mod tests {
         assert!(!exit.panicked);
         assert!(pool.worker_indices.is_empty());
         assert!(pool.next_exit().await.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_worker_without_an_index_is_logged_and_not_reported() {
+        let (_sender, mut pool) = idle_pool();
+        pool.workers.spawn(async { 3 });
+        let (exit, log) = crate::diagnostics::test_support::capture(pool.next_exit()).await;
+        assert!(exit.is_none(), "the unknown worker is skipped and the pool is empty");
+        assert!(log.contains("every worker of the pool has a registered index"), "{log}");
     }
 
     #[tokio::test(start_paused = true)]

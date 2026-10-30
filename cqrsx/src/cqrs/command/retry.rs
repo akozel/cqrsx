@@ -1,5 +1,5 @@
 use crate::cqrs::AggregateError;
-use std::{error::Error, future::Future, time::Duration};
+use std::{error::Error, future::Future, num::NonZeroUsize, time::Duration};
 use thiserror::Error;
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
 pub enum AggregateConflictRetryPolicyError {
@@ -16,7 +16,7 @@ pub enum AggregateConflictRetryPolicyError {
 /// conflicts are retried; failures with an unknown commit outcome are returned.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct AggregateConflictRetryPolicy {
-    pub(super) max_attempts: usize,
+    pub(super) max_attempts: NonZeroUsize,
     pub(super) initial_backoff: Duration,
     pub(super) max_backoff: Duration,
     pub(super) jitter_ratio: f64,
@@ -31,9 +31,7 @@ impl AggregateConflictRetryPolicy {
         max_backoff: Duration,
         jitter_ratio: f64,
     ) -> Result<Self, AggregateConflictRetryPolicyError> {
-        if max_attempts == 0 {
-            return Err(AggregateConflictRetryPolicyError::InvalidAttemptLimit);
-        }
+        let max_attempts = NonZeroUsize::new(max_attempts).ok_or(AggregateConflictRetryPolicyError::InvalidAttemptLimit)?;
         if initial_backoff > max_backoff || max_backoff.as_millis() > i64::MAX as u128 {
             return Err(AggregateConflictRetryPolicyError::InvalidBackoff);
         }
@@ -48,9 +46,9 @@ impl AggregateConflictRetryPolicy {
         })
     }
 
+    /// The bounds of the pause before the `retry`-th retry, counted from 1 (0 is taken as 1).
     pub(super) fn backoff_bounds(self, retry: usize) -> (Duration, Duration) {
-        debug_assert!(retry > 0);
-        let exponent = u32::try_from(retry - 1).unwrap_or(u32::MAX);
+        let exponent = u32::try_from(retry.saturating_sub(1)).unwrap_or(u32::MAX);
         let multiplier = 2_u32.checked_pow(exponent).unwrap_or(u32::MAX);
         let backoff = self.initial_backoff.saturating_mul(multiplier).min(self.max_backoff);
         let lower = backoff.mul_f64(1.0 - self.jitter_ratio).min(backoff);
@@ -68,9 +66,20 @@ impl AggregateConflictRetryPolicy {
     }
 }
 
+const DEFAULT_MAX_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(3).unwrap();
+const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(5);
+const DEFAULT_MAX_BACKOFF: Duration = Duration::from_millis(50);
+const DEFAULT_JITTER_RATIO: f64 = 0.2;
+
 impl Default for AggregateConflictRetryPolicy {
+    /// Three attempts, pauses from 5 ms doubling up to 50 ms, ±20 % jitter.
     fn default() -> Self {
-        Self::new(3, Duration::from_millis(5), Duration::from_millis(50), 0.2).expect("valid default conflict retry policy")
+        Self {
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            initial_backoff: DEFAULT_INITIAL_BACKOFF,
+            max_backoff: DEFAULT_MAX_BACKOFF,
+            jitter_ratio: DEFAULT_JITTER_RATIO,
+        }
     }
 }
 
@@ -83,15 +92,15 @@ where
     Operation: FnMut() -> OperationFuture,
     OperationFuture: Future<Output = Result<T, AggregateError<D>>>,
 {
-    for attempt in 1..=policy.max_attempts {
+    let mut attempt = 1;
+    loop {
         let result = operation().await;
-        if matches!(result, Err(AggregateError::AggregateConflict)) && attempt < policy.max_attempts {
-            tokio::time::sleep(policy.backoff(attempt)).await;
-            continue;
+        if !matches!(result, Err(AggregateError::AggregateConflict)) || attempt >= policy.max_attempts.get() {
+            return result;
         }
-        return result;
+        tokio::time::sleep(policy.backoff(attempt)).await;
+        attempt += 1;
     }
-    unreachable!("aggregate conflict retry policy always has at least one attempt")
 }
 
 #[cfg(test)]
@@ -151,7 +160,15 @@ mod tests {
     fn default_policy_has_bounded_exponential_jitter() {
         let policy = AggregateConflictRetryPolicy::default();
 
-        assert_eq!(policy.max_attempts, 3);
+        assert_eq!(
+            policy,
+            AggregateConflictRetryPolicy::new(3, Duration::from_millis(5), Duration::from_millis(50), 0.2).unwrap()
+        );
+        assert_eq!(
+            policy.backoff_bounds(0),
+            policy.backoff_bounds(1),
+            "retry 0 is taken as the first"
+        );
         assert_eq!(policy.backoff_bounds(1), (Duration::from_millis(4), Duration::from_millis(6)));
         assert_eq!(
             policy.backoff_bounds(2),

@@ -1,12 +1,15 @@
 //! The rebuild of one key from its history, and the bound on the documents a processor writes at once.
-use crate::cqrs::{
-    aggregate::Aggregate,
-    event::EventEnvelope,
-    event_handler::EventHandler,
-    projection::{RebuildableProjection, processor::delivery::Rebuilder},
-    store::{
-        PersistenceError, repository::PersistedEventRepository, serialized_event::deserialize_events, upcaster::EventUpcaster,
+use crate::{
+    cqrs::{
+        aggregate::Aggregate,
+        event::EventEnvelope,
+        event_handler::EventHandler,
+        projection::{RebuildableProjection, processor::delivery::Rebuilder},
+        store::{
+            PersistenceError, repository::PersistedEventRepository, serialized_event::deserialize_events, upcaster::EventUpcaster,
+        },
     },
+    diagnostics,
 };
 use async_trait::async_trait;
 use std::{sync::Arc, time::Duration};
@@ -16,8 +19,12 @@ use tokio_util::sync::CancellationToken;
 /// How often a rebuild re-reads a history the document has already left behind before it gives up.
 pub(super) const REBUILD_READS: usize = 3;
 
-async fn permit(permits: &Semaphore) -> SemaphorePermit<'_> {
-    permits.acquire().await.expect("the concurrency semaphore is never closed")
+/// A permit to write a document. Nothing closes the semaphore; a closed one is a bug and fails the write.
+async fn permit(permits: &Semaphore) -> Result<SemaphorePermit<'_>, PersistenceError> {
+    permits.acquire().await.map_err(|_| {
+        diagnostics::log_broken_invariant("projection", "the concurrency semaphore of a processor is never closed");
+        PersistenceError::UnknownError("the concurrency semaphore of the projection processor is closed".into())
+    })
 }
 
 /// The projection behind the processor's concurrency bound: every live write takes one of `permits`.
@@ -39,7 +46,7 @@ impl<A: Aggregate + 'static> EventHandler<A> for Bounded<A> {
     }
 
     async fn handle(&self, aggregate_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
-        let _permit = permit(&self.permits).await;
+        let _permit = permit(&self.permits).await?;
         self.projection.handle(aggregate_id, events).await
     }
 }
@@ -87,7 +94,7 @@ impl<A: Aggregate + 'static, R: PersistedEventRepository + 'static> Rebuilder fo
             }
             let prefix = if pace.is_zero() { history.len() } else { 1 };
             let written = {
-                let _permit = permit(&self.permits).await;
+                let _permit = permit(&self.permits).await?;
                 self.projection.rebuild(aggregate_id, &history, prefix).await
             };
             match written {
@@ -97,14 +104,15 @@ impl<A: Aggregate + 'static, R: PersistedEventRepository + 'static> Rebuilder fo
             }
         };
         if !pace.is_zero() {
-            for event in &history[1..] {
+            let after_first = history.iter().skip(1);
+            for event in after_first {
                 if stop.is_cancelled() {
                     return Err(PersistenceError::UnknownError(
                         "rebuild interrupted: the owner stopped".into(),
                     ));
                 }
                 tokio::time::sleep(pace).await;
-                let _permit = permit(&self.permits).await;
+                let _permit = permit(&self.permits).await?;
                 self.projection.handle(aggregate_id, std::slice::from_ref(event)).await?;
             }
         }
@@ -325,5 +333,31 @@ mod tests {
             Err(PersistenceError::OptimisticLockError)
         ));
         assert_eq!(views.load("a").await.unwrap(), Some(Sequences(vec![1, 2])));
+    }
+
+    #[tokio::test]
+    async fn a_closed_concurrency_semaphore_fails_the_write_and_logs_the_bug() {
+        let views = Views::default();
+        let journal = journal_with("a", 2).await;
+        let projection: Arc<dyn RebuildableProjection<Ledger>> = Arc::new(ViewProjection::new(Arc::new(views.clone())));
+        let (rebuilder, permits) = rebuilder(&journal, projection.clone(), 1);
+        permits.close();
+        let bounded = Bounded::new(projection, permits);
+        let ((rebuilt, handled), log) = crate::diagnostics::test_support::capture(async {
+            (
+                rebuilder.rebuild("a", Duration::ZERO, CancellationToken::new()).await,
+                bounded.handle("a", &[]).await,
+            )
+        })
+        .await;
+        assert!(matches!(rebuilt, Err(PersistenceError::UnknownError(_))));
+        assert!(matches!(handled, Err(PersistenceError::UnknownError(_))));
+        assert_eq!(
+            log.matches("the concurrency semaphore of a processor is never closed")
+                .count(),
+            2,
+            "{log}"
+        );
+        assert!(views.load("a").await.unwrap().is_none(), "nothing was written");
     }
 }

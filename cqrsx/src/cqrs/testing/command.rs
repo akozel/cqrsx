@@ -15,11 +15,12 @@ use crate::{
         store::{EventStore, persisted::PersistedEventStore},
         testing::{mem_event_repository::MemEventRepository, mem_store::MemStore},
     },
+    locking::lock,
     task::NewTask,
 };
 use std::{
     collections::HashMap,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex},
 };
 
 /// The production command path behind [`CommandExecutor`] over a test store: one [`CommandExecutorCore`]
@@ -135,9 +136,7 @@ impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
     where
         A::Command: Clone,
     {
-        Arc::get_mut(&mut self.inner)
-            .expect("register the task planner before cloning the executor")
-            .set_task_planner(Planning::new(planner));
+        self.unshared("the task planner").set_task_planner(Planning::new(planner));
         self
     }
 
@@ -147,9 +146,7 @@ impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
     ///
     /// When a clone of the executor exists.
     pub fn with_commit_wakeup(mut self, wakeup: CommitWakeup) -> Self {
-        Arc::get_mut(&mut self.inner)
-            .expect("register the commit wake-up before cloning the executor")
-            .set_commit_wakeup(wakeup);
+        self.unshared("the commit wake-up").set_commit_wakeup(wakeup);
         self
     }
 
@@ -159,10 +156,24 @@ impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
     ///
     /// When a clone of the executor exists.
     pub fn with_observer(mut self, observer: Arc<dyn CommandObserver<A>>) -> Self {
-        Arc::get_mut(&mut self.inner)
-            .expect("register the observer before cloning the executor")
-            .set_observer(observer);
+        self.unshared("the observer").set_observer(observer);
         self
+    }
+
+    /// The core, for a builder method that registers `what`.
+    ///
+    /// # Panics
+    ///
+    /// When a clone of the executor exists: registering after cloning misuses the test helper.
+    #[allow(
+        clippy::panic,
+        reason = "a test helper (rule 8 of the code guidelines): the misuse is documented in `# Panics` of the builders"
+    )]
+    fn unshared(&mut self, what: &str) -> &mut CommandExecutorCore<A, S> {
+        match Arc::get_mut(&mut self.inner) {
+            Some(core) => core,
+            None => panic!("register {what} before cloning the test executor: a clone shares the executor"),
+        }
     }
 
     /// The store the commands run against.
@@ -172,7 +183,7 @@ impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
 
     /// The tasks of the calls that committed since the last call, in call order; clears the record.
     pub fn take_published_tasks(&self) -> Vec<NewTask> {
-        std::mem::take(&mut *self.published.lock().unwrap_or_else(PoisonError::into_inner))
+        std::mem::take(&mut *lock(&self.published, "test executor published tasks"))
     }
 }
 
@@ -210,10 +221,7 @@ where
     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
         let result = self.inner.execute_with_metadata(id, command, metadata).await;
         if let Ok(report) = &result {
-            self.published
-                .lock()
-                .unwrap_or_else(PoisonError::into_inner)
-                .extend(report.tasks.iter().cloned());
+            lock(&self.published, "test executor published tasks").extend(report.tasks.iter().cloned());
         }
         result
     }

@@ -37,6 +37,9 @@ pub trait View<A: Aggregate>: Debug + Default + Serialize + DeserializeOwned + S
 }
 
 /// Builds and persists a materialized read model from committed events.
+/// How many times a projection tries to write a document, the first attempt included, unless configured otherwise.
+const DEFAULT_MAX_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+
 /// Also provides read access to the stored view.
 ///
 /// A document takes only the next event of its aggregate: events it has applied are skipped, a gap fails the
@@ -204,7 +207,7 @@ where
         Self {
             view_repository,
             error_observer: None,
-            max_attempts: NonZeroUsize::new(16).unwrap(),
+            max_attempts: DEFAULT_MAX_ATTEMPTS,
             phantom: PhantomData,
         }
     }
@@ -516,7 +519,8 @@ where
     /// something was applied. A version conflict reloads the document and runs the rule again against what
     /// the other writer left, up to `max_attempts` times.
     pub(crate) async fn apply_events(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
-        for attempt in 1..=self.max_attempts.get() {
+        let mut attempt = 1;
+        loop {
             let (mut view, mut context) = self.load_or_default(view_id.to_string()).await?;
             if !apply_contiguous(&mut view, &mut context, events)? {
                 return Ok(());
@@ -525,8 +529,8 @@ where
                 Err(PersistenceError::OptimisticLockError) if attempt < self.max_attempts.get() => tokio::task::yield_now().await,
                 result => return result,
             }
+            attempt += 1;
         }
-        unreachable!("a nonzero attempt limit always returns from an attempt")
     }
 
     /// Replaces the stored document with the fold of `history[..prefix]`, written with the version of the
@@ -541,11 +545,11 @@ where
         let Some(last) = history.last() else {
             return Ok(());
         };
-        if prefix == 0 || prefix > history.len() {
+        let Some(events) = history.get(..prefix).filter(|events| !events.is_empty()) else {
             return Err(PersistenceError::UnknownError(
                 "rebuild prefix must lie within the history".into(),
             ));
-        }
+        };
         let mut attempt = 0;
         loop {
             attempt += 1;
@@ -555,7 +559,7 @@ where
             }
             let mut view = V::default();
             let mut context = ViewContext::new(view_id.to_string(), stored.version, 0);
-            apply_contiguous(&mut view, &mut context, &history[..prefix])?;
+            apply_contiguous(&mut view, &mut context, events)?;
             match self.view_repository.update_view(view, context).await {
                 Err(PersistenceError::OptimisticLockError) if attempt < self.max_attempts.get() => tokio::task::yield_now().await,
                 result => return result,

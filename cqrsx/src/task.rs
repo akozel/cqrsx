@@ -19,7 +19,10 @@ pub mod runtime;
 pub(crate) mod test_support;
 pub mod testing;
 
-use crate::task::format::{TaskFormat, TaskFormatError, TaskPayload};
+use crate::{
+    diagnostics,
+    task::format::{TaskFormat, TaskFormatError, TaskPayload},
+};
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
 use std::time::Duration;
@@ -168,24 +171,33 @@ pub enum TaskValidationError {
     InvalidSchedule,
 }
 /// Moves the keys `labels` of the `payload` object to the `metadata` object; a key the payload lacks moves nothing.
-/// Both are objects: every constructor validates them.
+/// Both are objects: every constructor validates them. Were one not (a bug, logged), nothing moves.
 fn move_labels(labels: &[&str], payload: &mut Value, metadata: &mut Value) {
+    let (Value::Object(payload), Value::Object(metadata)) = (payload, metadata) else {
+        diagnostics::log_broken_invariant("task", "the payload and the metadata of a task are objects");
+        return;
+    };
     for label in labels {
-        if let Some(value) = payload.as_object_mut().and_then(|payload| payload.remove(*label)) {
-            metadata[*label] = value;
+        if let Some(value) = payload.remove(*label) {
+            metadata.insert((*label).to_owned(), value);
         }
     }
 }
 
 /// A copy of the `payload` object with the keys `labels` it lacks taken back from the `metadata` object: the body a
-/// labelled payload decodes from. Both are objects: every constructor validates them.
+/// labelled payload decodes from. The payload is an object: every constructor validates it. Were it not (a bug,
+/// logged), the copy takes nothing back.
 fn restore_labels(labels: &[&str], payload: &Value, metadata: &Value) -> Value {
     let mut restored = payload.clone();
+    let Value::Object(fields) = &mut restored else {
+        diagnostics::log_broken_invariant("task", "the payload of a task is an object");
+        return restored;
+    };
     for label in labels {
-        if restored.get(*label).is_none()
+        if !fields.contains_key(*label)
             && let Some(value) = metadata.get(*label)
         {
-            restored[*label] = value.clone();
+            fields.insert((*label).to_owned(), value.clone());
         }
     }
     restored
@@ -362,6 +374,19 @@ mod tests {
             restore_labels(Labelled::LABELS, &json!({ "amount": 80, "tenant": "body" }), &metadata),
             json!({ "amount": 80, "tenant": "body" })
         );
+    }
+
+    #[tokio::test]
+    async fn labels_of_a_task_that_is_not_an_object_stay_put_and_the_bug_is_logged() {
+        let ((payload, restored), log) = crate::diagnostics::test_support::capture(async {
+            let mut payload = json!({ "tenant": "acme" });
+            move_labels(Labelled::LABELS, &mut payload, &mut json!(["metadata"]));
+            let restored = restore_labels(Labelled::LABELS, &json!(["payload"]), &json!({ "tenant": "acme" }));
+            (payload, restored)
+        })
+        .await;
+        assert_eq!((payload, restored), (json!({ "tenant": "acme" }), json!(["payload"])));
+        assert_eq!(log.matches("an invariant of cqrsx is broken").count(), 2, "{log}");
     }
 
     #[test]

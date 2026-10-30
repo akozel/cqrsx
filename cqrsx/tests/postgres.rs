@@ -1,4 +1,13 @@
 #![cfg(feature = "postgres")]
+// Test code: a panic is the failed check (rule 8 of .claude/rules/rust-style.md); clippy.toml allows it only inside
+// `#[test]` functions, not in the helpers of this crate.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::indexing_slicing
+)]
 use cqrsx::cqrs::store::persisted::PersistedEventStore;
 use cqrsx::task::{attempt::TaskAttempt, queue::lease::TaskLease};
 use std::collections::HashMap;

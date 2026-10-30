@@ -223,8 +223,8 @@ impl View<Show> for Hall {
     }
 }
 
-pub(crate) const STEP: PolicyName = PolicyName::new("step");
-pub(crate) const MAIL: PolicyName = PolicyName::new("mail");
+pub(crate) const STEP: PolicyName = PolicyName::new("step").unwrap();
+pub(crate) const MAIL: PolicyName = PolicyName::new("mail").unwrap();
 
 /// The box office: the shows and their halls.
 pub(crate) fn box_office(_: &Setup) -> Result<Module, SetupError> {

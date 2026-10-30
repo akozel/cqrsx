@@ -414,7 +414,7 @@ async fn upcasted_event() {
         .execute(&pool)
         .await
         .unwrap();
-    let upcaster = NumericVersionUpcaster::new(
+    let upcaster = NumericVersionUpcaster::try_new(
         "NameAdded",
         "1.0.1",
         Box::new(|mut event| match event.get_mut("NameAdded").unwrap() {
@@ -424,7 +424,8 @@ async fn upcasted_event() {
             }
             _ => panic!("not the expected object"),
         }),
-    );
+    )
+    .unwrap();
     let event_store = new_test_event_store(pool).with_upcasters(vec![Box::new(upcaster)]);
 
     let id = "previous_event_in_need_of_upcast".to_string();

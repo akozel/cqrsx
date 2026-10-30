@@ -78,12 +78,15 @@ pub(crate) fn expand_commands(input: DeriveInput) -> syn::Result<TokenStream> {
     let variants = data
         .variants
         .iter()
-        .map(|variant| match &variant.fields {
-            Fields::Unnamed(fields) if fields.unnamed.len() == 1 => Ok((&variant.ident, &fields.unnamed[0].ty)),
-            _ => Err(Error::new_spanned(
-                variant,
-                "every variant carries one command type: `Variant(CommandType)`",
-            )),
+        .map(|variant| {
+            let mut types = variant.fields.iter().map(|field| &field.ty);
+            match (&variant.fields, types.next(), types.next()) {
+                (Fields::Unnamed(_), Some(ty), None) => Ok((&variant.ident, ty)),
+                _ => Err(Error::new_spanned(
+                    variant,
+                    "every variant carries one command type: `Variant(CommandType)`",
+                )),
+            }
         })
         .collect::<syn::Result<Vec<(&Ident, &Type)>>>()?;
     let ident = &input.ident;

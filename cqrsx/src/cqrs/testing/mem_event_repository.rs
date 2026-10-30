@@ -11,12 +11,13 @@ use crate::{
             snapshot::{SerializedSnapshot, SnapshotUpdate},
         },
     },
+    locking::lock,
     task::{NewTask, testing::mem_task_queue::Delivery},
 };
 use serde_json::Value;
 use std::{
     collections::{HashMap, HashSet},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use tokio::{sync::Semaphore, time::Instant};
 
@@ -134,7 +135,7 @@ pub struct MemEventRepository {
 
 impl MemEventRepository {
     fn journal(&self) -> MutexGuard<'_, Journal> {
-        self.journal.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.journal, "in-memory journal")
     }
 
     /// The tasks published with the events of aggregate type `A`, in commit order: the outbox as the
@@ -174,7 +175,7 @@ impl MemEventRepository {
     /// behind it queue. The rest of the journal does not wait; a closed gate lets every load through.
     pub fn hold_loads(&self) -> Arc<Semaphore> {
         let gate = Arc::new(Semaphore::new(0));
-        *self.gate.lock().unwrap_or_else(PoisonError::into_inner) = Some(gate.clone());
+        *lock(&self.gate, "in-memory journal gate") = Some(gate.clone());
         gate
     }
 
@@ -225,7 +226,7 @@ impl PersistedEventRepository for MemEventRepository {
     }
 
     async fn get_snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
-        let gate = self.gate.lock().unwrap_or_else(PoisonError::into_inner).clone();
+        let gate = lock(&self.gate, "in-memory journal gate").clone();
         // A closed gate lets every load through.
         if let Some(gate) = gate
             && let Ok(permit) = gate.acquire().await
@@ -348,19 +349,15 @@ impl PersistedEventRepository for MemEventRepository {
             .into_iter()
             .filter(|(position, _)| *position > after)
             .collect();
-        let mut end = rows.len().min(limit);
-        if end < rows.len() {
-            // Never cut a commit in two: the page runs to the end of its last position.
-            let last = rows[end - 1].0;
-            while end < rows.len() && rows[end].0 == last {
-                end += 1;
+        let mut page: Vec<FeedEntry> = Vec::with_capacity(rows.len().min(limit));
+        for (position, event) in rows {
+            // Never cut a commit in two: a full page runs on to the end of its last position.
+            if page.len() >= limit && page.last().is_none_or(|entry| entry.position != position) {
+                break;
             }
+            page.push(FeedEntry { position, event });
         }
-        Ok(rows
-            .into_iter()
-            .take(end)
-            .map(|(position, event)| FeedEntry { position, event })
-            .collect())
+        Ok(page)
     }
 
     async fn head<A: Aggregate>(&self) -> Result<Position, PersistenceError> {

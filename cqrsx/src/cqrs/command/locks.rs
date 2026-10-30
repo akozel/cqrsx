@@ -13,13 +13,13 @@
 //! - waiting commands take the lock first in, first out, skipping those that gave up;
 //! - a key has a registry entry exactly while a command holds or awaits its lock, so an idle registry is empty;
 //! - the commands counted as waiting for a key never exceed `max_waiters`; the holder is not counted.
-use crate::cqrs::aggregate::AggregateKey;
+use crate::{cqrs::aggregate::AggregateKey, locking::lock};
 use std::{
     collections::HashMap,
     fmt,
     num::NonZeroUsize,
     sync::{
-        Arc, Mutex, MutexGuard, PoisonError,
+        Arc, Mutex, MutexGuard,
         atomic::{AtomicUsize, Ordering},
     },
     time::Duration,
@@ -119,8 +119,7 @@ struct Entry {
 type Registry = Mutex<HashMap<AggregateKey, Entry>>;
 
 fn entries(registry: &Registry) -> MutexGuard<'_, HashMap<AggregateKey, Entry>> {
-    // Nothing panics under this mutex, and the map stays consistent even if something did.
-    registry.lock().unwrap_or_else(PoisonError::into_inner)
+    lock(registry, "aggregate locks")
 }
 
 /// One FIFO lock per aggregate key, owned by a command executor; a cheap handle, clones share the registry.

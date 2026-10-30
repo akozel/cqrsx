@@ -20,12 +20,14 @@
 use super::config::DeliveryLimits;
 use crate::{
     cqrs::{aggregate::Aggregate, event::EventEnvelope, event_handler::EventHandler, store::PersistenceError},
+    diagnostics,
+    locking::lock,
     unwinding::{Panicked, unwinding},
 };
 use async_trait::async_trait;
 use std::{
     collections::{HashMap, VecDeque},
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 use thiserror::Error;
@@ -42,7 +44,8 @@ pub(crate) enum DeliveryError {
     /// The handler panicked while handling the batch; the key's buffer keeps working.
     #[error("event handler panicked")]
     Panicked,
-    /// The key's worker was dropped before it answered, e.g. because the runtime shut down.
+    /// The key's worker was dropped before it answered, e.g. because the runtime shut down; or the delivery broke an
+    /// invariant of its own (logged) and dropped the job unhandled.
     #[error("event delivery stopped before the handler finished")]
     Stopped,
 }
@@ -111,7 +114,7 @@ type Buffers<A> = Mutex<HashMap<String, KeyBuffer<A>>>;
 
 fn guarded<A: Aggregate>(buffers: &Buffers<A>) -> MutexGuard<'_, HashMap<String, KeyBuffer<A>>> {
     // Nothing panics under this mutex, and the map stays consistent even if something did.
-    buffers.lock().unwrap_or_else(PoisonError::into_inner)
+    lock(buffers, "projection delivery buffers")
 }
 
 struct Inner<A: Aggregate> {
@@ -166,12 +169,10 @@ impl<A: Aggregate + 'static> OrderedDelivery<A> {
     /// while it waits reserves nothing; dropping the returned slot gives the space back.
     pub(crate) async fn reserve(&self, aggregate_id: &str) -> DeliverySlot<A> {
         let buffer = self.buffer(aggregate_id);
-        let space = buffer
-            .space
-            .clone()
-            .acquire_owned()
-            .await
-            .expect("a buffer's semaphore is never closed");
+        let space = buffer.space.clone().acquire_owned().await.ok();
+        if space.is_none() {
+            diagnostics::log_broken_invariant("projection", "the semaphore of a delivery buffer is never closed");
+        }
         DeliverySlot { buffer, space }
     }
 
@@ -241,7 +242,8 @@ impl<A: Aggregate> Drop for BufferRef<A> {
 #[must_use = "dropping the slot gives the reserved space back"]
 pub(crate) struct DeliverySlot<A: Aggregate> {
     buffer: BufferRef<A>,
-    space: OwnedSemaphorePermit,
+    /// `None` only when the buffer's semaphore was closed, a bug: the job is then answered `Stopped`.
+    space: Option<OwnedSemaphorePermit>,
 }
 
 impl<A: Aggregate + 'static> DeliverySlot<A> {
@@ -260,9 +262,13 @@ impl<A: Aggregate + 'static> DeliverySlot<A> {
         self.queue(Work::Rebuild { pace, stop })
     }
 
+    /// A job that cannot be queued (a broken invariant, logged) is dropped: its receipt answers `Stopped`.
     fn queue(self, work: Work<A>) -> DeliveryReceipt {
         let Self { buffer, space } = self;
         let (receipt, outcome) = oneshot::channel();
+        let Some(space) = space else {
+            return DeliveryReceipt(outcome);
+        };
         let job = Job {
             work,
             receipt,
@@ -270,9 +276,10 @@ impl<A: Aggregate + 'static> DeliverySlot<A> {
         };
         let start = {
             let mut buffers = guarded(&buffer.inner.buffers);
-            let entry = buffers
-                .get_mut(&buffer.aggregate_id)
-                .expect("a reserved buffer stays registered");
+            let Some(entry) = buffers.get_mut(&buffer.aggregate_id) else {
+                diagnostics::log_broken_invariant("projection", "a reserved delivery buffer stays registered");
+                return DeliveryReceipt(outcome);
+            };
             entry.jobs.push_back(job);
             !std::mem::replace(&mut entry.worker, true)
         };
@@ -741,6 +748,29 @@ mod tests {
         receipt.outcome().await.unwrap();
         assert_eq!(probe.calls_of("k"), [vec![1]]);
         assert_eq!(delivery.busy_keys(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_closed_buffer_semaphore_or_a_lost_buffer_answers_stopped_and_logs_the_bug() {
+        let probe = Probe::gated();
+        let delivery = delivery(&probe, 2, 1);
+        let (receipts, log) = crate::diagnostics::test_support::capture(async {
+            let held = delivery.reserve("closed").await;
+            guarded(&delivery.inner.buffers).get("closed").unwrap().space.close();
+            let closed = delivery.reserve("closed").await.deliver(events("closed", [1]));
+            drop(held);
+            let lost = delivery.reserve("lost").await;
+            guarded(&delivery.inner.buffers).remove("lost");
+            [closed, lost.deliver(events("lost", [1]))]
+        })
+        .await;
+        for receipt in receipts {
+            assert!(matches!(receipt.outcome().await, Err(DeliveryError::Stopped)));
+        }
+        assert!(log.contains("the semaphore of a delivery buffer is never closed"), "{log}");
+        assert!(log.contains("a reserved delivery buffer stays registered"), "{log}");
+        assert_eq!(delivery.busy_keys(), 0, "nothing stays behind");
+        assert!(probe.calls_of("closed").is_empty() && probe.calls_of("lost").is_empty());
     }
 
     #[tokio::test]

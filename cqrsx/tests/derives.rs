@@ -1,5 +1,14 @@
 //! The derive macros as a downstream crate uses them: what their expansions do once compiled, on the edges the
 //! examples leave out (generic types, raw field names, enums without variants, an overridden code).
+// Test code: a panic is the failed check (rule 8 of .claude/rules/rust-style.md); clippy.toml allows it only inside
+// `#[test]` functions, not in the helpers of this crate.
+#![allow(
+    clippy::unwrap_used,
+    clippy::expect_used,
+    clippy::panic,
+    clippy::unreachable,
+    clippy::indexing_slicing
+)]
 use cqrsx::{
     Command, Commands, Event, Events, Rejection, Task,
     cqrs::{

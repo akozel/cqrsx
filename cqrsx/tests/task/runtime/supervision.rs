@@ -240,7 +240,7 @@ fn panic_first_dispatcher(
 /// and the worker that ran it takes the next task, in the same Tokio task.
 #[tokio::test]
 async fn a_handler_panic_retries_its_task_after_the_policy_pause_and_the_worker_lives_on() {
-    const DUMMY: PolicyName = PolicyName::new("dummy");
+    const DUMMY: PolicyName = PolicyName::new("dummy").unwrap();
     let policies = Policies::default()
         .with_policy(DUMMY, TaskPolicy::new(Retry::fixed(Duration::from_secs(7)), 3).unwrap())
         .unwrap()

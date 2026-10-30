@@ -13,6 +13,7 @@ use crate::{
         lifecycle::{ReadSideStopped, run_with_processors},
         signal::shutdown_signal,
     },
+    locking::lock,
     task::runtime::{TaskRuntimeError, prepare},
 };
 use std::{
@@ -20,7 +21,7 @@ use std::{
     io,
     net::SocketAddr,
     pin::Pin,
-    sync::{Arc, PoisonError},
+    sync::Arc,
 };
 use thiserror::Error;
 use tokio::net::TcpListener;
@@ -99,7 +100,7 @@ impl Cqrs {
             tracing::info!("{name} listening on http://{addr}");
         }
         let shutdown = self.shutdown.clone();
-        let processors = std::mem::take(&mut *self.processors.lock().unwrap_or_else(PoisonError::into_inner));
+        let processors = std::mem::take(&mut *lock(&self.processors, "engine processors"));
         let task_runtime = self.task_runtime(shutdown.clone());
         let cqrs = Arc::new(self);
         // axum 0.8: `with_graceful_shutdown` returns an `IntoFuture`, not a `Future`.

@@ -1,11 +1,14 @@
 //! What a module gets when the engine is built: its variables of the environment and the settings of the engine.
-use crate::engine::settings::{Settings, duration_text, variable};
+use crate::{
+    engine::settings::{Settings, duration_text, variable},
+    locking::{get_mut, lock},
+};
 use std::{
     collections::BTreeMap,
     error::Error,
     fmt::Display,
     str::FromStr,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use thiserror::Error;
@@ -94,15 +97,13 @@ impl Setup {
     /// A setting of the module with no variable of its own (derived from others) in the engine's description, under a
     /// dotted name in lower case (`mail.request_timeout`); a key described twice keeps the last value.
     pub fn describe(&self, key: impl Into<String>, value: impl Into<String>) {
-        let mut described = self.described.lock().unwrap_or_else(PoisonError::into_inner);
+        let mut described = lock(&self.described, "setup descriptions");
         described.insert(key.into(), value.into());
     }
 
     /// What the modules read and described, sorted by key.
-    pub(crate) fn described(self) -> Vec<(String, String)> {
-        self.described
-            .into_inner()
-            .unwrap_or_else(PoisonError::into_inner)
+    pub(crate) fn described(mut self) -> Vec<(String, String)> {
+        std::mem::take(get_mut(&mut self.described, "setup descriptions"))
             .into_iter()
             .collect()
     }

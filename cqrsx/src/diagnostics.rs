@@ -158,6 +158,22 @@ pub(crate) fn log_projection_batch_panic(projection: &str, aggregate_type: &str,
     );
 }
 
+/// A broken invariant of the crate, a bug: `invariant` says what should have held. The caller fails its operation, or
+/// skips a step that has nothing to work on, and says which in its documentation.
+pub(crate) fn log_broken_invariant(component: &'static str, invariant: &'static str) {
+    tracing::error!(component, invariant, "an invariant of cqrsx is broken");
+}
+
+/// A thread panicked while it held the mutex `lock`; the crate clears the poison and goes on (see `locking`). A bug, hence
+/// `error`.
+pub(crate) fn log_poisoned_lock(lock: &'static str) {
+    tracing::error!(
+        component = "lock",
+        lock,
+        "a thread panicked while holding the lock; the poison is cleared and the lock used on"
+    );
+}
+
 /// A projection processor changed state: a lease acquired, lost or released, a rebuild started, finished
 /// or interrupted, a key healed. `projection` is the projection's name, chosen by the application.
 pub(crate) fn log_projection_event(projection: &str, aggregate_type: &str, event: &'static str) {
@@ -266,6 +282,8 @@ pub(crate) mod test_support {
             super::log_projection_batch_failure("prime", "prime", "prime", 1, &io::Error::other("prime"));
             super::log_projection_batch_panic("prime", "prime", "prime", 1);
             super::log_projection_event("prime", "prime", "prime");
+            super::log_poisoned_lock("prime");
+            super::log_broken_invariant("prime", "prime");
             super::log_projection_failure("prime", "prime", "prime", "prime", 1);
             #[cfg(feature = "postgres")]
             {

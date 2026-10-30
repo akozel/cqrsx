@@ -206,7 +206,7 @@ mod tests {
         struct NeverCalled;
         impl TaskHandler<Unversioned> for NeverCalled {
             async fn handle(&self, _: Unversioned, _: &TaskContext) -> TaskResult {
-                unreachable!("an invalid format cannot construct an adapter")
+                panic!("an invalid format cannot construct an adapter")
             }
         }
         assert!(matches!(

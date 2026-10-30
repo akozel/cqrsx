@@ -183,7 +183,7 @@ pub(in crate::cqrs) mod tests {
             let original=SerializedEvent::new("🦀".into(),37,Ledger::TYPE.into(),"delta".into(),format!("0.{initial}.0"),serde_json::json!(value),serde_json::json!({"trace":"данные"}));
             let mut upcasters:Vec<Box<dyn EventUpcaster>>=Vec::new();
             for (index,increment) in increments.iter().copied().enumerate() {
-                upcasters.push(Box::new(NumericVersionUpcaster::new("delta",&format!("0.{}.0",index+1),Box::new(move |v|serde_json::json!(v.as_i64().unwrap()+increment)))));
+                upcasters.push(Box::new(NumericVersionUpcaster::try_new("delta",&format!("0.{}.0",index+1),Box::new(move |v|serde_json::json!(v.as_i64().unwrap()+increment))).unwrap()));
             }
             let expected=value+increments.iter().skip(initial).sum::<i64>();
             let upgraded=original.clone().upcast(&upcasters);
@@ -227,16 +227,22 @@ pub(in crate::cqrs) mod tests {
             serde_json::json!({"trace": "данные"}),
         );
         let upcasters: Vec<Box<dyn EventUpcaster>> = vec![
-            Box::new(NumericVersionUpcaster::new(
-                "delta",
-                "0.2.0",
-                Box::new(|v| serde_json::json!({"next": v["old"].as_i64().unwrap()+1})),
-            )),
-            Box::new(NumericVersionUpcaster::new(
-                "delta",
-                "1.0.0",
-                Box::new(|v| serde_json::json!(v["next"].as_i64().unwrap() * 2)),
-            )),
+            Box::new(
+                NumericVersionUpcaster::try_new(
+                    "delta",
+                    "0.2.0",
+                    Box::new(|v| serde_json::json!({"next": v["old"].as_i64().unwrap()+1})),
+                )
+                .unwrap(),
+            ),
+            Box::new(
+                NumericVersionUpcaster::try_new(
+                    "delta",
+                    "1.0.0",
+                    Box::new(|v| serde_json::json!(v["next"].as_i64().unwrap() * 2)),
+                )
+                .unwrap(),
+            ),
         ];
         let upcasted = original.clone().upcast(&upcasters);
         assert_eq!(upcasted.aggregate_id, original.aggregate_id);

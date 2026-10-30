@@ -1,10 +1,13 @@
 //! The lease keeper of an owner: extends the checkpoint's lease while the owner works and notices when the
 //! lease is lost, by the store's answer or by the local deadline.
-use crate::cqrs::projection::checkpoint::{CheckpointKey, CheckpointStore, LeaseToken};
+use crate::{
+    cqrs::projection::checkpoint::{CheckpointKey, CheckpointStore, LeaseToken},
+    locking::lock,
+};
 use std::{
     pin::pin,
     sync::{
-        Arc, Mutex, PoisonError,
+        Arc, Mutex,
         atomic::{AtomicBool, Ordering},
     },
     time::Duration,
@@ -30,7 +33,7 @@ struct Shared {
 
 impl Shared {
     fn deadline(&self) -> Instant {
-        *self.deadline.lock().unwrap_or_else(PoisonError::into_inner)
+        *lock(&self.deadline, "projection lease deadline")
     }
 
     fn is_lost(&self) -> bool {
@@ -100,7 +103,7 @@ async fn keep<C: CheckpointStore>(store: Arc<C>, key: CheckpointKey, token: Leas
         let anchor = Instant::now();
         match store.extend(&key, token, lease).await {
             Ok(true) => {
-                *shared.deadline.lock().unwrap_or_else(PoisonError::into_inner) = anchor + lease;
+                *lock(&shared.deadline, "projection lease deadline") = anchor + lease;
                 shared.changed.notify_waiters();
             }
             Ok(false) => {

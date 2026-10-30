@@ -1,16 +1,19 @@
 //! An in-memory `CheckpointStore` with the rules of the PostgreSQL one: for tests of a projection
 //! processor without a database.
-use crate::cqrs::{
-    projection::checkpoint::{
-        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest, RebuildRequests,
-        RebuildState,
+use crate::{
+    cqrs::{
+        projection::checkpoint::{
+            CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest,
+            RebuildRequests, RebuildState,
+        },
+        store::feed::Position,
     },
-    store::feed::Position,
+    locking::lock,
 };
 use chrono::{DateTime, TimeDelta, Utc};
 use std::{
     collections::BTreeMap,
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex, MutexGuard},
     time::Duration,
 };
 use tokio::time::Instant;
@@ -124,7 +127,7 @@ impl MemCheckpointStore {
     }
 
     fn state(&self) -> MutexGuard<'_, State> {
-        self.state.lock().unwrap_or_else(PoisonError::into_inner)
+        lock(&self.state, "in-memory checkpoints")
     }
 
     /// The state, unless the store is unavailable.

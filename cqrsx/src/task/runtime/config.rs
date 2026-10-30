@@ -52,9 +52,12 @@ impl TaskRuntimeConfig {
 }
 
 impl Default for TaskRuntimeConfig {
+    /// The default storage and worker budgets, which fit together (a test checks them as [`new`](Self::new) does).
     fn default() -> Self {
-        Self::new(TaskStorageConfig::default(), TaskWorkerPoolConfig::default())
-            .expect("valid default outbox runtime configuration")
+        Self {
+            storage: TaskStorageConfig::default(),
+            worker: TaskWorkerPoolConfig::default(),
+        }
     }
 }
 
@@ -135,6 +138,10 @@ mod tests {
     #[test]
     fn combined_defaults_and_independent_overrides_use_existing_settings_once() {
         let default = TaskRuntimeConfig::default();
+        assert!(
+            TaskRuntimeConfig::new(default.storage().clone(), default.worker_pool().clone()).is_ok(),
+            "the defaults fit together"
+        );
         assert_eq!(default.worker_pool().concurrency(), 128);
         assert_eq!(default.worker_pool().buffer_capacity(), 128);
         assert_eq!(default.worker_pool().poll_interval(), Duration::from_secs(1));

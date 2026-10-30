@@ -1,5 +1,7 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
+// A test helper the engine does not use (rule 8 of the code guidelines): a poisoned lock fails the test that poisoned it.
+#![allow(clippy::unwrap_used)]
 use crate::{
     cqrs::{
         AggregateError,

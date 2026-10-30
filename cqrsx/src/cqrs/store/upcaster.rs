@@ -55,7 +55,8 @@ impl FromStr for NumericVersion {
 
     fn from_str(event_version: &str) -> Result<Self, Self::Err> {
         let mut split_version = event_version.split('.').fuse();
-        let major_version = u32::from_str(split_version.next().unwrap())?;
+        // `split` yields at least one component, maybe empty: an empty major version does not parse.
+        let major_version = u32::from_str(split_version.next().unwrap_or_default())?;
         let minor_version = split_version.next().map_or(Ok(0), u32::from_str)?;
         let patch = split_version.next().map_or(Ok(0), u32::from_str)?;
         Ok(Self {
@@ -94,7 +95,7 @@ impl From<ParseIntError> for NumericVersionError {
 ///                 panic!("the event payload is not an object")
 ///             }
 ///         });
-/// let upcaster = NumericVersionUpcaster::new("EventX", "2.3.4", upcast_function);
+/// let upcaster = NumericVersionUpcaster::try_new("EventX", "2.3.4", upcast_function).unwrap();
 ///
 /// let payload: Value = serde_json::from_str(
 ///             r#"{
@@ -139,15 +140,18 @@ pub struct NumericVersionUpcaster {
 }
 
 impl NumericVersionUpcaster {
-    /// Creates a `NumericVersionUpcaster`
-    pub fn new(event_type: &str, target_version: &str, transform: Box<EventPayloadTransform>) -> Self {
-        let target_version: NumericVersion =
-            NumericVersion::from_str(target_version).expect("target_version is not a valid numeric version");
-        Self {
+    /// Upcasts the events of `event_type` older than `target_version` with `transform`; a `target_version` that is not
+    /// a numeric version (see [`NumericVersion`]) is refused.
+    pub fn try_new(
+        event_type: &str,
+        target_version: &str,
+        transform: Box<EventPayloadTransform>,
+    ) -> Result<Self, NumericVersionError> {
+        Ok(Self {
             event_type: event_type.to_string(),
-            target_version,
+            target_version: NumericVersion::from_str(target_version)?,
             transform,
-        }
+        })
     }
 }
 
@@ -216,7 +220,7 @@ mod test {
 
     #[test]
     fn simple_upcaster_can_upcast() {
-        let upcaster = NumericVersionUpcaster::new("EventX", "2.3.4", Box::new(|event| event));
+        let upcaster = NumericVersionUpcaster::try_new("EventX", "2.3.4", Box::new(|event| event)).unwrap();
         assert!(upcaster.can_upcast("EventX", "1.12.35"));
         assert!(upcaster.can_upcast("EventX", "2.3.3"));
         assert!(!upcaster.can_upcast("AnotherEvent", "1.12.35"));
@@ -228,18 +232,25 @@ mod test {
 
     #[test]
     fn semantic_version_upcaster_can_upcast() {
-        NumericVersionUpcaster::new("EventX", "2.3.4", test_upcast());
+        assert!(NumericVersionUpcaster::try_new("EventX", "2.3.4", test_upcast()).is_ok());
     }
 
     #[test]
-    #[should_panic]
     fn semantic_version_upcaster_invalid_version() {
-        NumericVersionUpcaster::new("EventX", "not_a_version", test_upcast());
+        for invalid in ["not_a_version", "", "2."] {
+            assert!(
+                matches!(
+                    NumericVersionUpcaster::try_new("EventX", invalid, test_upcast()),
+                    Err(NumericVersionError)
+                ),
+                "{invalid:?} is refused"
+            );
+        }
     }
 
     #[test]
     fn semantic_version_upcaster_upcast() {
-        let upcaster = NumericVersionUpcaster::new("EventX", "2.3.4", test_upcast());
+        let upcaster = NumericVersionUpcaster::try_new("EventX", "2.3.4", test_upcast()).unwrap();
         let payload: Value = serde_json::from_str(
             r#"{
     "id": 4829,
@@ -272,7 +283,7 @@ mod test {
                 panic!("the event payload is not an object")
             }
         });
-        let upcaster = NumericVersionUpcaster::new("EventX", "2.3.4", upcast_function);
+        let upcaster = NumericVersionUpcaster::try_new("EventX", "2.3.4", upcast_function).unwrap();
 
         let payload: Value = serde_json::from_str(
             r#"{
