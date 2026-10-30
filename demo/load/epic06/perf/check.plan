@@ -1,0 +1,17 @@
+# Backlog epic 06, ticket 01, check runs: REPEAT=1, SEED=e06c, image e06-base. Every configuration of the ticket once,
+# to prove it runs: result.json, the drain, the probe's K views and M tasks per event. The prefix e06c-base- keeps them
+# out of the series' batches (compare.mjs puts a run into the batch with the longest prefix it starts with) and has the
+# series' length (see series.plan). The probe's script is ../k6/probe.js, named relative to demo/load/k6 as run.sh
+# takes it (see series.sh).
+# Points 01–03a: the parameters of 05/13's series. Points 09: the probe on the back-end's two cores (PROFILE=app),
+# eight workers to drain up to four tasks per command within the run's five minutes; KEYS=VUS gives every VU probes
+# of its own, KEYS=1 is one hot probe.
+e06c-base- e06-base hot-key NAME=01-hot-key-vus40-db VUS=40 POOL=20 PROFILE=db WORKERS=2 DRAIN=1 DRAIN_TIMEOUT=240
+e06c-base- e06-base hot-key NAME=01-hot-key-vus40-app VUS=40 POOL=20 PROFILE=app WORKERS=2 DRAIN=1 DRAIN_TIMEOUT=240
+e06c-base- e06-base spread-bookings NAME=02b-spread-vus50-db VUS=50 POOL=20 PROFILE=db WORKERS=2 DRAIN=1 DRAIN_TIMEOUT=200 VERIFY=1 VERIFY_TIMEOUT=40
+e06c-base- e06-base spread-bookings NAME=03a-drain-w8-db VUS=50 POOL=20 PROFILE=db WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=240
+e06c-base- e06-base ../epic06/k6/probe NAME=09-probe-k1-m1 VUS=50 KEYS=50 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=1 ENCORE_LOAD_TASKS=1
+e06c-base- e06-base ../epic06/k6/probe NAME=09-probe-k4-m1 VUS=50 KEYS=50 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=4 ENCORE_LOAD_TASKS=1
+e06c-base- e06-base ../epic06/k6/probe NAME=09-probe-k1-m4 VUS=50 KEYS=50 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=1 ENCORE_LOAD_TASKS=4
+e06c-base- e06-base ../epic06/k6/probe NAME=09-probe-k4-m4 VUS=50 KEYS=50 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=4 ENCORE_LOAD_TASKS=4
+e06c-base- e06-base ../epic06/k6/probe NAME=09-probe-hot-k4 VUS=40 KEYS=1 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=4 ENCORE_LOAD_TASKS=1

@@ -1,0 +1,18 @@
+# Backlog epic 06: the stand's overlay for this directory, added to every run by series.sh (LOAD_COMPOSE_EXTRA, after
+# perf/run.sh's own of epic 02). Relative paths resolve against demo/load, like every overlay's; the bind-mount sources
+# carry LOAD_HOST_DIR as the stand's compose.yaml does.
+# - The back-end (an image of ../Dockerfile, encore-load-backend:e06-*): the probe's views and tasks per ping. A plan
+#   line sets ENCORE_LOAD_VIEWS=… ENCORE_LOAD_TASKS=…, which demo/load/run.sh exports (every KEY=VALUE of a run is in
+#   its environment, and in result.json's params) and compose reads here. Unset: 0, the probe module's defaults, so the
+#   box office's points run with the probe idle (no view, no task type).
+# - k6: run.sh starts `k6 run /scripts/<script>.js`; the script `../epic06/k6/probe` is /epic06/k6/probe.js, and its
+#   imports `../../k6/lib/…` need the stand's scripts at /k6 as well (see ../k6/probe.js).
+services:
+  backend:
+    environment:
+      ENCORE_LOAD_VIEWS: ${ENCORE_LOAD_VIEWS:-0}
+      ENCORE_LOAD_TASKS: ${ENCORE_LOAD_TASKS:-0}
+  k6:
+    volumes:
+      - ${LOAD_HOST_DIR:-.}/epic06/k6:/epic06/k6:ro,z
+      - ${LOAD_HOST_DIR:-.}/k6:/k6:ro,z

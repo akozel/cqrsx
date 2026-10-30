@@ -1,0 +1,11 @@
+# Backlog epic 06 (demo/docs/backlog/06_code_guidelines): the crates of its measurements, in a workspace of their own
+# with a lock of their own (started from demo/Cargo.lock: the same versions as the demo's build). Neither the root
+# workspace nor the demo's knows them; ticket 08 deletes this directory as a whole. See README.md.
+[workspace]
+resolver = "3"
+members = ["allocations", "backend"]
+
+[workspace.package]
+edition = "2024"
+publish = false
+license = "Apache-2.0"
