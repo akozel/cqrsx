@@ -3,7 +3,7 @@ use super::*;
 #[tokio::test]
 async fn schema_rejects_inconsistent_direct_writes_and_accepts_valid_lifecycle_states() {
     let db = Database::new().await;
-    let task = new_task().with_max_attempts(3).unwrap();
+    let task = new_task().with_max_attempts(NonZeroU16::new(3).unwrap());
     enqueue(&db.pool, vec![task.clone()]).await;
     let original: Value = sqlx::query_scalar("SELECT to_jsonb(o) FROM transactional_outbox o WHERE id = $1")
         .bind(task.id())
@@ -204,7 +204,7 @@ async fn queue_indexes_serve_ready_and_expired_queries_with_finished_history() {
     );
     assert_eq!(queue.recover_expired(1).await.unwrap_err(), TaskProcessingError::Unavailable);
     let dummy = LeasedTask::new(
-        TaskAttempt::new(Uuid::new_v4(), format(), json!({}), json!({}), 1).unwrap(),
+        TaskAttempt::try_new(Uuid::new_v4(), format(), json!({}), json!({}), 1).unwrap(),
         TaskLease::new(Uuid::new_v4(), tokio::time::Instant::now() + Duration::from_secs(60)),
     );
     assert_eq!(

@@ -11,7 +11,7 @@ use crate::{
     task::{
         adapter::boxed::BoxedTaskAdapter,
         dependencies::Dependencies,
-        format::{TaskFormatError, TaskPayload},
+        format::TaskPayload,
         handler::TaskHandler,
         policy::{Policies, PolicyError, PolicyName, Retry},
     },
@@ -20,6 +20,7 @@ use serde::de::DeserializeOwned;
 use std::{
     any::{Any, TypeId},
     fmt,
+    num::NonZeroU16,
     sync::Arc,
 };
 
@@ -41,12 +42,12 @@ type Bind = fn(Policies, PolicyName) -> Result<Policies, PolicyError>;
 pub(crate) struct PolicyEntry {
     pub(crate) name: PolicyName,
     pub(crate) retry: Retry,
-    pub(crate) max_attempts: i32,
+    pub(crate) max_attempts: NonZeroU16,
 }
 
 /// A task type: its handler and the policy it is bound to.
 pub(crate) struct TaskRegistration {
-    pub(crate) adapter: Result<BoxedTaskAdapter, TaskFormatError>,
+    pub(crate) adapter: BoxedTaskAdapter,
     pub(crate) binding: Option<PolicyBinding>,
 }
 
@@ -151,7 +152,7 @@ impl Module {
     }
 
     /// The policy `name`: the pause before a retry and the attempt budget of its task types.
-    pub fn policy(mut self, name: PolicyName, retry: Retry, max_attempts: i32) -> Self {
+    pub fn policy(mut self, name: PolicyName, retry: Retry, max_attempts: NonZeroU16) -> Self {
         self.policies.push(PolicyEntry {
             name,
             retry,
@@ -188,7 +189,7 @@ impl Module {
 #[must_use = "a task type is registered by `policy` or `without_policy`"]
 pub struct TaskEntry {
     module: Module,
-    adapter: Result<BoxedTaskAdapter, TaskFormatError>,
+    adapter: BoxedTaskAdapter,
     bind: Bind,
 }
 

@@ -39,7 +39,7 @@ use crate::{
 #[cfg(test)]
 use std::any::TypeId;
 use std::{
-    collections::HashSet,
+    collections::{BTreeMap, HashSet, btree_map::Entry},
     fmt,
     sync::{Arc, Mutex},
 };
@@ -60,6 +60,10 @@ pub enum BuildError {
     ViewTwice(&'static str),
     #[error("the module `{0}` registers a second observer of the commands or of the processors")]
     ObserverTwice(&'static str),
+    /// One key of the engine's description ([`Cqrs::describe`]) with two values: from the engine's settings, a module
+    /// (`Setup::describe`, `Setup::env`) or two modules. The same value twice is one entry.
+    #[error("the key `{key}` is described twice, as `{first}` and as `{second}`")]
+    DescribedTwice { key: String, first: String, second: String },
     #[error("task policies: {0}")]
     Policy(#[from] PolicyError),
     #[error("task handlers: {0}")]
@@ -299,6 +303,7 @@ impl Builder {
             .collect::<Result<Vec<_>, _>>()?;
         let shutdown = CancellationToken::new();
         let settings = setup.engine().clone();
+        let described = merge_described(settings.entries().into_iter().chain(setup.described()))?;
         let memory = MemoryBackend::new();
         let checkpoints: Arc<dyn CheckpointOps> = memory.checkpoints.clone();
         let mut cqrs = Cqrs {
@@ -313,7 +318,7 @@ impl Builder {
             wakeups: Default::default(),
             dispatcher: None,
             views: Default::default(),
-            described: setup.described(),
+            described,
             memory,
             journal: Journal::Memory,
             #[cfg(feature = "postgres")]
@@ -328,7 +333,7 @@ impl Builder {
         for policy in modules.iter().flat_map(|module| &module.policies) {
             cqrs.policies = cqrs
                 .policies
-                .with_policy(policy.name, TaskPolicy::new(policy.retry, policy.max_attempts)?)?;
+                .with_policy(policy.name, TaskPolicy::new(policy.retry, policy.max_attempts))?;
         }
         let (mut registered, mut named) = (HashSet::new(), HashSet::new());
         let (mut aggregates, mut views, mut adapters) = (Vec::new(), Vec::new(), Vec::new());
@@ -348,7 +353,7 @@ impl Builder {
                 views.push(entry);
             }
             for task in module.tasks {
-                adapters.push(task.adapter.map_err(TaskDispatcherError::from)?);
+                adapters.push(task.adapter);
                 if let Some(binding) = task.binding {
                     cqrs.policies = (binding.bind)(cqrs.policies, binding.name)?;
                 }
@@ -415,6 +420,29 @@ impl Cqrs {
         let _ = stores;
         Ok(())
     }
+}
+
+/// The engine's description by key from `entries` in the order described: a key given again with its value is one
+/// entry, with another value it is refused, naming the value given first and the other one.
+fn merge_described(entries: impl IntoIterator<Item = (String, String)>) -> Result<BTreeMap<String, String>, BuildError> {
+    let mut described = BTreeMap::new();
+    for (key, value) in entries {
+        match described.entry(key) {
+            Entry::Vacant(entry) => {
+                entry.insert(value);
+            }
+            Entry::Occupied(entry) if *entry.get() == value => {}
+            Entry::Occupied(entry) => {
+                let (key, first) = entry.remove_entry();
+                return Err(BuildError::DescribedTwice {
+                    key,
+                    first,
+                    second: value,
+                });
+            }
+        }
+    }
+    Ok(described)
 }
 
 /// What the modules of an engine registered, merged and checked ([`Builder::registrations`]), with the engine they are
@@ -508,19 +536,15 @@ mod tests {
         },
         engine::test_support::*,
         task::{
-            dependencies::DependencyId,
-            dispatcher::TaskDispatcherError,
-            format::{TaskFormat, TaskFormatError, TaskPayload},
-            handler::TaskHandler,
-            policy::Retry,
-            result::TaskResult,
+            dependencies::DependencyId, dispatcher::TaskDispatcherError, format::TaskFormat, policy::Retry, result::TaskResult,
             runtime::config::TaskRuntimeConfig,
         },
     };
-    use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use std::{num::NonZeroUsize, time::Duration};
-    use uuid::Uuid;
+    use std::{
+        num::{NonZeroU16, NonZeroUsize},
+        time::Duration,
+    };
 
     fn refusal(builder: Builder) -> BuildError {
         ready(builder.build()).err().unwrap()
@@ -556,38 +580,21 @@ mod tests {
         );
     }
 
-    #[derive(Serialize, Deserialize)]
-    struct Unversioned {}
-
-    impl TaskPayload for Unversioned {
-        const TASK_TYPE: &'static str = "unversioned";
-        const TASK_VERSION: i32 = 0;
-    }
-
-    struct UnversionedHandler;
-
-    impl TaskHandler<Unversioned> for UnversionedHandler {
-        async fn handle(&self, _: Unversioned, _: &crate::task::context::TaskContext) -> TaskResult {
-            TaskResult::Done
-        }
-    }
-
     #[test]
-    fn a_policy_must_be_declared_once_with_a_budget_and_bound_once() {
+    fn a_policy_must_be_declared_once_and_bound_once() {
+        let three = NonZeroU16::new(3).unwrap();
         let unknown = module(|module| module.task(RecordInWallet).policy(STEP));
-        let twice = module(|module| {
+        let twice = module(move |module| {
             let one_second = Retry::fixed(Duration::from_secs(1));
-            module.policy(STEP, one_second, 3).policy(STEP, one_second, 3)
+            module.policy(STEP, one_second, three).policy(STEP, one_second, three)
         });
-        let no_budget = module(|module| module.policy(STEP, Retry::fixed(Duration::from_secs(1)), 0));
-        let bound_twice = module(|module| {
-            let module = module.policy(STEP, Retry::fixed(Duration::from_secs(1)), 3);
+        let bound_twice = module(move |module| {
+            let module = module.policy(STEP, Retry::fixed(Duration::from_secs(1)), three);
             module.task(RecordInWallet).policy(STEP).task(RecordInWallet).policy(STEP)
         });
         let refused = [
             refusal(Cqrs::in_memory().module(unknown)),
             refusal(Cqrs::in_memory().module(twice)),
-            refusal(Cqrs::in_memory().module(no_budget)),
             refusal(Cqrs::in_memory().module(bound_twice)),
         ];
         assert!(
@@ -597,8 +604,7 @@ mod tests {
         let expected = [
             PolicyError::Unknown(STEP),
             PolicyError::DefinedTwice(STEP),
-            PolicyError::MaxAttempts(0),
-            PolicyError::BoundTwice(TaskFormat::of::<RecordTicket>().unwrap()),
+            PolicyError::BoundTwice(TaskFormat::of::<RecordTicket>()),
         ];
         assert_eq!(
             refused.map(|refused| refused.to_string()),
@@ -606,14 +612,13 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn a_handler_without_its_dependency_and_a_task_format_twice_or_invalid_are_refused() {
+    #[test]
+    fn a_handler_without_its_dependency_and_a_task_format_twice_are_refused() {
         let missing = module(|module| module.task(SendMail).without_policy());
         let twice = module(|module| {
             let module = module.provide(Arc::new(Mailbox::default()));
             module.task(SendMail).without_policy().task(SendMail).without_policy()
         });
-        let invalid = module(|module| module.task(UnversionedHandler).without_policy());
         let refused = [
             refusal(Cqrs::in_memory().module(missing)),
             refusal(Cqrs::in_memory().module(twice)),
@@ -623,7 +628,7 @@ mod tests {
             "{refused:?}"
         );
         let refused = refused.map(|refused| refused.to_string().replacen("task handlers: ", "", 1));
-        let mail = TaskFormat::of::<MailTicket>().unwrap();
+        let mail = TaskFormat::of::<MailTicket>();
         assert_eq!(
             refused,
             [
@@ -635,20 +640,67 @@ mod tests {
                 TaskDispatcherError::DuplicateFormat(mail).to_string()
             ]
         );
-        assert!(matches!(
-            refusal(Cqrs::in_memory().module(invalid)),
-            BuildError::Tasks(TaskDispatcherError::InvalidFormat(TaskFormatError::InvalidVersion))
-        ));
-        let ctx = crate::task::context::TaskContext::new(
-            crate::task::attempt::TaskAttempt::new(Uuid::nil(), TaskFormat::new("other", 1).unwrap(), json!({}), json!({}), 1)
-                .unwrap(),
-            Duration::ZERO,
-        );
-        let answered = UnversionedHandler.handle(Unversioned {}, &ctx).await;
+    }
+
+    /// What `refused` says of a key described twice: the key, the value given first and the other one.
+    fn described_twice(refused: &BuildError) -> Option<(&str, &str, &str)> {
+        match refused {
+            BuildError::DescribedTwice { key, first, second } => Some((key, first, second)),
+            _ => None,
+        }
+    }
+
+    #[test]
+    fn a_key_described_with_two_values_fails_the_build() {
+        let lookup = || Cqrs::from_lookup("SHOP", |_| None);
+        let snapshots = |setup: &Setup| -> Result<Module, SetupError> {
+            setup.describe("SHOP_SNAPSHOT_EVERY", "11");
+            Ok(Module::new("snapshots"))
+        };
+        let refused = refusal(lookup().module(snapshots));
         assert_eq!(
-            answered,
-            TaskResult::Done,
-            "a handler of its own, refused only for its format"
+            described_twice(&refused),
+            Some(("SHOP_SNAPSHOT_EVERY", "10", "11")),
+            "a module against the engine's settings"
+        );
+        assert_eq!(
+            refused.to_string(),
+            "the key `SHOP_SNAPSHOT_EVERY` is described twice, as `10` and as `11`"
+        );
+        let three = |setup: &Setup| setup.env("RETRIES", 3).map(|_| Module::new("three"));
+        let four = |setup: &Setup| setup.env("RETRIES", 4).map(|_| Module::new("four"));
+        assert_eq!(
+            described_twice(&refusal(lookup().module(three).module(four))),
+            Some(("SHOP_RETRIES", "3", "4")),
+            "two modules reading one variable with two defaults"
+        );
+        let again = |setup: &Setup| -> Result<Module, SetupError> {
+            setup.describe("shop.timeout", "1 s");
+            setup.describe("shop.timeout", "2 s");
+            Ok(Module::new("again"))
+        };
+        assert_eq!(
+            described_twice(&refusal(lookup().module(again))),
+            Some(("shop.timeout", "1 s", "2 s")),
+            "one module twice"
+        );
+    }
+
+    #[test]
+    fn a_key_described_again_with_its_value_is_one_entry() {
+        let reader = |setup: &Setup| -> Result<Module, SetupError> {
+            setup.env("LIMIT", 4)?;
+            setup.describe("SHOP_SNAPSHOT_EVERY", "10");
+            Ok(Module::new("reader"))
+        };
+        let other = |setup: &Setup| setup.env("LIMIT", 4).map(|_| Module::new("other"));
+        let builder = Cqrs::from_lookup("SHOP", |name| (name == "SHOP_LIMIT").then(|| "5".to_owned()));
+        let cqrs = ready(builder.module(reader).module(other).build()).unwrap();
+        let described = cqrs.describe();
+        assert_eq!(
+            (described.get("SHOP_LIMIT"), described.get("SHOP_SNAPSHOT_EVERY")),
+            (Some(&"5".to_owned()), Some(&"10".to_owned())),
+            "two modules sharing a variable, a module repeating the engine's value"
         );
     }
 
@@ -806,7 +858,7 @@ mod tests {
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        assert_eq!(booked.tasks[0].max_attempts(), 3, "STEP's budget");
+        assert_eq!(booked.tasks[0].max_attempts().get(), 3, "STEP's budget");
     }
 
     /// Writes the aggregate type, the command and the outcome of every command.
@@ -903,9 +955,7 @@ mod tests {
             "not an aggregate type of the modules"
         );
         assert_eq!(
-            registrations
-                .policies()
-                .max_attempts(&TaskFormat::of::<MailTicket>().unwrap()),
+            registrations.policies().max_attempts(&TaskFormat::of::<MailTicket>()).get(),
             6
         );
         assert_eq!(*registrations.dependency::<String>().unwrap(), "extra");
@@ -935,10 +985,7 @@ mod tests {
         let dispatcher = registrations.take_task_handlers().build().unwrap();
         assert_eq!(
             dispatcher.formats(),
-            [
-                TaskFormat::of::<RecordTicket>().unwrap(),
-                TaskFormat::of::<MailTicket>().unwrap()
-            ]
+            [TaskFormat::of::<RecordTicket>(), TaskFormat::of::<MailTicket>()]
         );
         let mut bare = Cqrs::in_memory().module(shows).registrations().unwrap();
         assert!(bare.command_observer::<Show>().is_none() && bare.projection_observer("halls").is_none());
@@ -975,12 +1022,9 @@ mod tests {
         let dispatcher = handlers.build().unwrap();
         assert_eq!(
             dispatcher.formats(),
-            [
-                TaskFormat::of::<RecordTicket>().unwrap(),
-                TaskFormat::of::<MailTicket>().unwrap()
-            ]
+            [TaskFormat::of::<RecordTicket>(), TaskFormat::of::<MailTicket>()]
         );
-        let attempt = crate::task::attempt::TaskAttempt::first(
+        let attempt = crate::task::attempt::TaskAttempt::try_first(
             &MailTicket {
                 to: "fox".into(),
                 seat: "A1".into(),

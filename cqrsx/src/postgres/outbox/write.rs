@@ -112,7 +112,7 @@ pub(super) async fn persist_one<A: Aggregate>(
                 .push_bind(task.metadata())
                 .push_bind(at)
                 .push_bind(delay_ms)
-                .push_bind(task.max_attempts());
+                .push_bind(i32::from(task.max_attempts().get()));
         });
         query.push(") AS input(id, aggregate_type, aggregate_id, aggregate_sequence, task_type, task_version, payload, metadata, scheduled_at, delay_ms, max_attempts) WHERE EXISTS (SELECT 1 FROM written_events) RETURNING id)");
     }

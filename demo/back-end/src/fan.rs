@@ -31,13 +31,13 @@ use cqrsx::{
     },
     task::policy::Retry,
 };
-use std::sync::Arc;
+use std::{num::NonZeroU16, sync::Arc};
+
+/// The attempt budget of both policies without `ENCORE_TASK_MAX_ATTEMPTS`.
+const DEFAULT_TASK_MAX_ATTEMPTS: NonZeroU16 = NonZeroU16::new(6).unwrap();
 
 pub fn module(setup: &Setup) -> Result<Module, SetupError> {
-    let attempts: i32 = setup.env("TASK_MAX_ATTEMPTS", 6)?;
-    if attempts <= 0 {
-        return Err(setup.invalid("TASK_MAX_ATTEMPTS", "must be positive"));
-    }
+    let attempts: NonZeroU16 = setup.env("TASK_MAX_ATTEMPTS", DEFAULT_TASK_MAX_ATTEMPTS)?;
     let (base, max) = (
         setup.millis("TASK_RETRY_BASE_MS", 1000)?,
         setup.millis("TASK_RETRY_MAX_MS", 8000)?,

@@ -37,12 +37,12 @@ impl TaskPayload for DummyTask {
 }
 
 pub(crate) fn format() -> TaskFormat {
-    TaskFormat::of::<DummyTask>().unwrap()
+    TaskFormat::of::<DummyTask>()
 }
 
 pub(crate) fn claimed() -> LeasedTask {
     LeasedTask::new(
-        TaskAttempt::new(
+        TaskAttempt::try_new(
             Uuid::new_v4(),
             format(),
             json!({"value": "runtime"}),

@@ -36,7 +36,7 @@ impl FromRow<'_, PgRow> for ClaimRow {
 
 impl ClaimRow {
     fn into_claimed_task(self, format: &TaskFormat, lease_deadline: Instant) -> Result<LeasedTask, TaskProcessingError> {
-        let delivery = TaskAttempt::new(self.id, format.clone(), self.payload, self.metadata, self.attempts)
+        let delivery = TaskAttempt::try_new(self.id, format.clone(), self.payload, self.metadata, self.attempts)
             .map_err(|_| TaskProcessingError::InvalidDelivery)?;
         Ok(LeasedTask::new(delivery, TaskLease::new(self.lock_token, lease_deadline)))
     }
@@ -106,7 +106,7 @@ mod tests {
         let id = uuid::Uuid::new_v4();
         let lock_token = uuid::Uuid::new_v4();
         let deadline = Instant::now();
-        let format = TaskFormat::new("test", 1).unwrap();
+        let format = TaskFormat::try_new("test", 1).unwrap();
         for (payload, metadata, attempts, valid) in [
             (json!({"value": 1}), json!({}), 2, true),
             (json!([]), json!({}), 2, false),

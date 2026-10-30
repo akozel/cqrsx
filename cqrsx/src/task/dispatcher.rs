@@ -15,9 +15,6 @@ pub enum TaskDispatcherError {
     Empty,
     #[error("duplicate task format: {} v{}", crate::diagnostics::safe_type(.0.task_type()), .0.task_version())]
     DuplicateFormat(TaskFormat),
-    /// A task adapter factory rejected its payload format before registration.
-    #[error("{0}")]
-    InvalidFormat(#[from] crate::task::format::TaskFormatError),
     /// The handler of a format needs a dependency nobody provided.
     #[error(
         "the handler of {} v{} needs `{dependency}`, which nothing provides",
@@ -39,7 +36,6 @@ impl fmt::Debug for TaskDispatcherError {
                 .field("task_type", &crate::diagnostics::safe_type(format.task_type()))
                 .field("task_version", &format.task_version())
                 .finish(),
-            Self::InvalidFormat(error) => f.debug_tuple("InvalidFormat").field(error).finish(),
             Self::MissingDependency { format, dependency } => f
                 .debug_struct("MissingDependency")
                 .field("task_type", &crate::diagnostics::safe_type(format.task_type()))
@@ -166,7 +162,7 @@ mod tests {
             ("create_account", "create_account"),
             ("private_format\nmail@example.com", "unknown"),
         ] {
-            let format = TaskFormat::new(name, 2).unwrap();
+            let format = TaskFormat::try_new(name, 2).unwrap();
             let error = TaskDispatcherError::DuplicateFormat(format.clone());
             let rendered = format!("{error} {error:?}");
             assert!(rendered.contains(safe_name));
@@ -176,9 +172,6 @@ mod tests {
             assert!(matches!(error, TaskDispatcherError::DuplicateFormat(actual) if actual == format));
         }
         assert_eq!(format!("{:?}", TaskDispatcherError::Empty), "Empty");
-        let invalid = TaskDispatcherError::from(crate::task::format::TaskFormatError::EmptyType);
-        assert!(format!("{invalid:?}").contains("EmptyType"));
-        assert!(std::error::Error::source(&invalid).is_some());
     }
 
     struct RecordingAdapter {
@@ -204,8 +197,8 @@ mod tests {
     #[tokio::test]
     async fn routes_in_order_and_rejects_duplicates_empty_and_unknown_formats() {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let first = TaskFormat::new("first", 1).unwrap();
-        let second = TaskFormat::new("second", 2).unwrap();
+        let first = TaskFormat::try_new("first", 1).unwrap();
+        let second = TaskFormat::try_new("second", 2).unwrap();
         let dispatcher = TaskDispatcher::try_new(vec![
             adapter(vec![first.clone()], &calls),
             adapter(vec![second.clone()], &calls),
@@ -214,7 +207,7 @@ mod tests {
         assert_eq!(dispatcher.formats(), vec![first.clone(), second.clone()]);
         let base = claimed();
         for format in [second, first.clone()] {
-            let input = TaskAttempt::new(
+            let input = TaskAttempt::try_new(
                 base.attempt().task_id(),
                 format,
                 base.attempt().payload().clone(),
@@ -241,8 +234,6 @@ mod tests {
             TaskDispatcher::try_new(vec![adapter(vec![first.clone(), first], &calls)]),
             Err(TaskDispatcherError::DuplicateFormat(_))
         ));
-        let error = TaskDispatcherError::from(crate::task::format::TaskFormatError::EmptyType);
-        assert!(matches!(error, TaskDispatcherError::InvalidFormat(_)));
     }
 
     #[tokio::test]
@@ -286,17 +277,17 @@ mod tests {
             }
         }
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let first = TaskFormat::of::<Payload<1>>().unwrap();
-        let second = TaskFormat::of::<Payload<2>>().unwrap();
+        let first = TaskFormat::of::<Payload<1>>();
+        let second = TaskFormat::of::<Payload<2>>();
         let dispatcher = TaskDispatcher::try_new(vec![
-            VersionedAdapter::V1(JsonTaskAdapter::<Payload<1>, _>::new(Handler(calls.clone())).unwrap()),
-            VersionedAdapter::V2(JsonTaskAdapter::<Payload<2>, _>::new(Handler(calls.clone())).unwrap()),
+            VersionedAdapter::V1(JsonTaskAdapter::<Payload<1>, _>::new(Handler(calls.clone()))),
+            VersionedAdapter::V2(JsonTaskAdapter::<Payload<2>, _>::new(Handler(calls.clone()))),
         ])
         .unwrap();
         assert_eq!(dispatcher.formats(), vec![first.clone(), second.clone()]);
         let base = claimed();
         for format in [second, first.clone()] {
-            let task = TaskAttempt::new(
+            let task = TaskAttempt::try_new(
                 base.attempt().task_id(),
                 format,
                 json!({"value":"decoded"}),
@@ -308,8 +299,8 @@ mod tests {
         }
         assert_eq!(*calls.lock().unwrap(), vec![(2, "decoded".into()), (1, "decoded".into())]);
         assert!(matches!(TaskDispatcher::try_new(vec![
-            JsonTaskAdapter::<Payload<1>, _>::new(Handler(calls.clone())).unwrap(),
-            JsonTaskAdapter::<Payload<1>, _>::new(Handler(calls.clone())).unwrap(),
+            JsonTaskAdapter::<Payload<1>, _>::new(Handler(calls.clone())),
+            JsonTaskAdapter::<Payload<1>, _>::new(Handler(calls.clone())),
         ]), Err(TaskDispatcherError::DuplicateFormat(format)) if format == first));
         assert_eq!(calls.lock().unwrap().len(), 2);
     }
@@ -383,7 +374,7 @@ mod tests {
         );
         assert!(refused.to_string().ends_with("Clock`, which nothing provides"), "{refused}");
         let private = TaskDispatcherError::MissingDependency {
-            format: TaskFormat::new("private_type\nmail@example.com", 3).unwrap(),
+            format: TaskFormat::try_new("private_type\nmail@example.com", 3).unwrap(),
             dependency: "Clock",
         };
         let rendered = format!("{private} {private:?}");

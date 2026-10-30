@@ -119,7 +119,7 @@ mod tests {
         assert_eq!(cqrs.run_tasks().await, 8);
         let tasks = cqrs.outbox().tasks();
         assert!(tasks.iter().all(|task| task.status == TaskStatus::Completed));
-        assert_eq!(tasks[0].entry.task.format(), &TaskFormat::of::<ProbeEchoV1>().unwrap());
+        assert_eq!(tasks[0].entry.task.format(), &TaskFormat::of::<ProbeEchoV1>());
 
         cqrs.catch_up().await;
         let counted = [

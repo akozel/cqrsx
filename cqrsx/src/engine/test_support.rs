@@ -27,6 +27,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
     collections::BTreeMap,
+    num::NonZeroU16,
     sync::{
         Arc, Mutex,
         atomic::{AtomicUsize, Ordering},
@@ -316,9 +317,9 @@ impl View<Wallet> for Tickets {
 }
 
 /// A step of the chain waits a second.
-pub(crate) const STEP: PolicyName = PolicyName::new("step").unwrap();
+pub(crate) const STEP: PolicyName = PolicyName::try_new("step").unwrap();
 /// An e-mail backs off from a second to eight.
-pub(crate) const MAIL: PolicyName = PolicyName::new("mail").unwrap();
+pub(crate) const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
 
 /// The box office: the shows and their halls.
 pub(crate) fn shows(_: &Setup) -> Result<Module, SetupError> {
@@ -332,8 +333,12 @@ pub(crate) fn wallets(_: &Setup) -> Result<Module, SetupError> {
         .aggregate::<Wallet>(())
         .view::<Tickets, Wallet>()
         .provide(Arc::new(Mailbox::default()))
-        .policy(STEP, Retry::fixed(Duration::from_secs(1)), 3)
-        .policy(MAIL, Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 6)
+        .policy(STEP, Retry::fixed(Duration::from_secs(1)), NonZeroU16::new(3).unwrap())
+        .policy(
+            MAIL,
+            Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+            NonZeroU16::new(6).unwrap(),
+        )
         .task(RecordInWallet)
         .policy(STEP)
         .task(SendMail)

@@ -17,10 +17,10 @@
 //!     },
 //! };
 //! use serde::Serialize;
-//! use std::time::Duration;
+//! use std::{num::NonZeroU16, time::Duration};
 //!
 //! /// E-mails back off from one second to eight.
-//! const MAIL: PolicyName = PolicyName::new("mail").unwrap();
+//! const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
 //!
 //! #[derive(Serialize, Task)]
 //! #[task(name = "issue_refund", version = 1)]
@@ -34,25 +34,25 @@
 //!
 //! let mail = Retry::backoff(Duration::from_secs(1), Duration::from_secs(8));
 //! let policies = Policies::default()
-//!     .with_policy(MAIL, TaskPolicy::new(mail, 6)?)?
+//!     .with_policy(MAIL, TaskPolicy::new(mail, NonZeroU16::new(6).unwrap()))?
 //!     .with_task::<IssueRefund>(MAIL)?;
-//! let refund = TaskFormat::of::<IssueRefund>()?;
+//! let refund = TaskFormat::of::<IssueRefund>();
 //! assert_eq!(policies.name_of(&refund), Some(MAIL));
-//! assert_eq!(policies.max_attempts(&refund), 6);
+//! assert_eq!(policies.max_attempts(&refund).get(), 6);
 //! let pauses: Vec<u64> = (1..=5).map(|attempt| mail.pause(attempt).as_secs()).collect();
 //! assert_eq!(pauses, [1, 2, 4, 8, 8]);
 //! // A type bound to no policy keeps the engine's defaults.
-//! assert_eq!(policies.max_attempts(&TaskFormat::of::<Audit>()?), DEFAULT_MAX_ATTEMPTS);
+//! assert_eq!(policies.max_attempts(&TaskFormat::of::<Audit>()), DEFAULT_MAX_ATTEMPTS);
 //! # Ok::<(), Box<dyn std::error::Error>>(())
 //! ```
 //!
-//! A policy name is never empty: [`PolicyName::new`] is `None` for an empty one, so a constant with an empty one does
-//! not compile:
+//! A policy name is never empty: [`PolicyName::try_new`] is `None` for an empty one, so a constant with an empty one
+//! does not compile:
 //!
 //! ```compile_fail
 //! use cqrsx::task::policy::PolicyName;
 //!
-//! const NONE: PolicyName = PolicyName::new("").unwrap();
+//! const NONE: PolicyName = PolicyName::try_new("").unwrap();
 //!
 //! fn main() {
 //!     println!("{NONE}");
@@ -60,23 +60,24 @@
 //! ```
 use crate::task::{
     DEFAULT_MAX_ATTEMPTS,
-    format::{TaskFormat, TaskFormatError, TaskPayload},
+    format::{TaskFormat, TaskPayload},
     queue::retry::redelivery_backoff,
 };
 use std::{
     collections::{HashMap, hash_map::Entry},
     fmt,
+    num::NonZeroU16,
     sync::Arc,
     time::Duration,
 };
 
-/// The name of a task policy: a constant of the application (`const MAIL: PolicyName = PolicyName::new("mail").unwrap();`).
+/// The name of a task policy: a constant of the application (`const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct PolicyName(&'static str);
 
 impl PolicyName {
     /// A name that is not empty, `None` for an empty one. A constant unwraps it, so an empty name does not compile.
-    pub const fn new(name: &'static str) -> Option<Self> {
+    pub const fn try_new(name: &'static str) -> Option<Self> {
         if name.is_empty() { None } else { Some(Self(name)) }
     }
 
@@ -128,27 +129,23 @@ impl Retry {
 }
 
 /// What a policy decides for the tasks of its types: the pause before the next attempt and the attempt budget, the
-/// first attempt included.
+/// first attempt included. The budget is positive by its type and fits the queue's `max_attempts` column (`INTEGER`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskPolicy {
     retry: Retry,
-    max_attempts: i32,
+    max_attempts: NonZeroU16,
 }
 
 impl TaskPolicy {
-    /// A policy with a positive attempt budget.
-    pub fn new(retry: Retry, max_attempts: i32) -> Result<Self, PolicyError> {
-        if max_attempts <= 0 {
-            return Err(PolicyError::MaxAttempts(max_attempts));
-        }
-        Ok(Self { retry, max_attempts })
+    pub fn new(retry: Retry, max_attempts: NonZeroU16) -> Self {
+        Self { retry, max_attempts }
     }
 
     pub fn retry(&self) -> Retry {
         self.retry
     }
 
-    pub fn max_attempts(&self) -> i32 {
+    pub fn max_attempts(&self) -> NonZeroU16 {
         self.max_attempts
     }
 }
@@ -176,7 +173,7 @@ impl Policies {
 
     /// Binds the task type `T` to the policy `name`, which must be defined already; a type is bound once.
     pub fn with_task<T: TaskPayload>(mut self, name: PolicyName) -> Result<Self, PolicyError> {
-        let format = TaskFormat::of::<T>()?;
+        let format = TaskFormat::of::<T>();
         let table = Arc::make_mut(&mut self.0);
         if !table.policies.contains_key(&name) {
             return Err(PolicyError::Unknown(name));
@@ -205,7 +202,7 @@ impl Policies {
 
     /// The attempt budget of the task type `format`: its policy's, or [`DEFAULT_MAX_ATTEMPTS`] without one.
     #[must_use]
-    pub fn max_attempts(&self, format: &TaskFormat) -> i32 {
+    pub fn max_attempts(&self, format: &TaskFormat) -> NonZeroU16 {
         self.of(format).map_or(DEFAULT_MAX_ATTEMPTS, TaskPolicy::max_attempts)
     }
 
@@ -221,16 +218,12 @@ impl Policies {
 /// Why a policy or a binding was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PolicyError {
-    #[error("the attempt budget of a task policy must be positive, not {0}")]
-    MaxAttempts(i32),
     #[error("the task policy `{0}` is defined twice")]
     DefinedTwice(PolicyName),
     #[error("no task policy is named `{0}`")]
     Unknown(PolicyName),
     #[error("the task type `{0}` is bound to a policy twice")]
     BoundTwice(TaskFormat),
-    #[error(transparent)]
-    Format(#[from] TaskFormatError),
 }
 
 #[cfg(test)]
@@ -238,8 +231,8 @@ mod tests {
     use super::*;
     use serde::Serialize;
 
-    const STEP: PolicyName = PolicyName::new("step").unwrap();
-    const MAIL: PolicyName = PolicyName::new("mail").unwrap();
+    const STEP: PolicyName = PolicyName::try_new("step").unwrap();
+    const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
 
     #[derive(Serialize)]
     struct Step {}
@@ -262,14 +255,6 @@ mod tests {
 
     impl TaskPayload for Unbound {
         const TASK_TYPE: &'static str = "unbound";
-        const TASK_VERSION: i32 = 1;
-    }
-
-    #[derive(Serialize)]
-    struct Invalid {}
-
-    impl TaskPayload for Invalid {
-        const TASK_TYPE: &'static str = "";
         const TASK_VERSION: i32 = 1;
     }
 
@@ -312,19 +297,21 @@ mod tests {
         );
     }
 
+    fn attempts(n: u16) -> NonZeroU16 {
+        NonZeroU16::new(n).unwrap()
+    }
+
     #[test]
-    fn a_policy_needs_a_positive_budget() {
+    fn a_policy_keeps_its_retry_and_budget() {
         let retry = Retry::fixed(Duration::from_secs(1));
-        assert_eq!(TaskPolicy::new(retry, 0), Err(PolicyError::MaxAttempts(0)));
-        assert_eq!(TaskPolicy::new(retry, -1), Err(PolicyError::MaxAttempts(-1)));
-        let policy = TaskPolicy::new(retry, 1).unwrap();
-        assert_eq!((policy.retry(), policy.max_attempts()), (retry, 1));
+        let policy = TaskPolicy::new(retry, attempts(1));
+        assert_eq!((policy.retry(), policy.max_attempts()), (retry, attempts(1)));
     }
 
     #[test]
     fn policies_bind_task_types_to_named_policies_and_a_type_without_one_keeps_the_engine_default() {
-        let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), 6).unwrap();
-        let mail = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 3).unwrap();
+        let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), attempts(6));
+        let mail = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), attempts(3));
         let policies = Policies::default()
             .with_policy(STEP, step)
             .unwrap()
@@ -335,8 +322,8 @@ mod tests {
             .with_task::<Mail>(MAIL)
             .unwrap();
         let shared = policies.clone();
-        let (step_format, mail_format) = (TaskFormat::of::<Step>().unwrap(), TaskFormat::of::<Mail>().unwrap());
-        let unbound = TaskFormat::of::<Unbound>().unwrap();
+        let (step_format, mail_format) = (TaskFormat::of::<Step>(), TaskFormat::of::<Mail>());
+        let unbound = TaskFormat::of::<Unbound>();
         assert_eq!((shared.policy(STEP), shared.policy(MAIL)), (Some(&step), Some(&mail)));
         assert_eq!(
             (
@@ -356,15 +343,15 @@ mod tests {
                 shared.max_attempts(&mail_format),
                 shared.max_attempts(&unbound)
             ),
-            (6, 3, DEFAULT_MAX_ATTEMPTS)
+            (attempts(6), attempts(3), DEFAULT_MAX_ATTEMPTS)
         );
         assert_eq!(Policies::default().max_attempts(&step_format), DEFAULT_MAX_ATTEMPTS);
     }
 
     #[test]
     fn a_type_pauses_by_its_policy_and_a_type_without_one_by_the_redelivery_backoff() {
-        let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), 6).unwrap();
-        let mail = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 6).unwrap();
+        let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), attempts(6));
+        let mail = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), attempts(6));
         let policies = Policies::default()
             .with_policy(STEP, step)
             .unwrap()
@@ -374,11 +361,11 @@ mod tests {
             .unwrap()
             .with_task::<Mail>(MAIL)
             .unwrap();
-        let (step_format, mail_format) = (TaskFormat::of::<Step>().unwrap(), TaskFormat::of::<Mail>().unwrap());
+        let (step_format, mail_format) = (TaskFormat::of::<Step>(), TaskFormat::of::<Mail>());
         let pauses = |format: &TaskFormat| (1..=6).map(|n| policies.pause(format, n).as_secs()).collect::<Vec<_>>();
         assert_eq!(pauses(&step_format), [1; 6]);
         assert_eq!(pauses(&mail_format), [1, 2, 4, 8, 8, 8]);
-        let unbound = TaskFormat::of::<Unbound>().unwrap();
+        let unbound = TaskFormat::of::<Unbound>();
         for (attempt, low, high) in [(1, 4.0, 6.0), (3, 16.0, 24.0), (7, 240.0, 300.0)] {
             let pause = policies.pause(&unbound, attempt).as_secs_f64();
             assert!((low..=high).contains(&pause), "attempt {attempt}: {pause}");
@@ -386,8 +373,8 @@ mod tests {
     }
 
     #[test]
-    fn policies_refuse_a_name_twice_an_unknown_name_a_type_bound_twice_and_an_invalid_format() {
-        let policy = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), 6).unwrap();
+    fn policies_refuse_a_name_twice_an_unknown_name_and_a_type_bound_twice() {
+        let policy = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), attempts(6));
         let policies = Policies::default().with_policy(STEP, policy).unwrap();
         let twice = policies.clone().with_policy(STEP, policy).unwrap_err();
         assert_eq!(twice, PolicyError::DefinedTwice(STEP));
@@ -395,24 +382,17 @@ mod tests {
         let unknown = policies.clone().with_task::<Mail>(MAIL).unwrap_err();
         assert_eq!(unknown, PolicyError::Unknown(MAIL));
         assert_eq!(unknown.to_string(), "no task policy is named `mail`");
-        let bound = policies.clone().with_task::<Step>(STEP).unwrap();
+        let bound = policies.with_task::<Step>(STEP).unwrap();
         let again = bound.with_task::<Step>(STEP).unwrap_err();
-        assert_eq!(again, PolicyError::BoundTwice(TaskFormat::of::<Step>().unwrap()));
+        assert_eq!(again, PolicyError::BoundTwice(TaskFormat::of::<Step>()));
         assert_eq!(again.to_string(), "the task type `step v1` is bound to a policy twice");
-        let invalid = policies.with_task::<Invalid>(STEP).unwrap_err();
-        assert_eq!(invalid, PolicyError::Format(TaskFormatError::EmptyType));
-        assert_eq!(invalid.to_string(), "task type must not be empty");
-        assert_eq!(
-            PolicyError::MaxAttempts(0).to_string(),
-            "the attempt budget of a task policy must be positive, not 0"
-        );
     }
 
     #[test]
     fn a_policy_name_is_its_text() {
         assert_eq!((MAIL.as_str(), MAIL.to_string()), ("mail", "mail".to_owned()));
         assert_eq!(
-            PolicyName::new(std::hint::black_box("mail")),
+            PolicyName::try_new(std::hint::black_box("mail")),
             Some(MAIL),
             "built at run time too"
         );
@@ -421,6 +401,6 @@ mod tests {
 
     #[test]
     fn an_empty_policy_name_is_refused() {
-        assert_eq!(PolicyName::new(std::hint::black_box("")), None);
+        assert_eq!(PolicyName::try_new(std::hint::black_box("")), None);
     }
 }

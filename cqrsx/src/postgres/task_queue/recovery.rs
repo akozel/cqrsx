@@ -35,7 +35,7 @@ impl RecoveryRow {
     fn into_failure(self) -> Result<TaskFailure, TaskProcessingError> {
         Ok(TaskFailure {
             task_id: self.id,
-            format: TaskFormat::new(self.task_type, self.task_version).map_err(|_| TaskProcessingError::InvalidDelivery)?,
+            format: TaskFormat::try_new(self.task_type, self.task_version).map_err(|_| TaskProcessingError::InvalidDelivery)?,
             attempt_number: self.attempts,
             cause: TaskFailureCause::LeaseExpired,
         })

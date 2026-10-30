@@ -17,13 +17,13 @@ pub(super) async fn pool_with(db: &Database, pool: PgPoolOptions, timeout: State
 }
 
 pub(super) fn new_task() -> NewTask {
-    NewTask::new(DummyTaskV1 {
+    NewTask::try_new(DummyTaskV1 {
         value: "runtime".to_owned(),
     })
     .unwrap()
 }
 pub(super) fn format() -> TaskFormat {
-    TaskFormat::of::<DummyTaskV1>().unwrap()
+    TaskFormat::of::<DummyTaskV1>()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]

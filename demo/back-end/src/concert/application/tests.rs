@@ -114,7 +114,7 @@ async fn a_cancellation_that_overtook_its_ticket_is_retried_and_refunds_after_th
     ui.execute::<Concert>(&concert_id(), cancel("A1", "fox", Uuid::now_v7()))
         .await
         .unwrap();
-    let record_ticket = TaskFormat::of::<RecordTicketV1>().unwrap();
+    let record_ticket = TaskFormat::of::<RecordTicketV1>();
     let mut held = cqrs
         .outbox()
         .claim(&record_ticket, "node-b", 1, Duration::from_secs(60))

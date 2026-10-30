@@ -61,7 +61,7 @@ use cqrsx::{
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
-use std::{sync::Arc, time::Duration};
+use std::{num::NonZeroU16, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 /// The policies of the four task types under the variables `pairs`, as the `fan` module declares them.
@@ -104,10 +104,10 @@ fn handlers<E: CommandExecutor<Fan> + 'static>(
 /// The formats of the four task types, in the order of the policies.
 fn formats() -> [TaskFormat; 4] {
     [
-        TaskFormat::of::<RecordTicketV1>().unwrap(),
-        TaskFormat::of::<RecordCancellationV1>().unwrap(),
-        TaskFormat::of::<SendETicketV1>().unwrap(),
-        TaskFormat::of::<IssueRefundV1>().unwrap(),
+        TaskFormat::of::<RecordTicketV1>(),
+        TaskFormat::of::<RecordCancellationV1>(),
+        TaskFormat::of::<SendETicketV1>(),
+        TaskFormat::of::<IssueRefundV1>(),
     ]
 }
 
@@ -126,16 +126,12 @@ fn formats_are_snake_case_v1_and_tasks_carry_the_budget_of_their_policy() {
         (TaskFormat::of::<RecordCancellationV1>(), "encore_record_cancellation v1"),
         (TaskFormat::of::<IssueRefundV1>(), "encore_issue_refund v1"),
     ] {
-        assert_eq!(format.unwrap().to_string(), expected);
+        assert_eq!(format.to_string(), expected);
     }
     let policies = policies(&[]).unwrap();
     for format in formats() {
-        assert_eq!(policies.max_attempts(&format), 6, "{format}");
+        assert_eq!(policies.max_attempts(&format).get(), 6, "{format}");
     }
-    assert!(
-        TaskPolicy::new(Retry::fixed(CHAIN_RETRY_AFTER), 0).is_err(),
-        "an attempt budget is positive"
-    );
 }
 
 fn round_trip<T: Serialize + DeserializeOwned>(document: serde_json::Value) {
@@ -172,8 +168,14 @@ fn every_task_type_has_its_policy_from_the_configuration() {
     assert_eq!(
         (defaults.policy(STEP), defaults.policy(MAIL)),
         (
-            Some(&TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), 6).unwrap()),
-            Some(&TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 6).unwrap())
+            Some(&TaskPolicy::new(
+                Retry::fixed(Duration::from_secs(1)),
+                NonZeroU16::new(6).unwrap()
+            )),
+            Some(&TaskPolicy::new(
+                Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+                NonZeroU16::new(6).unwrap()
+            ))
         )
     );
     let config = [
@@ -185,8 +187,14 @@ fn every_task_type_has_its_policy_from_the_configuration() {
     assert_eq!(
         (changed.policy(STEP), changed.policy(MAIL)),
         (
-            Some(&TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), 3).unwrap()),
-            Some(&TaskPolicy::new(Retry::backoff(Duration::from_millis(300), Duration::from_secs(5)), 3).unwrap())
+            Some(&TaskPolicy::new(
+                Retry::fixed(Duration::from_secs(1)),
+                NonZeroU16::new(3).unwrap()
+            )),
+            Some(&TaskPolicy::new(
+                Retry::backoff(Duration::from_millis(300), Duration::from_secs(5)),
+                NonZeroU16::new(3).unwrap()
+            ))
         )
     );
     let refused = policies(&[("ENCORE_TASK_MAX_ATTEMPTS", "0")]).unwrap_err();
@@ -194,7 +202,11 @@ fn every_task_type_has_its_policy_from_the_configuration() {
         refused,
         BuildError::Setup(SetupError::Invalid { ref variable, .. }) if variable == "ENCORE_TASK_MAX_ATTEMPTS"
     ));
-    assert_eq!(refused.to_string(), "ENCORE_TASK_MAX_ATTEMPTS: must be positive");
+    assert_eq!(
+        refused.to_string(),
+        r#"ENCORE_TASK_MAX_ATTEMPTS: cannot parse "0": number would be zero for non-zero type"#,
+        "an attempt budget is positive"
+    );
 }
 
 /// The mail policy pauses exactly as the mail client asked until it stopped choosing its pauses (backlog 05/09), and
@@ -270,9 +282,9 @@ async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
     let [task] = &booked.tasks[..] else {
         panic!("one task per booking: {:?}", booked.tasks);
     };
-    let format = TaskFormat::new("encore_record_ticket", 1).unwrap();
+    let format = TaskFormat::try_new("encore_record_ticket", 1).unwrap();
     assert_eq!(
-        (task.id(), task.format(), task.schedule(), task.max_attempts()),
+        (task.id(), task.format(), task.schedule(), task.max_attempts().get()),
         (
             booking.task_id("Concert", "radiohead-2026-11-21", &format, 0),
             &format,
@@ -309,9 +321,9 @@ async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
     let [task] = &cancelled.tasks[..] else {
         panic!("one task per cancellation: {:?}", cancelled.tasks);
     };
-    let format = TaskFormat::new("encore_record_cancellation", 1).unwrap();
+    let format = TaskFormat::try_new("encore_record_cancellation", 1).unwrap();
     assert_eq!(
-        (task.id(), task.format(), task.schedule(), task.max_attempts()),
+        (task.id(), task.format(), task.schedule(), task.max_attempts().get()),
         (
             cancelling.task_id("Concert", "radiohead-2026-11-21", &format, 0),
             &format,
@@ -347,9 +359,9 @@ async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
     let [task] = &recorded.tasks[..] else {
         panic!("one e-ticket per recorded ticket: {:?}", recorded.tasks);
     };
-    let format = TaskFormat::new("encore_send_e_ticket", 1).unwrap();
+    let format = TaskFormat::try_new("encore_send_e_ticket", 1).unwrap();
     assert_eq!(
-        (task.id(), task.format(), task.schedule(), task.max_attempts()),
+        (task.id(), task.format(), task.schedule(), task.max_attempts().get()),
         (
             recording.task_id("Fan", "fox:radiohead-2026-11-21", &format, 0),
             &format,
@@ -382,9 +394,9 @@ async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
     let [task] = &refunded.tasks[..] else {
         panic!("one refund per cancelled ticket: {:?}", refunded.tasks);
     };
-    let format = TaskFormat::new("encore_issue_refund", 1).unwrap();
+    let format = TaskFormat::try_new("encore_issue_refund", 1).unwrap();
     assert_eq!(
-        (task.id(), task.format(), task.schedule(), task.max_attempts()),
+        (task.id(), task.format(), task.schedule(), task.max_attempts().get()),
         (
             refunding.task_id("Fan", "fox:radiohead-2026-11-21", &format, 0),
             &format,

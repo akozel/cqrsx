@@ -40,7 +40,7 @@ use cqrsx::{
         event::{DomainEvent, EventEnvelope},
         projection::{
             checkpoint::CheckpointStore,
-            processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
+            processor::observer::{Applied, Failed, FailureCategory, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
         },
         reactions::ReactionsPlanner,
         store::{EventStore, feed::Position},
@@ -391,9 +391,9 @@ fn mail_context(attempt: TaskAttempt, config: &Config, activity: &Arc<ActivityHu
 
 /// Attempt `number` of a task with `payload`, in the causation chain of a command.
 fn attempt<P: TaskPayload + Serialize>(payload: &P, number: i32) -> TaskAttempt {
-    TaskAttempt::new(
+    TaskAttempt::try_new(
         Uuid::now_v7(),
-        TaskFormat::new(P::TASK_TYPE, P::TASK_VERSION).unwrap(),
+        TaskFormat::try_new(P::TASK_TYPE, P::TASK_VERSION).unwrap(),
         serde_json::to_value(payload).unwrap(),
         json!({ "correlation_id": Uuid::now_v7() }),
         number,
@@ -452,7 +452,7 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
     let activity = Arc::new(ActivityHub::new(128, 128));
 
     // The executors' reports (`command.*`): every outcome, with a fan and without one.
-    let task = NewTask::from_payload(TaskFormat::new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
+    let task = NewTask::from_payload(TaskFormat::try_new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
     let sold_out = ConcertError::SoldOut;
     let commands = CommandActivityObserver::new(activity.clone());
     let announce = ConcertCommand::AnnounceConcert(AnnounceConcert {
@@ -491,7 +491,7 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
         observer.failed(&Failed {
             aggregate_id,
             handler: "concert_halls",
-            category: "connection",
+            category: FailureCategory::Connection,
             position: Position::new(9),
             failures: 1,
         });
@@ -698,9 +698,9 @@ fn cancel(seat: &str, fan_id: &str, metadata: &CommandMetadata) -> ConcertComman
 
 /// The metadata of the command a task of `payload` issues, in the causation chain of `cause`.
 fn step<P: TaskPayload + Serialize>(payload: &P, cause: &CommandMetadata) -> CommandMetadata {
-    let attempt = TaskAttempt::new(
+    let attempt = TaskAttempt::try_new(
         Uuid::now_v7(),
-        TaskFormat::of::<P>().unwrap(),
+        TaskFormat::of::<P>(),
         serde_json::to_value(payload).unwrap(),
         json!({ "correlation_id": cause.causation.correlation_id }),
         1,

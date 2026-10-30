@@ -32,7 +32,11 @@ async fn the_box_office_and_the_wallets_run_through_their_modules_in_memory() {
         booking_id,
     };
     let booked = ui.execute::<Show>(&"s-1".into(), book("fox", booking_id)).await.unwrap();
-    assert_eq!(booked.tasks[0].max_attempts(), 5, "the policy's budget from SHOP_ATTEMPTS");
+    assert_eq!(
+        booked.tasks[0].max_attempts().get(),
+        5,
+        "the policy's budget from SHOP_ATTEMPTS"
+    );
     assert_eq!(
         ui.execute::<Show>(&"s-1".into(), book("panda", Uuid::now_v7()))
             .await

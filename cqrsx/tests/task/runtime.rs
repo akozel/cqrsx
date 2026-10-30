@@ -16,6 +16,7 @@ use cqrsx::task::{
     runtime::{TaskRuntimeError, supervisor::run, worker_pool_config::TaskWorkerPoolConfig},
 };
 use std::{
+    num::NonZeroU16,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},

@@ -37,7 +37,7 @@ pub fn fans(store: MemStore<Fan>) -> (Arc<TestCommandExecutor<Fan>>, TestCommand
 
 /// The first claim of `payload`, carrying the correlation id of the command that published it.
 pub fn attempt<P: TaskPayload>(payload: &P, correlation_id: Uuid) -> TaskAttempt {
-    TaskAttempt::first(payload, json!({ "correlation_id": correlation_id })).unwrap()
+    TaskAttempt::try_first(payload, json!({ "correlation_id": correlation_id })).unwrap()
 }
 
 /// The context of a step of the ledger: `attempt`, the step's pause, `fans` as the ledgers' executor.

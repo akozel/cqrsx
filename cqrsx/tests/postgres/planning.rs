@@ -91,7 +91,7 @@ impl TaskPlanner<Shelf> for ShelfPlanner {
                 return Err(TaskPlanError::application("refused item"));
             }
             for _ in 0..self.per_item {
-                tasks.push(NewTask::new(DummyTaskV1 { value: item.clone() })?);
+                tasks.push(NewTask::try_new(DummyTaskV1 { value: item.clone() })?);
             }
         }
         Ok(tasks)

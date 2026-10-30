@@ -95,7 +95,7 @@ impl TaskPlanner<CommandAggregate> for LastValue {
         let Some(value) = decision.after.values.last() else {
             return Ok(Vec::new());
         };
-        Ok(vec![NewTask::new(DummyTaskV1 { value: value.clone() })?])
+        Ok(vec![NewTask::try_new(DummyTaskV1 { value: value.clone() })?])
     }
 }
 
@@ -589,7 +589,7 @@ impl TaskPlanner<Counted> for CountedTasks {
     fn plan(&self, decision: &Decision<'_, Counted>) -> Result<Vec<NewTask>, TaskPlanError> {
         let mut tasks = Vec::new();
         for Counted1(value) in decision.events {
-            tasks.push(NewTask::new(DummyTaskV1 { value: value.clone() })?);
+            tasks.push(NewTask::try_new(DummyTaskV1 { value: value.clone() })?);
         }
         Ok(tasks)
     }

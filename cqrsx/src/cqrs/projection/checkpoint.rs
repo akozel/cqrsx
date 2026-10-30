@@ -7,7 +7,11 @@
 //! means the lease was lost, and the owner stops at once. The lease compares against the clock of the
 //! store, so the clocks of the nodes do not matter; an owner keeps a conservative local deadline anchored
 //! before each request, as the task queue does.
-use crate::cqrs::{aggregate::Aggregate, projection::View, store::feed::Position};
+use crate::cqrs::{
+    aggregate::Aggregate,
+    projection::{View, processor::observer::FailureCategory},
+    store::feed::Position,
+};
 use chrono::{DateTime, Utc};
 use std::{error::Error, future::Future, time::Duration};
 use thiserror::Error;
@@ -130,12 +134,12 @@ pub enum CheckpointError {
 }
 
 impl CheckpointError {
-    /// A fixed word for logs and the row's `last_error`.
-    pub fn category(&self) -> &'static str {
+    /// The error's kind for logs and the row's `last_error`.
+    pub fn category(&self) -> FailureCategory {
         match self {
-            Self::Storage(_) => "storage",
-            Self::Corrupt(_) => "corrupt",
-            Self::Invalid(_) => "invalid",
+            Self::Storage(_) => FailureCategory::Storage,
+            Self::Corrupt(_) => FailureCategory::Corrupt,
+            Self::Invalid(_) => FailureCategory::Invalid,
         }
     }
 }
@@ -296,18 +300,21 @@ mod tests {
     #[test]
     fn errors_name_their_category_and_keep_the_source() {
         let storage = CheckpointError::Storage(std::io::Error::other("private_source").into());
-        assert_eq!(storage.category(), "storage");
+        assert_eq!(storage.category(), FailureCategory::Storage);
         assert_eq!(storage.to_string(), "checkpoint storage failed: private_source");
         assert!(std::error::Error::source(&storage).is_some());
         let corrupt = CheckpointError::Corrupt("bad position".into());
         assert_eq!(
             (corrupt.category(), corrupt.to_string().as_str()),
-            ("corrupt", "checkpoint row is corrupt: bad position")
+            (FailureCategory::Corrupt, "checkpoint row is corrupt: bad position")
         );
         let invalid = CheckpointError::Invalid("projection is not registered");
         assert_eq!(
             (invalid.category(), invalid.to_string().as_str()),
-            ("invalid", "invalid checkpoint request: projection is not registered")
+            (
+                FailureCategory::Invalid,
+                "invalid checkpoint request: projection is not registered"
+            )
         );
         assert!(std::error::Error::source(&invalid).is_none());
     }

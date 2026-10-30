@@ -197,17 +197,17 @@ impl PostgresSettings {
         })
     }
 
-    /// The variables of these settings and the plan of the pools.
-    pub(crate) fn describe(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> BTreeMap<String, String> {
-        let mut described = BTreeMap::from([
+    /// The variables of these settings and the plan of the pools, in the order described.
+    pub(crate) fn entries(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> Vec<(String, String)> {
+        let mut entries = vec![
             (name(DATABASE_URL), self.url.clone()),
             (name(DATABASE_POOL_SIZE), self.pool_size.to_string()),
             (name(STATEMENT_TIMEOUT), self.statement_timeout.to_string()),
             (name(HISTORY_POOL_SIZE), self.history_pool_size.to_string()),
             (name(PROJECTION_POOL_SIZE), self.projection_pool_size.to_string()),
-        ]);
-        described.extend(self.pool_plan(application_name).describe());
-        described
+        ];
+        entries.extend(self.pool_plan(application_name).entries());
+        entries
     }
 }
 
@@ -266,7 +266,7 @@ impl PostgresPool {
     }
 
     /// The pool as it is opened: SQLx's options read back, the ping policy and the statement timeout.
-    fn describe(&self, name: &str) -> BTreeMap<String, String> {
+    fn entries(&self, name: &str) -> Vec<(String, String)> {
         let options = self.options();
         let optional = |duration: Option<Duration>| duration.map_or_else(|| "none".to_owned(), duration_text);
         let ping = match self.ping {
@@ -305,11 +305,16 @@ pub struct PoolPlan {
 impl PoolPlan {
     /// Every pool as `postgres.<pool>.<field>` and the application name, by key.
     pub fn describe(&self) -> BTreeMap<String, String> {
-        let mut described = BTreeMap::from([("postgres.application_name".to_owned(), self.application_name.clone())]);
-        described.extend(self.main.describe("main"));
-        described.extend(self.projection.describe("projection"));
-        described.extend(self.history.describe("history"));
-        described
+        self.entries().into_iter().collect()
+    }
+
+    /// What [`describe`](Self::describe) holds, in the order described.
+    pub(crate) fn entries(&self) -> Vec<(String, String)> {
+        let mut entries = vec![("postgres.application_name".to_owned(), self.application_name.clone())];
+        entries.extend(self.main.entries("main"));
+        entries.extend(self.projection.entries("projection"));
+        entries.extend(self.history.entries("history"));
+        entries
     }
 }
 
@@ -416,10 +421,11 @@ mod tests {
             ping: ConnectionPingPolicy::Default,
             ..plan.main
         };
-        assert_eq!(
-            always.describe("main").get("postgres.main.ping").map(String::as_str),
-            Some("always")
-        );
+        let ping = always
+            .entries("main")
+            .into_iter()
+            .find(|(key, _)| key == "postgres.main.ping");
+        assert_eq!(ping.map(|(_, value)| value).as_deref(), Some("always"));
     }
 
     #[test]

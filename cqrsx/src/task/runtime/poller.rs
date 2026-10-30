@@ -94,7 +94,7 @@ mod tests {
         let first = claimed();
         let first_id = first.attempt().task_id();
         let mut second = claimed();
-        second = with_format(&second, TaskFormat::new("second", 1).unwrap());
+        second = with_format(&second, TaskFormat::try_new("second", 1).unwrap());
         let second_format = second.attempt().format().clone();
         queue.incoming.lock().unwrap().extend([first, second]);
         let mut poller = Poller::new(queue.clone(), vec![format(), second_format], Duration::from_secs(3));
@@ -111,7 +111,7 @@ mod tests {
     #[tokio::test]
     async fn claiming_rotates_formats_and_respects_capacity() {
         let queue = Arc::new(Queue::default());
-        let future = TaskFormat::new("future", 2).unwrap();
+        let future = TaskFormat::try_new("future", 2).unwrap();
         let mut second = claimed();
         second = with_format(&second, future.clone());
         queue.incoming.lock().unwrap().extend([claimed(), second]);
@@ -144,7 +144,7 @@ mod tests {
     #[tokio::test]
     async fn a_later_format_failure_does_not_discard_already_claimed_work() {
         let queue = Arc::new(Queue::default());
-        let unsupported = TaskFormat::new("temporarily_unavailable", 1).unwrap();
+        let unsupported = TaskFormat::try_new("temporarily_unavailable", 1).unwrap();
         *queue.failing_format.lock().unwrap() = Some(unsupported.clone());
         let task = claimed();
         let id = task.attempt().task_id();

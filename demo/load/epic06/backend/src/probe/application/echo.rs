@@ -32,7 +32,7 @@ mod tests {
             slot: 2,
         };
         assert_eq!(ProbeEchoV1::LABELS, ["probe_id"]);
-        let new = NewTask::new(task.clone()).unwrap();
+        let new = NewTask::try_new(task.clone()).unwrap();
         assert_eq!(
             (new.payload(), new.metadata()),
             (&json!({ "slot": 2 }), &json!({ "probe_id": "p-1" }))

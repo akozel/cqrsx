@@ -20,7 +20,7 @@ use cqrsx::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, num::NonZeroU16, time::Duration};
 
 /// The box office of one show: a seat goes to one fan.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -176,13 +176,16 @@ impl Reactions for Wallet {
     }
 }
 
-const STEP: PolicyName = PolicyName::new("step").unwrap();
-const MAIL: PolicyName = PolicyName::new("mail").unwrap();
+const STEP: PolicyName = PolicyName::try_new("step").unwrap();
+const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
 
 /// Steps wait a second and get six attempts, mails back off and get three; reminders keep the engine's defaults.
 fn policies() -> Policies {
-    let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), 6).unwrap();
-    let mail = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 3).unwrap();
+    let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap());
+    let mail = TaskPolicy::new(
+        Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+        NonZeroU16::new(3).unwrap(),
+    );
     Policies::default()
         .with_policy(STEP, step)
         .unwrap()
@@ -196,7 +199,7 @@ fn policies() -> Policies {
 
 /// What the task runtime would hand the wallet step: a claim of `task`.
 fn claim(task: &NewTask, number: i32) -> TaskAttempt {
-    TaskAttempt::new(
+    TaskAttempt::try_new(
         task.id(),
         task.format().clone(),
         task.payload().clone(),
@@ -242,12 +245,12 @@ async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type(
     };
     assert_eq!(step.id(), root.task_id(Show::TYPE, "gig-1", step.format(), 0));
     assert_eq!(step.payload(), &json!({ "fan": "fox", "ticket": "gig-1/A1" }));
-    assert_eq!((step.max_attempts(), step.schedule()), (6, &TaskSchedule::Now));
+    assert_eq!((step.max_attempts().get(), step.schedule()), (6, &TaskSchedule::Now));
 
     let delivery = claim(step, 1);
     let (chain, follow_ups) = record_in_wallet(&wallets, &delivery).await.unwrap();
-    let mail = TaskFormat::of::<MailTicket>().unwrap();
-    let remind = TaskFormat::of::<Remind>().unwrap();
+    let mail = TaskFormat::of::<MailTicket>();
+    let remind = TaskFormat::of::<Remind>();
     assert_eq!(
         follow_ups.iter().map(NewTask::id).collect::<Vec<_>>(),
         [
@@ -272,12 +275,12 @@ async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type(
     assert_eq!(
         follow_ups
             .iter()
-            .map(|task| (task.max_attempts(), task.schedule().clone()))
+            .map(|task| (task.max_attempts().get(), task.schedule().clone()))
             .collect::<Vec<_>>(),
         [
             (3, TaskSchedule::Now),
             (3, TaskSchedule::Now),
-            (DEFAULT_MAX_ATTEMPTS, TaskSchedule::After(Duration::from_secs(3600)))
+            (DEFAULT_MAX_ATTEMPTS.get(), TaskSchedule::After(Duration::from_secs(3600)))
         ],
         "the budget of each type's policy; a type without one keeps the engine's"
     );

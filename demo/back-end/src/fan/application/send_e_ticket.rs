@@ -99,7 +99,7 @@ mod tests {
             price: 80,
         };
         let ctx = TaskContext::new(
-            cqrsx::task::attempt::TaskAttempt::first(&task, serde_json::json!({})).unwrap(),
+            cqrsx::task::attempt::TaskAttempt::try_first(&task, serde_json::json!({})).unwrap(),
             std::time::Duration::from_secs(1),
         );
         let mail = RecordingMailer::delivering();

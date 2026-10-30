@@ -146,7 +146,7 @@ mod tests {
 
     #[test]
     fn a_write_plan_rejects_oversized_task_batches_including_snapshot_binds() {
-        let task = NewTask::from_payload(crate::task::format::TaskFormat::new("test", 1).unwrap(), json!({})).unwrap();
+        let task = NewTask::from_payload(crate::task::format::TaskFormat::try_new("test", 1).unwrap(), json!({})).unwrap();
         let events = [event(1)];
         for (count, snapshot) in [
             (5_958, None),
@@ -179,7 +179,7 @@ mod tests {
 
     #[test]
     fn invalid_write_shapes_retain_their_validation_reason() {
-        let tasks = [NewTask::from_payload(crate::task::format::TaskFormat::new("test", 1).unwrap(), json!({})).unwrap()];
+        let tasks = [NewTask::from_payload(crate::task::format::TaskFormat::try_new("test", 1).unwrap(), json!({})).unwrap()];
         for (events, snapshot, tasks, expected) in [
             (
                 vec![],
@@ -276,7 +276,7 @@ mod tests {
         // SQL binds seven event fields and eleven fields per task. The only
         // caller supplies these three snapshot shapes; none can total 65535.
         let limit = usize::from(u16::MAX);
-        let task = NewTask::from_payload(crate::task::format::TaskFormat::new("test", 1).unwrap(), json!({})).unwrap();
+        let task = NewTask::from_payload(crate::task::format::TaskFormat::try_new("test", 1).unwrap(), json!({})).unwrap();
         let events = [event(1)];
         for (update, expected_binds) in [
             (None, 0),

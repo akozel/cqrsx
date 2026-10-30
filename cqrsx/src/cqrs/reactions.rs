@@ -220,14 +220,14 @@ impl Then {
     /// A task of `payload`, eligible at once.
     pub fn task(&mut self, payload: impl TaskPayload) {
         if self.refused.is_none() {
-            self.keep(NewTask::new(payload));
+            self.keep(NewTask::try_new(payload));
         }
     }
 
     /// A task of `payload`, eligible `delay` after the commit; the delay is relative, a reaction has no clock.
     pub fn task_after(&mut self, delay: Duration, payload: impl TaskPayload) {
         if self.refused.is_none() {
-            self.keep(NewTask::new(payload).and_then(|task| task.with_schedule(TaskSchedule::After(delay))));
+            self.keep(NewTask::try_new(payload).and_then(|task| task.with_schedule(TaskSchedule::After(delay))));
         }
     }
 
@@ -296,9 +296,9 @@ impl<A: Reactions> TaskPlanner<A> for ReactionsPlanner<A> {
             .into_iter()
             .map(|task| match self.policies.of(task.format()) {
                 Some(policy) => task.with_max_attempts(policy.max_attempts()),
-                None => Ok(task),
+                None => task,
             });
-        Ok(tasks.collect::<Result<_, _>>()?)
+        Ok(tasks.collect())
     }
 }
 
@@ -320,7 +320,10 @@ mod tests {
     };
     use serde::{Deserialize, Serialize, Serializer};
     use serde_json::json;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::{
+        num::NonZeroU16,
+        sync::atomic::{AtomicUsize, Ordering},
+    };
 
     /// A till: what it rang up so far.
     #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -464,12 +467,15 @@ mod tests {
         }
     }
 
-    const STEP: PolicyName = PolicyName::new("step").unwrap();
+    const STEP: PolicyName = PolicyName::try_new("step").unwrap();
 
     /// Pings are steps of six attempts; pongs and receipts have no policy.
     fn policies() -> Policies {
         Policies::default()
-            .with_policy(STEP, TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), 6).unwrap())
+            .with_policy(
+                STEP,
+                TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap()),
+            )
             .unwrap()
             .with_task::<Ping>(STEP)
             .unwrap()
@@ -552,7 +558,7 @@ mod tests {
             )
         };
         let tasks = decide().unwrap();
-        let (ping, pong) = (TaskFormat::of::<Ping>().unwrap(), TaskFormat::of::<Pong>().unwrap());
+        let (ping, pong) = (TaskFormat::of::<Ping>(), TaskFormat::of::<Pong>());
         assert_eq!(formats(&tasks), ["ping v1", "pong v1", "ping v1"]);
         assert_eq!(
             tasks.iter().map(|task| task.payload().clone()).collect::<Vec<_>>(),
@@ -589,8 +595,8 @@ mod tests {
     fn the_policy_of_a_task_type_sets_its_budget_and_a_type_without_one_keeps_the_default() {
         let tasks = plan(&Sale::Burst, &[Sale::Burst], &HashMap::new()).unwrap();
         assert_eq!(
-            tasks.iter().map(NewTask::max_attempts).collect::<Vec<_>>(),
-            [6, DEFAULT_MAX_ATTEMPTS, 6]
+            tasks.iter().map(|task| task.max_attempts().get()).collect::<Vec<_>>(),
+            [6, DEFAULT_MAX_ATTEMPTS.get(), 6]
         );
         let unbound = ReactionsPlanner::<Till>::new(Policies::default());
         let tasks = unbound

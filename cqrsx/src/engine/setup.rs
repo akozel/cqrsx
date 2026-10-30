@@ -4,7 +4,6 @@ use crate::{
     locking::{get_mut, lock},
 };
 use std::{
-    collections::BTreeMap,
     error::Error,
     fmt::{self, Display},
     str::FromStr,
@@ -22,8 +21,9 @@ pub struct Setup {
     prefix: String,
     lookup: Lookup,
     settings: Settings,
-    /// What the modules read and described, by key: `Cqrs::describe` lists it next to the engine's settings.
-    described: Mutex<BTreeMap<String, String>>,
+    /// What the modules read and described, in the order described: the engine's build merges it with its settings
+    /// by key, and `Cqrs::describe` lists the result.
+    described: Mutex<Vec<(String, String)>>,
 }
 
 // By hand: the settings and what the modules described may hold database URLs with their passwords, and the variables
@@ -105,14 +105,16 @@ impl Setup {
     }
 
     /// A setting of the module with no variable of its own (derived from others) in the engine's description, under a
-    /// dotted name in lower case (`mail.request_timeout`); a key described twice keeps the last value.
+    /// dotted name in lower case (`mail.request_timeout`). A key has one value: described again with the same value (two
+    /// modules reading one shared variable) it is one entry, with another value, by this module, another one or the
+    /// engine's settings, it fails the engine's build ([`BuildError::DescribedTwice`](super::build::BuildError)).
     pub fn describe(&self, key: impl Into<String>, value: impl Into<String>) {
         let mut described = lock(&self.described, "setup descriptions");
-        described.insert(key.into(), value.into());
+        described.push((key.into(), value.into()));
     }
 
-    /// What the modules read and described, by key.
-    pub(crate) fn described(mut self) -> BTreeMap<String, String> {
+    /// What the modules read and described, in the order described; a key may come more than once.
+    pub(crate) fn described(mut self) -> Vec<(String, String)> {
         std::mem::take(get_mut(&mut self.described, "setup descriptions"))
     }
 
@@ -198,16 +200,16 @@ mod tests {
         assert!(matches!(refused, SetupError::Invalid { ref variable, .. } if variable == "ENCORE_TICKET_LIMIT"));
         assert_eq!(
             encore.described(),
-            BTreeMap::from(
-                [
-                    ("ENCORE_PACE_MS", "1 s"),
-                    ("ENCORE_RETRY_MS", "1500 ms"),
-                    ("ENCORE_TICKET_LIMIT", "7"),
-                    ("ENCORE_URL", "http://mail/"),
-                    ("mail.request_timeout", "3 s"),
-                ]
-                .map(|(key, value)| (key.to_owned(), value.to_owned()))
-            )
+            [
+                ("ENCORE_TICKET_LIMIT", "7"),
+                ("ENCORE_RETRY_MS", "1500 ms"),
+                ("ENCORE_PACE_MS", "1 s"),
+                ("ENCORE_URL", "http://mail/"),
+                ("mail.request_timeout", "4 s"),
+                ("mail.request_timeout", "3 s"),
+            ]
+            .map(|(key, value)| (key.to_owned(), value.to_owned())),
+            "in the order described; the build refuses the key described twice"
         );
     }
 }

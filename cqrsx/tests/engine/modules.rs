@@ -23,6 +23,7 @@ use cqrsx::{
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
+    num::NonZeroU16,
     sync::{Arc, Mutex},
     time::Duration,
 };
@@ -223,8 +224,10 @@ impl View<Show> for Hall {
     }
 }
 
-pub(crate) const STEP: PolicyName = PolicyName::new("step").unwrap();
-pub(crate) const MAIL: PolicyName = PolicyName::new("mail").unwrap();
+pub(crate) const STEP: PolicyName = PolicyName::try_new("step").unwrap();
+pub(crate) const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
+/// The budget of both policies without `ATTEMPTS`.
+const ATTEMPTS: NonZeroU16 = NonZeroU16::new(3).unwrap();
 
 /// The box office: the shows and their halls.
 pub(crate) fn box_office(_: &Setup) -> Result<Module, SetupError> {
@@ -234,7 +237,7 @@ pub(crate) fn box_office(_: &Setup) -> Result<Module, SetupError> {
 /// The wallets: the step (`STEP`, a second between attempts) and the e-mail (`MAIL`), both with the budget of
 /// `ATTEMPTS`, and a mail service of their own.
 pub(crate) fn wallets(setup: &Setup) -> Result<Module, SetupError> {
-    let attempts = setup.env("ATTEMPTS", 3)?;
+    let attempts = setup.env("ATTEMPTS", ATTEMPTS)?;
     let mail: Arc<Mailer> = Arc::new(Outbox::default());
     Ok(Module::new("wallets")
         .aggregate::<Wallet>(())

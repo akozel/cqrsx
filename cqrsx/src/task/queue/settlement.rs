@@ -89,7 +89,7 @@ mod tests {
     fn confirmed_results_and_recovery_counts_are_unambiguous() {
         let failure = TaskFailure {
             task_id: Uuid::new_v4(),
-            format: TaskFormat::new("test", 1).unwrap(),
+            format: TaskFormat::try_new("test", 1).unwrap(),
             attempt_number: 1,
             cause: TaskFailureCause::AttemptLimitReached,
         };

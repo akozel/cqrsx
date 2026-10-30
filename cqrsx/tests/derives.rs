@@ -97,8 +97,8 @@ struct SendETicket<'a> {
 #[test]
 fn a_derived_task_has_its_format_and_publishes() {
     assert_eq!((SendETicket::TASK_TYPE, SendETicket::TASK_VERSION), ("send_e_ticket", 2));
-    assert_eq!(TaskFormat::of::<SendETicket>().unwrap().to_string(), "send_e_ticket v2");
-    let task = NewTask::new(SendETicket { seat: "B4" }).unwrap();
+    assert_eq!(TaskFormat::of::<SendETicket>().to_string(), "send_e_ticket v2");
+    let task = NewTask::try_new(SendETicket { seat: "B4" }).unwrap();
     assert_eq!(
         (task.format().to_string(), task.payload()),
         ("send_e_ticket v2".to_owned(), &json!({ "seat": "B4" }))
@@ -135,11 +135,11 @@ async fn a_derived_task_keeps_its_labels_in_the_metadata() {
         amount: 80,
         r#type: 2,
     };
-    let task = NewTask::new(refund()).unwrap();
+    let task = NewTask::try_new(refund()).unwrap();
     assert_eq!(task.payload(), &json!({ "amount": 80 }));
     assert_eq!(task.metadata(), &json!({ "tenant": "acme", "type": 2 }));
     // The runtime claims the row as it was written; the adapter puts the labels back before it decodes.
-    let claim = TaskAttempt::new(
+    let claim = TaskAttempt::try_new(
         task.id(),
         task.format().clone(),
         task.payload().clone(),
@@ -148,12 +148,12 @@ async fn a_derived_task_keeps_its_labels_in_the_metadata() {
     )
     .unwrap();
     let decoded = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
-    let adapter = JsonTaskAdapter::new(Refunds(decoded.clone())).unwrap();
+    let adapter = JsonTaskAdapter::new(Refunds(decoded.clone()));
     let context = |attempt| TaskContext::new(attempt, std::time::Duration::ZERO);
     assert_eq!(adapter.invoke(&context(claim)).await, TaskResult::Done);
     assert_eq!(
         adapter
-            .invoke(&context(TaskAttempt::first(&refund(), json!({})).unwrap()))
+            .invoke(&context(TaskAttempt::try_first(&refund(), json!({})).unwrap()))
             .await,
         TaskResult::Done
     );
@@ -452,7 +452,10 @@ async fn a_task_handler_function_is_a_handler_with_its_context_and_its_dependenc
         amount: 80,
         r#type: 2,
     };
-    let ctx = TaskContext::new(TaskAttempt::first(&refund(), json!({})).unwrap(), std::time::Duration::ZERO);
+    let ctx = TaskContext::new(
+        TaskAttempt::try_first(&refund(), json!({})).unwrap(),
+        std::time::Duration::ZERO,
+    );
     // Called as a function, with its dependencies by hand.
     assert_eq!(
         stamp_refund.call(refund(), &Fixed(7), &ctx, &"refund".to_owned()).await,
@@ -466,13 +469,16 @@ async fn a_task_handler_function_is_a_handler_with_its_context_and_its_dependenc
         .provide(std::sync::Arc::new("stamped".to_owned()))
         .build()
         .unwrap();
-    let claim = TaskAttempt::first(&refund(), json!({})).unwrap();
+    let claim = TaskAttempt::try_first(&refund(), json!({})).unwrap();
     assert_eq!(
         dispatcher.dispatch(Arc::new(claim), std::time::Duration::ZERO).await,
         TaskResult::retry("stamped acme at 9 on attempt 1")
     );
     // A context without the dependency: the handler fails the task and names it.
-    let bare = TaskContext::new(TaskAttempt::first(&refund(), json!({})).unwrap(), std::time::Duration::ZERO);
+    let bare = TaskContext::new(
+        TaskAttempt::try_first(&refund(), json!({})).unwrap(),
+        std::time::Duration::ZERO,
+    );
     assert_eq!(
         stamp_refund.handle(refund(), &bare).await,
         TaskResult::fail(format!(
@@ -489,7 +495,7 @@ fn assembly_refuses_a_task_handler_whose_dependency_nobody_provides() {
     assert_eq!(
         TaskHandlers::new().handler(stamp_refund).provide(clock).build().err(),
         Some(TaskDispatcherError::MissingDependency {
-            format: TaskFormat::of::<IssueRefund>().unwrap(),
+            format: TaskFormat::of::<IssueRefund>(),
             dependency: DependencyId::of::<String>().name(),
         })
     );

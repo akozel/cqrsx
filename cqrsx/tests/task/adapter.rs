@@ -76,34 +76,38 @@ impl TaskAdapter for BorrowedAdapter<'_> {
         TaskResult::Done
     }
 }
-fn attempt() -> Arc<TaskAttempt> {
-    Arc::new(
-        TaskAttempt::new(
-            uuid::Uuid::nil(),
-            TaskFormat::of::<Payload>().unwrap(),
-            serde_json::json!({"value":"owned"}),
-            serde_json::json!({"original":"metadata"}),
-            1,
-        )
-        .unwrap(),
+fn attempt() -> TaskAttempt {
+    TaskAttempt::try_new(
+        uuid::Uuid::nil(),
+        TaskFormat::of::<Payload>(),
+        serde_json::json!({"value":"owned"}),
+        serde_json::json!({"original":"metadata"}),
+        1,
     )
+    .unwrap()
 }
+/// A handler sees the attempt of its context, and the dispatcher hands on the attempt it got, without a copy.
 #[tokio::test]
 async fn native_invoke_and_dispatch_borrow_original_attempt_and_shared_state_through_pending() {
-    let original = attempt();
-    let ctx = TaskContext::new(original.clone(), Duration::ZERO);
+    let ctx = TaskContext::new(attempt(), Duration::ZERO);
+    let original = Arc::new(attempt());
     let calls = AtomicUsize::new(0);
     {
-        let adapter = BorrowedAdapter {
+        let invoked = BorrowedAdapter {
+            calls: &calls,
+            original: ctx.attempt(),
+            state: AtomicUsize::new(0),
+        };
+        for _ in 0..2 {
+            assert_eq!(pending(TaskAdapter::invoke(&invoked, &ctx)).await, TaskResult::Done);
+        }
+        assert_eq!(invoked.state.load(Ordering::SeqCst), 2);
+        let dispatched = BorrowedAdapter {
             calls: &calls,
             original: &original,
             state: AtomicUsize::new(0),
         };
-        for _ in 0..2 {
-            assert_eq!(pending(TaskAdapter::invoke(&adapter, &ctx)).await, TaskResult::Done);
-        }
-        assert_eq!(adapter.state.load(Ordering::SeqCst), 2);
-        let dispatcher = TaskDispatcher::try_new(vec![adapter]).unwrap();
+        let dispatcher = TaskDispatcher::try_new(vec![dispatched]).unwrap();
         assert_eq!(
             pending(dispatcher.dispatch(original.clone(), Duration::ZERO)).await,
             TaskResult::Done
@@ -111,13 +115,16 @@ async fn native_invoke_and_dispatch_borrow_original_attempt_and_shared_state_thr
     }
     assert_eq!(calls.load(Ordering::SeqCst), 3);
     {
-        let adapter = JsonTaskAdapter::<Payload, _>::new(BorrowedHandler {
+        let invoked = JsonTaskAdapter::<Payload, _>::new(BorrowedHandler {
+            calls: &calls,
+            original: ctx.attempt(),
+        });
+        assert_eq!(pending(TaskAdapter::invoke(&invoked, &ctx)).await, TaskResult::Done);
+        let dispatched = JsonTaskAdapter::<Payload, _>::new(BorrowedHandler {
             calls: &calls,
             original: &original,
-        })
-        .unwrap();
-        assert_eq!(pending(TaskAdapter::invoke(&adapter, &ctx)).await, TaskResult::Done);
-        let dispatcher = TaskDispatcher::try_new(vec![adapter]).unwrap();
+        });
+        let dispatcher = TaskDispatcher::try_new(vec![dispatched]).unwrap();
         assert_eq!(
             pending(dispatcher.dispatch(original.clone(), Duration::ZERO)).await,
             TaskResult::Done
@@ -142,7 +149,7 @@ impl TaskQueue for Queue {
 struct Adapter;
 impl TaskAdapter for Adapter {
     fn formats(&self) -> Vec<TaskFormat> {
-        vec![TaskFormat::of::<Payload>().unwrap()]
+        vec![TaskFormat::of::<Payload>()]
     }
     async fn invoke(&self, _: &TaskContext) -> TaskResult {
         tokio::task::yield_now().await;
@@ -153,11 +160,11 @@ impl TaskAdapter for Adapter {
 async fn one_standard_executor_accepts_different_concrete_adapter_types() {
     let executor = DefaultTaskExecutor::new(Arc::new(Queue), TaskStorageConfig::default());
     let first = TaskDispatcher::try_new(vec![Adapter]).unwrap();
-    let second = TaskDispatcher::try_new(vec![JsonTaskAdapter::<Payload, _>::new(OwnedHandler).unwrap()]).unwrap();
+    let second = TaskDispatcher::try_new(vec![JsonTaskAdapter::<Payload, _>::new(OwnedHandler)]).unwrap();
     macro_rules! execute {
         ($dispatcher:expr) => {{
             let task = LeasedTask::new(
-                (*attempt()).clone(),
+                attempt(),
                 TaskLease::new(uuid::Uuid::nil(), tokio::time::Instant::now() + Duration::from_secs(60)),
             );
             assert_eq!(
@@ -191,7 +198,7 @@ async fn custom_adapter_converts_two_wire_versions_without_changing_routing() {
     impl TaskAdapter for Versions<'_> {
         fn formats(&self) -> Vec<TaskFormat> {
             (1..=2)
-                .map(|version| TaskFormat::new("custom_versioned", version).unwrap())
+                .map(|version| TaskFormat::try_new("custom_versioned", version).unwrap())
                 .collect()
         }
         async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
@@ -219,9 +226,9 @@ async fn custom_adapter_converts_two_wire_versions_without_changing_routing() {
             (1, serde_json::json!({"old_value":"first"})),
             (2, serde_json::json!({"value":"second"})),
         ] {
-            let task = TaskAttempt::new(
+            let task = TaskAttempt::try_new(
                 uuid::Uuid::nil(),
-                TaskFormat::new("custom_versioned", version).unwrap(),
+                TaskFormat::try_new("custom_versioned", version).unwrap(),
                 payload,
                 serde_json::json!({"original":"metadata"}),
                 1,

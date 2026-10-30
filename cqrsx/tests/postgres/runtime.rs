@@ -29,8 +29,8 @@ impl TaskAdapter for DummyHandler {
 #[tokio::test]
 async fn two_live_workers_complete_every_supported_task_and_quarantine_bad_payloads() {
     let db = Database::new().await;
-    let first = NewTask::new(DummyTaskV1 { value: "first".into() }).unwrap();
-    let second = NewTask::new(DummyTaskV1 { value: "second".into() }).unwrap();
+    let first = NewTask::try_new(DummyTaskV1 { value: "first".into() }).unwrap();
+    let second = NewTask::try_new(DummyTaskV1 { value: "second".into() }).unwrap();
     let bad = NewTask::from_payload(format(), json!({})).unwrap();
     enqueue(&db.pool, vec![first.clone(), second.clone(), bad.clone()]).await;
     let handled = Arc::new(Mutex::new(Vec::new()));
@@ -91,7 +91,7 @@ async fn one_worker_pool_routes_two_registered_task_types() {
 
     impl TaskAdapter for AuditHandler {
         fn formats(&self) -> Vec<TaskFormat> {
-            vec![TaskFormat::new("audit", 1).unwrap()]
+            vec![TaskFormat::try_new("audit", 1).unwrap()]
         }
 
         async fn invoke(&self, _: &TaskContext) -> TaskResult {
@@ -102,8 +102,8 @@ async fn one_worker_pool_routes_two_registered_task_types() {
 
     let db = Database::new().await;
     let dummy = new_task();
-    let audit = NewTask::from_payload(TaskFormat::new("audit", 1).unwrap(), json!({"kind":"runtime"})).unwrap();
-    let unknown = NewTask::from_payload(TaskFormat::new("future", 1).unwrap(), json!({"value":"runtime"})).unwrap();
+    let audit = NewTask::from_payload(TaskFormat::try_new("audit", 1).unwrap(), json!({"kind":"runtime"})).unwrap();
+    let unknown = NewTask::from_payload(TaskFormat::try_new("future", 1).unwrap(), json!({"value":"runtime"})).unwrap();
     enqueue(&db.pool, vec![dummy.clone(), audit.clone(), unknown.clone()]).await;
 
     enum WorkerAdapter {

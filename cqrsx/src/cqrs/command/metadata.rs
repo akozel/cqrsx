@@ -87,9 +87,9 @@ mod tests {
     #[test]
     fn task_metadata_inherits_correlation_and_points_causation_at_the_task() {
         let correlation = Uuid::now_v7();
-        let task = TaskAttempt::new(
+        let task = TaskAttempt::try_new(
             Uuid::new_v4(),
-            TaskFormat::new("encore_record_ticket", 1).unwrap(),
+            TaskFormat::try_new("encore_record_ticket", 1).unwrap(),
             serde_json::json!({}),
             serde_json::json!({ "correlation_id": correlation }),
             1,

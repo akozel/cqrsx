@@ -4,11 +4,11 @@ async fn concurrent_recovery_skips_locked_rows_and_reports_each_failed_transitio
     let db = Database::new().await;
     let queue = Arc::new(PostgresTaskQueue::new(db.pool.clone()));
     let tasks: Vec<_> = (0..24)
-        .map(|index| new_task().with_max_attempts(if index % 2 == 0 { 1 } else { 3 }).unwrap())
+        .map(|index| new_task().with_max_attempts(NonZeroU16::new(if index % 2 == 0 { 1 } else { 3 }).unwrap()))
         .collect();
     let exhausted: HashSet<_> = tasks
         .iter()
-        .filter(|task| task.max_attempts() == 1)
+        .filter(|task| task.max_attempts().get() == 1)
         .map(NewTask::id)
         .collect();
     enqueue(&db.pool, tasks.clone()).await;
@@ -88,12 +88,11 @@ async fn a_mid_batch_recovery_error_rolls_back_prior_updates_and_preserves_all_l
     let db = Database::new().await;
     let queue = PostgresTaskQueue::new(db.pool.clone());
     let retry = new_task();
-    let rejected = NewTask::new(DummyTaskV1 {
+    let rejected = NewTask::try_new(DummyTaskV1 {
         value: "reject_recovery".into(),
     })
     .unwrap()
-    .with_max_attempts(1)
-    .unwrap();
+    .with_max_attempts(NonZeroU16::new(1).unwrap());
     enqueue(&db.pool, vec![retry.clone(), rejected.clone()]).await;
     let deliveries = claim(&queue).await;
     sqlx::query("UPDATE transactional_outbox SET locked_until = now() - CASE WHEN id = $1 THEN interval '2 seconds' ELSE interval '1 second' END")
@@ -139,7 +138,7 @@ async fn retries_failed_tasks_and_expired_leases_preserve_identity_and_fence_old
     let db = Database::new().await;
     let queue = PostgresTaskQueue::new(db.pool.clone());
     let mut msg = new_task();
-    msg = msg.with_max_attempts(2).unwrap();
+    msg = msg.with_max_attempts(NonZeroU16::new(2).unwrap());
     enqueue(&db.pool, vec![msg.clone()]).await;
     let first = claim(&queue).await.pop().unwrap();
     assert!(
@@ -250,7 +249,9 @@ async fn recovery_backoff_keeps_the_bounds_of_redelivery_backoff_per_attempt() {
     let db = Database::new().await;
     let queue = PostgresTaskQueue::new(db.pool.clone());
     // Eight tasks per attempt number 1..=8, each later redelivered at most ten times.
-    let tasks: Vec<_> = (0..64).map(|_| new_task().with_max_attempts(10).unwrap()).collect();
+    let tasks: Vec<_> = (0..64)
+        .map(|_| new_task().with_max_attempts(NonZeroU16::new(10).unwrap()))
+        .collect();
     enqueue(&db.pool, tasks).await;
     let owned = claim(&queue).await;
     assert_eq!(owned.len(), 64);

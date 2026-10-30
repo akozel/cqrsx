@@ -38,14 +38,13 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
         .unwrap();
     assert_eq!(count, 2);
     let invalid = new_task();
-    assert!(invalid.clone().with_max_attempts(0).is_err());
     // Inject a storage rejection without constructing an invalid public DTO.
     sqlx::query("ALTER TABLE transactional_outbox ADD CONSTRAINT reject_invalid_task CHECK (max_attempts < 10) NOT VALID")
         .execute(&db.pool)
         .await
         .unwrap();
     let bad_repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    let bad_repo_tasks = vec![new_task().with_max_attempts(1).unwrap(), invalid];
+    let bad_repo_tasks = vec![new_task().with_max_attempts(NonZeroU16::new(1).unwrap()), invalid];
     assert!(
         bad_repo
             .persist_with_tasks::<TestAggregate>(

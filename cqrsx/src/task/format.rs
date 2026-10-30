@@ -18,12 +18,12 @@ use thiserror::Error;
 /// }
 ///
 /// assert_eq!((SendETicket::TASK_TYPE, SendETicket::TASK_VERSION), ("send_e_ticket", 2));
-/// assert_eq!(TaskFormat::of::<SendETicket>().unwrap().to_string(), "send_e_ticket v2");
-/// let task = NewTask::new(SendETicket { seat: "B4".into() }).unwrap();
+/// assert_eq!(TaskFormat::of::<SendETicket>().to_string(), "send_e_ticket v2");
+/// let task = NewTask::try_new(SendETicket { seat: "B4".into() }).unwrap();
 /// assert_eq!(task.payload()["seat"], "B4");
 /// ```
 ///
-/// A version is positive, as [`TaskFormat::new`] requires; the derive refuses another at compile time:
+/// A version is positive, as [`TaskFormat::try_new`] requires; the derive refuses another at compile time:
 ///
 /// ```compile_fail
 /// # use cqrsx::Task;
@@ -36,7 +36,7 @@ use thiserror::Error;
 /// ```
 ///
 /// A field marked `#[label]` is kept in the task's metadata, under its name, instead of its body: what is said of the
-/// task besides its business data (a tenant, say), never a copy of the body. [`NewTask::new`](crate::task::NewTask::new)
+/// task besides its business data (a tenant, say), never a copy of the body. [`NewTask::try_new`](crate::task::NewTask::try_new)
 /// moves it there, and the JSON adapter puts it back before it decodes the payload, so the handler gets the whole
 /// value:
 ///
@@ -54,7 +54,7 @@ use thiserror::Error;
 /// }
 ///
 /// assert_eq!(IssueRefund::LABELS, ["tenant"]);
-/// let task = NewTask::new(IssueRefund { amount: 80, tenant: "acme".into() }).unwrap();
+/// let task = NewTask::try_new(IssueRefund { amount: 80, tenant: "acme".into() }).unwrap();
 /// assert_eq!(task.payload(), &json!({ "amount": 80 }));
 /// assert_eq!(task.metadata(), &json!({ "tenant": "acme" }));
 /// ```
@@ -71,6 +71,26 @@ use thiserror::Error;
 ///     #[label]
 ///     #[serde(rename = "tenant_id")]
 ///     tenant: String,
+/// }
+/// ```
+///
+/// A `TaskPayload` written by hand is checked when its format is taken ([`TaskFormat::of`]), so `cargo build` refuses
+/// a version below 1 there:
+///
+/// ```compile_fail,E0080
+/// use cqrsx::task::format::{TaskFormat, TaskPayload};
+/// use serde::Serialize;
+///
+/// #[derive(Serialize)]
+/// struct SendETicket {}
+///
+/// impl TaskPayload for SendETicket {
+///     const TASK_TYPE: &'static str = "send_e_ticket";
+///     const TASK_VERSION: i32 = 0;
+/// }
+///
+/// fn main() {
+///     println!("{}", TaskFormat::of::<SendETicket>());
 /// }
 /// ```
 pub trait TaskPayload: Serialize {
@@ -95,7 +115,9 @@ pub struct TaskFormat {
     task_version: i32,
 }
 impl TaskFormat {
-    pub fn new(task_type: impl Into<String>, task_version: i32) -> Result<Self, TaskFormatError> {
+    /// A format read at run time (from a row of the queue, say): the type must not be empty, the version must be
+    /// positive.
+    pub fn try_new(task_type: impl Into<String>, task_version: i32) -> Result<Self, TaskFormatError> {
         let task_type = task_type.into();
         if task_type.is_empty() {
             return Err(TaskFormatError::EmptyType);
@@ -105,8 +127,20 @@ impl TaskFormat {
         }
         Ok(Self { task_type, task_version })
     }
-    pub fn of<T: TaskPayload>() -> Result<Self, TaskFormatError> {
-        Self::new(T::TASK_TYPE, T::TASK_VERSION)
+
+    /// The format of `T`. Its constants obey the rules of [`try_new`](Self::try_new), checked when the compiler
+    /// instantiates this function for `T`: a payload type with an empty `TASK_TYPE` or a `TASK_VERSION` below 1 fails
+    /// `cargo build` (a check made after monomorphization, which `cargo check` may not report), whether its
+    /// `TaskPayload` is derived or written by hand.
+    pub fn of<T: TaskPayload>() -> Self {
+        const {
+            assert!(!T::TASK_TYPE.is_empty(), "the task type must not be empty");
+            assert!(T::TASK_VERSION > 0, "the task version must be positive");
+        }
+        Self {
+            task_type: T::TASK_TYPE.to_owned(),
+            task_version: T::TASK_VERSION,
+        }
     }
     pub fn task_type(&self) -> &str {
         &self.task_type

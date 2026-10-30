@@ -702,7 +702,7 @@ mod tests {
             if self.refuse {
                 return Err(TaskPlanError::application("refused"));
             }
-            Ok(vec![NewTask::new(Shout { total: d.after.0 })?])
+            Ok(vec![NewTask::try_new(Shout { total: d.after.0 })?])
         }
     }
 
@@ -730,10 +730,7 @@ mod tests {
         assert_eq!(report.tasks.len(), 1);
         let task = &report.tasks[0];
         assert_eq!(task.payload()["total"], 12);
-        assert_eq!(
-            task.id(),
-            causation.task_id("echo", "e-1", &TaskFormat::of::<Shout>().unwrap(), 0)
-        );
+        assert_eq!(task.id(), causation.task_id("echo", "e-1", &TaskFormat::of::<Shout>(), 0));
         assert_eq!(task.metadata()["correlation_id"], causation.correlation_id.to_string());
     }
 
@@ -862,7 +859,7 @@ mod tests {
 
     impl TaskPlanner<Echo> for Whisperer {
         fn plan(&self, _: &Decision<'_, Echo>) -> Result<Vec<NewTask>, TaskPlanError> {
-            Ok(vec![NewTask::new(Whisper {})?])
+            Ok(vec![NewTask::try_new(Whisper {})?])
         }
     }
 

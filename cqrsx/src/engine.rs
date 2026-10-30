@@ -94,7 +94,8 @@ pub struct Cqrs {
     wakeups: HashMap<TypeId, CommitWakeup>,
     dispatcher: Option<Arc<TaskDispatcher<BoxedTaskAdapter>>>,
     views: Registry,
-    /// What the modules read and described when they were set up.
+    /// The settings and what the modules read and described when they were set up, by key: one value per key, checked
+    /// when the engine was built.
     described: BTreeMap<String, String>,
     memory: memory::MemoryBackend,
     journal: Journal,
@@ -188,11 +189,10 @@ impl Cqrs {
         self.dispatcher.as_deref()
     }
 
-    /// The settings of the engine ([`Settings::describe`]) and what its modules read and described, by key.
+    /// The settings of the engine ([`Settings::describe`]) and what its modules read and described, by key. A key has
+    /// one value: the build refuses one described twice with two ([`BuildError::DescribedTwice`](build::BuildError)).
     pub fn describe(&self) -> BTreeMap<String, String> {
-        let mut described = self.settings.describe();
-        described.extend(self.described.clone());
-        described
+        self.described.clone()
     }
 
     /// A token cancelled once the engine stops (it is served no more, or dropped); cancelling it stops nothing. A
@@ -510,7 +510,8 @@ mod tests {
         assert!(cqrs.history::<Show>(&"s-9".into()).await.unwrap().is_empty());
         assert_eq!(
             cqrs.policies()
-                .max_attempts(&crate::task::format::TaskFormat::of::<MailTicket>().unwrap()),
+                .max_attempts(&crate::task::format::TaskFormat::of::<MailTicket>())
+                .get(),
             6
         );
         assert!(cqrs.dispatcher().is_some());

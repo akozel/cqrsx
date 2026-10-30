@@ -13,8 +13,12 @@ async fn ready_time_formats_and_skip_locked_distribute_without_overlap() {
     let past = new_task()
         .with_schedule(TaskSchedule::At(Utc::now() - chrono::Duration::minutes(1)))
         .unwrap();
-    let unknown = NewTask::from_payload(TaskFormat::new(format().task_type(), 3).unwrap(), json!({"value":"runtime"})).unwrap();
-    let unknown_type = NewTask::from_payload(TaskFormat::new("future_task", 1).unwrap(), json!({"value":"runtime"})).unwrap();
+    let unknown = NewTask::from_payload(
+        TaskFormat::try_new(format().task_type(), 3).unwrap(),
+        json!({"value":"runtime"}),
+    )
+    .unwrap();
+    let unknown_type = NewTask::from_payload(TaskFormat::try_new("future_task", 1).unwrap(), json!({"value":"runtime"})).unwrap();
     enqueue(&db.pool, tasks).await;
     enqueue(
         &db.pool,
@@ -78,7 +82,7 @@ async fn an_invalid_row_stays_leased_for_recovery_and_the_rest_of_the_batch_is_d
     let db = Database::new().await;
     let queue = PostgresTaskQueue::new(db.pool.clone());
     let valid = new_task();
-    let poisoned = new_task().with_max_attempts(1).unwrap();
+    let poisoned = new_task().with_max_attempts(NonZeroU16::new(1).unwrap());
     enqueue(&db.pool, vec![valid.clone(), poisoned.clone()]).await;
     // A payload that is not an object is not a valid delivery. The schema's check forbids it; a
     // drifted schema without that check is what the claim has to survive.

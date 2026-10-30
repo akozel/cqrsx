@@ -642,7 +642,7 @@ mod tests {
 
     fn task(n: u8) -> NewTask {
         NewTask::from_payload(
-            crate::task::format::TaskFormat::new("notify", 1).unwrap(),
+            crate::task::format::TaskFormat::try_new("notify", 1).unwrap(),
             serde_json::json!({ "n": n }),
         )
         .unwrap()

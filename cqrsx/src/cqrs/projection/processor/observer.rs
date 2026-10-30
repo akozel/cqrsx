@@ -2,7 +2,7 @@
 //! method has an empty body, so an observer implements what it needs. Reports with borrowed strings come
 //! by reference, the small `Copy` events by value.
 use crate::cqrs::store::feed::Position;
-use std::time::Duration;
+use std::{fmt, time::Duration};
 
 /// Observes one processor. Called on the processor's task, so an observer returns quickly and never
 /// panics: a panic stops the processor.
@@ -68,13 +68,64 @@ pub struct Failed<'a> {
     pub aggregate_id: Option<&'a str>,
     /// The handler's name, or `journal` / `checkpoints`.
     pub handler: &'a str,
-    /// A fixed word: `connection`, `deserialization`, `optimistic_lock`, `sequence_gap`, `unknown`, `panic`,
-    /// `stopped`, `storage`, `corrupt`, `invalid`.
-    pub category: &'static str,
+    /// What kind of error failed the round; never its message.
+    pub category: FailureCategory,
     /// Where the processor stands: the page's position for a handler failure, the checkpoint otherwise.
     pub position: Position,
     /// Failed rounds in a row, this one included.
     pub failures: u32,
+}
+
+/// What kind of error failed a round of a processor: the journal's, a handler's, the delivery's or the checkpoint
+/// store's ([`CheckpointError::category`](crate::cqrs::projection::checkpoint::CheckpointError::category)). The
+/// error's message is never kept, since it may hold a payload; [`as_str`](Self::as_str) is the word the logs, the
+/// row's `last_error` (`handler: word`) and the status pages show.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum FailureCategory {
+    /// The journal or the view store could not be reached.
+    Connection,
+    /// An event of the journal or a stored document could not be read.
+    Deserialization,
+    /// The handler's write conflicted with another write of the document.
+    OptimisticLock,
+    /// A document refused a batch as a gap that was not healed in place.
+    SequenceGap,
+    /// The handler or the journal failed otherwise.
+    Unknown,
+    /// The handler panicked.
+    Panic,
+    /// The key's worker stopped before it answered.
+    Stopped,
+    /// The checkpoint store could not be reached or refused the statement.
+    Storage,
+    /// A checkpoint row holds a value this version cannot read.
+    Corrupt,
+    /// A checkpoint request was wrong.
+    Invalid,
+}
+
+impl FailureCategory {
+    /// The category's fixed word.
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Connection => "connection",
+            Self::Deserialization => "deserialization",
+            Self::OptimisticLock => "optimistic_lock",
+            Self::SequenceGap => "sequence_gap",
+            Self::Unknown => "unknown",
+            Self::Panic => "panic",
+            Self::Stopped => "stopped",
+            Self::Storage => "storage",
+            Self::Corrupt => "corrupt",
+            Self::Invalid => "invalid",
+        }
+    }
+}
+
+impl fmt::Display for FailureCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.as_str())
+    }
 }
 
 /// Why a key was rebuilt.
@@ -152,7 +203,7 @@ mod tests {
         observer.failed(&Failed {
             aggregate_id: None,
             handler: "journal",
-            category: "connection",
+            category: FailureCategory::Connection,
             position: Position::START,
             failures: 1,
         });
@@ -178,5 +229,30 @@ mod tests {
         observer.waiting(Waiting::Horizon);
         observer.waiting(Waiting::Idle);
         assert_ne!(RebuildReason::Requested, RebuildReason::Healed);
+    }
+
+    #[test]
+    fn every_failure_category_keeps_its_word() {
+        let words = [
+            (FailureCategory::Connection, "connection"),
+            (FailureCategory::Deserialization, "deserialization"),
+            (FailureCategory::OptimisticLock, "optimistic_lock"),
+            (FailureCategory::SequenceGap, "sequence_gap"),
+            (FailureCategory::Unknown, "unknown"),
+            (FailureCategory::Panic, "panic"),
+            (FailureCategory::Stopped, "stopped"),
+            (FailureCategory::Storage, "storage"),
+            (FailureCategory::Corrupt, "corrupt"),
+            (FailureCategory::Invalid, "invalid"),
+        ];
+        for (category, word) in words {
+            assert_eq!(
+                (category.as_str(), category.to_string().as_str()),
+                (word, word),
+                "{category:?}"
+            );
+        }
+        let distinct: std::collections::HashSet<FailureCategory> = words.iter().map(|(category, _)| *category).collect();
+        assert_eq!(distinct.len(), words.len(), "every variant is listed once");
     }
 }

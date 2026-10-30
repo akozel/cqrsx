@@ -34,12 +34,12 @@ impl TaskPayload for DummyTask {
 }
 
 pub(crate) fn format() -> TaskFormat {
-    TaskFormat::of::<DummyTask>().unwrap()
+    TaskFormat::of::<DummyTask>()
 }
 
 pub(crate) fn claimed() -> LeasedTask {
     LeasedTask::new(
-        TaskAttempt::new(
+        TaskAttempt::try_new(
             Uuid::new_v4(),
             format(),
             json!({"value": "runtime"}),
@@ -191,7 +191,7 @@ pub(crate) fn with_deadline(task: &LeasedTask, deadline: tokio::time::Instant) -
 pub(crate) fn with_format(task: &LeasedTask, format: TaskFormat) -> LeasedTask {
     let d = task.attempt();
     LeasedTask::new(
-        TaskAttempt::new(d.task_id(), format, d.payload().clone(), d.metadata().clone(), d.number()).unwrap(),
+        TaskAttempt::try_new(d.task_id(), format, d.payload().clone(), d.metadata().clone(), d.number()).unwrap(),
         task.lease().clone(),
     )
 }

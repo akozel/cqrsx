@@ -109,7 +109,7 @@
 | `spawn_rebuild(key, pace, reason, bool, waiters)` | сделано: `enum RebuildJob { Requested, Cursor { pace }, Healed { waiter } }`, `spawn_rebuild(key, job)` |
 | `SerializedEvent::new` | удалён; все места — литерал структуры с именами полей |
 | `can_upcast(&str, &str)` | сделано: `EventFormat<'a> { event_type, event_version }` (заимствует строки события, без копий), `SerializedEvent::format()`, `can_upcast(EventFormat<'_>)` |
-| `operation`, `category` | `enum Operation` с `as_str()` сделан (закрытый, имена в логах те же); журнал или хранилище контрольных точек для сбоя без страницы выбирается полным `match` по `Operation`. `Category` не введён: категории приходят из трёх источников (`PersistenceError`, `DeliveryError`, публичный `CheckpointError::category()`) и уходят наружу как текст — публичное поле `Failed.category` читает лента активности demo (`category` и `message`), status row, логи. Enum поменял бы публичный тип поля и метода; в crate по категориям нет ветвлений, выигрыша нет |
+| `operation`, `category` | `enum Operation` с `as_str()` сделан (закрытый, имена в логах те же); журнал или хранилище контрольных точек для сбоя без страницы выбирается полным `match` по `Operation`. `Category` введён 2026-10-30 по решению пользователя: публичный `FailureCategory` рядом с `Failed`, вариант на каждое прежнее слово, `as_str()` и `Display` дают те же слова. Тексты в логах, в `last_error` строки контрольной точки и в JSON ленты активности не изменились. Публичный API: `Failed.category` и `CheckpointError::category()` — `FailureCategory` вместо `&'static str` |
 | `Difference.kind` | сделано: `enum DifferenceKind { Differs, Unexpected }`, `serde(rename_all = "snake_case")`; JSON тот же (тест в `verify.rs`) |
 | `labels() -> Vec<(&str, String)>` | сделано: `Label { name, value }`; derive `Command`/`Commands` порождают его |
 | `load_with_context -> (V, ViewContext)` | сделано: `Option<StoredView<V>>`; `From<(V, ViewContext)> for StoredView` удалён; имя метода прежнее |
@@ -139,6 +139,14 @@
 - `SerializedEvent::new` удалён; `EventUpcaster::can_upcast(&str, &str)` → `can_upcast(EventFormat<'_>)`, новые
   `EventFormat` и `SerializedEvent::format`; `NumericVersion::supersedes` удалён.
 - `Difference::kind: &'static str` → `DifferenceKind`.
+- `Failed::category`, `CheckpointError::category()`: `&'static str` → `FailureCategory`, новый `FailureCategory`.
+- `TaskFormat::new` → `try_new`, `TaskFormat::of` без `Result`; `NewTask::new` → `try_new`; `TaskAttempt::new` → `try_new`,
+  `TaskAttempt::first` → `try_first`; `PolicyName::new` → `try_new`; `JsonTaskAdapter::new`, `BoxedTaskAdapter::json` без
+  `Result`; `TaskPolicy::new(Retry, NonZeroU16)` без `Result`; `Module::policy(.., NonZeroU16)`; `DEFAULT_MAX_ATTEMPTS`,
+  `Policies::max_attempts`, `NewTask::max_attempts`: `NonZeroU16`; `NewTask::with_max_attempts(NonZeroU16)` без `Result`;
+  `TaskContext::new(TaskAttempt, ..)`; удалены `TaskValidationError::{Format, InvalidAttemptLimit}`,
+  `PolicyError::{MaxAttempts, Format}`, `TaskDispatcherError::InvalidFormat`.
+- Новый `BuildError::DescribedTwice`; `Setup::describe` больше не «последнее значение побеждает».
 - `CommandInfo::labels() -> Vec<(&'static str, String)>` → `Vec<Label>`, новый `Label`.
 - `ViewRepository::load_with_context -> Option<(V, ViewContext)>` → `Option<StoredView<V>>`; `From<(V, ViewContext)>`
   удалён.
@@ -168,17 +176,51 @@
 
 - **demo:** правки только как у вызывающего: `try_new`, `TestFramework::new`, `with_snapshots`, `Context`,
   `command_executor`, литерал `SerializedEvent`, `DifferenceKind::Differs`, `label.name`/`label.value` в ленте, `StoredView`,
-  `ObservedProcessor`,
-  `Arc::new(..)` у `dispatch`/`prepare`. `tests/contracts.rs` правлен в трёх местах того же рода (`type Context`, путь
-  `command_executor`, `Arc::new(dispatcher)`); эталоны не трогались. `demo/load/epic06`: `TestFramework::new`,
+  `ObservedProcessor`, `report.category.as_str()` в ленте, `FailureCategory` в тестах,
+  `Arc::new(..)` у `dispatch`/`prepare`. `tests/contracts.rs` правлен в четырёх местах того же рода (`type Context`, путь
+  `command_executor`, `Arc::new(dispatcher)`, `FailureCategory::Connection`); эталоны не трогались. `demo/load/epic06`: `TestFramework::new`,
   `describe().get(..)`.
 - **Документация:** `cqrsx/doc/components.md` — новые имена, `Label`, `EventFormat`, `DifferenceKind`,
-  `ObservedProcessor`, `describe()` как `BTreeMap`, `AggregateKey` закрытый, дерево файлов.
-- **Наблюдение:** с `BTreeMap` ключ, описанный дважды (настройкой движка и модулем), хранит последнее значение;
-  проверка «ключ дважды» в `render` из `contracts.rs` больше не может сработать. Эталон это не меняет.
-- **Не в таблице, оставлено:** `NewTask::new`, `TaskFormat::new`, `TaskPolicy::new`, `JsonTaskAdapter::new`,
-  `TaskAttempt::new` возвращают `Result`, но называются `new` (правило 22); `TaskContext::new(impl Into<Arc<TaskAttempt>>)`
-  (правило 19). Кандидаты в следующую правку имён.
+  `ObservedProcessor`, `FailureCategory`, `describe()` как `BTreeMap`, `AggregateKey` закрытый, дерево файлов.
+- **Ключ, описанный дважды:** см. раздел «Повторный ключ в `describe()`» ниже; проверка «ключ дважды» перенесена из
+  `render` в `contracts.rs` в сборку движка.
+- **Конструкторы с `Result` под именем `new`:** сделано, см. раздел «Конструкторы» ниже.
+
+### Конструкторы (решение пользователя 2026-10-30, правило 22)
+
+- **Без ошибки:** `TaskFormat::of::<T>()` возвращает `TaskFormat`; `T::TASK_TYPE` и `T::TASK_VERSION` проверяет
+  `const { assert!(…) }` при инстанцировании, плохая константа не собирается (`cargo build`; `cargo check` может не
+  сообщить) и у derive, и у ручного `TaskPayload` (doctest `compile_fail,E0080`). Поэтому без `Result`
+  `JsonTaskAdapter::new`, `BoxedTaskAdapter::json`, а `Policies::with_task` без ошибки формата. `TaskPolicy::new(retry,
+  NonZeroU16)`; тот же тип у `Module::policy`, `DEFAULT_MAX_ATTEMPTS`, `Policies::max_attempts`, `NewTask::max_attempts`,
+  `NewTask::with_max_attempts` (без `Result`) и закрытого `PolicyEntry`; outbox пишет `i32::from(n.get())`. demo читает
+  `ENCORE_TASK_MAX_ATTEMPTS` как `NonZeroU16` (по умолчанию 6): `0` теперь отказ разбора (`cannot parse "0": number would
+  be zero for non-zero type`) вместо `must be positive`.
+- **`try_new`:** `TaskFormat::try_new`, `NewTask::try_new`, `TaskAttempt::try_new`, `TaskAttempt::try_first` (было
+  `first`), `PolicyName::try_new` (`const fn … -> Option<Self>`).
+- **`TaskContext::new(TaskAttempt, Duration)`** сам кладёт попытку в `Arc`; `TaskContext::shared` и так `pub(crate)`.
+- **Удалены ставшие невозможными ошибки:** `TaskValidationError::{Format, InvalidAttemptLimit}`,
+  `PolicyError::{MaxAttempts, Format}`, `TaskDispatcherError::InvalidFormat`; тесты неверного формата во время работы
+  удалены (их место — doctest `compile_fail`).
+- **Оставлены после grep публичного API:** `NewTask::from_payload` (преобразование JSON, `from_*` с `Result`, как
+  `String::from_utf8`); `from_env`/`from_lookup` у `LoggingConfig`, `TaskRuntimeConfig`, `TaskWorkerPoolConfig`,
+  `TaskStorageConfig`, `Settings` (чтение окружения); `Causation::from_event_metadata` (`Result<Option<_>>`: причины может
+  не быть). Методы builder с `Result` (`with_schedule`, `with_metadata`, `Policies::with_*`, `Executors::with`) —
+  не конструкторы.
+
+### Повторный ключ в `describe()` (решение пользователя 2026-10-30)
+
+- Сборка движка падает с `BuildError::DescribedTwice { key, first, second }` (``the key `K` is described twice, as `a`
+  and as `b` ``), если ключ описан дважды с разными значениями: настройки движка и модуль, два модуля (`Setup::describe`,
+  `Setup::env`), модуль сам с собой, настройки движка между собой. То же значение дважды — одна запись (два модуля
+  читают общую переменную). `describe()` остаётся `BTreeMap<String, String>`.
+- Устройство: `Settings`, `PoolPlan`, `MongoPlan` отдают пары по порядку (закрытый `entries()`), `Setup` копит описания
+  модулей списком, `merge_described` в `build.rs` сливает всё по ключу; `Cqrs::describe` отдаёт проверенную карту.
+- `serve.rs` печатает ошибку без `invalid configuration:`: это ошибка кода (один ключ читают по-разному), которую
+  значение переменной не исправит навсегда. Значения печатаются как есть — как и `describe()`, они могут содержать
+  адрес базы с паролем.
+- Тесты: модуль против движка, два модуля с разными умолчаниями, модуль дважды, то же значение принимается;
+  `the_engine_describes_every_key_once` возвращает проверку «каждый ключ один раз». Эталон `effective_config.txt` тот же.
 
 **Проверки** (все с кодом 0, журнал вне репозитория): build, fmt, clippy `-D warnings`, полные тесты workspace
 (838 прошли, 0 упало), `-p cqrsx --no-default-features` без features и с каждой из `postgres`, `worker`, `host`,

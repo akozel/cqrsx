@@ -248,7 +248,7 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
         metadata.causation.task_id(
             "Concert",
             "test-2026",
-            &TaskFormat::new("encore_record_ticket", 1).expect("format"),
+            &TaskFormat::try_new("encore_record_ticket", 1).expect("format"),
             0
         ),
         "the task id derives from the booking's command"
@@ -380,9 +380,9 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
     .fetch_one(&pool)
     .await
     .expect("the booking's task");
-    let attempt = TaskAttempt::new(
+    let attempt = TaskAttempt::try_new(
         row.get("id"),
-        TaskFormat::new(row.get::<String, _>("task_type"), row.get("task_version")).expect("format"),
+        TaskFormat::try_new(row.get::<String, _>("task_type"), row.get("task_version")).expect("format"),
         row.get("payload"),
         row.get("metadata"),
         1,

@@ -90,7 +90,7 @@ use std::{
 /// struct Notifier;
 /// impl TaskPlanner<Counter> for Notifier {
 ///     fn plan(&self, decision: &Decision<'_, Counter>) -> Result<Vec<NewTask>, TaskPlanError> {
-///         decision.events.iter().map(|_| Ok(NewTask::new(Notify {})?)).collect()
+///         decision.events.iter().map(|_| Ok(NewTask::try_new(Notify {})?)).collect()
 ///     }
 /// }
 ///
@@ -316,7 +316,7 @@ mod tests {
             decision
                 .events
                 .iter()
-                .map(|Pushed(value)| Ok(NewTask::new(Notify { value: *value })?))
+                .map(|Pushed(value)| Ok(NewTask::try_new(Notify { value: *value })?))
                 .collect()
         }
     }

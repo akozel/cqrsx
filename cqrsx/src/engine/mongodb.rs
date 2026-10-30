@@ -100,15 +100,15 @@ impl MongoSettings {
         })
     }
 
-    /// The variables of these settings and the plan of the client.
-    pub(crate) fn describe(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> BTreeMap<String, String> {
-        let mut described = BTreeMap::from([
+    /// The variables of these settings and the plan of the client, in the order described.
+    pub(crate) fn entries(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> Vec<(String, String)> {
+        let mut entries = vec![
             (name(MONGODB_URI), self.uri.clone()),
             (name(MONGODB_POOL_SIZE), self.pool_size.to_string()),
             (name(READ_DB), self.read_db.clone()),
-        ]);
-        described.extend(self.mongo_plan(application_name).describe());
-        described
+        ];
+        entries.extend(self.mongo_plan(application_name).entries());
+        entries
     }
 }
 
@@ -133,7 +133,12 @@ impl MongoPlan {
     /// The client as `mongodb.<option>`, by key; the application's name under the option's name in MongoDB's URI
     /// (`appName`).
     pub fn describe(&self) -> BTreeMap<String, String> {
-        BTreeMap::from([
+        self.entries().into_iter().collect()
+    }
+
+    /// What [`describe`](Self::describe) holds, in the order described.
+    pub(crate) fn entries(&self) -> Vec<(String, String)> {
+        vec![
             ("mongodb.app_name".to_owned(), self.application_name.clone()),
             ("mongodb.connect_timeout".to_owned(), duration_text(self.connect_timeout)),
             ("mongodb.max_pool_size".to_owned(), self.max_pool_size.to_string()),
@@ -141,7 +146,7 @@ impl MongoPlan {
                 "mongodb.server_selection_timeout".to_owned(),
                 duration_text(self.server_selection_timeout),
             ),
-        ])
+        ]
     }
 }
 

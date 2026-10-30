@@ -174,7 +174,7 @@ impl TaskPlanner<Show> for Delivery {
         let mut tasks = Vec::new();
         for Booked { seat, fan } in decision.events {
             let ticket = format!("{}/{seat}", decision.aggregate_id);
-            tasks.push(NewTask::new(RecordInWallet {
+            tasks.push(NewTask::try_new(RecordInWallet {
                 fan: fan.clone(),
                 ticket,
             })?);
@@ -187,7 +187,7 @@ impl TaskPlanner<Wallet> for Delivery {
     fn plan(&self, decision: &Decision<'_, Wallet>) -> Result<Vec<NewTask>, TaskPlanError> {
         let mut tasks = Vec::new();
         for Recorded { ticket } in decision.events {
-            tasks.push(NewTask::new(MailTicket {
+            tasks.push(NewTask::try_new(MailTicket {
                 fan: decision.aggregate_id.to_owned(),
                 ticket: ticket.clone(),
             })?);
@@ -198,7 +198,7 @@ impl TaskPlanner<Wallet> for Delivery {
 
 /// What the task runtime would hand the wallet step: a claim of `task`.
 fn claim(task: &NewTask, number: i32) -> TaskAttempt {
-    TaskAttempt::new(
+    TaskAttempt::try_new(
         task.id(),
         task.format().clone(),
         task.payload().clone(),
@@ -240,7 +240,7 @@ async fn a_process_plans_across_two_aggregates_and_the_chain_keeps_its_correlati
     let [first] = &booking.tasks[..] else {
         panic!("one task per booking: {:?}", booking.tasks);
     };
-    assert_eq!(first.format(), &TaskFormat::of::<RecordInWallet>().unwrap());
+    assert_eq!(first.format(), &TaskFormat::of::<RecordInWallet>());
     assert_eq!(first.id(), root.task_id(Show::TYPE, "gig-1", first.format(), 0));
     assert_eq!(first.payload(), &serde_json::json!({ "fan": "fox", "ticket": "gig-1/A1" }));
 
@@ -293,7 +293,7 @@ struct BalancePlanner;
 
 impl TaskPlanner<Ledger> for BalancePlanner {
     fn plan(&self, decision: &Decision<'_, Ledger>) -> Result<Vec<NewTask>, TaskPlanError> {
-        Ok(vec![NewTask::new(Balance {
+        Ok(vec![NewTask::try_new(Balance {
             after: decision.after.balance,
         })?])
     }

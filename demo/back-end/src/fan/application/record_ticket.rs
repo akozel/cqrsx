@@ -98,7 +98,7 @@ mod tests {
         assert_eq!(tasks[0].metadata()["correlation_id"], json!(correlation_id));
         assert_eq!(tasks[0].metadata()["command_id"], json!(events[0].metadata["command_id"]));
         assert_eq!(tasks[0].metadata()["causation_id"], json!(delivery.task_id()));
-        assert_eq!(tasks[0].max_attempts(), 6);
+        assert_eq!(tasks[0].max_attempts().get(), 6);
     }
 
     #[tokio::test]

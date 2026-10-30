@@ -137,7 +137,7 @@ impl ProjectionObserver for ActivityObserver {
                 "projection": self.projection,
                 "view_id": report.aggregate_id,
                 "handler": report.handler,
-                "category": report.category,
+                "category": report.category.as_str(),
                 "failures": report.failures,
                 "message": format!("{}: {}", report.handler, report.category),
             }),
@@ -181,7 +181,9 @@ mod tests {
     use crate::shared::domain::ConcertId;
     use cqrsx::cqrs::command::observer::Outcome;
     use cqrsx::{
-        cqrs::{command::decide::Decide, event::DomainEvent, store::feed::Position},
+        cqrs::{
+            command::decide::Decide, event::DomainEvent, projection::processor::observer::FailureCategory, store::feed::Position,
+        },
         task::{NewTask, format::TaskFormat},
     };
     use serde::{Deserialize, Serialize};
@@ -209,14 +211,14 @@ mod tests {
         observer.failed(&Failed {
             aggregate_id: Some("c-1"),
             handler: "concert_halls",
-            category: "connection",
+            category: FailureCategory::Connection,
             position: Position::new(9),
             failures: 3,
         });
         observer.failed(&Failed {
             aggregate_id: None,
             handler: "journal",
-            category: "storage",
+            category: FailureCategory::Storage,
             position: Position::START,
             failures: 1,
         });
@@ -410,7 +412,7 @@ mod tests {
     #[test]
     fn an_accepted_command_reports_the_tasks_its_commit_published() {
         let activity = Arc::new(ActivityHub::new(8, 8));
-        let task = NewTask::from_payload(TaskFormat::new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
+        let task = NewTask::from_payload(TaskFormat::try_new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
         CommandActivityObserver::new(activity.clone()).command(&CommandReport::<Hall> {
             aggregate_id: &hall(),
             command: &announce(),
@@ -425,7 +427,7 @@ mod tests {
     fn every_outcome_becomes_one_command_entry_with_the_command_and_its_metadata() {
         let activity = Arc::new(ActivityHub::new(8, 8));
         let observer = CommandActivityObserver::new(activity.clone());
-        let task = NewTask::from_payload(TaskFormat::new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
+        let task = NewTask::from_payload(TaskFormat::try_new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
         let refused = Refused::SeatTaken { seat: "B4".into() };
         let metadata = ui();
         for outcome in [

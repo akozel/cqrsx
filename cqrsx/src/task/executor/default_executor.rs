@@ -167,6 +167,7 @@ mod tests {
     use super::*;
     use crate::task::test_support::*;
     use std::{
+        num::NonZeroU16,
         sync::{Arc, atomic::Ordering},
         time::Duration,
     };
@@ -416,9 +417,9 @@ mod tests {
 
     /// The policies binding the dummy task's type to `retry`.
     fn policies(retry: Retry) -> Policies {
-        const DUMMY: PolicyName = PolicyName::new("dummy").unwrap();
+        const DUMMY: PolicyName = PolicyName::try_new("dummy").unwrap();
         Policies::default()
-            .with_policy(DUMMY, TaskPolicy::new(retry, 5).unwrap())
+            .with_policy(DUMMY, TaskPolicy::new(retry, NonZeroU16::new(5).unwrap()))
             .unwrap()
             .with_task::<DummyTask>(DUMMY)
             .unwrap()

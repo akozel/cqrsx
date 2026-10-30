@@ -115,7 +115,7 @@ async fn delayed_batch_keeps_the_original_task_deadline_and_skips_expired_execut
     let db = Database::new().await;
     let task = new_task();
     enqueue(&db.pool, vec![task.clone()]).await;
-    let delayed_format = TaskFormat::new("delayed", 1).unwrap();
+    let delayed_format = TaskFormat::try_new("delayed", 1).unwrap();
     let queue = Arc::new(LostReplyQueue {
         inner: PostgresTaskQueue::new(db.pool.clone()),
         lose_claim_reply: std::sync::atomic::AtomicBool::new(false),

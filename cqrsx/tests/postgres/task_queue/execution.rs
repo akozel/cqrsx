@@ -3,9 +3,12 @@ use cqrsx::task::policy::{Policies, PolicyName, Retry, TaskPolicy};
 
 /// The policies of the queue's tests: the dummy task waits 300 s before its next attempt.
 fn dummy_waits_300_s() -> Policies {
-    const DUMMY: PolicyName = PolicyName::new("dummy").unwrap();
+    const DUMMY: PolicyName = PolicyName::try_new("dummy").unwrap();
     Policies::default()
-        .with_policy(DUMMY, TaskPolicy::new(Retry::fixed(Duration::from_secs(300)), 10).unwrap())
+        .with_policy(
+            DUMMY,
+            TaskPolicy::new(Retry::fixed(Duration::from_secs(300)), NonZeroU16::new(10).unwrap()),
+        )
         .unwrap()
         .with_task::<DummyTaskV1>(DUMMY)
         .unwrap()
@@ -46,7 +49,7 @@ async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_fai
     assert!(claim(&queue).await.is_empty());
 
     let mut transient = new_task();
-    transient = transient.with_max_attempts(3).unwrap();
+    transient = transient.with_max_attempts(NonZeroU16::new(3).unwrap());
     enqueue(&db.pool, vec![transient.clone()]).await;
     let first = claim(&queue).await.pop().unwrap();
     assert!(
@@ -87,7 +90,7 @@ async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_fai
     assert_worker_state(&db.pool, transient.id(), "completed", 2, None).await;
 
     let mut exhausted = new_task();
-    exhausted = exhausted.with_max_attempts(1).unwrap();
+    exhausted = exhausted.with_max_attempts(NonZeroU16::new(1).unwrap());
     enqueue(&db.pool, vec![exhausted.clone()]).await;
     let claimed = claim(&queue).await.pop().unwrap();
     let exhausted_result = service
@@ -105,7 +108,7 @@ async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_fai
     assert_worker_state(&db.pool, exhausted.id(), "failed", 1, Some("still unavailable")).await;
 
     let mut permanent = new_task();
-    permanent = permanent.with_max_attempts(5).unwrap();
+    permanent = permanent.with_max_attempts(NonZeroU16::new(5).unwrap());
     enqueue(&db.pool, vec![permanent.clone()]).await;
     let claimed = claim(&queue).await.pop().unwrap();
     let permanent_result = service
@@ -129,7 +132,7 @@ async fn worker_test_aggregate_covers_lease_recovery_and_fenced_settlement() {
     let db = Database::new().await;
     let queue = PostgresTaskQueue::new(db.pool.clone());
     let mut task = new_task();
-    task = task.with_max_attempts(2).unwrap();
+    task = task.with_max_attempts(NonZeroU16::new(2).unwrap());
     enqueue(&db.pool, vec![task.clone()]).await;
 
     let first = claim(&queue).await.pop().unwrap();
@@ -175,7 +178,7 @@ async fn worker_test_aggregate_retries_timeouts_then_fails_at_attempt_limit() {
     let queue = Arc::new(PostgresTaskQueue::new(db.pool.clone()));
     let service = Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()));
     let mut task = new_task();
-    task = task.with_max_attempts(2).unwrap();
+    task = task.with_max_attempts(NonZeroU16::new(2).unwrap());
     enqueue(&db.pool, vec![task.clone()]).await;
 
     let first = claim(&queue).await.pop().unwrap();

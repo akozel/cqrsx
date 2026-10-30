@@ -165,7 +165,7 @@ mod tests {
     }
 
     fn attempt(metadata: Value) -> TaskAttempt {
-        TaskAttempt::new(Uuid::new_v4(), TaskFormat::of::<Ship>().unwrap(), json!({}), metadata, 2).unwrap()
+        TaskAttempt::try_new(Uuid::new_v4(), TaskFormat::of::<Ship>(), json!({}), metadata, 2).unwrap()
     }
 
     #[test]
@@ -224,7 +224,7 @@ mod tests {
     #[test]
     fn stamping_a_task_replaces_only_the_three_ids_and_keeps_application_keys() {
         let causation = Causation::from_task(&attempt(json!({})));
-        let task = NewTask::new(Ship {})
+        let task = NewTask::try_new(Ship {})
             .unwrap()
             .with_metadata(json!({ "order_id": "o-7", "command_id": "stale", "source": "app" }))
             .unwrap();
@@ -309,7 +309,7 @@ mod tests {
 
     #[test]
     fn task_ids_are_stable_v5_and_change_with_every_input() {
-        let format = TaskFormat::new("ship_order", 1).unwrap();
+        let format = TaskFormat::try_new("ship_order", 1).unwrap();
         let id = causation(7).task_id("order", "o-1", &format, 0);
         assert_eq!(
             id,
@@ -327,8 +327,8 @@ mod tests {
             causation(7).task_id("invoice", "o-1", &format, 0),
             causation(7).task_id("order", "o-2", &format, 0),
             causation(8).task_id("order", "o-1", &format, 0),
-            causation(7).task_id("order", "o-1", &TaskFormat::new("ship_parcel", 1).unwrap(), 0),
-            causation(7).task_id("order", "o-1", &TaskFormat::new("ship_order", 2).unwrap(), 0),
+            causation(7).task_id("order", "o-1", &TaskFormat::try_new("ship_parcel", 1).unwrap(), 0),
+            causation(7).task_id("order", "o-1", &TaskFormat::try_new("ship_order", 2).unwrap(), 0),
             causation(7).task_id("order", "o-1", &format, 1),
         ];
         for other in others {
@@ -342,7 +342,7 @@ mod tests {
 
     #[test]
     fn the_task_id_name_cannot_shift_between_fields() {
-        let format = TaskFormat::new("ship_order", 1).unwrap();
+        let format = TaskFormat::try_new("ship_order", 1).unwrap();
         assert_ne!(
             causation(7).task_id("ab", "c", &format, 0),
             causation(7).task_id("a", "bc", &format, 0)
@@ -360,7 +360,7 @@ mod tests {
             right in ("[a-z]{0,6}", "[a-z0-9:-]{0,12}", any::<u128>(), "[a-z_]{1,8}", 1..4_i32, 0..4_usize),
         ) {
             let id = |(aggregate_type, aggregate_id, command_id, task_type, version, ordinal): &(String, String, u128, String, i32, usize)| {
-                causation(*command_id).task_id(aggregate_type, aggregate_id, &TaskFormat::new(task_type.clone(), *version).unwrap(), *ordinal)
+                causation(*command_id).task_id(aggregate_type, aggregate_id, &TaskFormat::try_new(task_type.clone(), *version).unwrap(), *ordinal)
             };
             prop_assert_eq!(id(&left) == id(&right), left == right);
         }

@@ -12,7 +12,7 @@ use super::{
     Context, Operation,
     delivery::{DeliveryError, DeliverySlot, Done},
     lease::LeaseKeeper,
-    observer::{Advanced, Applied, Failed, RebuildEvent, RebuildReason, Rebuilt, Waiting},
+    observer::{Advanced, Applied, Failed, FailureCategory, RebuildEvent, RebuildReason, Rebuilt, Waiting},
 };
 use crate::{
     cqrs::{
@@ -68,7 +68,7 @@ struct Failure {
     key: Option<String>,
     handler: String,
     operation: Operation,
-    category: &'static str,
+    category: FailureCategory,
     position: Position,
 }
 
@@ -123,7 +123,7 @@ struct CursorPage {
     last_key: String,
     keys: u64,
     pending: usize,
-    failed: Option<&'static str>,
+    failed: Option<FailureCategory>,
 }
 
 /// A live job that waits for the rebuild of its key as for its own answer.
@@ -182,21 +182,21 @@ pub(super) struct Owner<'a, A: Aggregate, R, C> {
     draining: bool,
 }
 
-fn persistence_category(error: &PersistenceError) -> &'static str {
+fn persistence_category(error: &PersistenceError) -> FailureCategory {
     match error {
-        PersistenceError::OptimisticLockError => "optimistic_lock",
-        PersistenceError::ConnectionError(_) => "connection",
-        PersistenceError::DeserializationError(_) => "deserialization",
-        PersistenceError::UnknownError(_) => "unknown",
-        PersistenceError::SequenceGap { .. } => "sequence_gap",
+        PersistenceError::OptimisticLockError => FailureCategory::OptimisticLock,
+        PersistenceError::ConnectionError(_) => FailureCategory::Connection,
+        PersistenceError::DeserializationError(_) => FailureCategory::Deserialization,
+        PersistenceError::UnknownError(_) => FailureCategory::Unknown,
+        PersistenceError::SequenceGap { .. } => FailureCategory::SequenceGap,
     }
 }
 
-fn delivery_category(error: &DeliveryError) -> &'static str {
+fn delivery_category(error: &DeliveryError) -> FailureCategory {
     match error {
         DeliveryError::Failed(error) => persistence_category(error),
-        DeliveryError::Panicked => "panic",
-        DeliveryError::Stopped => "stopped",
+        DeliveryError::Panicked => FailureCategory::Panic,
+        DeliveryError::Stopped => FailureCategory::Stopped,
     }
 }
 
@@ -275,7 +275,7 @@ where
         diagnostics::log_projection_event(self.ctx.key.projection(), self.ctx.key.aggregate_type(), event);
     }
 
-    fn log_failure(&self, operation: Operation, category: &'static str, failures: u32) {
+    fn log_failure(&self, operation: Operation, category: FailureCategory, failures: u32) {
         diagnostics::log_projection_failure(
             self.ctx.key.projection(),
             self.ctx.key.aggregate_type(),
@@ -292,7 +292,7 @@ where
 
     /// A failure without a page (the journal, the checkpoint store, a rebuild): stops the reading; the
     /// first one of a window is the one recorded.
-    fn store_failure(&mut self, operation: Operation, category: &'static str) {
+    fn store_failure(&mut self, operation: Operation, category: FailureCategory) {
         let handler = match operation {
             Operation::Feed | Operation::Head => "journal",
             Operation::Checkpoints | Operation::Page | Operation::Rebuild | Operation::Lease => "checkpoints",
@@ -693,7 +693,7 @@ where
                 key: Some(key),
                 handler: "journal".to_owned(),
                 operation: Operation::Page,
-                category: "deserialization",
+                category: FailureCategory::Deserialization,
                 position,
             };
             self.pages.push_back(Page {
@@ -1026,5 +1026,37 @@ where
             self.log_failure(Operation::Checkpoints, error.category(), 0);
         }
         Exit::Stopped
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Arc;
+
+    #[test]
+    fn every_delivery_error_has_its_category() {
+        let failed = |error: PersistenceError| DeliveryError::Failed(Arc::new(error));
+        let cases = [
+            (failed(PersistenceError::OptimisticLockError), FailureCategory::OptimisticLock),
+            (
+                failed(PersistenceError::ConnectionError("down".into())),
+                FailureCategory::Connection,
+            ),
+            (
+                failed(PersistenceError::DeserializationError("bad".into())),
+                FailureCategory::Deserialization,
+            ),
+            (failed(PersistenceError::UnknownError("odd".into())), FailureCategory::Unknown),
+            (
+                failed(PersistenceError::SequenceGap { expected: 2, found: 4 }),
+                FailureCategory::SequenceGap,
+            ),
+            (DeliveryError::Panicked, FailureCategory::Panic),
+            (DeliveryError::Stopped, FailureCategory::Stopped),
+        ];
+        for (error, category) in &cases {
+            assert_eq!(delivery_category(error), *category, "{error:?}");
+        }
     }
 }

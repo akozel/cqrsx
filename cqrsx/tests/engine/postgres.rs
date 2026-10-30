@@ -48,7 +48,11 @@ async fn book_and_follow_the_chain(cqrs: &Cqrs, outbox: &Outbox) {
         )
         .await
         .unwrap();
-    assert_eq!(booked.tasks[0].max_attempts(), 4, "the policy's budget from SHOP_ATTEMPTS");
+    assert_eq!(
+        booked.tasks[0].max_attempts().get(),
+        4,
+        "the policy's budget from SHOP_ATTEMPTS"
+    );
     assert_eq!(
         cqrs.run_tasks().await,
         2,

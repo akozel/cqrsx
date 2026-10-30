@@ -90,7 +90,7 @@ use std::future::Future;
 /// impl MailService for Refusing {
 ///     fn send(&self, _: uuid::Uuid, _: &str) -> bool { false }
 /// }
-/// let attempt = TaskAttempt::first(&SendETicket { seat: "B4".into() }, serde_json::json!({}))?;
+/// let attempt = TaskAttempt::try_first(&SendETicket { seat: "B4".into() }, serde_json::json!({}))?;
 /// let ctx = TaskContext::new(attempt, Duration::from_secs(1));
 /// let result = block_on(send_e_ticket.call(SendETicket { seat: "B4".into() }, &ctx, &Refusing));
 /// assert_eq!(result, TaskResult::retry("mail_unavailable"));

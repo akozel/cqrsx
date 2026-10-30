@@ -109,13 +109,13 @@ impl TaskHandler<Payload> for Handler {
     }
 }
 fn dispatcher() -> TaskDispatcher<JsonTaskAdapter<Payload, Handler>> {
-    TaskDispatcher::try_new(vec![JsonTaskAdapter::<Payload, _>::new(Handler).unwrap()]).unwrap()
+    TaskDispatcher::try_new(vec![JsonTaskAdapter::<Payload, _>::new(Handler)]).unwrap()
 }
 fn leased() -> LeasedTask {
     LeasedTask::new(
-        TaskAttempt::new(
+        TaskAttempt::try_new(
             Uuid::nil(),
-            TaskFormat::of::<Payload>().unwrap(),
+            TaskFormat::of::<Payload>(),
             serde_json::json!({}),
             serde_json::json!({"owned":"payload"}),
             1,
@@ -161,7 +161,7 @@ impl TaskExecutor for BorrowedExecutor<'_> {
 #[tokio::test]
 async fn all_four_port_futures_are_send_and_keep_original_inputs_across_pending() {
     let calls = AtomicUsize::new(0);
-    let format = TaskFormat::of::<Payload>().unwrap();
+    let format = TaskFormat::of::<Payload>();
     let owner = String::from("borrowed owner");
     let task = leased();
     let reason = String::from("owned request");

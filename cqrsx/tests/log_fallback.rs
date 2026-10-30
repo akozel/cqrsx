@@ -119,7 +119,7 @@ impl EventStore<ProbeAggregate> for UnavailableStore {
 }
 
 fn format() -> TaskFormat {
-    TaskFormat::new("private_type\nmail@example.com", 1).unwrap()
+    TaskFormat::try_new("private_type\nmail@example.com", 1).unwrap()
 }
 struct FailingAdapter;
 
@@ -204,7 +204,7 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
     let id = Uuid::new_v4();
     let queue = Arc::new(Queue {
         pending: Mutex::new(Some(LeasedTask::new(
-            TaskAttempt::new(
+            TaskAttempt::try_new(
                 id,
                 format(),
                 json!({"secret": "private_payload"}),

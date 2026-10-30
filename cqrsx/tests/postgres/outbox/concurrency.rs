@@ -36,7 +36,7 @@ async fn stress_outbox_winners_publish_only_their_own_event_snapshot_and_task() 
                     tasks.spawn(async move {
                         let value = writer + 1;
                         let event = event_for(&id, sequence, value);
-                        let task = NewTask::new(DummyTaskV1 {
+                        let task = NewTask::try_new(DummyTaskV1 {
                             value: value.to_string(),
                         })
                         .unwrap()
@@ -141,7 +141,7 @@ async fn competing_writes_keep_the_winning_event_snapshot_and_tasks_consistent()
         let mut writes = tokio::task::JoinSet::new();
         let mut candidates = Vec::new();
         for name in ["left", "right"] {
-            let task = NewTask::new(DummyTaskV1 { value: name.into() }).unwrap();
+            let task = NewTask::try_new(DummyTaskV1 { value: name.into() }).unwrap();
             let mut candidate = event(id, sequence);
             candidate.payload = json!({"Recorded": {"value": name}});
             let snapshot = snapshot_version.map(|version| SnapshotUpdate {
@@ -235,7 +235,7 @@ async fn a_conflict_without_a_snapshot_is_a_result_and_with_a_new_snapshot_still
         .persist::<TestAggregate>(&[event(id, 1)], None)
         .await
         .unwrap();
-    let task = NewTask::new(DummyTaskV1 { value: "loser".into() }).unwrap();
+    let task = NewTask::try_new(DummyTaskV1 { value: "loser".into() }).unwrap();
     let loser = PostgresEventRepositoryWithOutbox::new(session.clone());
     let loser_tasks = vec![task.clone()];
     assert!(matches!(

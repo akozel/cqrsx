@@ -76,6 +76,10 @@ rule numbers.
 
 22. Standard library conventions: `as_`/`to_`/`into_` with the matching `self`; getters without `get_`;
     constructors `new`, `try_new` when fallible, `from_*` for conversions; `with_*` is a builder method.
+    A constructor that can fail: first remove the failure — parameter types that are already valid (`NonZeroU16`,
+    a newtype) or a compile-time check of constants (`const { assert!(…) }`) leave a plain `new`; a conversion from
+    one value is `FromStr`/`TryFrom`; otherwise `try_new` returning `Result` with its own error type (`Option` only
+    for one obvious reason); many checked parameters go through a builder whose `build()` returns `Result`.
 23. Generic parameters named after their main bound (`A: Aggregate`, `Q: TaskQueue`); descriptive lifetimes
     beyond a local `'a`.
 24. No abbreviations in public API names; common local ones (`tx`, `err`, `ctx`) are fine.

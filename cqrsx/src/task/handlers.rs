@@ -88,10 +88,7 @@ impl TaskHandlers {
         P: TaskPayload + DeserializeOwned + Send + 'static,
         H: TaskHandler<P> + 'static,
     {
-        match BoxedTaskAdapter::json::<P, H>(handler) {
-            Ok(adapter) => self.adapters.push(adapter),
-            Err(error) => self.refuse(error.into()),
-        }
+        self.adapters.push(BoxedTaskAdapter::json::<P, H>(handler));
         self
     }
 
@@ -148,7 +145,7 @@ mod tests {
             attempt::TaskAttempt,
             context::{ExecutorTwice, TaskContext},
             dependencies::DependencyId,
-            format::{TaskFormat, TaskFormatError},
+            format::TaskFormat,
             result::TaskResult,
         },
     };
@@ -250,28 +247,12 @@ mod tests {
         }
     }
 
-    #[derive(Serialize, Deserialize)]
-    struct Unversioned {}
-
-    impl TaskPayload for Unversioned {
-        const TASK_TYPE: &'static str = "unversioned";
-        const TASK_VERSION: i32 = 0;
-    }
-
-    struct UnversionedHandler;
-
-    impl TaskHandler<Unversioned> for UnversionedHandler {
-        async fn handle(&self, _: Unversioned, _: &TaskContext) -> TaskResult {
-            panic!("an invalid format cannot be registered")
-        }
-    }
-
     /// A multi-format adapter of its own.
     struct Legacy;
 
     impl TaskAdapter for Legacy {
         fn formats(&self) -> Vec<TaskFormat> {
-            vec![TaskFormat::new("legacy", 1).unwrap()]
+            vec![TaskFormat::try_new("legacy", 1).unwrap()]
         }
         async fn invoke(&self, _: &TaskContext) -> TaskResult {
             TaskResult::fail("legacy")
@@ -279,7 +260,7 @@ mod tests {
     }
 
     fn attempt<P: TaskPayload + Serialize>(payload: &P) -> TaskAttempt {
-        TaskAttempt::first(payload, json!({})).unwrap()
+        TaskAttempt::try_first(payload, json!({})).unwrap()
     }
 
     #[tokio::test]
@@ -307,9 +288,9 @@ mod tests {
             dispatcher.dispatch(Arc::new(attempt(&Stamp {})), Duration::ZERO).await,
             TaskResult::Done
         );
-        let legacy = TaskAttempt::new(
+        let legacy = TaskAttempt::try_new(
             uuid::Uuid::nil(),
-            TaskFormat::new("legacy", 1).unwrap(),
+            TaskFormat::try_new("legacy", 1).unwrap(),
             json!({}),
             json!({}),
             1,
@@ -326,7 +307,7 @@ mod tests {
         assert_eq!(
             refusal(TaskHandlers::new().handler(RecordHandler)),
             TaskDispatcherError::MissingDependency {
-                format: TaskFormat::of::<Record>().unwrap(),
+                format: TaskFormat::of::<Record>(),
                 dependency: DependencyId::of::<String>().name(),
             }
         );
@@ -341,18 +322,7 @@ mod tests {
         );
         assert_eq!(
             refusal(TaskHandlers::new().handler(StampHandler).adapter(StampHandlerAdapter)),
-            TaskDispatcherError::DuplicateFormat(TaskFormat::of::<Stamp>().unwrap())
-        );
-        assert_eq!(
-            refusal(
-                TaskHandlers::new()
-                    .handler(UnversionedHandler)
-                    .handler(StampHandler)
-                    .executor(Arc::new(Conflicting))
-                    .executor(Arc::new(Conflicting))
-            ),
-            TaskDispatcherError::InvalidFormat(TaskFormatError::InvalidVersion),
-            "the first refusal is reported"
+            TaskDispatcherError::DuplicateFormat(TaskFormat::of::<Stamp>())
         );
         assert_eq!(refusal(TaskHandlers::new()), TaskDispatcherError::Empty);
     }
@@ -362,7 +332,7 @@ mod tests {
 
     impl TaskAdapter for StampHandlerAdapter {
         fn formats(&self) -> Vec<TaskFormat> {
-            vec![TaskFormat::of::<Stamp>().unwrap()]
+            vec![TaskFormat::of::<Stamp>()]
         }
         async fn invoke(&self, _: &TaskContext) -> TaskResult {
             TaskResult::Done

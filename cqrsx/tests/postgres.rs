@@ -14,6 +14,7 @@ use std::collections::HashMap;
 
 use std::{
     collections::HashSet,
+    num::NonZeroU16,
     sync::{
         Arc,
         atomic::{AtomicUsize, Ordering},

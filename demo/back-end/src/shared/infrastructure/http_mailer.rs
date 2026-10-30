@@ -261,9 +261,9 @@ mod tests {
 
     /// Attempt `number` of an e-ticket task, told the pause of the `MAIL` policy.
     fn attempt(number: i32) -> TaskContext {
-        let attempt = TaskAttempt::new(
+        let attempt = TaskAttempt::try_new(
             Uuid::new_v4(),
-            TaskFormat::new("encore_send_e_ticket", 1).unwrap(),
+            TaskFormat::try_new("encore_send_e_ticket", 1).unwrap(),
             json!({}),
             json!({ "correlation_id": "c-1" }),
             number,

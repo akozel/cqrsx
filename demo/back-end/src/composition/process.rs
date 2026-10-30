@@ -48,7 +48,7 @@ use cqrsx::{
         result::TaskResult,
     },
 };
-use std::{collections::HashMap, sync::Arc, time::Duration};
+use std::{collections::HashMap, num::NonZeroU16, sync::Arc, time::Duration};
 
 /// The owner name a process writes on the checkpoints it holds, unless `ENCORE_NODE_NAME` names it.
 const DEFAULT_NODE_NAME: &str = "encore-backend";
@@ -159,9 +159,12 @@ async fn the_modules_default_to_the_values_of_the_configuration() {
         "encore_send_e_ticket",
         "encore_issue_refund",
     ]
-    .map(|name| TaskFormat::new(name, 1).unwrap());
-    let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), 6).unwrap();
-    let mail = TaskPolicy::new(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), 6).unwrap();
+    .map(|name| TaskFormat::try_new(name, 1).unwrap());
+    let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap());
+    let mail = TaskPolicy::new(
+        Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+        NonZeroU16::new(6).unwrap(),
+    );
     assert_eq!(
         formats.clone().map(|format| defaults.policies().of(&format).cloned()),
         [Some(step), Some(step), Some(mail), Some(mail)]
@@ -237,7 +240,7 @@ async fn the_task_handlers_report_their_attempts_to_the_feeds_hub() {
         fan_name: "Fox".into(),
         price: 80,
     };
-    let attempt = TaskAttempt::first(&task, serde_json::json!({})).unwrap();
+    let attempt = TaskAttempt::try_first(&task, serde_json::json!({})).unwrap();
     let answer = cqrs
         .dispatcher()
         .unwrap()

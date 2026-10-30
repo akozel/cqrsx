@@ -21,17 +21,17 @@ pub mod testing;
 
 use crate::{
     diagnostics,
-    task::format::{TaskFormat, TaskFormatError, TaskPayload},
+    task::format::{TaskFormat, TaskPayload},
 };
 use chrono::{DateTime, Utc};
 use serde_json::{Map, Value, json};
-use std::time::Duration;
+use std::{num::NonZeroU16, time::Duration};
 use thiserror::Error;
 use uuid::Uuid;
 
 /// The attempt budget of a task that sets none of its own: no [`with_max_attempts`](NewTask::with_max_attempts) and
 /// no policy of its type (`task::policy::Policies`).
-pub const DEFAULT_MAX_ATTEMPTS: i32 = 10;
+pub const DEFAULT_MAX_ATTEMPTS: NonZeroU16 = NonZeroU16::new(10).unwrap();
 
 #[derive(Clone, Debug, Default, PartialEq)]
 pub enum TaskSchedule {
@@ -58,16 +58,17 @@ pub struct NewTask {
     format: TaskFormat,
     payload: Value,
     metadata: Value,
-    /// The keys [`new`](Self::new) moved from the payload to the metadata, which `with_metadata` keeps.
+    /// The keys [`try_new`](Self::try_new) moved from the payload to the metadata, which `with_metadata` keeps.
     labels: &'static [&'static str],
     schedule: TaskSchedule,
-    max_attempts: i32,
+    max_attempts: NonZeroU16,
 }
 impl NewTask {
-    /// A task of `payload`; the fields of `T::LABELS` move from its body to its metadata.
-    pub fn new<T: TaskPayload>(payload: T) -> Result<Self, TaskValidationError> {
+    /// A task of `payload`; the fields of `T::LABELS` move from its body to its metadata. Refused when the payload
+    /// does not serialize to a JSON object.
+    pub fn try_new<T: TaskPayload>(payload: T) -> Result<Self, TaskValidationError> {
         let task = Self::from_payload(
-            TaskFormat::of::<T>()?,
+            TaskFormat::of::<T>(),
             serde_json::to_value(payload).map_err(|_| TaskValidationError::Serialization)?,
         );
         if T::LABELS.is_empty() {
@@ -96,7 +97,7 @@ impl NewTask {
         self.schedule = schedule;
         Ok(self)
     }
-    /// Replaces the metadata with `metadata`, an object, but keeps the labels [`new`](Self::new) moved here from the
+    /// Replaces the metadata with `metadata`, an object, but keeps the labels [`try_new`](Self::try_new) moved here from the
     /// payload: the handler decodes the payload with them, so a label is never lost, and a key of `metadata` that names
     /// a label keeps the label's value. A task without labels gets `metadata` as it is.
     pub fn with_metadata(mut self, metadata: Value) -> Result<Self, TaskValidationError> {
@@ -126,12 +127,10 @@ impl NewTask {
     }
 
     /// Total claims, including the initial claim and skipped invocations.
-    pub fn with_max_attempts(mut self, max_attempts: i32) -> Result<Self, TaskValidationError> {
-        if max_attempts <= 0 {
-            return Err(TaskValidationError::InvalidAttemptLimit);
-        }
+    #[must_use]
+    pub fn with_max_attempts(mut self, max_attempts: NonZeroU16) -> Self {
         self.max_attempts = max_attempts;
-        Ok(self)
+        self
     }
     pub fn id(&self) -> Uuid {
         self.id
@@ -148,23 +147,19 @@ impl NewTask {
     pub fn schedule(&self) -> &TaskSchedule {
         &self.schedule
     }
-    pub fn max_attempts(&self) -> i32 {
+    pub fn max_attempts(&self) -> NonZeroU16 {
         self.max_attempts
     }
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum TaskValidationError {
-    #[error(transparent)]
-    Format(#[from] TaskFormatError),
     #[error("task payload serialization failed")]
     Serialization,
     #[error("task payload must be a JSON object")]
     PayloadNotObject,
     #[error("task metadata must be a JSON object")]
     MetadataNotObject,
-    #[error("task attempt limit must be positive")]
-    InvalidAttemptLimit,
     #[error("delivery attempt must be positive")]
     InvalidAttempt,
     #[error("task schedule delay is not representable")]
@@ -227,31 +222,29 @@ mod tests {
     use serde::{Serialize, Serializer};
     #[test]
     fn construction_validates_format_objects_attempts_and_schedule() {
-        let task = NewTask::new(DummyTask { value: "runtime" }).unwrap();
+        let task = NewTask::try_new(DummyTask { value: "runtime" }).unwrap();
         assert_eq!(task.payload(), &json!({"value": "runtime"}));
         assert_eq!(task.format().task_version(), 1);
         assert_eq!(task.format().to_string(), "dummy_task v1");
-        assert_eq!(task.max_attempts(), 10);
+        assert_eq!(task.max_attempts().get(), 10);
         assert_eq!(task.metadata(), &json!({}));
         assert_eq!(task.schedule(), &TaskSchedule::Now);
         let id = task.id();
         let task = task
             .with_metadata(json!({"trace": "test"}))
             .unwrap()
-            .with_max_attempts(2)
-            .unwrap()
+            .with_max_attempts(NonZeroU16::new(2).unwrap())
             .with_schedule(TaskSchedule::After(Duration::ZERO))
             .unwrap();
         assert_eq!(task.id(), id);
-        assert_eq!(task.max_attempts(), 2);
+        assert_eq!(task.max_attempts().get(), 2);
         assert!(task.clone().with_metadata(json!([])).is_err());
-        assert!(task.clone().with_max_attempts(0).is_err());
         assert!(task.clone().with_schedule(TaskSchedule::After(Duration::MAX)).is_err());
         assert!(task.clone().with_schedule(TaskSchedule::Now).is_ok());
         assert!(task.with_schedule(TaskSchedule::At(Utc::now())).is_ok());
-        assert_eq!(TaskFormat::new("", 1), Err(TaskFormatError::EmptyType));
-        assert_eq!(TaskFormat::new("valid", 0), Err(TaskFormatError::InvalidVersion));
-        assert!(NewTask::from_payload(TaskFormat::new("valid", 1).unwrap(), json!([])).is_err());
+        assert_eq!(TaskFormat::try_new("", 1), Err(TaskFormatError::EmptyType));
+        assert_eq!(TaskFormat::try_new("valid", 0), Err(TaskFormatError::InvalidVersion));
+        assert!(NewTask::from_payload(TaskFormat::try_new("valid", 1).unwrap(), json!([])).is_err());
         struct Broken;
         impl Serialize for Broken {
             fn serialize<S: Serializer>(&self, _: S) -> Result<S::Ok, S::Error> {
@@ -262,17 +255,17 @@ mod tests {
             const TASK_TYPE: &'static str = "broken";
             const TASK_VERSION: i32 = 1;
         }
-        assert_eq!(NewTask::new(Broken), Err(TaskValidationError::Serialization));
+        assert_eq!(NewTask::try_new(Broken), Err(TaskValidationError::Serialization));
     }
 
     #[test]
     fn a_task_without_a_budget_of_its_own_gets_the_default_of_ten_attempts() {
-        assert_eq!(DEFAULT_MAX_ATTEMPTS, 10);
+        assert_eq!(DEFAULT_MAX_ATTEMPTS.get(), 10);
         assert_eq!(
-            NewTask::new(DummyTask { value: "runtime" }).unwrap().max_attempts(),
+            NewTask::try_new(DummyTask { value: "runtime" }).unwrap().max_attempts(),
             DEFAULT_MAX_ATTEMPTS
         );
-        let format = TaskFormat::new("dummy_task", 1).unwrap();
+        let format = TaskFormat::try_new("dummy_task", 1).unwrap();
         assert_eq!(
             NewTask::from_payload(format, json!({})).unwrap().max_attempts(),
             DEFAULT_MAX_ATTEMPTS
@@ -298,19 +291,19 @@ mod tests {
             amount: 80,
             tenant: "acme",
         };
-        let task = NewTask::new(labelled).unwrap();
+        let task = NewTask::try_new(labelled).unwrap();
         assert_eq!(task.payload(), &json!({ "amount": 80 }));
         assert_eq!(
             task.metadata(),
             &json!({ "tenant": "acme" }),
             "a label the body lacks moves nothing"
         );
-        let unlabelled = NewTask::new(DummyTask { value: "runtime" }).unwrap();
+        let unlabelled = NewTask::try_new(DummyTask { value: "runtime" }).unwrap();
         assert_eq!(
             (unlabelled.payload(), unlabelled.metadata()),
             (&json!({ "value": "runtime" }), &json!({}))
         );
-        let attempt = TaskAttempt::first(
+        let attempt = TaskAttempt::try_first(
             &Labelled {
                 amount: 80,
                 tenant: "acme",
@@ -320,7 +313,7 @@ mod tests {
         .unwrap();
         assert_eq!(attempt.payload(), &json!({ "amount": 80 }));
         assert_eq!(attempt.metadata(), &json!({ "correlation_id": "c-1", "tenant": "acme" }));
-        let first = TaskAttempt::first(&DummyTask { value: "runtime" }, json!({ "correlation_id": "c-1" })).unwrap();
+        let first = TaskAttempt::try_first(&DummyTask { value: "runtime" }, json!({ "correlation_id": "c-1" })).unwrap();
         assert_eq!(
             (first.payload(), first.metadata()),
             (&json!({ "value": "runtime" }), &json!({ "correlation_id": "c-1" }))
@@ -330,7 +323,7 @@ mod tests {
     /// `with_metadata` replaced the metadata whole and lost the labels: the handler could not decode the task any more.
     #[test]
     fn metadata_of_the_caller_keeps_the_labels_and_a_label_keeps_its_value() {
-        let labelled = NewTask::new(Labelled {
+        let labelled = NewTask::try_new(Labelled {
             amount: 80,
             tenant: "acme",
         })
@@ -354,7 +347,7 @@ mod tests {
             json!({ "amount": 80, "tenant": "acme" }),
             "the body decodes as it was"
         );
-        let unlabelled = NewTask::new(DummyTask { value: "runtime" }).unwrap();
+        let unlabelled = NewTask::try_new(DummyTask { value: "runtime" }).unwrap();
         assert_eq!(
             unlabelled.with_metadata(json!({ "tenant": "t-1" })).unwrap().metadata(),
             &json!({ "tenant": "t-1" }),
@@ -391,12 +384,11 @@ mod tests {
 
     #[test]
     fn with_id_changes_only_the_id() {
-        let task = NewTask::new(DummyTask { value: "runtime" })
+        let task = NewTask::try_new(DummyTask { value: "runtime" })
             .unwrap()
             .with_metadata(json!({"trace": "test"}))
             .unwrap()
-            .with_max_attempts(3)
-            .unwrap()
+            .with_max_attempts(NonZeroU16::new(3).unwrap())
             .with_schedule(TaskSchedule::After(Duration::from_secs(2)))
             .unwrap();
         let id = Uuid::now_v7();
@@ -417,20 +409,6 @@ mod tests {
                 task.schedule(),
                 task.max_attempts()
             )
-        );
-    }
-
-    #[test]
-    fn a_payload_with_an_invalid_declared_format_cannot_become_a_task() {
-        #[derive(Serialize)]
-        struct InvalidFormat;
-        impl TaskPayload for InvalidFormat {
-            const TASK_TYPE: &'static str = "invalid_format";
-            const TASK_VERSION: i32 = 0;
-        }
-        assert_eq!(
-            NewTask::new(InvalidFormat),
-            Err(TaskValidationError::Format(TaskFormatError::InvalidVersion))
         );
     }
 }

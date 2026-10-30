@@ -1267,7 +1267,7 @@ pub(in crate::cqrs) mod tests {
         let repo = MockRepo::with_commit(Box::new(|_, _| panic!("a refused commit must not persist")));
         let store = PersistedEventStore::<MockRepo, TestAggregate>::new(repo);
         let task = crate::task::NewTask::from_payload(
-            crate::task::format::TaskFormat::new("notify", 1).unwrap(),
+            crate::task::format::TaskFormat::try_new("notify", 1).unwrap(),
             serde_json::json!({}),
         )
         .unwrap();

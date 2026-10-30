@@ -79,7 +79,7 @@
 //!         let mut tasks = Vec::new();
 //!         for event in decision.events {
 //!             let OrderEvent::Placed { .. } = event;
-//!             tasks.push(NewTask::new(Ship { order_id: decision.aggregate_id.into() })?);
+//!             tasks.push(NewTask::try_new(Ship { order_id: decision.aggregate_id.into() })?);
 //!         }
 //!         Ok(tasks)
 //!     }
@@ -91,7 +91,7 @@
 //!         let mut tasks = Vec::new();
 //!         for event in decision.events {
 //!             let OrderEvent::Placed { total } = event;
-//!             tasks.push(NewTask::new(Invoice { order_id: decision.aggregate_id.into(), total: *total })?);
+//!             tasks.push(NewTask::try_new(Invoice { order_id: decision.aggregate_id.into(), total: *total })?);
 //!         }
 //!         Ok(tasks)
 //!     }
@@ -290,6 +290,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::{
+        num::NonZeroU16,
         sync::{
             Arc,
             atomic::{AtomicUsize, Ordering},
@@ -383,7 +384,7 @@ mod tests {
                 return Err(TaskPlanError::application("refused"));
             }
             (0..self.count)
-                .map(|_| Ok(NewTask::new(Ping { value: self.value })?))
+                .map(|_| Ok(NewTask::try_new(Ping { value: self.value })?))
                 .collect()
         }
     }
@@ -454,8 +455,8 @@ mod tests {
         let application = TaskPlanError::application(std::io::Error::other("unknown aggregate id"));
         assert_eq!(application.to_string(), "unknown aggregate id");
         assert!(application.source().unwrap().downcast_ref::<std::io::Error>().is_some());
-        let task = TaskPlanError::from(TaskValidationError::InvalidAttemptLimit);
-        assert_eq!(task.to_string(), "task attempt limit must be positive");
+        let task = TaskPlanError::from(TaskValidationError::PayloadNotObject);
+        assert_eq!(task.to_string(), "task payload must be a JSON object");
         let causation = TaskPlanError::from(CausationError::Missing("causation_id"));
         assert_eq!(causation.to_string(), "causation key `causation_id` is missing");
         assert!(format!("{causation:?}").contains("Missing"));
@@ -476,7 +477,7 @@ mod tests {
     }
 
     fn ping(value: u32) -> NewTask {
-        NewTask::new(Ping { value }).unwrap()
+        NewTask::try_new(Ping { value }).unwrap()
     }
 
     #[test]
@@ -485,13 +486,12 @@ mod tests {
         let scheduled = ping(1)
             .with_metadata(json!({ "tenant": "t-1", "command_id": "stale" }))
             .unwrap()
-            .with_max_attempts(4)
-            .unwrap()
+            .with_max_attempts(NonZeroU16::new(4).unwrap())
             .with_schedule(TaskSchedule::After(Duration::from_secs(3)))
             .unwrap();
-        let pong = NewTask::new(Pong {}).unwrap();
+        let pong = NewTask::try_new(Pong {}).unwrap();
         let tasks = plan_with(vec![scheduled.clone(), pong.clone(), ping(2)], &causation.event_metadata()).unwrap();
-        let ping_format = TaskFormat::of::<Ping>().unwrap();
+        let ping_format = TaskFormat::of::<Ping>();
         assert_eq!(
             tasks.iter().map(NewTask::id).collect::<Vec<_>>(),
             [
@@ -513,7 +513,7 @@ mod tests {
         );
         assert_eq!(
             (tasks[0].payload(), tasks[0].schedule(), tasks[0].max_attempts()),
-            (scheduled.payload(), scheduled.schedule(), 4)
+            (scheduled.payload(), scheduled.schedule(), NonZeroU16::new(4).unwrap())
         );
     }
 
@@ -595,8 +595,8 @@ mod tests {
                 .iter()
                 .map(|format| match format {
                     0 => ping(1),
-                    1 => NewTask::new(Pong {}).unwrap(),
-                    _ => NewTask::from_payload(TaskFormat::new("ping", 2).unwrap(), json!({})).unwrap(),
+                    1 => NewTask::try_new(Pong {}).unwrap(),
+                    _ => NewTask::from_payload(TaskFormat::try_new("ping", 2).unwrap(), json!({})).unwrap(),
                 })
                 .collect();
             let metadata = Causation::root("ui").event_metadata();

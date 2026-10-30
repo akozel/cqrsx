@@ -17,7 +17,9 @@ pub struct TaskAttempt {
     number: i32,
 }
 impl TaskAttempt {
-    pub fn new(
+    /// One claim of a stored task, as the queue leased it: the payload and the metadata are objects, the claim number is
+    /// positive.
+    pub fn try_new(
         task_id: Uuid,
         format: TaskFormat,
         payload: Value,
@@ -40,10 +42,10 @@ impl TaskAttempt {
     /// The first claim of a new task carrying `payload` and `metadata`, with a random task ID;
     /// for invoking task handlers outside the runtime, e.g. in their tests. The fields of `P::LABELS` move from the
     /// payload to the metadata, as in a published task.
-    pub fn first<P: TaskPayload>(payload: &P, metadata: Value) -> Result<Self, TaskValidationError> {
-        let format = TaskFormat::of::<P>()?;
+    pub fn try_first<P: TaskPayload>(payload: &P, metadata: Value) -> Result<Self, TaskValidationError> {
+        let format = TaskFormat::of::<P>();
         let payload = serde_json::to_value(payload).map_err(|_| TaskValidationError::Serialization)?;
-        let mut attempt = Self::new(Uuid::new_v4(), format, payload, metadata, 1)?;
+        let mut attempt = Self::try_new(Uuid::new_v4(), format, payload, metadata, 1)?;
         if !P::LABELS.is_empty() {
             move_labels(P::LABELS, &mut attempt.payload, &mut attempt.metadata);
         }
@@ -76,8 +78,8 @@ mod tests {
 
     #[test]
     fn invalid_attempt_data_is_rejected() {
-        let format = TaskFormat::new("test", 1).unwrap();
-        let build = |payload, metadata, attempt| TaskAttempt::new(Uuid::new_v4(), format.clone(), payload, metadata, attempt);
+        let format = TaskFormat::try_new("test", 1).unwrap();
+        let build = |payload, metadata, attempt| TaskAttempt::try_new(Uuid::new_v4(), format.clone(), payload, metadata, attempt);
         assert!(build(json!([]), json!({}), 1).is_err());
         assert!(build(json!({}), json!([]), 1).is_err());
         assert!(build(json!({}), json!({}), 0).is_err());
@@ -93,15 +95,15 @@ mod tests {
             const TASK_TYPE: &'static str = "greeting";
             const TASK_VERSION: i32 = 2;
         }
-        let attempt = TaskAttempt::first(&Greeting { name: "fox" }, json!({ "correlation_id": "c-1" })).unwrap();
-        assert_eq!(attempt.format(), &TaskFormat::new("greeting", 2).unwrap());
+        let attempt = TaskAttempt::try_first(&Greeting { name: "fox" }, json!({ "correlation_id": "c-1" })).unwrap();
+        assert_eq!(attempt.format(), &TaskFormat::try_new("greeting", 2).unwrap());
         assert_eq!(attempt.payload(), &json!({ "name": "fox" }));
         assert_eq!(attempt.metadata(), &json!({ "correlation_id": "c-1" }));
         assert_eq!(attempt.number(), 1);
-        let other = TaskAttempt::first(&Greeting { name: "fox" }, json!({})).unwrap();
+        let other = TaskAttempt::try_first(&Greeting { name: "fox" }, json!({})).unwrap();
         assert_ne!(attempt.task_id(), other.task_id());
         assert_eq!(
-            TaskAttempt::first(&Greeting { name: "fox" }, json!([])).unwrap_err(),
+            TaskAttempt::try_first(&Greeting { name: "fox" }, json!([])).unwrap_err(),
             TaskValidationError::MetadataNotObject
         );
     }
@@ -124,23 +126,13 @@ mod tests {
             const TASK_TYPE: &'static str = "broken";
             const TASK_VERSION: i32 = 1;
         }
-        #[derive(serde::Serialize)]
-        struct Unversioned;
-        impl TaskPayload for Unversioned {
-            const TASK_TYPE: &'static str = "unversioned";
-            const TASK_VERSION: i32 = 0;
-        }
         assert_eq!(
-            TaskAttempt::first(&Text("a string, not an object"), json!({})).unwrap_err(),
+            TaskAttempt::try_first(&Text("a string, not an object"), json!({})).unwrap_err(),
             TaskValidationError::PayloadNotObject
         );
         assert_eq!(
-            TaskAttempt::first(&Broken, json!({})).unwrap_err(),
+            TaskAttempt::try_first(&Broken, json!({})).unwrap_err(),
             TaskValidationError::Serialization
-        );
-        assert_eq!(
-            TaskAttempt::first(&Unversioned, json!({})).unwrap_err(),
-            TaskValidationError::Format(crate::task::format::TaskFormatError::InvalidVersion)
         );
     }
 }

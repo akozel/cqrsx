@@ -219,7 +219,7 @@ impl TaskQueue for MemTaskQueue {
                         token,
                         until,
                     });
-                    let attempt = TaskAttempt::new(
+                    let attempt = TaskAttempt::try_new(
                         task.id(),
                         task.format().clone(),
                         task.payload().clone(),
@@ -269,7 +269,7 @@ impl TaskQueue for MemTaskQueue {
                 }
                 SettlementRequest::Retry { delay, reason: text } => {
                     delivery.last_error = reason(&text);
-                    if delivery.attempts >= row.entry.task.max_attempts() {
+                    if delivery.attempts >= i32::from(row.entry.task.max_attempts().get()) {
                         delivery.status = TaskStatus::Failed;
                         failure(attempt, TaskFailureCause::AttemptLimitReached)
                     } else {
@@ -294,7 +294,7 @@ impl TaskQueue for MemTaskQueue {
                 let (task, delivery) = (&row.entry.task, &mut row.delivery);
                 delivery.lease = None;
                 delivery.last_error = Some(LEASE_EXPIRED.to_owned());
-                if delivery.attempts >= task.max_attempts() {
+                if delivery.attempts >= i32::from(task.max_attempts().get()) {
                     delivery.status = TaskStatus::Failed;
                     failures.push(TaskFailure {
                         task_id: task.id(),
@@ -322,12 +322,12 @@ mod tests {
         store::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
     };
     use serde_json::json;
-    use std::collections::HashMap;
+    use std::{collections::HashMap, num::NonZeroU16};
 
     const LEASE: Duration = Duration::from_secs(60);
 
     fn format(name: &str) -> TaskFormat {
-        TaskFormat::new(name, 1).unwrap()
+        TaskFormat::try_new(name, 1).unwrap()
     }
 
     fn task(name: &str, n: u8) -> NewTask {
@@ -568,7 +568,13 @@ mod tests {
     async fn a_retry_waits_its_pause_and_the_last_attempt_fails_the_task() {
         let journal = MemEventRepository::default();
         let queue = MemTaskQueue::new(journal.clone());
-        publish(&journal, "a", 1, &[task("notify", 1).with_max_attempts(2).unwrap()]).await;
+        publish(
+            &journal,
+            "a",
+            1,
+            &[task("notify", 1).with_max_attempts(NonZeroU16::new(2).unwrap())],
+        )
+        .await;
         let retry = || SettlementRequest::Retry {
             delay: Duration::from_secs(5),
             reason: "busy".into(),
@@ -592,7 +598,10 @@ mod tests {
     async fn expired_leases_come_back_after_the_redelivery_backoff_or_fail_on_the_last_attempt() {
         let journal = MemEventRepository::default();
         let queue = MemTaskQueue::new(journal.clone());
-        let (last, again) = (task("notify", 1).with_max_attempts(1).unwrap(), task("notify", 2));
+        let (last, again) = (
+            task("notify", 1).with_max_attempts(NonZeroU16::new(1).unwrap()),
+            task("notify", 2),
+        );
         publish(&journal, "a", 1, std::slice::from_ref(&last)).await;
         tokio::time::advance(Duration::from_secs(1)).await;
         publish(&journal, "b", 1, std::slice::from_ref(&again)).await;
@@ -639,7 +648,10 @@ mod tests {
     async fn a_recovery_takes_the_leases_that_ran_out_first_up_to_its_limit_and_reports_the_failures() {
         let journal = MemEventRepository::default();
         let queue = MemTaskQueue::new(journal.clone());
-        let (first, second) = (task("notify", 1).with_max_attempts(1).unwrap(), task("notify", 2));
+        let (first, second) = (
+            task("notify", 1).with_max_attempts(NonZeroU16::new(1).unwrap()),
+            task("notify", 2),
+        );
         publish(&journal, "a", 1, std::slice::from_ref(&first)).await;
         tokio::time::advance(Duration::from_secs(1)).await;
         publish(&journal, "b", 1, std::slice::from_ref(&second)).await;

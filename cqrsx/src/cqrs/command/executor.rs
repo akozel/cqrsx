@@ -406,7 +406,7 @@ mod tests {
                 if let Some(log) = &self.log {
                     log.lock().unwrap().push(format!("plan {value}"));
                 }
-                tasks.push(NewTask::new(DummyTask { value: value.clone() })?);
+                tasks.push(NewTask::try_new(DummyTask { value: value.clone() })?);
             }
             Ok(tasks)
         }
@@ -449,7 +449,7 @@ mod tests {
 
     impl TaskPlanner<SendOnlyAggregate> for CommandPlanner {
         fn plan(&self, decision: &Decision<'_, SendOnlyAggregate>) -> Result<Vec<NewTask>, TaskPlanError> {
-            Ok(vec![NewTask::new(DummyTask {
+            Ok(vec![NewTask::try_new(DummyTask {
                 value: decision.command.get().to_string(),
             })?])
         }
@@ -1299,7 +1299,7 @@ mod tests {
             if self.refuse_above.is_some_and(|limit| decision.before.0 > limit) {
                 return Err(TaskPlanError::application("too much"));
             }
-            Ok(vec![NewTask::new(Total {
+            Ok(vec![NewTask::try_new(Total {
                 before: decision.before.0,
                 after: decision.after.0,
             })?])
@@ -1456,7 +1456,7 @@ mod tests {
                 .lock()
                 .unwrap()
                 .push(std::ptr::from_ref(decision.aggregate_id) as usize);
-            Ok(vec![NewTask::new(DummyTask {
+            Ok(vec![NewTask::try_new(DummyTask {
                 value: "room".to_owned(),
             })?])
         }

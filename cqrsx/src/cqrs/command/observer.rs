@@ -352,7 +352,7 @@ mod tests {
     #[test]
     fn an_any_report_names_the_aggregate_the_command_its_rejection_and_the_typed_id() {
         let log = Log::default();
-        let task = NewTask::from_payload(TaskFormat::new("notify", 1).unwrap(), json!({})).unwrap();
+        let task = NewTask::from_payload(TaskFormat::try_new("notify", 1).unwrap(), json!({})).unwrap();
         let metadata = HashMap::from([("source".to_owned(), "ui".to_owned())]);
         for outcome in [
             Outcome::Accepted {
@@ -392,7 +392,7 @@ mod tests {
 
     #[test]
     fn a_report_prints_its_aggregate_and_outcome_but_neither_the_metadata_nor_the_task_payloads() {
-        let task = NewTask::from_payload(TaskFormat::new("notify", 1).unwrap(), json!({ "card": "4111" })).unwrap();
+        let task = NewTask::from_payload(TaskFormat::try_new("notify", 1).unwrap(), json!({ "card": "4111" })).unwrap();
         let metadata = HashMap::from([("token".to_owned(), "t0k3n".to_owned())]);
         let printed: Vec<(String, String)> = [
             Outcome::Accepted {

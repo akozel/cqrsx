@@ -46,7 +46,7 @@ use uuid::Uuid;
 ///     const TASK_VERSION: i32 = 1;
 /// }
 ///
-/// let attempt = TaskAttempt::first(&Ping {}, serde_json::json!({}))?;
+/// let attempt = TaskAttempt::try_first(&Ping {}, serde_json::json!({}))?;
 /// let id = attempt.task_id();
 /// let ctx = TaskContext::new(attempt, Duration::from_secs(1));
 /// assert_eq!((ctx.task_id(), ctx.attempt().number(), ctx.retry_pause()), (id, 1, Duration::from_secs(1)));
@@ -63,9 +63,9 @@ pub struct TaskContext {
 
 impl TaskContext {
     /// A context for `attempt`, whose retry would wait `retry_pause`, with no dependencies and no executors.
-    pub fn new(attempt: impl Into<Arc<TaskAttempt>>, retry_pause: Duration) -> Self {
+    pub fn new(attempt: TaskAttempt, retry_pause: Duration) -> Self {
         Self {
-            attempt: attempt.into(),
+            attempt: Arc::new(attempt),
             retry_pause,
             dependencies: Dependencies::default(),
             executors: Executors::default(),
@@ -286,7 +286,7 @@ mod tests {
     }
 
     fn attempt(metadata: serde_json::Value) -> TaskAttempt {
-        TaskAttempt::new(Uuid::new_v4(), TaskFormat::of::<DummyTask>().unwrap(), json!({}), metadata, 3).unwrap()
+        TaskAttempt::try_new(Uuid::new_v4(), TaskFormat::of::<DummyTask>(), json!({}), metadata, 3).unwrap()
     }
 
     fn command() -> Record {
@@ -300,7 +300,7 @@ mod tests {
         let ctx = TaskContext::new(attempt, Duration::from_millis(1500));
         assert_eq!(ctx.task_id(), id);
         assert_eq!(ctx.attempt().number(), 3);
-        assert_eq!(ctx.attempt().format(), &TaskFormat::of::<DummyTask>().unwrap());
+        assert_eq!(ctx.attempt().format(), &TaskFormat::of::<DummyTask>());
         assert_eq!(ctx.attempt().metadata(), &json!({ "correlation_id": "corr-q" }));
         assert_eq!(ctx.retry_pause(), Duration::from_millis(1500));
         let rendered = format!("{ctx:?}");

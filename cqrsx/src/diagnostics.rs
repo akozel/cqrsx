@@ -1,5 +1,5 @@
 //! Fixed diagnostic context, independent of error Display/Debug and payloads.
-use crate::cqrs::projection::processor::Operation;
+use crate::cqrs::projection::processor::{Operation, observer::FailureCategory};
 
 pub(crate) fn safe_type(value: &str) -> &str {
     if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
@@ -194,7 +194,7 @@ pub(crate) fn log_projection_failure(
     projection: &str,
     aggregate_type: &str,
     operation: Operation,
-    category: &'static str,
+    category: FailureCategory,
     failures: u32,
 ) {
     tracing::warn!(
@@ -202,7 +202,7 @@ pub(crate) fn log_projection_failure(
         projection = safe_type(projection),
         aggregate_type = safe_type(aggregate_type),
         operation = operation.as_str(),
-        category,
+        category = category.as_str(),
         failures,
         "projection processor operation failed"
     );
@@ -285,7 +285,7 @@ pub(crate) mod test_support {
             super::log_projection_event("prime", "prime", "prime");
             super::log_poisoned_lock("prime");
             super::log_broken_invariant("prime", "prime");
-            super::log_projection_failure("prime", "prime", super::Operation::Page, "prime", 1);
+            super::log_projection_failure("prime", "prime", super::Operation::Page, super::FailureCategory::Unknown, 1);
             #[cfg(feature = "postgres")]
             {
                 super::log_command_failure("prime", "unexpected", &sqlx::Error::RowNotFound);
@@ -627,14 +627,14 @@ mod tests {
 
 #[cfg(test)]
 mod projection_tests {
-    use super::{Operation, log_projection_event, log_projection_failure, test_support};
+    use super::{FailureCategory, Operation, log_projection_event, log_projection_failure, test_support};
 
     #[tokio::test]
     async fn projection_diagnostics_name_the_projection_safely_and_carry_fixed_fields_only() {
         let (_, log) = test_support::capture_at(tracing::Level::INFO, async {
             log_projection_event("concert_halls", "Concert", "lease acquired");
             log_projection_event("private\nmail@example.com", "Concert", "rebuild finished");
-            log_projection_failure("concert_halls", "Concert", Operation::Page, "connection", 3);
+            log_projection_failure("concert_halls", "Concert", Operation::Page, FailureCategory::Connection, 3);
         })
         .await;
         let lines: Vec<&str> = log.lines().collect();
@@ -678,7 +678,7 @@ mod task_failure_tests {
             ] {
                 let task = TaskFailure {
                     task_id: uuid::Uuid::from_u128(1),
-                    format: TaskFormat::new("create_account", 1).unwrap(),
+                    format: TaskFormat::try_new("create_account", 1).unwrap(),
                     attempt_number: 2,
                     cause,
                 };
@@ -686,7 +686,7 @@ mod task_failure_tests {
             }
             let task = TaskFailure {
                 task_id: uuid::Uuid::from_u128(2),
-                format: TaskFormat::new("secret\nalice@example.com", 1).unwrap(),
+                format: TaskFormat::try_new("secret\nalice@example.com", 1).unwrap(),
                 attempt_number: 1,
                 cause: TaskFailureCause::LeaseExpired,
             };

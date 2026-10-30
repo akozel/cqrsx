@@ -4,7 +4,7 @@ use crate::task::{
     adapter::TaskAdapter,
     context::TaskContext,
     dependencies::DependencyId,
-    format::{TaskFormat, TaskFormatError, TaskPayload},
+    format::{TaskFormat, TaskPayload},
     handler::TaskHandler,
     restore_labels,
     result::TaskResult,
@@ -46,13 +46,14 @@ where
     P: TaskPayload + DeserializeOwned + Send + 'static,
     H: TaskHandler<P>,
 {
-    /// Check the payload format without I/O, environment lookup or type erasure.
-    pub fn new(handler: H) -> Result<Self, TaskFormatError> {
-        Ok(Self {
+    /// The adapter of `handler` for the payloads of `P`, without I/O, environment lookup or type erasure; `P`'s format
+    /// is checked when this compiles ([`TaskFormat::of`]).
+    pub fn new(handler: H) -> Self {
+        Self {
             handler,
-            format: TaskFormat::of::<P>()?,
+            format: TaskFormat::of::<P>(),
             payload: PhantomData,
-        })
+        }
     }
 
     fn safe_format(&self) -> String {
@@ -95,7 +96,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::attempt::TaskAttempt;
+    use crate::task::{attempt::TaskAttempt, context::Executors, dependencies::Dependencies};
     use serde::{Deserialize, Serialize};
     use serde_json::json;
     use std::{
@@ -171,22 +172,27 @@ mod tests {
     }
 
     fn delivery(format: TaskFormat, payload: serde_json::Value) -> Arc<TaskAttempt> {
-        Arc::new(TaskAttempt::new(Uuid::new_v4(), format, payload, json!({"correlation_id":"original"}), 3).unwrap())
+        Arc::new(TaskAttempt::try_new(Uuid::new_v4(), format, payload, json!({"correlation_id":"original"}), 3).unwrap())
     }
 
     /// The context of `attempt`, as the dispatcher builds it.
     fn context(attempt: &Arc<TaskAttempt>) -> TaskContext {
-        TaskContext::new(attempt.clone(), Duration::from_secs(1))
+        TaskContext::shared(
+            attempt.clone(),
+            Duration::from_secs(1),
+            Dependencies::default(),
+            Executors::default(),
+        )
     }
 
     #[tokio::test]
     async fn decodes_owned_dto_preserves_original_delivery_and_shared_handler_state() {
         let calls = Arc::new(Mutex::new(Vec::new()));
         let task = delivery(
-            TaskFormat::of::<Payload<1>>().unwrap(),
+            TaskFormat::of::<Payload<1>>(),
             json!({"value":"accepted", "future_field":{"locale":"en"}}),
         );
-        let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &task, TaskResult::Done)).unwrap();
+        let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &task, TaskResult::Done));
         assert_eq!(adapter.formats(), vec![task.format().clone()]);
         assert_eq!(
             format!("{adapter:?}"),
@@ -212,22 +218,22 @@ mod tests {
     #[tokio::test]
     async fn format_and_decode_failures_are_permanent_and_never_call_business_handler() {
         let calls = Arc::new(Mutex::new(Vec::new()));
-        let base = delivery(TaskFormat::of::<Payload<1>>().unwrap(), json!({"value":"valid"}));
-        let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &base, TaskResult::Done)).unwrap();
+        let base = delivery(TaskFormat::of::<Payload<1>>(), json!({"value":"valid"}));
+        let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &base, TaskResult::Done));
         for (format, payload, reason) in [
             (
-                TaskFormat::new("private_actual_type\nsecret@example.com", 1).unwrap(),
+                TaskFormat::try_new("private_actual_type\nsecret@example.com", 1).unwrap(),
                 json!({"value":"private_payload"}),
                 "unsupported task format for test_operation v1",
             ),
             (
-                TaskFormat::of::<Payload<2>>().unwrap(),
+                TaskFormat::of::<Payload<2>>(),
                 json!({"value":"valid"}),
                 "unsupported task format for test_operation v1",
             ),
             // Both wrong format and bad schema: format observation wins.
             (
-                TaskFormat::of::<Payload<2>>().unwrap(),
+                TaskFormat::of::<Payload<2>>(),
                 json!({}),
                 "unsupported task format for test_operation v1",
             ),
@@ -249,14 +255,14 @@ mod tests {
 
     #[tokio::test]
     async fn business_results_pass_through_without_retry_or_reason_changes() {
-        let task = delivery(TaskFormat::of::<Payload<1>>().unwrap(), json!({"value":"valid"}));
+        let task = delivery(TaskFormat::of::<Payload<1>>(), json!({"value":"valid"}));
         for result in [
             TaskResult::Done,
             TaskResult::retry("business retry"),
             TaskResult::fail("business rejection"),
         ] {
             let calls = Arc::new(Mutex::new(Vec::new()));
-            let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &task, result.clone())).unwrap();
+            let adapter = JsonTaskAdapter::<Payload<1>, _>::new(adapter(&calls, &task, result.clone()));
             assert_eq!(adapter.invoke(&context(&task)).await, result);
             assert_eq!(calls.lock().unwrap().len(), 1);
         }
@@ -283,48 +289,20 @@ mod tests {
 
     #[tokio::test]
     async fn arbitrary_expected_types_and_serde_errors_are_not_exposed() {
-        let adapter = JsonTaskAdapter::<PrivatePayload, _>::new(NeverCalled).unwrap();
-        assert_eq!(adapter.formats(), vec![TaskFormat::of::<PrivatePayload>().unwrap()]);
+        let adapter = JsonTaskAdapter::<PrivatePayload, _>::new(NeverCalled);
+        assert_eq!(adapter.formats(), vec![TaskFormat::of::<PrivatePayload>()]);
         for (format, reason) in [
-            (TaskFormat::of::<PrivatePayload>().unwrap(), "invalid unknown v4 task payload"),
-            (TaskFormat::new("other", 4).unwrap(), "unsupported task format for unknown v4"),
+            (TaskFormat::of::<PrivatePayload>(), "invalid unknown v4 task payload"),
+            (
+                TaskFormat::try_new("other", 4).unwrap(),
+                "unsupported task format for unknown v4",
+            ),
         ] {
             let task = context(&delivery(format, json!({"private_payload_sentinel":"secret"})));
             let error = adapter.invoke(&task).await;
             assert_eq!(error.to_string(), reason);
             assert!(!format!("{error:?}").contains("private_"));
         }
-    }
-
-    #[derive(Serialize, Deserialize)]
-    struct EmptyType;
-    impl TaskPayload for EmptyType {
-        const TASK_TYPE: &'static str = "";
-        const TASK_VERSION: i32 = 1;
-    }
-    impl TaskHandler<EmptyType> for NeverCalled {
-        async fn handle(&self, _: EmptyType, _: &TaskContext) -> TaskResult {
-            panic!("invalid format cannot construct an adapter")
-        }
-    }
-
-    #[test]
-    fn validates_format_before_registering_handler() {
-        let task = delivery(TaskFormat::of::<Payload<1>>().unwrap(), json!({}));
-        let calls = Arc::new(Mutex::new(Vec::new()));
-        assert!(matches!(
-            JsonTaskAdapter::<EmptyType, _>::new(NeverCalled),
-            Err(TaskFormatError::EmptyType)
-        ));
-        for invalid in [0, -1] {
-            let result = if invalid == 0 {
-                JsonTaskAdapter::<Payload<0>, _>::new(adapter(&calls, &task, TaskResult::Done)).map(|_| ())
-            } else {
-                JsonTaskAdapter::<Payload<-1>, _>::new(adapter(&calls, &task, TaskResult::Done)).map(|_| ())
-            };
-            assert!(matches!(result, Err(TaskFormatError::InvalidVersion)));
-        }
-        assert!(calls.lock().unwrap().is_empty());
     }
 
     /// A payload whose tenant is kept in the task's metadata.
@@ -353,16 +331,16 @@ mod tests {
     #[tokio::test]
     async fn a_labelled_payload_decodes_with_its_labels_from_the_metadata() {
         let decoded = Arc::new(Mutex::new(Vec::new()));
-        let adapter = JsonTaskAdapter::<Labelled, _>::new(Decoded(decoded.clone())).unwrap();
-        let published = crate::task::NewTask::new(Labelled {
+        let adapter = JsonTaskAdapter::<Labelled, _>::new(Decoded(decoded.clone()));
+        let published = crate::task::NewTask::try_new(Labelled {
             amount: 80,
             tenant: "acme".into(),
         })
         .unwrap();
-        let format = TaskFormat::of::<Labelled>().unwrap();
+        let format = TaskFormat::of::<Labelled>();
         let claim = |payload, metadata| {
             context(&Arc::new(
-                TaskAttempt::new(Uuid::new_v4(), format.clone(), payload, metadata, 1).unwrap(),
+                TaskAttempt::try_new(Uuid::new_v4(), format.clone(), payload, metadata, 1).unwrap(),
             ))
         };
         assert_eq!(

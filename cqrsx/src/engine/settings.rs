@@ -376,12 +376,17 @@ impl Settings {
     /// `TaskRuntimeConfig`); what has no variable of its own (derived values, the plan of the connections) under a
     /// dotted name in lower case. Durations as [`duration_text`] writes them.
     pub fn describe(&self) -> BTreeMap<String, String> {
+        self.entries().into_iter().collect()
+    }
+
+    /// What [`describe`](Self::describe) holds, in the order described: a key appears once, which the engine's build
+    /// checks with what its modules describe.
+    pub(crate) fn entries(&self) -> Vec<(String, String)> {
         let name = |name: &str| self.variable(name);
         let (locks, projection) = (&self.lock_limits, &self.processor);
         let delivery = projection.delivery_limits();
         let worker = self.task_runtime.worker_pool();
-        let mut described = BTreeMap::new();
-        described.extend([
+        let mut entries = vec![
             (name(SNAPSHOT_EVERY), self.snapshot_every.to_string()),
             (name(LOCK_MAX_WAIT), duration_text(locks.max_wait())),
             (name(LOCK_MAX_WAITERS), locks.max_waiters().to_string()),
@@ -422,14 +427,14 @@ impl Settings {
                 "outbox.lease_budget".to_owned(),
                 duration_text(lease_budget(&self.task_runtime)),
             ),
-        ]);
+        ];
         #[cfg(feature = "postgres")]
-        described.extend(self.postgres.describe(&name, &self.application_name));
+        entries.extend(self.postgres.entries(&name, &self.application_name));
         #[cfg(feature = "mongodb")]
-        described.extend(self.mongodb.describe(&name, &self.application_name));
+        entries.extend(self.mongodb.entries(&name, &self.application_name));
         #[cfg(feature = "http")]
-        described.insert(name(HTTP_ADDR), self.http_addr.to_string());
-        described
+        entries.push((name(HTTP_ADDR), self.http_addr.to_string()));
+        entries
     }
 }
 
@@ -620,7 +625,7 @@ fn lease_budget(runtime: &TaskRuntimeConfig) -> Duration {
 mod tests {
     use super::*;
     use crate::task::runtime::worker_pool_config::{TaskWorkerPoolConfig, TaskWorkerPoolConfigError};
-    use std::collections::HashMap;
+    use std::collections::{HashMap, HashSet};
 
     /// What the demo of the repository sets where its variables are absent: the task runtime and the settle the moved
     /// tests of its configuration were written with.
@@ -1029,6 +1034,15 @@ mod tests {
         #[cfg(feature = "http")]
         let counted = counted + 1;
         assert_eq!(names.len(), counted);
+    }
+
+    /// A key described twice would fail every build: the engine's settings describe each key once.
+    #[test]
+    fn the_engine_describes_every_key_once() {
+        let entries = Settings::default().entries();
+        let keys: HashSet<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
+        assert_eq!(keys.len(), entries.len(), "{entries:?}");
+        assert_eq!(Settings::default().describe().len(), entries.len());
     }
 
     #[test]

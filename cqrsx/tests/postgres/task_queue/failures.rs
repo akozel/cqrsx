@@ -6,7 +6,7 @@ async fn deferred_commit_failures_roll_back_claim_settlement_and_recovery() {
     let db = Database::new().await;
     let pool = pool_with(&db, PgPoolOptions::new().max_connections(1), StatementTimeout::Default).await;
     let queue = PostgresTaskQueue::new(pool.clone());
-    let task = new_task().with_max_attempts(1).unwrap();
+    let task = new_task().with_max_attempts(NonZeroU16::new(1).unwrap());
     enqueue(&db.pool, vec![task.clone()]).await;
     sqlx::raw_sql(
         "CREATE FUNCTION reject_queue_commit() RETURNS trigger LANGUAGE plpgsql AS $$ \

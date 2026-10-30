@@ -4,7 +4,7 @@ use crate::task::{
     adapter::{TaskAdapter, json::JsonTaskAdapter},
     context::TaskContext,
     dependencies::DependencyId,
-    format::{TaskFormat, TaskFormatError, TaskPayload},
+    format::{TaskFormat, TaskPayload},
     handler::TaskHandler,
     result::TaskResult,
 };
@@ -59,13 +59,13 @@ impl BoxedTaskAdapter {
         Self(Box::new(adapter))
     }
 
-    /// A [`JsonTaskAdapter`] for `handler`; checks `P`'s format before registration.
-    pub fn json<P, H>(handler: H) -> Result<Self, TaskFormatError>
+    /// A [`JsonTaskAdapter`] for `handler`.
+    pub fn json<P, H>(handler: H) -> Self
     where
         P: TaskPayload + DeserializeOwned + Send + 'static,
         H: TaskHandler<P> + 'static,
     {
-        JsonTaskAdapter::<P, H>::new(handler).map(Self::new)
+        Self::new(JsonTaskAdapter::<P, H>::new(handler))
     }
 }
 
@@ -167,20 +167,20 @@ mod tests {
     }
 
     fn attempt<P: TaskPayload>(payload: serde_json::Value) -> TaskAttempt {
-        TaskAttempt::new(Uuid::new_v4(), TaskFormat::of::<P>().unwrap(), payload, json!({}), 1).unwrap()
+        TaskAttempt::try_new(Uuid::new_v4(), TaskFormat::of::<P>(), payload, json!({}), 1).unwrap()
     }
 
     #[tokio::test]
     async fn one_dispatcher_routes_differently_typed_adapters_by_format_in_registration_order() {
         let calls = Calls::default();
         let dispatcher = TaskDispatcher::try_new(vec![
-            BoxedTaskAdapter::json::<Invoice, _>(Recorder::new(&calls)).unwrap(),
-            BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&calls)).unwrap(),
+            BoxedTaskAdapter::json::<Invoice, _>(Recorder::new(&calls)),
+            BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&calls)),
         ])
         .unwrap();
         assert_eq!(
             dispatcher.formats(),
-            [TaskFormat::of::<Invoice>().unwrap(), TaskFormat::of::<Greeting>().unwrap()]
+            [TaskFormat::of::<Invoice>(), TaskFormat::of::<Greeting>()]
         );
         let invoice = r#"TaskFormat { task_type: "invoice", task_version: 2 }"#;
         let greeting = r#"TaskFormat { task_type: "greeting", task_version: 1 }"#;
@@ -192,7 +192,7 @@ mod tests {
             )
         );
         assert_eq!(
-            format!("{:?}", BoxedTaskAdapter::json::<Invoice, _>(Recorder::new(&calls)).unwrap()),
+            format!("{:?}", BoxedTaskAdapter::json::<Invoice, _>(Recorder::new(&calls))),
             format!("BoxedTaskAdapter {{ formats: [{invoice}], dependencies: [], .. }}")
         );
         for task in [
@@ -210,31 +210,14 @@ mod tests {
     }
 
     #[test]
-    fn duplicate_and_invalid_formats_are_rejected_before_registration() {
+    fn a_duplicate_format_is_rejected_before_registration() {
         let calls = Calls::default();
         assert!(matches!(
             TaskDispatcher::try_new(vec![
-                BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&calls)).unwrap(),
-                BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&calls)).unwrap(),
+                BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&calls)),
+                BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&calls)),
             ]),
-            Err(TaskDispatcherError::DuplicateFormat(format)) if format == TaskFormat::of::<Greeting>().unwrap()
-        ));
-
-        #[derive(Serialize, Deserialize)]
-        struct Unversioned;
-        impl TaskPayload for Unversioned {
-            const TASK_TYPE: &'static str = "unversioned";
-            const TASK_VERSION: i32 = 0;
-        }
-        struct NeverCalled;
-        impl TaskHandler<Unversioned> for NeverCalled {
-            async fn handle(&self, _: Unversioned, _: &TaskContext) -> TaskResult {
-                panic!("an invalid format cannot construct an adapter")
-            }
-        }
-        assert!(matches!(
-            BoxedTaskAdapter::json::<Unversioned, _>(NeverCalled),
-            Err(TaskFormatError::InvalidVersion)
+            Err(TaskDispatcherError::DuplicateFormat(format)) if format == TaskFormat::of::<Greeting>()
         ));
         assert!(calls.lock().unwrap().is_empty());
     }
@@ -243,7 +226,7 @@ mod tests {
     async fn handler_results_pass_through_unchanged() {
         for result in [TaskResult::Done, TaskResult::retry("later"), TaskResult::fail("rejected")] {
             let calls = Calls::default();
-            let adapter = BoxedTaskAdapter::json::<Greeting, _>(Recorder::returning(&calls, result.clone())).unwrap();
+            let adapter = BoxedTaskAdapter::json::<Greeting, _>(Recorder::returning(&calls, result.clone()));
             let actual = adapter
                 .invoke(&TaskContext::new(
                     attempt::<Greeting>(json!({ "name": "fox" })),
@@ -263,7 +246,10 @@ mod tests {
         }
         impl TaskAdapter for MultiVersion {
             fn formats(&self) -> Vec<TaskFormat> {
-                vec![TaskFormat::new("legacy", 1).unwrap(), TaskFormat::new("legacy", 2).unwrap()]
+                vec![
+                    TaskFormat::try_new("legacy", 1).unwrap(),
+                    TaskFormat::try_new("legacy", 2).unwrap(),
+                ]
             }
             async fn invoke(&self, ctx: &TaskContext) -> TaskResult {
                 self.seen.lock().unwrap().push(ctx.attempt().format().to_string());
@@ -273,14 +259,14 @@ mod tests {
         let seen = Calls::default();
         let dispatcher = TaskDispatcher::try_new(vec![
             BoxedTaskAdapter::new(MultiVersion { seen: seen.clone() }),
-            BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&seen)).unwrap(),
+            BoxedTaskAdapter::json::<Greeting, _>(Recorder::new(&seen)),
         ])
         .unwrap();
         assert_eq!(dispatcher.formats().len(), 3);
         for version in [2, 1] {
-            let task = TaskAttempt::new(
+            let task = TaskAttempt::try_new(
                 Uuid::new_v4(),
-                TaskFormat::new("legacy", version).unwrap(),
+                TaskFormat::try_new("legacy", version).unwrap(),
                 json!({}),
                 json!({}),
                 1,

@@ -42,7 +42,8 @@ pub enum StartupError {
 }
 
 /// A setting, a module's variable, a URL or URI of a store and views without a durable journal are an invalid
-/// configuration; the rest as it is.
+/// configuration; the rest as it is. A key described twice with two values is not: the code of the modules (or of the
+/// engine) reads one key in two ways, which no value of a variable mends for good.
 fn built(error: &BuildError) -> String {
     let invalid = match error {
         BuildError::Settings(_) | BuildError::Setup(SetupError::Invalid { .. }) | BuildError::ViewsWithoutJournal(_) => true,
@@ -54,6 +55,7 @@ fn built(error: &BuildError) -> String {
         | BuildError::AggregateTwice(_)
         | BuildError::ViewTwice(_)
         | BuildError::ObserverTwice(_)
+        | BuildError::DescribedTwice { .. }
         | BuildError::Policy(_)
         | BuildError::Tasks(_) => false,
         #[cfg(feature = "postgres")]
@@ -261,6 +263,11 @@ mod tests {
             })),
             StartupError::Build(BuildError::Setup(SetupError::failed(io::Error::other("no client")))),
             StartupError::Build(BuildError::AggregateTwice("show")),
+            StartupError::Build(BuildError::DescribedTwice {
+                key: "ENCORE_TICKET_LIMIT".into(),
+                first: "4".into(),
+                second: "5".into(),
+            }),
             StartupError::Build(BuildError::ViewsWithoutJournal("MongoDB")),
             StartupError::Bind {
                 addr: "127.0.0.1:8080".parse().unwrap(),
@@ -276,6 +283,7 @@ mod tests {
                 "invalid configuration: ENCORE_TICKET_LIMIT: must be positive",
                 "no client",
                 "the aggregate type `show` is registered twice: one executor per aggregate type",
+                "the key `ENCORE_TICKET_LIMIT` is described twice, as `4` and as `5`",
                 "invalid configuration: the views in MongoDB need the journal in PostgreSQL",
                 "cannot bind 127.0.0.1:8080: in use",
                 "the read side stopped: projection processor halls panicked",

@@ -57,14 +57,14 @@ mod tests {
         let [task] = &tasks[..] else {
             panic!("one task per booking: {tasks:?}");
         };
-        assert_eq!(task.format(), &TaskFormat::of::<RecordTicketV1>().unwrap());
+        assert_eq!(task.format(), &TaskFormat::of::<RecordTicketV1>());
         assert_eq!(
             task.payload(),
             &json!({ "booking_id": booking_id, "concert_id": "radiohead-2026-11-21", "seat": "A1", "zone": "vip",
                      "price": 120, "fan_id": "fox", "fan_name": "Fox" })
         );
         assert_eq!(task.metadata(), &json!({}));
-        assert_eq!(task.max_attempts(), 6);
+        assert_eq!(task.max_attempts().get(), 6);
     }
 
     #[test]
@@ -86,7 +86,7 @@ mod tests {
                      "seat": "A1", "fan_id": "fox", "refund": 120 })
         );
         assert_eq!(task.metadata(), &json!({}));
-        assert_eq!(task.max_attempts(), 6);
+        assert_eq!(task.max_attempts().get(), 6);
     }
 
     #[test]
@@ -258,12 +258,12 @@ mod tests {
                 metadata.causation.task_id(
                     "Concert",
                     "radiohead-2026-11-21",
-                    &TaskFormat::new("encore_record_ticket", 1).unwrap(),
+                    &TaskFormat::try_new("encore_record_ticket", 1).unwrap(),
                     0
                 ),
                 "the task id derives from the command"
             );
-            assert_eq!(tasks[0].max_attempts(), 6);
+            assert_eq!(tasks[0].max_attempts().get(), 6);
             let events = store.load_events(concert_id().as_str()).await.unwrap();
             assert_eq!(events.len(), 2);
             assert_eq!(events[1].metadata["command_id"], booking_id.to_string());
