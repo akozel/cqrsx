@@ -116,11 +116,14 @@ where
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #
@@ -268,11 +271,14 @@ where
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #
@@ -409,11 +415,14 @@ where
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #
@@ -530,15 +539,16 @@ where
         self
     }
 
-    async fn load_or_default(&self, view_id: String) -> Result<(V, ViewContext), PersistenceError> {
-        Ok(match self.view_repository.load_with_context(&view_id).await? {
+    /// The stored document of `view_id` with its context, or a new one; the id is copied only for a new document.
+    async fn load_or_default(&self, view_id: &str) -> Result<(V, ViewContext), PersistenceError> {
+        Ok(match self.view_repository.load_with_context(view_id).await? {
             Some(StoredView {
                 id,
                 version,
                 last_sequence,
                 view,
             }) => (view, ViewContext::new(id, version, last_sequence)),
-            None => (V::default(), ViewContext::new(view_id, 0, 0)),
+            None => (V::default(), ViewContext::new(view_id.to_owned(), 0, 0)),
         })
     }
 
@@ -548,7 +558,7 @@ where
     pub(crate) async fn apply_events(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
         let mut attempt = 1;
         loop {
-            let (mut view, mut context) = self.load_or_default(view_id.to_string()).await?;
+            let (mut view, mut context) = self.load_or_default(view_id).await?;
             if !apply_contiguous(&mut view, &mut context, events)? {
                 return Ok(());
             }
@@ -580,7 +590,7 @@ where
         let mut attempt = 0;
         loop {
             attempt += 1;
-            let (_, stored) = self.load_or_default(view_id.to_string()).await?;
+            let (_, stored) = self.load_or_default(view_id).await?;
             if stored.last_sequence > last.sequence {
                 return Err(PersistenceError::OptimisticLockError);
             }

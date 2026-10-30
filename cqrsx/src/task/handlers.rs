@@ -160,11 +160,11 @@ mod tests {
     struct Recorded;
 
     impl DomainEvent for Recorded {
-        fn event_type(&self) -> String {
-            "Recorded".into()
+        fn event_type(&self) -> &'static str {
+            "Recorded"
         }
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 

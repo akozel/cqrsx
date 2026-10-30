@@ -131,7 +131,7 @@ impl Cqrs {
             tokio::spawn(processors.run(self.shutdown.clone()));
         }
         for name in self.views.names() {
-            while self.views().lag(&name).await.map_or(true, |lag| lag > 0) {
+            while self.views().lag(name).await.map_or(true, |lag| lag > 0) {
                 tokio::time::sleep(Duration::from_millis(1)).await;
             }
         }

@@ -91,11 +91,14 @@ where
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #

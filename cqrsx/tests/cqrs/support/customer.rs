@@ -68,16 +68,16 @@ pub enum CustomerEvent {
 }
 
 impl DomainEvent for CustomerEvent {
-    fn event_type(&self) -> String {
+    fn event_type(&self) -> &'static str {
         match self {
-            Self::NameAdded { .. } => "NameAdded".to_string(),
-            Self::EmailUpdated { .. } => "EmailUpdated".to_string(),
-            CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated".to_string(),
+            Self::NameAdded { .. } => "NameAdded",
+            Self::EmailUpdated { .. } => "EmailUpdated",
+            CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated",
         }
     }
 
-    fn event_version(&self) -> String {
-        "1.0".to_string()
+    fn event_version(&self) -> &'static str {
+        "1.0"
     }
 }
 

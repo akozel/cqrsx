@@ -108,16 +108,16 @@ use std::{collections::HashMap, fmt};
 /// # }
 /// #
 /// # impl DomainEvent for CustomerEvent {
-/// #     fn event_type(&self) -> String {
+/// #     fn event_type(&self) -> &'static str {
 /// #         match self {
-/// #             Self::NameAdded { .. } => "NameAdded".to_string(),
-/// #             Self::EmailUpdated { .. } => "EmailUpdated".to_string(),
-/// #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated".to_string(),
+/// #             Self::NameAdded { .. } => "NameAdded",
+/// #             Self::EmailUpdated { .. } => "EmailUpdated",
+/// #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated",
 /// #         }
 /// #     }
 /// #
-/// #     fn event_version(&self) -> String {
-/// #         "1.0".to_string()
+/// #     fn event_version(&self) -> &'static str {
+/// #         "1.0"
 /// #     }
 /// # }
 /// #
@@ -139,10 +139,11 @@ use std::{collections::HashMap, fmt};
 /// }
 /// ```
 pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::Debug + Sync + Send {
-    /// A name specifying the event, used for event upcasting.
-    fn event_type(&self) -> String;
-    /// A version of the `event_type`, used for event upcasting.
-    fn event_version(&self) -> String;
+    /// A name specifying the event, used for event upcasting: a constant of the type, so encoding and decoding an
+    /// event never allocate it.
+    fn event_type(&self) -> &'static str;
+    /// A version of the `event_type`, used for event upcasting; a constant as well.
+    fn event_version(&self) -> &'static str;
 }
 
 /// The stored name and version of one event type, what `#[derive(cqrsx::Event)]` writes from its
@@ -185,7 +186,7 @@ pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::D
 /// assert_eq!(cancelled.event_type(), "BookingCancelled");
 /// assert_eq!(cancelled.event_version(), "2.0");
 /// let booked = ConcertEvent::SeatBooked(SeatBooked { seat: "B4".into() });
-/// assert_eq!((booked.event_type(), booked.event_version()), ("SeatBooked".into(), "1.0".into()));
+/// assert_eq!((booked.event_type(), booked.event_version()), ("SeatBooked", "1.0"));
 /// ```
 ///
 /// Every variant carries one event type, so a variant with fields of its own does not compile:

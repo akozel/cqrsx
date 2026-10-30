@@ -61,16 +61,16 @@ pub struct SomethingElse {
 }
 
 impl DomainEvent for TestEvent {
-    fn event_type(&self) -> String {
+    fn event_type(&self) -> &'static str {
         match self {
-            Self::Created(_) => "Created".to_string(),
-            Self::Tested(_) => "Tested".to_string(),
-            Self::SomethingElse(_) => "SomethingElse".to_string(),
+            Self::Created(_) => "Created",
+            Self::Tested(_) => "Tested",
+            Self::SomethingElse(_) => "SomethingElse",
         }
     }
 
-    fn event_version(&self) -> String {
-        "1.0".to_string()
+    fn event_version(&self) -> &'static str {
+        "1.0"
     }
 }
 
@@ -108,8 +108,8 @@ pub(crate) fn test_serialized_event(id: &str, sequence: usize, event: &TestEvent
         aggregate_id: id.to_string(),
         sequence,
         aggregate_type: TestAggregate::TYPE.to_string(),
-        event_type: event.event_type(),
-        event_version: event.event_version(),
+        event_type: event.event_type().to_owned(),
+        event_version: event.event_version().to_owned(),
         payload,
         metadata: serde_json::json!({}),
     }
@@ -198,16 +198,16 @@ pub(crate) mod customer {
     }
 
     impl DomainEvent for CustomerEvent {
-        fn event_type(&self) -> String {
+        fn event_type(&self) -> &'static str {
             match self {
-                Self::NameAdded { .. } => "NameAdded".to_string(),
-                Self::EmailUpdated { .. } => "EmailUpdated".to_string(),
-                CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated".to_string(),
+                Self::NameAdded { .. } => "NameAdded",
+                Self::EmailUpdated { .. } => "EmailUpdated",
+                CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated",
             }
         }
 
-        fn event_version(&self) -> String {
-            "1.0.1".to_string()
+        fn event_version(&self) -> &'static str {
+            "1.0.1"
         }
     }
 

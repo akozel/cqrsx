@@ -57,8 +57,8 @@ use std::{
 /// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// struct Incremented;
 /// impl DomainEvent for Incremented {
-///     fn event_type(&self) -> String { "incremented".into() }
-///     fn event_version(&self) -> String { "1".into() }
+///     fn event_type(&self) -> &'static str { "incremented" }
+///     fn event_version(&self) -> &'static str { "1" }
 /// }
 /// #[derive(Debug, PartialEq, thiserror::Error)]
 /// #[error("limit reached")]
@@ -264,11 +264,11 @@ mod tests {
     struct Pushed(u8);
 
     impl DomainEvent for Pushed {
-        fn event_type(&self) -> String {
-            "pushed".into()
+        fn event_type(&self) -> &'static str {
+            "pushed"
         }
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 

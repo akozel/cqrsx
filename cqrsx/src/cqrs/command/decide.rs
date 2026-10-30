@@ -36,14 +36,14 @@ use crate::cqrs::aggregate::Aggregate;
 /// }
 ///
 /// impl DomainEvent for ShelfEvent {
-///     fn event_type(&self) -> String {
+///     fn event_type(&self) -> &'static str {
 ///         match self {
-///             Self::Put(_) => "put".into(),
-///             Self::Taken(_) => "taken".into(),
+///             Self::Put(_) => "put",
+///             Self::Taken(_) => "taken",
 ///         }
 ///     }
-///     fn event_version(&self) -> String {
-///         "1".into()
+///     fn event_version(&self) -> &'static str {
+///         "1"
 ///     }
 /// }
 ///
@@ -139,8 +139,8 @@ use crate::cqrs::aggregate::Aggregate;
 /// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// struct Put;
 /// impl DomainEvent for Put {
-///     fn event_type(&self) -> String { "put".into() }
-///     fn event_version(&self) -> String { "1".into() }
+///     fn event_type(&self) -> &'static str { "put" }
+///     fn event_version(&self) -> &'static str { "1" }
 /// }
 /// #[derive(Debug, thiserror::Error)]
 /// #[error("full")]

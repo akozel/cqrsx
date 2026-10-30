@@ -90,16 +90,16 @@
 //! # }
 //! #
 //! # impl DomainEvent for CustomerEvent {
-//! #     fn event_type(&self) -> String {
+//! #     fn event_type(&self) -> &'static str {
 //! #         match self {
-//! #             Self::NameAdded { .. } => "NameAdded".to_string(),
-//! #             Self::EmailUpdated { .. } => "EmailUpdated".to_string(),
-//! #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated".to_string(),
+//! #             Self::NameAdded { .. } => "NameAdded",
+//! #             Self::EmailUpdated { .. } => "EmailUpdated",
+//! #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated",
 //! #         }
 //! #     }
 //! #
-//! #     fn event_version(&self) -> String {
-//! #         "1.0".to_string()
+//! #     fn event_version(&self) -> &'static str {
+//! #         "1.0"
 //! #     }
 //! # }
 //! #
@@ -194,11 +194,14 @@ impl<A: Aggregate> TestFramework<A> {
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #
@@ -284,11 +287,14 @@ impl<A: Aggregate> TestFramework<A> {
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #
@@ -374,11 +380,14 @@ impl<A: Aggregate> TestFramework<A> {
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #
@@ -466,11 +475,14 @@ impl<A: Aggregate> TestFramework<A> {
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #

@@ -1,0 +1,17 @@
+# Backlog epic 06, ticket 04 (copies): the series «до 04 → после 04», REPEAT=3, SEED=e06x. e06x-b-06- =
+# encore-load-backend:e06-06 (HEAD 2cb6079: tickets 01–03, 05, 06 committed, sha256:b1d66edd…), e06x-a-04- =
+# encore-load-backend:e06-04 (the working tree with the fixes of ticket 04, build.sh e06-04 …). The six configurations
+# of series.plan, each once per image; both prefixes are 10 characters (see series.plan). Every pass runs the twelve
+# lines in its own order (random.Random("e06x-<pass>")).
+e06x-b-06- e06-06 hot-key NAME=01-hot-key-vus40-app VUS=40 POOL=20 PROFILE=app WORKERS=2 DRAIN=1 DRAIN_TIMEOUT=240
+e06x-a-04- e06-04 hot-key NAME=01-hot-key-vus40-app VUS=40 POOL=20 PROFILE=app WORKERS=2 DRAIN=1 DRAIN_TIMEOUT=240
+e06x-b-06- e06-06 spread-bookings NAME=03a-drain-w8-db VUS=50 POOL=20 PROFILE=db WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=240
+e06x-a-04- e06-04 spread-bookings NAME=03a-drain-w8-db VUS=50 POOL=20 PROFILE=db WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=240
+e06x-b-06- e06-06 ../epic06/k6/probe NAME=09-probe-k1-m1 VUS=50 KEYS=50 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=1 ENCORE_LOAD_TASKS=1
+e06x-a-04- e06-04 ../epic06/k6/probe NAME=09-probe-k1-m1 VUS=50 KEYS=50 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=1 ENCORE_LOAD_TASKS=1
+e06x-b-06- e06-06 ../epic06/k6/probe NAME=09-probe-k4-m1 VUS=50 KEYS=50 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=4 ENCORE_LOAD_TASKS=1
+e06x-a-04- e06-04 ../epic06/k6/probe NAME=09-probe-k4-m1 VUS=50 KEYS=50 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=4 ENCORE_LOAD_TASKS=1
+e06x-b-06- e06-06 ../epic06/k6/probe NAME=09-probe-k1-m4 VUS=10 KEYS=10 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=1 ENCORE_LOAD_TASKS=4
+e06x-a-04- e06-04 ../epic06/k6/probe NAME=09-probe-k1-m4 VUS=10 KEYS=10 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=1 ENCORE_LOAD_TASKS=4
+e06x-b-06- e06-06 ../epic06/k6/probe NAME=09-probe-hot-k4 VUS=40 KEYS=1 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=4 ENCORE_LOAD_TASKS=1
+e06x-a-04- e06-04 ../epic06/k6/probe NAME=09-probe-hot-k4 VUS=40 KEYS=1 POOL=20 PROFILE=app WORKERS=8 DRAIN=1 DRAIN_TIMEOUT=200 ENCORE_LOAD_VIEWS=4 ENCORE_LOAD_TASKS=1

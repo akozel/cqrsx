@@ -15,8 +15,8 @@
 //! # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 //! # pub struct Counted;
 //! # impl DomainEvent for Counted {
-//! #     fn event_type(&self) -> String { "counted".into() }
-//! #     fn event_version(&self) -> String { "1".into() }
+//! #     fn event_type(&self) -> &'static str { "counted" }
+//! #     fn event_version(&self) -> &'static str { "1" }
 //! # }
 //! # #[derive(Debug, thiserror::Error)]
 //! # #[error("never")]
@@ -213,11 +213,11 @@ mod tests {
     struct Added(i64);
 
     impl DomainEvent for Added {
-        fn event_type(&self) -> String {
-            "added".into()
+        fn event_type(&self) -> &'static str {
+            "added"
         }
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 

@@ -727,11 +727,11 @@ mod tests {
         struct Counted;
 
         impl DomainEvent for Counted {
-            fn event_type(&self) -> String {
-                "counted".into()
+            fn event_type(&self) -> &'static str {
+                "counted"
             }
-            fn event_version(&self) -> String {
-                "1".into()
+            fn event_version(&self) -> &'static str {
+                "1"
             }
         }
 

@@ -46,8 +46,8 @@ use std::{any::Any, collections::HashMap, fmt};
 /// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// struct Incremented;
 /// impl DomainEvent for Incremented {
-///     fn event_type(&self) -> String { "incremented".into() }
-///     fn event_version(&self) -> String { "1".into() }
+///     fn event_type(&self) -> &'static str { "incremented" }
+///     fn event_version(&self) -> &'static str { "1" }
 /// }
 /// #[derive(Debug, PartialEq, thiserror::Error)]
 /// #[error("limit reached")]
@@ -268,12 +268,12 @@ mod tests {
     struct Booked;
 
     impl DomainEvent for Booked {
-        fn event_type(&self) -> String {
-            "booked".into()
+        fn event_type(&self) -> &'static str {
+            "booked"
         }
 
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 
@@ -374,10 +374,7 @@ mod tests {
         let mut hall = Hall;
         hall.apply(Booked);
         assert!(matches!(Book.decide(&hall, &()), Err(SeatTaken)));
-        assert_eq!(
-            (Booked.event_type(), Booked.event_version()),
-            ("booked".to_owned(), "1".to_owned())
-        );
+        assert_eq!((Booked.event_type(), Booked.event_version()), ("booked", "1"));
         let head = r#"hall 7 Some(7) Book [Label { name: "fan_id", value: "fox" }] Some("ui")"#;
         assert_eq!(
             *log.0.lock().unwrap(),

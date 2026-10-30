@@ -61,8 +61,9 @@ pub(crate) trait Rebuilder: Send + Sync {
 
 /// What a job asks the key's worker to do.
 enum Work<A: Aggregate> {
-    /// Hand these events to the handler, joined with the neighbouring `Apply` jobs of the batch.
-    Apply(Arc<[EventEnvelope<A>]>),
+    /// Hand these events to the handler, joined with the neighbouring `Apply` jobs of the batch: the batch moves
+    /// them into one vector, never copies them.
+    Apply(Vec<EventEnvelope<A>>),
     /// Rebuild the key's document from its history: always a batch of its own.
     Rebuild { pace: Duration, stop: CancellationToken },
 }
@@ -250,7 +251,7 @@ impl<A: Aggregate + 'static> DeliverySlot<A> {
     /// Queues `events` behind every job delivered before for the key and starts the key's worker when none
     /// runs; never waits. Must be called inside a Tokio runtime. The handler gets the events whether or not
     /// anybody awaits the receipt.
-    pub(crate) fn deliver(self, events: Arc<[EventEnvelope<A>]>) -> DeliveryReceipt {
+    pub(crate) fn deliver(self, events: Vec<EventEnvelope<A>>) -> DeliveryReceipt {
         self.queue(Work::Apply(events))
     }
 
@@ -318,8 +319,8 @@ struct Worker<A: Aggregate> {
 
 impl<A: Aggregate> Worker<A> {
     async fn run(mut self) {
-        while let Some(batch) = self.next_batch() {
-            let outcome = self.handle(&batch).await;
+        while let Some(mut batch) = self.next_batch() {
+            let outcome = self.handle(&mut batch).await;
             for job in batch {
                 // A receipt nobody awaits any more is fine: the events were handled all the same.
                 let _ = job.receipt.send(outcome.clone());
@@ -354,8 +355,9 @@ impl<A: Aggregate> Worker<A> {
         Some(buffer.jobs.drain(..take).collect())
     }
 
-    /// One handler call for the whole batch, or one rebuild, isolated from a panic of the callee.
-    async fn handle(&self, batch: &[Job<A>]) -> Result<Done, DeliveryError> {
+    /// One handler call for the whole batch, or one rebuild, isolated from a panic of the callee. The events of a
+    /// batch of several jobs move into the first job's vector.
+    async fn handle(&self, batch: &mut [Job<A>]) -> Result<Done, DeliveryError> {
         let projection = &self.inner.projection;
         if let [
             Job {
@@ -376,20 +378,17 @@ impl<A: Aggregate> Worker<A> {
                 }
             };
         }
-        let joined: Vec<EventEnvelope<A>>;
-        let events: &[EventEnvelope<A>] = match batch {
-            [
-                Job {
-                    work: Work::Apply(events),
-                    ..
-                },
-            ] => events,
-            _ => {
-                joined = batch.iter().filter_map(|job| job.work.events()).flatten().cloned().collect();
-                &joined
+        let mut joined = Vec::new();
+        for job in batch.iter_mut() {
+            if let Work::Apply(events) = &mut job.work {
+                if joined.is_empty() {
+                    joined = std::mem::take(events);
+                } else {
+                    joined.append(events);
+                }
             }
-        };
-        match unwinding(self.inner.handler.handle(&self.aggregate_id, events)).await {
+        }
+        match unwinding(self.inner.handler.handle(&self.aggregate_id, &joined)).await {
             Ok(Ok(())) => Ok(Done::Applied),
             Ok(Err(error)) => {
                 crate::diagnostics::log_projection_batch_failure(projection, A::TYPE, "deliver", batch.len(), &error);
@@ -441,7 +440,7 @@ mod tests {
 
     type Envelope = EventEnvelope<TestAggregate>;
 
-    fn events(aggregate_id: &str, sequences: impl IntoIterator<Item = usize>) -> Arc<[Envelope]> {
+    fn events(aggregate_id: &str, sequences: impl IntoIterator<Item = usize>) -> Vec<Envelope> {
         sequences
             .into_iter()
             .map(|sequence| EventEnvelope {

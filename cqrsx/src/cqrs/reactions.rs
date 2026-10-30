@@ -36,13 +36,13 @@
 //!     Paid { total: u32 },
 //! }
 //! impl DomainEvent for OrderEvent {
-//!     fn event_type(&self) -> String {
+//!     fn event_type(&self) -> &'static str {
 //!         match self {
-//!             OrderEvent::Reserved => "reserved".into(),
-//!             OrderEvent::Paid { .. } => "paid".into(),
+//!             OrderEvent::Reserved => "reserved",
+//!             OrderEvent::Paid { .. } => "paid",
 //!         }
 //!     }
-//!     fn event_version(&self) -> String { "1".into() }
+//!     fn event_version(&self) -> &'static str { "1" }
 //! }
 //! #[derive(Debug, thiserror::Error)]
 //! #[error("not reserved")]
@@ -119,8 +119,8 @@
 //!     Paid,
 //! }
 //! impl DomainEvent for OrderEvent {
-//!     fn event_type(&self) -> String { "order".into() }
-//!     fn event_version(&self) -> String { "1".into() }
+//!     fn event_type(&self) -> &'static str { "order" }
+//!     fn event_version(&self) -> &'static str { "1" }
 //! }
 //! impl Aggregate for Order {
 //!     const TYPE: &'static str = "order";
@@ -347,11 +347,11 @@ mod tests {
     }
 
     impl DomainEvent for Sale {
-        fn event_type(&self) -> String {
-            "sale".into()
+        fn event_type(&self) -> &'static str {
+            "sale"
         }
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 

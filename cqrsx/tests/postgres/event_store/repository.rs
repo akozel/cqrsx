@@ -18,11 +18,11 @@ struct History {
 struct Appended(i32);
 
 impl cqrsx::cqrs::event::DomainEvent for Appended {
-    fn event_type(&self) -> String {
-        "Appended".into()
+    fn event_type(&self) -> &'static str {
+        "Appended"
     }
-    fn event_version(&self) -> String {
-        "1".into()
+    fn event_version(&self) -> &'static str {
+        "1"
     }
 }
 

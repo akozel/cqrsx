@@ -154,12 +154,12 @@ mod tests {
     struct Said;
 
     impl crate::cqrs::event::DomainEvent for Said {
-        fn event_type(&self) -> String {
-            "said".into()
+        fn event_type(&self) -> &'static str {
+            "said"
         }
 
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 

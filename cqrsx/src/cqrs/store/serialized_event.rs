@@ -88,8 +88,8 @@ impl<A: Aggregate> TryFrom<&EventEnvelope<A>> for SerializedEvent {
 
     fn try_from(event: &EventEnvelope<A>) -> Result<Self, Self::Error> {
         let aggregate_type = A::TYPE.to_string();
-        let event_type = event.payload.event_type();
-        let event_version = event.payload.event_version();
+        let event_type = event.payload.event_type().to_owned();
+        let event_version = event.payload.event_version().to_owned();
         let payload = serde_json::to_value(&event.payload)?;
         let metadata = serde_json::to_value(&event.metadata)?;
         Ok(Self {

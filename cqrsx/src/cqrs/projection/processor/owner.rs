@@ -719,8 +719,14 @@ where
         let mut groups: Vec<Vec<EventEnvelope<A>>> = Vec::new();
         let mut transactions: Vec<Transaction> = Vec::new();
         for (position, event) in decoded {
-            // A new key gets the next index, and no group yet.
-            let idx = *index.entry(event.aggregate_id.clone()).or_insert(groups.len());
+            // A new key gets the next index, and no group yet; a known one is found by its text, without a copy.
+            let idx = match index.get(event.aggregate_id.as_str()) {
+                Some(idx) => *idx,
+                None => {
+                    index.insert(event.aggregate_id.clone(), groups.len());
+                    groups.len()
+                }
+            };
             match transactions.last_mut() {
                 Some(transaction) if transaction.position == position => {
                     if !transaction.keys.contains(&idx) {
@@ -759,7 +765,7 @@ where
         let deliveries = keys.into_iter().zip(slots).zip(groups).enumerate();
         for (key, ((aggregate_id, slot), events)) in deliveries {
             let (last_sequence, count) = (events.last().map_or(0, |event| event.sequence), events.len());
-            let receipt = slot.deliver(events.into());
+            let receipt = slot.deliver(events);
             self.outcomes.spawn(async move {
                 LiveOutcome {
                     page: no,

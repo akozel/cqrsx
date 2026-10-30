@@ -125,11 +125,14 @@ where
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #
@@ -288,11 +291,14 @@ where
     /// # }
     /// #
     /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
     /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
     /// #     }
     /// # }
     /// #
@@ -441,15 +447,6 @@ where
             SnapshotPolicy::Every(interval) => Some(interval.get()),
         }
     }
-
-    async fn load_events_after(
-        &self,
-        aggregate_id: &str,
-        context: &EventStoreAggregateContext<A>,
-    ) -> Result<Vec<EventEnvelope<A>>, AggregateError<<A as Aggregate>::Error>> {
-        let serialized_events = self.repo.events_after::<A>(aggregate_id, context.current_sequence).await?;
-        Ok(deserialize_events(serialized_events, &self.event_upcasters)?)
-    }
 }
 
 impl<R, A> EventStore<A> for PersistedEventStore<R, A>
@@ -487,14 +484,15 @@ where
             }
         };
         let events_to_apply = match self.snapshot_policy {
-            SnapshotPolicy::Disabled => self.load_events(aggregate_id).await?,
-            SnapshotPolicy::Every(_) => self.load_events_after(aggregate_id, &context).await?,
+            SnapshotPolicy::Disabled => self.repo.events::<A>(aggregate_id).await?,
+            SnapshotPolicy::Every(_) => self.repo.events_after::<A>(aggregate_id, context.current_sequence).await?,
         };
-
-        for envelope in events_to_apply {
+        // Decoded and applied one by one, never collected: an event that does not decode fails the load, and the
+        // state the events before it built is dropped with the context.
+        for event in events_to_apply {
+            let envelope: EventEnvelope<A> = event.decode(&self.event_upcasters)?;
             context.current_sequence = envelope.sequence;
-            let event = envelope.payload;
-            context.aggregate.apply(event);
+            context.aggregate.apply(envelope.payload);
         }
         Ok(context)
     }
@@ -524,7 +522,7 @@ where
                 next_version,
             )?)
         };
-        let wrapped_events = Self::wrap_events(&aggregate_id, last_sequence, events, metadata);
+        let wrapped_events = Self::wrap_events(&aggregate_id, last_sequence, events, &metadata);
         let serialized_events: Vec<SerializedEvent> = serialize_events(&wrapped_events)?;
         self.repo
             .persist_with_tasks::<A>(&serialized_events, snapshot_update, tasks)
@@ -556,15 +554,11 @@ where
     }
 
     /// Method to wrap a set of events with the additional metadata needed for persistence and publishing
-    #[expect(
-        clippy::needless_pass_by_value,
-        reason = "F4 of epic 06 (ticket 04) moves the map into the event instead of copying it"
-    )]
     fn wrap_events(
         aggregate_id: &str,
         last_sequence: usize,
         resultant_events: Vec<A::Event>,
-        base_metadata: HashMap<String, String>,
+        base_metadata: &HashMap<String, String>,
     ) -> Vec<EventEnvelope<A>> {
         resultant_events
             .into_iter()
@@ -661,14 +655,14 @@ pub(in crate::cqrs) mod tests {
     }
 
     impl DomainEvent for TestEvents {
-        fn event_type(&self) -> String {
+        fn event_type(&self) -> &'static str {
             match self {
-                Self::Started => "Started".to_string(),
-                Self::SomethingWasDone => "SomethingWasDone".to_string(),
+                Self::Started => "Started",
+                Self::SomethingWasDone => "SomethingWasDone",
             }
         }
-        fn event_version(&self) -> String {
-            EVENT_VERSION.to_string()
+        fn event_version(&self) -> &'static str {
+            EVENT_VERSION
         }
     }
 
@@ -831,8 +825,8 @@ pub(in crate::cqrs) mod tests {
     pub(in crate::cqrs) const EVENT_VERSION: &str = "1.0";
 
     pub(in crate::cqrs) fn test_serialized_event(seq: usize, event: TestEvents) -> SerializedEvent {
-        let event_type = event.event_type();
-        let event_version = event.event_version();
+        let event_type = event.event_type().to_owned();
+        let event_version = event.event_version().to_owned();
         let payload = serde_json::to_value(event).unwrap();
         SerializedEvent {
             aggregate_id: TEST_AGGREGATE_ID.to_string(),
@@ -1329,8 +1323,27 @@ mod contract_tests {
         );
         let mut bad = test_serialized_event(1, TestEvents::Started);
         bad.payload = serde_json::json!({"unknown":true});
-        let store = PersistedEventStore::<_, TestAggregate>::new(MockRepo::with_last_events(Ok(vec![bad]), Ok(None)))
+        let store = PersistedEventStore::<_, TestAggregate>::new(MockRepo::with_last_events(Ok(vec![bad.clone()]), Ok(None)))
             .with_snapshots(every(2));
+        assert!(matches!(
+            store.load_aggregate("a").await,
+            Err(AggregateError::DeserializationError(_))
+        ));
+        // A history that breaks in the middle: the events before the bad one are applied, then the load fails, with or
+        // without snapshots; no state of the half-replayed aggregate reaches the caller.
+        bad.sequence = 2;
+        let history = vec![
+            test_serialized_event(1, TestEvents::SomethingWasDone),
+            bad,
+            test_serialized_event(3, TestEvents::SomethingWasDone),
+        ];
+        let store = PersistedEventStore::<_, TestAggregate>::new(MockRepo::with_last_events(Ok(history.clone()), Ok(None)))
+            .with_snapshots(every(2));
+        assert!(matches!(
+            store.load_aggregate("a").await,
+            Err(AggregateError::DeserializationError(_))
+        ));
+        let store = PersistedEventStore::<_, TestAggregate>::new(MockRepo::with_events(Ok(history)));
         assert!(matches!(
             store.load_aggregate("a").await,
             Err(AggregateError::DeserializationError(_))
@@ -1393,11 +1406,11 @@ mod serialization_failure_tests {
         }
     }
     impl DomainEvent for Event {
-        fn event_type(&self) -> String {
-            "event".into()
+        fn event_type(&self) -> &'static str {
+            "event"
         }
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
     #[derive(Clone, Debug, Default, Deserialize)]
@@ -1516,11 +1529,11 @@ mod serialization_failure_tests {
         }
     }
     impl DomainEvent for GuardedEvent {
-        fn event_type(&self) -> String {
-            "guarded".into()
+        fn event_type(&self) -> &'static str {
+            "guarded"
         }
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
     impl Aggregate for Guarded {

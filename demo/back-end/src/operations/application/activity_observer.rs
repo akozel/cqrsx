@@ -283,12 +283,12 @@ mod tests {
     struct Booked;
 
     impl DomainEvent for Booked {
-        fn event_type(&self) -> String {
-            "booked".into()
+        fn event_type(&self) -> &'static str {
+            "booked"
         }
 
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 

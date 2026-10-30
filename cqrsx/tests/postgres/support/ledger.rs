@@ -5,11 +5,11 @@ pub(crate) struct Ledger(pub(crate) Vec<i32>);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Delta(pub(crate) i32);
 impl DomainEvent for Delta {
-    fn event_type(&self) -> String {
-        "delta".into()
+    fn event_type(&self) -> &'static str {
+        "delta"
     }
-    fn event_version(&self) -> String {
-        "1".into()
+    fn event_version(&self) -> &'static str {
+        "1"
     }
 }
 #[derive(Debug, thiserror::Error)]

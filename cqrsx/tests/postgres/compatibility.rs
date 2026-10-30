@@ -24,11 +24,11 @@ pub enum Event {
 }
 
 impl DomainEvent for Event {
-    fn event_type(&self) -> String {
-        "ValueSet".into()
+    fn event_type(&self) -> &'static str {
+        "ValueSet"
     }
-    fn event_version(&self) -> String {
-        "1".into()
+    fn event_version(&self) -> &'static str {
+        "1"
     }
 }
 

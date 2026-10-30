@@ -26,9 +26,6 @@ mod tests {
     fn a_ping_is_stored_as_a_small_flat_document() {
         let event = ProbeEvent::Pinged(Pinged { tasks: 4 });
         assert_eq!(serde_json::to_value(&event).unwrap(), json!({ "type": "Pinged", "tasks": 4 }));
-        assert_eq!(
-            (event.event_type(), event.event_version()),
-            ("Pinged".to_owned(), "1.0".to_owned())
-        );
+        assert_eq!((event.event_type(), event.event_version()), ("Pinged", "1.0"));
     }
 }

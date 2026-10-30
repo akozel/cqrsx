@@ -83,8 +83,8 @@ struct Journal {
 /// # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// # pub struct Counted;
 /// # impl DomainEvent for Counted {
-/// #     fn event_type(&self) -> String { "counted".into() }
-/// #     fn event_version(&self) -> String { "1".into() }
+/// #     fn event_type(&self) -> &'static str { "counted" }
+/// #     fn event_version(&self) -> &'static str { "1" }
 /// # }
 /// # #[derive(Debug, thiserror::Error)]
 /// # #[error("never")]
@@ -179,15 +179,17 @@ impl MemEventRepository {
         gate
     }
 
-    /// The events of type `A` in journal order: by position, aggregate id and sequence.
-    fn ordered<A: Aggregate>(journal: &Journal) -> Vec<(Position, SerializedEvent)> {
-        let mut rows: Vec<_> = journal
+    /// The rows of type `A` above `after` in journal order (by position, aggregate id and sequence), borrowed: a page
+    /// copies only the events it returns.
+    fn ordered_after<A: Aggregate>(journal: &Journal, after: Position) -> Vec<&Row> {
+        let mut rows: Vec<&Row> = journal
             .rows
             .iter()
-            .filter(|row| row.event.aggregate_type == A::TYPE)
-            .map(|row| (row.position, row.event.clone()))
+            .filter(|row| row.event.aggregate_type == A::TYPE && row.position > after)
             .collect();
-        rows.sort_by(|a, b| (a.0, &a.1.aggregate_id, a.1.sequence).cmp(&(b.0, &b.1.aggregate_id, b.1.sequence)));
+        rows.sort_by(|a, b| {
+            (a.position, &a.event.aggregate_id, a.event.sequence).cmp(&(b.position, &b.event.aggregate_id, b.event.sequence))
+        });
         rows
     }
 }
@@ -345,17 +347,18 @@ impl PersistedEventRepository for MemEventRepository {
 
     async fn feed_after<A: Aggregate>(&self, after: Position, limit: usize) -> Result<Vec<FeedEntry>, PersistenceError> {
         page_limit(limit)?;
-        let rows: Vec<_> = Self::ordered::<A>(&self.journal())
-            .into_iter()
-            .filter(|(position, _)| *position > after)
-            .collect();
+        let journal = self.journal();
+        let rows = Self::ordered_after::<A>(&journal, after);
         let mut page: Vec<FeedEntry> = Vec::with_capacity(rows.len().min(limit));
-        for (position, event) in rows {
+        for row in rows {
             // Never cut a commit in two: a full page runs on to the end of its last position.
-            if page.len() >= limit && page.last().is_none_or(|entry| entry.position != position) {
+            if page.len() >= limit && page.last().is_none_or(|entry| entry.position != row.position) {
                 break;
             }
-            page.push(FeedEntry { position, event });
+            page.push(FeedEntry {
+                position: row.position,
+                event: row.event.clone(),
+            });
         }
         Ok(page)
     }

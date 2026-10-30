@@ -24,6 +24,7 @@ use crate::{
     task::format::{TaskFormat, TaskPayload},
 };
 use chrono::{DateTime, Utc};
+use serde::de::{DeserializeOwned, value::MapDeserializer};
 use serde_json::{Map, Value, json};
 use std::{num::NonZeroU16, time::Duration};
 use thiserror::Error;
@@ -179,23 +180,18 @@ fn move_labels(labels: &[&str], payload: &mut Value, metadata: &mut Value) {
     }
 }
 
-/// A copy of the `payload` object with the keys `labels` it lacks taken back from the `metadata` object: the body a
-/// labelled payload decodes from. The payload is an object: every constructor validates it. Were it not (a bug,
-/// logged), the copy takes nothing back.
-fn restore_labels(labels: &[&str], payload: &Value, metadata: &Value) -> Value {
-    let mut restored = payload.clone();
-    let Value::Object(fields) = &mut restored else {
+/// Decodes `P` from the fields of the `payload` object and the keys `labels` it lacks, taken back from the `metadata`
+/// object: the body a labelled payload decodes from, read in place, neither object copied. The payload is an object:
+/// every constructor validates it. Were it not (a bug, logged), `P` decodes from the payload alone.
+fn decode_with_labels<P: DeserializeOwned>(labels: &[&str], payload: &Value, metadata: &Value) -> Result<P, serde_json::Error> {
+    let Value::Object(fields) = payload else {
         diagnostics::log_broken_invariant("task", "the payload of a task is an object");
-        return restored;
+        return P::deserialize(payload);
     };
-    for label in labels {
-        if !fields.contains_key(*label)
-            && let Some(value) = metadata.get(*label)
-        {
-            fields.insert((*label).to_owned(), value.clone());
-        }
-    }
-    restored
+    let missing = labels.iter().filter(|label| !fields.contains_key(**label));
+    let restored = missing.filter_map(|label| metadata.get(*label).map(|value| (*label, value)));
+    let entries = fields.iter().map(|(key, value)| (key.as_str(), value)).chain(restored);
+    P::deserialize(MapDeserializer::<_, serde_json::Error>::new(entries))
 }
 
 fn validate_payload(payload: &Value) -> Result<(), TaskValidationError> {
@@ -219,7 +215,7 @@ mod tests {
     use crate::task::attempt::TaskAttempt;
     use crate::task::format::TaskFormatError;
     use crate::task::test_support::DummyTask;
-    use serde::{Serialize, Serializer};
+    use serde::{Deserialize, Serialize, Serializer};
     #[test]
     fn construction_validates_format_objects_attempts_and_schedule() {
         let task = NewTask::try_new(DummyTask { value: "runtime" }).unwrap();
@@ -343,7 +339,7 @@ mod tests {
             "the label keeps its value, the caller's keys are replaced"
         );
         assert_eq!(
-            restore_labels(Labelled::LABELS, renamed.payload(), renamed.metadata()),
+            decode_with_labels::<Value>(Labelled::LABELS, renamed.payload(), renamed.metadata()).unwrap(),
             json!({ "amount": 80, "tenant": "acme" }),
             "the body decodes as it was"
         );
@@ -356,17 +352,33 @@ mod tests {
     }
 
     #[test]
-    fn labels_return_to_a_copy_of_the_body_unless_it_has_them() {
+    fn labels_return_to_the_body_unless_it_has_them() {
         let metadata = json!({ "tenant": "acme", "correlation_id": "c-1" });
         assert_eq!(
-            restore_labels(Labelled::LABELS, &json!({ "amount": 80 }), &metadata),
+            decode_with_labels::<Value>(Labelled::LABELS, &json!({ "amount": 80 }), &metadata).unwrap(),
             json!({ "amount": 80, "tenant": "acme" }),
             "only the labels come back, and a label the metadata lacks stays away"
         );
         assert_eq!(
-            restore_labels(Labelled::LABELS, &json!({ "amount": 80, "tenant": "body" }), &metadata),
+            decode_with_labels::<Value>(Labelled::LABELS, &json!({ "amount": 80, "tenant": "body" }), &metadata).unwrap(),
             json!({ "amount": 80, "tenant": "body" })
         );
+        #[derive(Debug, PartialEq, Deserialize)]
+        #[serde(deny_unknown_fields)]
+        struct Strict {
+            amount: u32,
+            tenant: String,
+        }
+        assert_eq!(
+            decode_with_labels::<Strict>(Labelled::LABELS, &json!({ "amount": 80 }), &metadata).unwrap(),
+            Strict {
+                amount: 80,
+                tenant: "acme".to_owned()
+            },
+            "a struct decodes from the body and the label alone: the other metadata stays away"
+        );
+        let missing = decode_with_labels::<Strict>(Labelled::LABELS, &json!({ "amount": 80 }), &json!({})).unwrap_err();
+        assert!(missing.to_string().contains("missing field `tenant`"), "{missing}");
     }
 
     #[tokio::test]
@@ -374,7 +386,8 @@ mod tests {
         let ((payload, restored), log) = crate::diagnostics::test_support::capture(async {
             let mut payload = json!({ "tenant": "acme" });
             move_labels(Labelled::LABELS, &mut payload, &mut json!(["metadata"]));
-            let restored = restore_labels(Labelled::LABELS, &json!(["payload"]), &json!({ "tenant": "acme" }));
+            let restored: Value =
+                decode_with_labels(Labelled::LABELS, &json!(["payload"]), &json!({ "tenant": "acme" })).unwrap();
             (payload, restored)
         })
         .await;

@@ -25,12 +25,12 @@ enum CommandEvent {
 }
 
 impl DomainEvent for CommandEvent {
-    fn event_type(&self) -> String {
-        "recorded".into()
+    fn event_type(&self) -> &'static str {
+        "recorded"
     }
 
-    fn event_version(&self) -> String {
-        "1".into()
+    fn event_version(&self) -> &'static str {
+        "1"
     }
 }
 
@@ -550,12 +550,12 @@ struct Counted(Vec<String>);
 struct Counted1(String);
 
 impl DomainEvent for Counted1 {
-    fn event_type(&self) -> String {
-        "counted".into()
+    fn event_type(&self) -> &'static str {
+        "counted"
     }
 
-    fn event_version(&self) -> String {
-        "1".into()
+    fn event_version(&self) -> &'static str {
+        "1"
     }
 }
 

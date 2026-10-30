@@ -102,8 +102,11 @@ trait Queries<V>: Send + Sync {
     fn range<'a>(&'a self, lower: &'a str, upper: &'a str) -> Answer<'a, Vec<StoredView<V>>>;
 }
 
-/// What the operations need of a view, its types erased.
+/// What the operations need of a view, its types erased. Its name and aggregate type are constants: finding a view by
+/// either allocates nothing; the key of its checkpoint is built only for a request.
 trait Operations: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn aggregate_type(&self) -> &'static str;
     fn key(&self) -> CheckpointKey;
     fn verify(&self) -> Answer<'_, Verification>;
     fn count_after(&self, after: Position, cap: u64) -> Answer<'_, u64>;
@@ -148,6 +151,14 @@ where
     H: PersistedEventRepository + Counts + 'static,
     K: Counts + 'static,
 {
+    fn name(&self) -> &'static str {
+        V::NAME
+    }
+
+    fn aggregate_type(&self) -> &'static str {
+        A::TYPE
+    }
+
     fn key(&self) -> CheckpointKey {
         CheckpointKey::of::<V, A>()
     }
@@ -192,15 +203,13 @@ impl Registry {
         self.operations.push(view);
     }
 
-    pub(crate) fn names(&self) -> Vec<String> {
-        self.operations
-            .iter()
-            .map(|view| view.key().projection().to_owned())
-            .collect()
+    /// The views' names, in the order the modules registered them.
+    pub(crate) fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
+        self.operations.iter().map(|view| view.name())
     }
 
     fn named(&self, name: &str) -> Result<&dyn Operations, ViewsError> {
-        let view = self.operations.iter().find(|view| view.key().projection() == name);
+        let view = self.operations.iter().find(|view| view.name() == name);
         view.map(|view| &**view).ok_or_else(|| ViewsError::Unknown(name.to_owned()))
     }
 }
@@ -317,7 +326,7 @@ impl Views<'_> {
         let mut counted = Vec::new();
         let mut totals = JournalTotals::default();
         for view in &self.cqrs.views.operations {
-            let aggregate_type = view.key().aggregate_type();
+            let aggregate_type = view.aggregate_type();
             if counted.contains(&aggregate_type) {
                 continue;
             }
@@ -331,7 +340,7 @@ impl Views<'_> {
 
     fn of_type(&self, aggregate_type: &str) -> Result<&dyn Operations, ViewsError> {
         let views = &self.cqrs.views.operations;
-        let view = views.iter().find(|view| view.key().aggregate_type() == aggregate_type);
+        let view = views.iter().find(|view| view.aggregate_type() == aggregate_type);
         view.map(|view| &**view)
             .ok_or_else(|| ViewsError::UnknownAggregateType(aggregate_type.to_owned()))
     }

@@ -3,10 +3,10 @@
 use crate::task::{
     adapter::TaskAdapter,
     context::TaskContext,
+    decode_with_labels,
     dependencies::DependencyId,
     format::{TaskFormat, TaskPayload},
     handler::TaskHandler,
-    restore_labels,
     result::TaskResult,
 };
 use serde::de::DeserializeOwned;
@@ -18,8 +18,9 @@ use std::{fmt, marker::PhantomData};
 /// and deserialize successfully before the operation is called. Structural
 /// failures fail the task, with sanitized expected type/version diagnostics;
 /// payloads, metadata, actual arbitrary type names and serde errors are omitted.
-/// Decoding borrows the JSON value without cloning the whole payload. Unknown
-/// field handling follows `P`'s serde settings. Business results pass unchanged.
+/// Decoding reads the JSON payload in place, and a label (`#[label]`) from the
+/// metadata, copying neither. Unknown field handling follows `P`'s serde settings.
+/// Business results pass unchanged.
 ///
 /// One handler serves every delivery and every worker; its dependencies are the
 /// handler's ([`TaskHandler::DEPENDENCIES`]). Register separate adapters for separate
@@ -84,7 +85,7 @@ where
         let decoded = if P::LABELS.is_empty() {
             P::deserialize(delivery.payload())
         } else {
-            P::deserialize(&restore_labels(P::LABELS, delivery.payload(), delivery.metadata()))
+            decode_with_labels(P::LABELS, delivery.payload(), delivery.metadata())
         };
         match decoded {
             Ok(payload) => self.handler.handle(payload, ctx).await,

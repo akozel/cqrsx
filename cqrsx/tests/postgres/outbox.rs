@@ -20,12 +20,12 @@ enum TestEvent {
 }
 
 impl DomainEvent for TestEvent {
-    fn event_type(&self) -> String {
-        "recorded".to_owned()
+    fn event_type(&self) -> &'static str {
+        "recorded"
     }
 
-    fn event_version(&self) -> String {
-        "1.0".to_owned()
+    fn event_version(&self) -> &'static str {
+        "1.0"
     }
 }
 
@@ -53,8 +53,8 @@ fn serialized_event(sequence: usize, value: &str) -> SerializedEvent {
         aggregate_id: AGGREGATE_ID.to_owned(),
         sequence,
         aggregate_type: StreamAggregate::TYPE.to_owned(),
-        event_type: event.event_type(),
-        event_version: event.event_version(),
+        event_type: event.event_type().to_owned(),
+        event_version: event.event_version().to_owned(),
         payload: serde_json::to_value(event).expect("test event must serialize"),
         metadata: json!({ "correlation_id": format!("correlation-{sequence}") }),
     }

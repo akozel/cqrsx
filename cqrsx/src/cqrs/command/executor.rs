@@ -277,12 +277,12 @@ mod tests {
     }
 
     impl DomainEvent for DummyEvent {
-        fn event_type(&self) -> String {
-            "recorded".to_owned()
+        fn event_type(&self) -> &'static str {
+            "recorded"
         }
 
-        fn event_version(&self) -> String {
-            "1".to_owned()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 
@@ -1188,11 +1188,11 @@ mod tests {
     struct Added(u32);
 
     impl DomainEvent for Added {
-        fn event_type(&self) -> String {
-            "added".into()
+        fn event_type(&self) -> &'static str {
+            "added"
         }
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 

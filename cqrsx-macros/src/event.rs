@@ -59,7 +59,7 @@ pub(crate) fn expand_events(input: &DeriveInput) -> syn::Result<TokenStream> {
     let arms = |constant: &str| {
         let constant = format_ident!("{constant}");
         payloads.iter().map(move |(variant, payload)| {
-            quote! { Self::#variant(_) => <#payload as ::cqrsx::cqrs::event::EventKind>::#constant.to_owned(), }
+            quote! { Self::#variant(_) => <#payload as ::cqrsx::cqrs::event::EventKind>::#constant, }
         })
     };
     let (names, versions) = (arms("NAME"), arms("VERSION"));
@@ -68,10 +68,10 @@ pub(crate) fn expand_events(input: &DeriveInput) -> syn::Result<TokenStream> {
     Ok(quote! {
         #[automatically_derived]
         impl #impl_generics ::cqrsx::cqrs::event::DomainEvent for #ident #type_generics #where_clause {
-            fn event_type(&self) -> ::std::string::String {
+            fn event_type(&self) -> &'static str {
                 match *self { #(#names)* }
             }
-            fn event_version(&self) -> ::std::string::String {
+            fn event_version(&self) -> &'static str {
                 match *self { #(#versions)* }
             }
         }
@@ -195,18 +195,18 @@ mod tests {
         let expected = quote! {
             #[automatically_derived]
             impl ::cqrsx::cqrs::event::DomainEvent for ConcertEvent {
-                fn event_type(&self) -> ::std::string::String {
+                fn event_type(&self) -> &'static str {
                     match *self {
-                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::cqrs::event::EventKind>::NAME.to_owned(),
+                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::cqrs::event::EventKind>::NAME,
                         Self::BookingCancelled(_) =>
-                            <events::BookingCancelled as ::cqrsx::cqrs::event::EventKind>::NAME.to_owned(),
+                            <events::BookingCancelled as ::cqrsx::cqrs::event::EventKind>::NAME,
                     }
                 }
-                fn event_version(&self) -> ::std::string::String {
+                fn event_version(&self) -> &'static str {
                     match *self {
-                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::cqrs::event::EventKind>::VERSION.to_owned(),
+                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::cqrs::event::EventKind>::VERSION,
                         Self::BookingCancelled(_) =>
-                            <events::BookingCancelled as ::cqrsx::cqrs::event::EventKind>::VERSION.to_owned(),
+                            <events::BookingCancelled as ::cqrsx::cqrs::event::EventKind>::VERSION,
                     }
                 }
             }
@@ -220,11 +220,11 @@ mod tests {
         let expected = quote! {
             #[automatically_derived]
             impl<T: Send> ::cqrsx::cqrs::event::DomainEvent for Either<T> where T: Sync {
-                fn event_type(&self) -> ::std::string::String {
-                    match *self { Self::One(_) => <T as ::cqrsx::cqrs::event::EventKind>::NAME.to_owned(), }
+                fn event_type(&self) -> &'static str {
+                    match *self { Self::One(_) => <T as ::cqrsx::cqrs::event::EventKind>::NAME, }
                 }
-                fn event_version(&self) -> ::std::string::String {
-                    match *self { Self::One(_) => <T as ::cqrsx::cqrs::event::EventKind>::VERSION.to_owned(), }
+                fn event_version(&self) -> &'static str {
+                    match *self { Self::One(_) => <T as ::cqrsx::cqrs::event::EventKind>::VERSION, }
                 }
             }
         };
@@ -237,8 +237,8 @@ mod tests {
         let expected = quote! {
             #[automatically_derived]
             impl ::cqrsx::cqrs::event::DomainEvent for Never {
-                fn event_type(&self) -> ::std::string::String { match *self {} }
-                fn event_version(&self) -> ::std::string::String { match *self {} }
+                fn event_type(&self) -> &'static str { match *self {} }
+                fn event_version(&self) -> &'static str { match *self {} }
             }
         };
         assert_eq!(expanded.to_string(), expected.to_string());

@@ -35,8 +35,8 @@
 //!     Placed { total: u32 },
 //! }
 //! impl DomainEvent for OrderEvent {
-//!     fn event_type(&self) -> String { "placed".into() }
-//!     fn event_version(&self) -> String { "1".into() }
+//!     fn event_type(&self) -> &'static str { "placed" }
+//!     fn event_version(&self) -> &'static str { "1" }
 //! }
 //! #[derive(Debug, thiserror::Error)]
 //! #[error("already placed")]
@@ -306,11 +306,11 @@ mod tests {
     struct Counted(u32);
 
     impl DomainEvent for Counted {
-        fn event_type(&self) -> String {
-            "counted".into()
+        fn event_type(&self) -> &'static str {
+            "counted"
         }
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
 

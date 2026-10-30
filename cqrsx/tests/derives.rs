@@ -71,21 +71,15 @@ fn derived_events_store_the_name_and_the_version_of_each_payload() {
     assert_eq!((Noted::<u8>::NAME, Noted::<u8>::VERSION), ("Noted", "3"));
     let booked = ConcertEvent::<String>::SeatBooked(SeatBooked { seat: "B4".into() });
     let noted = ConcertEvent::Noted(Noted { note: "late".to_owned() });
-    assert_eq!(
-        (booked.event_type(), booked.event_version()),
-        ("SeatBooked".to_owned(), "1.0".to_owned())
-    );
-    assert_eq!(
-        (noted.event_type(), noted.event_version()),
-        ("Noted".to_owned(), "3".to_owned())
-    );
+    assert_eq!((booked.event_type(), booked.event_version()), ("SeatBooked", "1.0"));
+    assert_eq!((noted.event_type(), noted.event_version()), ("Noted", "3"));
     // The derive leaves serde's attributes alone: the stored payload is still tagged by the variant.
     assert_eq!(
         serde_json::to_value(&noted).unwrap(),
         serde_json::json!({ "type": "Noted", "note": "late" })
     );
     // An enum without events dispatches nothing; it only has to compile.
-    let _: fn(&NoEvent) -> (String, String) = |never| (never.event_type(), never.event_version());
+    let _: fn(&NoEvent) -> (&'static str, &'static str) = |never| (never.event_type(), never.event_version());
 }
 
 #[derive(Serialize, Task)]
@@ -284,11 +278,11 @@ enum Counted {
 }
 
 impl DomainEvent for Counted {
-    fn event_type(&self) -> String {
-        "counted".into()
+    fn event_type(&self) -> &'static str {
+        "counted"
     }
-    fn event_version(&self) -> String {
-        "1".into()
+    fn event_version(&self) -> &'static str {
+        "1"
     }
 }
 

@@ -46,16 +46,16 @@ use std::{fmt, hash::Hash, str::FromStr};
 /// # }
 /// #
 /// # impl DomainEvent for CustomerEvent {
-/// #     fn event_type(&self) -> String {
+/// #     fn event_type(&self) -> &'static str {
 /// #         match self {
-/// #             Self::NameAdded { .. } => "NameAdded".to_string(),
-/// #             Self::EmailUpdated { .. } => "EmailUpdated".to_string(),
-/// #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated".to_string(),
+/// #             Self::NameAdded { .. } => "NameAdded",
+/// #             Self::EmailUpdated { .. } => "EmailUpdated",
+/// #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated",
 /// #         }
 /// #     }
 /// #
-/// #     fn event_version(&self) -> String {
-/// #         "1.0".to_string()
+/// #     fn event_version(&self) -> &'static str {
+/// #         "1.0"
 /// #     }
 /// # }
 /// #
@@ -166,16 +166,16 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// # }
     /// #
     /// # impl DomainEvent for CustomerEvent {
-    /// #     fn event_type(&self) -> String {
+    /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
-    /// #             Self::NameAdded { .. } => "NameAdded".to_string(),
-    /// #             Self::EmailUpdated { .. } => "EmailUpdated".to_string(),
-    /// #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated".to_string(),
+    /// #             Self::NameAdded { .. } => "NameAdded",
+    /// #             Self::EmailUpdated { .. } => "EmailUpdated",
+    /// #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated",
     /// #         }
     /// #     }
     /// #
-    /// #     fn event_version(&self) -> String {
-    /// #         "1.0".to_string()
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "1.0"
     /// #     }
     /// # }
     /// #
@@ -263,11 +263,11 @@ pub(crate) mod tests {
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub(crate) struct Delta(pub i32);
     impl DomainEvent for Delta {
-        fn event_type(&self) -> String {
-            "delta".into()
+        fn event_type(&self) -> &'static str {
+            "delta"
         }
-        fn event_version(&self) -> String {
-            "1".into()
+        fn event_version(&self) -> &'static str {
+            "1"
         }
     }
     #[derive(Debug, PartialEq, thiserror::Error)]

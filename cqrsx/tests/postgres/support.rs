@@ -44,7 +44,7 @@ pub(super) fn event(id: &str, sequence: usize) -> SerializedEvent {
         aggregate_id: id.to_owned(),
         sequence,
         aggregate_type: TestAggregate::TYPE.to_owned(),
-        event_type: payload.event_type(),
+        event_type: payload.event_type().to_owned(),
         event_version: "1".to_owned(),
         payload: serde_json::to_value(payload).unwrap(),
         metadata: json!({"correlation_id": "command"}),
@@ -60,12 +60,12 @@ pub(super) enum TestEvent {
 }
 
 impl DomainEvent for TestEvent {
-    fn event_type(&self) -> String {
-        "recorded".into()
+    fn event_type(&self) -> &'static str {
+        "recorded"
     }
 
-    fn event_version(&self) -> String {
-        "1".into()
+    fn event_version(&self) -> &'static str {
+        "1"
     }
 }
 

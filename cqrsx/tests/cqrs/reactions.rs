@@ -34,11 +34,11 @@ enum ShowEvent {
 }
 
 impl DomainEvent for ShowEvent {
-    fn event_type(&self) -> String {
-        "booked".into()
+    fn event_type(&self) -> &'static str {
+        "booked"
     }
-    fn event_version(&self) -> String {
-        "1".into()
+    fn event_version(&self) -> &'static str {
+        "1"
     }
 }
 
@@ -87,11 +87,11 @@ enum WalletEvent {
 }
 
 impl DomainEvent for WalletEvent {
-    fn event_type(&self) -> String {
-        "recorded".into()
+    fn event_type(&self) -> &'static str {
+        "recorded"
     }
-    fn event_version(&self) -> String {
-        "1".into()
+    fn event_version(&self) -> &'static str {
+        "1"
     }
 }
 
