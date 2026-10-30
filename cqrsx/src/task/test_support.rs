@@ -68,6 +68,8 @@ pub(crate) struct Queue {
     pub(crate) hang_settle: AtomicBool,
     pub(crate) failing_format: Mutex<Option<TaskFormat>>,
     pub(crate) claim_delay: Mutex<Duration>,
+    /// Claims every incoming task of the format, whatever the limit: a queue that breaks the `TaskQueue` contract.
+    pub(crate) claim_beyond_limit: AtomicBool,
 }
 
 impl TaskQueue for Queue {
@@ -93,7 +95,10 @@ impl TaskQueue for Queue {
         }
         let mut incoming = self.incoming.lock().unwrap();
         let mut result = Vec::new();
-        while result.len() < limit && incoming.front().is_some_and(|message| message.attempt().format() == format) {
+        let beyond_limit = self.claim_beyond_limit.load(Ordering::SeqCst);
+        while (result.len() < limit || beyond_limit)
+            && incoming.front().is_some_and(|message| message.attempt().format() == format)
+        {
             let mut task = incoming.pop_front().unwrap();
             task = with_deadline(task, lease_deadline);
             result.push(task);

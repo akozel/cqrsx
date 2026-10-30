@@ -199,6 +199,32 @@ mod tests {
         );
     }
 
+    /// A handler that panics on every attempt is retried as if it answered retry: after the pauses of its policy (`MAIL`:
+    /// 1, 2, 4, 8, 8 s), until the policy's budget of six attempts is spent and the task fails. The runner lives on.
+    #[tokio::test(start_paused = true)]
+    async fn a_handler_that_always_panics_spends_the_budget_of_its_policy_and_its_task_fails() {
+        let (cqrs, mailbox) = engine().await;
+        mailbox.crashes.store(usize::MAX, Ordering::SeqCst);
+        cqrs.from("ui")
+            .execute::<Show>(&"s-1".into(), book("A1", "fox"))
+            .await
+            .unwrap();
+        assert_eq!(cqrs.run_tasks().await, 2, "the step and the first attempt of its e-mail");
+        for pause in [1, 2, 4, 8, 8] {
+            assert_eq!(cqrs.run_tasks().await, 0, "the retry waits {pause} s");
+            tokio::time::advance(Duration::from_secs(pause)).await;
+            assert_eq!(cqrs.run_tasks().await, 1);
+        }
+        assert_eq!(
+            statuses(&cqrs),
+            [
+                ("record_ticket v1".to_owned(), TaskStatus::Completed, 1),
+                ("mail_ticket v1".to_owned(), TaskStatus::Failed, 6)
+            ]
+        );
+        assert!(mailbox.sent().is_empty());
+    }
+
     /// G-16: the process stops after the effects and before the acknowledgements; both tasks come back once their
     /// leases run out. The step is done by R9 and publishes nothing twice; the e-mail goes out again.
     #[tokio::test(start_paused = true)]

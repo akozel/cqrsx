@@ -208,16 +208,13 @@ where
             phantom: PhantomData,
         }
     }
-    /// Allows the user to apply a custom error handler to the projection.
-    /// Queries are infallible and _should_ never cause errors,
-    /// but programming errors or other technical problems
-    /// might. Adding an error handler allows the user to choose whether to
-    /// panic the application, log the error or otherwise register the issue.
+    /// Sets an observer of the projection's failures: it sees every error of [`load`](Self::load), of
+    /// [`handle`](EventHandler::handle) (a read or a write of the view, a gap in the events, a version conflict once the
+    /// retries are spent) and of [`rebuild`](RebuildableProjection::rebuild), before the error is returned. The
+    /// observer only looks: the error is still the caller's `Err`, nothing is retried, suppressed or replaced. Without an
+    /// observer the errors are returned all the same. A second call replaces the observer.
     ///
-    /// Use of an error handler is *strongly* recommended since without one any error encountered
-    /// by the projection repository will simply be ignored.
-    ///
-    /// _Example: An error handler that panics on any error._
+    /// _Example: an observer that logs every error._
     /// ```
     /// # mod example {
     /// # use async_trait::async_trait;
@@ -349,7 +346,7 @@ where
     /// # use example::MyView;
     /// # use cqrsx::cqrs::projection::ViewProjection;
     /// # fn config(mut projection: ViewProjection<MyViewRepository,MyView,MyAggregate>) {
-    /// projection.set_error_observer(Box::new(|e|panic!("{}",e)));
+    /// projection.set_error_observer(Box::new(|error| tracing::error!(%error, "view projection failed")));
     /// # }
     /// ```
     pub fn set_error_observer(&mut self, error_observer: Box<PersistenceErrorObserver>) {

@@ -26,7 +26,7 @@ mod snapshots {
                     let commits:Vec<Vec<i32>>=if framework { batch.iter().map(|v|vec![*v]).collect() } else { vec![batch] };
                     for batch in commits {
                         let before=model.len();
-                        let store=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),interval);
+                        let store=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),std::num::NonZeroUsize::new(interval).unwrap());
                         if framework { CqrsFramework::new(store,Services::default()).execute(&"history".into(),Command::Adjust(batch[0])).await.unwrap(); }
                         else { let context=store.load_aggregate("history").await.unwrap(); store.commit(batch.iter().map(|v|Delta(*v)).collect(), context, HashMap::new(), &[]).await.unwrap(); }
                         model.extend(batch);
@@ -34,7 +34,7 @@ mod snapshots {
                         if let Some(last)=boundaries.last() { watermark = *last;version+=1; }
                         let snapshot=repo.get_snapshot::<Ledger>("history").await.unwrap();
                         if watermark==0 { assert!(snapshot.is_none()); } else { let snapshot=snapshot.unwrap(); assert_eq!(snapshot.aggregate,serde_json::json!({"history":&model[..watermark], "balance":model[..watermark].iter().map(|v|i64::from(*v)).sum::<i64>()})); assert_eq!(snapshot.last_sequence,watermark);assert_eq!(snapshot.snapshot_version,version); }
-                        let restored=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),interval).load_aggregate("history").await.unwrap();
+                        let restored=PersistedEventStore::<_,Ledger>::new_snapshot_store(repo.clone(),std::num::NonZeroUsize::new(interval).unwrap()).load_aggregate("history").await.unwrap();
                         let replay=PersistedEventStore::<_,Ledger>::new_event_store(repo.clone()).load_aggregate("history").await.unwrap();
                         assert_eq!(restored.aggregate.history,model);assert_eq!(replay.aggregate.history,model);
                         assert_eq!(restored.aggregate.balance,model.iter().map(|v|i64::from(*v)).sum::<i64>());

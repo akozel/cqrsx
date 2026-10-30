@@ -294,20 +294,20 @@ mod tests {
 
     #[test]
     fn a_context_tells_the_handler_its_task_its_attempt_and_the_pause_of_its_retry() {
-        let attempt = attempt(json!({ "correlation_id": "c-1" }));
+        let attempt = attempt(json!({ "correlation_id": "corr-q" }));
         let id = attempt.task_id();
         let ctx = TaskContext::new(attempt, Duration::from_millis(1500));
         assert_eq!(ctx.task_id(), id);
         assert_eq!(ctx.attempt().number(), 3);
         assert_eq!(ctx.attempt().format(), &TaskFormat::of::<DummyTask>().unwrap());
-        assert_eq!(ctx.attempt().metadata(), &json!({ "correlation_id": "c-1" }));
+        assert_eq!(ctx.attempt().metadata(), &json!({ "correlation_id": "corr-q" }));
         assert_eq!(ctx.retry_pause(), Duration::from_millis(1500));
         let rendered = format!("{ctx:?}");
         assert!(
             rendered.contains(&id.to_string()) && rendered.contains("attempt: 3"),
             "{rendered}"
         );
-        assert!(!rendered.contains("c-1"), "no metadata in diagnostics: {rendered}");
+        assert!(!rendered.contains("corr-q"), "no metadata in diagnostics: {rendered}");
     }
 
     #[test]

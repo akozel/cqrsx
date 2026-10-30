@@ -12,9 +12,8 @@ use crate::{
 };
 use sqlx::PgPool;
 use std::{collections::HashMap, num::NonZeroUsize, sync::Arc};
-use thiserror::Error;
 
-/// Checked snapshot interval, optimistic-conflict policy and aggregate lock limits. Does not read env.
+/// Snapshot interval, optimistic-conflict policy and aggregate lock limits. Does not read env.
 #[derive(Clone, Debug, PartialEq)]
 pub struct PostgresCommandConfig {
     snapshot_interval: NonZeroUsize,
@@ -22,29 +21,20 @@ pub struct PostgresCommandConfig {
     lock_limits: LockLimits,
 }
 
-#[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]
-pub enum PostgresCommandConfigError {
-    #[error("snapshot interval must be positive")]
-    InvalidSnapshotInterval,
-}
-
 impl PostgresCommandConfig {
-    /// `lock_limits` bound how long, and how many, commands wait for one aggregate's lock; pass
-    /// [`LockLimits::default`] for the library's bounds.
-    pub fn new(
-        snapshot_interval: usize,
-        conflict_retry: AggregateConflictRetryPolicy,
-        lock_limits: LockLimits,
-    ) -> Result<Self, PostgresCommandConfigError> {
-        Ok(Self {
-            snapshot_interval: NonZeroUsize::new(snapshot_interval).ok_or(PostgresCommandConfigError::InvalidSnapshotInterval)?,
+    /// A snapshot every `snapshot_interval` events (never zero, so nothing is left to check); `lock_limits` bound how
+    /// long, and how many, commands wait for one aggregate's lock: pass [`LockLimits::default`] for the library's
+    /// bounds.
+    pub fn new(snapshot_interval: NonZeroUsize, conflict_retry: AggregateConflictRetryPolicy, lock_limits: LockLimits) -> Self {
+        Self {
+            snapshot_interval,
             conflict_retry,
             lock_limits,
-        })
+        }
     }
 
-    pub fn snapshot_interval(&self) -> usize {
-        self.snapshot_interval.get()
+    pub fn snapshot_interval(&self) -> NonZeroUsize {
+        self.snapshot_interval
     }
 
     pub fn conflict_retry(&self) -> AggregateConflictRetryPolicy {
@@ -197,25 +187,23 @@ mod tests {
             .connect_lazy("postgres://nobody@localhost/none")
             .unwrap();
         let limits = LockLimits::new(Duration::from_millis(5), 2).unwrap();
-        let config = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), limits).unwrap();
+        let config = PostgresCommandConfig::new(NonZeroUsize::MIN, AggregateConflictRetryPolicy::default(), limits);
         let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ())
             .with_task_planner(NoTasks)
             .with_commit_wakeup(CommitWakeup::new());
         assert_eq!(executor.inner.lock_limits(), limits);
     }
 
+    /// The interval is a `NonZeroUsize`: a zero interval, which made every commit divide by zero, does not compile.
     #[test]
-    fn config_keeps_its_values_and_checks_the_interval() {
+    fn config_keeps_its_values_and_its_interval_is_never_zero() {
         let retry = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
         let limits = LockLimits::new(Duration::from_millis(5), 2).unwrap();
-        let config = PostgresCommandConfig::new(2, retry, limits).unwrap();
-        assert_eq!(config.snapshot_interval(), 2);
+        let every_two = NonZeroUsize::new(2).unwrap();
+        let config = PostgresCommandConfig::new(every_two, retry, limits);
+        assert_eq!(config.snapshot_interval(), every_two);
         assert_eq!(config.conflict_retry(), retry);
         assert_eq!(config.lock_limits(), limits);
-        assert_eq!(
-            PostgresCommandConfig::new(0, retry, limits),
-            Err(PostgresCommandConfigError::InvalidSnapshotInterval)
-        );
     }
 
     /// Notes the outcome of every command.
@@ -239,7 +227,11 @@ mod tests {
             .acquire_timeout(Duration::from_millis(100))
             .connect_lazy("postgres://nobody@127.0.0.1:1/none")
             .unwrap();
-        let config = PostgresCommandConfig::new(1, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap();
+        let config = PostgresCommandConfig::new(
+            NonZeroUsize::MIN,
+            AggregateConflictRetryPolicy::default(),
+            LockLimits::default(),
+        );
         let heard = Arc::new(Heard::default());
         let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ()).with_observer(heard.clone());
         assert_eq!(

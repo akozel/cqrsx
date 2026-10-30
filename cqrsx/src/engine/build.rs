@@ -261,15 +261,16 @@ impl Builder {
             Some(settings) => settings,
             None => Settings::from_lookup(&self.prefix, &*self.lookup, &self.defaults)?,
         };
-        if !self.stores.postgres && self.stores.views != Views::Memory {
+        let durable_views = match self.stores.views {
+            Views::Memory => None,
             #[cfg(feature = "postgres")]
-            let store = if self.stores.views == Views::Postgres {
-                "PostgreSQL"
-            } else {
-                "MongoDB"
-            };
-            #[cfg(not(feature = "postgres"))]
-            let store = "MongoDB";
+            Views::Postgres => Some("PostgreSQL"),
+            #[cfg(feature = "mongodb")]
+            Views::MongoDb => Some("MongoDB"),
+        };
+        if let Some(store) = durable_views
+            && !self.stores.postgres
+        {
             return Err(BuildError::ViewsWithoutJournal(store));
         }
         let setup = Setup::over(self.prefix, self.lookup, settings);

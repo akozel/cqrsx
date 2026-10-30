@@ -52,10 +52,13 @@ async fn snapshot_command_applies_one_event_once() {
         postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
     };
     let db = Database::new().await;
-    let config = PostgresCommandConfig::new(1, Default::default(), LockLimits::default()).unwrap();
+    let config = PostgresCommandConfig::new(std::num::NonZeroUsize::MIN, Default::default(), LockLimits::default());
     let executor = PostgresCommandExecutor::<History>::new(db.pool.clone(), config, ());
     executor.execute(&"history".into(), 7).await.unwrap();
-    let store = PersistedEventStore::<_, History>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 1);
+    let store = PersistedEventStore::<_, History>::new_snapshot_store(
+        PostgresEventRepository::new(db.pool.clone()),
+        std::num::NonZeroUsize::MIN,
+    );
     assert_eq!(store.load_events("history").await.unwrap().len(), 1);
     let context = store.load_aggregate("history").await.unwrap();
     assert_eq!(context.current_sequence, 1);

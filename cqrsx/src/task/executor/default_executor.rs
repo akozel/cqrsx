@@ -1,21 +1,28 @@
 //! Queue-backed invocation and settlement within original lease deadlines.
 use super::lease_budget::{ExecutionPlan, execution_plan};
-use crate::task::{
-    adapter::TaskAdapter,
-    dispatcher::TaskDispatcher,
-    executor::TaskExecutor,
-    policy::Policies,
-    queue::{
-        TaskProcessingError, TaskQueue,
-        lease::LeasedTask,
-        retry::redelivery_backoff,
-        settlement::{SettlementRequest, SettlementResult},
-        storage_config::TaskStorageConfig,
+use crate::{
+    task::{
+        adapter::TaskAdapter,
+        dispatcher::TaskDispatcher,
+        executor::TaskExecutor,
+        policy::Policies,
+        queue::{
+            TaskProcessingError, TaskQueue,
+            lease::LeasedTask,
+            retry::redelivery_backoff,
+            settlement::{SettlementRequest, SettlementResult},
+            storage_config::TaskStorageConfig,
+        },
+        result::TaskResult,
     },
-    result::TaskResult,
+    unwinding::{Panicked, unwinding},
 };
 use std::{sync::Arc, time::Duration};
 use tokio::time::{Instant, sleep_until};
+
+/// The reason a retry of a handler that panicked is settled with: fixed, since the panic's message may hold the payload.
+pub const HANDLER_PANICKED: &str = "handler panicked";
+
 /// Queue-backed executor with checked storage budgets and concrete queue ownership.
 /// Construction performs no I/O and reads no environment variables. Callers
 /// create shared ownership explicitly with `Arc::new` when needed.
@@ -23,6 +30,11 @@ use tokio::time::{Instant, sleep_until};
 /// A retry waits the pause of the task type's policy ([`with_policies`](Self::with_policies)), or the queue's
 /// [`redelivery_backoff`] for a type without one; the handler sees that pause in its context before it answers. A
 /// handler that times out and an attempt the lease cannot fit wait the redelivery backoff whatever the policy.
+///
+/// A handler that panics is the boundary's to catch: the panic is logged (`error`, without its message, the payload or
+/// the lease token) and the attempt is settled as a retry with the reason [`HANDLER_PANICKED`] after the policy's
+/// pause, as if the handler had answered retry; the worker lives on. A handler that always panics spends the task's
+/// attempt budget and the task fails.
 pub struct DefaultTaskExecutor<Q: TaskQueue> {
     queue: Arc<Q>,
     storage_timeout: Duration,
@@ -103,7 +115,16 @@ impl<Q: TaskQueue> TaskExecutor for DefaultTaskExecutor<Q> {
                 reason: "handler timed out".to_owned(),
                 delay: redelivery_backoff(task.attempt().number()),
             },
-            result = dispatcher.dispatch(task.shared_attempt(), retry_pause) => settlement_request(result, retry_pause),
+            answer = unwinding(dispatcher.dispatch(task.shared_attempt(), retry_pause)) => match answer {
+                Ok(result) => settlement_request(result, retry_pause),
+                Err(Panicked) => {
+                    crate::diagnostics::log_task_handler_panic(task.attempt());
+                    SettlementRequest::Retry {
+                        reason: HANDLER_PANICKED.to_owned(),
+                        delay: retry_pause,
+                    }
+                }
+            },
         };
         // Retain a margin before local expiry; queue-side token and database
         // clock checks remain authoritative, including after clock changes.
@@ -336,6 +357,50 @@ mod tests {
                 .await,
             Err(TaskProcessingError::Unavailable)
         );
+    }
+
+    /// Panics on every delivery, with a message that must stay out of the log.
+    struct Panicking;
+
+    impl TaskAdapter for Panicking {
+        fn formats(&self) -> Vec<TaskFormat> {
+            vec![format()]
+        }
+
+        async fn invoke(&self, _: &TaskContext) -> TaskResult {
+            panic!("injected handler panic with a secret");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_handler_panic_is_a_retry_after_the_pause_of_its_policy_logged_without_payload_or_lease_token() {
+        let queue = Arc::new(Queue::default());
+        let executor = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())
+            .with_policies(policies(Retry::fixed(Duration::from_secs(300))));
+        let task = claimed();
+        let (task_id, token) = (task.attempt().task_id(), task.lease().lock_token());
+        let (settled, log) = crate::diagnostics::test_support::capture(executor.execute_and_settle(
+            &dispatcher(Panicking),
+            task,
+            Duration::from_secs(30),
+        ))
+        .await;
+        assert_eq!(settled, Ok(SettlementResult::RetryScheduled));
+        assert_eq!(
+            queue.outcomes.lock().unwrap().as_slice(),
+            [(
+                task_id,
+                SettlementRequest::Retry {
+                    delay: Duration::from_secs(300),
+                    reason: "handler panicked".into()
+                }
+            )]
+        );
+        assert!(log.contains("task handler panicked; the task is retried"), "{log}");
+        assert!(log.contains(&task_id.to_string()) && log.contains("attempt=2"), "{log}");
+        for private in ["secret", "runtime", &token.to_string()] {
+            assert!(!log.contains(private), "{private} in {log}");
+        }
     }
 
     /// The policies binding the dummy task's type to `retry`.

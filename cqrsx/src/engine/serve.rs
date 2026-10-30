@@ -40,11 +40,30 @@ pub enum StartupError {
     ReadSide(#[from] ReadSideStopped),
 }
 
-/// A setting or a module's variable the engine refuses is an invalid configuration; the rest as it is.
+/// A setting, a module's variable, a URL or URI of a store and views without a durable journal are an invalid
+/// configuration; the rest as it is.
 fn built(error: &BuildError) -> String {
-    match error {
-        BuildError::Settings(_) | BuildError::Setup(SetupError::Invalid { .. }) => format!("invalid configuration: {error}"),
-        other => other.to_string(),
+    let invalid = match error {
+        BuildError::Settings(_) | BuildError::Setup(SetupError::Invalid { .. }) | BuildError::ViewsWithoutJournal(_) => true,
+        #[cfg(feature = "postgres")]
+        BuildError::DatabaseUrl { .. } => true,
+        #[cfg(feature = "mongodb")]
+        BuildError::MongoUri { .. } => true,
+        BuildError::Setup(SetupError::Failed(_))
+        | BuildError::AggregateTwice(_)
+        | BuildError::ViewTwice(_)
+        | BuildError::ObserverTwice(_)
+        | BuildError::Policy(_)
+        | BuildError::Tasks(_) => false,
+        #[cfg(feature = "postgres")]
+        BuildError::Pool(_) | BuildError::HistoryPool(_) | BuildError::ProjectionPool(_) => false,
+        #[cfg(feature = "mongodb")]
+        BuildError::MongoClient(_) => false,
+    };
+    if invalid {
+        format!("invalid configuration: {error}")
+    } else {
+        error.to_string()
     }
 }
 
@@ -241,6 +260,7 @@ mod tests {
             })),
             StartupError::Build(BuildError::Setup(SetupError::failed(io::Error::other("no client")))),
             StartupError::Build(BuildError::AggregateTwice("show")),
+            StartupError::Build(BuildError::ViewsWithoutJournal("MongoDB")),
             StartupError::Bind {
                 addr: "127.0.0.1:8080".parse().unwrap(),
                 source: io::Error::other("in use"),
@@ -255,9 +275,38 @@ mod tests {
                 "invalid configuration: ENCORE_TICKET_LIMIT: must be positive",
                 "no client",
                 "the aggregate type `show` is registered twice: one executor per aggregate type",
+                "invalid configuration: the views in MongoDB need the journal in PostgreSQL",
                 "cannot bind 127.0.0.1:8080: in use",
                 "the read side stopped: projection processor halls panicked",
             ]
+        );
+    }
+
+    /// A URL or URI of a store that does not parse is an invalid configuration too.
+    #[test]
+    fn an_unparsable_store_address_is_an_invalid_configuration() {
+        #[cfg(feature = "postgres")]
+        assert_eq!(
+            StartupError::from(BuildError::DatabaseUrl {
+                variable: "SHOP_DATABASE_URL".into(),
+                source: sqlx::Error::Configuration("invalid port number".into()),
+            })
+            .to_string(),
+            "invalid configuration: SHOP_DATABASE_URL: error with configuration: invalid port number"
+        );
+        #[cfg(feature = "mongodb")]
+        assert!(
+            StartupError::from(BuildError::MongoUri {
+                variable: "SHOP_MONGODB_URI".into(),
+                source: ::mongodb::error::Error::custom("no scheme"),
+            })
+            .to_string()
+            .starts_with("invalid configuration: SHOP_MONGODB_URI: ")
+        );
+        #[cfg(feature = "postgres")]
+        assert_eq!(
+            StartupError::from(BuildError::Pool(sqlx::Error::PoolTimedOut)).to_string(),
+            "cannot connect to PostgreSQL: pool timed out while waiting for an open connection"
         );
     }
 

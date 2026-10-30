@@ -45,12 +45,15 @@ pub enum SettlementResult {
 impl SettlementResult {
     /// Applied also includes a durable retry, not just completed work.
     pub fn is_applied(&self) -> bool {
-        !matches!(self, Self::OwnershipLost)
+        match self {
+            Self::OwnershipLost => false,
+            Self::Completed | Self::RetryScheduled | Self::Failed(_) => true,
+        }
     }
     pub fn failure(&self) -> Option<&TaskFailure> {
         match self {
             Self::Failed(failure) => Some(failure),
-            _ => None,
+            Self::OwnershipLost | Self::Completed | Self::RetryScheduled => None,
         }
     }
 }
@@ -96,6 +99,10 @@ mod tests {
         }
         assert!(!SettlementResult::OwnershipLost.is_applied());
         assert!(SettlementResult::OwnershipLost.failure().is_none());
+        assert!(
+            SettlementResult::Failed(failure.clone()).is_applied(),
+            "a failure is a confirmed transition"
+        );
         assert_eq!(SettlementResult::Failed(failure.clone()).failure(), Some(&failure));
         let report = LeaseRecoveryReport::new(2, vec![failure]);
         assert_eq!(report.processed_count(), 3);

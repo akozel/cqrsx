@@ -243,11 +243,13 @@ impl TaskPayload for MailTicket {
     const TASK_VERSION: i32 = 1;
 }
 
-/// A mail service that records the letters and refuses the first `refusals` of them.
+/// A mail service that records the letters, refuses the first `refusals` of them and crashes on the first `crashes`
+/// (the handler panics).
 #[derive(Default)]
 pub(crate) struct Mailbox {
     pub(crate) sent: Mutex<Vec<String>>,
     pub(crate) refusals: AtomicUsize,
+    pub(crate) crashes: AtomicUsize,
 }
 
 impl Mailbox {
@@ -264,6 +266,10 @@ impl TaskHandler<MailTicket> for SendMail {
 
     async fn handle(&self, task: MailTicket, ctx: &TaskContext) -> TaskResult {
         let mailbox = ctx.dependency::<Mailbox>().expect("the build checks the dependencies");
+        let crash = mailbox
+            .crashes
+            .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1));
+        assert!(crash.is_err(), "injected crash of the mail service");
         if mailbox
             .refusals
             .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))

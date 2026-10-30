@@ -71,7 +71,7 @@ async fn snapshot_histories(through_framework: bool) {
                         let before = expected.len();
                         let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(
                             PostgresEventRepository::new(db.pool.clone()),
-                            interval,
+                            std::num::NonZeroUsize::new(interval).unwrap(),
                         );
                         if through_framework {
                             CqrsFramework::new(store, ()).execute(&id, changes[0]).await.unwrap();
@@ -103,7 +103,7 @@ async fn snapshot_histories(through_framework: bool) {
                         }
                         let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(
                             PostgresEventRepository::new(db.pool.clone()),
-                            interval,
+                            std::num::NonZeroUsize::new(interval).unwrap(),
                         );
                         let restored = store.load_aggregate(&id).await.unwrap();
                         let replay =
@@ -138,7 +138,7 @@ async fn incompatible_snapshot_falls_back_to_complete_history_in_postgres() {
     )
     .await
     .unwrap();
-    let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(repo, 2);
+    let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(repo, std::num::NonZeroUsize::new(2).unwrap());
     let context = store.load_aggregate("legacy-snapshot").await.unwrap();
     assert_eq!(context.aggregate, Ledger(vec![1, 2, 3]));
     assert_eq!(context.current_sequence, 3);
@@ -175,10 +175,13 @@ async fn both_adapters_use_explicit_snapshot_watermarks_for_insert_and_update() 
             } else {
                 repo.persist::<Ledger>(&events, update).await.unwrap();
             }
-            let restored = PersistedEventStore::<_, Ledger>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 2)
-                .load_aggregate(&id)
-                .await
-                .unwrap();
+            let restored = PersistedEventStore::<_, Ledger>::new_snapshot_store(
+                PostgresEventRepository::new(db.pool.clone()),
+                std::num::NonZeroUsize::new(2).unwrap(),
+            )
+            .load_aggregate(&id)
+            .await
+            .unwrap();
             assert_eq!(restored.aggregate.0, (1..=sequence as i32).collect::<Vec<_>>());
             assert_eq!(restored.current_sequence, sequence);
         }

@@ -85,7 +85,7 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
                 .unwrap();
             assert_eq!(&found, expected);
         }
-        let store = PersistedEventStore::<_, State>::new_snapshot_store(repository, 2);
+        let store = PersistedEventStore::<_, State>::new_snapshot_store(repository, std::num::NonZeroUsize::new(2).unwrap());
         let context = store.load_aggregate(id).await.unwrap();
         assert_eq!(context.aggregate.value, value);
         assert_eq!(context.current_sequence, sequence);
@@ -94,7 +94,10 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
         let events_only = PersistedEventStore::<_, State>::new_event_store(PostgresEventRepository::new(db.pool.clone()));
         assert_eq!(events_only.load_aggregate(id).await.unwrap().aggregate.value, value);
     }
-    let store = PersistedEventStore::<_, State>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 2);
+    let store = PersistedEventStore::<_, State>::new_snapshot_store(
+        PostgresEventRepository::new(db.pool.clone()),
+        std::num::NonZeroUsize::new(2).unwrap(),
+    );
     let framework = CqrsFramework::new(store, ());
     framework
         .execute_with_metadata(
@@ -113,7 +116,10 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
     assert_eq!(row.get::<String, _>("event_version"), "1");
     assert_eq!(row.get::<Value, _>("payload"), json!({"ValueSet":{"value":50}}));
     assert_eq!(row.get::<Value, _>("metadata"), json!({"correlation_id":"after-fork"}));
-    let store = PersistedEventStore::<_, State>::new_snapshot_store(PostgresEventRepository::new(db.pool.clone()), 2);
+    let store = PersistedEventStore::<_, State>::new_snapshot_store(
+        PostgresEventRepository::new(db.pool.clone()),
+        std::num::NonZeroUsize::new(2).unwrap(),
+    );
     let context = store.load_aggregate("old").await.unwrap();
     assert_eq!(context.aggregate.value, 50);
     assert_eq!(context.current_sequence, 4);

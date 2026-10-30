@@ -246,7 +246,11 @@ async fn forty_parallel_commands_to_one_key_reach_the_view_in_commit_order() {
     let (observer, wakeup, shutdown) = (Arc::new(Recording::default()), CommitWakeup::new(), CancellationToken::new());
     let running = tokio::spawn(processor(&db.pool, "node-a", &observer, &wakeup).run(shutdown.clone()));
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-    let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).unwrap();
+    let config = PostgresCommandConfig::new(
+        std::num::NonZeroUsize::new(10).unwrap(),
+        single_attempt,
+        LockLimits::default(),
+    );
     let executor = Arc::new(PostgresCommandExecutor::<Ledger>::new(db.pool.clone(), config, ()).with_commit_wakeup(wakeup));
     let mut commands = JoinSet::new();
     for value in 1..=40 {

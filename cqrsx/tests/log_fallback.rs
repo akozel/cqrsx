@@ -159,7 +159,11 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         .connect_lazy("postgres://localhost/unused")
         .unwrap();
     pool.close().await;
-    let config = PostgresCommandConfig::new(25, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap();
+    let config = PostgresCommandConfig::new(
+        std::num::NonZeroUsize::new(25).unwrap(),
+        AggregateConflictRetryPolicy::default(),
+        LockLimits::default(),
+    );
     let executor = PostgresCommandExecutor::<ProbeAggregate>::new(pool, config, ());
     assert!(matches!(
         executor.execute(&"private_id".into(), ()).await,

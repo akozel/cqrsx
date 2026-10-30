@@ -205,6 +205,18 @@ pub(crate) fn log_task_failure(task: &crate::task::queue::settlement::TaskFailur
     );
 }
 
+/// A task's handler panicked; the attempt is settled as a retry. Neither the panic's message nor the payload nor the
+/// lease token reach the log: the message may hold the payload, the token fences the lease.
+pub(crate) fn log_task_handler_panic(attempt: &crate::task::attempt::TaskAttempt) {
+    tracing::error!(
+        task_id = %attempt.task_id(),
+        task_type = %safe_type(attempt.format().task_type()),
+        task_version = attempt.format().task_version(),
+        attempt = attempt.number(),
+        "task handler panicked; the task is retried"
+    );
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use std::{

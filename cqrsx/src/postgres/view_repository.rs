@@ -2,7 +2,7 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use super::{
     error::PostgresRepositoryError,
-    event_repository::{decode_usize, encode_bigint},
+    event_repository::{decode_usize, encode_bigint, row_decode_error},
 };
 use crate::cqrs::{
     aggregate::Aggregate,
@@ -12,6 +12,7 @@ use crate::cqrs::{
     },
     store::PersistenceError,
 };
+use serde_json::Value;
 use sqlx::{Pool, Postgres, Row, postgres::PgRow};
 use std::marker::PhantomData;
 
@@ -184,7 +185,7 @@ where
         match row {
             None => Ok(None),
             Some(row) => {
-                let view = serde_json::from_value(row.get("payload"))?;
+                let view = serde_json::from_value(payload(&row)?)?;
                 Ok(Some(view))
             }
         }
@@ -199,9 +200,9 @@ where
         match row {
             None => Ok(None),
             Some(row) => {
-                let version = row.get("version");
-                let last_sequence = decode_usize(row.get("last_sequence"))?;
-                let view = serde_json::from_value(row.get("payload"))?;
+                let version = row.try_get("version").map_err(row_decode_error)?;
+                let last_sequence = decode_usize(row.try_get("last_sequence").map_err(row_decode_error)?)?;
+                let view = serde_json::from_value(payload(&row)?)?;
                 let view_context = ViewContext::new(view_id.to_string(), version, last_sequence);
                 Ok(Some((view, view_context)))
             }
@@ -255,12 +256,18 @@ where
     }
 }
 
-/// A row of `list` or `range`, decoded.
+/// A row of `list` or `range`, decoded. A column the table lacks or holds in another type is a
+/// `DeserializationError`, as is a payload that is no view.
 fn stored_view<V: serde::de::DeserializeOwned>(row: &PgRow) -> Result<StoredView<V>, PersistenceError> {
     Ok(StoredView {
-        id: row.get("view_id"),
-        version: row.get("version"),
-        last_sequence: decode_usize(row.get("last_sequence"))?,
-        view: serde_json::from_value(row.get("payload"))?,
+        id: row.try_get("view_id").map_err(row_decode_error)?,
+        version: row.try_get("version").map_err(row_decode_error)?,
+        last_sequence: decode_usize(row.try_get("last_sequence").map_err(row_decode_error)?)?,
+        view: serde_json::from_value(payload(row)?)?,
     })
+}
+
+/// The `payload` column of a row, as JSON.
+fn payload(row: &PgRow) -> Result<Value, PersistenceError> {
+    Ok(row.try_get("payload").map_err(row_decode_error)?)
 }

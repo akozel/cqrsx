@@ -234,7 +234,7 @@ impl Cqrs {
 
     /// The store of the commands of `A` in memory: the journal, a snapshot every `snapshot_every` events.
     fn store<A: Aggregate>(&self) -> PersistedEventStore<MemEventRepository, A> {
-        PersistedEventStore::new_snapshot_store(self.memory.journal.clone(), self.settings.snapshot_every().get())
+        PersistedEventStore::new_snapshot_store(self.memory.journal.clone(), self.settings.snapshot_every())
     }
 
     /// The executor of `A` over `store` as every backend builds it: the settings' conflict retry and lock limits, the
@@ -267,12 +267,7 @@ impl Cqrs {
         A::Error: Rejection,
     {
         let settings = &self.settings;
-        let config = PostgresCommandConfig::new(
-            settings.snapshot_every().get(),
-            settings.conflict_retry(),
-            settings.lock_limits(),
-        )
-        .expect("a snapshot interval of a NonZeroUsize is positive");
+        let config = PostgresCommandConfig::new(settings.snapshot_every(), settings.conflict_retry(), settings.lock_limits());
         let executor = PostgresCommandExecutor::new(pool, config, rules)
             .with_task_planner(ReactionsPlanner::<A>::new(self.policies.clone()))
             .with_commit_wakeup(self.wakeup::<A>());

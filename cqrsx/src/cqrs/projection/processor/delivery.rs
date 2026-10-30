@@ -18,14 +18,14 @@
 //! - reserved, queued and handled jobs of a key never exceed `capacity`;
 //! - the std mutex guarding the entries is never held across an `.await`.
 use super::config::DeliveryLimits;
-use crate::cqrs::{aggregate::Aggregate, event::EventEnvelope, event_handler::EventHandler, store::PersistenceError};
+use crate::{
+    cqrs::{aggregate::Aggregate, event::EventEnvelope, event_handler::EventHandler, store::PersistenceError},
+    unwinding::{Panicked, unwinding},
+};
 use async_trait::async_trait;
 use std::{
     collections::{HashMap, VecDeque},
-    future::Future,
-    panic::AssertUnwindSafe,
     sync::{Arc, Mutex, MutexGuard, PoisonError},
-    task::Poll,
     time::Duration,
 };
 use thiserror::Error;
@@ -62,6 +62,17 @@ enum Work<A: Aggregate> {
     Apply(Arc<[EventEnvelope<A>]>),
     /// Rebuild the key's document from its history: always a batch of its own.
     Rebuild { pace: Duration, stop: CancellationToken },
+}
+
+impl<A: Aggregate> Work<A> {
+    /// The live events of an `Apply` job, which joins its neighbours in a batch; `None` for a job that is a batch of
+    /// its own.
+    fn events(&self) -> Option<&[EventEnvelope<A>]> {
+        match self {
+            Self::Apply(events) => Some(events),
+            Self::Rebuild { .. } => None,
+        }
+    }
 }
 
 /// What a handled job did.
@@ -316,21 +327,21 @@ impl<A: Aggregate> Worker<A> {
     fn next_batch(&mut self) -> Option<Vec<Job<A>>> {
         let mut buffers = guarded(&self.inner.buffers);
         let buffer = buffers.get_mut(&self.aggregate_id)?;
-        if buffer.jobs.is_empty() {
+        let Some(first) = buffer.jobs.front() else {
             buffer.worker = false;
             if buffer.users == 0 {
                 buffers.remove(&self.aggregate_id);
             }
             self.finished = true;
             return None;
-        }
-        let take = match buffer.jobs.front().map(|job| &job.work) {
-            Some(Work::Rebuild { .. }) => 1,
-            _ => buffer
+        };
+        let take = match &first.work {
+            Work::Rebuild { .. } => 1,
+            Work::Apply(_) => buffer
                 .jobs
                 .iter()
                 .take(self.inner.limits.max_batch())
-                .take_while(|job| matches!(job.work, Work::Apply(_)))
+                .take_while(|job| job.work.events().is_some())
                 .count(),
         };
         Some(buffer.jobs.drain(..take).collect())
@@ -367,18 +378,7 @@ impl<A: Aggregate> Worker<A> {
                 },
             ] => events,
             _ => {
-                joined = batch
-                    .iter()
-                    .filter_map(|job| {
-                        if let Work::Apply(events) = &job.work {
-                            Some(events.iter())
-                        } else {
-                            None
-                        }
-                    })
-                    .flatten()
-                    .cloned()
-                    .collect();
+                joined = batch.iter().filter_map(|job| job.work.events()).flatten().cloned().collect();
                 &joined
             }
         };
@@ -419,21 +419,6 @@ impl<A: Aggregate> Drop for Worker<A> {
     }
 }
 
-struct Panicked;
-
-/// Polls `future` and turns a panic in any poll into `Err(Panicked)`; a future that panicked is not
-/// polled again.
-async fn unwinding<F: Future>(future: F) -> Result<F::Output, Panicked> {
-    let mut future = std::pin::pin!(future);
-    std::future::poll_fn(
-        move |cx| match std::panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
-            Ok(poll) => poll.map(Ok),
-            Err(_) => Poll::Ready(Err(Panicked)),
-        },
-    )
-    .await
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -441,9 +426,10 @@ mod tests {
     use async_trait::async_trait;
     use std::{
         collections::HashSet,
+        future::Future,
         pin::Pin,
         sync::atomic::{AtomicBool, Ordering},
-        task::{Context, Waker},
+        task::{Context, Poll, Waker},
     };
 
     type Envelope = EventEnvelope<TestAggregate>;

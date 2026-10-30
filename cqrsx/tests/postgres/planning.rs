@@ -100,7 +100,11 @@ impl TaskPlanner<Shelf> for ShelfPlanner {
 
 fn shelf_config(snapshot_interval: usize, attempts: usize) -> PostgresCommandConfig {
     let retry = AggregateConflictRetryPolicy::new(attempts, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-    PostgresCommandConfig::new(snapshot_interval, retry, LockLimits::default()).unwrap()
+    PostgresCommandConfig::new(
+        std::num::NonZeroUsize::new(snapshot_interval).unwrap(),
+        retry,
+        LockLimits::default(),
+    )
 }
 
 fn shelves(pool: &PgPool, snapshot_interval: usize, attempts: usize, planner: ShelfPlanner) -> PostgresCommandExecutor<Shelf> {

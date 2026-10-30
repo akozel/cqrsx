@@ -148,6 +148,11 @@ pub(super) fn encode_bigint(value: usize) -> Result<i64, PostgresRepositoryError
     i64::try_from(value).map_err(|error| PostgresRepositoryError::UnknownError(Box::new(error)))
 }
 
+/// A column a row lacks or holds in another type than the code reads: the table is not what it should be.
+pub(super) fn row_decode_error(error: sqlx::Error) -> PostgresRepositoryError {
+    PostgresRepositoryError::DeserializationError(Box::new(error))
+}
+
 pub(super) fn decode_usize(value: i64) -> Result<usize, PostgresRepositoryError> {
     usize::try_from(value).map_err(|error| PostgresRepositoryError::DeserializationError(Box::new(error)))
 }

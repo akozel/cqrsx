@@ -41,7 +41,7 @@ impl TaskSchedule {
     fn validate(&self) -> Result<(), TaskValidationError> {
         match self {
             Self::After(delay) if delay.as_millis() > i64::MAX as u128 => Err(TaskValidationError::InvalidSchedule),
-            _ => Ok(()),
+            Self::After(_) | Self::Now | Self::At(_) => Ok(()),
         }
     }
 }
@@ -55,6 +55,8 @@ pub struct NewTask {
     format: TaskFormat,
     payload: Value,
     metadata: Value,
+    /// The keys [`new`](Self::new) moved from the payload to the metadata, which `with_metadata` keeps.
+    labels: &'static [&'static str],
     schedule: TaskSchedule,
     max_attempts: i32,
 }
@@ -70,6 +72,7 @@ impl NewTask {
         }
         let mut task = task?;
         move_labels(T::LABELS, &mut task.payload, &mut task.metadata);
+        task.labels = T::LABELS;
         Ok(task)
     }
     /// Dynamic producers must still supply an object and a validated format.
@@ -80,6 +83,7 @@ impl NewTask {
             format,
             payload,
             metadata: json!({}),
+            labels: &[],
             schedule: TaskSchedule::Now,
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
@@ -89,9 +93,19 @@ impl NewTask {
         self.schedule = schedule;
         Ok(self)
     }
+    /// Replaces the metadata with `metadata`, an object, but keeps the labels [`new`](Self::new) moved here from the
+    /// payload: the handler decodes the payload with them, so a label is never lost, and a key of `metadata` that names
+    /// a label keeps the label's value. A task without labels gets `metadata` as it is.
     pub fn with_metadata(mut self, metadata: Value) -> Result<Self, TaskValidationError> {
-        validate_metadata(&metadata)?;
-        self.metadata = metadata;
+        let Value::Object(mut metadata) = metadata else {
+            return Err(TaskValidationError::MetadataNotObject);
+        };
+        for label in self.labels {
+            if let Some(value) = self.metadata.get_mut(*label).map(Value::take) {
+                metadata.insert((*label).to_owned(), value);
+            }
+        }
+        self.metadata = Value::Object(metadata);
         Ok(self)
     }
     /// Insert `entries` into the metadata object, replacing equal keys. Metadata is always an
@@ -221,6 +235,7 @@ mod tests {
         assert!(task.clone().with_metadata(json!([])).is_err());
         assert!(task.clone().with_max_attempts(0).is_err());
         assert!(task.clone().scheduled(TaskSchedule::After(Duration::MAX)).is_err());
+        assert!(task.clone().scheduled(TaskSchedule::Now).is_ok());
         assert!(task.scheduled(TaskSchedule::At(Utc::now())).is_ok());
         assert_eq!(TaskFormat::new("", 1), Err(TaskFormatError::EmptyType));
         assert_eq!(TaskFormat::new("valid", 0), Err(TaskFormatError::InvalidVersion));
@@ -297,6 +312,41 @@ mod tests {
         assert_eq!(
             (first.payload(), first.metadata()),
             (&json!({ "value": "runtime" }), &json!({ "correlation_id": "c-1" }))
+        );
+    }
+
+    /// `with_metadata` replaced the metadata whole and lost the labels: the handler could not decode the task any more.
+    #[test]
+    fn metadata_of_the_caller_keeps_the_labels_and_a_label_keeps_its_value() {
+        let labelled = NewTask::new(Labelled {
+            amount: 80,
+            tenant: "acme",
+        })
+        .unwrap();
+        assert_eq!(
+            labelled.clone().with_metadata(json!({ "trace": "t-1" })).unwrap().metadata(),
+            &json!({ "trace": "t-1", "tenant": "acme" })
+        );
+        let renamed = labelled
+            .with_metadata(json!({ "tenant": "other", "trace": "t-1" }))
+            .unwrap()
+            .with_metadata(json!({ "trace": "t-2" }))
+            .unwrap();
+        assert_eq!(
+            renamed.metadata(),
+            &json!({ "trace": "t-2", "tenant": "acme" }),
+            "the label keeps its value, the caller's keys are replaced"
+        );
+        assert_eq!(
+            restore_labels(Labelled::LABELS, renamed.payload(), renamed.metadata()),
+            json!({ "amount": 80, "tenant": "acme" }),
+            "the body decodes as it was"
+        );
+        let unlabelled = NewTask::new(DummyTask { value: "runtime" }).unwrap();
+        assert_eq!(
+            unlabelled.with_metadata(json!({ "tenant": "t-1" })).unwrap().metadata(),
+            &json!({ "tenant": "t-1" }),
+            "without labels the metadata is the caller's"
         );
     }
 

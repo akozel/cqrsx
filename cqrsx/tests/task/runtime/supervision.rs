@@ -1,43 +1,64 @@
 use super::*;
+use cqrsx::task::{
+    executor::{TaskExecutor, default_executor::HANDLER_PANICKED},
+    policy::{Policies, PolicyName, Retry, TaskPolicy},
+};
+
+/// An executor of one's own that panics on its first attempt, outside every handler, so that its worker dies: what the
+/// supervisor's restart still guards against. Records the Tokio task of every attempt; may ask for shutdown first.
+struct PanicOnce {
+    inner: DefaultTaskExecutor<Queue>,
+    attempts: AtomicUsize,
+    workers: std::sync::Mutex<Vec<Id>>,
+    stop: Option<CancellationToken>,
+}
+
+impl PanicOnce {
+    fn new(queue: Arc<Queue>, stop: Option<CancellationToken>) -> Self {
+        Self {
+            inner: DefaultTaskExecutor::new(queue, TaskStorageConfig::default()),
+            attempts: AtomicUsize::new(0),
+            workers: std::sync::Mutex::default(),
+            stop,
+        }
+    }
+}
+
+impl TaskExecutor for PanicOnce {
+    fn storage_timeout(&self) -> Duration {
+        self.inner.storage_timeout()
+    }
+
+    async fn execute_and_settle<A: TaskAdapter>(
+        &self,
+        dispatcher: &TaskDispatcher<A>,
+        task: LeasedTask,
+        handler_timeout: Duration,
+    ) -> Result<SettlementResult, TaskProcessingError> {
+        self.workers.lock().unwrap().push(tokio::task::id());
+        if self.attempts.fetch_add(1, Ordering::SeqCst) == 0 {
+            if let Some(stop) = &self.stop {
+                stop.cancel();
+            }
+            panic!("injected executor panic");
+        }
+        self.inner.execute_and_settle(dispatcher, task, handler_timeout).await
+    }
+}
 
 #[tokio::test]
 async fn cancellation_before_a_restart_does_not_start_a_replacement_worker() {
-    /// Asks for shutdown and panics on its first delivery; counts the deliveries after it.
-    struct CancelThenPanic {
-        stop: CancellationToken,
-        deliveries: AtomicUsize,
-        after_panic: Arc<AtomicUsize>,
-    }
-
-    impl TaskAdapter for CancelThenPanic {
-        fn formats(&self) -> Vec<TaskFormat> {
-            vec![format()]
-        }
-        async fn invoke(&self, _: &TaskContext) -> TaskResult {
-            if self.deliveries.fetch_add(1, Ordering::SeqCst) == 0 {
-                self.stop.cancel();
-                panic!("injected worker panic");
-            }
-            self.after_panic.fetch_add(1, Ordering::SeqCst);
-            TaskResult::Done
-        }
-    }
     let queue = Arc::new(Queue::default());
     queue.incoming.lock().unwrap().extend([claimed(), claimed()]);
     let stop = CancellationToken::new();
     let replacement_calls = Arc::new(AtomicUsize::new(0));
-    let dispatcher = TaskDispatcher::try_new(vec![CancelThenPanic {
-        stop: stop.clone(),
-        deliveries: AtomicUsize::new(0),
-        after_panic: replacement_calls.clone(),
-    }])
-    .unwrap();
+    let executor = Arc::new(PanicOnce::new(queue.clone(), Some(stop.clone())));
     tokio::time::timeout(
         Duration::from_secs(5),
         run(
             queue.clone(),
-            Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())),
-            dispatcher,
+            executor.clone(),
+            TaskDispatcher::try_new(vec![CountingAdapter(replacement_calls.clone())]).unwrap(),
             worker_config(1, 1, Duration::from_secs(3600)),
             stop.clone(),
         ),
@@ -46,12 +67,13 @@ async fn cancellation_before_a_restart_does_not_start_a_replacement_worker() {
     .unwrap()
     .unwrap();
     assert!(stop.is_cancelled());
+    assert_eq!(executor.attempts.load(Ordering::SeqCst), 1);
     assert_eq!(replacement_calls.load(Ordering::SeqCst), 0);
     assert!(queue.outcomes.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
-async fn supervisor_recovers_workers_and_survives_storage_errors_and_lost_acknowledgements() {
+async fn supervisor_survives_a_handler_panic_storage_errors_and_lost_acknowledgements() {
     let queue = Arc::new(Queue::default());
     queue.claim_error.store(true, Ordering::SeqCst);
     queue.recovery_error.store(true, Ordering::SeqCst);
@@ -86,15 +108,19 @@ async fn supervisor_recovers_workers_and_survives_storage_errors_and_lost_acknow
     queue.claim_error.store(false, Ordering::SeqCst);
     queue.recovery_error.store(false, Ordering::SeqCst);
     queue.incoming.lock().unwrap().extend([claimed(), claimed()]);
-    wait_until(|| calls.load(Ordering::SeqCst) >= 2 && !queue.outcomes.lock().unwrap().is_empty()).await;
+    // The panic of the first delivery is a retry; the same worker takes the second.
+    wait_until(|| calls.load(Ordering::SeqCst) == 2 && queue.outcomes.lock().unwrap().len() == 2).await;
+    assert!(
+        matches!(&queue.outcomes.lock().unwrap()[..], [(_, SettlementRequest::Retry { reason, .. }), (_, SettlementRequest::Completed)] if reason == HANDLER_PANICKED)
+    );
     // An acknowledgement failure leaves durable recovery to the queue's lease mechanism.
     queue.settle_error.store(true, Ordering::SeqCst);
     queue.incoming.lock().unwrap().push_back(claimed());
-    wait_until(|| queue.outcomes.lock().unwrap().len() >= 2).await;
+    wait_until(|| queue.outcomes.lock().unwrap().len() == 3).await;
     queue.settle_error.store(false, Ordering::SeqCst);
     queue.lost_owner.store(true, Ordering::SeqCst);
     queue.incoming.lock().unwrap().push_back(claimed());
-    wait_until(|| queue.outcomes.lock().unwrap().len() >= 3).await;
+    wait_until(|| queue.outcomes.lock().unwrap().len() == 4).await;
     stop.cancel();
     supervisor_task.await.unwrap().unwrap();
     assert_eq!(calls.load(Ordering::SeqCst), 4);
@@ -179,44 +205,118 @@ async fn sequential_deliveries_preserve_dispatcher_state_and_tokio_task_identity
     supervisor_task.await.unwrap().unwrap();
 }
 
-#[tokio::test]
-async fn panic_restarts_without_poll_tick_with_the_shared_dispatcher_and_a_new_task() {
-    /// Panics on its first delivery; records the dispatcher and the Tokio task of every delivery.
-    struct PanicFirstRegistry {
-        dispatcher: usize,
-        deliveries: AtomicUsize,
-        records: Arc<std::sync::Mutex<Vec<(usize, Id)>>>,
-    }
+/// Panics on its first delivery; records the dispatcher and the Tokio task of every delivery.
+struct PanicFirstRegistry {
+    dispatcher: usize,
+    deliveries: AtomicUsize,
+    records: Arc<std::sync::Mutex<Vec<(usize, Id)>>>,
+}
 
-    impl TaskAdapter for PanicFirstRegistry {
-        fn formats(&self) -> Vec<TaskFormat> {
-            vec![format()]
-        }
-        async fn invoke(&self, _: &TaskContext) -> TaskResult {
-            self.records.lock().unwrap().push((self.dispatcher, tokio::task::id()));
-            assert_ne!(self.deliveries.fetch_add(1, Ordering::SeqCst), 0, "injected failure");
-            TaskResult::Done
-        }
+impl TaskAdapter for PanicFirstRegistry {
+    fn formats(&self) -> Vec<TaskFormat> {
+        vec![format()]
     }
-    let queue = Arc::new(Queue::default());
-    queue.incoming.lock().unwrap().extend([claimed(), claimed()]);
-    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
-    let built = Arc::new(AtomicUsize::new(0));
-    let dispatcher = TaskDispatcher::try_new(vec![PanicFirstRegistry {
+    async fn invoke(&self, _: &TaskContext) -> TaskResult {
+        self.records.lock().unwrap().push((self.dispatcher, tokio::task::id()));
+        assert_ne!(self.deliveries.fetch_add(1, Ordering::SeqCst), 0, "injected failure");
+        TaskResult::Done
+    }
+}
+
+/// A dispatcher over a `PanicFirstRegistry`; `built` counts the dispatchers built.
+fn panic_first_dispatcher(
+    built: &AtomicUsize,
+    records: &Arc<std::sync::Mutex<Vec<(usize, Id)>>>,
+) -> TaskDispatcher<PanicFirstRegistry> {
+    TaskDispatcher::try_new(vec![PanicFirstRegistry {
         dispatcher: built.fetch_add(1, Ordering::SeqCst),
         deliveries: AtomicUsize::new(0),
         records: records.clone(),
     }])
-    .unwrap();
+    .unwrap()
+}
+
+/// A handler's panic is caught at the dispatch: its task is settled as a retry after the pause of its type's policy,
+/// and the worker that ran it takes the next task, in the same Tokio task.
+#[tokio::test]
+async fn a_handler_panic_retries_its_task_after_the_policy_pause_and_the_worker_lives_on() {
+    const DUMMY: PolicyName = PolicyName::new("dummy");
+    let policies = Policies::default()
+        .with_policy(DUMMY, TaskPolicy::new(Retry::fixed(Duration::from_secs(7)), 3).unwrap())
+        .unwrap()
+        .with_task::<DummyTask>(DUMMY)
+        .unwrap();
+    let queue = Arc::new(Queue::default());
+    let (first, second) = (claimed(), claimed());
+    let ids = (first.attempt().task_id(), second.attempt().task_id());
+    queue.incoming.lock().unwrap().extend([first, second]);
+    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let built = AtomicUsize::new(0);
+    let runtime = cqrsx::task::runtime::prepare(
+        queue.clone(),
+        panic_first_dispatcher(&built, &records),
+        cqrsx::task::runtime::config::TaskRuntimeConfig::new(
+            TaskStorageConfig::default(),
+            worker_config(1, 1, Duration::from_secs(3600)),
+        )
+        .unwrap(),
+        policies,
+    );
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
-    let supervisor_task =
-        tokio::spawn(prepared_runtime(queue.clone(), dispatcher, worker_config(1, 1, Duration::from_secs(3600))).run(shutdown));
-    wait_until(|| queue.outcomes.lock().unwrap().len() == 1).await;
+    let supervisor_task = tokio::spawn(runtime.run(shutdown));
+    wait_until(|| queue.outcomes.lock().unwrap().len() == 2).await;
+    assert_eq!(
+        queue.outcomes.lock().unwrap().as_slice(),
+        [
+            (
+                ids.0,
+                SettlementRequest::Retry {
+                    delay: Duration::from_secs(7),
+                    reason: HANDLER_PANICKED.into()
+                }
+            ),
+            (ids.1, SettlementRequest::Completed)
+        ]
+    );
     let records = records.lock().unwrap().clone();
     assert_eq!(built.load(Ordering::SeqCst), 1);
-    assert_eq!((records[0].0, records[1].0), (0, 0));
-    assert_ne!(records[0].1, records[1].1);
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0], records[1], "one dispatcher, one worker: the panic did not end it");
+    assert!(!stop.is_cancelled(), "a handler panic must not cancel the host");
+    stop.cancel();
+    supervisor_task.await.unwrap().unwrap();
+}
+
+/// The last line of defence: a worker that dies outside every handler (here in an executor of one's own) is replaced
+/// at once, without waiting for a poll tick, by a new Tokio task with the shared dispatcher.
+#[tokio::test]
+async fn a_worker_that_dies_restarts_without_poll_tick_with_the_shared_dispatcher_and_a_new_task() {
+    let queue = Arc::new(Queue::default());
+    queue.incoming.lock().unwrap().extend([claimed(), claimed()]);
+    let records = Arc::new(std::sync::Mutex::new(Vec::new()));
+    let built = AtomicUsize::new(0);
+    let executor = Arc::new(PanicOnce::new(queue.clone(), None));
+    let shutdown = CancellationToken::new();
+    let stop = shutdown.clone();
+    let supervisor_task = tokio::spawn(run(
+        queue.clone(),
+        executor.clone(),
+        panic_first_dispatcher(&built, &records),
+        worker_config(1, 1, Duration::from_secs(3600)),
+        shutdown,
+    ));
+    wait_until(|| queue.outcomes.lock().unwrap().len() == 1).await;
+    let workers = executor.workers.lock().unwrap().clone();
+    assert_eq!(workers.len(), 2);
+    assert_ne!(workers[0], workers[1], "the replacement is a new Tokio task");
+    let records = records.lock().unwrap().clone();
+    assert_eq!(built.load(Ordering::SeqCst), 1);
+    assert_eq!(
+        records,
+        [(0, workers[1])],
+        "the replacement delivers with the shared dispatcher"
+    );
     assert_eq!(queue.recovery_calls.load(Ordering::SeqCst), 1);
     assert!(!stop.is_cancelled(), "a worker panic must not cancel the host");
     stop.cancel();

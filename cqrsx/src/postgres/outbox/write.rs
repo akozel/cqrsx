@@ -69,7 +69,10 @@ pub(super) async fn persist_one<A: Aggregate>(
     sequence: i64,
     snapshot: SnapshotWrite,
 ) -> Result<(), PersistenceError> {
-    let has_snapshot = !matches!(snapshot, SnapshotWrite::None);
+    let has_snapshot = match snapshot {
+        SnapshotWrite::None => false,
+        SnapshotWrite::Insert { .. } | SnapshotWrite::Update { .. } => true,
+    };
     let mut query = QueryBuilder::<Postgres>::new("WITH ");
     append_snapshot::<A>(&snapshot, &mut query);
     query.push("written_events AS (INSERT INTO events (aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata) ");
@@ -117,7 +120,9 @@ pub(super) async fn persist_one<A: Aggregate>(
     // event follows) with one.
     match snapshot {
         SnapshotWrite::None => query.push(" SELECT (SELECT COUNT(*) FROM written_events)::bigint AS written"),
-        _ => query.push(" SELECT COUNT(*)::bigint AS written FROM written_snapshot"),
+        SnapshotWrite::Insert { .. } | SnapshotWrite::Update { .. } => {
+            query.push(" SELECT COUNT(*)::bigint AS written FROM written_snapshot")
+        }
     };
     let row = query.build().fetch_one(pool).await.map_err(map_sqlx_error)?;
     match row.try_get::<i64, _>("written").map_err(map_sqlx_error)? {

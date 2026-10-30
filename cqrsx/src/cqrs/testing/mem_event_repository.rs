@@ -624,7 +624,10 @@ mod tests {
     async fn held_loads_wait_for_a_permit_and_the_rest_of_the_journal_does_not() {
         let journal = MemEventRepository::default();
         journal.persist::<Ledger>(&[delta("a", 1, 3)], None).await.unwrap();
-        let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(journal.clone(), 10);
+        let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(
+            journal.clone(),
+            crate::cqrs::store::persisted::tests::every(10),
+        );
         let gate = journal.hold_loads();
         let mut load = Box::pin(store.load_aggregate("a"));
         let waiting = std::future::poll_fn(|cx| std::task::Poll::Ready(load.as_mut().poll(cx).is_pending())).await;

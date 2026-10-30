@@ -73,7 +73,11 @@ impl Decide<CommandAggregate> for Command {
 
 /// The default retry policy and lock limits.
 fn config(interval: usize) -> PostgresCommandConfig {
-    PostgresCommandConfig::new(interval, AggregateConflictRetryPolicy::default(), LockLimits::default()).unwrap()
+    PostgresCommandConfig::new(
+        std::num::NonZeroUsize::new(interval).unwrap(),
+        AggregateConflictRetryPolicy::default(),
+        LockLimits::default(),
+    )
 }
 
 fn record(value: &str, expected_count: usize) -> Command {
@@ -392,7 +396,8 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     assert_eq!(snapshot.aggregate, json!({"values": ["first", "second"]}));
     // The third and fourth calls require state from the snapshot, then its tail.
     executor.execute(&"snapshot".into(), record("third", 2)).await.unwrap();
-    let store = PersistedEventStore::<_, CommandAggregate>::new_snapshot_store(repository, 2);
+    let store =
+        PersistedEventStore::<_, CommandAggregate>::new_snapshot_store(repository, std::num::NonZeroUsize::new(2).unwrap());
     let context = store.load_aggregate("snapshot").await.unwrap();
     assert_eq!(context.current_sequence, 3);
     assert_eq!(context.aggregate.values, vec!["first", "second", "third"]);
@@ -492,7 +497,11 @@ async fn rules_decide_and_the_metadata_is_stored_with_every_event() {
 async fn aggregate_locks_accept_forty_parallel_commands_without_conflicts() {
     let db = Database::new().await;
     let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-    let config = PostgresCommandConfig::new(10, single_attempt, LockLimits::default()).unwrap();
+    let config = PostgresCommandConfig::new(
+        std::num::NonZeroUsize::new(10).unwrap(),
+        single_attempt,
+        LockLimits::default(),
+    );
     let executor = Arc::new(PostgresCommandExecutor::<CappedAggregate>::new(
         db.pool.clone(),
         config,

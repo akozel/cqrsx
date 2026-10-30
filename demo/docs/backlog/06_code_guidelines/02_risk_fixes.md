@@ -76,6 +76,47 @@
 
 ## Критерии приёмки
 
-- [ ] 11 пунктов исправлены, у каждого тест.
-- [ ] Изменения поведения (п. 2, 3, 5, 6) перечислены в сообщении коммита и в README эпика.
-- [ ] Тексты SQL и `GET /api/config` demo не изменились.
+- [x] 11 пунктов исправлены, у каждого тест.
+- [ ] Изменения поведения (п. 2, 3, 5, 6) перечислены в сообщении коммита и в README эпика. README — да; сообщение
+  коммита — при коммите.
+- [x] Тексты SQL и `GET /api/config` demo не изменились.
+
+## Результаты
+
+Сделано 2026-10-30 на HEAD `a270a06` поверх правок задачи 01 в рабочем дереве (коммита ещё нет). Тексты SQL не
+менялись; `GET /api/config` demo тот же (`snapshot_every` по-прежнему число).
+
+| п. | Что сделано | Тест |
+|---|---|---|
+| 1 | `SnapshotPolicy::Every(NonZeroUsize)`; `new_snapshot_store(repo, NonZeroUsize)`; `PostgresCommandConfig::new(NonZeroUsize, …) -> Self`, геттер отдаёт `NonZeroUsize`; `PostgresCommandConfigError` и `expect` в `engine.rs` удалены | `postgres::command::tests::config_keeps_its_values_and_its_interval_is_never_zero`; ноль больше не компилируется |
+| 2 | `unwinding` переехал в общий `src/unwinding.rs`; `DefaultTaskExecutor` оборачивает им `dispatch`: `error!` без сообщения panic, payload и lease token, `Retry` с причиной `HANDLER_PANICKED` (`"handler panicked"`) и паузой политики | `default_executor::tests::a_handler_panic_is_a_retry_after_the_pause_of_its_policy_logged_without_payload_or_lease_token`; `engine::memory::tests::a_handler_that_always_panics_spends_the_budget_of_its_policy_and_its_task_fails` (паузы 1, 2, 4, 8, 8 с, шесть попыток, `Failed`); `tests/task/runtime/supervision.rs`: `a_handler_panic_retries_its_task_after_the_policy_pause_and_the_worker_lives_on` (вместо `panic_restarts_…`), `supervisor_survives_a_handler_panic_storage_errors_and_lost_acknowledgements` |
+| 2 | перезапуск worker проверяется смертью вне обработчика: свой `TaskExecutor`, который паникует один раз | `a_worker_that_dies_restarts_without_poll_tick_with_the_shared_dispatcher_and_a_new_task`, `cancellation_before_a_restart_does_not_start_a_replacement_worker` |
+| 3 | `assert!` в supervisor заменены функцией `admit`: лишние задачи сверх `limit` — `error!` с названием контракта `TaskQueue::claim`, берётся `limit`; задача, не вошедшая в канал, — `error!`; цикл продолжается | `supervisor::tests::a_queue_that_claims_beyond_the_limit_is_logged_and_the_runtime_goes_on`, `a_task_that_does_not_fit_the_channel_is_logged_and_dropped` |
+| 4 | `try_get` + `row_decode_error` (переехал в `event_repository.rs`, общий с `read.rs`) во всех чтениях `PostgresViewRepository` | `tests/postgres/projection.rs::columns_of_other_types_are_deserialization_errors_not_panics` (`version integer`, `payload text`) |
+| 5 | вариант «labels сохраняются»: `NewTask` помнит `T::LABELS`, `with_metadata` заменяет metadata, но возвращает в неё labels; ключ вызывающего с именем label получает значение label (иначе payload не декодируется). Описано в документации метода | `task::tests::metadata_of_the_caller_keeps_the_labels_and_a_label_keeps_its_value` |
+| 6 | `built()` перечисляет все варианты `BuildError`; `DatabaseUrl`, `MongoUri`, `ViewsWithoutJournal` — с префиксом `invalid configuration:`. Эталонов demo с этим текстом нет | `engine::serve::tests::startup_errors_read_as_the_process_wrote_them`, `an_unparsable_store_address_is_an_invalid_configuration` |
+| 7 | `Self::After(_) \| Self::Now \| Self::At(_) => Ok(())` | `task::tests::construction_validates_format_objects_attempts_and_schedule` (+ `Now`) |
+| 8 | `next_batch` сопоставляет `Work` полностью; объединение пакета — через `Work::events()` с полным `match` | тесты `delivery.rs` о пакетах и rebuild |
+| 9 | `is_applied` и `failure` перечисляют варианты | `settlement::tests::confirmed_results_and_recovery_counts_are_unambiguous` (+ `Failed` применён) |
+| 10 | `SnapshotWrite`: `Insert { .. } \| Update { .. }`; `Views`: `match` с тремя вариантами | `views_outside_memory_need_the_journal_in_postgres`, тесты outbox со снимком и без |
+| 11 | документация `set_error_observer`: наблюдатель видит ошибки `load`, `handle`, `rebuild`, ошибка всё равно возвращается; пример логирует, а не паникует | `a_gap_fails_without_writing`, `failures_are_reported_once_and_never_save_partial_views` |
+
+Тесты пп. 1–6 падают на прежнем коде (п. 1 — не компилируется). Пункты 7–11 поведения не меняют: защита в том, что
+новый вариант enum ломает сборку, поэтому тест, который падал бы на прежнем коде, невозможен; тесты закрепляют
+нынешнее поведение для каждого варианта.
+
+**Изменения поведения:** пп. 2, 3, 5, 6 — перечислены в [README эпика](README.md#изменения-поведения).
+
+**Вне задачи (разрешено):** тест `task::context::tests::a_context_tells_the_handler_its_task_its_attempt_and_the_pause_of_its_retry`
+проверял, что Debug не содержит `c-1`, а случайный UUID может его содержать; идентификатор корреляции заменён на
+`corr-q` (нешестнадцатеричные буквы).
+
+**Проверки** (все с кодом 0): build, fmt, clippy `-D warnings`, полные тесты workspace (6 543 прошли, 0 упало),
+`-p cqrsx --no-default-features` без features и с каждой из `postgres`, `worker`, `host`, `logging`, `mongodb`,
+`http`; покрытие строк — workspace 98,02 %, `cqrsx` 97,92 % (после задачи 01 было 98,06 % и 97,97 %); demo — fmt,
+build, clippy `-D warnings`, тесты без feature `load` и с ней. Новые тесты supervisor и исполнителя прогнаны ещё 10 раз
+подряд — стабильны.
+
+**Документация:** `cqrsx/doc/components.md` — интервал снимков `NonZeroUsize`, без `PostgresCommandConfigError`;
+panic обработчика у исполнителя; перезапуск и нарушение контракта `TaskQueue` у supervisor; `with_metadata` и labels;
+префикс `invalid configuration:`; ошибки типов колонок у `PostgresViewRepository`.

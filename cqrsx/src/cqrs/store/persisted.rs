@@ -15,12 +15,13 @@ use crate::{
     },
     task::NewTask,
 };
-use std::{collections::HashMap, marker::PhantomData, sync::Arc};
+use std::{collections::HashMap, marker::PhantomData, num::NonZeroUsize, sync::Arc};
 
 #[derive(Clone, Copy, PartialEq)]
 enum SnapshotPolicy {
     Disabled,
-    Every(usize),
+    /// A snapshot every this many events: never zero, so a commit never divides by it.
+    Every(NonZeroUsize),
 }
 
 impl SnapshotPolicy {
@@ -28,6 +29,7 @@ impl SnapshotPolicy {
         match self {
             Self::Disabled => 0,
             Self::Every(snapshot_interval) => {
+                let snapshot_interval = snapshot_interval.get();
                 let next_snapshot_at = snapshot_interval - (current_sequence % snapshot_interval);
                 if num_events < next_snapshot_at {
                     0
@@ -242,7 +244,8 @@ where
     }
 
     /// Creates a new `PersistedEventStore` from the provided event repository,
-    /// using events and aggregate snapshots as the source of truth.
+    /// using events and aggregate snapshots as the source of truth: a snapshot every `snapshot_interval` events,
+    /// which is never zero.
     ///
     /// ```
     /// # mod example {
@@ -388,13 +391,15 @@ where
     /// # use example::MyEventRepository;
     /// # use cqrsx::cqrs::CqrsFramework;
     /// # use cqrsx::cqrs::store::persisted::PersistedEventStore;
+    /// # use std::num::NonZeroUsize;
     /// # fn config(my_db_connection: MyDatabaseConnection) {
+    /// const SNAPSHOT_EVERY: NonZeroUsize = NonZeroUsize::new(100).unwrap();
     /// let repo = MyEventRepository::new(my_db_connection);
-    /// let store = PersistedEventStore::<MyEventRepository,MyAggregate>::new_snapshot_store(repo, 100);
+    /// let store = PersistedEventStore::<MyEventRepository,MyAggregate>::new_snapshot_store(repo, SNAPSHOT_EVERY);
     /// let cqrs = CqrsFramework::new(store, MyService);
     /// # }
     /// ```
-    pub fn new_snapshot_store(repo: R, snapshot_interval: usize) -> Self {
+    pub fn new_snapshot_store(repo: R, snapshot_interval: NonZeroUsize) -> Self {
         Self {
             repo,
             snapshot_policy: SnapshotPolicy::Every(snapshot_interval),
@@ -422,7 +427,7 @@ where
     pub(crate) fn snapshot_interval(&self) -> Option<usize> {
         match self.snapshot_policy {
             SnapshotPolicy::Disabled => None,
-            SnapshotPolicy::Every(interval) => Some(interval),
+            SnapshotPolicy::Every(interval) => Some(interval.get()),
         }
     }
 
@@ -619,7 +624,12 @@ pub(in crate::cqrs) mod tests {
         },
     };
     use serde::{Deserialize, Serialize};
-    use std::{collections::HashMap, sync::Mutex};
+    use std::{collections::HashMap, num::NonZeroUsize, sync::Mutex};
+
+    /// A snapshot interval of `events` events, which is positive in every test.
+    pub(in crate::cqrs) fn every(events: usize) -> NonZeroUsize {
+        NonZeroUsize::new(events).expect("a snapshot interval of a test is positive")
+    }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
     pub(in crate::cqrs) enum TestEvents {
@@ -940,13 +950,14 @@ pub(in crate::cqrs) mod tests {
         use crate::cqrs::store::persisted::tests::TEST_AGGREGATE_ID;
         use crate::cqrs::store::persisted::tests::TestAggregate;
         use crate::cqrs::store::persisted::tests::TestEvents;
+        use crate::cqrs::store::persisted::tests::every;
         use crate::cqrs::store::persisted::tests::test_serialized_event;
         use crate::cqrs::store::snapshot::SerializedSnapshot;
 
         #[tokio::test]
         async fn load() {
             let repo = MockRepo::with_events(Ok(vec![test_serialized_event(1, TestEvents::SomethingWasDone)]));
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let events = store.load_events(TEST_AGGREGATE_ID).await.unwrap();
             let event = events.first().unwrap();
             assert_eq!(1, event.sequence);
@@ -957,7 +968,7 @@ pub(in crate::cqrs) mod tests {
         #[tokio::test]
         async fn load_error() {
             let repo = MockRepo::with_events(Err(PersistenceError::OptimisticLockError));
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let result = store.load_events(TEST_AGGREGATE_ID).await.unwrap_err();
             match result {
                 AggregateError::AggregateConflict => {}
@@ -968,7 +979,7 @@ pub(in crate::cqrs) mod tests {
         #[tokio::test]
         async fn load_aggregate_new() {
             let repo = MockRepo::with_last_events(Ok(vec![]), Ok(None));
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let snapshot_context = store.load_aggregate(TEST_AGGREGATE_ID).await.unwrap();
             assert_eq!(None, snapshot_context.snapshot_version);
             assert_eq!(0, snapshot_context.current_sequence);
@@ -987,7 +998,7 @@ pub(in crate::cqrs) mod tests {
                     snapshot_version: 2,
                 })),
             );
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let snapshot_context = store.load_aggregate(TEST_AGGREGATE_ID).await.unwrap();
             assert_eq!(Some(2), snapshot_context.snapshot_version);
             assert_eq!(4, snapshot_context.current_sequence);
@@ -998,7 +1009,7 @@ pub(in crate::cqrs) mod tests {
         #[tokio::test]
         async fn load_aggregate_error() {
             let repo = MockRepo::with_snapshot(Err(PersistenceError::OptimisticLockError));
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let result = store.load_aggregate(TEST_AGGREGATE_ID).await;
             match result {
                 Err(AggregateError::AggregateConflict) => {}
@@ -1024,7 +1035,7 @@ pub(in crate::cqrs) mod tests {
                 })),
             );
 
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let snapshot_context = store.load_aggregate(TEST_AGGREGATE_ID).await.unwrap();
             assert_eq!(Some(1), snapshot_context.snapshot_version);
             assert_eq!(2, snapshot_context.current_sequence);
@@ -1042,7 +1053,7 @@ pub(in crate::cqrs) mod tests {
 
                 assert_eq!(None, snapshot_update);
             }));
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let context = EventStoreAggregateContext {
                 aggregate_id: TEST_AGGREGATE_ID.to_string(),
                 aggregate: TestAggregate::default(),
@@ -1069,7 +1080,7 @@ pub(in crate::cqrs) mod tests {
 
                 assert_eq!(None, snapshot_update);
             }));
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let context = EventStoreAggregateContext {
                 aggregate_id: TEST_AGGREGATE_ID.to_string(),
                 aggregate: TestAggregate::default(),
@@ -1102,7 +1113,7 @@ pub(in crate::cqrs) mod tests {
                 assert_eq!(1, snapshot_version);
                 assert_eq!(json!(TestAggregate { something_happened: 1 }), aggregate);
             }));
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let context = EventStoreAggregateContext {
                 aggregate_id: TEST_AGGREGATE_ID.to_string(),
                 aggregate: TestAggregate::default(),
@@ -1145,7 +1156,7 @@ pub(in crate::cqrs) mod tests {
                 assert_eq!(2, snapshot_version);
                 assert_eq!(json!(TestAggregate { something_happened: 1 }), aggregate);
             }));
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let context = EventStoreAggregateContext {
                 aggregate_id: TEST_AGGREGATE_ID.to_string(),
                 aggregate: TestAggregate::default(),
@@ -1186,7 +1197,7 @@ pub(in crate::cqrs) mod tests {
                 assert_eq!(1, snapshot_version);
                 assert_eq!(json!(TestAggregate { something_happened: 3 }), aggregate);
             }));
-            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, 2);
+            let store = PersistedEventStore::<MockRepo, TestAggregate>::new_snapshot_store(repo, every(2));
             let context = EventStoreAggregateContext {
                 aggregate_id: TEST_AGGREGATE_ID.to_string(),
                 aggregate: TestAggregate::default(),
@@ -1243,10 +1254,10 @@ pub(in crate::cqrs) mod tests {
     #[test]
     fn test_source_of_truth() {
         assert_eq!(0, SnapshotPolicy::Disabled.snapshot_prefix_len(5, 3));
-        assert_eq!(0, SnapshotPolicy::Every(5).snapshot_prefix_len(5, 3));
-        assert_eq!(3, SnapshotPolicy::Every(4).snapshot_prefix_len(5, 3));
-        assert_eq!(3, SnapshotPolicy::Every(4).snapshot_prefix_len(5, 4));
-        assert_eq!(7, SnapshotPolicy::Every(4).snapshot_prefix_len(5, 8));
+        assert_eq!(0, SnapshotPolicy::Every(every(5)).snapshot_prefix_len(5, 3));
+        assert_eq!(3, SnapshotPolicy::Every(every(4)).snapshot_prefix_len(5, 3));
+        assert_eq!(3, SnapshotPolicy::Every(every(4)).snapshot_prefix_len(5, 4));
+        assert_eq!(7, SnapshotPolicy::Every(every(4)).snapshot_prefix_len(5, 8));
     }
 }
 
@@ -1262,7 +1273,7 @@ mod contract_tests {
         #[test]
         fn property_snapshot_boundary_matches_enumerated_prefix(interval in 1usize..40, sequence in 0usize..100, count in 0usize..120) {
             let expected = (1..=count).filter(|offset| (sequence + offset).is_multiple_of(interval)).max().unwrap_or(0);
-            prop_assert_eq!(SnapshotPolicy::Every(interval).snapshot_prefix_len(sequence, count), expected);
+            prop_assert_eq!(SnapshotPolicy::Every(every(interval)).snapshot_prefix_len(sequence, count), expected);
             prop_assert_eq!(SnapshotPolicy::Disabled.snapshot_prefix_len(sequence, count), 0);
         }
     }
@@ -1277,15 +1288,17 @@ mod contract_tests {
         );
         let store = PersistedEventStore::<_, TestAggregate>::new_snapshot_store(
             MockRepo::with_last_events(Err(PersistenceError::UnknownError("tail failed".into())), Ok(None)),
-            2,
+            every(2),
         );
         assert!(
             matches!(store.load_aggregate("a").await, Err(AggregateError::UnexpectedError(e)) if e.to_string() == "tail failed")
         );
         let mut bad = test_serialized_event(1, TestEvents::Started);
         bad.payload = serde_json::json!({"unknown":true});
-        let store =
-            PersistedEventStore::<_, TestAggregate>::new_snapshot_store(MockRepo::with_last_events(Ok(vec![bad]), Ok(None)), 2);
+        let store = PersistedEventStore::<_, TestAggregate>::new_snapshot_store(
+            MockRepo::with_last_events(Ok(vec![bad]), Ok(None)),
+            every(2),
+        );
         assert!(matches!(
             store.load_aggregate("a").await,
             Err(AggregateError::DeserializationError(_))
@@ -1388,7 +1401,7 @@ mod serialization_failure_tests {
                 panic!("serialization failure must prevent repository writes")
             }));
             let store = if snapshot {
-                PersistedEventStore::<_, State>::new_snapshot_store(repo, 1)
+                PersistedEventStore::<_, State>::new_snapshot_store(repo, NonZeroUsize::MIN)
             } else {
                 PersistedEventStore::<_, State>::new_event_store(repo)
             };
@@ -1410,7 +1423,7 @@ mod serialization_failure_tests {
     async fn sequence_and_snapshot_version_overflow_precede_apply_serialization_and_persist() {
         for (sequence, version, count) in [(usize::MAX, None, 1), (usize::MAX - 1, None, 2), (0, Some(usize::MAX), 1)] {
             let repo = MockRepo::with_commit(Box::new(|_, _| panic!("invalid batch reached persist")));
-            let store = PersistedEventStore::<_, Guarded>::new_snapshot_store(repo, 1);
+            let store = PersistedEventStore::<_, Guarded>::new_snapshot_store(repo, NonZeroUsize::MIN);
             let context = EventStoreAggregateContext {
                 aggregate_id: "overflow".into(),
                 aggregate: Guarded,
@@ -1437,7 +1450,7 @@ mod serialization_failure_tests {
                 }
             }));
             let store = if snapshot {
-                PersistedEventStore::<_, TestAggregate>::new_snapshot_store(repo, 1)
+                PersistedEventStore::<_, TestAggregate>::new_snapshot_store(repo, NonZeroUsize::MIN)
             } else {
                 PersistedEventStore::new_event_store(repo)
             };

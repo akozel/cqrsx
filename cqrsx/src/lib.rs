@@ -36,6 +36,7 @@ pub mod mongodb;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 pub mod task;
+mod unwinding;
 
 pub use cqrsx_macros::{Command, Commands, Event, Events, Rejection, Task, task_handler};
 

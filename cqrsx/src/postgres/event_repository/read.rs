@@ -1,7 +1,7 @@
 //! Event history and snapshot reads, including checked row decoding.
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use super::{LedgerTotals, PostgresEventRepository, decode_count, decode_usize, encode_bigint};
+use super::{LedgerTotals, PostgresEventRepository, decode_count, decode_usize, encode_bigint, row_decode_error};
 use crate::{
     cqrs::{
         aggregate::Aggregate,
@@ -218,10 +218,6 @@ pub(super) fn decode_snapshot_row(row: &PgRow) -> Result<SerializedSnapshot, Pos
         last_sequence: decode_usize(row.try_get("last_sequence").map_err(row_decode_error)?)?,
         snapshot_version: decode_usize(row.try_get("current_snapshot").map_err(row_decode_error)?)?,
     })
-}
-
-fn row_decode_error(error: sqlx::Error) -> PostgresRepositoryError {
-    PostgresRepositoryError::DeserializationError(Box::new(error))
 }
 
 #[cfg(test)]

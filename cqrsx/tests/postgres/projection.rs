@@ -20,6 +20,15 @@ impl View<TestAggregate> for Unprovisioned {
     fn update(&mut self, _: &EventEnvelope<TestAggregate>) {}
 }
 
+/// A view whose table holds `version` as `integer` and `payload` as `text`: other types than the repository reads.
+#[derive(Debug, Default, Serialize, Deserialize)]
+struct Mistyped;
+
+impl View<TestAggregate> for Mistyped {
+    const NAME: &'static str = "mistyped_view";
+    fn update(&mut self, _: &EventEnvelope<TestAggregate>) {}
+}
+
 async fn create_view(pool: &sqlx::PgPool) {
     sqlx::raw_sql("CREATE TABLE test_view (view_id text PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
         .execute(pool)
@@ -279,6 +288,33 @@ async fn missing_and_corrupt_views_and_sql_failures_are_explicit() {
         ));
         assert!(repo.load("too-far").await.unwrap().is_none());
     }
+    db.close().await;
+}
+
+/// A table whose columns have other types than the repository reads fails every read with a `DeserializationError`,
+/// as a payload that is no view does, instead of panicking in the handler of the projection or in a query.
+#[tokio::test]
+async fn columns_of_other_types_are_deserialization_errors_not_panics() {
+    use cqrsx::cqrs::store::PersistenceError;
+    let db = Database::new().await;
+    sqlx::raw_sql(
+        "CREATE TABLE mistyped_view (view_id text PRIMARY KEY, version integer NOT NULL, last_sequence bigint NOT NULL, payload text NOT NULL);
+         INSERT INTO mistyped_view VALUES ('a', 1, 0, 'null')",
+    )
+    .execute(&db.pool)
+    .await
+    .unwrap();
+    let repo = PostgresViewRepository::<Mistyped, TestAggregate>::new(db.pool.clone());
+    assert!(matches!(repo.load("a").await, Err(PersistenceError::DeserializationError(_))));
+    assert!(matches!(
+        repo.load_with_context("a").await,
+        Err(PersistenceError::DeserializationError(_))
+    ));
+    assert!(matches!(repo.list().await, Err(PersistenceError::DeserializationError(_))));
+    assert!(matches!(
+        repo.range("a", "b").await,
+        Err(PersistenceError::DeserializationError(_))
+    ));
     db.close().await;
 }
 
