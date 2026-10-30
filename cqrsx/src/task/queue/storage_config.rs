@@ -22,7 +22,7 @@ impl Default for TaskStorageConfig {
     }
 }
 impl TaskStorageConfig {
-    pub fn new(storage_timeout: Duration) -> Result<Self, TaskStorageConfigError> {
+    pub fn try_new(storage_timeout: Duration) -> Result<Self, TaskStorageConfigError> {
         if storage_timeout.is_zero() || storage_timeout.as_millis() > i64::MAX as u128 {
             return Err(TaskStorageConfigError::InvalidStorageTimeout);
         }
@@ -37,7 +37,7 @@ impl TaskStorageConfig {
     pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Result<Self, TaskStorageConfigError> {
         let millis = crate::env::read_u64(&mut lookup, "OUTBOX_STORAGE_TIMEOUT_MS", DEFAULT_STORAGE_TIMEOUT_MS)
             .map_err(|_| TaskStorageConfigError::InvalidEnvironmentValue)?;
-        Self::new(Duration::from_millis(millis))
+        Self::try_new(Duration::from_millis(millis))
     }
 }
 
@@ -114,7 +114,7 @@ mod tests {
             assert!(TaskStorageConfig::from_lookup(|_| Some(value.into())).is_err());
         }
         for storage_timeout in [Duration::ZERO, Duration::MAX] {
-            assert!(TaskStorageConfig::new(storage_timeout).is_err());
+            assert!(TaskStorageConfig::try_new(storage_timeout).is_err());
         }
     }
 }

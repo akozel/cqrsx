@@ -55,10 +55,8 @@ async fn snapshot_command_applies_one_event_once() {
     let config = PostgresCommandConfig::new(std::num::NonZeroUsize::MIN, Default::default(), LockLimits::default());
     let executor = PostgresCommandExecutor::<History>::new(db.pool.clone(), config, ());
     executor.execute(&"history".into(), 7).await.unwrap();
-    let store = PersistedEventStore::<_, History>::new_snapshot_store(
-        PostgresEventRepository::new(db.pool.clone()),
-        std::num::NonZeroUsize::MIN,
-    );
+    let store = PersistedEventStore::<_, History>::new(PostgresEventRepository::new(db.pool.clone()))
+        .with_snapshots(std::num::NonZeroUsize::MIN);
     assert_eq!(store.load_events("history").await.unwrap().len(), 1);
     let context = store.load_aggregate("history").await.unwrap();
     assert_eq!(context.current_sequence, 1);
@@ -95,22 +93,22 @@ async fn custom_tables_keep_the_event_and_snapshot_contracts() {
         .await
         .unwrap();
     assert_eq!(
-        repository.get_events::<TestAggregate>("custom").await.unwrap(),
+        repository.events::<TestAggregate>("custom").await.unwrap(),
         vec![event.clone()]
     );
     assert!(
         repository
-            .get_events_after::<TestAggregate>("custom", 1)
+            .events_after::<TestAggregate>("custom", 1)
             .await
             .unwrap()
             .is_empty()
     );
     assert_eq!(
-        repository.get_snapshot::<TestAggregate>("custom").await.unwrap(),
+        repository.snapshot::<TestAggregate>("custom").await.unwrap(),
         Some(serialized_snapshot("custom".into(), 1, 1, aggregate))
     );
     let default = PostgresEventRepository::new(db.pool.clone());
-    assert!(default.get_events::<TestAggregate>("custom").await.unwrap().is_empty());
+    assert!(default.events::<TestAggregate>("custom").await.unwrap().is_empty());
     db.close().await;
 }
 
@@ -120,7 +118,7 @@ async fn event_repositories() {
     let pool = db.pool.clone();
     let id = uuid::Uuid::new_v4().to_string();
     let event_repo: PostgresEventRepository = PostgresEventRepository::new(pool.clone());
-    let events = event_repo.get_events::<TestAggregate>(&id).await.unwrap();
+    let events = event_repo.events::<TestAggregate>(&id).await.unwrap();
     assert!(events.is_empty());
 
     event_repo
@@ -139,7 +137,7 @@ async fn event_repositories() {
         )
         .await
         .unwrap();
-    let events = event_repo.get_events::<TestAggregate>(&id).await.unwrap();
+    let events = event_repo.events::<TestAggregate>(&id).await.unwrap();
     assert_eq!(2, events.len());
     events.iter().for_each(|e| assert_eq!(&id, &e.aggregate_id));
 
@@ -171,7 +169,7 @@ async fn event_repositories() {
         "invalid error result found during insert: {result}"
     );
 
-    let events = event_repo.get_events::<TestAggregate>(&id).await.unwrap();
+    let events = event_repo.events::<TestAggregate>(&id).await.unwrap();
     assert_eq!(2, events.len());
 
     db.close().await;
@@ -191,7 +189,7 @@ async fn events_after_every_watermark_share_one_prepared_statement() {
     let events: Vec<_> = (1..=12).map(|sequence| event(&id, sequence)).collect();
     repository.persist::<TestAggregate>(&events, None).await.unwrap();
     for after in 0..10 {
-        let found = repository.get_events_after::<TestAggregate>(&id, after).await.unwrap();
+        let found = repository.events_after::<TestAggregate>(&id, after).await.unwrap();
         let sequences: Vec<_> = found.iter().map(|event| event.sequence).collect();
         assert_eq!(
             sequences,
@@ -226,7 +224,7 @@ async fn snapshot_repositories() {
     let pool = db.pool.clone();
     let id = uuid::Uuid::new_v4().to_string();
     let event_repo: PostgresEventRepository = PostgresEventRepository::new(pool.clone());
-    let snapshot = event_repo.get_snapshot::<TestAggregate>(&id).await.unwrap();
+    let snapshot = event_repo.snapshot::<TestAggregate>(&id).await.unwrap();
     assert_eq!(None, snapshot);
 
     let test_description = "some test snapshot here".to_string();
@@ -249,7 +247,7 @@ async fn snapshot_repositories() {
         .await
         .unwrap();
 
-    let snapshot = event_repo.get_snapshot::<TestAggregate>(&id).await.unwrap();
+    let snapshot = event_repo.snapshot::<TestAggregate>(&id).await.unwrap();
     assert_eq!(
         Some(serialized_snapshot(
             id.clone(),
@@ -284,7 +282,7 @@ async fn snapshot_repositories() {
         .await
         .unwrap();
 
-    let snapshot = event_repo.get_snapshot::<TestAggregate>(&id).await.unwrap();
+    let snapshot = event_repo.snapshot::<TestAggregate>(&id).await.unwrap();
     assert_eq!(
         Some(serialized_snapshot(
             id.clone(),
@@ -323,7 +321,7 @@ async fn snapshot_repositories() {
         "invalid error result found during insert: {result}"
     );
 
-    let snapshot = event_repo.get_snapshot::<TestAggregate>(&id).await.unwrap();
+    let snapshot = event_repo.snapshot::<TestAggregate>(&id).await.unwrap();
     assert_eq!(
         Some(serialized_snapshot(
             id.clone(),
@@ -388,7 +386,7 @@ async fn simple_es_commit_and_load_test(event_store: PersistedEventStore<Postgre
 }
 fn new_test_event_store(pool: sqlx::PgPool) -> PersistedEventStore<PostgresEventRepository, Customer> {
     let repo = PostgresEventRepository::new(pool);
-    PersistedEventStore::<PostgresEventRepository, Customer>::new_event_store(repo)
+    PersistedEventStore::<PostgresEventRepository, Customer>::new(repo)
 }
 
 #[tokio::test]
@@ -396,7 +394,7 @@ async fn commit_and_load_events() {
     let db = Database::new().await;
     let pool = db.pool.clone();
     let repo = PostgresEventRepository::new(pool);
-    let event_store = PersistedEventStore::<PostgresEventRepository, Customer>::new_event_store(repo);
+    let event_store = PersistedEventStore::<PostgresEventRepository, Customer>::new(repo);
 
     simple_es_commit_and_load_test(event_store).await;
 

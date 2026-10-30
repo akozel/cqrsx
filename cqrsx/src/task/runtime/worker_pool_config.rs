@@ -48,7 +48,7 @@ pub enum TaskWorkerPoolConfigError {
     LeaseTooShort,
 }
 impl Default for TaskWorkerPoolConfig {
-    /// The defaults above, valid as [`new`](Self::new) checks them (a test does).
+    /// The defaults above, valid as [`try_new`](Self::try_new) checks them (a test does).
     fn default() -> Self {
         Self {
             concurrency: DEFAULT_CONCURRENCY as usize,
@@ -64,7 +64,7 @@ impl TaskWorkerPoolConfig {
     /// Construct explicit limits with the default refill percent. Both concurrency and buffer
     /// capacity must be positive. Validate the full lease separately with
     /// [`Self::validate_for_storage_timeout`].
-    pub fn new(
+    pub fn try_new(
         concurrency: usize,
         buffer_capacity: usize,
         poll_interval: Duration,
@@ -139,7 +139,7 @@ impl TaskWorkerPoolConfig {
         let mut read_u64 = |name, default| {
             crate::env::read_u64(&mut lookup, name, default).map_err(|_| TaskWorkerPoolConfigError::InvalidEnvironmentValue(name))
         };
-        let config = Self::new(
+        let config = Self::try_new(
             usize::try_from(read_u64("OUTBOX_WORKER_CONCURRENCY", DEFAULT_CONCURRENCY)?)
                 .map_err(|_| TaskWorkerPoolConfigError::InvalidConcurrency)?,
             usize::try_from(read_u64("OUTBOX_QUEUE_CAPACITY", DEFAULT_BUFFER_CAPACITY)?)
@@ -326,7 +326,7 @@ mod tests {
                 TaskWorkerPoolConfigError::InvalidBufferRefillPercent
             );
         }
-        let config = |c, q, poll, handler, lease| TaskWorkerPoolConfig::new(c, q, poll, handler, lease);
+        let config = |c, q, poll, handler, lease| TaskWorkerPoolConfig::try_new(c, q, poll, handler, lease);
         assert_eq!(
             config(
                 1,
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn buffer_refill_level_rounds_up_and_stays_within_capacity() {
         let level = |q, percent| {
-            TaskWorkerPoolConfig::new(
+            TaskWorkerPoolConfig::try_new(
                 1,
                 q,
                 Duration::from_secs(1),
@@ -377,7 +377,7 @@ mod tests {
     #[test]
     fn buffer_waves_budget_boundaries_and_storage_overflow() {
         let build = |c, q, lease| {
-            TaskWorkerPoolConfig::new(
+            TaskWorkerPoolConfig::try_new(
                 c,
                 q,
                 Duration::from_secs(1),
@@ -434,7 +434,7 @@ mod tests {
     #[test]
     fn default_lease_budget_has_the_expected_boundary_and_rejects_an_extra_buffer_wave() {
         let build = |queue, lease| {
-            TaskWorkerPoolConfig::new(
+            TaskWorkerPoolConfig::try_new(
                 128,
                 queue,
                 Duration::from_secs(1),

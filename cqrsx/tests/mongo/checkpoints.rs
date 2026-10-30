@@ -8,7 +8,7 @@ use cqrsx::{
         },
         store::feed::Position,
     },
-    mongodb::projection_checkpoints::{MongoCheckpointStore, PROJECTION_CHECKPOINTS_COLLECTION},
+    mongodb::checkpoint_store::{MongoCheckpointStore, PROJECTION_CHECKPOINTS_COLLECTION},
 };
 use mongodb::{
     Collection,

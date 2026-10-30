@@ -1,7 +1,10 @@
 //! The lease keeper of an owner: extends the checkpoint's lease while the owner works and notices when the
 //! lease is lost, by the store's answer or by the local deadline.
 use crate::{
-    cqrs::projection::checkpoint::{CheckpointKey, CheckpointStore, LeaseToken},
+    cqrs::projection::{
+        checkpoint::{CheckpointKey, CheckpointStore, LeaseToken},
+        processor::Operation,
+    },
     locking::lock,
 };
 use std::{
@@ -111,7 +114,13 @@ async fn keep<C: CheckpointStore>(store: Arc<C>, key: CheckpointKey, token: Leas
                 return;
             }
             Err(error) => {
-                crate::diagnostics::log_projection_failure(key.projection(), key.aggregate_type(), "lease", error.category(), 0);
+                crate::diagnostics::log_projection_failure(
+                    key.projection(),
+                    key.aggregate_type(),
+                    Operation::Lease,
+                    error.category(),
+                    0,
+                );
                 if shared.is_lost() {
                     shared.mark_lost();
                     return;

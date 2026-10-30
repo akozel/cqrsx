@@ -120,7 +120,7 @@ mod tests {
         };
         use cqrsx::cqrs::{
             command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata},
-            testing::{command::TestCommandExecutor, mem_store::MemStore, unavailable_store::UnavailableStore},
+            testing::{command_executor::TestCommandExecutor, mem_store::MemStore, unavailable_store::UnavailableStore},
         };
         use std::sync::Arc;
         use uuid::Uuid;

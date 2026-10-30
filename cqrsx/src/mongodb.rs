@@ -1,5 +1,5 @@
 //! The MongoDB read side: read-model documents ([`view_repository::MongoViewRepository`]) and the checkpoints
-//! of their projections ([`projection_checkpoints::MongoCheckpointStore`]), next to each other in the read
+//! of their projections ([`checkpoint_store::MongoCheckpointStore`]), next to each other in the read
 //! database.
 //!
 //! MongoDB is only the read side here: the journal, the outbox and the task queue stay in PostgreSQL. A
@@ -11,7 +11,7 @@
 //! Every write is one statement on one document; leases compare against the server clock (`$$NOW`, MongoDB
 //! 4.2 or later). Nothing here connects: the application builds the `mongodb::Client` with its own options and
 //! hands over a `mongodb::Database`.
-pub mod projection_checkpoints;
+pub mod checkpoint_store;
 pub mod view_repository;
 
 use crate::cqrs::store::PersistenceError;

@@ -12,10 +12,9 @@ where
     /// Returns the current view instance.
     fn load(&self, view_id: &str) -> impl Future<Output = Result<Option<V>, PersistenceError>> + Send;
 
-    /// Returns the current view instance and context, used by the `ViewProjection` to update
-    /// views with committed events.
-    fn load_with_context(&self, view_id: &str)
-    -> impl Future<Output = Result<Option<(V, ViewContext)>, PersistenceError>> + Send;
+    /// Returns the current view instance with its id, version and last applied event, used by the `ViewProjection`
+    /// to update views with committed events.
+    fn load_with_context(&self, view_id: &str) -> impl Future<Output = Result<Option<StoredView<V>>, PersistenceError>> + Send;
 
     /// Updates the view instance and context, used by the `ViewProjection` to update
     /// views with committed events.
@@ -40,18 +39,6 @@ pub struct StoredView<V> {
     pub view: V,
 }
 
-/// What [`ViewRepository::load_with_context`] answers, as a stored document.
-impl<V> From<(V, ViewContext)> for StoredView<V> {
-    fn from((view, context): (V, ViewContext)) -> Self {
-        Self {
-            id: context.view_instance_id,
-            version: context.version,
-            last_sequence: context.last_sequence,
-            view,
-        }
-    }
-}
-
 /// A data structure maintaining context when updating views.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ViewContext {
@@ -73,24 +60,5 @@ impl ViewContext {
             version,
             last_sequence,
         }
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_stored_view_is_the_view_with_its_id_version_and_last_event() {
-        let stored = StoredView::from(("seats", ViewContext::new("c-1".into(), 3, 7)));
-        assert_eq!(
-            stored,
-            StoredView {
-                id: "c-1".into(),
-                version: 3,
-                last_sequence: 7,
-                view: "seats",
-            }
-        );
     }
 }

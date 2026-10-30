@@ -28,7 +28,7 @@ async fn generic_custom_executor_uses_actual_budget_and_stalled_invocation_drain
         }
     }
     let queue = Arc::new(Queue::default());
-    let config = TaskWorkerPoolConfig::new(
+    let config = TaskWorkerPoolConfig::try_new(
         1,
         1,
         Duration::from_secs(1),
@@ -95,7 +95,7 @@ async fn shutdown_drains_in_flight_work_and_invalid_worker_wiring_is_rejected() 
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     let invalid =
-        TaskWorkerPoolConfig::new(1, 1, Duration::from_secs(1), Duration::from_secs(30), Duration::from_secs(45)).unwrap();
+        TaskWorkerPoolConfig::try_new(1, 1, Duration::from_secs(1), Duration::from_secs(30), Duration::from_secs(45)).unwrap();
     assert!(
         run(queue.clone(), executor.clone(), dispatcher(), invalid, shutdown.child_token())
             .await
@@ -159,7 +159,7 @@ async fn shutdown_drain_uses_the_configured_settlement_budget() {
     queue.incoming.lock().unwrap().push_back(claimed());
     let executor = Arc::new(DefaultTaskExecutor::new(
         queue.clone(),
-        TaskStorageConfig::new(Duration::from_secs(10)).unwrap(),
+        TaskStorageConfig::try_new(Duration::from_secs(10)).unwrap(),
     ));
     let mut task_adapter = adapter();
     task_adapter.hang = true;

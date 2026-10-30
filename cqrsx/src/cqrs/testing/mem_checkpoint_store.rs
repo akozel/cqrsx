@@ -49,18 +49,16 @@ impl Row {
     }
 }
 
-type RowKey = (String, String);
-
 #[derive(Debug, Default)]
 struct State {
-    rows: BTreeMap<RowKey, Row>,
+    rows: BTreeMap<CheckpointKey, Row>,
     /// Requested keys per row in request order.
-    keys: BTreeMap<RowKey, Vec<(u64, String)>>,
+    keys: BTreeMap<CheckpointKey, Vec<(u64, String)>>,
     next_request: u64,
     unavailable: bool,
 }
 
-/// Checkpoint rows in memory with the rules of `postgres::projection_checkpoints::PostgresCheckpointStore`
+/// Checkpoint rows in memory with the rules of `postgres::checkpoint_store::PostgresCheckpointStore`
 /// by meaning: a claim takes a free or expired lease (by the clock of `tokio::time`, so a paused test clock
 /// drives it), every write is fenced by the token, `advance` and `advance_rebuild` move only forward and
 /// accept a repeat, a rebuild request is refused while one is requested or running, and a request for a
@@ -89,10 +87,6 @@ pub struct MemCheckpointStore {
     state: Arc<Mutex<State>>,
 }
 
-fn row_key(key: &CheckpointKey) -> RowKey {
-    (key.projection().to_owned(), key.aggregate_type().to_owned())
-}
-
 /// Milliseconds as the PostgreSQL row stores them: an `integer` for the pace.
 fn pace_fits(pace: Duration) -> Result<(), CheckpointError> {
     i32::try_from(pace.as_millis())
@@ -109,7 +103,7 @@ impl MemCheckpointStore {
     /// Ends the lease of the row now, so the next claim by anybody succeeds; the old token keeps failing
     /// its fenced writes once somebody else claimed.
     pub fn expire_lease(&self, key: &CheckpointKey) {
-        if let Some(row) = self.state().rows.get_mut(&row_key(key))
+        if let Some(row) = self.state().rows.get_mut(key)
             && let Some(lease) = &mut row.lease
         {
             let now = Instant::now();
@@ -147,7 +141,7 @@ impl MemCheckpointStore {
         write: impl FnOnce(&mut Row) -> bool,
     ) -> Result<bool, CheckpointError> {
         let mut state = self.available()?;
-        let Some(row) = state.rows.get_mut(&row_key(key)) else {
+        let Some(row) = state.rows.get_mut(key) else {
             return Ok(false);
         };
         if !row.owned_by(token) {
@@ -163,7 +157,7 @@ impl MemCheckpointStore {
 
 impl CheckpointStore for MemCheckpointStore {
     async fn register(&self, key: &CheckpointKey) -> Result<(), CheckpointError> {
-        self.available()?.rows.entry(row_key(key)).or_insert_with(|| Row {
+        self.available()?.rows.entry(key.clone()).or_insert_with(|| Row {
             position: Position::START,
             applied: 0,
             rebuild_requested: false,
@@ -180,7 +174,7 @@ impl CheckpointStore for MemCheckpointStore {
 
     async fn claim(&self, key: &CheckpointKey, owner: &str, lease: Duration) -> Result<Option<Claimed>, CheckpointError> {
         let mut state = self.available()?;
-        let Some(row) = state.rows.get_mut(&row_key(key)) else {
+        let Some(row) = state.rows.get_mut(key) else {
             return Ok(None);
         };
         let now = Instant::now();
@@ -245,7 +239,7 @@ impl CheckpointStore for MemCheckpointStore {
     async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
         pace_fits(pace)?;
         let mut state = self.available()?;
-        let Some(row) = state.rows.get_mut(&row_key(key)) else {
+        let Some(row) = state.rows.get_mut(key) else {
             return Err(CheckpointError::Invalid("projection is not registered"));
         };
         if row.rebuild_requested || row.cursor.is_some() {
@@ -259,12 +253,11 @@ impl CheckpointStore for MemCheckpointStore {
 
     async fn request_rebuild_key(&self, key: &CheckpointKey, aggregate_id: &str) -> Result<(), CheckpointError> {
         let mut state = self.available()?;
-        let id = row_key(key);
-        if !state.rows.contains_key(&id) {
+        if !state.rows.contains_key(key) {
             return Err(CheckpointError::Invalid("projection is not registered"));
         }
         let number = state.next_request;
-        let requests = state.keys.entry(id).or_default();
+        let requests = state.keys.entry(key.clone()).or_default();
         if !requests.iter().any(|(_, requested)| requested == aggregate_id) {
             requests.push((number, aggregate_id.to_owned()));
             state.next_request += 1;
@@ -279,15 +272,14 @@ impl CheckpointStore for MemCheckpointStore {
         limit: usize,
     ) -> Result<Option<RebuildRequests>, CheckpointError> {
         let mut state = self.available()?;
-        let id = row_key(key);
-        let Some(row) = state.rows.get(&id) else {
+        let Some(row) = state.rows.get(key) else {
             return Ok(None);
         };
         if !row.owned_by(token) {
             return Ok(None);
         }
         let rebuild = row.rebuild_requested.then_some(row.pace);
-        let requests = state.keys.entry(id).or_default();
+        let requests = state.keys.entry(key.clone()).or_default();
         requests.sort();
         let taken = requests.drain(..limit.min(requests.len())).map(|(_, key)| key).collect();
         Ok(Some(RebuildRequests { rebuild, keys: taken }))
@@ -344,10 +336,10 @@ impl CheckpointStore for MemCheckpointStore {
         Ok(state
             .rows
             .iter()
-            .filter(|((name, _), _)| projection.is_none_or(|wanted| wanted == name))
-            .map(|((name, aggregate_type), row)| CheckpointStatus {
-                projection: name.clone(),
-                aggregate_type: aggregate_type.clone(),
+            .filter(|(key, _)| projection.is_none_or(|wanted| wanted == key.projection()))
+            .map(|(key, row)| CheckpointStatus {
+                projection: key.projection().to_owned(),
+                aggregate_type: key.aggregate_type().to_owned(),
                 position: row.position,
                 applied: row.applied,
                 rebuild_requested: row.rebuild_requested,

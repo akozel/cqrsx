@@ -48,7 +48,7 @@ use cqrsx::{
         result::TaskResult,
     },
 };
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, sync::Arc, time::Duration};
 
 /// The owner name a process writes on the checkpoints it holds, unless `ENCORE_NODE_NAME` names it.
 const DEFAULT_NODE_NAME: &str = "encore-backend";
@@ -75,7 +75,7 @@ async fn from_pairs(pairs: &[(&str, &str)]) -> Result<Configured, BuildError> {
 #[test]
 fn the_engine_settings_are_the_configuration_and_the_library_constants() {
     let settings = Settings::from_lookup("ENCORE", |_| None, &DEMO_DEFAULTS).unwrap();
-    let library = LockLimits::new(DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS.get()).unwrap();
+    let library = LockLimits::try_new(DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS.get()).unwrap();
     assert_eq!(
         (settings.snapshot_every(), settings.conflict_retry(), settings.lock_limits()),
         (DEFAULT_SNAPSHOT_EVERY, AggregateConflictRetryPolicy::default(), library)
@@ -238,7 +238,11 @@ async fn the_task_handlers_report_their_attempts_to_the_feeds_hub() {
         price: 80,
     };
     let attempt = TaskAttempt::first(&task, serde_json::json!({})).unwrap();
-    let answer = cqrs.dispatcher().unwrap().dispatch(attempt, Duration::from_secs(1)).await;
+    let answer = cqrs
+        .dispatcher()
+        .unwrap()
+        .dispatch(Arc::new(attempt), Duration::from_secs(1))
+        .await;
     assert_eq!(
         answer,
         TaskResult::retry("mail_unreachable"),

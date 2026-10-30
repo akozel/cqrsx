@@ -29,7 +29,7 @@ pub(super) enum SnapshotWrite {
     },
 }
 impl SnapshotWrite {
-    fn new(update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>) -> Result<Self, PersistenceError> {
+    fn try_new(update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>) -> Result<Self, PersistenceError> {
         match update {
             None => Ok(Self::None),
             Some(SnapshotUpdate {
@@ -70,7 +70,7 @@ impl SnapshotWrite {
     }
 }
 impl<'a> WritePlan<'a> {
-    pub(super) fn new(
+    pub(super) fn try_new(
         events: &'a [SerializedEvent],
         snapshot: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
         tasks: &[NewTask],
@@ -80,7 +80,7 @@ impl<'a> WritePlan<'a> {
             [] if !tasks.is_empty() => Err(invalid_write(WriteValidationError::TasksWithoutEvent)),
             [] => Ok(Self::NoOp),
             [event] => {
-                let snapshot = SnapshotWrite::new(snapshot)?;
+                let snapshot = SnapshotWrite::try_new(snapshot)?;
                 validate_bind_count(tasks.len(), snapshot.bind_count())?;
                 Ok(Self::OneEvent {
                     event,
@@ -133,15 +133,15 @@ mod tests {
     use serde_json::json;
 
     fn event(sequence: usize) -> SerializedEvent {
-        SerializedEvent::new(
-            "aggregate".into(),
+        SerializedEvent {
+            aggregate_id: "aggregate".into(),
             sequence,
-            "test".into(),
-            "recorded".into(),
-            "1".into(),
-            json!({}),
-            json!({}),
-        )
+            aggregate_type: "test".into(),
+            event_type: "recorded".into(),
+            event_version: "1".into(),
+            payload: json!({}),
+            metadata: json!({}),
+        }
     }
 
     #[test]
@@ -170,7 +170,7 @@ mod tests {
             ),
         ] {
             let tasks = vec![task.clone(); count];
-            let Err(PersistenceError::UnknownError(source)) = WritePlan::new(&events, snapshot, &tasks) else {
+            let Err(PersistenceError::UnknownError(source)) = WritePlan::try_new(&events, snapshot, &tasks) else {
                 panic!("an oversized batch must be rejected before issuing SQL");
             };
             assert!(matches!(source.downcast_ref(), Some(WriteValidationError::BindLimitExceeded)));
@@ -211,12 +211,12 @@ mod tests {
                 "a command may commit at most one domain event",
             ),
         ] {
-            let Err(PersistenceError::UnknownError(source)) = WritePlan::new(&events, snapshot, tasks) else {
+            let Err(PersistenceError::UnknownError(source)) = WritePlan::try_new(&events, snapshot, tasks) else {
                 panic!("invalid shape must be rejected before SQL");
             };
             assert_eq!(source.to_string(), expected);
         }
-        assert!(matches!(WritePlan::new(&[], None, &[]), Ok(WritePlan::NoOp)));
+        assert!(matches!(WritePlan::try_new(&[], None, &[]), Ok(WritePlan::NoOp)));
     }
 
     #[cfg(target_pointer_width = "64")]
@@ -244,7 +244,7 @@ mod tests {
                 }),
             ),
         ] {
-            let Err(PersistenceError::UnknownError(source)) = WritePlan::new(&[event], snapshot, &[]) else {
+            let Err(PersistenceError::UnknownError(source)) = WritePlan::try_new(&[event], snapshot, &[]) else {
                 panic!("overflow must fail during validation");
             };
             assert!(matches!(source.downcast_ref(), Some(WriteValidationError::BigintOverflow)));
@@ -299,7 +299,7 @@ mod tests {
                 6,
             ),
         ] {
-            let snapshot = SnapshotWrite::new(update.clone()).unwrap();
+            let snapshot = SnapshotWrite::try_new(update.clone()).unwrap();
             assert_eq!(snapshot.bind_count(), expected_binds);
             let fixed_binds = 7 + expected_binds;
             assert_ne!((limit - fixed_binds) % 11, 0);
@@ -308,7 +308,7 @@ mod tests {
             assert!(validate_bind_count(largest_valid_tasks + 1, snapshot.bind_count()).is_err());
             let tasks = vec![task.clone(); largest_valid_tasks];
             assert!(matches!(
-                WritePlan::new(&events, update, &tasks),
+                WritePlan::try_new(&events, update, &tasks),
                 Ok(WritePlan::OneEvent { .. })
             ));
         }

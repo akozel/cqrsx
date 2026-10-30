@@ -123,8 +123,8 @@ impl<A: TaskAdapter> TaskDispatcher<A> {
 
     /// Route an attempt by its complete format and invoke that adapter with the attempt's context: the pause its
     /// retry would get (`retry_pause`), the dependencies and the executors.
-    pub async fn dispatch(&self, attempt: impl Into<Arc<TaskAttempt>>, retry_pause: Duration) -> TaskResult {
-        let ctx = TaskContext::shared(attempt.into(), retry_pause, self.dependencies.clone(), self.executors.clone());
+    pub async fn dispatch(&self, attempt: Arc<TaskAttempt>, retry_pause: Duration) -> TaskResult {
+        let ctx = TaskContext::shared(attempt, retry_pause, self.dependencies.clone(), self.executors.clone());
         match self
             .routes
             .get(ctx.attempt().format())
@@ -211,11 +211,11 @@ mod tests {
                 1,
             )
             .unwrap();
-            assert_eq!(dispatcher.dispatch(input, Duration::ZERO).await, TaskResult::Done);
+            assert_eq!(dispatcher.dispatch(Arc::new(input), Duration::ZERO).await, TaskResult::Done);
         }
         assert_eq!(*calls.lock().unwrap(), vec!["second", "first"]);
         assert!(matches!(
-            dispatcher.dispatch(base.attempt().clone(), Duration::ZERO).await,
+            dispatcher.dispatch(Arc::new(base.attempt().clone()), Duration::ZERO).await,
             TaskResult::Fail { .. }
         ));
         assert!(matches!(
@@ -293,7 +293,7 @@ mod tests {
                 1,
             )
             .unwrap();
-            assert_eq!(dispatcher.dispatch(task, Duration::ZERO).await, TaskResult::Done);
+            assert_eq!(dispatcher.dispatch(Arc::new(task), Duration::ZERO).await, TaskResult::Done);
         }
         assert_eq!(*calls.lock().unwrap(), vec![(2, "decoded".into()), (1, "decoded".into())]);
         assert!(matches!(TaskDispatcher::try_new(vec![
@@ -348,7 +348,9 @@ mod tests {
         .unwrap();
         let task = claimed();
         assert_eq!(
-            dispatcher.dispatch(task.attempt().clone(), Duration::from_secs(4)).await,
+            dispatcher
+                .dispatch(Arc::new(task.attempt().clone()), Duration::from_secs(4))
+                .await,
             TaskResult::retry("later")
         );
         assert_eq!(*seen.lock().unwrap(), [(Duration::from_secs(4), 2, Some(42))]);

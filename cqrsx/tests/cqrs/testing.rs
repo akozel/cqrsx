@@ -3,20 +3,20 @@ use cqrsx::cqrs::testing::TestFramework;
 
 #[test]
 fn typed_errors_and_success_can_be_inspected() {
-    TestFramework::<Ledger>::with(Services::default())
+    TestFramework::<Ledger>::new(Services::default())
         .given(vec![Delta(4)])
         .and(vec![Delta(3)])
         .when(Command::Adjust(-7))
         .then_expect_event(Delta(-7));
-    TestFramework::<Ledger>::with(Services::default())
+    TestFramework::<Ledger>::new(Services::default())
         .given_no_previous_events()
         .when(Command::Adjust(-1))
         .then_expect_error(Rejected);
     assert_eq!(
-        TestFramework::<Ledger>::with(Services::default())
+        TestFramework::<Ledger>::new(Services::default())
             .given_no_previous_events()
             .when(Command::Adjust(2))
-            .inspect_result()
+            .into_result()
             .unwrap(),
         Delta(2)
     );
@@ -31,7 +31,7 @@ mod given {
 
     #[test]
     fn test_add_name() {
-        CustomerTestFramework::with(CustomerService)
+        CustomerTestFramework::new(CustomerService)
             .given_no_previous_events()
             .when(CustomerCommand::AddCustomerName {
                 name: "John Doe".to_string(),
@@ -43,7 +43,7 @@ mod given {
 
     #[test]
     fn test_add_name_again() {
-        CustomerTestFramework::with(CustomerService)
+        CustomerTestFramework::new(CustomerService)
             .given(vec![CustomerEvent::NameAdded {
                 name: "John Doe".to_string(),
             }])
@@ -55,7 +55,7 @@ mod given {
 
     #[test]
     fn test_add_email() {
-        CustomerTestFramework::with(CustomerService)
+        CustomerTestFramework::new(CustomerService)
             .given_no_previous_events()
             .when(CustomerCommand::UpdateEmail {
                 new_email: "john.doe@example.com".to_string(),
@@ -68,7 +68,7 @@ mod given {
     /// A command decides one event: the email that completes the customer's data is the email, and nothing else.
     #[test]
     fn test_add_email_after_the_name_is_one_event() {
-        CustomerTestFramework::with(CustomerService)
+        CustomerTestFramework::new(CustomerService)
             .given(vec![CustomerEvent::NameAdded {
                 name: "John Doe".to_string(),
             }])
@@ -85,12 +85,12 @@ mod framework {
 
     #[test]
     fn the_framework_applies_given_and_additional_events_before_the_command() {
-        TestFramework::<TestAggregate>::with(TestService)
+        TestFramework::<TestAggregate>::new(TestService)
             .given_no_previous_events()
             .when(TestCommand::CreateTest(CreateTest { id: "created".into() }))
             .then_expect_event(TestEvent::Created(Created { id: "created".into() }));
 
-        TestFramework::<TestAggregate>::with(TestService)
+        TestFramework::<TestAggregate>::new(TestService)
             .given(vec![TestEvent::Created(Created { id: "created".into() })])
             .and(vec![TestEvent::Tested(Tested {
                 test_name: "previous".into(),
@@ -102,7 +102,7 @@ mod framework {
                 description: "changed".into(),
             }));
 
-        TestFramework::<TestAggregate>::with(TestService)
+        TestFramework::<TestAggregate>::new(TestService)
             .given_no_previous_events()
             .and(vec![TestEvent::Tested(Tested {
                 test_name: "previous".into(),
@@ -122,7 +122,7 @@ mod validators {
     fn test_framework_test() {
         let test_name = "test A";
 
-        ThisTestFramework::with(TestService)
+        ThisTestFramework::new(TestService)
             .given(vec![TestEvent::Created(Created {
                 id: "test_id_A".to_string(),
             })])
@@ -133,7 +133,7 @@ mod validators {
                 test_name: test_name.to_string(),
             }));
 
-        ThisTestFramework::with(TestService)
+        ThisTestFramework::new(TestService)
             .given(vec![TestEvent::Tested(Tested {
                 test_name: test_name.to_string(),
             })])
@@ -148,7 +148,7 @@ mod validators {
     fn test_framework_failure_test() {
         let test_name = "test A";
 
-        ThisTestFramework::with(TestService)
+        ThisTestFramework::new(TestService)
             .given(vec![TestEvent::Tested(Tested {
                 test_name: test_name.to_string(),
             })])
@@ -165,7 +165,7 @@ mod validators {
     fn test_framework_failure_test_b() {
         let test_name = "test A";
 
-        ThisTestFramework::with(TestService)
+        ThisTestFramework::new(TestService)
             .given(vec![TestEvent::Created(Created {
                 id: "test_id_A".to_string(),
             })])

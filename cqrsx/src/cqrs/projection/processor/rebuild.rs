@@ -85,10 +85,7 @@ impl<A: Aggregate + 'static, R: PersistedEventRepository + 'static> Rebuilder fo
         let mut reads = 0;
         let history: Vec<EventEnvelope<A>> = loop {
             reads += 1;
-            let history = deserialize_events::<A>(
-                self.repository.get_events::<A>(aggregate_id).await?,
-                self.upcasters.as_slice(),
-            )?;
+            let history = deserialize_events::<A>(self.repository.events::<A>(aggregate_id).await?, self.upcasters.as_slice())?;
             if history.is_empty() {
                 return Ok(0);
             }
@@ -225,9 +222,9 @@ mod tests {
                 .unwrap(),
             4
         );
-        let (view, context) = views.load_with_context("a").await.unwrap().unwrap();
+        let stored = views.load_with_context("a").await.unwrap().unwrap();
         assert_eq!(
-            (view, context.version, context.last_sequence),
+            (stored.view, stored.version, stored.last_sequence),
             (Sequences(vec![1, 2, 3, 4]), 1, 4)
         );
         assert_eq!(
@@ -267,17 +264,20 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                let (view, context) = views.load_with_context("a").await.unwrap().unwrap();
-                assert_eq!((view, context.version, context.last_sequence), (Sequences(vec![1]), 6, 1));
+                let stored = views.load_with_context("a").await.unwrap().unwrap();
+                assert_eq!(
+                    (stored.view, stored.version, stored.last_sequence),
+                    (Sequences(vec![1]), 6, 1)
+                );
                 assert_eq!(bounded.name(), Sequences::NAME);
             }
         });
         assert_eq!(rebuilder.rebuild("a", pace, CancellationToken::new()).await.unwrap(), 3);
         assert_eq!(started.elapsed(), pace * 2, "a pause before each event after the first");
         running.await.unwrap();
-        let (view, context) = views.load_with_context("a").await.unwrap().unwrap();
+        let stored = views.load_with_context("a").await.unwrap().unwrap();
         assert_eq!(
-            (view, context.version, context.last_sequence),
+            (stored.view, stored.version, stored.last_sequence),
             (Sequences(vec![1, 2, 3]), 8, 3)
         );
         assert_eq!(views.load("b").await.unwrap(), Some(Sequences(vec![1])));
@@ -294,9 +294,9 @@ mod tests {
         let error = rebuilder.rebuild("a", Duration::from_millis(80), stop).await.unwrap_err();
         assert!(matches!(error, PersistenceError::UnknownError(_)));
         assert_eq!(error.to_string(), "rebuild interrupted: the owner stopped");
-        let (view, context) = views.load_with_context("a").await.unwrap().unwrap();
+        let stored = views.load_with_context("a").await.unwrap().unwrap();
         assert_eq!(
-            (view, context.last_sequence),
+            (stored.view, stored.last_sequence),
             (Sequences(vec![1]), 1),
             "the first event was written"
         );

@@ -99,7 +99,7 @@ impl TaskPlanner<Shelf> for ShelfPlanner {
 }
 
 fn shelf_config(snapshot_interval: usize, attempts: usize) -> PostgresCommandConfig {
-    let retry = AggregateConflictRetryPolicy::new(attempts, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
+    let retry = AggregateConflictRetryPolicy::try_new(attempts, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
     PostgresCommandConfig::new(
         std::num::NonZeroUsize::new(snapshot_interval).unwrap(),
         retry,
@@ -414,7 +414,7 @@ async fn a_plan_at_the_bind_limit_commits_and_one_more_task_is_refused_before_an
 #[tokio::test]
 async fn a_store_without_an_outbox_refuses_planned_tasks_and_writes_nothing() {
     let db = Database::new().await;
-    let store = || PersistedEventStore::<_, Shelf>::new_event_store(PostgresEventRepository::new(db.pool.clone()));
+    let store = || PersistedEventStore::<_, Shelf>::new(PostgresEventRepository::new(db.pool.clone()));
     let planned = CommandExecutorCore::new(
         CqrsFramework::new(store(), 10).with_task_planner(ShelfPlanner::one_per_item()),
         AggregateConflictRetryPolicy::default(),

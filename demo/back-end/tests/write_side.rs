@@ -391,7 +391,7 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
     assert_eq!(
         cqrs.dispatcher()
             .expect("task handlers")
-            .dispatch(attempt, Duration::ZERO)
+            .dispatch(Arc::new(attempt), Duration::ZERO)
             .await,
         TaskResult::Done,
         "the step records the ticket"
@@ -545,7 +545,7 @@ async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_tas
 async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() {
     let (pool, container) = database().await;
     // One attempt only: a booking that lost a version race would answer `Conflict`.
-    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
+    let single_attempt = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
     let config = PostgresCommandConfig::new(DEFAULT_SNAPSHOT_EVERY, single_attempt, LockLimits::default());
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
         .with_task_planner(concert_reactions());
@@ -630,7 +630,7 @@ impl ReadSide {
     /// Starts the processor; cancel the token to stop it.
     fn start(&self) -> (CancellationToken, tokio::task::JoinHandle<()>) {
         let config =
-            ProcessorConfig::new(POLL, 100, Duration::from_secs(1), DeliveryLimits::default()).expect("processor config");
+            ProcessorConfig::try_new(POLL, 100, Duration::from_secs(1), DeliveryLimits::default()).expect("processor config");
         let processor = ProjectionProcessor::new(
             HALLS,
             Arc::new(PostgresEventRepository::new(self.pool.clone())),
@@ -645,7 +645,7 @@ impl ReadSide {
 
     /// The fold of the concert's whole history, `None` without one.
     async fn fold(&self, id: &str) -> Option<ConcertHallView> {
-        let events = PersistedEventStore::<_, Concert>::new_event_store(PostgresEventRepository::new(self.pool.clone()))
+        let events = PersistedEventStore::<_, Concert>::new(PostgresEventRepository::new(self.pool.clone()))
             .load_events(id)
             .await
             .expect("journal");
@@ -717,7 +717,7 @@ impl ReadSide {
             .load_with_context(id)
             .await
             .expect("hall")
-            .map(|(_, context)| context.version)
+            .map(|stored| stored.version)
             .unwrap_or_default()
     }
 }
@@ -729,7 +729,7 @@ impl ReadSide {
 async fn the_concert_halls_follow_the_journal_through_their_processor() {
     let (pool, container) = database().await;
     let read = ReadSide::new(&pool);
-    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
+    let single_attempt = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).expect("policy");
     let config = PostgresCommandConfig::new(DEFAULT_SNAPSHOT_EVERY, single_attempt, LockLimits::default());
     let executor = PostgresCommandExecutor::new(pool.clone(), config, ConcertRules { ticket_limit: 4 })
         .with_task_planner(concert_reactions())
@@ -795,13 +795,16 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
     announce("hot-2026").await;
     book_all("hot-2026", 0..20).await;
     read.caught_up(&["early-2026", "hot-2026"], POLL / 2).await;
-    let (hall, context) = read
+    let stored = read
         .halls
         .load_with_context("hot-2026")
         .await
         .expect("hall")
         .expect("a document");
-    assert_eq!((hall.sold, hall.last_sequence, context.last_sequence), (20, 21, 21));
+    assert_eq!(
+        (stored.view.sold, stored.view.last_sequence, stored.last_sequence),
+        (20, 21, 21)
+    );
 
     // Encore! with the box office open: the documents are replaced in place under new bookings.
     assert_eq!(

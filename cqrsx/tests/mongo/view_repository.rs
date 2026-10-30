@@ -29,7 +29,12 @@ async fn a_view_is_inserted_updated_and_loaded_with_its_context() {
         .unwrap();
     assert_eq!(
         views.load_with_context("l1").await.unwrap(),
-        Some((first, ViewContext::new("l1".into(), 1, 1)))
+        Some(StoredView {
+            id: "l1".into(),
+            version: 1,
+            last_sequence: 1,
+            view: first
+        })
     );
     let second = Balance {
         total: 3,
@@ -42,7 +47,12 @@ async fn a_view_is_inserted_updated_and_loaded_with_its_context() {
     assert_eq!(views.load("l1").await.unwrap(), Some(second.clone()));
     assert_eq!(
         views.load_with_context("l1").await.unwrap(),
-        Some((second, ViewContext::new("l1".into(), 2, 2)))
+        Some(StoredView {
+            id: "l1".into(),
+            version: 2,
+            last_sequence: 2,
+            view: second
+        })
     );
     let raw = mongo
         .database
@@ -94,7 +104,12 @@ async fn a_duplicate_insert_a_stale_version_and_an_overflow_are_explicit() {
     ));
     assert_eq!(
         views.load_with_context("l1").await.unwrap(),
-        Some((view, ViewContext::new("l1".into(), 1, 1))),
+        Some(StoredView {
+            id: "l1".into(),
+            version: 1,
+            last_sequence: 1,
+            view
+        }),
         "nothing was written by the refused updates"
     );
     assert!(views.load("none").await.unwrap().is_none());
@@ -244,18 +259,18 @@ async fn stress_concurrent_writers_of_one_mongo_document_converge() {
                 while let Some(result) = tasks.join_next().await {
                     result.unwrap().unwrap();
                 }
-                let (view, context) = repository.load_with_context(&id).await.unwrap().unwrap();
+                let stored = repository.load_with_context(&id).await.unwrap().unwrap();
                 let expected: Vec<_> = (1..=total).map(|sequence| (sequence, sequence as i32)).collect();
                 assert_eq!(
-                    view.history, expected,
+                    stored.view.history, expected,
                     "{id}: the fold of the whole history, every event once"
                 );
-                assert_eq!(context.last_sequence, total, "{id}");
+                assert_eq!(stored.last_sequence, total, "{id}");
                 let versions = (initial as i64 + 1)..=((initial + writers) as i64);
                 assert!(
-                    versions.contains(&context.version),
+                    versions.contains(&stored.version),
                     "{id}: version {} outside {versions:?}",
-                    context.version
+                    stored.version
                 );
             }
         }

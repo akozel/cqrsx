@@ -13,8 +13,8 @@ use std::{error::Error, future::Future, time::Duration};
 use thiserror::Error;
 use uuid::Uuid;
 
-/// The row of one projection over one aggregate type.
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+/// The row of one projection over one aggregate type; ordered by the projection, then the aggregate type.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CheckpointKey {
     projection: String,
     aggregate_type: &'static str,

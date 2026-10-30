@@ -7,7 +7,7 @@ use cqrsx::{
         },
         store::feed::Position,
     },
-    postgres::{PROJECTION_CHECKPOINTS_SCHEMA, projection_checkpoints::PostgresCheckpointStore},
+    postgres::{PROJECTION_CHECKPOINTS_SCHEMA, checkpoint_store::PostgresCheckpointStore},
 };
 use serde_json::{Value, json};
 use std::time::Duration;

@@ -49,15 +49,15 @@ impl Decide<StreamAggregate> for () {
 
 fn serialized_event(sequence: usize, value: &str) -> SerializedEvent {
     let event = TestEvent::Recorded { value: value.to_owned() };
-    SerializedEvent::new(
-        AGGREGATE_ID.to_owned(),
+    SerializedEvent {
+        aggregate_id: AGGREGATE_ID.to_owned(),
         sequence,
-        StreamAggregate::TYPE.to_owned(),
-        event.event_type(),
-        event.event_version(),
-        serde_json::to_value(event).expect("test event must serialize"),
-        json!({ "correlation_id": format!("correlation-{sequence}") }),
-    )
+        aggregate_type: StreamAggregate::TYPE.to_owned(),
+        event_type: event.event_type(),
+        event_version: event.event_version(),
+        payload: serde_json::to_value(event).expect("test event must serialize"),
+        metadata: json!({ "correlation_id": format!("correlation-{sequence}") }),
+    }
 }
 
 async fn row_count(pool: &PgPool, table: &str) -> i64 {

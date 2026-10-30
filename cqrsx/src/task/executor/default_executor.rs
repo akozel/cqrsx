@@ -184,7 +184,7 @@ mod tests {
         let queue = Arc::new(Queue::default());
         let executor = Arc::new(DefaultTaskExecutor::new(
             queue.clone(),
-            TaskStorageConfig::new(Duration::from_secs(5)).unwrap(),
+            TaskStorageConfig::try_new(Duration::from_secs(5)).unwrap(),
         ));
         let calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let adapter = ProbeAdapter {
@@ -280,7 +280,7 @@ mod tests {
         let queue = Arc::new(Queue::default());
         let executor = Arc::new(DefaultTaskExecutor::new(
             queue.clone(),
-            TaskStorageConfig::new(Duration::from_secs(3)).unwrap(),
+            TaskStorageConfig::try_new(Duration::from_secs(3)).unwrap(),
         ));
         queue.hang_settle.store(true, Ordering::SeqCst);
         let started = Instant::now();
@@ -477,7 +477,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_timeout_and_a_short_lease_wait_the_redelivery_backoff_even_under_a_policy() {
         let queue = Arc::new(Queue::default());
-        let executor = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::new(Duration::from_secs(5)).unwrap())
+        let executor = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::try_new(Duration::from_secs(5)).unwrap())
             .with_policies(policies(Retry::fixed(Duration::from_secs(300))));
         let mut hanging = adapter();
         hanging.hang = true;

@@ -21,17 +21,17 @@ struct LostAcknowledgementStore {
 }
 
 impl EventStore<Ledger> for LostAcknowledgementStore {
-    type AC = <cqrsx::cqrs::testing::mem_store::MemStore<Ledger> as EventStore<Ledger>>::AC;
+    type Context = <cqrsx::cqrs::testing::mem_store::MemStore<Ledger> as EventStore<Ledger>>::Context;
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
         self.inner.load_events(id).await
     }
-    async fn load_aggregate(&self, id: &str) -> Result<Self::AC, AggregateError<Rejected>> {
+    async fn load_aggregate(&self, id: &str) -> Result<Self::Context, AggregateError<Rejected>> {
         self.inner.load_aggregate(id).await
     }
     async fn commit(
         &self,
         events: Vec<Delta>,
-        context: Self::AC,
+        context: Self::Context,
         metadata: HashMap<String, String>,
         tasks: &[cqrsx::task::NewTask],
     ) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
@@ -54,7 +54,7 @@ async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command(
     let commands = seen.clone();
     let executor = CommandExecutorCore::new(
         CqrsFramework::new(store, Services(commands)),
-        AggregateConflictRetryPolicy::new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
+        AggregateConflictRetryPolicy::try_new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
         cqrsx::cqrs::command::locks::LockLimits::default(),
     );
     assert_eq!(

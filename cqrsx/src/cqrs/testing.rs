@@ -117,7 +117,7 @@
 //! # fn test() {
 //! type CustomerTestFramework = TestFramework<Customer>;
 //!
-//! CustomerTestFramework::with(CustomerService::default())
+//! CustomerTestFramework::new(CustomerService::default())
 //!     .given_no_previous_events()
 //!     .when(CustomerCommand::AddCustomerName{
 //!             name: "John Doe".to_string()
@@ -128,7 +128,7 @@
 //! # }
 //! ```
 
-pub mod command;
+pub mod command_executor;
 pub mod mem_checkpoint_store;
 pub mod mem_event_repository;
 pub mod mem_store;
@@ -147,7 +147,7 @@ pub struct TestFramework<A: Aggregate> {
 
 impl<A: Aggregate> TestFramework<A> {
     /// Create a test framework using the provided rules, with no previous events.
-    pub fn with(rules: A::Rules) -> Self {
+    pub fn new(rules: A::Rules) -> Self {
         Self {
             rules,
             events: Vec::new(),
@@ -236,7 +236,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use example::MyService;
     /// use cqrsx::cqrs::testing::TestFramework;
     ///
-    /// let framework = TestFramework::<MyAggregate>::with(MyService)
+    /// let framework = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events();
     /// ```
     #[must_use]
@@ -328,7 +328,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use example::MyEvents;
     /// use cqrsx::cqrs::testing::TestFramework;
     ///
-    /// let framework = TestFramework::<MyAggregate>::with(MyService)
+    /// let framework = TestFramework::<MyAggregate>::new(MyService)
     ///     .given(vec![MyEvents::SomethingWasDone]);
     /// ```
     #[must_use]
@@ -419,7 +419,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use example::MyEvents;
     /// use cqrsx::cqrs::testing::TestFramework;
     ///
-    /// let framework = TestFramework::<MyAggregate>::with(MyService)
+    /// let framework = TestFramework::<MyAggregate>::new(MyService)
     ///     .given(vec![MyEvents::SomethingWasDone])
     ///     .and(vec![MyEvents::SomethingElseWasDone]);
     /// ```
@@ -512,7 +512,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use example::MyCommands;
     /// use cqrsx::cqrs::testing::TestFramework;
     ///
-    /// let validator = TestFramework::<MyAggregate>::with(MyService)
+    /// let validator = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events()
     ///     .when(MyCommands::DoSomething);
     /// ```

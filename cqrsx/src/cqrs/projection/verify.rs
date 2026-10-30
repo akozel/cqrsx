@@ -85,8 +85,17 @@ pub struct Difference {
     /// The view's name, [`View::NAME`].
     pub collection: &'static str,
     pub id: String,
-    /// `differs` (not the fold of its prefix, or ahead of its history) or `unexpected` (no history).
-    pub kind: &'static str,
+    pub kind: DifferenceKind,
+}
+
+/// How a document is wrong; serialized in snake case (`differs`, `unexpected`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DifferenceKind {
+    /// Not the fold of a prefix of its history, or ahead of its history.
+    Differs,
+    /// A document without a history.
+    Unexpected,
 }
 
 /// What verify found in the documents of one view.
@@ -123,7 +132,7 @@ fn compare<V: View<A> + PartialEq, A: Aggregate>(document: &StoredView<V>, histo
     }
 }
 
-fn difference<V: View<A>, A: Aggregate>(id: &str, kind: &'static str) -> Difference {
+fn difference<V: View<A>, A: Aggregate>(id: &str, kind: DifferenceKind) -> Difference {
     Difference {
         collection: V::NAME,
         id: id.to_owned(),
@@ -158,7 +167,7 @@ where
         };
         for key in page {
             let history = journal
-                .get_events::<A>(&key)
+                .events::<A>(&key)
                 .await?
                 .into_iter()
                 .map(EventEnvelope::<A>::try_from)
@@ -169,7 +178,7 @@ where
                 Some(Comparison::Same) => 0,
                 Some(Comparison::Behind(events)) => events,
                 Some(Comparison::Differs) => {
-                    result.differences.push(difference::<V, A>(&key, "differs"));
+                    result.differences.push(difference::<V, A>(&key, DifferenceKind::Differs));
                     0
                 }
             };
@@ -182,7 +191,7 @@ where
         after = last;
     }
     for id in documents.keys().filter(|id| !keys.contains(*id)) {
-        result.differences.push(difference::<V, A>(id, "unexpected"));
+        result.differences.push(difference::<V, A>(id, DifferenceKind::Unexpected));
     }
     Ok(result)
 }
@@ -315,12 +324,27 @@ mod tests {
             ("orphan", 1, total(1)),
         ]);
         let verification = verify(journal, documents).await;
-        let kinds: Vec<(&str, &str)> = verification
+        let kinds: Vec<(&str, DifferenceKind)> = verification
             .differences
             .iter()
             .map(|difference| (difference.id.as_str(), difference.kind))
             .collect();
-        assert_eq!(kinds, [("ahead", "differs"), ("wrong", "differs"), ("orphan", "unexpected")]);
+        assert_eq!(
+            kinds,
+            [
+                ("ahead", DifferenceKind::Differs),
+                ("wrong", DifferenceKind::Differs),
+                ("orphan", DifferenceKind::Unexpected)
+            ]
+        );
+        assert_eq!(
+            serde_json::to_value(&verification.differences).unwrap(),
+            serde_json::json!([
+                { "collection": "totals", "id": "ahead", "kind": "differs" },
+                { "collection": "totals", "id": "wrong", "kind": "differs" },
+                { "collection": "totals", "id": "orphan", "kind": "unexpected" }
+            ])
+        );
         assert_eq!((verification.checked, verification.behind_documents), (2, 0));
         assert!(
             verification
@@ -360,7 +384,7 @@ mod tests {
         async fn load(&self, id: &str) -> Result<Option<Total>, PersistenceError> {
             self.documents.load(id).await
         }
-        async fn load_with_context(&self, id: &str) -> Result<Option<(Total, ViewContext)>, PersistenceError> {
+        async fn load_with_context(&self, id: &str) -> Result<Option<StoredView<Total>>, PersistenceError> {
             self.documents.load_with_context(id).await
         }
         async fn update_view(&self, view: Total, context: ViewContext) -> Result<(), PersistenceError> {
@@ -402,15 +426,15 @@ mod tests {
     #[tokio::test]
     async fn a_failing_store_or_an_unreadable_history_is_a_storage_error() {
         let journal = journal(&[]).await;
-        let broken = SerializedEvent::new(
-            "c-1".into(),
-            1,
-            Counter::TYPE.into(),
-            "added".into(),
-            "1".into(),
-            serde_json::json!("not a number"),
-            serde_json::json!({}),
-        );
+        let broken = SerializedEvent {
+            aggregate_id: "c-1".into(),
+            sequence: 1,
+            aggregate_type: Counter::TYPE.into(),
+            event_type: "added".into(),
+            event_version: "1".into(),
+            payload: serde_json::json!("not a number"),
+            metadata: serde_json::json!({}),
+        };
         journal.persist::<Counter>(&[broken], None).await.unwrap();
         let error = super::verify::<Total, Counter>(&*journal, &*documents(&[]))
             .await

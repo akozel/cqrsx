@@ -200,15 +200,15 @@ pub(super) fn parse_position(text: &str) -> Result<Position, PostgresRepositoryE
 }
 
 pub(super) fn decode_event_row(row: &PgRow) -> Result<SerializedEvent, PostgresRepositoryError> {
-    Ok(SerializedEvent::new(
-        row.try_get("aggregate_id").map_err(row_decode_error)?,
-        decode_usize(row.try_get("sequence").map_err(row_decode_error)?)?,
-        row.try_get("aggregate_type").map_err(row_decode_error)?,
-        row.try_get("event_type").map_err(row_decode_error)?,
-        row.try_get("event_version").map_err(row_decode_error)?,
-        row.try_get("payload").map_err(row_decode_error)?,
-        row.try_get("metadata").map_err(row_decode_error)?,
-    ))
+    Ok(SerializedEvent {
+        aggregate_id: row.try_get("aggregate_id").map_err(row_decode_error)?,
+        sequence: decode_usize(row.try_get("sequence").map_err(row_decode_error)?)?,
+        aggregate_type: row.try_get("aggregate_type").map_err(row_decode_error)?,
+        event_type: row.try_get("event_type").map_err(row_decode_error)?,
+        event_version: row.try_get("event_version").map_err(row_decode_error)?,
+        payload: row.try_get("payload").map_err(row_decode_error)?,
+        metadata: row.try_get("metadata").map_err(row_decode_error)?,
+    })
 }
 
 pub(super) fn decode_snapshot_row(row: &PgRow) -> Result<SerializedSnapshot, PostgresRepositoryError> {

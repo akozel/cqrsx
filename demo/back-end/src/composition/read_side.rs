@@ -16,7 +16,7 @@ use cqrsx::cqrs::{
     event::EventEnvelope,
     projection::{
         View,
-        verify::{Difference, Verification, verify},
+        verify::{Difference, DifferenceKind, Verification, verify},
     },
     store::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
 };
@@ -140,18 +140,18 @@ async fn a_read_model_is_verified_by_the_engine_under_the_name_of_its_view() {
         [Difference {
             collection: "concert_halls",
             id: "c-1".into(),
-            kind: "differs"
+            kind: DifferenceKind::Differs
         }]
     );
-    let broken = SerializedEvent::new(
-        "c-2".into(),
-        1,
-        Concert::TYPE.into(),
-        "ConcertAnnounced".into(),
-        "1".into(),
-        serde_json::json!("not an event"),
-        serde_json::json!({}),
-    );
+    let broken = SerializedEvent {
+        aggregate_id: "c-2".into(),
+        sequence: 1,
+        aggregate_type: Concert::TYPE.into(),
+        event_type: "ConcertAnnounced".into(),
+        event_version: "1".into(),
+        payload: serde_json::json!("not an event"),
+        metadata: serde_json::json!({}),
+    };
     journal.persist::<Concert>(&[broken], None).await.unwrap();
     let expected = verify::<ConcertHallView, Concert>(journal, halls)
         .await

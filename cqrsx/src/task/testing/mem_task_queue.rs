@@ -363,13 +363,13 @@ mod tests {
         let queue = MemTaskQueue::new(journal.clone());
         let now = task("notify", 1);
         let after = task("notify", 2)
-            .scheduled(TaskSchedule::After(Duration::from_secs(10)))
+            .with_schedule(TaskSchedule::After(Duration::from_secs(10)))
             .unwrap();
         let at = task("notify", 3)
-            .scheduled(TaskSchedule::At(Utc::now() + chrono::TimeDelta::seconds(20)))
+            .with_schedule(TaskSchedule::At(Utc::now() + chrono::TimeDelta::seconds(20)))
             .unwrap();
         let past = task("notify", 4)
-            .scheduled(TaskSchedule::At(Utc::now() - chrono::TimeDelta::hours(1)))
+            .with_schedule(TaskSchedule::At(Utc::now() - chrono::TimeDelta::hours(1)))
             .unwrap();
         publish(&journal, "a", 1, &[now.clone(), after.clone(), at.clone(), past.clone()]).await;
         assert_eq!(statuses(&queue), [(TaskStatus::Pending, 0); 4]);

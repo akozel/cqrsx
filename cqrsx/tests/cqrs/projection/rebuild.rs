@@ -14,7 +14,7 @@ use tokio::time::Instant;
 async fn versions(h: &Harness, keys: &[&str]) -> Vec<i64> {
     let mut versions = Vec::new();
     for key in keys {
-        versions.push(h.view(key).await.map_or(0, |(_, context)| context.version));
+        versions.push(h.view(key).await.map_or(0, |stored| stored.version));
     }
     versions
 }
@@ -36,12 +36,12 @@ async fn a_stale_rebuild_never_rolls_a_document_back() {
     let b = h.node("B");
     h.until(async || h.status().await.owner.as_deref() == Some("B")).await;
     h.commit("a", 4).await;
-    h.until(async || h.view("a").await.is_some_and(|(view, _)| view.history.len() == 4))
+    h.until(async || h.view("a").await.is_some_and(|stored| stored.view.history.len() == 4))
         .await;
     read.release(); // A's rebuild goes on with its stale history
     h.run_for(POLL * 4).await;
     assert_eq!(
-        h.view("a").await.unwrap().0.history,
+        h.view("a").await.unwrap().view.history,
         [(1, 1), (2, 2), (3, 3), (4, 4)],
         "never rolled back"
     );
@@ -89,7 +89,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     h.caught_up(&keys).await;
     for key in keys {
         assert_eq!(
-            h.view(key).await.unwrap().0.history,
+            h.view(key).await.unwrap().view.history,
             (1..=8).map(|n| (n, n as i32)).collect::<Vec<_>>()
         );
     }
@@ -186,13 +186,13 @@ async fn a_live_event_during_its_key_rebuild_is_applied_exactly_once() {
     h.commit("a", 4).await; // queued behind the rebuild in a's worker
     h.run_for(POLL * 2).await;
     assert_eq!(
-        h.view("a").await.unwrap().0.history.len(),
+        h.view("a").await.unwrap().view.history.len(),
         3,
         "the live event waits for the rebuild"
     );
     gate.release();
     h.caught_up(&["a"]).await;
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2), (3, 3), (4, 4)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2), (3, 3), (4, 4)]);
     assert_eq!(
         (h.observer.count("rebuilt:a:Requested:3"), h.observer.count("applied:a:4")),
         (1, 1)
@@ -251,7 +251,7 @@ async fn a_single_key_rebuild_touches_nothing_else() {
         versions(&h, &["a", "b", "c"]).await,
         [versions_before[0], versions_before[1] + 1, versions_before[2]]
     );
-    assert_eq!(h.view("b").await.unwrap().0.history, [(1, 1), (2, 2)]);
+    assert_eq!(h.view("b").await.unwrap().view.history, [(1, 1), (2, 2)]);
     let after = h.status().await;
     assert_eq!(
         (after.position, after.rebuild_cursor, after.rebuilt),
@@ -275,7 +275,7 @@ async fn a_gap_heals_itself_from_the_journal_without_stalling_the_projection() {
     gate.reached().await;
     h.commit("b", 3).await;
     h.commit("c", 1).await;
-    h.until(async || h.view("b").await.is_some_and(|(view, _)| view.history.len() == 3) && h.view("c").await.is_some())
+    h.until(async || h.view("b").await.is_some_and(|stored| stored.view.history.len() == 3) && h.view("c").await.is_some())
         .await;
     let during = h.status().await;
     assert_eq!(
@@ -286,7 +286,7 @@ async fn a_gap_heals_itself_from_the_journal_without_stalling_the_projection() {
     assert_eq!(h.observer.count("failed:"), 0);
     gate.release();
     let after = h.caught_up(&["a", "b", "c"]).await;
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2), (3, 3)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2), (3, 3)]);
     assert_eq!((h.observer.count("rebuilt:a:Healed:3"), after.failures), (1, 0));
     node.stop().await;
 }
@@ -319,11 +319,11 @@ async fn an_empty_journal_finishes_a_rebuild_at_once() {
 #[tokio::test(start_paused = true)]
 async fn a_paced_rebuild_of_one_key_does_not_hold_the_other_keys_back() {
     let h = Harness::with_config(
-        ProcessorConfig::new(
+        ProcessorConfig::try_new(
             POLL,
             1000,
             crate::projection::support::LEASE,
-            DeliveryLimits::new(3, 32).unwrap(),
+            DeliveryLimits::try_new(3, 32).unwrap(),
         )
         .unwrap(),
     );
@@ -343,7 +343,7 @@ async fn a_paced_rebuild_of_one_key_does_not_hold_the_other_keys_back() {
         h.until(async || {
             h.view("fast")
                 .await
-                .is_some_and(|(view, _)| view.history.len() == value as usize)
+                .is_some_and(|stored| stored.view.history.len() == value as usize)
         })
         .await;
     }
@@ -355,14 +355,14 @@ async fn a_paced_rebuild_of_one_key_does_not_hold_the_other_keys_back() {
     h.commit("fast", 6).await;
     h.run_for(POLL * 3).await;
     assert_eq!(
-        h.view("fast").await.unwrap().0.history.len(),
+        h.view("fast").await.unwrap().view.history.len(),
         5,
         "the window is full: the boundary of the decision"
     );
     h.until(async || h.observer.count("rebuild:Finished") == 1).await;
     h.caught_up(&["fast", "slow"]).await;
-    assert_eq!(h.view("slow").await.unwrap().0.history.len(), 202);
-    assert_eq!(h.view("fast").await.unwrap().0.history.len(), 6);
+    assert_eq!(h.view("slow").await.unwrap().view.history.len(), 202);
+    assert_eq!(h.view("fast").await.unwrap().view.history.len(), 6);
     assert_eq!(h.observer.count("rebuilt:slow:Requested:200"), 1);
     node.stop().await;
 }
@@ -388,13 +388,17 @@ async fn a_rebuild_reads_old_events_through_the_upcasters() {
         h.journal.inner.persist::<Ledger>(&[event], None).await.unwrap();
     }
     let node = h.node_with(NAME, "n1", config(), vec![Box::new(Heal)]);
-    h.until(async || h.view("a").await.is_some_and(|(view, _)| view.history.len() == 2))
+    h.until(async || h.view("a").await.is_some_and(|stored| stored.view.history.len() == 2))
         .await;
-    let (_, before) = h.view("a").await.unwrap();
+    let before = h.view("a").await.unwrap();
     h.checkpoints.request_rebuild_key(&key(), "a").await.unwrap();
     h.until(async || h.observer.count("rebuilt:a:Requested:2") == 1).await;
-    let (view, after) = h.view("a").await.unwrap();
-    assert_eq!(view.history, [(1, 0), (2, 5)], "the old event folds as the upcaster reads it");
+    let after = h.view("a").await.unwrap();
+    assert_eq!(
+        after.view.history,
+        [(1, 0), (2, 5)],
+        "the old event folds as the upcaster reads it"
+    );
     assert_eq!((after.version, h.observer.count("failed:")), (before.version + 1, 0));
     node.stop().await;
 }
@@ -418,7 +422,7 @@ async fn a_failed_history_read_is_retried_and_the_rebuild_finishes() {
         "{:?}",
         h.observer.events()
     );
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2)]);
     assert_eq!(h.status().await.failures, 1, "until the checkpoint moves again");
     h.commit("a", 3).await;
     assert_eq!(h.caught_up(&["a"]).await.failures, 0);

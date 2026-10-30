@@ -243,7 +243,7 @@ async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_even
         // Accepted or refused: the events below say which.
         let _ = result.unwrap();
     }
-    let store = PersistedEventStore::<_, Concert>::new_event_store(cqrs.journal().clone());
+    let store = PersistedEventStore::<_, Concert>::new(cqrs.journal().clone());
     let cancelled: HashMap<String, Uuid> = store
         .load_events(concert_id().as_str())
         .await

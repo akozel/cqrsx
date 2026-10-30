@@ -103,7 +103,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # async fn test() {
     /// use cqrsx::cqrs::testing::TestFramework;
     ///
-    /// let validator = TestFramework::<MyAggregate>::with(MyService)
+    /// let validator = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events()
     ///     .when(MyCommands::DoSomething);
     ///
@@ -205,7 +205,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use example::MyService;
     /// use cqrsx::cqrs::testing::TestFramework;
     ///
-    /// let validator = TestFramework::<MyAggregate>::with(MyService)
+    /// let validator = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events()
     ///     .when(MyCommands::BadCommand);
     ///
@@ -309,14 +309,14 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use example::MyUserError;
     /// use cqrsx::cqrs::testing::TestFramework;
     ///
-    /// let validator = TestFramework::<MyAggregate>::with(MyService)
+    /// let validator = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events()
     ///     .when(MyCommands::BadCommand);
     ///
     /// let expected = MyUserError("the expected error message".to_string());
-    /// assert_eq!(expected,validator.inspect_result().unwrap_err());
+    /// assert_eq!(expected,validator.into_result().unwrap_err());
     /// ```
-    pub fn inspect_result(self) -> Result<A::Event, A::Error> {
+    pub fn into_result(self) -> Result<A::Event, A::Error> {
         self.result
     }
 
@@ -420,7 +420,7 @@ where
     /// # use example::MyUserError;
     /// use cqrsx::cqrs::testing::TestFramework;
     ///
-    /// let validator = TestFramework::<MyAggregate>::with(MyService)
+    /// let validator = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events()
     ///     .when(MyCommands::BadCommand);
     ///
@@ -498,7 +498,7 @@ mod inspection_tests {
     fn constructor_retains_the_typed_error() {
         assert_eq!(
             AggregateResultValidator::<Ledger>::new(Err(Rejected))
-                .inspect_result()
+                .into_result()
                 .unwrap_err(),
             Rejected
         );

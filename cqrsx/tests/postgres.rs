@@ -27,7 +27,7 @@ use cqrsx::cqrs::command::decide::Decide;
 use cqrsx::cqrs::event::DomainEvent;
 use cqrsx::cqrs::store::PersistenceError;
 use cqrsx::cqrs::store::repository::PersistedEventRepository;
-use cqrsx::cqrs::store::serialized_event::SerializedEvent;
+use cqrsx::cqrs::store::serialized_event::{EventFormat, SerializedEvent};
 #[cfg(feature = "worker")]
 use cqrsx::task::runtime::worker_pool_config::TaskWorkerPoolConfig;
 use cqrsx::{

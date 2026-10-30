@@ -1,6 +1,6 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::store::serialized_event::SerializedEvent;
+use crate::cqrs::store::serialized_event::{EventFormat, SerializedEvent};
 use serde_json::Value;
 use std::{
     fmt::{Display, Formatter},
@@ -12,7 +12,7 @@ use std::{
 /// to modify the structure of events older versions are already persisted.
 pub trait EventUpcaster: Send + Sync {
     /// Examines and event type and version to understand if the event should be upcasted.
-    fn can_upcast(&self, event_type: &str, event_version: &str) -> bool;
+    fn can_upcast(&self, format: EventFormat<'_>) -> bool;
 
     /// Modifies the serialized event to conform the the new structure.
     fn upcast(&self, event: SerializedEvent) -> SerializedEvent;
@@ -26,23 +26,14 @@ pub type EventPayloadTransform = dyn Fn(Value) -> Value + Send + Sync;
 /// Missing minor/patch components default to zero; components after the third are
 /// ignored. The first three components must be unsigned integers. Prerelease and
 /// build suffixes in those components are unsupported. Persisted versions are unchanged.
+///
+/// Versions compare component by component, major first: an upcaster applies to the events whose version is
+/// lower than its own, so an upcaster of v0.2.3 upcasts an event of v0.2.2 and leaves one of v0.2.3 as it is.
 #[derive(Debug, PartialOrd, PartialEq, Eq)]
 pub struct NumericVersion {
     major_version: u32,
     minor_version: u32,
     patch: u32,
-}
-
-impl NumericVersion {
-    /// Identifies if one `NumericVersion` supersedes another. Used to determine whether an
-    /// upcaster function should be applied.
-    ///
-    /// E.g.,
-    /// - for upcaster v0.2.3 with code v0.2.2 --> upcaster is applied
-    /// - for upcaster v0.2.2 with code v0.2.2 --> upcaster is _not_ applied
-    pub fn supersedes(&self, other: &Self) -> bool {
-        (self.major_version, self.minor_version, self.patch) > (other.major_version, other.minor_version, other.patch)
-    }
 }
 
 impl Display for NumericVersion {
@@ -103,15 +94,15 @@ impl From<ParseIntError> for NumericVersionError {
 ///                     "state": "Washington"
 ///                    }"#,
 ///         ).unwrap();
-///  let event = SerializedEvent::new(
-///             String::new(),
-///             0,
-///             String::new(),
-///             String::new(),
-///             String::new(),
-///             payload,
-///             Default::default(),
-///         );
+/// let event = SerializedEvent {
+///     aggregate_id: String::new(),
+///     sequence: 0,
+///     aggregate_type: String::new(),
+///     event_type: String::new(),
+///     event_version: String::new(),
+///     payload,
+///     metadata: Value::default(),
+/// };
 /// let upcasted_event = upcaster.upcast(event);
 ///
 /// let expected_payload: Value = serde_json::from_str(
@@ -121,15 +112,15 @@ impl From<ParseIntError> for NumericVersionError {
 ///                     "country": "USA"
 ///                    }"#,
 ///         ).unwrap();
-/// let expected_event = SerializedEvent::new(
-///             String::new(),
-///             0,
-///             String::new(),
-///             String::new(),
-///             "2.3.4".to_string(),
-///             expected_payload,
-///             Default::default(),
-///         );
+/// let expected_event = SerializedEvent {
+///     aggregate_id: String::new(),
+///     sequence: 0,
+///     aggregate_type: String::new(),
+///     event_type: String::new(),
+///     event_version: "2.3.4".to_string(),
+///     payload: expected_payload,
+///     metadata: Value::default(),
+/// };
 ///
 /// assert_eq!(upcasted_event, expected_event);
 /// ```
@@ -156,14 +147,14 @@ impl NumericVersionUpcaster {
 }
 
 impl EventUpcaster for NumericVersionUpcaster {
-    fn can_upcast(&self, event_type: &str, event_version: &str) -> bool {
-        if event_type != self.event_type {
+    fn can_upcast(&self, format: EventFormat<'_>) -> bool {
+        if format.event_type != self.event_type {
             return false;
         }
-        let Ok(event_version) = NumericVersion::from_str(event_version) else {
+        let Ok(event_version) = NumericVersion::from_str(format.event_version) else {
             return false;
         };
-        self.target_version.supersedes(&event_version)
+        self.target_version > event_version
     }
 
     fn upcast(&self, event: SerializedEvent) -> SerializedEvent {
@@ -184,7 +175,7 @@ impl EventUpcaster for NumericVersionUpcaster {
 mod test {
     use std::str::FromStr;
 
-    use crate::cqrs::store::serialized_event::SerializedEvent;
+    use crate::cqrs::store::serialized_event::{EventFormat, SerializedEvent};
     use serde_json::Value;
     use serde_json::json;
 
@@ -221,13 +212,20 @@ mod test {
     #[test]
     fn simple_upcaster_can_upcast() {
         let upcaster = NumericVersionUpcaster::try_new("EventX", "2.3.4", Box::new(|event| event)).unwrap();
-        assert!(upcaster.can_upcast("EventX", "1.12.35"));
-        assert!(upcaster.can_upcast("EventX", "2.3.3"));
-        assert!(!upcaster.can_upcast("AnotherEvent", "1.12.35"));
-        assert!(!upcaster.can_upcast("EventX", "2.3.4"));
-        assert!(!upcaster.can_upcast("EventX", "2.3.5"));
-        assert!(!upcaster.can_upcast("EventX", "2.4.0"));
-        assert!(!upcaster.can_upcast("EventX", "3.0.0"));
+        let can_upcast = |event_type, event_version| {
+            upcaster.can_upcast(EventFormat {
+                event_type,
+                event_version,
+            })
+        };
+        assert!(can_upcast("EventX", "1.12.35"));
+        assert!(can_upcast("EventX", "2.3.3"));
+        assert!(!can_upcast("AnotherEvent", "1.12.35"));
+        assert!(!can_upcast("EventX", "2.3.4"));
+        assert!(!can_upcast("EventX", "2.3.5"));
+        assert!(!can_upcast("EventX", "2.4.0"));
+        assert!(!can_upcast("EventX", "3.0.0"));
+        assert!(!can_upcast("EventX", "not_a_version"));
     }
 
     #[test]
@@ -258,15 +256,15 @@ mod test {
 }"#,
         )
         .unwrap();
-        let event = SerializedEvent::new(
-            String::new(),
-            0,
-            String::new(),
-            String::new(),
-            String::new(),
+        let event = SerializedEvent {
+            aggregate_id: String::new(),
+            sequence: 0,
+            aggregate_type: String::new(),
+            event_type: String::new(),
+            event_version: String::new(),
             payload,
-            Value::default(),
-        );
+            metadata: Value::default(),
+        };
 
         let upcasted_event = upcaster.upcast(event);
 
@@ -292,15 +290,15 @@ mod test {
                    }"#,
         )
         .unwrap();
-        let event = SerializedEvent::new(
-            String::new(),
-            0,
-            String::new(),
-            String::new(),
-            String::new(),
+        let event = SerializedEvent {
+            aggregate_id: String::new(),
+            sequence: 0,
+            aggregate_type: String::new(),
+            event_type: String::new(),
+            event_version: String::new(),
             payload,
-            Value::default(),
-        );
+            metadata: Value::default(),
+        };
         let upcasted_event = upcaster.upcast(event);
 
         let expected_payload: Value = serde_json::from_str(
@@ -311,15 +309,15 @@ mod test {
                    }"#,
         )
         .unwrap();
-        let expected_event = SerializedEvent::new(
-            String::new(),
-            0,
-            String::new(),
-            String::new(),
-            "2.3.4".to_string(),
-            expected_payload,
-            Value::default(),
-        );
+        let expected_event = SerializedEvent {
+            aggregate_id: String::new(),
+            sequence: 0,
+            aggregate_type: String::new(),
+            event_type: String::new(),
+            event_version: "2.3.4".to_string(),
+            payload: expected_payload,
+            metadata: Value::default(),
+        };
 
         assert_eq!(upcasted_event, expected_event);
     }

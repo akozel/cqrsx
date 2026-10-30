@@ -456,7 +456,7 @@ mod tests {
             .unwrap()
             .with_max_attempts(4)
             .unwrap()
-            .scheduled(TaskSchedule::After(Duration::from_secs(3)))
+            .with_schedule(TaskSchedule::After(Duration::from_secs(3)))
             .unwrap();
         let pong = NewTask::new(Pong {}).unwrap();
         let tasks = plan_with(vec![scheduled.clone(), pong.clone(), ping(2)], &causation.event_metadata()).unwrap();

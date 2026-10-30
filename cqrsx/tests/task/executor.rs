@@ -150,7 +150,7 @@ impl TaskExecutor for BorrowedExecutor<'_> {
         assert_eq!(task.lease().deadline(), self.deadline);
         assert_eq!(timeout, Duration::from_secs(15));
         assert_eq!(
-            dispatcher.dispatch(task.attempt().clone(), Duration::ZERO).await,
+            dispatcher.dispatch(Arc::new(task.attempt().clone()), Duration::ZERO).await,
             TaskResult::Done
         );
         self.calls.fetch_add(1, Ordering::SeqCst);

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-30, без коммита |
 | Ценность | средняя: API читается без документации, перестановка аргументов не компилируется, нет устаревшего |
 | Цена | высокая: переименования и новые типы в публичном API, правки во всех реализациях и в demo |
 | cqrsx | места ниже |
@@ -78,5 +78,112 @@
 
 ## Критерии приёмки
 
-- [ ] Все строки таблиц сделаны или отклонены пользователем с причиной.
-- [ ] Эталоны demo (`effective_config.txt`, лента активности) не изменились.
+- [x] Все строки таблиц сделаны или отклонены пользователем с причиной.
+- [x] Эталоны demo (`effective_config.txt`, лента активности) не изменились.
+
+## Результаты
+
+Сделано 2026-10-30 на HEAD `5eea784` (задачи 01–03 в коммитах) без коммита. Задача 05/15 ещё ждёт решений
+пользователя; по его указанию 05 сделана раньше, пересечения с темами пересмотра — ниже. Задача 04 не сделана: ни одна
+её правка (Н6 `engine/views.rs`, Н11 `Arc<dyn Fn>` в `engine/module.rs` и другие) сюда не попала. Тексты SQL,
+эталоны `demo/back-end/tests/golden/`, `GET /api/config`, лента активности, JSON verify и тексты ошибок не менялись.
+
+### Имена
+
+| Строка | Итог |
+|---|---|
+| конструкторы с `Result` | сделано: `try_new` у `LockLimits`, `AggregateConflictRetryPolicy`, `DeliveryLimits`, `ProcessorConfig`, `TaskStorageConfig`, `TaskWorkerPoolConfig`, `TaskRuntimeConfig`, `Settings`, `PostgresSettings`, `WritePlan` (и соседний закрытый `SnapshotWrite`). Ни одна проверка не сводится к «не ноль» целиком (везде есть `Duration` или диапазон), поэтому `new` без `Result` не осталось нигде; `Settings::try_new` принимает интервал снимков как `NonZeroUsize`, как `with_snapshots` и `PostgresCommandConfig::new`, — `try_new` остаётся из-за проверки блокировки против таймаута обработчика |
+| `new_event_store`, `new_snapshot_store` | сделано: `PersistedEventStore::new(repo)`, `.with_snapshots(NonZeroUsize)` |
+| `get_events`, `get_events_after`, `get_snapshot` | сделано: `events`, `events_after`, `snapshot` |
+| `MemStore::get_events` | удалён; его тест переписан: клоны видят одни события через `load_events` |
+| `EventStore::AC` | сделано: `Context` |
+| `NewTask::scheduled` | сделано: `with_schedule` |
+| `TestFramework::with`, `inspect_result` | сделано: `new`, `into_result` |
+| `app_name` в `engine/mongodb.rs` | сделано: параметр `mongo_plan`/`describe` и поле `MongoPlan::application_name`. Ключ описания `mongodb.app_name` оставлен: это видимый вывод (эталон `effective_config.txt`) и имя опции MongoDB (`appName`) |
+| файлы не по главному типу | сделано: `cqrs/testing/command_executor.rs`, `mongodb/checkpoint_store.rs`; ради симметрии и PostgreSQL-двойник `postgres/projection_checkpoints.rs` → `postgres/checkpoint_store.rs` (в нём `PostgresCheckpointStore`, файл без изменений). Модули: `testing::command_executor`, `mongodb::checkpoint_store`, `postgres::checkpoint_store` |
+
+### Типы
+
+| Строка | Итог |
+|---|---|
+| `spawn_rebuild(key, pace, reason, bool, waiters)` | сделано: `enum RebuildJob { Requested, Cursor { pace }, Healed { waiter } }`, `spawn_rebuild(key, job)` |
+| `SerializedEvent::new` | удалён; все места — литерал структуры с именами полей |
+| `can_upcast(&str, &str)` | сделано: `EventFormat<'a> { event_type, event_version }` (заимствует строки события, без копий), `SerializedEvent::format()`, `can_upcast(EventFormat<'_>)` |
+| `operation`, `category` | `enum Operation` с `as_str()` сделан (закрытый, имена в логах те же); журнал или хранилище контрольных точек для сбоя без страницы выбирается полным `match` по `Operation`. `Category` не введён: категории приходят из трёх источников (`PersistenceError`, `DeliveryError`, публичный `CheckpointError::category()`) и уходят наружу как текст — публичное поле `Failed.category` читает лента активности demo (`category` и `message`), status row, логи. Enum поменял бы публичный тип поля и метода; в crate по категориям нет ветвлений, выигрыша нет |
+| `Difference.kind` | сделано: `enum DifferenceKind { Differs, Unexpected }`, `serde(rename_all = "snake_case")`; JSON тот же (тест в `verify.rs`) |
+| `labels() -> Vec<(&str, String)>` | сделано: `Label { name, value }`; derive `Command`/`Commands` порождают его |
+| `load_with_context -> (V, ViewContext)` | сделано: `Option<StoredView<V>>`; `From<(V, ViewContext)> for StoredView` удалён; имя метода прежнее |
+| кортежи модуля и owner | сделано: `PolicyEntry`, `TaskRegistration { adapter, binding }` с `PolicyBinding { name, bind }`, `RebuildOutcome { aggregate_id, result }` |
+| `describe()`, `observe_projections` | сделано: `Cqrs`, `Settings`, `PoolPlan`, `MongoPlan` отдают `BTreeMap<String, String>` (эталон тот же: `render` в `contracts.rs` принимает пары); `observe_projections(Fn(ObservedProcessor<'_>))`, `ObservedProcessor { projection, node }` |
+| `RowKey = (String, String)` | сделано: строки `MemCheckpointStore` по `CheckpointKey` (derive `PartialOrd`, `Ord`: порядок прежний — проекция, потом тип агрегата) |
+| `supersedes`, `statement_timeout_text`, `Default` у `CommitReport` | сделано: `NumericVersion::supersedes` удалён, сравнение `>`; `impl Display for StatementTimeout` (в `engine/postgres.rs`: текст тот же, `duration_text` живёт в engine); `#[derive(Default)]` |
+| `AggregateKey`, `impl Into<Bson>`, `impl Into<String>` | сделано: `AggregateKey` — `pub(crate)`, `new(&'static str, String)`, неиспользуемый геттер `aggregate_type()` удалён; `literal(&str)`; `Read::invalid`/`invalid_named` принимают `&str` |
+| `impl Into<Arc<…>>` | сделано: `TaskDispatcher::dispatch(Arc<TaskAttempt>, …)`, `prepare(…, Arc<TaskDispatcher<A>>, …)`, `prepare_task_runtime(…, Arc<TaskDispatcher<A>>, …)` |
+| `AggregateContext::aggregate(&mut self)` | сделано: `aggregate(&self) -> &A` |
+| `dyn` с одним значением (правило 18) | оставлено по рекомендации: generic-параметр processor добавил бы параметры типам, а `ProjectionRuntime` всё равно стирает их |
+
+### Публичный API: было → стало
+
+- `LockLimits`, `AggregateConflictRetryPolicy`, `DeliveryLimits`, `ProcessorConfig`, `TaskStorageConfig`,
+  `TaskWorkerPoolConfig`, `TaskRuntimeConfig`, `PostgresSettings`: `new` → `try_new`; `Settings::new(usize, …)` →
+  `Settings::try_new(NonZeroUsize, …)`.
+- `PersistedEventStore::new_event_store(repo)` → `new(repo)`; `new_snapshot_store(repo, n)` → `new(repo).with_snapshots(n)`.
+- `PersistedEventRepository::{get_events, get_events_after, get_snapshot}` → `{events, events_after, snapshot}`;
+  `MemStore::get_events` удалён; `EventStore::AC` → `EventStore::Context`;
+  `AggregateContext::aggregate(&mut self) -> &mut A` → `aggregate(&self) -> &A`.
+- `NewTask::scheduled` → `with_schedule`; `TestFramework::with` → `new`; `AggregateResultValidator::inspect_result` →
+  `into_result`.
+- `MongoPlan::app_name` → `application_name` (параметры `mongo_plan` тоже).
+- Модули: `cqrs::testing::command` → `command_executor`, `mongodb::projection_checkpoints` → `checkpoint_store`,
+  `postgres::projection_checkpoints` → `checkpoint_store`.
+- `SerializedEvent::new` удалён; `EventUpcaster::can_upcast(&str, &str)` → `can_upcast(EventFormat<'_>)`, новые
+  `EventFormat` и `SerializedEvent::format`; `NumericVersion::supersedes` удалён.
+- `Difference::kind: &'static str` → `DifferenceKind`.
+- `CommandInfo::labels() -> Vec<(&'static str, String)>` → `Vec<Label>`, новый `Label`.
+- `ViewRepository::load_with_context -> Option<(V, ViewContext)>` → `Option<StoredView<V>>`; `From<(V, ViewContext)>`
+  удалён.
+- `Module::observe_projections(Fn(&'static str, &str))` → `Fn(ObservedProcessor<'_>)`, новый `ObservedProcessor`.
+- `Cqrs::describe`, `Settings::describe`, `PoolPlan::describe`, `MongoPlan::describe`: `Vec<(String, String)>` →
+  `BTreeMap<String, String>`.
+- `CheckpointKey`: добавлены `PartialOrd`, `Ord`; `StatementTimeout`: добавлен `Display`.
+- `AggregateKey` больше не публичный.
+- `TaskDispatcher::dispatch`, `task::runtime::prepare`, `postgres::task_runtime::prepare_task_runtime`:
+  `impl Into<Arc<…>>` → `Arc<…>`.
+
+### Пересечения с задачей 05/15
+
+- Темы 2 и 10 (upcasting, версии): `EventFormat` и `can_upcast` — тот же трейт `EventUpcaster`.
+- Тема 8 (подписи ленты): `Label { name, value }` — лента ищет `fan_id` через `label.name`.
+- Тема 11 (политика у типа задачи): закрытые `TaskRegistration`/`PolicyBinding` — та же привязка, публичный API
+  `.task(x).policy(..)` прежний.
+- Темы 12 и 13 (запросы витрин, своя реализация под базу): `load_with_context` отдаёт `StoredView`, как три запроса;
+  поменялись все три реализации `ViewRepository`.
+- Темы 16 и 17 (наблюдатели): аргумент фабрики наблюдателей процессоров — `ObservedProcessor`.
+- Темы 20 и 21 (размер движка, `Defaults`): `Settings::try_new(NonZeroUsize, …)`, `describe()` → `BTreeMap`.
+
+Если решения 05/15 поменяют эти API, правки 05 переписываются вместе с ними; ни одно решение 05/15 эта задача не
+предрешает.
+
+### Прочее
+
+- **demo:** правки только как у вызывающего: `try_new`, `TestFramework::new`, `with_snapshots`, `Context`,
+  `command_executor`, литерал `SerializedEvent`, `DifferenceKind::Differs`, `label.name`/`label.value` в ленте, `StoredView`,
+  `ObservedProcessor`,
+  `Arc::new(..)` у `dispatch`/`prepare`. `tests/contracts.rs` правлен в трёх местах того же рода (`type Context`, путь
+  `command_executor`, `Arc::new(dispatcher)`); эталоны не трогались. `demo/load/epic06`: `TestFramework::new`,
+  `describe().get(..)`.
+- **Документация:** `cqrsx/doc/components.md` — новые имена, `Label`, `EventFormat`, `DifferenceKind`,
+  `ObservedProcessor`, `describe()` как `BTreeMap`, `AggregateKey` закрытый, дерево файлов.
+- **Наблюдение:** с `BTreeMap` ключ, описанный дважды (настройкой движка и модулем), хранит последнее значение;
+  проверка «ключ дважды» в `render` из `contracts.rs` больше не может сработать. Эталон это не меняет.
+- **Не в таблице, оставлено:** `NewTask::new`, `TaskFormat::new`, `TaskPolicy::new`, `JsonTaskAdapter::new`,
+  `TaskAttempt::new` возвращают `Result`, но называются `new` (правило 22); `TaskContext::new(impl Into<Arc<TaskAttempt>>)`
+  (правило 19). Кандидаты в следующую правку имён.
+
+**Проверки** (все с кодом 0, журнал вне репозитория): build, fmt, clippy `-D warnings`, полные тесты workspace
+(838 прошли, 0 упало), `-p cqrsx --no-default-features` без features и с каждой из `postgres`, `worker`, `host`,
+`logging`, `mongodb`, `http`; покрытие строк — workspace 98,00 %, `cqrsx` 97,90 %; `cargo doc -p cqrsx` без
+предупреждений. demo — fmt, build, clippy `-D warnings`, тесты (174 прошли, `contracts.rs` с эталонами — 9);
+`demo/load/epic06` — build, fmt, clippy `-D warnings`, тесты. Первый прогон поймал три doctest с прежним
+`load_with_context` и тест архитектуры demo: доменный тест назвал `Label`, которого нет в списке разрешённого домену;
+тест переписан без `Label`, список не менялся.

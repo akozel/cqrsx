@@ -52,9 +52,16 @@ async fn test_valid_view_repository() {
     repo.update_view(view.clone(), ViewContext::new(test_view_id.to_string(), 0, 1))
         .await
         .unwrap();
-    let (found, context) = repo.load_with_context(&test_view_id).await.unwrap().unwrap();
-    assert_eq!(found, view);
-    assert_eq!(context, ViewContext::new(test_view_id.to_string(), 1, 1));
+    let stored = repo.load_with_context(&test_view_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored,
+        StoredView {
+            id: test_view_id.to_string(),
+            version: 1,
+            last_sequence: 1,
+            view: view.clone(),
+        }
+    );
     let found = repo.load(&test_view_id).await.unwrap().unwrap();
     assert_eq!(found, view);
 
@@ -63,18 +70,19 @@ async fn test_valid_view_repository() {
             id: "a totally different view".to_string(),
         })],
     };
-    repo.update_view(
-        updated_view.clone(),
-        ViewContext {
+    repo.update_view(updated_view.clone(), ViewContext::new(stored.id, stored.version, 2))
+        .await
+        .unwrap();
+    let stored = repo.load_with_context(&test_view_id).await.unwrap().unwrap();
+    assert_eq!(
+        stored,
+        StoredView {
+            id: test_view_id.to_string(),
+            version: 2,
             last_sequence: 2,
-            ..context
-        },
-    )
-    .await
-    .unwrap();
-    let (found, context) = repo.load_with_context(&test_view_id).await.unwrap().unwrap();
-    assert_eq!(found, updated_view);
-    assert_eq!(context, ViewContext::new(test_view_id.to_string(), 2, 2));
+            view: updated_view,
+        }
+    );
 
     db.close().await;
 }
@@ -140,10 +148,10 @@ async fn stress_optimistic_view_create_and_update_has_one_winner() {
                 }
                 assert_eq!(winners.len(), 1, "{id}");
                 assert_eq!(conflicts, writers - 1);
-                let (view, context) = repo.load_with_context(&id).await.unwrap().unwrap();
-                assert_eq!(view, winners[0]);
-                assert_eq!((context.version, context.last_sequence), (version + 1, 1));
-                assert_eq!(context.view_instance_id, id);
+                let stored = repo.load_with_context(&id).await.unwrap().unwrap();
+                assert_eq!(stored.view, winners[0]);
+                assert_eq!((stored.version, stored.last_sequence), (version + 1, 1));
+                assert_eq!(stored.id, id);
             }
         }
     }
@@ -224,19 +232,22 @@ async fn stress_two_writers_of_one_document_converge() {
                 for result in finish_writers(&mut tasks).await {
                     result.unwrap();
                 }
-                let (view, context) = repository.load_with_context(&id).await.unwrap().unwrap();
+                let stored = repository.load_with_context(&id).await.unwrap().unwrap();
                 let expected: Vec<_> = source.iter().map(|e| e.payload.clone()).collect();
-                assert_eq!(view.events, expected, "{id}: the fold of the whole history, every event once");
-                assert_eq!(context.last_sequence, total, "{id}");
+                assert_eq!(
+                    stored.view.events, expected,
+                    "{id}: the fold of the whole history, every event once"
+                );
+                assert_eq!(stored.last_sequence, total, "{id}");
                 let versions = (initial as i64 + 1)..=((initial + writers) as i64);
                 assert!(
-                    versions.contains(&context.version),
+                    versions.contains(&stored.version),
                     "{id}: version {} outside {versions:?}",
-                    context.version
+                    stored.version
                 );
                 assert_eq!(
                     PostgresEventRepository::new(db.pool.clone())
-                        .get_events::<TestAggregate>(&id)
+                        .events::<TestAggregate>(&id)
                         .await
                         .unwrap()
                         .len(),
@@ -361,9 +372,9 @@ async fn unrelated_view_uniqueness_is_technical_and_stale_versions_are_conflicts
             .await,
         Err(PersistenceError::UnknownError(_))
     ));
-    let (saved, context) = repo.load_with_context("two").await.unwrap().unwrap();
-    assert_eq!(saved, other);
-    assert_eq!(context.version, 1);
+    let stored = repo.load_with_context("two").await.unwrap().unwrap();
+    assert_eq!(stored.view, other);
+    assert_eq!(stored.version, 1);
     db.close().await;
 }
 

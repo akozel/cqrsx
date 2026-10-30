@@ -11,7 +11,7 @@ use cqrsx::{
         command::{executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
         store::{feed::Position, persisted::PersistedEventStore, repository::PersistedEventRepository},
     },
-    mongodb::projection_checkpoints::PROJECTION_CHECKPOINTS_COLLECTION,
+    mongodb::checkpoint_store::PROJECTION_CHECKPOINTS_COLLECTION,
     postgres::{event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox},
 };
 use mongodb::bson::Document;
@@ -21,7 +21,7 @@ use std::sync::Arc;
 /// Commits `per_key` commands on every key through PostgreSQL.
 async fn commit(pool: &PgPool, wakeup: &CommitWakeup, keys: &[&str], per_key: i32) {
     let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
-    let framework = CqrsFramework::new(PersistedEventStore::<_, Ledger>::new_event_store(repository), ());
+    let framework = CqrsFramework::new(PersistedEventStore::<_, Ledger>::new(repository), ());
     let executor = Arc::new(
         CommandExecutorCore::new(framework, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()),
     );

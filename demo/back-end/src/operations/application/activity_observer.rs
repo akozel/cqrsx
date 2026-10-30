@@ -38,7 +38,7 @@ impl observer::AnyCommandObserver for CommandActivityObserver {
             .command
             .labels()
             .into_iter()
-            .find_map(|(key, fan)| (key == "fan_id").then_some(fan))
+            .find_map(|label| (label.name == "fan_id").then_some(label.value))
             .or_else(|| {
                 let ledger = report.id.downcast_ref::<FanLedgerId>();
                 ledger.map(|ledger| ledger.fan().as_str().to_owned())

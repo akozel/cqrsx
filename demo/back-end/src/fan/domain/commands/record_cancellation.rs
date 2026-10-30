@@ -46,7 +46,7 @@ mod tests {
     fn record_cancellation_happy_path_copies_concert_and_seat_from_the_ticket() {
         let id = Uuid::new_v4();
         let cancellation_id = Uuid::new_v4();
-        TestFramework::<Fan>::with(())
+        TestFramework::<Fan>::new(())
             .given(vec![recorded(id)])
             .when(cancel(id, cancellation_id))
             .then_expect_event(cancelled(id, cancellation_id));
@@ -55,7 +55,7 @@ mod tests {
     #[test]
     fn r10_rejects_cancellation_of_an_unknown_ticket() {
         let id = Uuid::new_v4();
-        TestFramework::<Fan>::with(())
+        TestFramework::<Fan>::new(())
             .given_no_previous_events()
             .when(cancel(id, Uuid::new_v4()))
             .then_expect_error(FanError::UnknownTicket { booking_id: id });
@@ -65,7 +65,7 @@ mod tests {
     fn r11_rejects_a_repeated_cancellation() {
         let id = Uuid::new_v4();
         let cancellation_id = Uuid::new_v4();
-        TestFramework::<Fan>::with(())
+        TestFramework::<Fan>::new(())
             .given(vec![recorded(id), cancelled(id, cancellation_id)])
             .when(cancel(id, cancellation_id))
             .then_expect_error(FanError::AlreadyCancelled { booking_id: id });

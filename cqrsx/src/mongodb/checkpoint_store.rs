@@ -116,8 +116,8 @@ fn owned(key: &CheckpointKey, token: LeaseToken) -> Document {
 }
 
 /// A value an update pipeline must not read as an expression (an id may start with `$`).
-fn literal(value: impl Into<Bson>) -> Document {
-    doc! { "$literal": value.into() }
+fn literal(value: &str) -> Document {
+    doc! { "$literal": value }
 }
 
 fn count_in(value: u64, what: &'static str) -> Result<i64, CheckpointError> {
@@ -259,7 +259,7 @@ impl CheckpointStore for MongoCheckpointStore {
         };
         let claim = doc! {
             "owner": literal(owner),
-            "lock_token": literal(Uuid::new_v4().to_string()),
+            "lock_token": literal(&Uuid::new_v4().to_string()),
             "locked_until": { "$add": ["$$NOW", lease] },
             "updated_at": "$$NOW",
         };

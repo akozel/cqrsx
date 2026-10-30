@@ -94,7 +94,10 @@ pub enum CommandGatewayError<D> {
 ///   an activity feed shows and filters a command by.
 ///
 /// ```
-/// use cqrsx::{Command, Commands, cqrs::command::CommandInfo};
+/// use cqrsx::{
+///     Command, Commands,
+///     cqrs::command::{CommandInfo, Label},
+/// };
 /// use uuid::Uuid;
 ///
 /// #[derive(Command)]
@@ -117,7 +120,13 @@ pub enum CommandGatewayError<D> {
 /// let cancel = CancelBooking { seat: "B4".into(), fan_id: "fox".into(), cancellation_id, reason: 2 };
 /// assert_eq!(cancel.name(), "CancelBooking");
 /// assert_eq!(cancel.command_id(), Some(cancellation_id));
-/// assert_eq!(cancel.labels(), [("fan_id", "fox".to_owned()), ("reason", "2".to_owned())]);
+/// assert_eq!(
+///     cancel.labels(),
+///     [
+///         Label { name: "fan_id", value: "fox".to_owned() },
+///         Label { name: "reason", value: "2".to_owned() },
+///     ]
+/// );
 /// let announce = AnnounceConcert { artist: "Radiohead".into() };
 /// assert_eq!((announce.name(), announce.command_id(), announce.labels()), ("AnnounceConcert", None, vec![]));
 /// ```
@@ -152,10 +161,17 @@ pub trait CommandInfo {
         None
     }
 
-    /// The labels of the command, `(field, value)` in field order (`#[label]`); none by default.
-    fn labels(&self) -> Vec<(&'static str, String)> {
+    /// The labels of the command in field order (`#[label]`); none by default.
+    fn labels(&self) -> Vec<Label> {
         Vec::new()
     }
+}
+
+/// A labelled field of a command (`#[label]`): its name and its value as its `Display` writes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Label {
+    pub name: &'static str,
+    pub value: String,
 }
 
 #[cfg(test)]

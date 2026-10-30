@@ -227,7 +227,10 @@ async fn custom_adapter_converts_two_wire_versions_without_changing_routing() {
                 1,
             )
             .unwrap();
-            assert_eq!(pending(dispatcher.dispatch(task, Duration::ZERO)).await, TaskResult::Done);
+            assert_eq!(
+                pending(dispatcher.dispatch(Arc::new(task), Duration::ZERO)).await,
+                TaskResult::Done
+            );
         }
     }
     assert_eq!(*calls.lock().unwrap(), ["first", "second"]);

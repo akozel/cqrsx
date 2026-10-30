@@ -58,7 +58,7 @@ async fn an_event_conflict_rolls_back_an_otherwise_valid_snapshot_update_and_tas
         .persist::<TestAggregate>(&[event("rollback-snapshot", 2)], None)
         .await
         .unwrap();
-    let before = reader.get_snapshot::<TestAggregate>("rollback-snapshot").await.unwrap();
+    let before = reader.snapshot::<TestAggregate>("rollback-snapshot").await.unwrap();
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     let repository_tasks = vec![new_task()];
     let result = repository
@@ -74,14 +74,8 @@ async fn an_event_conflict_rolls_back_an_otherwise_valid_snapshot_update_and_tas
         )
         .await;
     assert!(matches!(result, Err(PersistenceError::OptimisticLockError)));
-    assert_eq!(
-        reader.get_snapshot::<TestAggregate>("rollback-snapshot").await.unwrap(),
-        before
-    );
-    assert_eq!(
-        reader.get_events::<TestAggregate>("rollback-snapshot").await.unwrap().len(),
-        2
-    );
+    assert_eq!(reader.snapshot::<TestAggregate>("rollback-snapshot").await.unwrap(), before);
+    assert_eq!(reader.events::<TestAggregate>("rollback-snapshot").await.unwrap().len(), 2);
     let task_count: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox")
         .fetch_one(&db.pool)
         .await
@@ -125,7 +119,7 @@ async fn rolls_back_events_and_outbox_when_snapshot_lock_is_stale() {
     assert_eq!(row_count(&database.pool, "transactional_outbox").await, 0);
     assert_eq!(
         repository
-            .get_snapshot::<StreamAggregate>(AGGREGATE_ID)
+            .snapshot::<StreamAggregate>(AGGREGATE_ID)
             .await
             .expect("snapshot must load"),
         Some(SerializedSnapshot {

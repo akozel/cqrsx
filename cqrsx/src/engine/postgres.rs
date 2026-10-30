@@ -16,7 +16,7 @@ use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-use std::{num::NonZeroU32, time::Duration};
+use std::{collections::BTreeMap, fmt, num::NonZeroU32, time::Duration};
 
 /// The journal, the snapshots, the outbox and the task queue in PostgreSQL (`Builder::event_store`), or the views and
 /// their checkpoints (`Builder::projections`).
@@ -114,7 +114,7 @@ impl Default for PostgresSettings {
 
 impl PostgresSettings {
     /// The pools of the database `url`; a custom statement timeout is 1 ms to `i32::MAX` ms.
-    pub fn new(
+    pub fn try_new(
         url: impl Into<String>,
         pool_size: NonZeroU32,
         statement_timeout: StatementTimeout,
@@ -198,16 +198,16 @@ impl PostgresSettings {
     }
 
     /// The variables of these settings and the plan of the pools.
-    pub(crate) fn describe(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> Vec<(String, String)> {
-        let mut lines = vec![
+    pub(crate) fn describe(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> BTreeMap<String, String> {
+        let mut described = BTreeMap::from([
             (name(DATABASE_URL), self.url.clone()),
             (name(DATABASE_POOL_SIZE), self.pool_size.to_string()),
-            (name(STATEMENT_TIMEOUT), statement_timeout_text(self.statement_timeout)),
+            (name(STATEMENT_TIMEOUT), self.statement_timeout.to_string()),
             (name(HISTORY_POOL_SIZE), self.history_pool_size.to_string()),
             (name(PROJECTION_POOL_SIZE), self.projection_pool_size.to_string()),
-        ];
-        lines.extend(self.pool_plan(application_name).describe());
-        lines
+        ]);
+        described.extend(self.pool_plan(application_name).describe());
+        described
     }
 }
 
@@ -223,12 +223,15 @@ fn checked_timeout(read: &Read, value: Option<String>) -> Result<StatementTimeou
     }
 }
 
-/// The cap a statement timeout puts on a statement (`Default` is the library's 4 s), or `unlimited`.
-pub(crate) fn statement_timeout_text(timeout: StatementTimeout) -> String {
-    match timeout {
-        StatementTimeout::Default => duration_text(DEFAULT_STATEMENT_TIMEOUT),
-        StatementTimeout::Custom(timeout) => duration_text(timeout),
-        StatementTimeout::Unlimited => "unlimited".to_owned(),
+/// The cap a statement timeout puts on a statement as the description of the settings writes it (`Default` is the
+/// library's 4 s), or `unlimited`.
+impl fmt::Display for StatementTimeout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Default => f.write_str(&duration_text(DEFAULT_STATEMENT_TIMEOUT)),
+            Self::Custom(timeout) => f.write_str(&duration_text(*timeout)),
+            Self::Unlimited => f.write_str("unlimited"),
+        }
     }
 }
 
@@ -263,7 +266,7 @@ impl PostgresPool {
     }
 
     /// The pool as it is opened: SQLx's options read back, the ping policy and the statement timeout.
-    fn describe(&self, name: &str) -> Vec<(String, String)> {
+    fn describe(&self, name: &str) -> BTreeMap<String, String> {
         let options = self.options();
         let optional = |duration: Option<Duration>| duration.map_or_else(|| "none".to_owned(), duration_text);
         let ping = match self.ping {
@@ -277,7 +280,7 @@ impl PostgresPool {
             ("max_lifetime", optional(options.get_max_lifetime())),
             ("min_connections", options.get_min_connections().to_string()),
             ("ping", ping),
-            ("statement_timeout", statement_timeout_text(self.statement_timeout)),
+            ("statement_timeout", self.statement_timeout.to_string()),
         ]
         .into_iter()
         .map(|(field, value)| (format!("postgres.{name}.{field}"), value))
@@ -300,14 +303,13 @@ pub struct PoolPlan {
 }
 
 impl PoolPlan {
-    /// Every pool as `postgres.<pool>.<field>` and the application name, sorted by key.
-    pub fn describe(&self) -> Vec<(String, String)> {
-        let mut lines = vec![("postgres.application_name".to_owned(), self.application_name.clone())];
-        lines.extend(self.main.describe("main"));
-        lines.extend(self.projection.describe("projection"));
-        lines.extend(self.history.describe("history"));
-        lines.sort();
-        lines
+    /// Every pool as `postgres.<pool>.<field>` and the application name, by key.
+    pub fn describe(&self) -> BTreeMap<String, String> {
+        let mut described = BTreeMap::from([("postgres.application_name".to_owned(), self.application_name.clone())]);
+        described.extend(self.main.describe("main"));
+        described.extend(self.projection.describe("projection"));
+        described.extend(self.history.describe("history"));
+        described
     }
 }
 
@@ -315,7 +317,7 @@ impl PoolPlan {
 mod tests {
     use super::*;
     use crate::engine::settings::{Defaults, Settings};
-    use std::collections::HashMap;
+    use std::{collections::HashMap, num::NonZeroUsize};
 
     /// `value` as the variable of the statement timeout under the prefix `ENCORE` (`None`: absent; blank counts as a
     /// value here, as the configuration's parser saw it).
@@ -355,7 +357,7 @@ mod tests {
 
     #[test]
     fn the_pool_plan_takes_the_sizes_and_the_timeout_of_the_configuration() {
-        let config = PostgresSettings::new(
+        let config = PostgresSettings::try_new(
             "postgresql://localhost/test",
             NonZeroU32::new(7).unwrap(),
             StatementTimeout::Custom(Duration::from_millis(2500)),
@@ -402,38 +404,33 @@ mod tests {
             ),
             (2, 0, Some(Duration::from_secs(30)))
         );
-        let lines = plan.describe();
-        assert!(lines.is_sorted());
-        for line in [
+        let described = plan.describe();
+        for (key, value) in [
             ("postgres.main.statement_timeout", "2500 ms"),
             ("postgres.history.statement_timeout", "unlimited"),
             ("postgres.projection.ping", "idle 100 ms"),
         ] {
-            assert!(
-                lines.contains(&(line.0.to_owned(), line.1.to_owned())),
-                "{line:?} in {lines:?}"
-            );
+            assert_eq!(described.get(key).map(String::as_str), Some(value), "{key} in {described:?}");
         }
         let always = PostgresPool {
             ping: ConnectionPingPolicy::Default,
             ..plan.main
         };
-        assert!(
-            always
-                .describe("main")
-                .contains(&("postgres.main.ping".to_owned(), "always".to_owned()))
+        assert_eq!(
+            always.describe("main").get("postgres.main.ping").map(String::as_str),
+            Some("always")
         );
     }
 
     #[test]
     fn checked_postgres_settings_refuse_a_timeout_postgresql_cannot_hold() {
         let one = NonZeroU32::new(1).unwrap();
-        let refused = PostgresSettings::new("u", one, StatementTimeout::Custom(Duration::ZERO), one, one).unwrap_err();
+        let refused = PostgresSettings::try_new("u", one, StatementTimeout::Custom(Duration::ZERO), one, one).unwrap_err();
         assert_eq!(
             refused.to_string(),
             "DATABASE_STATEMENT_TIMEOUT_MS: must be 0 (no cap) or 1..=2147483647 milliseconds"
         );
-        let unlimited = PostgresSettings::new("u", one, StatementTimeout::Unlimited, one, one).unwrap();
+        let unlimited = PostgresSettings::try_new("u", one, StatementTimeout::Unlimited, one, one).unwrap();
         assert_eq!(
             (unlimited.url(), unlimited.statement_timeout(), unlimited.history_pool_size()),
             ("u", StatementTimeout::Unlimited, one)
@@ -460,11 +457,16 @@ mod tests {
                 .acquire_timeout(Duration::from_millis(200))
                 .connect_lazy_with("postgresql://shop@127.0.0.1:1/shop".parse().unwrap())
         };
-        let limits = LockLimits::new(Duration::from_millis(500), 7).unwrap();
-        let retry = AggregateConflictRetryPolicy::new(5, Duration::from_millis(1), Duration::from_millis(2), 0.0).unwrap();
-        let settings = Settings::new(3, limits, ProcessorConfig::default(), TaskRuntimeConfig::default())
-            .unwrap()
-            .with_conflict_retry(retry);
+        let limits = LockLimits::try_new(Duration::from_millis(500), 7).unwrap();
+        let retry = AggregateConflictRetryPolicy::try_new(5, Duration::from_millis(1), Duration::from_millis(2), 0.0).unwrap();
+        let settings = Settings::try_new(
+            NonZeroUsize::new(3).unwrap(),
+            limits,
+            ProcessorConfig::default(),
+            TaskRuntimeConfig::default(),
+        )
+        .unwrap()
+        .with_conflict_retry(retry);
         let pools = PostgresPools {
             main: lazy(),
             history: lazy(),

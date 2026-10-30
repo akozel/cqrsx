@@ -108,7 +108,7 @@ where
     A: Aggregate + Clone + 'static,
     A::Command: Clone,
     S: EventStore<A> + 'static,
-    S::AC: Send,
+    S::Context: Send,
 {
     /// Executes without event metadata; see [`execute_with_metadata`](Self::execute_with_metadata).
     pub async fn execute(&self, id: &A::Id, command: A::Command) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
@@ -195,7 +195,7 @@ where
     A::Command: Clone + 'static,
     A::Error: Send + 'static,
     S: EventStore<A> + 'static,
-    S::AC: Send,
+    S::Context: Send,
 {
     async fn execute_with_metadata(
         &self,
@@ -301,8 +301,8 @@ mod tests {
     struct DummyContext(DummyAggregate);
 
     impl AggregateContext<DummyAggregate> for DummyContext {
-        fn aggregate(&mut self) -> &mut DummyAggregate {
-            &mut self.0
+        fn aggregate(&self) -> &DummyAggregate {
+            &self.0
         }
     }
 
@@ -334,13 +334,13 @@ mod tests {
     }
 
     impl EventStore<DummyAggregate> for DummyStore {
-        type AC = DummyContext;
+        type Context = DummyContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, _: &str) -> Result<Self::AC, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<DummyError>> {
             if let Some(error) = self.load_error {
                 return Err(error());
             }
@@ -350,7 +350,7 @@ mod tests {
         async fn commit(
             &self,
             _: Vec<DummyEvent>,
-            _: Self::AC,
+            _: Self::Context,
             _: HashMap<String, String>,
             tasks: &[NewTask],
         ) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
@@ -401,7 +401,7 @@ mod tests {
     }
 
     fn no_delay_policy(max_attempts: usize) -> AggregateConflictRetryPolicy {
-        AggregateConflictRetryPolicy::new(max_attempts, Duration::ZERO, Duration::ZERO, 0.0).unwrap()
+        AggregateConflictRetryPolicy::try_new(max_attempts, Duration::ZERO, Duration::ZERO, 0.0).unwrap()
     }
 
     fn dummy_executor(store: DummyStore, attempts: usize) -> CommandExecutorCore<DummyAggregate, DummyStore> {
@@ -519,20 +519,20 @@ mod tests {
     }
 
     impl EventStore<DummyAggregate> for MetadataStore {
-        type AC = DummyContext;
+        type Context = DummyContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, _: &str) -> Result<Self::AC, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<DummyError>> {
             Ok(DummyContext(DummyAggregate))
         }
 
         async fn commit(
             &self,
             _: Vec<DummyEvent>,
-            _: Self::AC,
+            _: Self::Context,
             metadata: HashMap<String, String>,
             _: &[NewTask],
         ) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
@@ -804,19 +804,19 @@ mod tests {
     struct VersionedContext(DummyAggregate, usize);
 
     impl AggregateContext<DummyAggregate> for VersionedContext {
-        fn aggregate(&mut self) -> &mut DummyAggregate {
-            &mut self.0
+        fn aggregate(&self) -> &DummyAggregate {
+            &self.0
         }
     }
 
     impl EventStore<DummyAggregate> for VersionedStore {
-        type AC = VersionedContext;
+        type Context = VersionedContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, _: &str) -> Result<Self::AC, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<DummyError>> {
             self.loads.fetch_add(1, Ordering::SeqCst);
             if let Some(gate) = &self.load_gate {
                 gate.acquire().await.unwrap().forget();
@@ -830,7 +830,7 @@ mod tests {
         async fn commit(
             &self,
             events: Vec<DummyEvent>,
-            context: Self::AC,
+            context: Self::Context,
             _: HashMap<String, String>,
             tasks: &[NewTask],
         ) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
@@ -1033,7 +1033,7 @@ mod tests {
     async fn a_panicking_planner_unwinds_and_releases_the_aggregate_lock() {
         let store = VersionedStore::default();
         let executor = Arc::new(
-            versioned_executor_with(&store, 1, LockLimits::new(Duration::from_millis(500), 4).unwrap())
+            versioned_executor_with(&store, 1, LockLimits::try_new(Duration::from_millis(500), 4).unwrap())
                 .with_task_planner(ValuePlanner::default()),
         );
         let panicking = tokio::spawn({
@@ -1059,7 +1059,7 @@ mod tests {
         };
         let planner = ValuePlanner::default();
         let executor = Arc::new(
-            versioned_executor_with(&store, 1, LockLimits::new(Duration::from_millis(100), 1).unwrap())
+            versioned_executor_with(&store, 1, LockLimits::try_new(Duration::from_millis(100), 1).unwrap())
                 .with_task_planner(planner.clone()),
         );
         // The holder keeps the key's lock while its load waits at the gate.
@@ -1206,8 +1206,8 @@ mod tests {
     struct TallyContext(Tally);
 
     impl AggregateContext<Tally> for TallyContext {
-        fn aggregate(&mut self) -> &mut Tally {
-            &mut self.0
+        fn aggregate(&self) -> &Tally {
+            &self.0
         }
     }
 
@@ -1231,13 +1231,13 @@ mod tests {
     }
 
     impl EventStore<Tally> for TallyStore {
-        type AC = TallyContext;
+        type Context = TallyContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<Tally>>, AggregateError<DummyError>> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, _: &str) -> Result<Self::AC, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<DummyError>> {
             let loads = self.loads.fetch_add(1, Ordering::SeqCst);
             Ok(TallyContext(Tally(10 * loads as u32)))
         }
@@ -1245,7 +1245,7 @@ mod tests {
         async fn commit(
             &self,
             events: Vec<Added>,
-            _: Self::AC,
+            _: Self::Context,
             metadata: HashMap<String, String>,
             tasks: &[NewTask],
         ) -> Result<Vec<EventEnvelope<Tally>>, AggregateError<DummyError>> {
@@ -1383,8 +1383,8 @@ mod tests {
     struct RoomContext(Room, String);
 
     impl AggregateContext<Room> for RoomContext {
-        fn aggregate(&mut self) -> &mut Room {
-            &mut self.0
+        fn aggregate(&self) -> &Room {
+            &self.0
         }
     }
 
@@ -1398,13 +1398,13 @@ mod tests {
     }
 
     impl EventStore<Room> for RoomStore {
-        type AC = RoomContext;
+        type Context = RoomContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<Room>>, AggregateError<DummyError>> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, key: &str) -> Result<Self::AC, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, key: &str) -> Result<Self::Context, AggregateError<DummyError>> {
             self.loads.lock().unwrap().push(key.to_owned());
             self.gate.acquire().await.unwrap().forget();
             Ok(RoomContext(Room, key.to_owned()))
@@ -1413,7 +1413,7 @@ mod tests {
         async fn commit(
             &self,
             events: Vec<DummyEvent>,
-            context: Self::AC,
+            context: Self::Context,
             metadata: HashMap<String, String>,
             _: &[NewTask],
         ) -> Result<Vec<EventEnvelope<Room>>, AggregateError<DummyError>> {
@@ -1461,7 +1461,7 @@ mod tests {
         let executor = CommandExecutorCore::new(
             CqrsFramework::new(store.clone(), ()),
             no_delay_policy(2),
-            LockLimits::new(Duration::from_millis(100), 1).unwrap(),
+            LockLimits::try_new(Duration::from_millis(100), 1).unwrap(),
         )
         .with_task_planner(planner.clone());
         let id = RoomId { floor: 3, number: 7 };
@@ -1470,11 +1470,21 @@ mod tests {
         // One poll: the command takes its lock and waits at the gate of its first load.
         assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(command.as_mut().poll(cx).is_pending())).await);
         assert_eq!(
-            executor.locks.acquire(AggregateKey::new(Room::TYPE, "3-07")).await.err(),
+            executor
+                .locks
+                .acquire(AggregateKey::new(Room::TYPE, "3-07".to_owned()))
+                .await
+                .err(),
             Some(LockRefused::TimedOut),
             "the command holds the lock of the id's text"
         );
-        drop(executor.locks.acquire(AggregateKey::new(Room::TYPE, "3-08")).await.unwrap());
+        drop(
+            executor
+                .locks
+                .acquire(AggregateKey::new(Room::TYPE, "3-08".to_owned()))
+                .await
+                .unwrap(),
+        );
         store.gate.add_permits(2);
         let report = command.await.unwrap();
         assert_eq!(
@@ -1642,7 +1652,7 @@ mod tests {
         };
         let observer = Arc::new(Heard::default());
         let executor = Arc::new(
-            versioned_executor_with(&store, 1, LockLimits::new(Duration::from_millis(100), 1).unwrap())
+            versioned_executor_with(&store, 1, LockLimits::try_new(Duration::from_millis(100), 1).unwrap())
                 .with_observer(observer.clone()),
         );
         // The holder keeps the key's lock while its load waits at the gate.

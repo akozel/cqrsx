@@ -13,7 +13,7 @@ use cqrsx::{
     Command, Commands, Event, Events, Rejection, Task,
     cqrs::{
         aggregate::Aggregate,
-        command::{CommandInfo, decide::Decide},
+        command::{CommandInfo, Label, decide::Decide},
         event::{DomainEvent, EventKind},
         rejection::Rejection as _,
         testing::TestFramework,
@@ -34,7 +34,10 @@ use cqrsx::{
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;
-use std::fmt::{Debug, Display};
+use std::{
+    fmt::{Debug, Display},
+    sync::Arc,
+};
 use uuid::Uuid;
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
@@ -243,13 +246,31 @@ fn a_derived_command_reports_its_name_id_and_labels_in_field_order() {
         (
             "BookSeat",
             Some(Uuid::from_u128(7)),
-            vec![("fan_id", "fox".to_owned()), ("type", "2".to_owned())]
+            vec![
+                Label {
+                    name: "fan_id",
+                    value: "fox".to_owned()
+                },
+                Label {
+                    name: "type",
+                    value: "2".to_owned()
+                }
+            ]
         )
     );
     assert_eq!(book.seat, "B4", "a field without an attribute is the command's only");
     assert_eq!((Ping.name(), Ping.command_id(), Ping.labels()), ("Ping", None, vec![]));
     let note = Note { note: 'x' };
-    assert_eq!((note.name(), note.labels()), ("Note", vec![("note", "x".to_owned())]));
+    assert_eq!(
+        (note.name(), note.labels()),
+        (
+            "Note",
+            vec![Label {
+                name: "note",
+                value: "x".to_owned()
+            }]
+        )
+    );
 }
 
 /// A tally that adds and resets: two command types, each deciding in its own `impl`.
@@ -342,15 +363,15 @@ fn derived_commands_route_every_variant_to_its_decision_and_report_it() {
             value,
         })
     };
-    TestFramework::<Tally>::with(5)
+    TestFramework::<Tally>::new(5)
         .given(vec![Counted::Added(3)])
         .when(add(2))
         .then_expect_event(Counted::Added(2));
-    TestFramework::<Tally>::with(5)
+    TestFramework::<Tally>::new(5)
         .given(vec![Counted::Added(3)])
         .when(add(3))
         .then_expect_error(OverTheLimit);
-    TestFramework::<Tally>::with(5)
+    TestFramework::<Tally>::new(5)
         .given(vec![Counted::Added(3)])
         .when(TallyCommand::Reset(Reset { by: "ops".into() }))
         .then_expect_event(Counted::Reset);
@@ -362,11 +383,27 @@ fn derived_commands_route_every_variant_to_its_decision_and_report_it() {
         ],
         [
             ("Add", Some(Uuid::from_u128(1)), vec![]),
-            ("Reset", None, vec![("by", "ops".to_owned())])
+            (
+                "Reset",
+                None,
+                vec![Label {
+                    name: "by",
+                    value: "ops".to_owned()
+                }]
+            )
         ]
     );
     let only = Only::One(Reset { by: "ops".into() });
-    assert_eq!((only.name(), only.labels()), ("Reset", vec![("by", "ops".to_owned())]));
+    assert_eq!(
+        (only.name(), only.labels()),
+        (
+            "Reset",
+            vec![Label {
+                name: "by",
+                value: "ops".to_owned()
+            }]
+        )
+    );
     assert_eq!(
         Decide::<Tally>::decide(only, &Tally(4), &5),
         Ok(Counted::Reset),
@@ -431,7 +468,7 @@ async fn a_task_handler_function_is_a_handler_with_its_context_and_its_dependenc
         .unwrap();
     let claim = TaskAttempt::first(&refund(), json!({})).unwrap();
     assert_eq!(
-        dispatcher.dispatch(claim, std::time::Duration::ZERO).await,
+        dispatcher.dispatch(Arc::new(claim), std::time::Duration::ZERO).await,
         TaskResult::retry("stamped acme at 9 on attempt 1")
     );
     // A context without the dependency: the handler fails the task and names it.

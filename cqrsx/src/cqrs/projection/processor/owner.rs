@@ -9,7 +9,7 @@
 //! that refuses an event as a gap is healed in place: a rebuild of its key is queued behind the failed job,
 //! and the page waits for the rebuild's receipt as for the job's.
 use super::{
-    Context,
+    Context, Operation,
     delivery::{DeliveryError, DeliverySlot, Done},
     lease::LeaseKeeper,
     observer::{Advanced, Applied, Failed, RebuildEvent, RebuildReason, Rebuilt, Waiting},
@@ -54,7 +54,7 @@ enum Woke {
     Shutdown,
     Lost,
     Live(Result<LiveOutcome, JoinError>),
-    Rebuild(Result<(String, Result<Done, DeliveryError>), JoinError>),
+    Rebuild(Result<RebuildOutcome, JoinError>),
     /// A commit woke the owner: it settles for `settle` so that the commits of a burst land in one page.
     Commit,
     Timer,
@@ -67,7 +67,7 @@ const HEAD_CHECK_EVERY: u32 = 8;
 struct Failure {
     key: Option<String>,
     handler: String,
-    operation: &'static str,
+    operation: Operation,
     category: &'static str,
     position: Position,
 }
@@ -104,6 +104,12 @@ struct LiveOutcome {
     result: Result<Done, DeliveryError>,
 }
 
+/// The receipt of a key's rebuild.
+struct RebuildOutcome {
+    aggregate_id: String,
+    result: Result<Done, DeliveryError>,
+}
+
 struct RebuildRun {
     cursor: String,
     pace: Duration,
@@ -126,6 +132,16 @@ struct Waiter {
     key: usize,
     last_sequence: usize,
     events: usize,
+}
+
+/// Why a key is rebuilt, and what its rebuild carries.
+enum RebuildJob {
+    /// A key requested on its own: rebuilt at once.
+    Requested,
+    /// A key of the rebuild's cursor page: rebuilt at the rebuild's pace, counted on the page.
+    Cursor { pace: Duration },
+    /// A key whose document refused a live event as a gap: the job waits for the rebuild as for its own answer.
+    Healed { waiter: Waiter },
 }
 
 /// A key whose rebuild is in flight.
@@ -157,7 +173,7 @@ pub(super) struct Owner<'a, A: Aggregate, R, C> {
     rebuild: Option<RebuildRun>,
     requested: VecDeque<String>,
     in_flight: HashMap<String, Rebuilding>,
-    rebuild_outcomes: JoinSet<(String, Result<Done, DeliveryError>)>,
+    rebuild_outcomes: JoinSet<RebuildOutcome>,
     failures: u32,
     backoff_until: Option<Instant>,
     requests_due: Instant,
@@ -259,7 +275,7 @@ where
         diagnostics::log_projection_event(self.ctx.key.projection(), self.ctx.key.aggregate_type(), event);
     }
 
-    fn log_failure(&self, operation: &'static str, category: &'static str, failures: u32) {
+    fn log_failure(&self, operation: Operation, category: &'static str, failures: u32) {
         diagnostics::log_projection_failure(
             self.ctx.key.projection(),
             self.ctx.key.aggregate_type(),
@@ -276,11 +292,10 @@ where
 
     /// A failure without a page (the journal, the checkpoint store, a rebuild): stops the reading; the
     /// first one of a window is the one recorded.
-    fn store_failure(&mut self, operation: &'static str, category: &'static str) {
-        let handler = if operation == "feed" || operation == "head" {
-            "journal"
-        } else {
-            "checkpoints"
+    fn store_failure(&mut self, operation: Operation, category: &'static str) {
+        let handler = match operation {
+            Operation::Feed | Operation::Head => "journal",
+            Operation::Checkpoints | Operation::Page | Operation::Rebuild | Operation::Lease => "checkpoints",
         };
         self.pending_failure.get_or_insert(Failure {
             key: None,
@@ -352,7 +367,7 @@ where
             }
             Ok(false) => Err(Interrupt::Lost),
             Err(error) => {
-                self.store_failure("checkpoints", error.category());
+                self.store_failure(Operation::Checkpoints, error.category());
                 Ok(())
             }
         }
@@ -395,7 +410,7 @@ where
         {
             Ok(true) => {}
             Ok(false) => return Err(Interrupt::Lost),
-            Err(error) => self.log_failure("checkpoints", error.category(), failures),
+            Err(error) => self.log_failure(Operation::Checkpoints, error.category(), failures),
         }
         self.ctx.observer.failed(&Failed {
             aggregate_id: failure.key.as_deref(),
@@ -428,7 +443,7 @@ where
             Ok(Some(requests)) => requests,
             Ok(None) => return Err(Interrupt::Lost),
             Err(error) => {
-                self.store_failure("checkpoints", error.category());
+                self.store_failure(Operation::Checkpoints, error.category());
                 return Ok(());
             }
         };
@@ -449,7 +464,7 @@ where
                     self.log("rebuild started");
                 }
                 Ok(false) => return Err(Interrupt::Lost),
-                Err(error) => self.store_failure("checkpoints", error.category()), // the flag stays: next poll
+                Err(error) => self.store_failure(Operation::Checkpoints, error.category()), // the flag stays: next poll
             }
         }
         Ok(())
@@ -463,8 +478,7 @@ where
             if self.in_flight.contains_key(&key) {
                 self.requested.push_back(key);
             } else {
-                self.spawn_rebuild(key, Duration::ZERO, RebuildReason::Requested, false, Vec::new())
-                    .await?;
+                self.spawn_rebuild(key, RebuildJob::Requested).await?;
             }
         }
         let Some((cursor, pace)) = self
@@ -483,7 +497,7 @@ where
         {
             Ok(ids) => ids,
             Err(error) => {
-                self.store_failure("feed", persistence_category(&error));
+                self.store_failure(Operation::Feed, persistence_category(&error));
                 return Ok(());
             }
         };
@@ -496,8 +510,7 @@ where
             if self.in_flight.contains_key(&id) {
                 continue; // being rebuilt already: it becomes the fold of its history all the same
             }
-            self.spawn_rebuild(id, pace, RebuildReason::Requested, true, Vec::new())
-                .await?;
+            self.spawn_rebuild(id, RebuildJob::Cursor { pace }).await?;
             pending += 1;
         }
         if let Some(run) = &mut self.rebuild {
@@ -525,7 +538,7 @@ where
             }
             Ok(false) => Err(Interrupt::Lost),
             Err(error) => {
-                self.store_failure("checkpoints", error.category());
+                self.store_failure(Operation::Checkpoints, error.category());
                 Ok(())
             }
         }
@@ -543,7 +556,7 @@ where
             self.pending_failure.get_or_insert(Failure {
                 key: None,
                 handler: self.ctx.handler.clone(),
-                operation: "rebuild",
+                operation: Operation::Rebuild,
                 category,
                 position: self.checkpoint,
             });
@@ -566,32 +579,49 @@ where
             }
             Ok(false) => Err(Interrupt::Lost),
             Err(error) => {
-                self.store_failure("checkpoints", error.category());
+                self.store_failure(Operation::Checkpoints, error.category());
                 Ok(())
             }
         }
     }
 
-    async fn spawn_rebuild(
-        &mut self,
-        key: String,
-        pace: Duration,
-        reason: RebuildReason,
-        cursor_member: bool,
-        waiting: Vec<Waiter>,
-    ) -> Result<(), Interrupt> {
+    async fn spawn_rebuild(&mut self, key: String, job: RebuildJob) -> Result<(), Interrupt> {
+        let (pace, rebuilding) = match job {
+            RebuildJob::Requested => (
+                Duration::ZERO,
+                Rebuilding {
+                    reason: RebuildReason::Requested,
+                    cursor_member: false,
+                    waiting: Vec::new(),
+                },
+            ),
+            RebuildJob::Cursor { pace } => (
+                pace,
+                Rebuilding {
+                    reason: RebuildReason::Requested,
+                    cursor_member: true,
+                    waiting: Vec::new(),
+                },
+            ),
+            RebuildJob::Healed { waiter } => (
+                Duration::ZERO,
+                Rebuilding {
+                    reason: RebuildReason::Healed,
+                    cursor_member: false,
+                    waiting: vec![waiter],
+                },
+            ),
+        };
         let slot = self.reserve(&key).await?;
         let receipt = slot.rebuild(pace, self.stop.clone());
-        let id = key.clone();
-        self.rebuild_outcomes.spawn(async move { (id, receipt.outcome().await) });
-        self.in_flight.insert(
-            key,
-            Rebuilding {
-                reason,
-                cursor_member,
-                waiting,
-            },
-        );
+        let aggregate_id = key.clone();
+        self.rebuild_outcomes.spawn(async move {
+            RebuildOutcome {
+                aggregate_id,
+                result: receipt.outcome().await,
+            }
+        });
+        self.in_flight.insert(key, rebuilding);
         Ok(())
     }
 
@@ -626,7 +656,7 @@ where
         let entries = match self.ctx.repository.feed_after::<A>(self.frontier, page_size).await {
             Ok(entries) => entries,
             Err(error) => {
-                self.store_failure("feed", persistence_category(&error));
+                self.store_failure(Operation::Feed, persistence_category(&error));
                 return Ok(());
             }
         };
@@ -662,7 +692,7 @@ where
             let failure = Failure {
                 key: Some(key),
                 handler: "journal".to_owned(),
-                operation: "page",
+                operation: Operation::Page,
                 category: "deserialization",
                 position,
             };
@@ -753,7 +783,7 @@ where
                 Ok(head) if head > self.frontier => Waiting::Horizon,
                 Ok(_) => Waiting::Idle,
                 Err(error) => {
-                    self.log_failure("head", persistence_category(&error), 0);
+                    self.log_failure(Operation::Head, persistence_category(&error), 0);
                     Waiting::Idle
                 }
             };
@@ -850,8 +880,7 @@ where
                 match self.in_flight.get_mut(&key) {
                     Some(rebuilding) => rebuilding.waiting.push(waiter),
                     None => {
-                        self.spawn_rebuild(key, Duration::ZERO, RebuildReason::Healed, false, vec![waiter])
-                            .await?;
+                        self.spawn_rebuild(key, RebuildJob::Healed { waiter }).await?;
                     }
                 }
             }
@@ -859,7 +888,7 @@ where
                 let failure = Failure {
                     key: Some(key.clone()),
                     handler: self.ctx.handler.clone(),
-                    operation: "page",
+                    operation: Operation::Page,
                     category: delivery_category(&error),
                     position,
                 };
@@ -872,8 +901,14 @@ where
         Ok(())
     }
 
-    async fn on_rebuild(&mut self, joined: Result<(String, Result<Done, DeliveryError>), JoinError>) -> Result<(), Interrupt> {
-        let Ok((key, result)) = joined else { return Ok(()) };
+    async fn on_rebuild(&mut self, joined: Result<RebuildOutcome, JoinError>) -> Result<(), Interrupt> {
+        let Ok(RebuildOutcome {
+            aggregate_id: key,
+            result,
+        }) = joined
+        else {
+            return Ok(());
+        };
         let Some(entry) = self.in_flight.remove(&key) else {
             return Ok(());
         };
@@ -921,7 +956,7 @@ where
                             Failure {
                                 key: Some(key.clone()),
                                 handler: self.ctx.handler.clone(),
-                                operation: "page",
+                                operation: Operation::Page,
                                 category,
                                 position,
                             },
@@ -943,7 +978,7 @@ where
                     self.pending_failure.get_or_insert(Failure {
                         key: Some(key),
                         handler: self.ctx.handler.clone(),
-                        operation: "rebuild",
+                        operation: Operation::Rebuild,
                         category,
                         position: self.checkpoint,
                     });
@@ -988,7 +1023,7 @@ where
             self.log("rebuild interrupted");
         }
         if let Err(error) = self.ctx.checkpoints.release(&self.ctx.key, self.token).await {
-            self.log_failure("checkpoints", error.category(), 0);
+            self.log_failure(Operation::Checkpoints, error.category(), 0);
         }
         Exit::Stopped
     }

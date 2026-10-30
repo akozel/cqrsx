@@ -73,11 +73,11 @@ async fn stress_same_version_has_exactly_one_complete_winner() {
                     }
                 }
                 let (_, batch, _) = winners[0];
-                let saved = repository.get_events::<Ledger>(&id).await.unwrap();
+                let saved = repository.events::<Ledger>(&id).await.unwrap();
                 let mut expected = if start == 2 { vec![event_for(&id, 1, 10)] } else { vec![] };
                 expected.extend(batch.clone());
                 assert_eq!(saved, expected, "{id}: winner payload, metadata and continuous sequences");
-                let snapshot = repository.get_snapshot::<Ledger>(&id).await.unwrap();
+                let snapshot = repository.snapshot::<Ledger>(&id).await.unwrap();
                 if mode == "events" {
                     assert_eq!(snapshot, None);
                 } else {
@@ -155,10 +155,10 @@ async fn stress_snapshot_cas_losers_roll_back_distinct_events() {
                 }
                 let (winner, batch, _) = winners[0];
                 assert_eq!(
-                    repo.get_events::<Ledger>(&id).await.unwrap(),
+                    repo.events::<Ledger>(&id).await.unwrap(),
                     [vec![event_for(&id, 1, 10)], batch.clone()].concat()
                 );
-                let snapshot = repo.get_snapshot::<Ledger>(&id).await.unwrap().unwrap();
+                let snapshot = repo.snapshot::<Ledger>(&id).await.unwrap().unwrap();
                 assert_eq!(snapshot.aggregate, json!([10, winner]));
                 assert_eq!(snapshot.last_sequence, winner + 2);
                 assert_eq!(snapshot.snapshot_version, 2);
@@ -249,27 +249,27 @@ async fn row_lock_on_one_aggregate_does_not_block_independent_id_or_type() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        repo.get_events::<Ledger>("blocked").await.unwrap(),
+        repo.events::<Ledger>("blocked").await.unwrap(),
         [event_for("blocked", 1, 10), event_for("blocked", 2, 20)]
     );
     assert_eq!(
-        repo.get_events::<Ledger>("independent").await.unwrap(),
+        repo.events::<Ledger>("independent").await.unwrap(),
         [event_for("independent", 1, 10), event_for("independent", 2, 30)]
     );
-    let other = repo.get_events::<OtherLedger>("blocked").await.unwrap();
+    let other = repo.events::<OtherLedger>("blocked").await.unwrap();
     assert_eq!(other.len(), 1);
     assert_eq!(other[0].payload, json!(99));
     assert_eq!(other[0].aggregate_type, OtherLedger::TYPE);
     assert_eq!(
-        repo.get_snapshot::<Ledger>("blocked").await.unwrap().unwrap().aggregate,
+        repo.snapshot::<Ledger>("blocked").await.unwrap().unwrap().aggregate,
         json!([10, 20])
     );
     assert_eq!(
-        repo.get_snapshot::<Ledger>("independent").await.unwrap().unwrap().aggregate,
+        repo.snapshot::<Ledger>("independent").await.unwrap().unwrap().aggregate,
         json!([10, 30])
     );
     assert_eq!(
-        repo.get_snapshot::<OtherLedger>("blocked").await.unwrap().unwrap().aggregate,
+        repo.snapshot::<OtherLedger>("blocked").await.unwrap().unwrap().aggregate,
         json!([99])
     );
     db.close().await;

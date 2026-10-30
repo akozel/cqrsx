@@ -15,7 +15,7 @@ use cqrsx::{
     cqrs::{
         command::CommandExecutor,
         reactions::ReactionsPlanner,
-        testing::{command::TestCommandExecutor, mem_store::MemStore},
+        testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
     },
     task::{
         attempt::TaskAttempt,

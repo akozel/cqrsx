@@ -171,7 +171,7 @@ mod tests {
         .unwrap();
     }
     fn worker_config(c: usize, q: usize, poll: Duration) -> TaskWorkerPoolConfig {
-        TaskWorkerPoolConfig::new(c, q, poll, Duration::from_secs(30), Duration::from_secs(120)).unwrap()
+        TaskWorkerPoolConfig::try_new(c, q, poll, Duration::from_secs(30), Duration::from_secs(120)).unwrap()
     }
 
     #[tokio::test]

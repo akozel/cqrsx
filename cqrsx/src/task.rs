@@ -91,7 +91,7 @@ impl NewTask {
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
     }
-    pub fn scheduled(mut self, schedule: TaskSchedule) -> Result<Self, TaskValidationError> {
+    pub fn with_schedule(mut self, schedule: TaskSchedule) -> Result<Self, TaskValidationError> {
         schedule.validate()?;
         self.schedule = schedule;
         Ok(self)
@@ -240,15 +240,15 @@ mod tests {
             .unwrap()
             .with_max_attempts(2)
             .unwrap()
-            .scheduled(TaskSchedule::After(Duration::ZERO))
+            .with_schedule(TaskSchedule::After(Duration::ZERO))
             .unwrap();
         assert_eq!(task.id(), id);
         assert_eq!(task.max_attempts(), 2);
         assert!(task.clone().with_metadata(json!([])).is_err());
         assert!(task.clone().with_max_attempts(0).is_err());
-        assert!(task.clone().scheduled(TaskSchedule::After(Duration::MAX)).is_err());
-        assert!(task.clone().scheduled(TaskSchedule::Now).is_ok());
-        assert!(task.scheduled(TaskSchedule::At(Utc::now())).is_ok());
+        assert!(task.clone().with_schedule(TaskSchedule::After(Duration::MAX)).is_err());
+        assert!(task.clone().with_schedule(TaskSchedule::Now).is_ok());
+        assert!(task.with_schedule(TaskSchedule::At(Utc::now())).is_ok());
         assert_eq!(TaskFormat::new("", 1), Err(TaskFormatError::EmptyType));
         assert_eq!(TaskFormat::new("valid", 0), Err(TaskFormatError::InvalidVersion));
         assert!(NewTask::from_payload(TaskFormat::new("valid", 1).unwrap(), json!([])).is_err());
@@ -397,7 +397,7 @@ mod tests {
             .unwrap()
             .with_max_attempts(3)
             .unwrap()
-            .scheduled(TaskSchedule::After(Duration::from_secs(2)))
+            .with_schedule(TaskSchedule::After(Duration::from_secs(2)))
             .unwrap();
         let id = Uuid::now_v7();
         let renamed = task.clone().with_id(id);

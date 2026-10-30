@@ -48,7 +48,7 @@ pub enum LockLimitsError {
 }
 
 impl LockLimits {
-    pub fn new(max_wait: Duration, max_waiters: usize) -> Result<Self, LockLimitsError> {
+    pub fn try_new(max_wait: Duration, max_waiters: usize) -> Result<Self, LockLimitsError> {
         if max_wait.is_zero() {
             return Err(LockLimitsError::ZeroMaxWait);
         }
@@ -290,11 +290,11 @@ mod tests {
     };
 
     fn key(id: &str) -> AggregateKey {
-        AggregateKey::new("hall", id)
+        AggregateKey::new("hall", id.to_owned())
     }
 
     fn locks(max_wait: Duration, max_waiters: usize) -> AggregateLockRegistry {
-        AggregateLockRegistry::new(LockLimits::new(max_wait, max_waiters).unwrap())
+        AggregateLockRegistry::new(LockLimits::try_new(max_wait, max_waiters).unwrap())
     }
 
     /// A future polled by hand. The tests never `.await` a waiting command: on a paused clock an idle
@@ -386,8 +386,13 @@ mod tests {
         let locks = locks(Duration::from_secs(1), 8);
         let hall = locks.acquire(key("1")).await.unwrap();
         let other_hall = locks.acquire(key("2")).await.unwrap();
-        let wallet = AggregateKey::new("wallet", "1");
-        assert_eq!((wallet.aggregate_type(), wallet.aggregate_id()), ("wallet", "1"));
+        let wallet = AggregateKey::new("wallet", "1".to_owned());
+        assert_eq!(
+            wallet.aggregate_id(),
+            key("1").aggregate_id(),
+            "the same id under another type"
+        );
+        assert_ne!(wallet, key("1"));
         let wallet = locks.acquire(wallet).await.unwrap();
         assert_eq!(locks.busy_keys(), 3);
         drop((hall, other_hall, wallet));
@@ -553,12 +558,12 @@ mod tests {
 
     #[test]
     fn limits_reject_zero_and_default_uses_the_constants() {
-        assert_eq!(LockLimits::new(Duration::ZERO, 1), Err(LockLimitsError::ZeroMaxWait));
+        assert_eq!(LockLimits::try_new(Duration::ZERO, 1), Err(LockLimitsError::ZeroMaxWait));
         assert_eq!(
-            LockLimits::new(Duration::from_millis(1), 0),
+            LockLimits::try_new(Duration::from_millis(1), 0),
             Err(LockLimitsError::ZeroMaxWaiters)
         );
-        let limits = LockLimits::new(Duration::from_millis(250), 3).unwrap();
+        let limits = LockLimits::try_new(Duration::from_millis(250), 3).unwrap();
         assert_eq!((limits.max_wait(), limits.max_waiters()), (Duration::from_millis(250), 3));
         let defaults = LockLimits::default();
         assert_eq!(
@@ -581,7 +586,7 @@ mod tests {
 
     #[test]
     fn locks_keep_their_limits_and_refusals_have_stable_reasons() {
-        let limits = LockLimits::new(Duration::from_millis(250), 3).unwrap();
+        let limits = LockLimits::try_new(Duration::from_millis(250), 3).unwrap();
         assert_eq!(AggregateLockRegistry::new(limits).limits(), limits);
         assert_eq!(AggregateLockRegistry::default().limits(), LockLimits::default());
         assert_eq!(LockRefused::TimedOut.reason(), "timed_out");
@@ -644,7 +649,7 @@ mod tests {
 
         /// Runs `ops` against real locks and a plain model of one holder and a FIFO line per key.
         async fn check(ops: Vec<Op>) -> Result<(), TestCaseError> {
-            let locks = AggregateLockRegistry::new(LockLimits::new(MAX_WAIT, MAX_WAITERS).unwrap());
+            let locks = AggregateLockRegistry::new(LockLimits::try_new(MAX_WAIT, MAX_WAITERS).unwrap());
             let keys: Vec<AggregateKey> = (0..KEYS).map(|k| key(&k.to_string())).collect();
             let mut model: Vec<ModelKey> = (0..KEYS).map(|_| ModelKey::default()).collect();
             let mut holders: Vec<Option<(u32, AggregateLockGuard)>> = (0..KEYS).map(|_| None).collect();

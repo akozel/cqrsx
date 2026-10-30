@@ -19,7 +19,7 @@ mod tests {
 
     #[test]
     fn every_ping_is_accepted_with_the_tasks_of_the_rules() {
-        TestFramework::<Probe>::with(ProbeRules { tasks: 3 })
+        TestFramework::<Probe>::new(ProbeRules { tasks: 3 })
             .given(vec![ProbeEvent::Pinged(Pinged { tasks: 0 })])
             .when(Ping)
             .then_expect_event(ProbeEvent::Pinged(Pinged { tasks: 3 }));

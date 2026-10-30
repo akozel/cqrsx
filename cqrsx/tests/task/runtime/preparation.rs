@@ -8,7 +8,7 @@ async fn invalid_full_lease_budget_is_rejected_before_polling() {
     let queue = Arc::new(Queue::default());
     let executor = Arc::new(DefaultTaskExecutor::new(
         queue.clone(),
-        TaskStorageConfig::new(Duration::from_secs(10)).unwrap(),
+        TaskStorageConfig::try_new(Duration::from_secs(10)).unwrap(),
     ));
     let dispatcher = TaskDispatcher::try_new(vec![adapter()]).unwrap();
     let shutdown = CancellationToken::new();
@@ -17,7 +17,7 @@ async fn invalid_full_lease_budget_is_rejected_before_polling() {
             queue.clone(),
             executor,
             dispatcher,
-            TaskWorkerPoolConfig::new(
+            TaskWorkerPoolConfig::try_new(
                 TaskWorkerPoolConfig::default().concurrency(),
                 TaskWorkerPoolConfig::default().concurrency(),
                 TaskWorkerPoolConfig::default().poll_interval(),
@@ -140,8 +140,8 @@ async fn standard_assembly_polls_and_settles_through_the_original_queue_instance
     let id = task.attempt().task_id();
     queue.incoming.lock().unwrap().push_back(task);
     let dispatcher = TaskDispatcher::try_new(vec![adapter()]).unwrap();
-    let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), worker_config(1, 1, Duration::from_millis(5))).unwrap();
-    let prepared = prepare(queue.clone(), dispatcher, config, Policies::default());
+    let config = TaskRuntimeConfig::try_new(TaskStorageConfig::default(), worker_config(1, 1, Duration::from_millis(5))).unwrap();
+    let prepared = prepare(queue.clone(), Arc::new(dispatcher), config, Policies::default());
     assert!(queue.requested.lock().unwrap().is_empty());
     assert!(queue.outcomes.lock().unwrap().is_empty());
     let shutdown = CancellationToken::new();
@@ -181,8 +181,8 @@ async fn a_boxed_adapter_dispatcher_runs_through_the_standard_runtime() {
     queue.incoming.lock().unwrap().push_back(task);
     // Two workers share the one dispatcher.
     let dispatcher = TaskDispatcher::try_new(vec![BoxedTaskAdapter::new(adapter())]).unwrap();
-    let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), worker_config(2, 1, Duration::from_millis(5))).unwrap();
-    let prepared = prepare(queue.clone(), dispatcher, config, Policies::default());
+    let config = TaskRuntimeConfig::try_new(TaskStorageConfig::default(), worker_config(2, 1, Duration::from_millis(5))).unwrap();
+    let prepared = prepare(queue.clone(), Arc::new(dispatcher), config, Policies::default());
     let shutdown = CancellationToken::new();
     let running = tokio::spawn(prepared.run(shutdown.clone()));
     let settled = tokio::time::timeout(Duration::from_secs(2), async {

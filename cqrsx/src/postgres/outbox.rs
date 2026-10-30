@@ -41,20 +41,20 @@ impl PostgresEventRepositoryWithOutbox {
 }
 
 impl PersistedEventRepository for PostgresEventRepositoryWithOutbox {
-    async fn get_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        self.reader.get_events::<A>(aggregate_id).await
+    async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
+        self.reader.events::<A>(aggregate_id).await
     }
 
-    async fn get_events_after<A: Aggregate>(
+    async fn events_after<A: Aggregate>(
         &self,
         aggregate_id: &str,
         after_sequence: usize,
     ) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        self.reader.get_events_after::<A>(aggregate_id, after_sequence).await
+        self.reader.events_after::<A>(aggregate_id, after_sequence).await
     }
 
-    async fn get_snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
-        self.reader.get_snapshot::<A>(aggregate_id).await
+    async fn snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
+        self.reader.snapshot::<A>(aggregate_id).await
     }
 
     async fn persist<A: Aggregate>(
@@ -71,7 +71,7 @@ impl PersistedEventRepository for PostgresEventRepositoryWithOutbox {
         snapshot_update: Option<SnapshotUpdate>,
         tasks: &[NewTask],
     ) -> Result<(), PersistenceError> {
-        match WritePlan::new(events, snapshot_update, tasks)? {
+        match WritePlan::try_new(events, snapshot_update, tasks)? {
             WritePlan::NoOp => Ok(()),
             WritePlan::OneEvent {
                 event,

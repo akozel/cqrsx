@@ -21,7 +21,7 @@ pub enum TaskRuntimeConfigError {
 }
 
 impl TaskRuntimeConfig {
-    pub fn new(storage: TaskStorageConfig, worker: TaskWorkerPoolConfig) -> Result<Self, TaskRuntimeConfigError> {
+    pub fn try_new(storage: TaskStorageConfig, worker: TaskWorkerPoolConfig) -> Result<Self, TaskRuntimeConfigError> {
         worker.validate_for_storage_timeout(storage.storage_timeout())?;
         Ok(Self { storage, worker })
     }
@@ -44,7 +44,7 @@ impl TaskRuntimeConfig {
     }
 
     pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Result<Self, TaskRuntimeConfigError> {
-        Self::new(
+        Self::try_new(
             TaskStorageConfig::from_lookup(&mut lookup)?,
             TaskWorkerPoolConfig::from_lookup(&mut lookup)?,
         )
@@ -52,7 +52,7 @@ impl TaskRuntimeConfig {
 }
 
 impl Default for TaskRuntimeConfig {
-    /// The default storage and worker budgets, which fit together (a test checks them as [`new`](Self::new) does).
+    /// The default storage and worker budgets, which fit together (a test checks them as [`try_new`](Self::try_new) does).
     fn default() -> Self {
         Self {
             storage: TaskStorageConfig::default(),
@@ -139,7 +139,7 @@ mod tests {
     fn combined_defaults_and_independent_overrides_use_existing_settings_once() {
         let default = TaskRuntimeConfig::default();
         assert!(
-            TaskRuntimeConfig::new(default.storage().clone(), default.worker_pool().clone()).is_ok(),
+            TaskRuntimeConfig::try_new(default.storage().clone(), default.worker_pool().clone()).is_ok(),
             "the defaults fit together"
         );
         assert_eq!(default.worker_pool().concurrency(), 128);

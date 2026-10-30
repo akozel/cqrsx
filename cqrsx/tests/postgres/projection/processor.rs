@@ -25,10 +25,10 @@ use cqrsx::{
         store::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
     },
     postgres::{
+        checkpoint_store::PostgresCheckpointStore,
         command::{PostgresCommandConfig, PostgresCommandExecutor},
         event_repository::PostgresEventRepository,
         outbox::PostgresEventRepositoryWithOutbox,
-        projection_checkpoints::PostgresCheckpointStore,
         view_repository::PostgresViewRepository,
     },
 };
@@ -107,12 +107,12 @@ type Store = PersistedEventStore<PostgresEventRepositoryWithOutbox, Ledger>;
 
 fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<CommandExecutorCore<Ledger, Store>> {
     let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
-    let framework = CqrsFramework::new(PersistedEventStore::new_event_store(repository), ());
+    let framework = CqrsFramework::new(PersistedEventStore::new(repository), ());
     Arc::new(CommandExecutorCore::new(framework, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
 }
 
 fn config() -> ProcessorConfig {
-    ProcessorConfig::new(
+    ProcessorConfig::try_new(
         Duration::from_millis(50),
         100,
         Duration::from_secs(1),
@@ -150,7 +150,7 @@ async fn create_views(pool: &PgPool) {
 }
 
 async fn fold(pool: &PgPool, id: &str) -> Option<Balance> {
-    let store = PersistedEventStore::<_, Ledger>::new_event_store(PostgresEventRepository::new(pool.clone()));
+    let store = PersistedEventStore::<_, Ledger>::new(PostgresEventRepository::new(pool.clone()));
     let events = store.load_events(id).await.unwrap();
     if events.is_empty() {
         return None;
@@ -245,7 +245,7 @@ async fn forty_parallel_commands_to_one_key_reach_the_view_in_commit_order() {
     create_views(&db.pool).await;
     let (observer, wakeup, shutdown) = (Arc::new(Recording::default()), CommitWakeup::new(), CancellationToken::new());
     let running = tokio::spawn(processor(&db.pool, "node-a", &observer, &wakeup).run(shutdown.clone()));
-    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
+    let single_attempt = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
     let config = PostgresCommandConfig::new(
         std::num::NonZeroUsize::new(10).unwrap(),
         single_attempt,

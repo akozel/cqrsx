@@ -11,15 +11,15 @@ async fn totals_count_the_events_and_aggregates_of_one_type_only() {
         .await
         .unwrap();
     repo.persist::<Ledger>(&[event_for("b", 1, 3)], None).await.unwrap();
-    let other = SerializedEvent::new(
-        "c".into(),
-        1,
-        OtherLedger::TYPE.into(),
-        "delta".into(),
-        "1".into(),
-        json!(5),
-        json!({}),
-    );
+    let other = SerializedEvent {
+        aggregate_id: "c".into(),
+        sequence: 1,
+        aggregate_type: OtherLedger::TYPE.into(),
+        event_type: "delta".into(),
+        event_version: "1".into(),
+        payload: json!(5),
+        metadata: json!({}),
+    };
     repo.persist::<OtherLedger>(&[other], None).await.unwrap();
 
     assert_eq!(
@@ -63,15 +63,15 @@ async fn count_after_counts_the_events_of_one_type_above_a_position_up_to_the_ca
     let first_commit = repo.head::<Ledger>().await.unwrap();
     repo.persist::<Ledger>(&[event_for("b", 1, 3)], None).await.unwrap();
     repo.persist::<Ledger>(&[event_for("a", 3, 4)], None).await.unwrap();
-    let other = SerializedEvent::new(
-        "c".into(),
-        1,
-        OtherLedger::TYPE.into(),
-        "delta".into(),
-        "1".into(),
-        json!(5),
-        json!({}),
-    );
+    let other = SerializedEvent {
+        aggregate_id: "c".into(),
+        sequence: 1,
+        aggregate_type: OtherLedger::TYPE.into(),
+        event_type: "delta".into(),
+        event_version: "1".into(),
+        payload: json!(5),
+        metadata: json!({}),
+    };
     repo.persist::<OtherLedger>(&[other], None).await.unwrap();
     let head = repo.head::<Ledger>().await.unwrap();
     assert_eq!(repo.count_after::<Ledger>(Position::START, 100).await.unwrap(), 4);

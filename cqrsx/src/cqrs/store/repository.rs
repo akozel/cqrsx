@@ -19,20 +19,20 @@ use std::future::Future;
 /// (`feed_after`, `head`, `aggregate_ids_after`; see `store::feed`).
 pub trait PersistedEventRepository: Send + Sync {
     /// Returns all events for a single aggregate instance.
-    fn get_events<A: Aggregate>(
+    fn events<A: Aggregate>(
         &self,
         aggregate_id: &str,
     ) -> impl Future<Output = Result<Vec<SerializedEvent>, PersistenceError>> + Send;
 
     /// Returns events strictly after `after_sequence`, ordered by aggregate sequence.
-    fn get_events_after<A: Aggregate>(
+    fn events_after<A: Aggregate>(
         &self,
         aggregate_id: &str,
         after_sequence: usize,
     ) -> impl Future<Output = Result<Vec<SerializedEvent>, PersistenceError>> + Send;
 
     /// Returns the current snapshot for an aggregate instance.
-    fn get_snapshot<A: Aggregate>(
+    fn snapshot<A: Aggregate>(
         &self,
         aggregate_id: &str,
     ) -> impl Future<Output = Result<Option<SerializedSnapshot>, PersistenceError>> + Send;

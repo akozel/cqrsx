@@ -160,11 +160,8 @@ where
         Ok(self.stored(view_id).await?.map(|stored| stored.view))
     }
 
-    async fn load_with_context(&self, view_id: &str) -> Result<Option<(V, ViewContext)>, PersistenceError> {
-        Ok(self.stored(view_id).await?.map(|stored| {
-            let context = ViewContext::new(view_id.to_owned(), stored.version, stored.last_sequence);
-            (stored.view, context)
-        }))
+    async fn load_with_context(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
+        self.stored(view_id).await
     }
 
     async fn update_view(&self, view: V, context: ViewContext) -> Result<(), PersistenceError> {

@@ -26,7 +26,7 @@ use crate::{
 };
 #[cfg(feature = "http")]
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::{fmt::Display, num::NonZeroUsize, str::FromStr, time::Duration};
+use std::{collections::BTreeMap, fmt::Display, num::NonZeroUsize, str::FromStr, time::Duration};
 use thiserror::Error;
 
 /// A snapshot of an aggregate every ten events.
@@ -206,19 +206,16 @@ impl Default for Settings {
 }
 
 impl Settings {
-    /// The library's settings with these: a snapshot every `snapshot_every` events (positive), the lock limits of
+    /// The library's settings with these: a snapshot every `snapshot_every` events, the lock limits of
     /// every executor, the configuration of every processor and the task runtime. A command waits for its lock less
     /// than a handler may run, since a chain step waits for it inside its handler.
-    pub fn new(
-        snapshot_every: usize,
+    pub fn try_new(
+        snapshot_every: NonZeroUsize,
         lock_limits: LockLimits,
         processor: ProcessorConfig,
         task_runtime: TaskRuntimeConfig,
     ) -> Result<Self, SettingsError> {
-        let named = Read::bare();
-        let snapshot_every =
-            NonZeroUsize::new(snapshot_every).ok_or_else(|| named.invalid(SNAPSHOT_EVERY, "must be positive"))?;
-        below_handler_timeout(&named, lock_limits, task_runtime.worker_pool().handler_timeout())?;
+        below_handler_timeout(&Read::bare(), lock_limits, task_runtime.worker_pool().handler_timeout())?;
         Ok(Self {
             snapshot_every,
             lock_limits,
@@ -244,7 +241,7 @@ impl Settings {
         };
         let known = variables();
         if let Some((name, _)) = defaults.variables.iter().find(|(name, _)| !known.contains(name)) {
-            return Err(read.invalid_named("defaults", format!("{name} is no variable of the engine")));
+            return Err(read.invalid_named("defaults", &format!("{name} is no variable of the engine")));
         }
         let task_runtime = TaskRuntimeConfig::from_lookup(|name| lookup(name).or_else(|| defaults.get(name).map(str::to_owned)))?;
         let snapshot_every: usize = read.value(SNAPSHOT_EVERY, DEFAULT_SNAPSHOT_EVERY.get())?;
@@ -373,16 +370,17 @@ impl Settings {
         variable(&self.prefix, name)
     }
 
-    /// Every setting as `(key, value)`, sorted by key: a setting read from a variable under the variable's name with
+    /// Every setting by key: a setting read from a variable under the variable's name with
     /// the value the engine uses, read back from the object built from it (`LockLimits`, `ProcessorConfig`,
     /// `TaskRuntimeConfig`); what has no variable of its own (derived values, the plan of the connections) under a
     /// dotted name in lower case. Durations as [`duration_text`] writes them.
-    pub fn describe(&self) -> Vec<(String, String)> {
+    pub fn describe(&self) -> BTreeMap<String, String> {
         let name = |name: &str| self.variable(name);
         let (locks, projection) = (&self.lock_limits, &self.processor);
         let delivery = projection.delivery_limits();
         let worker = self.task_runtime.worker_pool();
-        let mut lines: Vec<(String, String)> = vec![
+        let mut described = BTreeMap::new();
+        described.extend([
             (name(SNAPSHOT_EVERY), self.snapshot_every.to_string()),
             (name(LOCK_MAX_WAIT), duration_text(locks.max_wait())),
             (name(LOCK_MAX_WAITERS), locks.max_waiters().to_string()),
@@ -423,15 +421,14 @@ impl Settings {
                 "outbox.lease_budget".to_owned(),
                 duration_text(lease_budget(&self.task_runtime)),
             ),
-        ];
+        ]);
         #[cfg(feature = "postgres")]
-        lines.extend(self.postgres.describe(&name, &self.application_name));
+        described.extend(self.postgres.describe(&name, &self.application_name));
         #[cfg(feature = "mongodb")]
-        lines.extend(self.mongodb.describe(&name, &self.application_name));
+        described.extend(self.mongodb.describe(&name, &self.application_name));
         #[cfg(feature = "http")]
-        lines.push((name(HTTP_ADDR), self.http_addr.to_string()));
-        lines.sort();
-        lines
+        described.insert(name(HTTP_ADDR), self.http_addr.to_string());
+        described
     }
 }
 
@@ -501,7 +498,7 @@ impl<'a> Read<'a> {
         match self.raw(name) {
             Some(raw) => raw
                 .parse()
-                .map_err(|error: T::Err| self.invalid(name, format!("cannot parse {raw:?}: {error}"))),
+                .map_err(|error: T::Err| self.invalid(name, &format!("cannot parse {raw:?}: {error}"))),
             None => Ok(default),
         }
     }
@@ -514,14 +511,14 @@ impl<'a> Read<'a> {
         }
     }
 
-    pub(crate) fn invalid(&self, name: &str, message: impl Into<String>) -> SettingsError {
+    pub(crate) fn invalid(&self, name: &str, message: &str) -> SettingsError {
         self.invalid_named(&self.variable(name), message)
     }
 
-    fn invalid_named(&self, variable: &str, message: impl Into<String>) -> SettingsError {
+    fn invalid_named(&self, variable: &str, message: &str) -> SettingsError {
         SettingsError::Invalid {
             variable: variable.to_owned(),
-            message: message.into(),
+            message: message.to_owned(),
         }
     }
 }
@@ -539,7 +536,7 @@ fn below_handler_timeout(read: &Read, limits: LockLimits, handler_timeout: Durat
 fn command_lock_limits(read: &Read, handler_timeout: Duration) -> Result<LockLimits, SettingsError> {
     let max_wait = read.millis(LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAIT)?;
     let max_waiters = read.value(LOCK_MAX_WAITERS, DEFAULT_LOCK_MAX_WAITERS.get())?;
-    let limits = LockLimits::new(max_wait, max_waiters).map_err(|error| match error {
+    let limits = LockLimits::try_new(max_wait, max_waiters).map_err(|error| match error {
         LockLimitsError::ZeroMaxWait => read.invalid(LOCK_MAX_WAIT, "must be positive"),
         LockLimitsError::ZeroMaxWaiters => read.invalid(LOCK_MAX_WAITERS, "must be positive"),
     })?;
@@ -560,8 +557,8 @@ fn projection_config(read: &Read) -> Result<ProcessorConfig, SettingsError> {
     let settle = read.millis(PROJECTION_SETTLE, DEFAULT_PROCESSOR_SETTLE)?;
     let capacity = read.value(PROJECTION_BUFFER, DEFAULT_DELIVERY_CAPACITY)?;
     let max_batch = read.value(PROJECTION_MAX_BATCH, DEFAULT_DELIVERY_MAX_BATCH)?;
-    let delivery_limits = DeliveryLimits::new(capacity, max_batch).map_err(|error| match error {
-        DeliveryLimitsError::CapacityTooSmall { min } => read.invalid(PROJECTION_BUFFER, format!("must be at least {min}")),
+    let delivery_limits = DeliveryLimits::try_new(capacity, max_batch).map_err(|error| match error {
+        DeliveryLimitsError::CapacityTooSmall { min } => read.invalid(PROJECTION_BUFFER, &format!("must be at least {min}")),
         DeliveryLimitsError::ZeroMaxBatch => read.invalid(PROJECTION_MAX_BATCH, "must be positive"),
     })?;
     let named = |error: ProcessorConfigError| match error {
@@ -569,20 +566,20 @@ fn projection_config(read: &Read) -> Result<ProcessorConfig, SettingsError> {
         ProcessorConfigError::ZeroPageSize => read.invalid(PROJECTION_PAGE, "must be positive"),
         ProcessorConfigError::ZeroRebuildPage => read.invalid(PROJECTION_REBUILD_PAGE, "must be positive"),
         ProcessorConfigError::LeaseTooShort { min } => {
-            read.invalid(PROJECTION_LEASE, format!("must be at least {} ms", min.as_millis()))
+            read.invalid(PROJECTION_LEASE, &format!("must be at least {} ms", min.as_millis()))
         }
         ProcessorConfigError::InvalidRetry if retry_base.is_zero() => read.invalid(PROJECTION_RETRY_BASE, "must be positive"),
         ProcessorConfigError::InvalidRetry => read.invalid(
             PROJECTION_RETRY_BASE,
-            format!("must not exceed {}", read.variable(PROJECTION_RETRY_MAX)),
+            &format!("must not exceed {}", read.variable(PROJECTION_RETRY_MAX)),
         ),
         ProcessorConfigError::ZeroConcurrency => read.invalid(PROJECTION_CONCURRENCY, "must be positive"),
         ProcessorConfigError::SettleTooLong { .. } => read.invalid(
             PROJECTION_SETTLE,
-            format!("must not exceed {}", read.variable(PROJECTION_POLL)),
+            &format!("must not exceed {}", read.variable(PROJECTION_POLL)),
         ),
     };
-    ProcessorConfig::new(poll, page, lease, delivery_limits)
+    ProcessorConfig::try_new(poll, page, lease, delivery_limits)
         .and_then(|config| config.with_retry(retry_base, retry_max))
         .and_then(|config| config.with_rebuild_page(rebuild_page))
         .and_then(|config| config.with_concurrency(concurrency))
@@ -693,7 +690,7 @@ mod tests {
             (
                 10,
                 AggregateConflictRetryPolicy::default(),
-                LockLimits::new(DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS.get()).unwrap()
+                LockLimits::try_new(DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS.get()).unwrap()
             )
         );
         assert_eq!(
@@ -734,19 +731,16 @@ mod tests {
     #[cfg(feature = "postgres")]
     #[test]
     fn durations_are_whole_seconds_or_milliseconds() {
-        use crate::{engine::postgres::statement_timeout_text, postgres::pool::StatementTimeout};
+        use crate::postgres::pool::StatementTimeout;
         assert_eq!(duration_text(Duration::ZERO), "0 s");
         assert_eq!(duration_text(Duration::from_secs(30)), "30 s");
         assert_eq!(duration_text(Duration::from_millis(10_000)), "10 s");
         assert_eq!(duration_text(Duration::from_millis(250)), "250 ms");
         assert_eq!(duration_text(Duration::from_millis(1500)), "1500 ms");
         assert_eq!(duration_text(Duration::from_micros(1500)), "1500000 ns");
-        assert_eq!(statement_timeout_text(StatementTimeout::Default), "4 s");
-        assert_eq!(
-            statement_timeout_text(StatementTimeout::Custom(Duration::from_millis(2500))),
-            "2500 ms"
-        );
-        assert_eq!(statement_timeout_text(StatementTimeout::Unlimited), "unlimited");
+        assert_eq!(StatementTimeout::Default.to_string(), "4 s");
+        assert_eq!(StatementTimeout::Custom(Duration::from_millis(2500)).to_string(), "2500 ms");
+        assert_eq!(StatementTimeout::Unlimited.to_string(), "unlimited");
     }
 
     #[cfg(feature = "postgres")]
@@ -758,11 +752,8 @@ mod tests {
             ("OUTBOX_LEASE_SECS", "45"),
         ])
         .unwrap();
-        let lines = config.describe();
-        let keys: std::collections::BTreeSet<&str> = lines.iter().map(|(key, _)| key.as_str()).collect();
-        assert_eq!(keys.len(), lines.len(), "every key once");
-        assert!(lines.is_sorted(), "sorted by key");
-        let value = |key: &str| lines.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        let described = config.describe();
+        let value = |key: &str| described.get(key).map(String::as_str);
         assert_eq!(value(STATEMENT_TIMEOUT), Some("unlimited"));
         assert_eq!(value(PROJECTION_SETTLE), Some("0 s"));
         assert_eq!(value("OUTBOX_LEASE_SECS"), Some("45 s"));
@@ -791,7 +782,7 @@ mod tests {
         for runtime in [demo, wider] {
             let worker = runtime.worker_pool();
             let with_lease = |lease| {
-                TaskWorkerPoolConfig::new(
+                TaskWorkerPoolConfig::try_new(
                     worker.concurrency(),
                     worker.buffer_capacity(),
                     worker.poll_interval(),
@@ -818,7 +809,7 @@ mod tests {
         assert_eq!(lock_limits(&[], 5).unwrap(), LockLimits::default());
         assert_eq!(
             lock_limits(&[(LOCK_MAX_WAIT, "250"), (LOCK_MAX_WAITERS, "16")], 5).unwrap(),
-            LockLimits::new(Duration::from_millis(250), 16).unwrap()
+            LockLimits::try_new(Duration::from_millis(250), 16).unwrap()
         );
     }
 
@@ -890,7 +881,7 @@ mod tests {
                 Duration::from_millis(30)
             )
         );
-        assert_eq!(config.delivery_limits(), DeliveryLimits::new(8, 2).unwrap());
+        assert_eq!(config.delivery_limits(), DeliveryLimits::try_new(8, 2).unwrap());
     }
 
     #[test]
@@ -1022,8 +1013,7 @@ mod tests {
         assert_eq!(read, expected);
         let described: Vec<String> = Settings::default()
             .describe()
-            .into_iter()
-            .map(|(key, _)| key)
+            .into_keys()
             .filter(|key| key.starts_with(|c: char| c.is_ascii_uppercase()))
             .collect();
         let mut names: Vec<&str> = variables();
@@ -1040,24 +1030,22 @@ mod tests {
     }
 
     #[test]
-    fn a_checked_new_names_the_value_it_refuses() {
+    fn a_checked_try_new_names_the_value_it_refuses() {
         let (limits, processor, runtime) = (
             LockLimits::default(),
             ProcessorConfig::default(),
             TaskRuntimeConfig::default(),
         );
+        let long_wait = LockLimits::try_new(Duration::from_secs(15), 1).unwrap();
         assert_eq!(
-            Settings::new(0, limits, processor, runtime.clone()).unwrap_err().to_string(),
-            "SNAPSHOT_EVERY: must be positive"
-        );
-        let long_wait = LockLimits::new(Duration::from_secs(15), 1).unwrap();
-        assert_eq!(
-            Settings::new(10, long_wait, processor, runtime.clone())
+            Settings::try_new(NonZeroUsize::new(10).unwrap(), long_wait, processor, runtime.clone())
                 .unwrap_err()
                 .to_string(),
             "COMMAND_LOCK_MAX_WAIT_MS: must be below OUTBOX_HANDLER_TIMEOUT_SECS"
         );
-        let settings = Settings::new(3, limits, processor, runtime).unwrap().with_node_name("node-b");
+        let settings = Settings::try_new(NonZeroUsize::new(3).unwrap(), limits, processor, runtime)
+            .unwrap()
+            .with_node_name("node-b");
         assert_eq!(
             (
                 settings.snapshot_every().get(),

@@ -557,7 +557,7 @@ mod tests {
             "probe",
             probe.clone(),
             probe.clone(),
-            DeliveryLimits::new(capacity, max_batch).unwrap(),
+            DeliveryLimits::try_new(capacity, max_batch).unwrap(),
         )
     }
 
@@ -1021,7 +1021,7 @@ mod tests {
     fn errors_and_handles_describe_themselves() {
         let probe = Probe::gated();
         let delivery = delivery(&probe, 3, 2);
-        assert_eq!(delivery.limits(), DeliveryLimits::new(3, 2).unwrap());
+        assert_eq!(delivery.limits(), DeliveryLimits::try_new(3, 2).unwrap());
         assert_eq!(
             DeliveryError::Stopped.to_string(),
             "event delivery stopped before the handler finished"

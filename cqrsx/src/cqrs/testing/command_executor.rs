@@ -46,7 +46,7 @@ use std::{
 ///         planner::{Decision, TaskPlanError, TaskPlanner},
 ///     },
 ///     event::DomainEvent,
-///     testing::{command::TestCommandExecutor, mem_store::MemStore},
+///     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
 /// };
 /// use cqrsx::task::{NewTask, format::TaskPayload};
 /// use serde::{Deserialize, Serialize};
@@ -192,7 +192,7 @@ impl<A: Aggregate + 'static> TestCommandExecutor<A, PersistedEventStore<MemEvent
     /// appends its events, and its tasks to the journal's outbox, where projection processors and tests
     /// over the same journal read them.
     pub fn over_journal(journal: MemEventRepository, rules: A::Rules) -> Self {
-        Self::new(PersistedEventStore::new_event_store(journal), rules)
+        Self::new(PersistedEventStore::new(journal), rules)
     }
 }
 
@@ -211,7 +211,7 @@ where
     A::Command: Clone + 'static,
     A::Error: Send + 'static,
     S: EventStore<A> + 'static,
-    S::AC: Send,
+    S::Context: Send,
 {
     async fn execute_with_metadata(
         &self,
@@ -351,7 +351,7 @@ mod tests {
             Err(CommandGatewayError::Domain(Full)),
             "the second load came from the journal"
         );
-        let journaled = journal.get_events::<Stack>("s").await.unwrap();
+        let journaled = journal.events::<Stack>("s").await.unwrap();
         assert_eq!(journaled.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1, 2]);
         let outbox = journal.outbox::<Stack>();
         assert_eq!(

@@ -72,7 +72,7 @@ impl<A: Aggregate + 'static> PostgresCommandExecutor<A> {
     /// retry policy and the lock limits go to the executor, the snapshot interval to its store.
     pub fn new(pool: PgPool, config: PostgresCommandConfig, rules: A::Rules) -> Self {
         let store =
-            PersistedEventStore::new_snapshot_store(PostgresEventRepositoryWithOutbox::new(pool), config.snapshot_interval());
+            PersistedEventStore::new(PostgresEventRepositoryWithOutbox::new(pool)).with_snapshots(config.snapshot_interval());
         Self {
             inner: CommandExecutorCore::new(
                 CqrsFramework::new(store, rules),
@@ -186,7 +186,7 @@ mod tests {
         let pool = sqlx::postgres::PgPoolOptions::new()
             .connect_lazy("postgres://nobody@localhost/none")
             .unwrap();
-        let limits = LockLimits::new(Duration::from_millis(5), 2).unwrap();
+        let limits = LockLimits::try_new(Duration::from_millis(5), 2).unwrap();
         let config = PostgresCommandConfig::new(NonZeroUsize::MIN, AggregateConflictRetryPolicy::default(), limits);
         let executor = PostgresCommandExecutor::<Quiet>::new(pool, config, ())
             .with_task_planner(NoTasks)
@@ -197,8 +197,8 @@ mod tests {
     /// The interval is a `NonZeroUsize`: a zero interval, which made every commit divide by zero, does not compile.
     #[test]
     fn config_keeps_its_values_and_its_interval_is_never_zero() {
-        let retry = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-        let limits = LockLimits::new(Duration::from_millis(5), 2).unwrap();
+        let retry = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
+        let limits = LockLimits::try_new(Duration::from_millis(5), 2).unwrap();
         let every_two = NonZeroUsize::new(2).unwrap();
         let config = PostgresCommandConfig::new(every_two, retry, limits);
         assert_eq!(config.snapshot_interval(), every_two);

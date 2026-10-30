@@ -17,8 +17,8 @@ pub const PROJECTION_CHECKPOINTS_SCHEMA: &str = include_str!("../sql/003-project
 /// Operational statement for explicitly requeuing one failed task.
 pub const REQUEUE_FAILED_OUTBOX_TASK: &str = include_str!("../sql/requeue-failed-outbox.sql");
 
+pub mod checkpoint_store;
 pub mod event_repository;
-pub mod projection_checkpoints;
 pub mod view_repository;
 
 mod error;

@@ -36,7 +36,10 @@ mod tests {
             cancel("B4", "fox", cancellation_id),
         ]
         .iter()
-        .map(|command| (command.name(), command.labels(), command.command_id()))
+        .map(|command| {
+            let labels: Vec<(&str, String)> = command.labels().into_iter().map(|label| (label.name, label.value)).collect();
+            (command.name(), labels, command.command_id())
+        })
         .collect::<Vec<_>>();
         assert_eq!(
             reported,

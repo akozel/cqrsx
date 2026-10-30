@@ -22,7 +22,7 @@ where
     /// Provides the current state of an aggregate along with surrounding context.
     /// This is used by the [CqrsFramework](crate::cqrs::CqrsFramework) when loading
     /// an aggregate in order to handle incoming commands.
-    type AC: AggregateContext<A>;
+    type Context: AggregateContext<A>;
 
     /// Load all events for a particular `aggregate_id`
     fn load_events(
@@ -30,14 +30,14 @@ where
         aggregate_id: &str,
     ) -> impl Future<Output = Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>>> + Send;
     /// Load aggregate at current state
-    fn load_aggregate(&self, aggregate_id: &str) -> impl Future<Output = Result<Self::AC, AggregateError<A::Error>>> + Send;
+    fn load_aggregate(&self, aggregate_id: &str) -> impl Future<Output = Result<Self::Context, AggregateError<A::Error>>> + Send;
     /// Commit new events and the tasks planned from them using the last committed aggregate context.
     /// The tasks commit atomically with the events or the commit fails before writing anything; a task
     /// never commits without an event. A store without an outbox refuses non-empty `tasks`.
     fn commit(
         &self,
         events: Vec<A::Event>,
-        context: Self::AC,
+        context: Self::Context,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
     ) -> impl Future<Output = Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>>> + Send;
@@ -52,7 +52,7 @@ where
     A: Aggregate,
 {
     /// The aggregate instance with all state loaded.
-    fn aggregate(&mut self) -> &mut A;
+    fn aggregate(&self) -> &A;
 }
 
 /// Validate a complete batch before applying or serializing any of its events.

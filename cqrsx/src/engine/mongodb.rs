@@ -7,7 +7,7 @@ use crate::engine::{build::BuildError, settings::Settings};
 #[cfg(feature = "postgres")]
 use mongodb::Client;
 use mongodb::options::ClientOptions;
-use std::{num::NonZeroU32, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroU32, time::Duration};
 
 /// The views and their checkpoints in MongoDB (`Builder::projections`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -82,13 +82,13 @@ impl MongoSettings {
         &self.read_db
     }
 
-    /// The client as it is built, under the connections' name `app_name`: what the engine sets whatever the URI says.
-    pub fn mongo_plan(&self, app_name: &str) -> MongoPlan {
+    /// The client as it is built, under the connections' name `application_name`: what the engine sets whatever the URI says.
+    pub fn mongo_plan(&self, application_name: &str) -> MongoPlan {
         MongoPlan {
             max_pool_size: self.pool_size,
             server_selection_timeout: MONGODB_SERVER_SELECTION_TIMEOUT,
             connect_timeout: MONGODB_CONNECT_TIMEOUT,
-            app_name: app_name.to_owned(),
+            application_name: application_name.to_owned(),
         }
     }
 
@@ -101,14 +101,14 @@ impl MongoSettings {
     }
 
     /// The variables of these settings and the plan of the client.
-    pub(crate) fn describe(&self, name: &dyn Fn(&str) -> String, app_name: &str) -> Vec<(String, String)> {
-        let mut lines = vec![
+    pub(crate) fn describe(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> BTreeMap<String, String> {
+        let mut described = BTreeMap::from([
             (name(MONGODB_URI), self.uri.clone()),
             (name(MONGODB_POOL_SIZE), self.pool_size.to_string()),
             (name(READ_DB), self.read_db.clone()),
-        ];
-        lines.extend(self.mongo_plan(app_name).describe());
-        lines
+        ]);
+        described.extend(self.mongo_plan(application_name).describe());
+        described
     }
 }
 
@@ -118,7 +118,7 @@ pub struct MongoPlan {
     pub max_pool_size: NonZeroU32,
     pub server_selection_timeout: Duration,
     pub connect_timeout: Duration,
-    pub app_name: String,
+    pub application_name: String,
 }
 
 impl MongoPlan {
@@ -126,21 +126,22 @@ impl MongoPlan {
     pub fn apply(&self, options: &mut ClientOptions) {
         options.server_selection_timeout = Some(self.server_selection_timeout);
         options.connect_timeout = Some(self.connect_timeout);
-        options.app_name = Some(self.app_name.clone());
+        options.app_name = Some(self.application_name.clone());
         options.max_pool_size = Some(self.max_pool_size.get());
     }
 
-    /// The client as `mongodb.<option>`, sorted by key.
-    pub fn describe(&self) -> Vec<(String, String)> {
-        vec![
-            ("mongodb.app_name".to_owned(), self.app_name.clone()),
+    /// The client as `mongodb.<option>`, by key; the application's name under the option's name in MongoDB's URI
+    /// (`appName`).
+    pub fn describe(&self) -> BTreeMap<String, String> {
+        BTreeMap::from([
+            ("mongodb.app_name".to_owned(), self.application_name.clone()),
             ("mongodb.connect_timeout".to_owned(), duration_text(self.connect_timeout)),
             ("mongodb.max_pool_size".to_owned(), self.max_pool_size.to_string()),
             (
                 "mongodb.server_selection_timeout".to_owned(),
                 duration_text(self.server_selection_timeout),
             ),
-        ]
+        ])
     }
 }
 
@@ -192,13 +193,15 @@ mod tests {
         );
         assert_eq!(
             plan.describe(),
-            [
-                ("mongodb.app_name", "encore-backend"),
-                ("mongodb.connect_timeout", "3 s"),
-                ("mongodb.max_pool_size", "12"),
-                ("mongodb.server_selection_timeout", "3 s"),
-            ]
-            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            BTreeMap::from(
+                [
+                    ("mongodb.app_name", "encore-backend"),
+                    ("mongodb.connect_timeout", "3 s"),
+                    ("mongodb.max_pool_size", "12"),
+                    ("mongodb.server_selection_timeout", "3 s"),
+                ]
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            )
         );
         assert_eq!((config.uri(), config.read_db()), ("mongodb://localhost:27018", "encore_read"));
     }

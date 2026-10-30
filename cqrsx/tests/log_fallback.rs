@@ -94,13 +94,13 @@ impl Decide<ProbeAggregate> for () {
 }
 struct ProbeContext(ProbeAggregate);
 impl AggregateContext<ProbeAggregate> for ProbeContext {
-    fn aggregate(&mut self) -> &mut ProbeAggregate {
-        &mut self.0
+    fn aggregate(&self) -> &ProbeAggregate {
+        &self.0
     }
 }
 struct UnavailableStore;
 impl EventStore<ProbeAggregate> for UnavailableStore {
-    type AC = ProbeContext;
+    type Context = ProbeContext;
     async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<ProbeAggregate>>, AggregateError<io::Error>> {
         Err(AggregateError::UnexpectedError(Box::new(io::Error::other("private_source"))))
     }
@@ -217,7 +217,7 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         stop: stop.clone(),
     });
     let config =
-        TaskWorkerPoolConfig::new(1, 1, Duration::from_secs(1), Duration::from_secs(15), Duration::from_secs(60)).unwrap();
+        TaskWorkerPoolConfig::try_new(1, 1, Duration::from_secs(1), Duration::from_secs(15), Duration::from_secs(60)).unwrap();
     tokio::time::timeout(
         Duration::from_secs(5),
         runtime::supervisor::run(

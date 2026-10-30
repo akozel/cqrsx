@@ -46,7 +46,7 @@ pub enum DeliveryLimitsError {
 }
 
 impl DeliveryLimits {
-    pub fn new(capacity: usize, max_batch: usize) -> Result<Self, DeliveryLimitsError> {
+    pub fn try_new(capacity: usize, max_batch: usize) -> Result<Self, DeliveryLimitsError> {
         if capacity < MIN_DELIVERY_CAPACITY {
             return Err(DeliveryLimitsError::CapacityTooSmall {
                 min: MIN_DELIVERY_CAPACITY,
@@ -82,7 +82,7 @@ impl Default for DeliveryLimits {
     }
 }
 
-/// Checked bounds of a projection processor. `new` takes what every deployment sets; the rest keep the
+/// Checked bounds of a projection processor. `try_new` takes what every deployment sets; the rest keep the
 /// defaults above until a fallible `with_*` changes them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ProcessorConfig {
@@ -118,7 +118,7 @@ pub enum ProcessorConfigError {
 impl ProcessorConfig {
     /// `delivery_limits` bound the buffer of every key: its `capacity` minus one is how many live pages may be
     /// in flight at once, its `max_batch` how many of them one handler call may take for a key.
-    pub fn new(
+    pub fn try_new(
         poll_interval: Duration,
         page_size: usize,
         lease: Duration,
@@ -264,7 +264,7 @@ mod tests {
     fn defaults_equal_the_constants() {
         let config = ProcessorConfig::default();
         assert_eq!(
-            ProcessorConfig::new(
+            ProcessorConfig::try_new(
                 seconds(0) + DEFAULT_PROCESSOR_POLL_INTERVAL,
                 1000,
                 seconds(10),
@@ -288,20 +288,20 @@ mod tests {
 
     #[test]
     fn every_bound_is_checked_with_a_readable_message() {
-        let delivery = DeliveryLimits::new(4, 2).unwrap();
-        let valid = ProcessorConfig::new(seconds(1), 10, seconds(1), delivery).unwrap();
+        let delivery = DeliveryLimits::try_new(4, 2).unwrap();
+        let valid = ProcessorConfig::try_new(seconds(1), 10, seconds(1), delivery).unwrap();
         assert_eq!(valid.pages_in_flight(), 3);
         for (config, error) in [
             (
-                ProcessorConfig::new(seconds(0), 10, seconds(1), delivery),
+                ProcessorConfig::try_new(seconds(0), 10, seconds(1), delivery),
                 ProcessorConfigError::ZeroPollInterval,
             ),
             (
-                ProcessorConfig::new(seconds(1), 0, seconds(1), delivery),
+                ProcessorConfig::try_new(seconds(1), 0, seconds(1), delivery),
                 ProcessorConfigError::ZeroPageSize,
             ),
             (
-                ProcessorConfig::new(seconds(1), 10, Duration::from_millis(999), delivery),
+                ProcessorConfig::try_new(seconds(1), 10, Duration::from_millis(999), delivery),
                 ProcessorConfigError::LeaseTooShort { min: seconds(1) },
             ),
             (valid.with_retry(seconds(0), seconds(1)), ProcessorConfigError::InvalidRetry),
@@ -368,11 +368,11 @@ mod tests {
     #[test]
     fn delivery_limits_reject_a_small_capacity_and_no_batch_and_default_to_the_constants() {
         assert_eq!(
-            DeliveryLimits::new(1, 1),
+            DeliveryLimits::try_new(1, 1),
             Err(DeliveryLimitsError::CapacityTooSmall { min: 2 })
         );
-        assert_eq!(DeliveryLimits::new(2, 0), Err(DeliveryLimitsError::ZeroMaxBatch));
-        let limits = DeliveryLimits::new(MIN_DELIVERY_CAPACITY, 1).unwrap();
+        assert_eq!(DeliveryLimits::try_new(2, 0), Err(DeliveryLimitsError::ZeroMaxBatch));
+        let limits = DeliveryLimits::try_new(MIN_DELIVERY_CAPACITY, 1).unwrap();
         assert_eq!((limits.capacity(), limits.max_batch()), (2, 1));
         let defaults = DeliveryLimits::default();
         assert_eq!(

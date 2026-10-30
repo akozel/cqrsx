@@ -12,7 +12,7 @@ use crate::cqrs::{
     aggregate::Aggregate,
     event::EventEnvelope,
     event_handler::EventHandler,
-    projection::repository::{ViewContext, ViewRepository},
+    projection::repository::{StoredView, ViewContext, ViewRepository},
     store::{PersistenceError, PersistenceErrorObserver, checked_counter_add},
 };
 use async_trait::async_trait;
@@ -171,7 +171,7 @@ where
     /// #     async fn load_with_context(
     /// #         &self,
     /// #         _view_id: &str,
-    /// #     ) -> Result<Option<(MyView, ViewContext)>, PersistenceError> {
+    /// #     ) -> Result<Option<StoredView<MyView>>, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
@@ -323,7 +323,7 @@ where
     /// #     async fn load_with_context(
     /// #         &self,
     /// #         _view_id: &str,
-    /// #     ) -> Result<Option<(MyView, ViewContext)>, PersistenceError> {
+    /// #     ) -> Result<Option<StoredView<MyView>>, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
@@ -464,7 +464,7 @@ where
     /// #     async fn load_with_context(
     /// #         &self,
     /// #         _view_id: &str,
-    /// #     ) -> Result<Option<(MyView, ViewContext)>, PersistenceError> {
+    /// #     ) -> Result<Option<StoredView<MyView>>, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
@@ -497,7 +497,7 @@ where
         self.view_repository
             .load_with_context(view_id)
             .await
-            .map(|option| option.map(|(view, _)| view))
+            .map(|option| option.map(|stored| stored.view))
             .inspect_err(|error| self.handle_error(error))
     }
 
@@ -508,11 +508,15 @@ where
     }
 
     async fn load_or_default(&self, view_id: String) -> Result<(V, ViewContext), PersistenceError> {
-        Ok(self
-            .view_repository
-            .load_with_context(&view_id)
-            .await?
-            .unwrap_or_else(|| (Default::default(), ViewContext::new(view_id, 0, 0))))
+        Ok(match self.view_repository.load_with_context(&view_id).await? {
+            Some(StoredView {
+                id,
+                version,
+                last_sequence,
+                view,
+            }) => (view, ViewContext::new(id, version, last_sequence)),
+            None => (V::default(), ViewContext::new(view_id, 0, 0)),
+        })
     }
 
     /// Applies the batch to the stored document under the contiguity rule and writes the document when
@@ -725,12 +729,17 @@ mod tests {
         async fn load(&self, _: &str) -> Result<Option<Projection>, PersistenceError> {
             panic!("ViewProjection must retain the version with load_with_context")
         }
-        async fn load_with_context(&self, id: &str) -> Result<Option<(Projection, ViewContext)>, PersistenceError> {
+        async fn load_with_context(&self, id: &str) -> Result<Option<StoredView<Projection>>, PersistenceError> {
             self.calls.lock().unwrap().push(format!("load:{id}"));
             if *self.failure.lock().unwrap() == Some(Failure::Load) {
                 return Err(PersistenceError::ConnectionError("load failed".into()));
             }
-            Ok(self.saved.lock().unwrap().clone())
+            Ok(self.saved.lock().unwrap().clone().map(|(view, context)| StoredView {
+                id: context.view_instance_id,
+                version: context.version,
+                last_sequence: context.last_sequence,
+                view,
+            }))
         }
         async fn update_view(&self, view: Projection, context: ViewContext) -> Result<(), PersistenceError> {
             self.calls.lock().unwrap().push(format!(
@@ -1148,9 +1157,9 @@ mod tests {
                 }
                 match repository.load_with_context("view").await.unwrap() {
                     None => prop_assert_eq!((applied, version), (0, 0)),
-                    Some((view, context)) => {
-                        prop_assert_eq!(view.0, (1..=applied).collect::<Vec<_>>());
-                        prop_assert_eq!((context.version, context.last_sequence), (version, applied));
+                    Some(stored) => {
+                        prop_assert_eq!(stored.view.0, (1..=applied).collect::<Vec<_>>());
+                        prop_assert_eq!((stored.version, stored.last_sequence), (version, applied));
                     }
                 }
             }

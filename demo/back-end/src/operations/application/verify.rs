@@ -49,7 +49,7 @@ impl VerifyService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::cqrs::projection::verify::{Difference, Verification};
+    use cqrsx::cqrs::projection::verify::{Difference, DifferenceKind, Verification};
 
     struct Fixed(&'static str, Result<Verification, StorageError>);
 
@@ -97,7 +97,7 @@ mod tests {
                 differences: vec![Difference {
                     collection: "concert_halls",
                     id: "c-1".into(),
-                    kind: "differs",
+                    kind: DifferenceKind::Differs,
                 }],
             }),
         );

@@ -191,7 +191,7 @@ where
         }
     }
 
-    async fn load_with_context(&self, view_id: &str) -> Result<Option<(V, ViewContext)>, PersistenceError> {
+    async fn load_with_context(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
         let row: Option<PgRow> = sqlx::query(&self.select_sql)
             .bind(view_id)
             .fetch_optional(&self.pool)
@@ -203,8 +203,12 @@ where
                 let version = row.try_get("version").map_err(row_decode_error)?;
                 let last_sequence = decode_usize(row.try_get("last_sequence").map_err(row_decode_error)?)?;
                 let view = serde_json::from_value(payload(&row)?)?;
-                let view_context = ViewContext::new(view_id.to_string(), version, last_sequence);
-                Ok(Some((view, view_context)))
+                Ok(Some(StoredView {
+                    id: view_id.to_owned(),
+                    version,
+                    last_sequence,
+                    view,
+                }))
             }
         }
     }

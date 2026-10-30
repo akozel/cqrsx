@@ -3,7 +3,7 @@
 use crate::{
     cqrs::{
         aggregate::Aggregate,
-        command::{CommandGatewayError, CommandInfo, decide::Decide},
+        command::{CommandGatewayError, CommandInfo, Label, decide::Decide},
         event::{DomainEvent, EventEnvelope},
         projection::View,
         reactions::{Decided, Reactions, Then},
@@ -73,8 +73,11 @@ impl CommandInfo for Book {
         self.booking_id
     }
 
-    fn labels(&self) -> Vec<(&'static str, String)> {
-        vec![("fan", self.fan.clone())]
+    fn labels(&self) -> Vec<Label> {
+        vec![Label {
+            name: "fan",
+            value: self.fan.clone(),
+        }]
     }
 }
 

@@ -60,7 +60,7 @@ async fn deadlines_after_committed_claim_or_settlement_preserve_durable_outcomes
     });
     let executor = Arc::new(DefaultTaskExecutor::new(
         queue.clone(),
-        TaskStorageConfig::new(Duration::from_millis(200)).unwrap(),
+        TaskStorageConfig::try_new(Duration::from_millis(200)).unwrap(),
     ));
     assert_eq!(
         claim_with_timeout(queue.as_ref(), executor.storage_timeout(), "test", 1, Duration::from_secs(60))
@@ -124,7 +124,7 @@ async fn delayed_batch_keeps_the_original_task_deadline_and_skips_expired_execut
     });
     let executor = Arc::new(DefaultTaskExecutor::new(
         queue.clone(),
-        TaskStorageConfig::new(Duration::from_millis(300)).unwrap(),
+        TaskStorageConfig::try_new(Duration::from_millis(300)).unwrap(),
     ));
     let deadline = tokio::time::Instant::now() + executor.storage_timeout();
     let mut batch = tokio::time::timeout_at(deadline, queue.claim(&format(), "test", 2, Duration::from_millis(100)))
@@ -194,7 +194,7 @@ async fn insufficient_remaining_lease_returns_task_to_retry_without_performing_i
     let queue = Arc::new(PostgresTaskQueue::new(db.pool.clone()));
     let executor = Arc::new(DefaultTaskExecutor::new(
         queue.clone(),
-        TaskStorageConfig::new(Duration::from_millis(300)).unwrap(),
+        TaskStorageConfig::try_new(Duration::from_millis(300)).unwrap(),
     ));
     let mut old = claim_with_timeout(queue.as_ref(), executor.storage_timeout(), "test", 1, Duration::from_secs(60))
         .await
@@ -365,7 +365,7 @@ async fn runtime_deadline_includes_connection_acquisition() {
     let queue = Arc::new(PostgresTaskQueue::new(pool.clone()));
     let executor = Arc::new(DefaultTaskExecutor::new(
         queue.clone(),
-        TaskStorageConfig::new(Duration::from_millis(200)).unwrap(),
+        TaskStorageConfig::try_new(Duration::from_millis(200)).unwrap(),
     ));
     assert_eq!(
         claim_with_timeout(queue.as_ref(), executor.storage_timeout(), "test", 1, Duration::from_secs(60))
@@ -430,7 +430,7 @@ async fn shutdown_after_committed_claim_or_settlement_preserves_durable_outcomes
         });
         let executor = Arc::new(DefaultTaskExecutor::new(
             queue.clone(),
-            TaskStorageConfig::new(Duration::from_millis(300)).unwrap(),
+            TaskStorageConfig::try_new(Duration::from_millis(300)).unwrap(),
         ));
         let calls = Arc::new(AtomicUsize::new(0));
         let shutdown = CancellationToken::new();
@@ -438,7 +438,7 @@ async fn shutdown_after_committed_claim_or_settlement_preserves_durable_outcomes
             queue.clone(),
             executor.clone(),
             dispatcher(CountingAdapter(calls.clone())),
-            TaskWorkerPoolConfig::new(
+            TaskWorkerPoolConfig::try_new(
                 1,
                 1,
                 Duration::from_secs(3600),

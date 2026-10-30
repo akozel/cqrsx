@@ -5,11 +5,13 @@ async fn ready_time_formats_and_skip_locked_distribute_without_overlap() {
     let queue = PostgresTaskQueue::new(db.pool.clone());
     let tasks: Vec<_> = (0..20).map(|_| new_task()).collect();
     let ids: HashSet<_> = tasks.iter().map(|m| m.id()).collect();
-    let delayed = new_task().scheduled(TaskSchedule::After(Duration::from_secs(300))).unwrap();
+    let delayed = new_task()
+        .with_schedule(TaskSchedule::After(Duration::from_secs(300)))
+        .unwrap();
     let absolute_time = DateTime::from_timestamp_micros((Utc::now() + chrono::Duration::hours(1)).timestamp_micros()).unwrap();
-    let absolute = new_task().scheduled(TaskSchedule::At(absolute_time)).unwrap();
+    let absolute = new_task().with_schedule(TaskSchedule::At(absolute_time)).unwrap();
     let past = new_task()
-        .scheduled(TaskSchedule::At(Utc::now() - chrono::Duration::minutes(1)))
+        .with_schedule(TaskSchedule::At(Utc::now() - chrono::Duration::minutes(1)))
         .unwrap();
     let unknown = NewTask::from_payload(TaskFormat::new(format().task_type(), 3).unwrap(), json!({"value":"runtime"})).unwrap();
     let unknown_type = NewTask::from_payload(TaskFormat::new("future_task", 1).unwrap(), json!({"value":"runtime"})).unwrap();

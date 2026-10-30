@@ -177,7 +177,7 @@ mod tests {
             attempt::<Invoice>(json!({ "amount": 80 })),
             attempt::<Greeting>(json!({ "name": "panda" })),
         ] {
-            assert_eq!(dispatcher.dispatch(task, Duration::ZERO).await, TaskResult::Done);
+            assert_eq!(dispatcher.dispatch(Arc::new(task), Duration::ZERO).await, TaskResult::Done);
         }
         assert_eq!(
             *calls.lock().unwrap(),
@@ -263,7 +263,7 @@ mod tests {
                 1,
             )
             .unwrap();
-            assert_eq!(dispatcher.dispatch(task, Duration::ZERO).await, TaskResult::Done);
+            assert_eq!(dispatcher.dispatch(Arc::new(task), Duration::ZERO).await, TaskResult::Done);
         }
         assert_eq!(*seen.lock().unwrap(), ["legacy v2", "legacy v1"]);
     }

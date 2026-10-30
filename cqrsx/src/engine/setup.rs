@@ -101,11 +101,9 @@ impl Setup {
         described.insert(key.into(), value.into());
     }
 
-    /// What the modules read and described, sorted by key.
-    pub(crate) fn described(mut self) -> Vec<(String, String)> {
+    /// What the modules read and described, by key.
+    pub(crate) fn described(mut self) -> BTreeMap<String, String> {
         std::mem::take(get_mut(&mut self.described, "setup descriptions"))
-            .into_iter()
-            .collect()
     }
 
     fn read<T: FromStr>(&self, name: &str, default: T) -> Result<T, SetupError>
@@ -190,14 +188,16 @@ mod tests {
         assert!(matches!(refused, SetupError::Invalid { ref variable, .. } if variable == "ENCORE_TICKET_LIMIT"));
         assert_eq!(
             encore.described(),
-            [
-                ("ENCORE_PACE_MS", "1 s"),
-                ("ENCORE_RETRY_MS", "1500 ms"),
-                ("ENCORE_TICKET_LIMIT", "7"),
-                ("ENCORE_URL", "http://mail/"),
-                ("mail.request_timeout", "3 s"),
-            ]
-            .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            BTreeMap::from(
+                [
+                    ("ENCORE_PACE_MS", "1 s"),
+                    ("ENCORE_RETRY_MS", "1500 ms"),
+                    ("ENCORE_TICKET_LIMIT", "7"),
+                    ("ENCORE_URL", "http://mail/"),
+                    ("mail.request_timeout", "3 s"),
+                ]
+                .map(|(key, value)| (key.to_owned(), value.to_owned()))
+            )
         );
     }
 }

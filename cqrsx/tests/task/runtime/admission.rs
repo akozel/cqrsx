@@ -56,7 +56,7 @@ async fn claim_limits_while_one_worker_drains_a_buffer_of_four(percent: u8, step
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     // Four queued waves need a lease above 2 * 6 + 30 + 5 + 4 * 36 = 191 s.
-    let config = TaskWorkerPoolConfig::new(
+    let config = TaskWorkerPoolConfig::try_new(
         1,
         4,
         Duration::from_millis(2),

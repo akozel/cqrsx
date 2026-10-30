@@ -128,7 +128,7 @@ where
     K: Send + Sync,
 {
     fn get<'a>(&'a self, id: &'a str) -> Answer<'a, Option<StoredView<V>>> {
-        Box::pin(async move { Ok(self.documents.load_with_context(id).await?.map(StoredView::from)) })
+        Box::pin(async move { self.documents.load_with_context(id).await })
     }
 
     fn list(&self) -> Answer<'_, Vec<StoredView<V>>> {
@@ -446,7 +446,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_commit_wakes_the_processors_of_its_type_before_their_poll() {
         let config = Settings::default().processor();
-        let hour = crate::cqrs::projection::processor::config::ProcessorConfig::new(
+        let hour = crate::cqrs::projection::processor::config::ProcessorConfig::try_new(
             Duration::from_secs(3600),
             config.page_size(),
             config.lease(),
@@ -454,8 +454,8 @@ mod tests {
         )
         .unwrap();
         let defaults = Settings::default();
-        let settings = Settings::new(
-            defaults.snapshot_every().get(),
+        let settings = Settings::try_new(
+            defaults.snapshot_every(),
             defaults.lock_limits(),
             hour,
             defaults.task_runtime().clone(),

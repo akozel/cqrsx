@@ -48,7 +48,7 @@ pub struct PostgresEventRepository {
 }
 
 impl PersistedEventRepository for PostgresEventRepository {
-    async fn get_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
+    async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
         self.fetch_events(
             sqlx::query(self.query_factory.select_events())
                 .bind(A::TYPE)
@@ -57,7 +57,7 @@ impl PersistedEventRepository for PostgresEventRepository {
         .await
     }
 
-    async fn get_events_after<A: Aggregate>(
+    async fn events_after<A: Aggregate>(
         &self,
         aggregate_id: &str,
         after_sequence: usize,
@@ -69,7 +69,7 @@ impl PersistedEventRepository for PostgresEventRepository {
         self.fetch_events(query).await
     }
 
-    async fn get_snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
+    async fn snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
         self.load_snapshot::<A>(aggregate_id).await
     }
 
@@ -203,15 +203,15 @@ mod configuration_tests {
             .connect_lazy("postgres://localhost/unused")
             .unwrap();
         let repository = PostgresEventRepository::new(pool.clone());
-        let event = SerializedEvent::new(
-            "a".into(),
-            1,
-            "ledger".into(),
-            "delta".into(),
-            "1".into(),
-            serde_json::json!(1),
-            serde_json::json!({}),
-        );
+        let event = SerializedEvent {
+            aggregate_id: "a".into(),
+            sequence: 1,
+            aggregate_type: "ledger".into(),
+            event_type: "delta".into(),
+            event_version: "1".into(),
+            payload: serde_json::json!(1),
+            metadata: serde_json::json!({}),
+        };
         let task = crate::task::NewTask::from_payload(
             crate::task::format::TaskFormat::new("notify", 1).unwrap(),
             serde_json::json!({}),

@@ -201,11 +201,11 @@ fn page_limit(limit: usize) -> Result<(), PersistenceError> {
 }
 
 impl PersistedEventRepository for MemEventRepository {
-    async fn get_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        self.get_events_after::<A>(aggregate_id, 0).await
+    async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
+        self.events_after::<A>(aggregate_id, 0).await
     }
 
-    async fn get_events_after<A: Aggregate>(
+    async fn events_after<A: Aggregate>(
         &self,
         aggregate_id: &str,
         after_sequence: usize,
@@ -225,7 +225,7 @@ impl PersistedEventRepository for MemEventRepository {
         Ok(events)
     }
 
-    async fn get_snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
+    async fn snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
         let gate = lock(&self.gate, "in-memory journal gate").clone();
         // A closed gate lets every load through.
         if let Some(gate) = gate
@@ -453,7 +453,7 @@ mod tests {
         assert_eq!(journal.feed_after::<Ledger>(Position::START, 10).await.unwrap().len(), 5);
         assert_eq!(
             journal
-                .get_events::<Ledger>("a")
+                .events::<Ledger>("a")
                 .await
                 .unwrap()
                 .iter()
@@ -461,7 +461,7 @@ mod tests {
                 .collect::<Vec<_>>(),
             [1, 2, 3, 4]
         );
-        assert_eq!(journal.get_events_after::<Ledger>("a", 3).await.unwrap().len(), 1);
+        assert_eq!(journal.events_after::<Ledger>("a", 3).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -487,7 +487,7 @@ mod tests {
             TestAggregate::TYPE,
             "the type of the persist call is stored"
         );
-        assert!(journal.get_events::<Ledger>("z").await.unwrap().is_empty());
+        assert!(journal.events::<Ledger>("z").await.unwrap().is_empty());
         assert_eq!(journal.feed_after::<Ledger>(Position::START, 10).await.unwrap().len(), 6);
     }
 
@@ -519,12 +519,12 @@ mod tests {
     #[tokio::test]
     async fn snapshots_follow_the_version_chain_and_a_conflict_writes_no_event_either() {
         let journal = MemEventRepository::default();
-        assert!(journal.get_snapshot::<Ledger>("a").await.unwrap().is_none());
+        assert!(journal.snapshot::<Ledger>("a").await.unwrap().is_none());
         journal
             .persist::<Ledger>(&[delta("a", 1, 1)], Some(snapshot("a", 1, 1)))
             .await
             .unwrap();
-        let stored = journal.get_snapshot::<Ledger>("a").await.unwrap().unwrap();
+        let stored = journal.snapshot::<Ledger>("a").await.unwrap().unwrap();
         assert_eq!(
             (stored.aggregate_id.as_str(), stored.last_sequence, stored.snapshot_version),
             ("a", 1, 1)
@@ -539,7 +539,7 @@ mod tests {
             ));
         }
         assert_eq!(
-            journal.get_events::<Ledger>("a").await.unwrap().len(),
+            journal.events::<Ledger>("a").await.unwrap().len(),
             1,
             "the event of a refused commit is gone too"
         );
@@ -554,16 +554,13 @@ mod tests {
             .await
             .unwrap();
         journal.persist::<Ledger>(&[], Some(snapshot("a", 2, 3))).await.unwrap();
-        assert_eq!(
-            journal.get_snapshot::<Ledger>("a").await.unwrap().unwrap().snapshot_version,
-            3
-        );
+        assert_eq!(journal.snapshot::<Ledger>("a").await.unwrap().unwrap().snapshot_version, 3);
         assert_eq!(
             journal.head::<Ledger>().await.unwrap(),
             Position::new(2),
             "a snapshot alone takes no position"
         );
-        assert!(journal.get_snapshot::<TestAggregate>("a").await.unwrap().is_none());
+        assert!(journal.snapshot::<TestAggregate>("a").await.unwrap().is_none());
     }
 
     #[tokio::test]
@@ -582,7 +579,7 @@ mod tests {
     #[tokio::test]
     async fn clones_share_the_journal_and_a_store_commits_into_it() {
         let journal = MemEventRepository::default();
-        let store = PersistedEventStore::<_, Ledger>::new_event_store(journal.clone());
+        let store = PersistedEventStore::<_, Ledger>::new(journal.clone());
         let context = store.load_aggregate("x").await.unwrap();
         store
             .commit(vec![Delta(5), Delta(-2)], context, HashMap::new(), &[])
@@ -593,7 +590,7 @@ mod tests {
         store.commit(vec![Delta(1)], context, HashMap::new(), &[]).await.unwrap();
         let page = journal.feed_after::<Ledger>(Position::START, 10).await.unwrap();
         assert_eq!(keys(&page), [(1, "x", 1), (1, "x", 2), (2, "x", 3)]);
-        assert_eq!(journal.get_events_after::<Ledger>("x", 2).await.unwrap().len(), 1);
+        assert_eq!(journal.events_after::<Ledger>("x", 2).await.unwrap().len(), 1);
     }
 
     #[tokio::test]
@@ -621,16 +618,14 @@ mod tests {
     async fn held_loads_wait_for_a_permit_and_the_rest_of_the_journal_does_not() {
         let journal = MemEventRepository::default();
         journal.persist::<Ledger>(&[delta("a", 1, 3)], None).await.unwrap();
-        let store = PersistedEventStore::<_, Ledger>::new_snapshot_store(
-            journal.clone(),
-            crate::cqrs::store::persisted::tests::every(10),
-        );
+        let store = PersistedEventStore::<_, Ledger>::new(journal.clone())
+            .with_snapshots(crate::cqrs::store::persisted::tests::every(10));
         let gate = journal.hold_loads();
         let mut load = Box::pin(store.load_aggregate("a"));
         let waiting = std::future::poll_fn(|cx| std::task::Poll::Ready(load.as_mut().poll(cx).is_pending())).await;
         assert!(waiting, "the load waits at the gate");
         assert_eq!(
-            journal.get_events::<Ledger>("a").await.unwrap().len(),
+            journal.events::<Ledger>("a").await.unwrap().len(),
             1,
             "the events do not wait"
         );
@@ -698,7 +693,7 @@ mod tests {
             "one id twice in a write"
         );
         assert_eq!(
-            journal.get_events::<Ledger>("a").await.unwrap().len(),
+            journal.events::<Ledger>("a").await.unwrap().len(),
             2,
             "the refused writes wrote no event"
         );

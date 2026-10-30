@@ -21,7 +21,11 @@ async fn a_stale_owner_cannot_damage_the_view_or_the_checkpoint() {
     h.until(async || h.observer.count("lease:Lost") == 1).await;
     gate.release(); // the stale write lands now, next to B's work
     let status = h.caught_up(&["a"]).await;
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2)], "applied exactly once");
+    assert_eq!(
+        h.view("a").await.unwrap().view.history,
+        [(1, 1), (2, 2)],
+        "applied exactly once"
+    );
     assert_eq!((status.owner.as_deref(), status.position), (Some("B"), h.head().await));
     assert_eq!(
         a_store.calls("advance"),
@@ -131,11 +135,11 @@ async fn a_stop_with_a_stuck_key_releases_after_the_drain_deadline() {
     let b = h.node("B");
     h.caught_up(&["a", "b"]).await;
     assert_eq!(
-        h.view("a").await.unwrap().0.history,
+        h.view("a").await.unwrap().view.history,
         [(1, 1)],
         "the stale write and the repeat met at the contiguity rule"
     );
-    assert_eq!(h.view("b").await.unwrap().1.version, 1, "b was not written again");
+    assert_eq!(h.view("b").await.unwrap().version, 1, "b was not written again");
     b.stop().await;
 }
 
@@ -172,7 +176,7 @@ async fn a_stop_during_backoff_or_a_lost_lease_during_drain_ends_cleanly() {
     assert_eq!(a_store.calls("release"), 0, "a lost owner releases nothing");
     let status = h.caught_up(&["a"]).await;
     assert_eq!(
-        (status.owner.as_deref(), h.view("a").await.unwrap().0.history),
+        (status.owner.as_deref(), h.view("a").await.unwrap().view.history),
         (Some("B"), vec![(1, 1), (2, 2)])
     );
     b.stop().await;
@@ -199,7 +203,7 @@ async fn a_killed_owner_is_replaced_after_the_lease_expires() {
         waited >= LEASE - LEASE / 3 && waited <= LEASE + POLL,
         "took over when the lease ran out: {waited:?}"
     );
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2)]);
     b.stop().await;
 }
 
@@ -220,7 +224,7 @@ async fn a_rejected_advance_stops_the_old_owner() {
     gate.release();
     h.until(async || h.observer.count("lease:Lost") == 1).await;
     let status = h.caught_up(&["a"]).await;
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2)]);
     assert_eq!(status.owner.as_deref(), Some("B"));
     assert!(!a.is_finished(), "A keeps asking for the row");
     a.stop().await;
@@ -277,7 +281,7 @@ async fn a_wiped_checkpoint_row_is_registered_again_and_the_journal_is_read_from
         (4, 0),
         "the journal was read again from the start"
     );
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2)]);
     // Only the checkpoint row is dropped: the documents skip the events they already hold.
     let writes = h.views.writes();
     h.checkpoints.inner.clear();
@@ -285,7 +289,7 @@ async fn a_wiped_checkpoint_row_is_registered_again_and_the_journal_is_read_from
     h.commit("a", 3).await;
     let status = h.caught_up(&["a", "b"]).await;
     assert_eq!(status.applied, 5);
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2), (3, 3)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2), (3, 3)]);
     assert_eq!(h.views.writes(), writes + 1, "only the new event was written");
     assert_eq!(h.observer.count("failed:"), 0);
     node.stop().await;

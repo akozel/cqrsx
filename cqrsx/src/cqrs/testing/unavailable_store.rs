@@ -19,20 +19,20 @@ fn unavailable<E: Error>() -> AggregateError<E> {
 }
 
 impl<A: Aggregate> EventStore<A> for UnavailableStore {
-    type AC = MemStoreAggregateContext<A>;
+    type Context = MemStoreAggregateContext<A>;
 
     async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
         Err(unavailable())
     }
 
-    async fn load_aggregate(&self, _: &str) -> Result<Self::AC, AggregateError<A::Error>> {
+    async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<A::Error>> {
         Err(unavailable())
     }
 
     async fn commit(
         &self,
         _: Vec<A::Event>,
-        _: Self::AC,
+        _: Self::Context,
         _: HashMap<String, String>,
         _: &[NewTask],
     ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {

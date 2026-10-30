@@ -40,15 +40,15 @@ pub(super) fn event(id: &str, sequence: usize) -> SerializedEvent {
     let payload = TestEvent::Recorded {
         value: format!("event-{sequence}"),
     };
-    SerializedEvent::new(
-        id.to_owned(),
+    SerializedEvent {
+        aggregate_id: id.to_owned(),
         sequence,
-        TestAggregate::TYPE.to_owned(),
-        payload.event_type(),
-        "1".to_owned(),
-        serde_json::to_value(payload).unwrap(),
-        json!({"correlation_id": "command"}),
-    )
+        aggregate_type: TestAggregate::TYPE.to_owned(),
+        event_type: payload.event_type(),
+        event_version: "1".to_owned(),
+        payload: serde_json::to_value(payload).unwrap(),
+        metadata: json!({"correlation_id": "command"}),
+    }
 }
 
 #[derive(Clone, Default, Serialize, Deserialize)]

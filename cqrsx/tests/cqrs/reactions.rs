@@ -9,7 +9,7 @@ use cqrsx::{
         event::DomainEvent,
         reactions::{Decided, Reactions, ReactionsPlanner, Then},
         store::persisted::PersistedEventStore,
-        testing::{command::TestCommandExecutor, mem_event_repository::MemEventRepository},
+        testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
     },
     task::{
         DEFAULT_MAX_ATTEMPTS, NewTask, TaskSchedule,

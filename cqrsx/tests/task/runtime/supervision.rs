@@ -93,7 +93,7 @@ async fn supervisor_survives_a_handler_panic_storage_errors_and_lost_acknowledge
         }
     }
     let dispatcher = TaskDispatcher::try_new(vec![PanicOnce { calls: calls.clone() }]).unwrap();
-    let config = TaskWorkerPoolConfig::new(
+    let config = TaskWorkerPoolConfig::try_new(
         1,
         1,
         Duration::from_millis(2),
@@ -136,7 +136,7 @@ async fn storage_timeouts_allow_polling_and_free_worker_capacity_without_shutdow
         queue.incoming.lock().unwrap().extend([claimed(), claimed()]);
         let executor = Arc::new(DefaultTaskExecutor::new(
             queue.clone(),
-            TaskStorageConfig::new(Duration::from_millis(5)).unwrap(),
+            TaskStorageConfig::try_new(Duration::from_millis(5)).unwrap(),
         ));
         let calls = Arc::new(AtomicUsize::new(0));
         let shutdown = CancellationToken::new();
@@ -145,7 +145,7 @@ async fn storage_timeouts_allow_polling_and_free_worker_capacity_without_shutdow
             queue.clone(),
             executor,
             TaskDispatcher::try_new(vec![CountingAdapter(calls.clone())]).unwrap(),
-            TaskWorkerPoolConfig::new(
+            TaskWorkerPoolConfig::try_new(
                 1,
                 1,
                 Duration::from_millis(2),
@@ -254,8 +254,8 @@ async fn a_handler_panic_retries_its_task_after_the_policy_pause_and_the_worker_
     let built = AtomicUsize::new(0);
     let runtime = cqrsx::task::runtime::prepare(
         queue.clone(),
-        panic_first_dispatcher(&built, &records),
-        cqrsx::task::runtime::config::TaskRuntimeConfig::new(
+        Arc::new(panic_first_dispatcher(&built, &records)),
+        cqrsx::task::runtime::config::TaskRuntimeConfig::try_new(
             TaskStorageConfig::default(),
             worker_config(1, 1, Duration::from_secs(3600)),
         )

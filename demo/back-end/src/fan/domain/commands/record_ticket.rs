@@ -56,7 +56,7 @@ mod tests {
     #[test]
     fn record_ticket_happy_path() {
         let id = Uuid::new_v4();
-        TestFramework::<Fan>::with(())
+        TestFramework::<Fan>::new(())
             .given_no_previous_events()
             .when(record(id))
             .then_expect_event(recorded(id));
@@ -65,7 +65,7 @@ mod tests {
     #[test]
     fn r9_rejects_a_repeated_record_ticket() {
         let id = Uuid::new_v4();
-        TestFramework::<Fan>::with(())
+        TestFramework::<Fan>::new(())
             .given(vec![recorded(id)])
             .when(record(id))
             .then_expect_error(FanError::AlreadyRecorded { booking_id: id });

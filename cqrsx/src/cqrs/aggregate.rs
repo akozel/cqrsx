@@ -116,7 +116,7 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// This is used for persisting the events and snapshots to a database.
     const TYPE: &'static str;
     /// The id of an instance, e.g. a validated newtype. Its [`Display`](fmt::Display) is the instance's text: the
-    /// key of its lock ([`AggregateKey::of`]), of its events, snapshots and tasks in the store, and of the ids of its
+    /// key of its lock, of its events, snapshots and tasks in the store, and of the ids of its
     /// tasks ([`Causation::task_id`](crate::cqrs::command::causation::Causation::task_id)); the command executor
     /// formats it once per command. The text is stored, so it never changes for an id; [`FromStr`] parses it back.
     type Id: fmt::Display + FromStr + Clone + Eq + Hash + Send + Sync + 'static;
@@ -225,29 +225,25 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
 
 /// One aggregate instance, unique across aggregate types: the same ID under two types is two keys.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
-pub struct AggregateKey {
+pub(crate) struct AggregateKey {
     aggregate_type: &'static str,
     aggregate_id: String,
 }
 
 impl AggregateKey {
-    pub fn new(aggregate_type: &'static str, aggregate_id: impl Into<String>) -> Self {
+    pub(crate) fn new(aggregate_type: &'static str, aggregate_id: String) -> Self {
         Self {
             aggregate_type,
-            aggregate_id: aggregate_id.into(),
+            aggregate_id,
         }
     }
 
     /// The key of `id` under [`A::TYPE`](Aggregate::TYPE): its text is the id's `Display`, formatted here.
-    pub fn of<A: Aggregate>(id: &A::Id) -> Self {
+    pub(crate) fn of<A: Aggregate>(id: &A::Id) -> Self {
         Self::new(A::TYPE, id.to_string())
     }
 
-    pub fn aggregate_type(&self) -> &'static str {
-        self.aggregate_type
-    }
-
-    pub fn aggregate_id(&self) -> &str {
+    pub(crate) fn aggregate_id(&self) -> &str {
         &self.aggregate_id
     }
 }

@@ -133,6 +133,37 @@ use tokio::{sync::Semaphore, time::Instant};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
+/// What a processor was doing when it failed, as its log lines name it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum Operation {
+    /// A page of the journal.
+    Feed,
+    /// The journal's head, looked at while idle.
+    Head,
+    /// A statement of the checkpoint store.
+    Checkpoints,
+    /// A page delivered to the projection.
+    Page,
+    /// A rebuild of keys.
+    Rebuild,
+    /// An extension of the lease.
+    Lease,
+}
+
+impl Operation {
+    /// The operation's name in the log lines.
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::Feed => "feed",
+            Self::Head => "head",
+            Self::Checkpoints => "checkpoints",
+            Self::Page => "page",
+            Self::Rebuild => "rebuild",
+            Self::Lease => "lease",
+        }
+    }
+}
+
 /// Feeds one projection from the journal of aggregate type `A`: see the [module](self) documentation.
 /// Built once per projection and process, run until its shutdown token is cancelled.
 pub struct ProjectionProcessor<A: Aggregate, R, C> {
@@ -297,7 +328,9 @@ where
                     }
                 }
                 Ok(None) => {}
-                Err(error) => diagnostics::log_projection_failure(projection, aggregate_type, "checkpoints", error.category(), 0),
+                Err(error) => {
+                    diagnostics::log_projection_failure(projection, aggregate_type, Operation::Checkpoints, error.category(), 0)
+                }
             }
             tokio::select! {
                 _ = self.shutdown.cancelled() => return,

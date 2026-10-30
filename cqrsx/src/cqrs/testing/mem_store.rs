@@ -118,104 +118,6 @@ impl<A: Aggregate> Default for MemStore<A> {
 type LockedEventEnvelopeMap<A> = RwLock<HashMap<String, Vec<EventEnvelope<A>>>>;
 
 impl<A: Aggregate> MemStore<A> {
-    /// Get a shared copy of the events stored within the event store.
-    ///
-    /// This can be used to verify the state of events that have been committed.
-    /// Example of reading and displaying stored events:
-    /// ```
-    /// # mod example {
-    /// # use async_trait::async_trait;
-    /// # use serde::Deserialize;
-    /// # use serde::Serialize;
-    /// # use serde_json::Value;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
-    /// # use cqrsx::cqrs::event_handler::EventHandler;
-    /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
-    /// # use cqrsx::cqrs::projection::repository::ViewContext;
-    /// # use cqrsx::cqrs::projection::repository::ViewRepository;
-    /// #
-    /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
-    /// # pub enum MyEvents {
-    /// #     SomethingWasDone,
-    /// #     SomethingElseWasDone,
-    /// # }
-    /// #
-    /// # impl DomainEvent for MyEvents {
-    /// #     fn event_type(&self) -> String {
-    /// #         format!("{:?}", &self)
-    /// #     }
-    /// #     fn event_version(&self) -> String {
-    /// #         "0.1.0".to_string()
-    /// #     }
-    /// # }
-    /// #
-    /// # #[derive(Debug, Serialize, Deserialize)]
-    /// # pub enum MyCommands {
-    /// #     DoSomething,
-    /// #     BadCommand,
-    /// # }
-    /// #
-    /// # #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-    /// # pub struct MyAggregate;
-    /// #
-    /// # impl Aggregate for MyAggregate {
-    /// #     const TYPE: &'static str = "MyAggregate";
-    /// #     type Id = String;
-    /// #     type Command = MyCommands;
-    /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
-    /// #     type Rules = MyService;
-    /// #
-    /// #     fn apply(&mut self, _event: Self::Event) {}
-    /// # }
-    /// #
-    /// # impl Decide<MyAggregate> for MyCommands {
-    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
-    /// #         match self {
-    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
-    /// #             MyCommands::BadCommand => Err("the expected error message".into()),
-    /// #         }
-    /// #     }
-    /// # }
-    /// #
-    /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
-    /// # #[error("{0}")]
-    /// # pub struct MyUserError(pub String);
-    /// #
-    /// # impl From<&str> for MyUserError {
-    /// #     fn from(msg: &str) -> Self {
-    /// #         Self(msg.to_string())
-    /// #     }
-    /// # }
-    /// #
-    /// # #[derive(Debug, Clone, Default)]
-    /// # pub struct MyService;
-    /// # }
-    /// # use example::MyAggregate;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
-    /// # use cqrsx::cqrs::testing::mem_store::MemStore;
-    /// let store = MemStore::<MyAggregate>::default();
-    /// //...
-    /// let all_locked_events = store.get_events();
-    /// let unlocked_events = all_locked_events.read().unwrap();
-    /// if let Some(events) = unlocked_events.get("test-aggregate-id-C450D1A") {
-    ///     for event in events {
-    ///         println!("{:?}", event);
-    ///     }
-    /// };
-    /// ```
-    #[deprecated(since = "0.4.9", note = "clone the MemStore instead")]
-    pub fn get_events(&self) -> Arc<LockedEventEnvelopeMap<A>> {
-        Arc::clone(&self.events)
-    }
-
     fn load_committed_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
         let committed_events = self
             .events
@@ -238,7 +140,7 @@ impl<A: Aggregate> MemStore<A> {
 }
 
 impl<A: Aggregate> EventStore<A> for MemStore<A> {
-    type AC = MemStoreAggregateContext<A>;
+    type Context = MemStoreAggregateContext<A>;
 
     async fn load_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
         let events = self.load_committed_events(aggregate_id)?;
@@ -336,8 +238,8 @@ impl<A> AggregateContext<A> for MemStoreAggregateContext<A>
 where
     A: Aggregate,
 {
-    fn aggregate(&mut self) -> &mut A {
-        &mut self.aggregate
+    fn aggregate(&self) -> &A {
+        &self.aggregate
     }
 }
 
@@ -529,17 +431,13 @@ mod tests {
 }
 
 #[cfg(test)]
-mod legacy_api_tests {
+mod store_tests {
     use super::*;
     use crate::cqrs::aggregate::tests::*;
     #[tokio::test]
-    #[allow(deprecated)]
-    async fn legacy_event_handle_and_clones_observe_the_same_envelopes() {
+    async fn clones_observe_the_same_envelopes() {
         let store = MemStore::<Ledger>::default();
         let clone = store.clone();
-        let first = store.get_events();
-        let second = clone.get_events();
-        assert!(Arc::ptr_eq(&first, &second));
         let metadata = HashMap::from([("trace".into(), "🦀".into())]);
         clone
             .commit(
@@ -550,13 +448,15 @@ mod legacy_api_tests {
             )
             .await
             .unwrap();
-        let events = first.read().unwrap();
-        let event = &events["a"][0];
+        let events = store.load_events("a").await.unwrap();
+        let [event] = events.as_slice() else {
+            panic!("one committed event is visible through the other clone, got {}", events.len())
+        };
         assert_eq!(event.aggregate_id, "a");
         assert_eq!(event.sequence, 1);
         assert_eq!(event.payload, Delta(5));
         assert_eq!(event.metadata, metadata);
-        assert!(!events.contains_key("b"));
+        assert!(store.load_events("b").await.unwrap().is_empty());
     }
 
     #[tokio::test]

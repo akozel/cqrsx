@@ -6,7 +6,10 @@ use crate::projection::support::{Harness, Node, key};
 use crate::support::ledger::Ledger;
 use crate::support::property_config;
 use cqrsx::cqrs::{
-    projection::checkpoint::{CheckpointStore, RebuildRequest},
+    projection::{
+        checkpoint::{CheckpointStore, RebuildRequest},
+        repository::StoredView,
+    },
     store::{feed::Position, repository::PersistedEventRepository},
 };
 use proptest::prelude::*;
@@ -85,18 +88,10 @@ async fn invariants(h: &Harness, wiped: &HashMap<&str, Position>) -> Result<(), 
         let fold = h.fold(key).await;
         let history = fold.as_ref().map(|fold| &fold.history[..]).unwrap_or(&[]);
         let document = h.view(key).await;
-        if let Some((view, context)) = &document {
-            prop_assert!(context.last_sequence <= history.len(), "{key}: document beyond the journal");
-            prop_assert_eq!(
-                &view.history[..],
-                &history[..context.last_sequence],
-                "{}: not a prefix fold",
-                key
-            );
-            let total: i64 = history[..context.last_sequence]
-                .iter()
-                .map(|(_, value)| i64::from(*value))
-                .sum();
+        if let Some(StoredView { view, last_sequence, .. }) = &document {
+            prop_assert!(*last_sequence <= history.len(), "{key}: document beyond the journal");
+            prop_assert_eq!(&view.history[..], &history[..*last_sequence], "{}: not a prefix fold", key);
+            let total: i64 = history[..*last_sequence].iter().map(|(_, value)| i64::from(*value)).sum();
             prop_assert_eq!(view.total, total);
         }
         let since = wiped.get(key).copied().unwrap_or(Position::START);
@@ -106,7 +101,7 @@ async fn invariants(h: &Harness, wiped: &HashMap<&str, Position>) -> Result<(), 
             .map(|entry| entry.event.sequence)
             .max();
         if let Some(sequence) = covered {
-            let applied = document.as_ref().map_or(0, |(_, context)| context.last_sequence);
+            let applied = document.as_ref().map_or(0, |stored| stored.last_sequence);
             prop_assert!(
                 applied >= sequence,
                 "{key}: the checkpoint {:?} covers event {sequence} but the document is at {applied}",
@@ -195,7 +190,7 @@ async fn check(ops: Vec<Op>) -> Result<(), TestCaseError> {
     prop_assert_eq!(status.rebuild_cursor, None);
     for key in KEYS {
         let fold = h.fold(key).await;
-        prop_assert_eq!(h.view(key).await.map(|(view, _)| view), fold, "{}", key);
+        prop_assert_eq!(h.view(key).await.map(|stored| stored.view), fold, "{}", key);
     }
     invariants(&h, &HashMap::new()).await?;
     for node in cluster.nodes.drain(..) {

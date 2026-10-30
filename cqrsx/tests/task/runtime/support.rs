@@ -256,7 +256,7 @@ pub(super) fn io_dispatcher(probe: Arc<IoProbe>) -> TaskDispatcher<IoAdapter> {
     .unwrap()
 }
 pub(super) fn worker_config(c: usize, q: usize, poll: Duration) -> TaskWorkerPoolConfig {
-    TaskWorkerPoolConfig::new(c, q, poll, Duration::from_secs(30), Duration::from_secs(120)).unwrap()
+    TaskWorkerPoolConfig::try_new(c, q, poll, Duration::from_secs(30), Duration::from_secs(120)).unwrap()
 }
 
 pub(super) fn prepared_runtime<Q: TaskQueue + 'static, A: TaskAdapter + 'static>(
@@ -266,8 +266,8 @@ pub(super) fn prepared_runtime<Q: TaskQueue + 'static, A: TaskAdapter + 'static>
 ) -> cqrsx::task::runtime::TaskRuntime<Q, A> {
     cqrsx::task::runtime::prepare(
         queue,
-        dispatcher,
-        cqrsx::task::runtime::config::TaskRuntimeConfig::new(TaskStorageConfig::default(), config).unwrap(),
+        Arc::new(dispatcher),
+        cqrsx::task::runtime::config::TaskRuntimeConfig::try_new(TaskStorageConfig::default(), config).unwrap(),
         Policies::default(),
     )
 }

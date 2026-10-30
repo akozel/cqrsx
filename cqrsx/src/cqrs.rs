@@ -456,7 +456,7 @@ where
     where
         A: Clone,
     {
-        let mut aggregate_context = self.store.load_aggregate(key).await?;
+        let aggregate_context = self.store.load_aggregate(key).await?;
         // The planner's decision needs the command after `decide` consumed it: one owned clone, kept for the
         // planner, never a borrow across an await, so a command that is `Send` but not `Sync` keeps the future
         // `Send`.
@@ -486,6 +486,9 @@ where
 
 /// What one command committed in one transaction: its events in commit order (the one event it decided, as
 /// the store reports it) and the tasks planned from them, published atomically with them.
+///
+/// `Default` is derived: its bound `A: Default` holds for every aggregate.
+#[derive(Default)]
 pub struct CommitReport<A: Aggregate> {
     pub events: Vec<EventEnvelope<A>>,
     pub tasks: Vec<NewTask>,
@@ -513,15 +516,6 @@ impl<A: Aggregate> fmt::Debug for CommitReport<A> {
 impl<A: Aggregate> PartialEq for CommitReport<A> {
     fn eq(&self, other: &Self) -> bool {
         self.events == other.events && self.tasks == other.tasks
-    }
-}
-
-impl<A: Aggregate> Default for CommitReport<A> {
-    fn default() -> Self {
-        Self {
-            events: Vec::new(),
-            tasks: Vec::new(),
-        }
     }
 }
 

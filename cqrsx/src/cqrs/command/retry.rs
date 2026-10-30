@@ -25,7 +25,7 @@ pub struct AggregateConflictRetryPolicy {
 impl AggregateConflictRetryPolicy {
     /// Creates an explicit retry policy. `jitter_ratio` is symmetric, so `0.2`
     /// means ±20%.
-    pub fn new(
+    pub fn try_new(
         max_attempts: usize,
         initial_backoff: Duration,
         max_backoff: Duration,
@@ -109,7 +109,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn conflicts_wait_for_the_configured_backoff_and_stop_after_the_last_attempt() {
-        let policy = AggregateConflictRetryPolicy::new(4, Duration::from_millis(5), Duration::from_millis(12), 0.0).unwrap();
+        let policy = AggregateConflictRetryPolicy::try_new(4, Duration::from_millis(5), Duration::from_millis(12), 0.0).unwrap();
         let started = tokio::time::Instant::now();
         let mut calls = Vec::new();
         let result = retry_on_aggregate_conflict::<(), std::io::Error, _, _>(policy, || {
@@ -124,7 +124,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_reloaded_domain_or_unknown_commit_outcome_stops_conflict_retries_immediately() {
-        let policy = AggregateConflictRetryPolicy::new(5, Duration::from_secs(1), Duration::from_secs(1), 0.0).unwrap();
+        let policy = AggregateConflictRetryPolicy::try_new(5, Duration::from_secs(1), Duration::from_secs(1), 0.0).unwrap();
         for terminal in [
             Ok(42),
             Err(AggregateError::Domain(std::io::Error::other("reloaded domain rejection"))),
@@ -162,7 +162,7 @@ mod tests {
 
         assert_eq!(
             policy,
-            AggregateConflictRetryPolicy::new(3, Duration::from_millis(5), Duration::from_millis(50), 0.2).unwrap()
+            AggregateConflictRetryPolicy::try_new(3, Duration::from_millis(5), Duration::from_millis(50), 0.2).unwrap()
         );
         assert_eq!(
             policy.backoff_bounds(0),
@@ -188,7 +188,7 @@ mod tests {
 
     #[test]
     fn nonzero_jitter_does_not_collapse_to_a_constant_delay() {
-        let policy = AggregateConflictRetryPolicy::new(2, Duration::from_secs(2), Duration::from_secs(8), 0.5).unwrap();
+        let policy = AggregateConflictRetryPolicy::try_new(2, Duration::from_secs(2), Duration::from_secs(8), 0.5).unwrap();
         let (lower, upper) = policy.backoff_bounds(1);
         assert_eq!((lower, upper), (Duration::from_secs(1), Duration::from_secs(3)));
         let samples: std::collections::HashSet<_> = (0..128).map(|_| policy.backoff(1)).collect();
@@ -201,17 +201,17 @@ mod tests {
 
     #[test]
     fn retry_policy_rejects_zero_attempts() {
-        assert!(AggregateConflictRetryPolicy::new(0, Duration::ZERO, Duration::ZERO, 0.0).is_err());
-        assert!(AggregateConflictRetryPolicy::new(1, Duration::MAX, Duration::MAX, 0.2).is_err());
-        assert!(AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, f64::NAN).is_err());
-        assert!(AggregateConflictRetryPolicy::new(1, Duration::from_secs(2), Duration::from_secs(1), 0.2).is_err());
+        assert!(AggregateConflictRetryPolicy::try_new(0, Duration::ZERO, Duration::ZERO, 0.0).is_err());
+        assert!(AggregateConflictRetryPolicy::try_new(1, Duration::MAX, Duration::MAX, 0.2).is_err());
+        assert!(AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, f64::NAN).is_err());
+        assert!(AggregateConflictRetryPolicy::try_new(1, Duration::from_secs(2), Duration::from_secs(1), 0.2).is_err());
     }
 
     #[test]
     fn large_representable_backoff_and_tiny_jitter_remain_bounded() {
         let cap = Duration::from_millis(i64::MAX as u64);
         for jitter in [0.0, 1e-20, 0.2, 1.0] {
-            let policy = AggregateConflictRetryPolicy::new(2, cap, cap, jitter).unwrap();
+            let policy = AggregateConflictRetryPolicy::try_new(2, cap, cap, jitter).unwrap();
             let (lower, upper) = policy.backoff_bounds(usize::MAX);
             assert!(lower <= upper && upper <= cap);
             for _ in 0..100 {

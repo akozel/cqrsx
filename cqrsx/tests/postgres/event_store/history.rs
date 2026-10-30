@@ -27,11 +27,11 @@ async fn both_adapters_report_missing_tables_and_row_decode_failures() {
             sqlx::query("DROP TABLE events").execute(&db.pool).await.unwrap();
         }
         let plain = PostgresEventRepository::new(db.pool.clone())
-            .get_events::<TestAggregate>("fault")
+            .events::<TestAggregate>("fault")
             .await;
         assert_sql_error(&plain.unwrap_err(), decode);
         let outbox = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
-            .get_events::<TestAggregate>("fault")
+            .events::<TestAggregate>("fault")
             .await;
         assert_sql_error(&outbox.unwrap_err(), decode);
     }
@@ -41,8 +41,8 @@ async fn both_adapters_report_missing_tables_and_row_decode_failures() {
 mod contracts {
     struct DeltaUpcaster(&'static str, &'static str, fn(Value) -> Value);
     impl cqrsx::cqrs::store::upcaster::EventUpcaster for DeltaUpcaster {
-        fn can_upcast(&self, kind: &str, version: &str) -> bool {
-            kind == "delta" && version == self.0
+        fn can_upcast(&self, format: EventFormat<'_>) -> bool {
+            format.event_type == "delta" && format.event_version == self.0
         }
         fn upcast(&self, mut event: SerializedEvent) -> SerializedEvent {
             event.event_version = self.1.into();
@@ -56,7 +56,7 @@ mod contracts {
     async fn histories_keep_ids_and_types_apart_and_a_broken_row_fails_the_load() {
         let db = Database::new().await;
         let repo = PostgresEventRepository::new(db.pool.clone());
-        assert!(repo.get_events::<Ledger>("empty").await.unwrap().is_empty());
+        assert!(repo.events::<Ledger>("empty").await.unwrap().is_empty());
         let mut expected = HashMap::new();
         for id in ["one", "two"] {
             let events: Vec<_> = (1..=5).map(|i| event_for(id, i, i as i32)).collect();
@@ -65,11 +65,11 @@ mod contracts {
         }
         repo.persist::<OtherLedger>(&[event_for("one", 1, 999)], None).await.unwrap();
         for id in ["one", "two"] {
-            assert_eq!(repo.get_events::<Ledger>(id).await.unwrap(), expected[id]);
-            assert_eq!(repo.get_events_after::<Ledger>(id, 3).await.unwrap(), expected[id][3..]);
+            assert_eq!(repo.events::<Ledger>(id).await.unwrap(), expected[id]);
+            assert_eq!(repo.events_after::<Ledger>(id, 3).await.unwrap(), expected[id][3..]);
         }
         assert_eq!(
-            repo.get_events::<OtherLedger>("one").await.unwrap()[0].aggregate_type,
+            repo.events::<OtherLedger>("one").await.unwrap()[0].aggregate_type,
             OtherLedger::TYPE
         );
         sqlx::query("UPDATE events SET payload = '{}'::json WHERE aggregate_type=$1 AND aggregate_id='one' AND sequence=2")
@@ -78,9 +78,7 @@ mod contracts {
             .await
             .unwrap();
         assert!(matches!(
-            PersistedEventStore::<_, Ledger>::new_event_store(repo)
-                .load_aggregate("one")
-                .await,
+            PersistedEventStore::<_, Ledger>::new(repo).load_aggregate("one").await,
             Err(cqrsx::cqrs::AggregateError::DeserializationError(_))
         ));
         db.close().await;
@@ -100,7 +98,7 @@ mod contracts {
             .persist::<Ledger>(&[original], None)
             .await
             .unwrap();
-        let store = PersistedEventStore::<_, Ledger>::new_event_store(PostgresEventRepository::new(db.pool.clone()))
+        let store = PersistedEventStore::<_, Ledger>::new(PostgresEventRepository::new(db.pool.clone()))
             .with_upcasters(delta_upcasters());
         let loaded = store.load_events("upcast").await.unwrap();
         assert_eq!(SerializedEvent::try_from(&loaded[0]).unwrap(), expected);

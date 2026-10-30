@@ -115,17 +115,19 @@ where
     A: Aggregate,
 {
     async fn load(&self, view_id: &str) -> Result<Option<V>, PersistenceError> {
-        Ok(self.load_with_context(view_id).await?.map(|(view, _)| view))
+        Ok(self.load_with_context(view_id).await?.map(|stored| stored.view))
     }
 
-    async fn load_with_context(&self, view_id: &str) -> Result<Option<(V, ViewContext)>, PersistenceError> {
+    async fn load_with_context(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
         let Some(document) = self.documents().get(view_id).cloned() else {
             return Ok(None);
         };
-        Ok(Some((
-            V::deserialize(document.payload)?,
-            ViewContext::new(view_id.to_owned(), document.version, document.last_sequence),
-        )))
+        Ok(Some(StoredView {
+            id: view_id.to_owned(),
+            version: document.version,
+            last_sequence: document.last_sequence,
+            view: V::deserialize(document.payload)?,
+        }))
     }
 
     async fn update_view(&self, view: V, context: ViewContext) -> Result<(), PersistenceError> {
@@ -202,8 +204,15 @@ mod tests {
             .update_view(Sequences(vec![1]), ViewContext::new("a".into(), 0, 1))
             .await
             .unwrap();
-        let (view, context) = repository.load_with_context("a").await.unwrap().unwrap();
-        assert_eq!((view, context), (Sequences(vec![1]), ViewContext::new("a".into(), 1, 1)));
+        assert_eq!(
+            repository.load_with_context("a").await.unwrap(),
+            Some(StoredView {
+                id: "a".into(),
+                version: 1,
+                last_sequence: 1,
+                view: Sequences(vec![1]),
+            })
+        );
         for stale in [0, 2] {
             assert!(matches!(
                 repository
@@ -244,8 +253,15 @@ mod tests {
             metadata: Default::default(),
         };
         projection.handle("b", &[event]).await.unwrap();
-        let (view, context) = repository.load_with_context("b").await.unwrap().unwrap();
-        assert_eq!((view, context), (Sequences(vec![2, 3]), ViewContext::new("b".into(), 5, 3)));
+        assert_eq!(
+            repository.load_with_context("b").await.unwrap(),
+            Some(StoredView {
+                id: "b".into(),
+                version: 5,
+                last_sequence: 3,
+                view: Sequences(vec![2, 3]),
+            })
+        );
         repository.clear();
         assert!(repository.list().await.unwrap().is_empty());
     }

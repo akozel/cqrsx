@@ -34,7 +34,13 @@ pub fn module(setup: &Setup) -> Result<Module, SetupError> {
         .provide(Arc::new(replay))
         .provide(Arc::new(RebuildState::default()))
         .observe_commands(Arc::new(CommandActivityObserver::new(activity)))
-        .observe_projections(move |projection, owner| Arc::new(ActivityObserver::new(projection, owner, projections.clone())))
+        .observe_projections(move |processor| {
+            Arc::new(ActivityObserver::new(
+                processor.projection,
+                processor.node,
+                projections.clone(),
+            ))
+        })
         .routes(presentation::routes()))
 }
 

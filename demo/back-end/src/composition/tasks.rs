@@ -42,7 +42,7 @@ use cqrsx::{
     cqrs::{
         command::{CommandExecutor, causation::Causation},
         reactions::ReactionsPlanner,
-        testing::{command::TestCommandExecutor, mem_store::MemStore},
+        testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
     },
     engine::{
         Cqrs,

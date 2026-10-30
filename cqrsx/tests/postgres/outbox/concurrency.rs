@@ -76,7 +76,7 @@ async fn stress_outbox_winners_publish_only_their_own_event_snapshot_and_task() 
                 let (event, task, _) = winners[0];
                 let mut expected = if mode == 2 { vec![event_for(&id, 1, 10)] } else { vec![] };
                 expected.push(event.clone());
-                assert_eq!(repo.get_events::<Ledger>(&id).await.unwrap(), expected);
+                assert_eq!(repo.events::<Ledger>(&id).await.unwrap(), expected);
                 let rows = sqlx::query("SELECT * FROM transactional_outbox WHERE aggregate_type=$1 AND aggregate_id=$2")
                     .bind(Ledger::TYPE)
                     .bind(&id)
@@ -90,7 +90,7 @@ async fn stress_outbox_winners_publish_only_their_own_event_snapshot_and_task() 
                 assert_eq!(saved.get::<Value, _>("metadata"), *task.metadata());
                 assert_eq!(saved.get::<i64, _>("aggregate_sequence"), sequence as i64);
                 assert_eq!(saved.get::<String, _>("status"), "pending");
-                let snapshot = repo.get_snapshot::<Ledger>(&id).await.unwrap();
+                let snapshot = repo.snapshot::<Ledger>(&id).await.unwrap();
                 if mode == 0 {
                     assert_eq!(snapshot, None);
                 } else {
@@ -176,7 +176,7 @@ async fn competing_writes_keep_the_winning_event_snapshot_and_tasks_consistent()
         }
         assert_eq!(conflicts, 1);
         let winner = winner.unwrap();
-        let events = reader.get_events::<TestAggregate>(id).await.unwrap();
+        let events = reader.events::<TestAggregate>(id).await.unwrap();
         assert_eq!(events.len(), sequence);
         let (_, winning_task, winning_event) = candidates.iter().find(|(name, _, _)| *name == winner).unwrap();
         assert_eq!(events.last().unwrap(), winning_event);
@@ -190,7 +190,7 @@ async fn competing_writes_keep_the_winning_event_snapshot_and_tasks_consistent()
             .await
             .unwrap();
         assert_eq!(published, vec![winning_task.id()], "the losing write must publish no tasks");
-        let snapshot = reader.get_snapshot::<TestAggregate>(id).await.unwrap();
+        let snapshot = reader.snapshot::<TestAggregate>(id).await.unwrap();
         if let Some(version) = snapshot_version {
             let snapshot = snapshot.unwrap();
             assert_eq!(snapshot.last_sequence, sequence);
@@ -273,8 +273,8 @@ async fn a_conflict_without_a_snapshot_is_a_result_and_with_a_new_snapshot_still
     ));
     assert_eq!(rollbacks(&session, &db.pool).await, start + 2);
     let reader = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    assert_eq!(reader.get_snapshot::<TestAggregate>(id).await.unwrap(), None);
-    assert_eq!(reader.get_events::<TestAggregate>(id).await.unwrap().len(), 1);
+    assert_eq!(reader.snapshot::<TestAggregate>(id).await.unwrap(), None);
+    assert_eq!(reader.events::<TestAggregate>(id).await.unwrap().len(), 1);
     let tasks: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox WHERE id = $1")
         .bind(task.id())
         .fetch_one(&db.pool)

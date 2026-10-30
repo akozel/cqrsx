@@ -28,25 +28,20 @@ pub struct SerializedEvent {
     pub metadata: Value,
 }
 
+/// The type and the version of a serialized event, side by side so that the two strings cannot be swapped: what an
+/// [`EventUpcaster`] decides on.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EventFormat<'a> {
+    pub event_type: &'a str,
+    pub event_version: &'a str,
+}
+
 impl SerializedEvent {
-    /// Create a new [`SerializedEvent`] with the given values.
-    pub fn new(
-        aggregate_id: String,
-        sequence: usize,
-        aggregate_type: String,
-        event_type: String,
-        event_version: String,
-        payload: Value,
-        metadata: Value,
-    ) -> Self {
-        Self {
-            aggregate_id,
-            sequence,
-            aggregate_type,
-            event_type,
-            event_version,
-            payload,
-            metadata,
+    /// The type and the version of this event.
+    pub fn format(&self) -> EventFormat<'_> {
+        EventFormat {
+            event_type: &self.event_type,
+            event_version: &self.event_version,
         }
     }
 
@@ -64,7 +59,7 @@ impl SerializedEvent {
 
     pub(crate) fn upcast(self, upcasters: &[Box<dyn EventUpcaster>]) -> Self {
         upcasters.iter().fold(self, |event, upcaster| {
-            if upcaster.can_upcast(&event.event_type, &event.event_version) {
+            if upcaster.can_upcast(event.format()) {
                 upcaster.upcast(event)
             } else {
                 event
@@ -180,7 +175,7 @@ pub(in crate::cqrs) mod tests {
         #![proptest_config(property_config())]
         #[test]
         fn property_version_chains_match_independent_upgrade_model(initial in 0usize..9, value in -1000i64..1000, increments in prop::collection::vec(-20i64..20, 0..8)) {
-            let original=SerializedEvent::new("🦀".into(),37,Ledger::TYPE.into(),"delta".into(),format!("0.{initial}.0"),serde_json::json!(value),serde_json::json!({"trace":"данные"}));
+            let original=SerializedEvent { aggregate_id: "🦀".into(), sequence: 37, aggregate_type: Ledger::TYPE.into(), event_type: "delta".into(), event_version: format!("0.{initial}.0"), payload: serde_json::json!(value), metadata: serde_json::json!({"trace":"данные"}) };
             let mut upcasters:Vec<Box<dyn EventUpcaster>>=Vec::new();
             for (index,increment) in increments.iter().copied().enumerate() {
                 upcasters.push(Box::new(NumericVersionUpcaster::try_new("delta",&format!("0.{}.0",index+1),Box::new(move |v|serde_json::json!(v.as_i64().unwrap()+increment))).unwrap()));
@@ -217,15 +212,15 @@ pub(in crate::cqrs) mod tests {
     }
     #[test]
     fn upcaster_chain_preserves_identity_metadata_and_uses_each_previous_version() {
-        let original = SerializedEvent::new(
-            "🦀".into(),
-            42,
-            Ledger::TYPE.into(),
-            "delta".into(),
-            "0.1.0".into(),
-            serde_json::json!({"old": 3}),
-            serde_json::json!({"trace": "данные"}),
-        );
+        let original = SerializedEvent {
+            aggregate_id: "🦀".into(),
+            sequence: 42,
+            aggregate_type: Ledger::TYPE.into(),
+            event_type: "delta".into(),
+            event_version: "0.1.0".into(),
+            payload: serde_json::json!({"old": 3}),
+            metadata: serde_json::json!({"trace": "данные"}),
+        };
         let upcasters: Vec<Box<dyn EventUpcaster>> = vec![
             Box::new(
                 NumericVersionUpcaster::try_new(
@@ -272,7 +267,7 @@ pub(in crate::cqrs) mod tests {
     fn typed_envelope_rejects_foreign_aggregate_before_upcasting() {
         struct MustNotRun;
         impl EventUpcaster for MustNotRun {
-            fn can_upcast(&self, _: &str, _: &str) -> bool {
+            fn can_upcast(&self, _: EventFormat<'_>) -> bool {
                 panic!("foreign aggregate reached upcaster")
             }
             fn upcast(&self, _: SerializedEvent) -> SerializedEvent {
@@ -314,8 +309,8 @@ pub(in crate::cqrs) mod tests {
     }
     struct Upgrade(&'static str, &'static str);
     impl EventUpcaster for Upgrade {
-        fn can_upcast(&self, kind: &str, version: &str) -> bool {
-            kind == "delta" && version == self.0
+        fn can_upcast(&self, format: EventFormat<'_>) -> bool {
+            format.event_type == "delta" && format.event_version == self.0
         }
         fn upcast(&self, mut event: SerializedEvent) -> SerializedEvent {
             event.event_version = self.1.into();

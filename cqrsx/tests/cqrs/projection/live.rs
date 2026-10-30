@@ -29,7 +29,7 @@ async fn an_event_committed_before_the_processor_started_is_applied() {
     let node = h.node("n1");
     let status = h.caught_up(&["a"]).await;
     assert_eq!(
-        h.view("a").await.unwrap().0,
+        h.view("a").await.unwrap().view,
         Balance {
             total: 12,
             history: vec![(1, 5), (2, 7)]
@@ -57,7 +57,7 @@ async fn a_crash_while_reading_a_page_loses_nothing() {
     let node = h.node("n2");
     let status = h.caught_up(&["a"]).await;
     assert_eq!(status.owner.as_deref(), Some("n2"), "after the lease of n1 ran out");
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1)]);
     node.stop().await;
 }
 
@@ -69,14 +69,18 @@ async fn a_crash_between_the_view_writes_and_the_advance_applies_nothing_twice()
     let gate = h.checkpoints.gate_before("advance");
     let node = h.node("n1");
     gate.reached().await;
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1)], "written before the advance");
+    assert_eq!(
+        h.view("a").await.unwrap().view.history,
+        [(1, 1)],
+        "written before the advance"
+    );
     assert_eq!(h.status().await.position, Position::START, "not advanced");
     node.crash();
     gate.release();
     let node = h.node("n2");
     h.caught_up(&["a", "b"]).await;
-    let (view, context) = h.view("a").await.unwrap();
-    assert_eq!((view.history, context.version), (vec![(1, 1)], 1), "no second write");
+    let stored = h.view("a").await.unwrap();
+    assert_eq!((stored.view.history, stored.version), (vec![(1, 1)], 1), "no second write");
     assert_eq!(h.views.writes(), 2);
     node.stop().await;
 }
@@ -103,7 +107,7 @@ async fn a_crash_during_the_advance_is_safe_either_way() {
         h.commit("a", 2).await;
         let node = h.node("n2");
         let status = h.caught_up(&["a"]).await;
-        assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2)]);
+        assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2)]);
         assert_eq!(status.applied, 2, "a repeated event is skipped and not counted twice");
         node.stop().await;
     }
@@ -154,7 +158,7 @@ async fn a_failure_of_one_key_moves_the_checkpoint_up_to_the_event_before_it() {
         "failed:balances:connection:c:1"
     );
     h.caught_up(&["a", "b", "c", "d", "e"]).await;
-    assert_eq!(h.view("c").await.unwrap().0.history, [(1, 1), (2, 2)]);
+    assert_eq!(h.view("c").await.unwrap().view.history, [(1, 1), (2, 2)]);
     assert_eq!(h.views.writes(), 5, "the repeated events of a, b, d, e were skipped");
     assert_eq!(
         h.observer.count("rebuilt:"),
@@ -197,13 +201,13 @@ async fn a_poison_event_stalls_only_its_projection_until_an_upcaster_arrives() {
             .is_some_and(|status| status.position == Position::new(3))
     })
     .await;
-    assert_eq!(h.view("b").await.unwrap().0.history, [(1, 1)], "written by the sibling");
+    assert_eq!(h.view("b").await.unwrap().view.history, [(1, 1)], "written by the sibling");
     sibling.stop().await;
     node.stop().await;
     let node = h.node_with(crate::projection::support::NAME, "n2", config(), upcaster());
     let status = h.caught_up(&["a", "b"]).await;
     assert_eq!((status.failures, status.last_error), (0, None));
-    assert_eq!(h.view("p").await.unwrap().0.history, [(1, 0)], "the upcast event");
+    assert_eq!(h.view("p").await.unwrap().view.history, [(1, 0)], "the upcast event");
     node.stop().await;
 }
 
@@ -224,7 +228,7 @@ async fn a_panic_in_the_handler_is_a_failure_of_its_key_only() {
     assert!(h.view("a").await.is_some() && h.view("c").await.is_some() && h.view("b").await.is_none());
     h.caught_up(&["a", "b", "c"]).await;
     assert_eq!(
-        h.view("b").await.unwrap().0.history,
+        h.view("b").await.unwrap().view.history,
         [(1, 1)],
         "the key's worker survived the panic"
     );
@@ -253,7 +257,7 @@ async fn concurrency_bounds_the_keys_in_flight() {
 #[tokio::test(start_paused = true)]
 async fn a_page_smaller_than_a_transaction_is_delivered_whole() {
     let h = Harness::with_config(
-        ProcessorConfig::new(POLL, 1, crate::projection::support::LEASE, DeliveryLimits::default()).unwrap(),
+        ProcessorConfig::try_new(POLL, 1, crate::projection::support::LEASE, DeliveryLimits::default()).unwrap(),
     );
     h.journal
         .inner
@@ -283,18 +287,18 @@ async fn queued_pages_of_one_key_are_handled_in_one_call() {
     h.caught_up(&["a"]).await;
     assert_eq!(h.observer.count("applied:a:"), 3, "one receipt per page");
     assert_eq!(h.views.writes(), 2, "the two queued pages were one handler call");
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2), (3, 3)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2), (3, 3)]);
     node.stop().await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn the_window_is_bounded_by_the_buffer_capacity() {
     let h = Harness::with_config(
-        ProcessorConfig::new(
+        ProcessorConfig::try_new(
             POLL,
             1000,
             crate::projection::support::LEASE,
-            DeliveryLimits::new(3, 32).unwrap(),
+            DeliveryLimits::try_new(3, 32).unwrap(),
         )
         .unwrap(),
     );
@@ -314,7 +318,7 @@ async fn the_window_is_bounded_by_the_buffer_capacity() {
     assert_eq!(h.observer.count("applied:"), 0);
     gate.release();
     h.caught_up(&["a", "b"]).await;
-    assert_eq!(h.view("a").await.unwrap().0.history, [(1, 1), (2, 2), (3, 3)]);
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2), (3, 3)]);
     node.stop().await;
 }
 
@@ -383,13 +387,13 @@ async fn a_commit_costs_one_read_and_neither_the_end_of_the_page_nor_its_receipt
         reads, 1,
         "a page short of its size is the end of the journal; a receipt is no reason to read"
     );
-    assert_eq!(h.view("a").await.unwrap().0.total, 1);
+    assert_eq!(h.view("a").await.unwrap().view.total, 1);
     node.stop().await;
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_full_page_is_followed_at_once_by_the_next_read_and_the_last_short_page_ends_them() {
-    let config = ProcessorConfig::new(POLL, 2, Duration::from_secs(1), DeliveryLimits::default()).unwrap();
+    let config = ProcessorConfig::try_new(POLL, 2, Duration::from_secs(1), DeliveryLimits::default()).unwrap();
     let h = Harness::with_config(config);
     for delta in 1..=5 {
         h.commit("a", delta).await;
@@ -400,7 +404,7 @@ async fn a_full_page_is_followed_at_once_by_the_next_read_and_the_last_short_pag
     })
     .await;
     assert_eq!(reads, 3, "pages of 2, 2 and 1 events: the short one is the last");
-    assert_eq!(h.view("a").await.unwrap().0.total, 15);
+    assert_eq!(h.view("a").await.unwrap().view.total, 15);
     node.stop().await;
 }
 
@@ -416,7 +420,7 @@ async fn a_settle_time_gathers_the_commits_of_a_burst_into_one_page() {
     let node = eager.node("n1");
     eager.run_for(POLL * 2).await;
     let eager_reads = reads_during(&eager, async || burst(&eager).await).await;
-    assert_eq!(eager.view("a").await.unwrap().0.total, 15);
+    assert_eq!(eager.view("a").await.unwrap().view.total, 15);
     node.stop().await;
 
     let patient = Harness::with_config(config().with_settle(SHORT).unwrap());
@@ -424,7 +428,7 @@ async fn a_settle_time_gathers_the_commits_of_a_burst_into_one_page() {
     patient.run_for(POLL * 2).await;
     let patient_reads = reads_during(&patient, async || burst(&patient).await).await;
     assert_eq!(
-        patient.view("a").await.unwrap().0.total,
+        patient.view("a").await.unwrap().view.total,
         15,
         "the settle delays the reads, it loses nothing"
     );
@@ -446,7 +450,7 @@ async fn a_settling_owner_stops_on_shutdown_and_still_sees_a_commit_made_while_i
     tokio::time::sleep(SHORT).await; // the owner is settling now
     h.commit("a", 2).await;
     h.caught_up(&["a"]).await;
-    assert_eq!(h.view("a").await.unwrap().0.total, 3);
+    assert_eq!(h.view("a").await.unwrap().view.total, 3);
     h.commit("a", 4).await;
     tokio::time::sleep(SHORT).await;
     node.stop().await; // the stop interrupts the settle and releases the row

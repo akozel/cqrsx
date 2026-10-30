@@ -177,12 +177,12 @@ async fn bigint_sequences_and_snapshot_versions_round_trip_without_narrowing() {
         .await
         .unwrap();
         assert_eq!(
-            repo.get_events::<Ledger>(&id).await.unwrap().as_slice(),
+            repo.events::<Ledger>(&id).await.unwrap().as_slice(),
             std::slice::from_ref(&event)
         );
-        assert_eq!(repo.get_events_after::<Ledger>(&id, sequence - 1).await.unwrap(), [event]);
-        assert!(repo.get_events_after::<Ledger>(&id, sequence).await.unwrap().is_empty());
-        let snapshot = repo.get_snapshot::<Ledger>(&id).await.unwrap().unwrap();
+        assert_eq!(repo.events_after::<Ledger>(&id, sequence - 1).await.unwrap(), [event]);
+        assert!(repo.events_after::<Ledger>(&id, sequence).await.unwrap().is_empty());
+        let snapshot = repo.snapshot::<Ledger>(&id).await.unwrap().unwrap();
         assert_eq!(snapshot.last_sequence, sequence);
         // Seed only the previous version, without constructing an enormous history.
         sqlx::query("UPDATE snapshots SET current_snapshot=$1 WHERE aggregate_id=$2")
@@ -203,7 +203,7 @@ async fn bigint_sequences_and_snapshot_versions_round_trip_without_narrowing() {
         .await
         .unwrap();
         assert_eq!(
-            repo.get_snapshot::<Ledger>(&id).await.unwrap().unwrap().snapshot_version,
+            repo.snapshot::<Ledger>(&id).await.unwrap().unwrap().snapshot_version,
             sequence
         );
     }
@@ -248,7 +248,7 @@ async fn bigint_sequences_and_snapshot_versions_round_trip_without_narrowing() {
             Err(PersistenceError::UnknownError(_))
         ));
         assert!(matches!(
-            repo.get_events_after::<Ledger>("invalid", sequence).await,
+            repo.events_after::<Ledger>("invalid", sequence).await,
             Err(PersistenceError::UnknownError(_))
         ));
         assert_eq!(database_state(&db.pool).await, before);
@@ -285,13 +285,13 @@ async fn custom_tables_distinguish_optimistic_keys_from_unrelated_unique_constra
         repo.persist::<Ledger>(&[event_for("two", 1, 2)], snapshot("two")).await,
         Err(PersistenceError::UnknownError(_))
     ));
-    assert!(repo.get_events::<Ledger>("two").await.unwrap().is_empty());
+    assert!(repo.events::<Ledger>("two").await.unwrap().is_empty());
     assert!(matches!(
         repo.persist::<Ledger>(&[event_for("one", 2, 2)], snapshot("one")).await,
         Err(PersistenceError::OptimisticLockError)
     ));
-    assert_eq!(repo.get_events::<Ledger>("one").await.unwrap(), [event_for("one", 1, 1)]);
-    assert_eq!(repo.get_snapshot::<Ledger>("one").await.unwrap().unwrap().snapshot_version, 1);
+    assert_eq!(repo.events::<Ledger>("one").await.unwrap(), [event_for("one", 1, 1)]);
+    assert_eq!(repo.snapshot::<Ledger>("one").await.unwrap().unwrap().snapshot_version, 1);
     db.close().await;
 }
 
@@ -303,16 +303,14 @@ async fn every_out_of_range_write_field_is_rejected_before_acquiring_a_connectio
         .unwrap();
     pool.close().await;
     let repo = PostgresEventRepository::new(pool);
-    let event = |sequence| {
-        SerializedEvent::new(
-            "range".into(),
-            sequence,
-            Ledger::TYPE.into(),
-            "event".into(),
-            "1".into(),
-            serde_json::json!({}),
-            serde_json::json!({}),
-        )
+    let event = |sequence| SerializedEvent {
+        aggregate_id: "range".into(),
+        sequence,
+        aggregate_type: Ledger::TYPE.into(),
+        event_type: "event".into(),
+        event_version: "1".into(),
+        payload: serde_json::json!({}),
+        metadata: serde_json::json!({}),
     };
     let overflow = i64::MAX as usize + 1;
     for (events, snapshot) in [

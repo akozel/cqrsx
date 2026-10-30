@@ -56,11 +56,11 @@ impl<Q: TaskQueue + 'static, A: TaskAdapter + 'static> TaskRuntime<Q, A> {
 
 /// Assemble the runtime synchronously, before opening inbound listeners: the executor pauses every retry by the
 /// policy of its task's type (`policies`). Does not perform storage I/O or spawn Tokio tasks. The dispatcher is shared
-/// by every worker: given as it is, or already shared (`Arc`) with the application.
+/// by every worker and may be shared with the application.
 #[cfg(feature = "worker")]
 pub fn prepare<Q: TaskQueue + 'static, A: TaskAdapter + 'static>(
     queue: Arc<Q>,
-    dispatcher: impl Into<Arc<TaskDispatcher<A>>>,
+    dispatcher: Arc<TaskDispatcher<A>>,
     config: TaskRuntimeConfig,
     policies: Policies,
 ) -> TaskRuntime<Q, A> {
@@ -69,7 +69,7 @@ pub fn prepare<Q: TaskQueue + 'static, A: TaskAdapter + 'static>(
     TaskRuntime {
         context: RuntimeContext::new(queue, executor),
         config: worker_config,
-        dispatcher: dispatcher.into(),
+        dispatcher,
     }
 }
 
@@ -137,9 +137,10 @@ mod tests {
         TaskDispatcher::try_new(vec![TrackedAdapter { formats, dropped }]).unwrap()
     }
     fn config(c: usize) -> TaskRuntimeConfig {
-        TaskRuntimeConfig::new(
+        TaskRuntimeConfig::try_new(
             TaskStorageConfig::default(),
-            TaskWorkerPoolConfig::new(c, c, Duration::from_secs(1), Duration::from_secs(15), Duration::from_secs(60)).unwrap(),
+            TaskWorkerPoolConfig::try_new(c, c, Duration::from_secs(1), Duration::from_secs(15), Duration::from_secs(60))
+                .unwrap(),
         )
         .unwrap()
     }
@@ -155,7 +156,7 @@ mod tests {
         let dropped = Arc::new(AtomicUsize::new(0));
         let prepared = prepare(
             queue.clone(),
-            dispatcher(vec![format()], dropped.clone()),
+            Arc::new(dispatcher(vec![format()], dropped.clone())),
             config(3),
             Policies::default(),
         );
@@ -173,7 +174,7 @@ mod tests {
         let dropped = Arc::new(AtomicUsize::new(0));
         let prepared = prepare(
             queue.clone(),
-            dispatcher(vec![format()], dropped.clone()),
+            Arc::new(dispatcher(vec![format()], dropped.clone())),
             config(2),
             Policies::default(),
         );

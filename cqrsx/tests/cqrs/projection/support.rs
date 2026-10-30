@@ -26,7 +26,7 @@ use cqrsx::cqrs::{
         feed::{FeedEntry, Position},
         persisted::PersistedEventStore,
         repository::PersistedEventRepository,
-        serialized_event::SerializedEvent,
+        serialized_event::{EventFormat, SerializedEvent},
         snapshot::{SerializedSnapshot, SnapshotUpdate},
     },
     testing::{
@@ -237,7 +237,7 @@ impl ViewRepository<Balance, Ledger> for Views {
         self.inner.load(view_id).await
     }
 
-    async fn load_with_context(&self, view_id: &str) -> Result<Option<(Balance, ViewContext)>, PersistenceError> {
+    async fn load_with_context(&self, view_id: &str) -> Result<Option<StoredView<Balance>>, PersistenceError> {
         self.inner.load_with_context(view_id).await
     }
 
@@ -487,9 +487,9 @@ impl Journal {
 }
 
 impl PersistedEventRepository for Journal {
-    async fn get_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
+    async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
         self.fault("history").await?;
-        let history = self.inner.get_events::<A>(aggregate_id).await;
+        let history = self.inner.events::<A>(aggregate_id).await;
         let gate = self.faults.lock().unwrap().gates.get("history-read").cloned();
         if let Some(gate) = gate {
             gate.pass().await;
@@ -497,16 +497,16 @@ impl PersistedEventRepository for Journal {
         history
     }
 
-    async fn get_events_after<A: Aggregate>(
+    async fn events_after<A: Aggregate>(
         &self,
         aggregate_id: &str,
         after_sequence: usize,
     ) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        self.inner.get_events_after::<A>(aggregate_id, after_sequence).await
+        self.inner.events_after::<A>(aggregate_id, after_sequence).await
     }
 
-    async fn get_snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
-        self.inner.get_snapshot::<A>(aggregate_id).await
+    async fn snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
+        self.inner.snapshot::<A>(aggregate_id).await
     }
 
     async fn persist<A: Aggregate>(
@@ -636,7 +636,7 @@ pub(crate) struct Harness {
 }
 
 pub(crate) fn config() -> ProcessorConfig {
-    ProcessorConfig::new(
+    ProcessorConfig::try_new(
         POLL,
         1000,
         LEASE,
@@ -655,7 +655,7 @@ impl Harness {
     pub(crate) fn with_config(config: ProcessorConfig) -> Self {
         let journal = MemEventRepository::default();
         let wakeup = CommitWakeup::new();
-        let framework = CqrsFramework::new(PersistedEventStore::new_event_store(journal.clone()), Services::default());
+        let framework = CqrsFramework::new(PersistedEventStore::new(journal.clone()), Services::default());
         let executor = Arc::new(
             CommandExecutorCore::new(framework, AggregateConflictRetryPolicy::default(), LockLimits::default())
                 .with_commit_wakeup(wakeup.clone()),
@@ -724,7 +724,7 @@ impl Harness {
     /// Commits the events of `deltas` of `key` in one transaction, past the command path (a command decides one
     /// event), and wakes the processors as a commit of the executor does.
     pub(crate) async fn commit_together(&self, key: &str, deltas: &[i32]) {
-        let store = Store::new_event_store(self.journal.inner.clone());
+        let store = Store::new(self.journal.inner.clone());
         let context = store.load_aggregate(key).await.unwrap();
         let events = deltas.iter().map(|delta| Delta(*delta)).collect();
         store.commit(events, context, HashMap::new(), &[]).await.unwrap();
@@ -745,7 +745,7 @@ impl Harness {
 
     /// The fold of the key's whole history, `None` without a history.
     pub(crate) async fn fold(&self, key: &str) -> Option<Balance> {
-        let store = PersistedEventStore::<_, Ledger>::new_event_store(self.journal.inner.clone());
+        let store = PersistedEventStore::<_, Ledger>::new(self.journal.inner.clone());
         let events = store.load_events(key).await.unwrap();
         if events.is_empty() {
             return None;
@@ -757,7 +757,7 @@ impl Harness {
         Some(balance)
     }
 
-    pub(crate) async fn view(&self, key: &str) -> Option<(Balance, ViewContext)> {
+    pub(crate) async fn view(&self, key: &str) -> Option<StoredView<Balance>> {
         self.views.load_with_context(key).await.unwrap()
     }
 
@@ -777,7 +777,7 @@ impl Harness {
             return false;
         }
         for key in keys {
-            if self.view(key).await.map(|(view, _)| view) != self.fold(key).await {
+            if self.view(key).await.map(|stored| stored.view) != self.fold(key).await {
                 return false;
             }
         }
@@ -824,8 +824,8 @@ impl Harness {
 pub(crate) struct Heal;
 
 impl cqrsx::cqrs::store::upcaster::EventUpcaster for Heal {
-    fn can_upcast(&self, event_type: &str, event_version: &str) -> bool {
-        event_type == "delta" && event_version == "0"
+    fn can_upcast(&self, format: EventFormat<'_>) -> bool {
+        format.event_type == "delta" && format.event_version == "0"
     }
 
     fn upcast(&self, mut event: SerializedEvent) -> SerializedEvent {

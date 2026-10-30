@@ -74,7 +74,7 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
     }
     for (id, value, sequence, snapshot) in [("old", 30, 3, 1), ("shared", 40, 4, 2), ("local", 7, 3, 1)] {
         let repository = PostgresEventRepository::new(db.pool.clone());
-        let stored = repository.get_events::<State>(id).await.unwrap();
+        let stored = repository.events::<State>(id).await.unwrap();
         for event in stored {
             let found = json!({"aggregate_type":event.aggregate_type,"aggregate_id":event.aggregate_id,"sequence":event.sequence,"event_type":event.event_type,"event_version":event.event_version,"payload":event.payload,"metadata":event.metadata});
             let expected = fixture["events"]
@@ -85,19 +85,17 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
                 .unwrap();
             assert_eq!(&found, expected);
         }
-        let store = PersistedEventStore::<_, State>::new_snapshot_store(repository, std::num::NonZeroUsize::new(2).unwrap());
+        let store = PersistedEventStore::<_, State>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
         let context = store.load_aggregate(id).await.unwrap();
         assert_eq!(context.aggregate.value, value);
         assert_eq!(context.current_sequence, sequence);
         assert_eq!(context.snapshot_version, Some(snapshot));
         assert_eq!(store.load_events(id).await.unwrap().len(), sequence);
-        let events_only = PersistedEventStore::<_, State>::new_event_store(PostgresEventRepository::new(db.pool.clone()));
+        let events_only = PersistedEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()));
         assert_eq!(events_only.load_aggregate(id).await.unwrap().aggregate.value, value);
     }
-    let store = PersistedEventStore::<_, State>::new_snapshot_store(
-        PostgresEventRepository::new(db.pool.clone()),
-        std::num::NonZeroUsize::new(2).unwrap(),
-    );
+    let store = PersistedEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
+        .with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
     let framework = CqrsFramework::new(store, ());
     framework
         .execute_with_metadata(
@@ -116,10 +114,8 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
     assert_eq!(row.get::<String, _>("event_version"), "1");
     assert_eq!(row.get::<Value, _>("payload"), json!({"ValueSet":{"value":50}}));
     assert_eq!(row.get::<Value, _>("metadata"), json!({"correlation_id":"after-fork"}));
-    let store = PersistedEventStore::<_, State>::new_snapshot_store(
-        PostgresEventRepository::new(db.pool.clone()),
-        std::num::NonZeroUsize::new(2).unwrap(),
-    );
+    let store = PersistedEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
+        .with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
     let context = store.load_aggregate("old").await.unwrap();
     assert_eq!(context.aggregate.value, 50);
     assert_eq!(context.current_sequence, 4);

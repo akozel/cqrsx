@@ -40,7 +40,7 @@ mod tests {
 
     #[test]
     fn announce_concert_happy_path() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given_no_previous_events()
             .when(announce())
             .then_expect_event(announced());
@@ -48,7 +48,7 @@ mod tests {
 
     #[test]
     fn r2_rejects_a_second_announcement() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(announce())
             .then_expect_error(ConcertError::AlreadyAnnounced);

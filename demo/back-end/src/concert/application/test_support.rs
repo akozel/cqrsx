@@ -23,7 +23,7 @@ use cqrsx::{
         reactions::ReactionsPlanner,
         store::EventStore,
         testing::{
-            command::TestCommandExecutor,
+            command_executor::TestCommandExecutor,
             mem_store::{MemStore, MemStoreAggregateContext},
         },
     },
@@ -54,7 +54,7 @@ pub struct Harness<S: EventStore<Concert>> {
 pub fn harness<S>(store: S) -> Harness<S>
 where
     S: EventStore<Concert> + 'static,
-    S::AC: Send,
+    S::Context: Send,
 {
     let activity = Arc::new(ActivityHub::new(64, 64));
     let executor = TestCommandExecutor::new(store, ConcertRules::default())
@@ -66,7 +66,7 @@ where
 impl<S> Harness<S>
 where
     S: EventStore<Concert> + 'static,
-    S::AC: Send,
+    S::Context: Send,
 {
     /// Runs `command` on the concert under `metadata`, as the HTTP handler does.
     pub async fn execute(&self, concert_id: &ConcertId, command: ConcertCommand, metadata: CommandMetadata) -> Answer {
@@ -102,13 +102,13 @@ impl ProbeStore {
 }
 
 impl EventStore<Concert> for ProbeStore {
-    type AC = MemStoreAggregateContext<Concert>;
+    type Context = MemStoreAggregateContext<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {
         self.inner.load_events(id).await
     }
 
-    async fn load_aggregate(&self, id: &str) -> Result<Self::AC, AggregateError<ConcertError>> {
+    async fn load_aggregate(&self, id: &str) -> Result<Self::Context, AggregateError<ConcertError>> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         self.inner.load_aggregate(id).await
     }
@@ -116,7 +116,7 @@ impl EventStore<Concert> for ProbeStore {
     async fn commit(
         &self,
         events: Vec<ConcertEvent>,
-        context: Self::AC,
+        context: Self::Context,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
     ) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {

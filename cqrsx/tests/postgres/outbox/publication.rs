@@ -65,9 +65,9 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
         .execute(&db.pool)
         .await
         .unwrap();
-    assert_eq!(repo.get_events::<TestAggregate>("batch").await.unwrap().len(), 1);
+    assert_eq!(repo.events::<TestAggregate>("batch").await.unwrap().len(), 1);
     assert_eq!(
-        repo.get_snapshot::<TestAggregate>("batch").await.unwrap().unwrap().aggregate,
+        repo.snapshot::<TestAggregate>("batch").await.unwrap().unwrap().aggregate,
         json!({"state": "original"})
     );
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox")
@@ -110,12 +110,7 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
         .unwrap();
     assert_eq!(row(&db.pool, next_task.id()).await.get::<i64, _>("aggregate_sequence"), 2);
     assert_eq!(
-        next_repo
-            .get_snapshot::<TestAggregate>("batch")
-            .await
-            .unwrap()
-            .unwrap()
-            .aggregate,
+        next_repo.snapshot::<TestAggregate>("batch").await.unwrap().unwrap().aggregate,
         json!({"state": "next"})
     );
     assert!(
@@ -124,7 +119,7 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
             .await
             .is_err()
     );
-    assert!(new_task().scheduled(TaskSchedule::After(Duration::MAX)).is_err());
+    assert!(new_task().with_schedule(TaskSchedule::After(Duration::MAX)).is_err());
     // A duplicate task ID is not an optimistic aggregate conflict. The whole
     // statement still rolls its otherwise valid new event back.
     assert!(matches!(
@@ -132,7 +127,7 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
             .await,
         Err(PersistenceError::UnknownError(_))
     ));
-    assert!(repo.get_events::<TestAggregate>("duplicate-task").await.unwrap().is_empty());
+    assert!(repo.events::<TestAggregate>("duplicate-task").await.unwrap().is_empty());
     db.close().await;
 }
 
@@ -160,21 +155,21 @@ async fn persists_events_and_snapshot_without_implicit_outbox() {
 
     assert_eq!(
         repository
-            .get_events::<StreamAggregate>(AGGREGATE_ID)
+            .events::<StreamAggregate>(AGGREGATE_ID)
             .await
             .expect("events must load"),
         events.clone()
     );
     assert_eq!(
         repository
-            .get_events_after::<StreamAggregate>(AGGREGATE_ID, 0)
+            .events_after::<StreamAggregate>(AGGREGATE_ID, 0)
             .await
             .expect("events after sequence one must load"),
         events
     );
     assert_eq!(
         repository
-            .get_snapshot::<StreamAggregate>(AGGREGATE_ID)
+            .snapshot::<StreamAggregate>(AGGREGATE_ID)
             .await
             .expect("snapshot must load"),
         Some(SerializedSnapshot {
@@ -231,7 +226,7 @@ async fn updates_snapshot_for_a_later_event_batch() {
 
     assert_eq!(
         repository
-            .get_snapshot::<StreamAggregate>(AGGREGATE_ID)
+            .snapshot::<StreamAggregate>(AGGREGATE_ID)
             .await
             .expect("snapshot must load"),
         Some(SerializedSnapshot {
@@ -308,6 +303,6 @@ async fn rejects_multi_event_snapshot_only_and_tasks_without_event_before_writin
     );
     assert_eq!(row_count(&database.pool, "events").await, 0);
     assert_eq!(row_count(&database.pool, "transactional_outbox").await, 0);
-    assert_eq!(repository.get_snapshot::<StreamAggregate>(AGGREGATE_ID).await.unwrap(), None);
+    assert_eq!(repository.snapshot::<StreamAggregate>(AGGREGATE_ID).await.unwrap(), None);
     database.close().await;
 }

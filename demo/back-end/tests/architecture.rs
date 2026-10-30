@@ -820,7 +820,7 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
         "use cqrsx::cqrs::command::CommandInfo;\n",
         "use cqrsx::cqrs::command::observer::CommandObserver;\n",
         "use cqrsx::cqrs::CommitReport;\n",
-        "use cqrsx::cqrs::testing::command::TestCommandExecutor;\n",
+        "use cqrsx::cqrs::testing::command_executor::TestCommandExecutor;\n",
         "use cqrsx::postgres::command::PostgresCommandExecutor;\n",
         "use cqrsx::engine::build::Builder;\n",
     ] {

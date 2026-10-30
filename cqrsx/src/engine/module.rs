@@ -22,13 +22,38 @@ use std::{
     sync::Arc,
 };
 
+/// The processor an observer of [`Module::observe_projections`] is made for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ObservedProcessor<'a> {
+    /// The name of the processor's view, [`View::NAME`].
+    pub projection: &'static str,
+    /// The node the processor runs on: the owner of its checkpoint while it holds the lease.
+    pub node: &'a str,
+}
+
 /// The observer of the processor of a view, made from the view's name and the node's (the owner of its checkpoint).
-pub(crate) type ProjectionObservers = Arc<dyn Fn(&'static str, &str) -> Arc<dyn ProjectionObserver> + Send + Sync>;
+pub(crate) type ProjectionObservers = Arc<dyn Fn(ObservedProcessor<'_>) -> Arc<dyn ProjectionObserver> + Send + Sync>;
 
 type Bind = fn(Policies, PolicyName) -> Result<Policies, PolicyError>;
 
+/// A policy of [`Module::policy`].
+pub(crate) struct PolicyEntry {
+    pub(crate) name: PolicyName,
+    pub(crate) retry: Retry,
+    pub(crate) max_attempts: i32,
+}
+
 /// A task type: its handler and the policy it is bound to.
-type TaskRegistration = (Result<BoxedTaskAdapter, TaskFormatError>, Option<(PolicyName, Bind)>);
+pub(crate) struct TaskRegistration {
+    pub(crate) adapter: Result<BoxedTaskAdapter, TaskFormatError>,
+    pub(crate) binding: Option<PolicyBinding>,
+}
+
+/// The policy a task type is bound to, and how its payload type binds itself.
+pub(crate) struct PolicyBinding {
+    pub(crate) name: PolicyName,
+    pub(crate) bind: Bind,
+}
 
 /// What one part of an application plugs into the engine; the engine checks it when it is built:
 /// - an aggregate type with its rules, whose reactions plan the tasks of its decisions ([`aggregate`](Self::aggregate));
@@ -42,7 +67,7 @@ pub struct Module {
     pub(crate) name: &'static str,
     pub(crate) aggregates: Vec<AggregateEntry>,
     pub(crate) views: Vec<ViewEntry>,
-    pub(crate) policies: Vec<(PolicyName, Retry, i32)>,
+    pub(crate) policies: Vec<PolicyEntry>,
     pub(crate) tasks: Vec<TaskRegistration>,
     pub(crate) dependencies: Dependencies,
     pub(crate) command_observers: Vec<Arc<dyn AnyCommandObserver>>,
@@ -108,7 +133,11 @@ impl Module {
 
     /// The policy `name`: the pause before a retry and the attempt budget of its task types.
     pub fn policy(mut self, name: PolicyName, retry: Retry, max_attempts: i32) -> Self {
-        self.policies.push((name, retry, max_attempts));
+        self.policies.push(PolicyEntry {
+            name,
+            retry,
+            max_attempts,
+        });
         self
     }
 
@@ -128,7 +157,7 @@ impl Module {
     /// engine.
     pub fn observe_projections(
         mut self,
-        observers: impl Fn(&'static str, &str) -> Arc<dyn ProjectionObserver> + Send + Sync + 'static,
+        observers: impl Fn(ObservedProcessor<'_>) -> Arc<dyn ProjectionObserver> + Send + Sync + 'static,
     ) -> Self {
         self.projection_observers.push(Arc::new(observers));
         self
@@ -146,13 +175,19 @@ pub struct TaskEntry {
 impl TaskEntry {
     /// The task type waits the pauses and gets the attempts of the policy `name`.
     pub fn policy(mut self, name: PolicyName) -> Module {
-        self.module.tasks.push((self.adapter, Some((name, self.bind))));
+        self.module.tasks.push(TaskRegistration {
+            adapter: self.adapter,
+            binding: Some(PolicyBinding { name, bind: self.bind }),
+        });
         self.module
     }
 
     /// The task type keeps the engine's defaults: the default budget, the queue's redelivery backoff.
     pub fn without_policy(mut self) -> Module {
-        self.module.tasks.push((self.adapter, None));
+        self.module.tasks.push(TaskRegistration {
+            adapter: self.adapter,
+            binding: None,
+        });
         self.module
     }
 }

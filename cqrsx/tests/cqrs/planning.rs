@@ -23,7 +23,7 @@ use cqrsx::{
             serialized_event::SerializedEvent,
             snapshot::{SerializedSnapshot, SnapshotUpdate},
         },
-        testing::{command::TestCommandExecutor, mem_event_repository::MemEventRepository},
+        testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
     },
     task::{
         NewTask,
@@ -324,25 +324,25 @@ impl Interfering {
 }
 
 impl PersistedEventRepository for Interfering {
-    async fn get_events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
+    async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
         if let Some(gate) = &self.gate
             && self.gated.fetch_add(1, Ordering::SeqCst) < 2
         {
             gate.wait().await;
         }
-        self.inner.get_events::<A>(aggregate_id).await
+        self.inner.events::<A>(aggregate_id).await
     }
 
-    async fn get_events_after<A: Aggregate>(
+    async fn events_after<A: Aggregate>(
         &self,
         aggregate_id: &str,
         after_sequence: usize,
     ) -> Result<Vec<SerializedEvent>, PersistenceError> {
-        self.inner.get_events_after::<A>(aggregate_id, after_sequence).await
+        self.inner.events_after::<A>(aggregate_id, after_sequence).await
     }
 
-    async fn get_snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
-        self.inner.get_snapshot::<A>(aggregate_id).await
+    async fn snapshot<A: Aggregate>(&self, aggregate_id: &str) -> Result<Option<SerializedSnapshot>, PersistenceError> {
+        self.inner.snapshot::<A>(aggregate_id).await
     }
 
     async fn persist<A: Aggregate>(
@@ -385,7 +385,7 @@ impl PersistedEventRepository for Interfering {
 }
 
 fn no_delay(attempts: usize) -> AggregateConflictRetryPolicy {
-    AggregateConflictRetryPolicy::new(attempts, Duration::ZERO, Duration::ZERO, 0.0).unwrap()
+    AggregateConflictRetryPolicy::try_new(attempts, Duration::ZERO, Duration::ZERO, 0.0).unwrap()
 }
 
 fn ledger_executor(
@@ -393,7 +393,7 @@ fn ledger_executor(
     attempts: usize,
 ) -> CommandExecutorCore<Ledger, PersistedEventStore<Interfering, Ledger>> {
     CommandExecutorCore::new(
-        CqrsFramework::new(PersistedEventStore::new_event_store(journal), Services::default()),
+        CqrsFramework::new(PersistedEventStore::new(journal), Services::default()),
         no_delay(attempts),
         LockLimits::default(),
     )
@@ -402,7 +402,7 @@ fn ledger_executor(
 
 /// The balance of `id` after the journal's first `sequence` events.
 async fn balance_at(journal: &MemEventRepository, id: &str, sequence: usize) -> i64 {
-    let events = journal.get_events::<Ledger>(id).await.unwrap();
+    let events = journal.events::<Ledger>(id).await.unwrap();
     events
         .iter()
         .take(sequence)

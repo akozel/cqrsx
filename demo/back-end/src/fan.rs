@@ -102,7 +102,7 @@ mod tests {
         if one_second_handler {
             let (demo, second) = (settings.task_runtime(), Duration::from_secs(1));
             let worker = demo.worker_pool();
-            let worker = TaskWorkerPoolConfig::new(
+            let worker = TaskWorkerPoolConfig::try_new(
                 worker.concurrency(),
                 worker.buffer_capacity(),
                 worker.poll_interval(),
@@ -110,9 +110,10 @@ mod tests {
                 worker.lease_duration(),
             )
             .unwrap();
-            let runtime = TaskRuntimeConfig::new(demo.storage().clone(), worker).expect("a one-second handler timeout validates");
-            let waits_less = LockLimits::new(Duration::from_millis(500), 128).unwrap();
-            settings = Settings::new(settings.snapshot_every().get(), waits_less, settings.processor(), runtime).unwrap();
+            let runtime =
+                TaskRuntimeConfig::try_new(demo.storage().clone(), worker).expect("a one-second handler timeout validates");
+            let waits_less = LockLimits::try_new(Duration::from_millis(500), 128).unwrap();
+            settings = Settings::try_new(settings.snapshot_every(), waits_less, settings.processor(), runtime).unwrap();
         }
         mail_settings(&Setup::new("ENCORE", |_| None, settings)).unwrap().timeout
     }

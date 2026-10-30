@@ -37,7 +37,7 @@ async fn two_live_workers_complete_every_supported_task_and_quarantine_bad_paylo
     let dispatcher = || TaskDispatcher::try_new(vec![DummyHandler(handled.clone())]).unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
-    let config = TaskWorkerPoolConfig::new(
+    let config = TaskWorkerPoolConfig::try_new(
         2,
         2,
         Duration::from_millis(10),
@@ -45,12 +45,12 @@ async fn two_live_workers_complete_every_supported_task_and_quarantine_bad_paylo
         TaskWorkerPoolConfig::default().lease_duration(),
     )
     .unwrap();
-    let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), config).unwrap();
+    let config = TaskRuntimeConfig::try_new(TaskStorageConfig::default(), config).unwrap();
     // A startup failure must leave existing durable work unclaimed: a dispatcher that cannot be built never runs.
     let failed = TaskDispatcher::<DummyHandler>::try_new(vec![]);
     assert!(matches!(failed, Err(TaskDispatcherError::Empty)));
-    let left = prepare_task_runtime(db.pool.clone(), dispatcher(), config.clone(), Policies::default());
-    let right = prepare_task_runtime(db.pool.clone(), dispatcher(), config, Policies::default());
+    let left = prepare_task_runtime(db.pool.clone(), Arc::new(dispatcher()), config.clone(), Policies::default());
+    let right = prepare_task_runtime(db.pool.clone(), Arc::new(dispatcher()), config, Policies::default());
     for task in [&first, &second, &bad] {
         assert_worker_state(&db.pool, task.id(), "pending", 0, None).await;
     }
@@ -135,10 +135,10 @@ async fn one_worker_pool_routes_two_registered_task_types() {
     let stop = shutdown.clone();
     let prepared = prepare_task_runtime(
         db.pool.clone(),
-        dispatcher,
-        TaskRuntimeConfig::new(
+        Arc::new(dispatcher),
+        TaskRuntimeConfig::try_new(
             TaskStorageConfig::default(),
-            TaskWorkerPoolConfig::new(
+            TaskWorkerPoolConfig::try_new(
                 2,
                 2,
                 Duration::from_millis(10),
@@ -231,7 +231,7 @@ async fn old_terminal_tasks_are_retained_while_old_pending_and_processing_tasks_
     assert_eq!(terminal_history(&db.pool, &terminal).await, before);
     let handled = Arc::new(AtomicUsize::new(0));
     let dispatcher = TaskDispatcher::try_new(vec![CountingAdapter(handled.clone())]).unwrap();
-    let workers = TaskWorkerPoolConfig::new(
+    let workers = TaskWorkerPoolConfig::try_new(
         1,
         1,
         Duration::from_millis(10),
@@ -239,8 +239,8 @@ async fn old_terminal_tasks_are_retained_while_old_pending_and_processing_tasks_
         Duration::from_secs(60),
     )
     .unwrap();
-    let config = TaskRuntimeConfig::new(TaskStorageConfig::default(), workers).unwrap();
-    let prepared = prepare_task_runtime(db.pool.clone(), dispatcher, config, Policies::default());
+    let config = TaskRuntimeConfig::try_new(TaskStorageConfig::default(), workers).unwrap();
+    let prepared = prepare_task_runtime(db.pool.clone(), Arc::new(dispatcher), config, Policies::default());
     let shutdown = CancellationToken::new();
     let runtime = tokio::spawn(prepared.run(shutdown.clone()));
     let progress = tokio::time::timeout(Duration::from_secs(10), async {

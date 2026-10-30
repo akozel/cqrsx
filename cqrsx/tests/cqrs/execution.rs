@@ -99,11 +99,11 @@ mod contracts {
         failure: Option<&'static str>,
     }
     impl EventStore<Ledger> for Store {
-        type AC = MemStoreAggregateContext<Ledger>;
+        type Context = MemStoreAggregateContext<Ledger>;
         async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
             self.inner.load_events(id).await
         }
-        async fn load_aggregate(&self, id: &str) -> Result<Self::AC, AggregateError<Rejected>> {
+        async fn load_aggregate(&self, id: &str) -> Result<Self::Context, AggregateError<Rejected>> {
             self.calls.lock().unwrap().push("load");
             if self.failure == Some("load") {
                 return Err(AggregateError::DatabaseConnectionError("load failed".into()));
@@ -113,7 +113,7 @@ mod contracts {
         async fn commit(
             &self,
             events: Vec<Delta>,
-            mut context: Self::AC,
+            context: Self::Context,
             metadata: HashMap<String, String>,
             tasks: &[NewTask],
         ) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
@@ -132,7 +132,7 @@ mod contracts {
         S: EventStore<Ledger> + Send + Sync,
     {
         let services = Services(calls.clone());
-        let one_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
+        let one_attempt = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
         CommandExecutorCore::new(CqrsFramework::new(store, services), one_attempt, LockLimits::default())
             .with_commit_wakeup(wakeup.clone())
     }

@@ -45,7 +45,7 @@ pub(crate) fn expand_command(input: DeriveInput) -> syn::Result<TokenStream> {
     };
     let labels = labels
         .iter()
-        .map(|(key, field)| quote! { (#key, ::std::string::ToString::to_string(&self.#field)) });
+        .map(|(key, field)| quote! { ::cqrsx::cqrs::command::Label { name: #key, value: ::std::string::ToString::to_string(&self.#field) } });
     let ident = &input.ident;
     let name = LitStr::new(&ident.unraw().to_string(), ident.span());
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
@@ -58,7 +58,7 @@ pub(crate) fn expand_command(input: DeriveInput) -> syn::Result<TokenStream> {
             fn command_id(&self) -> ::core::option::Option<::cqrsx::__private::Uuid> {
                 #command_id
             }
-            fn labels(&self) -> ::std::vec::Vec<(&'static str, ::std::string::String)> {
+            fn labels(&self) -> ::std::vec::Vec<::cqrsx::cqrs::command::Label> {
                 ::std::vec![#(#labels),*]
             }
         }
@@ -149,7 +149,7 @@ pub(crate) fn expand_commands(input: DeriveInput) -> syn::Result<TokenStream> {
             fn command_id(&self) -> ::core::option::Option<::cqrsx::__private::Uuid> {
                 #command_id
             }
-            fn labels(&self) -> ::std::vec::Vec<(&'static str, ::std::string::String)> {
+            fn labels(&self) -> ::std::vec::Vec<::cqrsx::cqrs::command::Label> {
                 #labels
             }
         }
@@ -189,10 +189,10 @@ mod tests {
                 fn command_id(&self) -> ::core::option::Option<::cqrsx::__private::Uuid> {
                     ::core::option::Option::Some(self.cancellation_id)
                 }
-                fn labels(&self) -> ::std::vec::Vec<(&'static str, ::std::string::String)> {
+                fn labels(&self) -> ::std::vec::Vec<::cqrsx::cqrs::command::Label> {
                     ::std::vec![
-                        ("fan_id", ::std::string::ToString::to_string(&self.fan_id)),
-                        ("type", ::std::string::ToString::to_string(&self.r#type))
+                        ::cqrsx::cqrs::command::Label { name: "fan_id", value: ::std::string::ToString::to_string(&self.fan_id) },
+                        ::cqrsx::cqrs::command::Label { name: "type", value: ::std::string::ToString::to_string(&self.r#type) }
                     ]
                 }
             }
@@ -299,7 +299,7 @@ mod tests {
                         Self::CancelBooking(ref command) => ::cqrsx::cqrs::command::CommandInfo::command_id(command),
                     }
                 }
-                fn labels(&self) -> ::std::vec::Vec<(&'static str, ::std::string::String)> {
+                fn labels(&self) -> ::std::vec::Vec<::cqrsx::cqrs::command::Label> {
                     match *self {
                         Self::BookSeat(ref command) => ::cqrsx::cqrs::command::CommandInfo::labels(command),
                         Self::CancelBooking(ref command) => ::cqrsx::cqrs::command::CommandInfo::labels(command),

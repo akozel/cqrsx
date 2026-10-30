@@ -75,7 +75,7 @@ mod tests {
     #[test]
     fn book_seat_happy_path_records_zone_and_price() {
         let id = Uuid::new_v4();
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(book("b4", "fox", "Fox", id))
             .then_expect_event(ConcertEvent::SeatBooked(SeatBooked {
@@ -90,7 +90,7 @@ mod tests {
 
     #[test]
     fn r1_rejects_booking_in_an_unannounced_concert() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given_no_previous_events()
             .when(book("B4", "fox", "Fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::ConcertNotFound);
@@ -98,7 +98,7 @@ mod tests {
 
     #[test]
     fn r3_rejects_an_unknown_seat() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(book("Z9", "fox", "Fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::UnknownSeat { seat: "Z9".into() });
@@ -107,7 +107,7 @@ mod tests {
     /// Sold-out wins over "seat taken": on a full hall even a taken seat is reported as sold out.
     #[test]
     fn r4_rejects_booking_when_sold_out() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(full_house())
             .when(book("B4", "fox", "Fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::SoldOut);
@@ -115,7 +115,7 @@ mod tests {
 
     #[test]
     fn r5_rejects_a_taken_seat() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(vec![announced(), booked("B4", "fox", "Fox", Uuid::new_v4())])
             .when(book("B4", "panda", "Panda", Uuid::new_v4()))
             .then_expect_error(ConcertError::SeatTaken {
@@ -133,24 +133,24 @@ mod tests {
             booked("A3", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()),
             booked("A4", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()),
         ];
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(history.clone())
             .when(book("A5", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()))
             .then_expect_error(ConcertError::TicketLimit { limit: 4 });
         // Another fan is unaffected.
         assert!(
-            TestFramework::<Concert>::with(rules())
+            TestFramework::<Concert>::new(rules())
                 .given(history.clone())
                 .when(book("A5", "fox", "Fox", Uuid::new_v4()))
-                .inspect_result()
+                .into_result()
                 .is_ok()
         );
         // A looser limit from the rules accepts the fifth ticket.
         assert!(
-            TestFramework::<Concert>::with(ConcertRules { ticket_limit: 5 })
+            TestFramework::<Concert>::new(ConcertRules { ticket_limit: 5 })
                 .given(history)
                 .when(book("A5", "arbitrage-bot", "Arbitrage Bot", Uuid::new_v4()))
-                .inspect_result()
+                .into_result()
                 .is_ok()
         );
     }
@@ -170,10 +170,10 @@ mod tests {
             }),
         ];
         assert!(
-            TestFramework::<Concert>::with(rules())
+            TestFramework::<Concert>::new(rules())
                 .given(history)
                 .when(book("B4", "panda", "Panda", Uuid::new_v4()))
-                .inspect_result()
+                .into_result()
                 .is_ok()
         );
     }

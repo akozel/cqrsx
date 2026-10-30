@@ -36,7 +36,7 @@ use std::{any::Any, collections::HashMap};
 ///         observer::{CommandObserver, CommandReport, Outcome},
 ///     },
 ///     event::DomainEvent,
-///     testing::{command::TestCommandExecutor, mem_store::MemStore},
+///     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
 /// };
 /// use serde::{Deserialize, Serialize};
 /// use std::sync::{Arc, Mutex};
@@ -199,7 +199,10 @@ impl<'a> AnyCommandReport<'a> {
 mod tests {
     use super::*;
     use crate::{
-        cqrs::{command::decide::Decide, event::DomainEvent},
+        cqrs::{
+            command::{Label, decide::Decide},
+            event::DomainEvent,
+        },
         task::format::TaskFormat,
     };
     use serde::{Deserialize, Serialize};
@@ -230,8 +233,11 @@ mod tests {
             "Book"
         }
 
-        fn labels(&self) -> Vec<(&'static str, String)> {
-            vec![("fan_id", "fox".into())]
+        fn labels(&self) -> Vec<Label> {
+            vec![Label {
+                name: "fan_id",
+                value: "fox".into(),
+            }]
         }
     }
 
@@ -320,7 +326,7 @@ mod tests {
             (Booked.event_type(), Booked.event_version()),
             ("booked".to_owned(), "1".to_owned())
         );
-        let head = r#"hall 7 Some(7) Book [("fan_id", "fox")] Some("ui")"#;
+        let head = r#"hall 7 Some(7) Book [Label { name: "fan_id", value: "fox" }] Some("ui")"#;
         assert_eq!(
             *log.0.lock().unwrap(),
             [

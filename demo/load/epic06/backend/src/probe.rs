@@ -98,8 +98,8 @@ mod tests {
         assert!(pinged.tasks.is_empty());
         assert_eq!(cqrs.run_tasks().await, 0);
         assert!(cqrs.views().keys().is_empty(), "no view");
-        assert!(cqrs.describe().contains(&("ENCORE_LOAD_VIEWS".to_owned(), "0".to_owned())));
-        assert!(cqrs.describe().contains(&("ENCORE_LOAD_TASKS".to_owned(), "0".to_owned())));
+        assert_eq!(cqrs.describe().get("ENCORE_LOAD_VIEWS").map(String::as_str), Some("0"));
+        assert_eq!(cqrs.describe().get("ENCORE_LOAD_TASKS").map(String::as_str), Some("0"));
     }
 
     /// The whole path the stand drives: a ping commits its event with its tasks, every view folds the event, every task

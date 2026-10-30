@@ -149,14 +149,10 @@ async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_
     assert_eq!(rejected, 1, "the retry must decide against the committed aggregate state");
     let winner = winner.unwrap();
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    let events = repository.get_events::<CommandAggregate>("contended").await.unwrap();
+    let events = repository.events::<CommandAggregate>("contended").await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].payload, json!({"Recorded": {"values": [winner]}}));
-    let snapshot = repository
-        .get_snapshot::<CommandAggregate>("contended")
-        .await
-        .unwrap()
-        .unwrap();
+    let snapshot = repository.snapshot::<CommandAggregate>("contended").await.unwrap().unwrap();
     assert_eq!(snapshot.last_sequence, 1);
     assert_eq!(snapshot.aggregate, json!({"values": [winner]}));
     let published: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM transactional_outbox")
@@ -191,16 +187,10 @@ async fn planned_work_publishes_atomically_and_rejections_write_nothing() {
         report.tasks.iter().map(NewTask::id).collect::<Vec<_>>(),
         [derived_id(&causation, "accepted")]
     );
-    let events = repository.get_events::<CommandAggregate>("accepted").await.unwrap();
+    let events = repository.events::<CommandAggregate>("accepted").await.unwrap();
     assert_eq!(events.len(), 1);
     assert_eq!(events[0].payload, json!({"Recorded": {"values": ["first"]}}));
-    assert!(
-        repository
-            .get_snapshot::<CommandAggregate>("accepted")
-            .await
-            .unwrap()
-            .is_some()
-    );
+    assert!(repository.snapshot::<CommandAggregate>("accepted").await.unwrap().is_some());
     let saved = row(&db.pool, derived_id(&causation, "accepted")).await;
     assert_eq!(saved.get::<String, _>("aggregate_id"), "accepted");
     assert_eq!(saved.get::<String, _>("aggregate_type"), CommandAggregate::TYPE);
@@ -220,20 +210,8 @@ async fn planned_work_publishes_atomically_and_rejections_write_nothing() {
         executor.execute(&"rejected".into(), Command::Reject).await,
         Err(CommandGatewayError::Domain(Rejected))
     );
-    assert!(
-        repository
-            .get_events::<CommandAggregate>("rejected")
-            .await
-            .unwrap()
-            .is_empty()
-    );
-    assert!(
-        repository
-            .get_snapshot::<CommandAggregate>("rejected")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(repository.events::<CommandAggregate>("rejected").await.unwrap().is_empty());
+    assert!(repository.snapshot::<CommandAggregate>("rejected").await.unwrap().is_none());
     executor.execute(&"accepted".into(), record("second", 1)).await.unwrap();
     let rows: Vec<(String, i64, Value)> =
         sqlx::query_as("SELECT aggregate_id, aggregate_sequence, payload FROM transactional_outbox ORDER BY aggregate_sequence")
@@ -288,7 +266,7 @@ async fn the_observer_reports_the_metadata_and_the_tasks_the_commit_stored() {
         Err(CommandGatewayError::Domain(Rejected))
     );
     let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
-        .get_events::<CommandAggregate>("observed")
+        .events::<CommandAggregate>("observed")
         .await
         .unwrap();
     let outbox: Vec<(Uuid, Value)> =
@@ -328,7 +306,7 @@ async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_obje
         Err(CommandGatewayError::Domain(Rejected))
     );
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    let events = repository.get_events::<CommandAggregate>("metadata").await.unwrap();
+    let events = repository.events::<CommandAggregate>("metadata").await.unwrap();
     assert_eq!(events.len(), 2, "a rejected command commits neither event nor metadata");
     assert_eq!(events[0].metadata, json!({"command_id": "cmd-1", "source": "integration"}));
     assert_eq!(events[1].metadata, json!({}));
@@ -361,7 +339,7 @@ async fn parallel_commands_publish_the_tasks_of_their_own_decisions() {
         assert_eq!(saved.get::<String, _>("aggregate_type"), CommandAggregate::TYPE);
         assert_eq!(saved.get::<i64, _>("aggregate_sequence"), 1);
         assert_eq!(saved.get::<Value, _>("payload"), json!({ "value": id }));
-        let events = repository.get_events::<CommandAggregate>(&id).await.unwrap();
+        let events = repository.events::<CommandAggregate>(&id).await.unwrap();
         assert_eq!(events.len(), 1);
         assert_eq!(events[0].payload, json!({"Recorded": {"values": [id]}}));
     }
@@ -379,31 +357,21 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     let executor = PostgresCommandExecutor::<CommandAggregate>::new(db.pool.clone(), config(2), ());
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     executor.execute(&"snapshot".into(), record("first", 0)).await.unwrap();
-    assert!(
-        repository
-            .get_snapshot::<CommandAggregate>("snapshot")
-            .await
-            .unwrap()
-            .is_none()
-    );
+    assert!(repository.snapshot::<CommandAggregate>("snapshot").await.unwrap().is_none());
     executor.execute(&"snapshot".into(), record("second", 1)).await.unwrap();
-    let snapshot = repository
-        .get_snapshot::<CommandAggregate>("snapshot")
-        .await
-        .unwrap()
-        .unwrap();
+    let snapshot = repository.snapshot::<CommandAggregate>("snapshot").await.unwrap().unwrap();
     assert_eq!(snapshot.last_sequence, 2);
     assert_eq!(snapshot.aggregate, json!({"values": ["first", "second"]}));
     // The third and fourth calls require state from the snapshot, then its tail.
     executor.execute(&"snapshot".into(), record("third", 2)).await.unwrap();
     let store =
-        PersistedEventStore::<_, CommandAggregate>::new_snapshot_store(repository, std::num::NonZeroUsize::new(2).unwrap());
+        PersistedEventStore::<_, CommandAggregate>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
     let context = store.load_aggregate("snapshot").await.unwrap();
     assert_eq!(context.current_sequence, 3);
     assert_eq!(context.aggregate.values, vec!["first", "second", "third"]);
     executor.execute(&"snapshot".into(), record("fourth", 3)).await.unwrap();
     let snapshot = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
-        .get_snapshot::<CommandAggregate>("snapshot")
+        .snapshot::<CommandAggregate>("snapshot")
         .await
         .unwrap()
         .unwrap();
@@ -480,7 +448,7 @@ async fn rules_decide_and_the_metadata_is_stored_with_every_event() {
         .await
         .unwrap();
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    let capped = repository.get_events::<CappedAggregate>("capped").await.unwrap();
+    let capped = repository.events::<CappedAggregate>("capped").await.unwrap();
     assert_eq!(
         capped
             .iter()
@@ -488,7 +456,7 @@ async fn rules_decide_and_the_metadata_is_stored_with_every_event() {
             .collect::<Vec<_>>(),
         [Some("test"), Some("test")]
     );
-    let other = repository.get_events::<CappedAggregate>("other").await.unwrap();
+    let other = repository.events::<CappedAggregate>("other").await.unwrap();
     assert_eq!(other[0].metadata, json!({}));
     db.close().await;
 }
@@ -496,7 +464,7 @@ async fn rules_decide_and_the_metadata_is_stored_with_every_event() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn aggregate_locks_accept_forty_parallel_commands_without_conflicts() {
     let db = Database::new().await;
-    let single_attempt = AggregateConflictRetryPolicy::new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
+    let single_attempt = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
     let config = PostgresCommandConfig::new(
         std::num::NonZeroUsize::new(10).unwrap(),
         single_attempt,
@@ -516,7 +484,7 @@ async fn aggregate_locks_accept_forty_parallel_commands_without_conflicts() {
         assert!(result.unwrap().is_ok(), "without a conflict there is nothing to retry");
     }
     let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
-        .get_events::<CappedAggregate>("hot")
+        .events::<CappedAggregate>("hot")
         .await
         .unwrap();
     assert_eq!(
@@ -553,7 +521,7 @@ async fn two_executors_with_their_own_locks_meet_only_in_the_database() {
         }
     }
     let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
-        .get_events::<CappedAggregate>("shared")
+        .events::<CappedAggregate>("shared")
         .await
         .unwrap();
     assert_eq!(events.len(), accepted);
@@ -640,9 +608,9 @@ async fn rules_that_are_not_clone_serve_the_executor_which_commits_event_snapsho
         .unwrap();
     assert_eq!(decided.load(Ordering::SeqCst), 1);
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
-    let events = repository.get_events::<Counted>("core").await.unwrap();
+    let events = repository.events::<Counted>("core").await.unwrap();
     assert_eq!(events.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1]);
-    let snapshot = repository.get_snapshot::<Counted>("core").await.unwrap().unwrap();
+    let snapshot = repository.snapshot::<Counted>("core").await.unwrap().unwrap();
     assert_eq!((snapshot.aggregate, snapshot.last_sequence), (json!(["accepted"]), 1));
     let id = causation.task_id(Counted::TYPE, "core", &format(), 0);
     assert_eq!(report.tasks[0].id(), id);
@@ -663,18 +631,18 @@ mod contracts {
         durable: Arc<tokio::sync::Notify>,
     }
     impl EventStore<Ledger> for CommitBoundary {
-        type AC = cqrsx::cqrs::store::persisted::EventStoreAggregateContext<Ledger>;
+        type Context = cqrsx::cqrs::store::persisted::EventStoreAggregateContext<Ledger>;
         async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::cqrs::AggregateError<Rejected>> {
             self.inner.load_events(id).await
         }
-        async fn load_aggregate(&self, id: &str) -> Result<Self::AC, cqrsx::cqrs::AggregateError<Rejected>> {
+        async fn load_aggregate(&self, id: &str) -> Result<Self::Context, cqrsx::cqrs::AggregateError<Rejected>> {
             self.loads.fetch_add(1, Ordering::SeqCst);
             self.inner.load_aggregate(id).await
         }
         async fn commit(
             &self,
             events: Vec<Delta>,
-            context: Self::AC,
+            context: Self::Context,
             metadata: HashMap<String, String>,
             tasks: &[NewTask],
         ) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::cqrs::AggregateError<Rejected>> {
@@ -721,7 +689,7 @@ mod contracts {
         let executor = CommandExecutorCore::new(
             CqrsFramework::new(
                 CommitBoundary {
-                    inner: PersistedEventStore::new_event_store(PostgresEventRepository::new(db.pool.clone())),
+                    inner: PersistedEventStore::new(PostgresEventRepository::new(db.pool.clone())),
                     pool: db.pool.clone(),
                     mode: 3,
                     loads: loads.clone(),
@@ -760,7 +728,7 @@ mod contracts {
             let executor = CommandExecutorCore::new(
                 CqrsFramework::new(
                     CommitBoundary {
-                        inner: PersistedEventStore::new_event_store(PostgresEventRepository::new(pool.clone())),
+                        inner: PersistedEventStore::new(PostgresEventRepository::new(pool.clone())),
                         pool: pool.clone(),
                         mode,
                         loads: loads.clone(),
@@ -769,7 +737,7 @@ mod contracts {
                     },
                     (),
                 ),
-                AggregateConflictRetryPolicy::new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
+                AggregateConflictRetryPolicy::try_new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
                 cqrsx::cqrs::command::locks::LockLimits::default(),
             );
             if mode == 2 {
@@ -796,10 +764,7 @@ mod contracts {
             }
             assert_eq!(loads.load(Ordering::SeqCst), if mode == 0 { 2 } else { 1 });
             assert_eq!(commits.load(Ordering::SeqCst), 1);
-            let context = PersistedEventStore::<_, Ledger>::new_event_store(repo)
-                .load_aggregate(&id)
-                .await
-                .unwrap();
+            let context = PersistedEventStore::<_, Ledger>::new(repo).load_aggregate(&id).await.unwrap();
             assert_eq!(context.aggregate.0, if mode == 0 { vec![10, -7] } else { vec![10] });
             assert_eq!(context.current_sequence, if mode == 0 { 2 } else { 1 });
         }

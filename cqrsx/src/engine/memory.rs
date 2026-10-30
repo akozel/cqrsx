@@ -187,7 +187,7 @@ mod tests {
         assert_eq!(cqrs.run_tasks().await, 1);
         assert_eq!(mailbox.sent(), ["fox:A1"]);
         let step = &cqrs.outbox().tasks()[0].entry.task;
-        let recorded = cqrs.journal().get_events::<Wallet>("fox").await.unwrap();
+        let recorded = cqrs.journal().events::<Wallet>("fox").await.unwrap();
         let metadata = &recorded[0].metadata;
         let correlation = booked.tasks[0].metadata()[CORRELATION_ID].clone();
         assert_eq!(

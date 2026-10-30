@@ -19,7 +19,7 @@ use cqrsx::{
         store::{persisted::PersistedEventStore, repository::PersistedEventRepository},
         testing::mem_event_repository::MemEventRepository,
     },
-    mongodb::{projection_checkpoints::MongoCheckpointStore, view_repository::MongoViewRepository},
+    mongodb::{checkpoint_store::MongoCheckpointStore, view_repository::MongoViewRepository},
 };
 use mongodb::Database;
 use serde::{Deserialize, Serialize};
@@ -144,7 +144,7 @@ impl ProjectionObserver for Recording {
 }
 
 fn config() -> ProcessorConfig {
-    ProcessorConfig::new(
+    ProcessorConfig::try_new(
         Duration::from_millis(50),
         100,
         Duration::from_secs(1),
@@ -219,13 +219,13 @@ type MemStore = PersistedEventStore<MemEventRepository, Ledger>;
 
 /// Commands over an in-memory journal that wake its processors.
 pub(crate) fn mem_ledgers(journal: &MemEventRepository, wakeup: &CommitWakeup) -> Arc<CommandExecutorCore<Ledger, MemStore>> {
-    let framework = CqrsFramework::new(PersistedEventStore::new_event_store(journal.clone()), ());
+    let framework = CqrsFramework::new(PersistedEventStore::new(journal.clone()), ());
     Arc::new(CommandExecutorCore::new(framework, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
 }
 
 /// The fold of the key's whole history, `None` without a history.
 pub(crate) async fn fold<R: PersistedEventRepository>(journal: &R, id: &str) -> Option<Balance> {
-    let events = journal.get_events::<Ledger>(id).await.unwrap();
+    let events = journal.events::<Ledger>(id).await.unwrap();
     if events.is_empty() {
         return None;
     }

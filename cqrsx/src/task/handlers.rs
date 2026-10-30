@@ -298,12 +298,12 @@ mod tests {
         );
         let record = Record { ledger: "fox".into() };
         assert_eq!(
-            dispatcher.dispatch(attempt(&record), Duration::ZERO).await,
+            dispatcher.dispatch(Arc::new(attempt(&record)), Duration::ZERO).await,
             TaskResult::retry("ledger: conflict"),
             "the second provided prefix, the executor's answer"
         );
         assert_eq!(
-            dispatcher.dispatch(attempt(&Stamp {}), Duration::ZERO).await,
+            dispatcher.dispatch(Arc::new(attempt(&Stamp {})), Duration::ZERO).await,
             TaskResult::Done
         );
         let legacy = TaskAttempt::new(
@@ -314,7 +314,7 @@ mod tests {
             1,
         );
         assert_eq!(
-            dispatcher.dispatch(legacy.unwrap(), Duration::ZERO).await,
+            dispatcher.dispatch(Arc::new(legacy.unwrap()), Duration::ZERO).await,
             TaskResult::fail("legacy")
         );
     }

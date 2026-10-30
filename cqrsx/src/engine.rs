@@ -30,9 +30,9 @@ pub mod views;
 
 #[cfg(feature = "postgres")]
 use crate::postgres::{
+    checkpoint_store::PostgresCheckpointStore,
     command::{PostgresCommandConfig, PostgresCommandExecutor},
     event_repository::PostgresEventRepository,
-    projection_checkpoints::PostgresCheckpointStore,
     view_repository::PostgresViewRepository,
 };
 use crate::{
@@ -57,7 +57,7 @@ use crate::{
     },
     engine::{
         build::BuildError,
-        module::ProjectionObservers,
+        module::{ObservedProcessor, ProjectionObservers},
         settings::Settings,
         views::{CheckpointOps, Counts, Registry},
     },
@@ -72,7 +72,7 @@ use crate::{
 };
 use std::{
     any::{Any, TypeId, type_name},
-    collections::HashMap,
+    collections::{BTreeMap, HashMap},
     sync::{Arc, Mutex},
 };
 use tokio_util::sync::{CancellationToken, DropGuard};
@@ -94,7 +94,7 @@ pub struct Cqrs {
     dispatcher: Option<Arc<TaskDispatcher<BoxedTaskAdapter>>>,
     views: Registry,
     /// What the modules read and described when they were set up.
-    described: Vec<(String, String)>,
+    described: BTreeMap<String, String>,
     memory: memory::MemoryBackend,
     journal: Journal,
     #[cfg(feature = "postgres")]
@@ -172,13 +172,11 @@ impl Cqrs {
         self.dispatcher.as_deref()
     }
 
-    /// The settings of the engine ([`Settings::describe`]) and what its modules read and described, as `(key, value)`
-    /// sorted by key.
-    pub fn describe(&self) -> Vec<(String, String)> {
-        let mut lines = self.settings.describe();
-        lines.extend(self.described.iter().cloned());
-        lines.sort();
-        lines
+    /// The settings of the engine ([`Settings::describe`]) and what its modules read and described, by key.
+    pub fn describe(&self) -> BTreeMap<String, String> {
+        let mut described = self.settings.describe();
+        described.extend(self.described.clone());
+        described
     }
 
     /// A token cancelled once the engine stops (it is served no more, or dropped); cancelling it stops nothing. A
@@ -193,13 +191,13 @@ impl Cqrs {
         let id = id.to_string();
         match &self.journal {
             Journal::Memory => {
-                PersistedEventStore::<_, A>::new_event_store(self.memory.journal.clone())
+                PersistedEventStore::<_, A>::new(self.memory.journal.clone())
                     .load_events(&id)
                     .await
             }
             #[cfg(feature = "postgres")]
             Journal::Postgres(pools) => {
-                PersistedEventStore::<_, A>::new_event_store(PostgresEventRepository::new(pools.history.clone()))
+                PersistedEventStore::<_, A>::new(PostgresEventRepository::new(pools.history.clone()))
                     .load_events(&id)
                     .await
             }
@@ -235,7 +233,7 @@ impl Cqrs {
 
     /// The store of the commands of `A` in memory: the journal, a snapshot every `snapshot_every` events.
     fn store<A: Aggregate>(&self) -> PersistedEventStore<MemEventRepository, A> {
-        PersistedEventStore::new_snapshot_store(self.memory.journal.clone(), self.settings.snapshot_every())
+        PersistedEventStore::new(self.memory.journal.clone()).with_snapshots(self.settings.snapshot_every())
     }
 
     /// The executor of `A` over `store` as every backend builds it: the settings' conflict retry and lock limits, the
@@ -323,7 +321,7 @@ impl Cqrs {
                     #[cfg(feature = "mongodb")]
                     ViewStore::MongoDb(database) => {
                         let documents = Arc::new(crate::mongodb::view_repository::MongoViewRepository::<V, A>::new(database));
-                        let checkpoints = Arc::new(crate::mongodb::projection_checkpoints::MongoCheckpointStore::new(database));
+                        let checkpoints = Arc::new(crate::mongodb::checkpoint_store::MongoCheckpointStore::new(database));
                         self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
                     }
                 }
@@ -369,7 +367,10 @@ impl Cqrs {
             .with_wakeup(self.wakeup::<A>())
             .with_owner(self.owner.clone());
         match &self.projection_observers {
-            Some(observers) => processor.with_observer(observers(V::NAME, &self.owner)),
+            Some(observers) => processor.with_observer(observers(ObservedProcessor {
+                projection: V::NAME,
+                node: &self.owner,
+            })),
             None => processor,
         }
     }
@@ -443,9 +444,8 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let lines = cqrs.describe();
-        assert!(lines.is_sorted());
-        let value = |key: &str| lines.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str());
+        let described = cqrs.describe();
+        let value = |key: &str| described.get(key).map(String::as_str);
         assert_eq!(
             (value("SHOP_LIMIT"), value("shop.limit_twice"), value("SHOP_SNAPSHOT_EVERY")),
             (Some("5"), Some("8"), Some("10"))
@@ -486,8 +486,8 @@ mod tests {
             assert_eq!(scenario, "variables");
             let read = |setup: &setup::Setup| setup.env("LIMIT", 4).map(|_| module::Module::new("reader"));
             let cqrs = ready(Cqrs::from_env("CQRSX_ENGINE_TEST").module(read).build()).unwrap();
-            let lines = cqrs.describe();
-            let value = |key: &str| lines.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone());
+            let described = cqrs.describe();
+            let value = |key: &str| described.get(key).cloned();
             assert_eq!(
                 (cqrs.settings().snapshot_every().get(), value("CQRSX_ENGINE_TEST_LIMIT")),
                 (7, Some("3".to_owned()))

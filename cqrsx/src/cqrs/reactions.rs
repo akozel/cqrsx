@@ -19,7 +19,7 @@
 //!         command::{CommandExecutor, decide::Decide},
 //!         event::DomainEvent,
 //!         reactions::{Decided, Reactions, ReactionsPlanner, Then},
-//!         testing::{command::TestCommandExecutor, mem_store::MemStore},
+//!         testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
 //!     },
 //!     task::policy::Policies,
 //! };
@@ -216,7 +216,7 @@ impl Then {
     /// A task of `payload`, eligible `delay` after the commit; the delay is relative, a reaction has no clock.
     pub fn task_after(&mut self, delay: Duration, payload: impl TaskPayload) {
         if self.refused.is_none() {
-            self.keep(NewTask::new(payload).and_then(|task| task.scheduled(TaskSchedule::After(delay))));
+            self.keep(NewTask::new(payload).and_then(|task| task.with_schedule(TaskSchedule::After(delay))));
         }
     }
 
@@ -292,7 +292,7 @@ mod tests {
             command::{CommandExecutor, CommandGatewayError, causation::Causation, decide::Decide, planner::Planning},
             event::DomainEvent,
             store::repository::PersistedEventRepository,
-            testing::{command::TestCommandExecutor, mem_event_repository::MemEventRepository},
+            testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
         },
         task::{
             DEFAULT_MAX_ATTEMPTS,
@@ -621,7 +621,7 @@ mod tests {
         })
         .await;
         assert!(
-            journal.get_events::<Till>("private_till").await.unwrap().is_empty() && journal.outbox::<Till>().is_empty(),
+            journal.events::<Till>("private_till").await.unwrap().is_empty() && journal.outbox::<Till>().is_empty(),
             "nothing was committed"
         );
         assert_eq!(log.matches("command execution failed").count(), 1, "{log}");
@@ -631,7 +631,7 @@ mod tests {
         tills.execute(&"private_till".into(), Sale::Rung(2)).await.unwrap();
         assert_eq!(
             (
-                journal.get_events::<Till>("private_till").await.unwrap().len(),
+                journal.events::<Till>("private_till").await.unwrap().len(),
                 journal.outbox::<Till>().len()
             ),
             (1, 1)

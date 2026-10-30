@@ -45,7 +45,7 @@ use cqrsx::{
         reactions::ReactionsPlanner,
         store::{EventStore, feed::Position},
         testing::{
-            command::TestCommandExecutor,
+            command_executor::TestCommandExecutor,
             mem_checkpoint_store::MemCheckpointStore,
             mem_store::{MemStore, MemStoreAggregateContext},
             unavailable_store::UnavailableStore,
@@ -604,13 +604,13 @@ impl Switched {
 }
 
 impl EventStore<Concert> for Switched {
-    type AC = MemStoreAggregateContext<Concert>;
+    type Context = MemStoreAggregateContext<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {
         self.inner.load_events(id).await
     }
 
-    async fn load_aggregate(&self, id: &str) -> Result<Self::AC, AggregateError<ConcertError>> {
+    async fn load_aggregate(&self, id: &str) -> Result<Self::Context, AggregateError<ConcertError>> {
         if self.unavailable.load(Ordering::SeqCst) {
             return Err(AggregateError::DatabaseConnectionError("unreachable".into()));
         }
@@ -624,7 +624,7 @@ impl EventStore<Concert> for Switched {
     async fn commit(
         &self,
         events: Vec<ConcertEvent>,
-        context: Self::AC,
+        context: Self::Context,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
     ) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {
@@ -949,7 +949,7 @@ async fn run_through_the_runtime(
 ) -> Vec<(Uuid, SettlementRequest)> {
     let runtime = prepare(
         queue.clone(),
-        dispatcher,
+        Arc::new(dispatcher),
         config.settings().task_runtime().clone(),
         policies(config).unwrap(),
     );

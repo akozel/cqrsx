@@ -1,5 +1,7 @@
 //! How an engine is built: its settings are read, its modules set up, their registrations merged and checked
 //! (`Registrations`), its stores opened, and the components assembled from the registrations over the stores.
+#[cfg(test)]
+use crate::engine::module::ObservedProcessor;
 #[cfg(feature = "mongodb")]
 use crate::engine::mongodb::MongoDb;
 #[cfg(feature = "postgres")]
@@ -307,8 +309,10 @@ impl Builder {
             _stop: shutdown.clone().drop_guard(),
             shutdown,
         };
-        for (name, retry, max_attempts) in modules.iter().flat_map(|module| &module.policies) {
-            cqrs.policies = cqrs.policies.with_policy(*name, TaskPolicy::new(*retry, *max_attempts)?)?;
+        for policy in modules.iter().flat_map(|module| &module.policies) {
+            cqrs.policies = cqrs
+                .policies
+                .with_policy(policy.name, TaskPolicy::new(policy.retry, policy.max_attempts)?)?;
         }
         let (mut registered, mut named) = (HashSet::new(), HashSet::new());
         let (mut aggregates, mut views, mut adapters) = (Vec::new(), Vec::new(), Vec::new());
@@ -327,10 +331,10 @@ impl Builder {
                     .ok_or(BuildError::ViewTwice(entry.name))?;
                 views.push(entry);
             }
-            for (adapter, binding) in module.tasks {
-                adapters.push(adapter.map_err(TaskDispatcherError::from)?);
-                if let Some((name, bind)) = binding {
-                    cqrs.policies = bind(cqrs.policies, name)?;
+            for task in module.tasks {
+                adapters.push(task.adapter.map_err(TaskDispatcherError::from)?);
+                if let Some(binding) = task.binding {
+                    cqrs.policies = (binding.bind)(cqrs.policies, binding.name)?;
                 }
             }
             cqrs.dependencies = cqrs.dependencies.merged(&module.dependencies);
@@ -373,7 +377,7 @@ impl Cqrs {
             };
             match stores.views {
                 Views::Postgres => {
-                    self.checkpoints = Arc::new(crate::postgres::projection_checkpoints::PostgresCheckpointStore::new(
+                    self.checkpoints = Arc::new(crate::postgres::checkpoint_store::PostgresCheckpointStore::new(
                         pools.main.clone(),
                     ));
                     self.view_store = crate::engine::ViewStore::Postgres;
@@ -385,7 +389,7 @@ impl Cqrs {
                         None => crate::engine::mongodb::client(&self.settings).await?,
                     };
                     let database = client.database(self.settings.mongodb().read_db());
-                    self.checkpoints = Arc::new(crate::mongodb::projection_checkpoints::MongoCheckpointStore::new(&database));
+                    self.checkpoints = Arc::new(crate::mongodb::checkpoint_store::MongoCheckpointStore::new(&database));
                     self.view_store = crate::engine::ViewStore::MongoDb(database);
                 }
                 Views::Memory => {}
@@ -452,7 +456,10 @@ impl Registrations {
     /// The observer of the processor of the view named `projection` on this node.
     pub(crate) fn projection_observer(&self, projection: &'static str) -> Option<Arc<dyn ProjectionObserver>> {
         let observers = self.cqrs.projection_observers.as_ref()?;
-        Some(observers(projection, &self.cqrs.owner))
+        Some(observers(ObservedProcessor {
+            projection,
+            node: &self.cqrs.owner,
+        }))
     }
 
     #[cfg(test)]
@@ -493,7 +500,7 @@ mod tests {
     };
     use serde::{Deserialize, Serialize};
     use serde_json::json;
-    use std::time::Duration;
+    use std::{num::NonZeroUsize, time::Duration};
     use uuid::Uuid;
 
     fn refusal(builder: Builder) -> BuildError {
@@ -644,7 +651,7 @@ mod tests {
         let refused = refusal(Cqrs::in_memory().module(commands()).module(commands()));
         assert!(matches!(refused, BuildError::ObserverTwice("test")), "{refused:?}");
         let projections = module(|module| {
-            let observer = |_: &'static str, _: &str| -> Arc<dyn ProjectionObserver> { Arc::new(Silent) };
+            let observer = |_: ObservedProcessor<'_>| -> Arc<dyn ProjectionObserver> { Arc::new(Silent) };
             module.observe_projections(observer).observe_projections(observer)
         });
         assert_eq!(
@@ -675,16 +682,16 @@ mod tests {
 
     #[tokio::test]
     async fn the_engine_builds_every_executor_and_processor_with_its_settings() {
-        let processor = ProcessorConfig::new(
+        let processor = ProcessorConfig::try_new(
             Duration::from_millis(300),
             50,
             Duration::from_secs(30),
             DeliveryLimits::default(),
         )
         .unwrap();
-        let limits = LockLimits::new(Duration::from_millis(500), 7).unwrap();
-        let retry = AggregateConflictRetryPolicy::new(5, Duration::from_millis(1), Duration::from_millis(2), 0.0).unwrap();
-        let settings = Settings::new(3, limits, processor, TaskRuntimeConfig::default())
+        let limits = LockLimits::try_new(Duration::from_millis(500), 7).unwrap();
+        let retry = AggregateConflictRetryPolicy::try_new(5, Duration::from_millis(1), Duration::from_millis(2), 0.0).unwrap();
+        let settings = Settings::try_new(NonZeroUsize::new(3).unwrap(), limits, processor, TaskRuntimeConfig::default())
             .unwrap()
             .with_conflict_retry(retry)
             .with_node_name("node-a");
@@ -766,8 +773,11 @@ mod tests {
         let (feed, seen) = (log.clone(), observed.clone());
         let observers = move |_: &Setup| -> Result<Module, SetupError> {
             Ok(Module::new("feed").observe_commands(feed).observe_projections(
-                move |projection, owner| -> Arc<dyn ProjectionObserver> {
-                    seen.0.lock().unwrap().push(format!("{projection}@{owner}"));
+                move |processor: ObservedProcessor<'_>| -> Arc<dyn ProjectionObserver> {
+                    seen.0
+                        .lock()
+                        .unwrap()
+                        .push(format!("{}@{}", processor.projection, processor.node));
                     Arc::new(Silent)
                 },
             ))
@@ -793,8 +803,8 @@ mod tests {
         assert_eq!(
             *log.0.lock().unwrap(),
             [
-                r#"show Book [("fan", "fox")] accepted"#,
-                r#"show Book [("fan", "panda")] seat_taken {}"#,
+                r#"show Book [Label { name: "fan", value: "fox" }] accepted"#,
+                r#"show Book [Label { name: "fan", value: "panda" }] seat_taken {}"#,
                 "wallet Record [] accepted",
                 "wallet Record [] already_recorded {}"
             ]
@@ -809,7 +819,7 @@ mod tests {
         let observers = move |_: &Setup| -> Result<Module, SetupError> {
             Ok(Module::new("feed")
                 .observe_commands(feed)
-                .observe_projections(|_, _| Arc::new(Silent)))
+                .observe_projections(|_| Arc::new(Silent)))
         };
         let builder = Cqrs::in_memory().module(shows).module(wallets).module(observers);
         let mut registrations = builder.provide(Arc::new(String::from("extra"))).registrations().unwrap();
@@ -849,8 +859,8 @@ mod tests {
         assert_eq!(
             *log.0.lock().unwrap(),
             [
-                r#"show Book [("fan", "fox")] accepted"#,
-                r#"show Book [("fan", "fox")] other"#
+                r#"show Book [Label { name: "fan", value: "fox" }] accepted"#,
+                r#"show Book [Label { name: "fan", value: "fox" }] other"#
             ]
         );
         let dispatcher = registrations.take_task_handlers().build().unwrap();
@@ -909,7 +919,7 @@ mod tests {
             json!({}),
         )
         .unwrap();
-        assert_eq!(dispatcher.dispatch(attempt, Duration::ZERO).await, TaskResult::Done);
+        assert_eq!(dispatcher.dispatch(Arc::new(attempt), Duration::ZERO).await, TaskResult::Done);
         assert_eq!(mailbox.sent(), ["fox:A1"], "the builder's mailbox, not the module's");
         let refused = Cqrs::in_memory().module(shows).module(shows).task_handlers().err().unwrap();
         assert!(matches!(refused, BuildError::AggregateTwice("show")));

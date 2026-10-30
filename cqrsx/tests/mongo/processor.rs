@@ -13,7 +13,7 @@ use cqrsx::{
         },
         testing::mem_event_repository::MemEventRepository,
     },
-    mongodb::projection_checkpoints::{MongoCheckpointStore, PROJECTION_CHECKPOINTS_COLLECTION},
+    mongodb::checkpoint_store::{MongoCheckpointStore, PROJECTION_CHECKPOINTS_COLLECTION},
 };
 use mongodb::bson::Document;
 use std::{sync::Arc, time::Duration};

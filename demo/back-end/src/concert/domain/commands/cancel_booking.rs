@@ -67,7 +67,7 @@ mod tests {
         let booking_id = Uuid::new_v4();
         let cancellation_id = Uuid::new_v4();
         // A VIP seat booked at 120: the refund comes from the SeatBooked fact.
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(vec![announced(), booked("A1", "fox", "Fox", booking_id)])
             .when(cancel("A1", "fox", cancellation_id))
             .then_expect_event(ConcertEvent::BookingCancelled(BookingCancelled {
@@ -81,7 +81,7 @@ mod tests {
 
     #[test]
     fn r1_rejects_cancelling_in_an_unannounced_concert() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given_no_previous_events()
             .when(cancel("B4", "fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::ConcertNotFound);
@@ -89,7 +89,7 @@ mod tests {
 
     #[test]
     fn r3_rejects_an_unknown_seat() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(cancel("Z9", "fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::UnknownSeat { seat: "Z9".into() });
@@ -97,7 +97,7 @@ mod tests {
 
     #[test]
     fn r7_rejects_cancelling_a_free_seat() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(vec![announced()])
             .when(cancel("B4", "fox", Uuid::new_v4()))
             .then_expect_error(ConcertError::SeatNotBooked {
@@ -107,7 +107,7 @@ mod tests {
 
     #[test]
     fn r8_rejects_cancelling_somebody_elses_ticket() {
-        TestFramework::<Concert>::with(rules())
+        TestFramework::<Concert>::new(rules())
             .given(vec![announced(), booked("B4", "fox", "Fox", Uuid::new_v4())])
             .when(cancel("B4", "panda", Uuid::new_v4()))
             .then_expect_error(ConcertError::NotYourTicket);
