@@ -257,7 +257,7 @@ pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, st
 
 ### 2.6 Агрегат и команды
 
-Актуальный код — `back-end/src/concert/domain/concert.rs`, `domain/commands/` и `domain/events/`.
+Актуальный код — `back-end/src/concert/domain/aggregate.rs`, `domain/commands/` и `domain/events/`.
 `Aggregate::apply` применяет событие к состоянию; каждый тип команды реализует `Decide<Concert>` и
 возвращает одно событие или доменный отказ. `type Rules = ConcertRules` задаёт лимит билетов.
 Сквозной компилируемый пример — [быстрый старт cqrsx](../cqrsx/README.md#quick-start).
@@ -448,7 +448,8 @@ front-end/src/               интерфейс Vue
 load/                        изолированный стенд k6
 ```
 
-Границы слоёв проверяются `back-end/tests/architecture.rs`.
+Границы слоёв проверяются `back-end/tests/architecture.rs`; он же не даёт файлу или каталогу повторить имя,
+которое уже есть в пути: состояние агрегата — `concert/domain/aggregate.rs`, а не `concert/domain/concert.rs`.
 
 ## 5. Инфраструктура
 

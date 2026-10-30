@@ -4,8 +4,10 @@
 //! The crate is a set of modules, each a directory with its layers inside and its root file next to it: `concert` and
 //! `fan` (an aggregate each: `domain`, `application`, `presentation`), `operations` (no aggregate: `application`,
 //! `presentation`) and `shared`, the kernel several modules need (`domain`, `application`, `presentation`,
-//! `infrastructure`). Every `use` tree is expanded to full paths and every other qualified path is collected, with
-//! comments and string literals removed first (docs link across modules). Inside a module a layer sees the layers
+//! `infrastructure`). Inside a module a file or directory is named by its role, never by a name the path already says:
+//! an aggregate's state is `concert/domain/aggregate.rs`, not `concert/domain/concert.rs`. Every `use` tree is
+//! expanded to full paths and every other qualified path is collected, with comments and string literals removed
+//! first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
 //! the ledger's tasks. Of cqrsx a domain sees its contracts and their derive macros, a presentation the engine (its
 //! commands, its views, the dependencies of the modules), the outcomes of a command, the rejection trait and the
@@ -118,6 +120,17 @@ fn locate(relative: &Path) -> Located {
         .find(|part| Layer::ALL.iter().any(|layer| layer.name() == *part))
     {
         return Located::Nowhere(format!("puts the layer `{inner}` inside the layer `{}`", layer.name()));
+    }
+    if let Some(repeated) = parts
+        .iter()
+        .enumerate()
+        .skip(2)
+        .find_map(|(at, part)| parts[..at].contains(part).then_some(part))
+    {
+        return Located::Nowhere(format!(
+            "repeats `{repeated}`, a name the path already says: name it by its role (an aggregate's state is \
+             `domain/aggregate.rs`)"
+        ));
     }
     Located::Module {
         module,
@@ -690,8 +703,16 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         "test tooling in test code"
     );
     assert!(check("concert.rs", "pub mod domain; use crate::shared::domain::ConcertId;\n").is_empty());
-    // Every file has its place: the old layout, a missing layer and a layer inside a layer are reported.
-    for file in ["domain/concert.rs", "operations/domain.rs", "concert/application/domain/x.rs"] {
+    // Every file has its place: the old layout, a missing layer, a layer inside a layer and a name the path already
+    // says are reported.
+    for file in [
+        "domain/concert.rs",
+        "operations/domain.rs",
+        "concert/application/domain/x.rs",
+        "concert/domain/concert.rs",
+        "fan/application/views/views.rs",
+        "operations/presentation/activity/activity/stream.rs",
+    ] {
         assert_eq!(check(file, "").len(), 1, "{file}");
     }
     assert!(

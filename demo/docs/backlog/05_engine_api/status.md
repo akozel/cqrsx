@@ -32,7 +32,8 @@
   несёт «(этот коммит)», хеш вписывается сразу после коммита и уходит в коммит следующей задачи. Между задачами в
   дереве изменён только `status.md`.
 - **03, отступления от карты переезда** (записываются в карту тикета 03 и в пути тикетов 08, 09, 12):
-  `fan/domain/fan.rs` вместо `fan/domain/aggregate.rs` (симметрия с `concert/domain/concert.rs`); HTTP-тесты маршрутов —
+  `fan/domain/fan.rs` вместо `fan/domain/aggregate.rs` (симметрия с `concert/domain/concert.rs`; 2026-10-30 по решению
+  пользователя оба — `domain/aggregate.rs`, правило имён в `tests/architecture.rs`); HTTP-тесты маршрутов —
   `bootstrap/routes/tests.rs`, а не `operations/presentation/tests.rs` (собирают маршруты всех модулей);
   `workflows.rs` (`ChainStep`, `run_chain_step`, `map_fan_outcome`) — `fan/application/chain.rs`, а не
   `shared/application/chain.rs` (код называет `Fan`/`FanApp`); `PostgresLedger` — `bootstrap/ledger.rs` (порт

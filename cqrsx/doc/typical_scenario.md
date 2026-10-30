@@ -8,9 +8,10 @@ shape in memory. The detailed contracts and lower-level components are in [Compo
 
 An application contains modules such as a concert box office and a fan's ledger. Each module owns its
 domain (aggregate, commands, events and rules), application (reactions, tasks, views), and presentation
-(HTTP routes). A module root registers its pieces. Shared contracts and infrastructure live outside the
-modules; modules do not reach into each other's internals. The engine assembles their components; it
-does not decide business rules. See the [concert root](../../demo/back-end/src/concert.rs),
+(HTTP routes). A file inside a module is named by its role (`domain/aggregate.rs`, `domain/commands/`,
+`domain/events/`), never by a name its path already says. A module root registers its pieces. Shared
+contracts and infrastructure live outside the modules; modules do not reach into each other's
+internals. The engine assembles their components; it does not decide business rules. See the [concert root](../../demo/back-end/src/concert.rs),
 [fan root](../../demo/back-end/src/fan.rs), and [architecture tests](../../demo/back-end/tests/architecture.rs).
 
 ## Aggregate, events and typed ID
@@ -18,8 +19,8 @@ does not decide business rules. See the [concert root](../../demo/back-end/src/c
 An `Aggregate` has an `Id`, command, event, error and rules type. It starts with `Default` and `apply`
 folds a committed event into its state. A typed ID's `Display` supplies the journal key. `Event` and
 `Events` derive the persisted name and version for facts and their aggregate enum. A snapshot and the
-events after it restore the state. See [Concert](../../demo/back-end/src/concert/domain/concert.rs)
-and [Fan](../../demo/back-end/src/fan/domain/fan.rs).
+events after it restore the state. See [Concert](../../demo/back-end/src/concert/domain/aggregate.rs)
+and [Fan](../../demo/back-end/src/fan/domain/aggregate.rs).
 
 ## Commands and decisions
 

@@ -26,8 +26,8 @@ projections,…}`, `presentation/http/*`, `infrastructure/*`. Путь «отм�
 
 | Откуда | Куда | Примечание |
 |---|---|---|
-| `domain/concert/aggregate.rs` | `concert/domain/concert.rs` | состояние и `apply`; остальное `domain/concert/*` → `concert/domain/*` как есть |
-| `domain/fan/aggregate.rs` | `fan/domain/fan.rs` | как у кассы: файл с именем агрегата (дизайн 02) |
+| `domain/concert/aggregate.rs` | `concert/domain/aggregate.rs` | состояние и `apply`; остальное `domain/concert/*` → `concert/domain/*` как есть. В 03 файл назвали `concert.rs`; 2026-10-30 — `aggregate.rs`: имя модуля в пути не повторяется |
+| `domain/fan/aggregate.rs` | `fan/domain/aggregate.rs` | как у кассы (в 03 — `fan.rs`, 2026-10-30 — `aggregate.rs`) |
 | `domain/fan/*` (остальное) | `fan/domain/*` | |
 | `domain/shared/{ids,venue}.rs` | `shared/domain/{ids,venue}.rs` | |
 | `domain.rs` (`pub use` id), `domain/shared.rs` | `shared/domain.rs` | `crate::shared::domain::ConcertId` |
@@ -150,7 +150,7 @@ projections,…}`, `presentation/http/*`, `infrastructure/*`. Путь «отм�
     тест.
   - Самопроверка ловит `crate::fan::domain` из `concert/application`.
 - **Отступления от первоначальной карты** (утверждены):
-  - `fan/domain/fan.rs`;
+  - `fan/domain/fan.rs` (2026-10-30 оба агрегата — `domain/aggregate.rs`);
   - шаг книжки — `fan/application/chain.rs`;
   - HTTP-тесты — `bootstrap/routes/tests.rs`;
   - `PostgresLedger` — `bootstrap/ledger.rs`.
