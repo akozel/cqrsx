@@ -73,10 +73,11 @@ ignore tests.
 ## Commands
 
 ```bash
-cargo build --locked --workspace --all-features
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo clippy --locked -p cqrsx -p cqrsx-engine --no-default-features --all-targets -- -D warnings
+for p in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-testing cqrsx-fixtures; do cargo check --locked -p $p --lib; done
+cargo check --locked -p cqrsx-engine --no-default-features --lib   # also with --features postgres, mongodb, http
 RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --all-features --no-deps
 RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-features
 cargo test --locked -p cqrsx                                  # the crates without features, one by one
@@ -88,12 +89,12 @@ cargo llvm-cov --locked -p cqrsx --fail-under-lines 97     # also: -p cqrsx-post
 cargo llvm-cov --locked -p cqrsx-engine --all-features --fail-under-lines 97
 ```
 
-The demo is a separate workspace; a change that touches it also needs, from `demo/`:
+The demo is a separate workspace with a CI job of its own; a change that touches it also needs, from `demo/`:
 
 ```bash
 cargo fmt --all --check
-cargo clippy --workspace --all-targets -- -D warnings
-cargo test                      # with the architecture rule and the golden files
+cargo clippy --locked --workspace --all-targets -- -D warnings
+cargo test --locked --workspace   # with the architecture rule and the golden files
 git diff --stat -- back-end/tests/golden   # empty
 ```
 

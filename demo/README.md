@@ -351,7 +351,7 @@ cd front-end && npm test               # seatState, outboxStatus, diff, i18n par
 ```
 
 The root workspace (`cqrsx`) is untouched by the demo except `exclude = ["demo"]` and `.dockerignore`;
-its own CI (`cargo build --locked --workspace --all-features`, 97 % coverage) runs as before.
+its coverage threshold (97 %) does not count the demo. CI checks the demo in a job of its own: fmt, clippy and the tests.
 
 ### Load tests (k6)
 

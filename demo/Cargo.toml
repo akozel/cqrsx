@@ -1,5 +1,5 @@
-# Separate workspace: the root workspace excludes `demo`, so root CI, `--locked` builds and the
-# 97 % coverage threshold never see the demo crates.
+# Separate workspace: the root workspace excludes `demo`, so the root `--locked` builds and the
+# 97 % coverage threshold never see the demo crates; CI checks the demo in a job of its own.
 [workspace]
 resolver = "3"
 members = ["back-end", "sidecar"]
