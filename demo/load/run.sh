@@ -42,7 +42,7 @@
 #                   or none; auto (default) pins when the cpuset controller is available, else quota
 #   BUILD=1         rebuild the back-end image first
 # Any other KEY=VALUE is passed to k6 as environment (__ENV.KEY).
-# Extension points, for measurement tools that live elsewhere (e.g. backlog epic 02, docs/backlog/…/perf/):
+# Extension points, for measurement tools that live elsewhere (e.g. perf/):
 #   LOAD_COMPOSE_EXTRA=…  more compose files (`:`-separated), added after the CPU isolation overlay
 #   LOAD_SERVICES_EXTRA=… more services (space-separated, defined by those files) started with the stand;
 #                         each must be healthy before k6, and its log is saved as <service>.log

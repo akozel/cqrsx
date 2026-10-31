@@ -17,9 +17,7 @@ Five "aha" moments, one per topic: the **event store** (⏳ time machine), **com
 *Encore* ("once more!") is the pun: replay is playing the whole history again — while the box office
 stays open.
 
-The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the library API are in
-[`docs/API_MAPPING.md`](docs/API_MAPPING.md); the autonomous build log with every verification is
-[`docs/PROGRESS.md`](docs/PROGRESS.md).
+The plan this demo implements is [`PLAN.md`](PLAN.md).
 
 ## Layout
 

@@ -23,3 +23,6 @@
 *~
 .DS_Store
 Thumbs.db
+
+# Backlog and journal: working material of the maintainers, not in the repository (doc/backlog/README.md)
+/doc/backlog/

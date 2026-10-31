@@ -8,11 +8,11 @@
 #                                                 encore-0 encore-80 wipe   (default: all)
 #   REPEAT=n      runs per scene (default 1)
 #   VUS=…         virtual users (default 40);  DURATION=… measured window (default 40s)
-# Other KEY=VALUE pairs go to run.sh. kill-9 and kill-term run two nodes behind nginx through the epic's
+# Other KEY=VALUE pairs go to run.sh. kill-9 and kill-term run two nodes behind nginx through
 # perf/run.sh (BALANCE=round_robin); the others run on the one-node stand. Exit 0 = every run passed.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PERF="$HERE/../docs/backlog/02_postgres_performance/perf/run.sh"
+PERF="$HERE/perf/run.sh"
 REPEAT=1 VUS=40 DURATION=40s
 SCENES=() EXTRA=()
 for arg in "$@"; do

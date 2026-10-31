@@ -229,8 +229,8 @@ Measurement tools that live outside this directory plug into a run without copyi
   are called at those points and see `RUN_DIR`, `compose` and `log`. A failing hook is logged, the run goes
   on.
 
-Backlog epic 02 measures its tickets this way: `docs/backlog/02_postgres_performance/perf/` (statement
-statistics, work per command, repeats with medians).
+The PostgreSQL measurements use them: [`perf/`](perf/README.md) (statement statistics, work per command, repeats
+with medians).
 
 ## Layout
 
