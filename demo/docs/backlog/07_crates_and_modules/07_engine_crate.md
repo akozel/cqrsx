@@ -9,8 +9,8 @@
 
 ## Сейчас
 
-`engine` (около 2 600 строк без тестов, 88 `cfg(feature)`) лежит в ядре и знает о PostgreSQL, MongoDB и HTTP. `host`
-(152 строки) и `logging` (64 строки) — отдельные модули и фичи, но их зовёт только `engine::serve`. У движка в памяти
+`engine` (около 3 200 строк без тестов, 88 `cfg(feature)`) лежит в ядре и знает о PostgreSQL, MongoDB и HTTP. `host`
+(314 строк) и `logging` (64 строки) — отдельные модули и фичи, но их зовёт только `engine::serve`. У движка в памяти
 публичные `journal()`, `outbox()`, `checkpoints()` возвращают хранилища памяти и на движке поверх PostgreSQL — пустые.
 
 ## Станет
@@ -32,6 +32,13 @@
 - **Фичи движка:** `postgres = ["cqrsx/postgres", "dep:sqlx"]`, `mongodb = ["postgres", "cqrsx/mongodb",
   "dep:mongodb"]`, `http = ["dep:axum", "dep:tower-http", "dep:tracing-subscriber", "tokio/net", "tokio/signal"]`,
   `default = []`. В ядре остаются только `postgres` и `mongodb` — до задачи 08.
+- **Закрытые функции ядра, которыми пользуется движок** (проверено 2026-10-31): в рабочем коде —
+  `TaskDispatcher::assemble`, `TaskHandlers::assembled`, `Dependencies::shared`, `Dependencies::merged`,
+  `locking::{lock, get_mut}`, `diagnostics::log_unregistered_aggregate`; в тестах движка — `CommandExecutorCore::framework`,
+  `CommandExecutorCore::lock_limits`, `CqrsFramework::store` (после 06 — закрытая попытка), `PersistedEventStore::snapshot_interval`.
+  Рабочие становятся публичными с документацией (это сборка обработчиков и зависимостей для того, кто собирает
+  приложение) или их работа переезжает в движок — выбор по каждой в плане; тестовые — тест переходит на наблюдаемое
+  поведение (настройки видны в ответах и логах) или переезжает в ядро. Публичный API ради одного теста не появляется.
 - **Помощники:** логи движка (`log_unregistered_aggregate`, `log_missing_executor`) переезжают из `diagnostics`.
   Закрытый `cqrsx/src/locking.rs` становится публичным `cqrsx/src/mutex.rs` (`cqrsx::mutex::{lock, get_mut}`, решение 6
   эпика): документация модуля описывает контракт для пользователя — под мьютексом одна короткая операция над
