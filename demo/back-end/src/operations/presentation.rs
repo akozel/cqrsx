@@ -8,7 +8,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use cqrsx::engine::Cqrs;
+use cqrsx_engine::Cqrs;
 use std::sync::Arc;
 
 /// The service routes, one line per endpoint.

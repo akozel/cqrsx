@@ -8,6 +8,7 @@ description = "Encore: box-office demo for the cqrsx library (write side, outbox
 
 [dependencies]
 cqrsx.workspace = true
+cqrsx-engine.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true

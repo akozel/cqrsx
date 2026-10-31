@@ -4,7 +4,7 @@ Procedural macros for [cqrsx](../cqrsx/README.md). Each derive is re-exported by
 implements (`cqrsx::domain::event::{Event, Events}`, `cqrsx::domain::command::{Command, Decide}`,
 `cqrsx::task::Task`, `cqrsx::domain::rejection::Rejection`, `cqrsx::worker::task_handler`), so one `use` brings
 the trait and its derive. The macro crate has no feature flags. Examples of the derives and handler together
-are in [`cqrsx/tests/engine/modules.rs`](../cqrsx/tests/engine/modules.rs).
+are in [`cqrsx-engine/tests/engine/modules.rs`](../cqrsx-engine/tests/engine/modules.rs).
 
 ## Events
 

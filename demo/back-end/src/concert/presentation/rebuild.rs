@@ -10,7 +10,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cqrsx::engine::Cqrs;
+use cqrsx_engine::Cqrs;
 use serde_json::json;
 use std::sync::Arc;
 

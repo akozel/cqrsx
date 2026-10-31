@@ -2,7 +2,7 @@
 use crate::{
     domain::aggregate::Aggregate,
     journal::PersistenceError,
-    locking::lock,
+    mutex::lock,
     view::{
         View,
         repository::{StoredView, ViewContext, ViewRepository},

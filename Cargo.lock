@@ -557,7 +557,6 @@ version = "0.1.0"
 dependencies = [
  "async-channel",
  "async-trait",
- "axum",
  "chrono",
  "cqrsx-macros",
  "futures",
@@ -568,6 +567,27 @@ dependencies = [
  "serde",
  "serde_json",
  "sha1 0.10.7",
+ "sqlx",
+ "testcontainers",
+ "thiserror",
+ "tokio",
+ "tokio-util",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "cqrsx-engine"
+version = "0.1.0"
+dependencies = [
+ "axum",
+ "chrono",
+ "cqrsx",
+ "log",
+ "mongodb",
+ "serde",
+ "serde_json",
  "sqlx",
  "testcontainers",
  "thiserror",

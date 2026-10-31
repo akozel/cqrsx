@@ -1,8 +1,8 @@
+use super::{ReadSideStopped, error::HostError};
 #[cfg(test)]
-use crate::worker::runtime::worker_pool_config::TaskWorkerPoolConfigError;
-use crate::{host::error::HostError, projection::runtime::ProjectionRuntime, worker::runtime::TaskRuntimeError};
+use cqrsx::worker::runtime::worker_pool_config::TaskWorkerPoolConfigError;
+use cqrsx::{projection::runtime::ProjectionRuntime, worker::runtime::TaskRuntimeError};
 use std::{future::Future, io};
-use thiserror::Error;
 use tokio::task::JoinError;
 use tokio_util::sync::CancellationToken;
 
@@ -92,11 +92,6 @@ pub struct Stopped {
     pub host: Result<(), HostError>,
     pub read_side: Result<(), ReadSideStopped>,
 }
-
-/// The projection processors failed: one panicked (and stopped the others), or their runtime did.
-#[derive(Clone, Debug, Error, PartialEq, Eq)]
-#[error("the read side stopped: {0}")]
-pub struct ReadSideStopped(pub String);
 
 /// Runs the inbound server and the task runtime under [`run`], with the projection processors beside them on the same
 /// token: the processors start only now, after everything that could fail at start has succeeded, so a failed start
@@ -703,7 +698,7 @@ mod tests {
 
     mod processors {
         use super::*;
-        use crate::{
+        use cqrsx::{
             domain::{
                 aggregate::Aggregate,
                 command::Decide,

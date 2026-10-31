@@ -9,9 +9,10 @@
 //! expanded to full paths and every other qualified path is collected, with comments and string literals removed
 //! first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
-//! the ledger's tasks. Of cqrsx a domain sees its contracts and their derive macros, a presentation the engine (its
-//! commands, its views, the dependencies of the modules), the outcomes of a command, the rejection trait and the
-//! documents of the read models. `main.rs` and `lib.rs` compose the modules, `testing.rs` and `composition.rs` with
+//! the ledger's tasks. Of the framework (the crates `cqrsx`, `cqrsx_engine` and those split off the core later, see
+//! `FRAMEWORK`) a domain sees the contracts of the core and their derive macros, a presentation the engine
+//! (`cqrsx_engine::Cqrs`: its commands, its views, the dependencies of the modules), the outcomes of a command, the
+//! rejection trait and the documents of the read models. `main.rs` and `lib.rs` compose the modules, `testing.rs` and `composition.rs` with
 //! their directories test them as composed: they are exempt. A few rules apply to production code only: test code may use test
 //! tooling. Relative paths (`super::`) are not resolved: one module reaches another only through `crate::`.
 use std::{
@@ -169,7 +170,7 @@ struct Externals {
     forbidden: &'static [&'static str],
     /// Path prefixes only test code of the layer may use.
     test_only: &'static [&'static str],
-    /// When set, every `cqrsx` path must start with one of these prefixes.
+    /// When set, every path of a crate of the framework ([`FRAMEWORK`]) must start with one of these prefixes.
     cqrsx_allowed: Option<&'static [&'static str]>,
 }
 
@@ -198,8 +199,9 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::worker::adapter",
                 "cqrsx::worker::dispatcher",
                 "cqrsx::worker::runtime",
-                "cqrsx::host",
-                "cqrsx::logging",
+                "cqrsx_postgres",
+                "cqrsx_mongodb",
+                "cqrsx_engine::serve",
                 "sqlx",
                 "mongodb",
                 "axum",
@@ -216,7 +218,7 @@ fn externals(layer: Option<Layer>) -> Externals {
             // what it answers (05/10, design 06). Nothing else. The path `domain::rejection::Rejection` names the trait
             // and its derive alike (backlog 07/05, decision 2), so a presentation may name both.
             cqrsx_allowed: Some(&[
-                "cqrsx::engine::Cqrs",
+                "cqrsx_engine::Cqrs",
                 "cqrsx::command::CommandGatewayError",
                 "cqrsx::domain::rejection",
                 "cqrsx::view::repository::StoredView",
@@ -318,8 +320,7 @@ fn violations(
             );
         }
         if let Some(allowed) = outside.cqrsx_allowed
-            && starts_with(&path, "cqrsx")
-            && path != "cqrsx"
+            && is_framework_path(&path)
             && !allowed.iter().any(|prefix| starts_with(&path, prefix))
         {
             why.push("uses a cqrsx module outside its allowlist".to_owned());
@@ -529,15 +530,12 @@ fn paths(code: &str) -> Vec<(usize, String)> {
             search = start + 4;
         }
     }
-    for root in [
-        "crate::",
-        "cqrsx::",
-        "sqlx::",
-        "mongodb::",
-        "axum::",
-        "tokio::",
-        "serde_json::",
-    ] {
+    let roots = ["crate", "sqlx", "mongodb", "axum", "tokio", "serde_json"]
+        .iter()
+        .chain(&FRAMEWORK)
+        .map(|root| format!("{root}::"));
+    for root in roots {
+        let root = root.as_str();
         let mut search = 0;
         while let Some(position) = code[search..].find(root) {
             let start = search + position;
@@ -557,6 +555,16 @@ fn paths(code: &str) -> Vec<(usize, String)> {
         }
     }
     found
+}
+
+/// The crates of the framework: the core and every crate built on it. A path into any of them is a path into
+/// "cqrsx" for the allowlists, so that a crate split off the core (`cqrsx_engine`, later the adapters and the testing
+/// tools) does not slip out of the rules.
+const FRAMEWORK: [&str; 5] = ["cqrsx", "cqrsx_engine", "cqrsx_postgres", "cqrsx_mongodb", "cqrsx_testing"];
+
+/// Whether `path` goes into a crate of the framework (a bare crate name is not a path into it).
+fn is_framework_path(path: &str) -> bool {
+    FRAMEWORK.iter().any(|name| starts_with(path, name) && path != *name)
 }
 
 fn starts_with(path: &str, prefix: &str) -> bool {
@@ -812,9 +820,9 @@ fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
 fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::{command::CommandGatewayError, engine::Cqrs};\n",
+        "use cqrsx::command::CommandGatewayError;\nuse cqrsx_engine::Cqrs;\n",
         "fn f(e: cqrsx::command::CommandGatewayError<()>) {}\n",
-        "fn f(cqrs: &cqrsx::engine::Cqrs) {}\n",
+        "fn f(cqrs: &cqrsx_engine::Cqrs) {}\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
     }
@@ -826,12 +834,63 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
         "use cqrsx::command::CommitReport;\n",
         "use cqrsx::testing::command_executor::TestCommandExecutor;\n",
         "use cqrsx::command::executor::StoreCommandExecutor;\n",
-        "use cqrsx::engine::build::Builder;\n",
+        "use cqrsx_engine::build::Builder;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}");
         assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
     }
+}
+
+/// Backlog 07/07: the engine is a crate of its own, `cqrsx_engine`; every crate of the framework falls under the
+/// allowlists, not only the path segment `cqrsx`.
+#[test]
+fn every_crate_of_the_framework_is_under_the_rules() {
+    let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
+    // A domain names no part of the engine, in a `use` tree or inline.
+    for (code, reports) in [
+        ("use cqrsx_engine::Cqrs;\n", 1),
+        ("use cqrsx_engine::{Cqrs, build::Builder};\n", 2),
+        ("fn f(cqrs: &cqrsx_engine::Cqrs) {}\n", 1),
+    ] {
+        let broken = check("concert/domain/x.rs", code);
+        assert_eq!(broken.len(), reports, "{code}: {broken:?}");
+        assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
+    }
+    // A presentation names the engine itself and nothing else of it.
+    assert!(check("concert/presentation/x.rs", "use cqrsx_engine::Cqrs;\n").is_empty());
+    for code in [
+        "use cqrsx_engine::settings::Settings;\n",
+        "fn f() { cqrsx_engine::build::Builder::default(); }\n",
+        "use cqrsx_postgres::pool::connect_pool;\n",
+        "use cqrsx_mongodb::view_repository::MongoViewRepository;\n",
+    ] {
+        let broken = check("fan/presentation/x.rs", code);
+        assert_eq!(broken.len(), 1, "{code}: {broken:?}");
+        assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
+    }
+    // An application assembles nothing of the process and opens no store, but may use the engine's settings.
+    assert!(check("operations/application/x.rs", "use cqrsx_engine::settings::Settings;\n").is_empty());
+    for (code, prefix) in [
+        ("use cqrsx_engine::serve::StartupError;\n", "cqrsx_engine::serve"),
+        ("use cqrsx_postgres::pool::connect_pool;\n", "cqrsx_postgres"),
+        (
+            "fn f() { cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(); }\n",
+            "cqrsx_mongodb",
+        ),
+    ] {
+        let broken = check("operations/application/x.rs", code);
+        assert_eq!(broken.len(), 1, "{code}: {broken:?}");
+        assert!(broken[0].contains(&format!("uses `{prefix}`")), "{broken:?}");
+    }
+    // A bare crate name is no path into it; an inline path of any crate of the framework is collected.
+    assert!(!is_framework_path("cqrsx_engine") && is_framework_path("cqrsx_engine::Cqrs"));
+    assert!(!is_framework_path("cqrsx_other::Cqrs"));
+    let found: Vec<String> = paths("fn f() { cqrsx_testing::TestFramework::default(); }\n")
+        .into_iter()
+        .map(|(_, path)| path)
+        .collect();
+    assert_eq!(found, ["cqrsx_testing::TestFramework::default"]);
 }
 
 /// Backlog 05/10: a presentation reads a read model through the engine and answers its stored documents; nothing else
@@ -840,14 +899,14 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
 fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_the_read_side() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::{view::repository::StoredView, engine::Cqrs};\n",
+        "use cqrsx::view::repository::StoredView;\nuse cqrsx_engine::Cqrs;\n",
         "fn f(d: cqrsx::view::repository::StoredView<()>) {}\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
     }
     for code in [
         "use cqrsx::view::repository::ViewRepository;\n",
-        "use cqrsx::engine::views::Views;\n",
+        "use cqrsx_engine::views::Views;\n",
         "use cqrsx::view::projection::ViewProjection;\n",
         "use cqrsx::view::repository::ViewContext;\n",
         "use cqrsx::view::verify::verify;\n",

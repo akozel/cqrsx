@@ -8,10 +8,6 @@ use cqrsx::{
         event::{Event, EventEnvelope, Events},
         rejection::Rejection,
     },
-    engine::{
-        module::Module,
-        setup::{Setup, SetupError},
-    },
     reactions::{Decided, Reactions, Then},
     task::{
         Task,
@@ -19,6 +15,10 @@ use cqrsx::{
     },
     view::View,
     worker::{TaskResult, context::TaskContext, task_handler},
+};
+use cqrsx_engine::{
+    module::Module,
+    setup::{Setup, SetupError},
 };
 use serde::{Deserialize, Serialize};
 use std::{

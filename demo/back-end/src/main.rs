@@ -1,7 +1,7 @@
 //! Encore back-end: the box office on the cqrsx engine. The engine reads its settings from the `ENCORE_*` variables
 //! (and the library's `OUTBOX_*`), keeps the journal in PostgreSQL and the read models in MongoDB, and serves the HTTP
 //! API of the modules next to the task runtime and the projection processors until a signal.
-use cqrsx::engine::{Cqrs, mongodb::MongoDb, postgres::Postgres};
+use cqrsx_engine::{Cqrs, mongodb::MongoDb, postgres::Postgres};
 use encore_backend::{DEMO_DEFAULTS, concert, fan, operations};
 
 fn fail(message: impl std::fmt::Display) -> ! {

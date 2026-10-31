@@ -434,15 +434,6 @@ where
             _phantom: PhantomData,
         }
     }
-
-    /// The interval of the snapshots, `None` without snapshots.
-    #[cfg(test)]
-    pub(crate) fn snapshot_interval(&self) -> Option<usize> {
-        match self.snapshot_policy {
-            SnapshotPolicy::Disabled => None,
-            SnapshotPolicy::Every(interval) => Some(interval.get()),
-        }
-    }
 }
 
 impl<R, A> EventStore<A> for PersistedEventStore<R, A>

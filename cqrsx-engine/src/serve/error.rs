@@ -1,4 +1,4 @@
-use crate::worker::runtime::TaskRuntimeError;
+use cqrsx::worker::runtime::TaskRuntimeError;
 use std::{fmt, io};
 use thiserror::Error;
 use tokio::task::JoinError;
@@ -69,7 +69,7 @@ mod tests {
         cancelled.abort();
         let cancelled = cancelled.await.unwrap_err();
         let ids = [panic.id().to_string(), cancelled.id().to_string()];
-        let (_, log) = crate::diagnostics::test_support::capture(async {
+        let (_, log) = crate::test_support::capture(async {
             for source in [panic, cancelled] {
                 HostError::TaskRuntimeJoin(source).log("additional failure during host shutdown");
             }
@@ -86,9 +86,9 @@ mod tests {
 
     #[tokio::test]
     async fn io_and_dispatcher_diagnostics_preserve_sources_without_rendering_private_text() {
-        use crate::worker::runtime::worker_pool_config::TaskWorkerPoolConfigError;
+        use cqrsx::worker::runtime::worker_pool_config::TaskWorkerPoolConfigError;
 
-        let (_, log) = crate::diagnostics::test_support::capture(async {
+        let (_, log) = crate::test_support::capture(async {
             for error in [
                 HostError::Inbound(io::Error::new(io::ErrorKind::PermissionDenied, "private_io_source")),
                 HostError::ShutdownSignal(io::Error::other("private_signal_source")),
@@ -155,5 +155,63 @@ mod tests {
         task.abort();
         let error = HostError::TaskRuntimeJoin(task.await.unwrap_err());
         assert!(format!("{error:?}").contains("cancelled: true"));
+    }
+
+    // The log lines a process writes through the `log` crate when no `tracing` subscriber is installed, as the
+    // process-global logger of a test of its own (the logger is installed once and never removed).
+    struct RecordingLogger(std::sync::Mutex<Vec<String>>);
+    static LOGGER: RecordingLogger = RecordingLogger(std::sync::Mutex::new(Vec::new()));
+
+    impl log::Log for RecordingLogger {
+        fn enabled(&self, _: &log::Metadata<'_>) -> bool {
+            true
+        }
+
+        fn log(&self, record: &log::Record<'_>) {
+            self.0.lock().unwrap().push(record.args().to_string());
+        }
+
+        fn flush(&self) {}
+    }
+
+    #[test]
+    fn host_failures_fall_back_to_log_without_a_tracing_subscriber_and_redact_private_data() {
+        use crate::test_support;
+        if test_support::scenario().is_some() {
+            let runtime = tokio::runtime::Builder::new_current_thread().build().unwrap();
+            runtime.block_on(async {
+                assert!(!tracing::dispatcher::has_been_set());
+                log::set_logger(&LOGGER).unwrap();
+                log::set_max_level(log::LevelFilter::Trace);
+                let panic = tokio::spawn(async {
+                    panic!("private_panic_payload");
+                })
+                .await
+                .unwrap_err();
+                let panic_id = panic.id().to_string();
+                HostError::TaskRuntimeJoin(panic).log("host stopped");
+                let cancelled = tokio::spawn(std::future::pending::<()>());
+                cancelled.abort();
+                let cancelled = cancelled.await.unwrap_err();
+                let cancelled_id = cancelled.id().to_string();
+                HostError::TaskRuntimeJoin(cancelled).log("host stopped");
+                let log = LOGGER.0.lock().unwrap().join("\n");
+                assert!(log.contains(&panic_id));
+                assert!(log.contains(&cancelled_id));
+                assert!(log.contains("panicked=true cancelled=false"));
+                assert!(log.contains("panicked=false cancelled=true"));
+                assert!(!log.contains("private_"));
+                assert!(!tracing::dispatcher::has_been_set());
+            });
+            return;
+        }
+        test_support::isolated(
+            concat!(
+                module_path!(),
+                "::host_failures_fall_back_to_log_without_a_tracing_subscriber_and_redact_private_data"
+            ),
+            "fallback",
+            |_| {},
+        );
     }
 }

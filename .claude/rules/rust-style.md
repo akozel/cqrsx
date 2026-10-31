@@ -47,7 +47,7 @@ a wrong result, a wrong doc) is fixed wherever it is found. Lints in `[lints]` k
    condition. A panic in user code (a handler) is caught at the boundary and becomes an error (rule 11).
 9. Pattern matching instead of check-then-unwrap: `if let`, `let … else`, `match`.
 10. Mutexes: under a `std::sync::Mutex` only short operations, no user code and no `.await`. Lock through one
-    shared helper: on poison it logs `error!` naming the lock, calls `clear_poison()` and continues. A lock that
+    shared helper (`cqrsx::mutex::{lock, get_mut}`): on poison it logs `error!` naming the lock, calls `clear_poison()` and continues. A lock that
     guards a change of several steps (data may stay half-updated) does not recover: it returns `Err`.
 11. `catch_unwind` only at the boundary with user code (handlers run by long-lived workers, where a handler's
     panic must not kill the worker) and in tests; never as control flow inside the engine.

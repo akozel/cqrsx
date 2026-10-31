@@ -3,20 +3,17 @@
 //! (`Builder::projections`). Its settings are the three pools of [`PostgresSettings`], opened as their [`PoolPlan`]
 //! says when the engine is built: one connection each, an unreachable database fails the build.
 use crate::{
-    engine::{
-        build::BuildError,
-        settings::{Read, Settings, SettingsError, duration_text},
-    },
-    postgres::pool::{
-        ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, DEFAULT_MAX_CONNECTIONS, DEFAULT_STATEMENT_TIMEOUT, StatementTimeout,
-        connect_pool_with,
-    },
+    build::BuildError,
+    settings::{Read, Settings, SettingsError, duration_text},
+};
+use cqrsx::postgres::pool::{
+    ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, DEFAULT_MAX_CONNECTIONS, StatementTimeout, connect_pool_with,
 };
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-use std::{collections::BTreeMap, fmt, num::NonZeroU32, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroU32, time::Duration};
 
 /// The journal, the snapshots, the outbox and the task queue in PostgreSQL (`Builder::event_store`), or the views and
 /// their checkpoints (`Builder::projections`).
@@ -223,18 +220,6 @@ fn checked_timeout(read: &Read, value: Option<String>) -> Result<StatementTimeou
     }
 }
 
-/// The cap a statement timeout puts on a statement as the description of the settings writes it (`Default` is the
-/// library's 4 s), or `unlimited`.
-impl fmt::Display for StatementTimeout {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            Self::Default => f.write_str(&duration_text(DEFAULT_STATEMENT_TIMEOUT)),
-            Self::Custom(timeout) => f.write_str(&duration_text(*timeout)),
-            Self::Unlimited => f.write_str("unlimited"),
-        }
-    }
-}
-
 /// How the engine connects one PostgreSQL pool: what it sets; everything else is SQLx's default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PostgresPool {
@@ -321,7 +306,7 @@ impl PoolPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::settings::{Defaults, Settings};
+    use crate::settings::{Defaults, Settings};
     use std::{collections::HashMap, num::NonZeroUsize};
 
     /// `value` as the variable of the statement timeout under the prefix `ENCORE` (`None`: absent; blank counts as a
@@ -452,7 +437,8 @@ mod tests {
     /// a store that does not answer is `Unavailable` and heard as such by its observer.
     #[tokio::test]
     async fn an_executor_over_postgres_prints_its_attempt_and_reports_an_unreachable_store_to_its_observer() {
-        use crate::{
+        use crate::test_support::{Book, Show};
+        use cqrsx::{
             command::{
                 CommandGatewayError,
                 executor::StoreCommandExecutor,
@@ -460,7 +446,6 @@ mod tests {
                 observer::{CommandObserver, CommandReport, Outcome},
                 retry::AggregateConflictRetryPolicy,
             },
-            engine::test_support::{Book, Show},
             journal::persisted::PersistedEventStore,
             postgres::outbox::PostgresEventRepositoryWithOutbox,
         };
@@ -485,7 +470,7 @@ mod tests {
         let heard = Arc::new(Heard::default());
         let executor =
             StoreCommandExecutor::<Show, _>::new(store, (), AggregateConflictRetryPolicy::default(), LockLimits::default())
-                .with_commit_wakeup(crate::journal::wakeup::CommitWakeup::new())
+                .with_commit_wakeup(cqrsx::journal::wakeup::CommitWakeup::new())
                 .with_observer(heard.clone());
         let printed = format!("{executor:?}");
         assert!(
@@ -512,9 +497,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_executors_over_postgres_take_the_settings_of_the_engine() {
-        use crate::{
+        use crate::{Cqrs, Journal, executor::Executor, test_support::*};
+        use cqrsx::{
             command::{locks::LockLimits, retry::AggregateConflictRetryPolicy},
-            engine::{Cqrs, Executor, test_support::*},
             projection::processor::config::ProcessorConfig,
             worker::runtime::config::TaskRuntimeConfig,
         };
@@ -548,18 +533,39 @@ mod tests {
         let Some(Executor::Postgres(executor)) = cqrs.executor_of::<Show>() else {
             panic!("the executor of an engine over PostgreSQL is PostgreSQL's");
         };
-        assert_eq!(
-            (
-                executor.lock_limits(),
-                executor.retry_policy(),
-                executor.store().snapshot_interval()
-            ),
-            (limits, retry, Some(3))
+        let printed = format!("{executor:?}");
+        assert!(
+            printed.contains(&format!("retry_policy: {retry:?}, lock_limits: {limits:?}")),
+            "{printed}"
         );
+        let Journal::Postgres(pools) = &cqrs.journal else {
+            panic!("the journal of an engine over PostgreSQL is PostgreSQL's");
+        };
+        let store = format!("{:?}", cqrs.postgres_store::<Show>(pools));
+        assert!(store.contains("snapshot_policy: Every(3)"), "{store}");
         assert!(
             cqrs.history::<Show>(&"s-1".into()).await.is_err(),
             "nobody listens on the history pool"
         );
         assert!(cqrs.documents::<Hall, Show>().is_some(), "the views in memory");
+        assert!(
+            cqrs.journal().is_none() && cqrs.outbox().is_none(),
+            "the journal and the outbox are in PostgreSQL"
+        );
+        assert!(cqrs.checkpoints().is_some(), "the views and their checkpoints in memory");
+        let pools = PostgresPools {
+            main: lazy(),
+            history: lazy(),
+            projection: lazy(),
+        };
+        let durable = Cqrs::in_memory()
+            .event_store(Postgres)
+            .projections(Postgres)
+            .postgres_pools(pools)
+            .module(shows)
+            .build()
+            .await
+            .unwrap();
+        assert!(durable.checkpoints().is_none(), "the checkpoints are in PostgreSQL");
     }
 }

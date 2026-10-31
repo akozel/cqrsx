@@ -1,8 +1,6 @@
 //! What a module gets when the engine is built: its variables of the environment and the settings of the engine.
-use crate::{
-    engine::settings::{Settings, duration_text, variable},
-    locking::{get_mut, lock},
-};
+use crate::settings::{Settings, duration_text, variable};
+use cqrsx::mutex::{get_mut, lock};
 use std::{
     error::Error,
     fmt::{self, Display},
@@ -141,7 +139,7 @@ impl Setup {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::settings::DEFAULT_SNAPSHOT_EVERY;
+    use crate::settings::DEFAULT_SNAPSHOT_EVERY;
     use std::collections::HashMap;
 
     fn setup(prefix: &str, variables: &[(&str, &str)]) -> Setup {

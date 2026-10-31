@@ -11,7 +11,7 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use cqrsx::engine::Cqrs;
+use cqrsx_engine::Cqrs;
 use std::sync::Arc;
 
 /// The routes of the box office, one line per endpoint.

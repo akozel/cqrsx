@@ -1,9 +1,9 @@
 //! A command from an entry point of the application ([`Source`]) and what became of it ([`Outcome`]).
-use crate::{
+use crate::Cqrs;
+use crate::diagnostics;
+use cqrsx::{
     command::{CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
-    diagnostics,
     domain::{aggregate::Aggregate, command::Command},
-    engine::Cqrs,
 };
 use std::fmt;
 use uuid::Uuid;
@@ -82,13 +82,13 @@ impl Cqrs {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
+    use crate::{Cqrs, test_support::*};
+    use cqrsx::{
         command::{
             CommandGatewayError,
             causation::{CAUSATION_ID, COMMAND_ID, CORRELATION_ID, SOURCE},
             metadata::RECORDED_AT,
         },
-        engine::{Cqrs, test_support::*},
         journal::repository::PersistedEventRepository,
     };
     use std::collections::BTreeSet;
@@ -107,7 +107,7 @@ mod tests {
             .execute::<Show>(&"s-1".into(), book("A2", "panda"))
             .await
             .unwrap();
-        let events = cqrs.journal().events::<Show>("s-1").await.unwrap();
+        let events = cqrs.journal().unwrap().events::<Show>("s-1").await.unwrap();
         let metadata: Vec<&serde_json::Value> = events.iter().map(|event| &event.metadata).collect();
         let keys: BTreeSet<&str> = metadata[0].as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
@@ -150,7 +150,7 @@ mod tests {
             CommandGatewayError::Domain(SeatTaken)
         );
         let shows = Cqrs::in_memory().module(shows).build().await.unwrap();
-        let (answer, log) = crate::diagnostics::test_support::capture(
+        let (answer, log) = crate::test_support::capture(
             shows
                 .from("ui")
                 .execute::<Wallet>(&"fox".into(), Record { seat: "A1".into() }),
@@ -177,7 +177,7 @@ mod tests {
             ..book("A2", "panda")
         };
         ui.execute_with_id::<Show>(given, &"s-1".into(), own).await.unwrap();
-        let events = cqrs.journal().events::<Show>("s-1").await.unwrap();
+        let events = cqrs.journal().unwrap().events::<Show>("s-1").await.unwrap();
         let ids: Vec<&serde_json::Value> = events.iter().map(|event| &event.metadata[COMMAND_ID]).collect();
         assert_eq!(
             ids,

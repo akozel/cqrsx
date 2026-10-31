@@ -2,7 +2,7 @@
 //! this node started and the last one it saw finish.
 use crate::{operations::application::rebuild::RebuildService, shared::presentation::error::ApiError};
 use axum::{Json, extract::State};
-use cqrsx::engine::Cqrs;
+use cqrsx_engine::Cqrs;
 use serde_json::Value;
 use std::sync::Arc;
 

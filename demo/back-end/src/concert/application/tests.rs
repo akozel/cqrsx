@@ -13,19 +13,19 @@ use crate::{
     testing::test_app,
 };
 use cqrsx::{
-    engine::Cqrs,
     journal::{EventStore, persisted::PersistedEventStore},
     memory::task_queue::TaskStatus,
     task::format::TaskFormat,
     worker::queue::{TaskQueue, settlement::SettlementRequest},
 };
+use cqrsx_engine::Cqrs;
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use uuid::Uuid;
 
 /// Every task of the outbox: its type, its status and its claims.
 fn deliveries(cqrs: &Cqrs) -> Vec<(String, TaskStatus, i32)> {
-    let tasks = cqrs.outbox().tasks();
+    let tasks = cqrs.outbox().unwrap().tasks();
     tasks
         .into_iter()
         .map(|task| (task.entry.task.format().task_type().to_owned(), task.status, task.attempts))
@@ -73,13 +73,13 @@ async fn a_delivery_repeated_after_a_lost_acknowledgement_records_one_ticket_and
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", booking_id))
         .await
         .unwrap();
-    cqrs.outbox().lose_settlements(true);
+    cqrs.outbox().unwrap().lose_settlements(true);
     assert_eq!(
         cqrs.run_tasks().await,
         2,
         "the step and the e-mail ran; their acknowledgements are lost"
     );
-    cqrs.outbox().lose_settlements(false);
+    cqrs.outbox().unwrap().lose_settlements(false);
     tokio::time::advance(cqrs.settings().task_lease()).await;
     assert_eq!(
         cqrs.run_tasks().await,
@@ -115,11 +115,12 @@ async fn a_cancellation_that_overtook_its_ticket_is_retried_and_refunds_after_th
     let record_ticket = TaskFormat::of::<RecordTicketV1>();
     let mut held = cqrs
         .outbox()
+        .unwrap()
         .claim(&record_ticket, "node-b", 1, Duration::from_secs(60))
         .await
         .unwrap();
     assert_eq!(cqrs.run_tasks().await, 1, "the cancellation came first");
-    let tasks = cqrs.outbox().tasks();
+    let tasks = cqrs.outbox().unwrap().tasks();
     assert_eq!(
         (tasks[1].status, tasks[1].last_error.as_deref()),
         (TaskStatus::Pending, Some("unknown_ticket"))
@@ -128,7 +129,7 @@ async fn a_cancellation_that_overtook_its_ticket_is_retried_and_refunds_after_th
         delay: Duration::from_secs(1),
         reason: "unavailable".into(),
     };
-    cqrs.outbox().settle(&held.remove(0), retry).await.unwrap();
+    cqrs.outbox().unwrap().settle(&held.remove(0), retry).await.unwrap();
     assert_eq!(cqrs.run_tasks().await, 0, "both wait a second");
     tokio::time::advance(Duration::from_secs(1)).await;
     assert_eq!(
@@ -187,7 +188,7 @@ async fn a_cancellation_queued_behind_a_rebooking_refunds_the_booking_it_cancels
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", first)).await.unwrap();
     // The first cancellation holds the lock while its load waits at the gate; the rebooking and the
     // second cancellation queue behind it in this order.
-    let gate = cqrs.journal().hold_loads();
+    let gate = cqrs.journal().unwrap().hold_loads();
     let (id, cancel_first, second, cancel_second) = (concert_id(), Uuid::now_v7(), Uuid::now_v7(), Uuid::now_v7());
     let mut first_cancellation = Box::pin(ui.execute::<Concert>(&id, cancel("A1", "fox", cancel_first)));
     assert!(poll_once(first_cancellation.as_mut()).await.is_none());
@@ -200,6 +201,7 @@ async fn a_cancellation_queued_behind_a_rebooking_refunds_the_booking_it_cancels
     assert!(one.is_ok() && two.is_ok() && three.is_ok());
     let refunded: Vec<_> = cqrs
         .outbox()
+        .unwrap()
         .tasks()
         .into_iter()
         .map(|queued| queued.entry.task)
@@ -241,7 +243,7 @@ async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_even
         // Accepted or refused: the events below say which.
         let _ = result.unwrap();
     }
-    let store = PersistedEventStore::<_, Concert>::new(cqrs.journal().clone());
+    let store = PersistedEventStore::<_, Concert>::new(cqrs.journal().unwrap().clone());
     let cancelled: HashMap<String, Uuid> = store
         .load_events(concert_id().as_str())
         .await
@@ -254,6 +256,7 @@ async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_even
         .collect();
     let tasks: Vec<_> = cqrs
         .outbox()
+        .unwrap()
         .tasks()
         .into_iter()
         .map(|queued| queued.entry.task)

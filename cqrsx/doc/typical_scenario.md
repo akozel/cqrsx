@@ -93,4 +93,4 @@ The code is in [cancel booking](../../demo/back-end/src/concert/domain/commands/
 `run_tasks()` runs due work and `catch_up()` waits for views. A task context and `MemTaskQueue` permit
 focused task tests. Modules register one executor per aggregate and one owner per view name; handlers
 must tolerate repeat delivery, while reactions must stay pure. The tests in
-[`tests/engine/scenario.rs`](../tests/engine/scenario.rs) cover the full in-memory path.
+[`tests/engine/scenario.rs`](../../cqrsx-engine/tests/engine/scenario.rs) cover the full in-memory path.

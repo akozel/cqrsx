@@ -1,21 +1,30 @@
 //! The process of an engine (feature `http`): the HTTP API of its modules, the task runtime and the projection
 //! processors side by side until a signal, then stopped in order: the server, the task runtime, the processors (they
 //! finish what is in flight and give their checkpoints back), the pools.
-#[cfg(feature = "postgres")]
-use crate::postgres::task_queue::PostgresTaskQueue;
+//!
+//! Requires a running Tokio runtime. The process observes the shutdown signal, shares one cancellation token and drains
+//! its components; the task runtime enforces its own drain budget, and the process imposes no inbound or cleanup
+//! timeout. Dropping a polled process cancels its token and detaches the task runtime task for independent drain,
+//! without guaranteeing inbound or resource cleanup. The parts are private: [`Builder::serve`] and [`Cqrs::serve`] are
+//! the way in, [`StartupError`] is what comes out.
+mod error;
+mod lifecycle;
+mod logging;
+mod signal;
+
 use crate::{
-    engine::{
-        Cqrs, Journal,
-        build::{BuildError, Builder},
-        setup::SetupError,
-    },
-    host::{
-        lifecycle::{ReadSideStopped, run_with_processors},
-        signal::shutdown_signal,
-    },
-    locking::lock,
+    Cqrs, Journal,
+    build::{BuildError, Builder},
+    setup::SetupError,
+};
+#[cfg(feature = "postgres")]
+use cqrsx::postgres::task_queue::PostgresTaskQueue;
+use cqrsx::{
+    mutex::lock,
     worker::runtime::{TaskRuntimeError, prepare},
 };
+use lifecycle::run_with_processors;
+use signal::shutdown_signal;
 use std::{
     future::{Future, IntoFuture},
     io,
@@ -70,14 +79,18 @@ fn built(error: &BuildError) -> String {
     }
 }
 
+/// The projection processors failed: one panicked (and stopped the others), or their runtime did.
+#[derive(Clone, Debug, Error, PartialEq, Eq)]
+#[error("the read side stopped: {0}")]
+pub struct ReadSideStopped(pub String);
+
 type TaskRuntimeRun = Pin<Box<dyn Future<Output = Result<(), TaskRuntimeError>> + Send>>;
 
 impl Builder {
-    /// The process: installs the logger (`RUST_LOG`, one level, once per process; feature `logging`), builds the
+    /// The process: installs the logger (`RUST_LOG`, one level, once per process), builds the
     /// engine, binds the address of its settings and [serves](Cqrs::serve) it until SIGINT or SIGTERM.
     pub async fn serve(self) -> Result<(), StartupError> {
-        #[cfg(feature = "logging")]
-        crate::logging::LoggingConfig::from_env()
+        logging::LoggingConfig::from_env()
             .map_err(|error| StartupError::Logging(error.to_string()))?
             .try_init()
             .map_err(|error| StartupError::Logging(error.to_string()))?;
@@ -158,19 +171,17 @@ impl Cqrs {
 mod tests {
     use super::*;
     use crate::{
-        engine::{
-            module::Module,
-            settings::SettingsError,
-            setup::{Setup, SetupError},
-            test_support::*,
-        },
-        projection::checkpoint::CheckpointStore,
+        module::Module,
+        settings::SettingsError,
+        setup::{Setup, SetupError},
+        test_support::*,
     };
     use axum::{
         Router,
         extract::{Path, State},
         routing::get,
     };
+    use cqrsx::projection::checkpoint::CheckpointStore;
     use std::time::Duration;
     use tokio::{
         io::{AsyncReadExt, AsyncWriteExt},
@@ -219,7 +230,7 @@ mod tests {
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        let checkpoints = cqrs.checkpoints().clone();
+        let checkpoints = cqrs.checkpoints().unwrap().clone();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
@@ -329,7 +340,7 @@ mod tests {
     /// start in one process fails it before anything else.
     #[test]
     fn a_taken_address_fails_the_start() {
-        use crate::env::test_support;
+        use crate::test_support;
         if test_support::scenario().is_some() {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
@@ -344,19 +355,10 @@ mod tests {
                 let refused = serve().await.unwrap_err();
                 assert!(matches!(refused, StartupError::Bind { .. }), "{refused:?}");
                 assert!(refused.to_string().starts_with(&format!("cannot bind {addr}: ")), "{refused}");
-                #[cfg(feature = "logging")]
                 assert!(
                     matches!(serve().await, Err(StartupError::Logging(_))),
                     "one logger per process"
                 );
-                let invalid = Cqrs::from_lookup("SHOP", |name| (name == "SHOP_SNAPSHOT_EVERY").then(|| "0".to_owned()));
-                #[cfg(not(feature = "logging"))]
-                assert_eq!(
-                    invalid.serve().await.unwrap_err().to_string(),
-                    "invalid configuration: SHOP_SNAPSHOT_EVERY: must be positive"
-                );
-                #[cfg(feature = "logging")]
-                drop(invalid);
             });
             return;
         }

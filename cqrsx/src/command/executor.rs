@@ -42,6 +42,7 @@ impl<A: Aggregate, S: EventStore<A>> fmt::Debug for StoreCommandExecutor<A, S> {
         f.debug_struct("StoreCommandExecutor")
             .field("attempt", &self.attempt)
             .field("retry_policy", &self.retry_policy)
+            .field("lock_limits", &self.locks.limits())
             .field("commit_wakeup", &self.wakeup.is_some())
             .field("observer", &self.observer.is_some())
             .finish_non_exhaustive()
@@ -186,16 +187,6 @@ impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
     /// The store the commands run against.
     pub(crate) fn store(&self) -> &S {
         self.attempt.store()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn lock_limits(&self) -> LockLimits {
-        self.locks.limits()
-    }
-
-    #[cfg(test)]
-    pub(crate) fn retry_policy(&self) -> AggregateConflictRetryPolicy {
-        self.retry_policy
     }
 }
 

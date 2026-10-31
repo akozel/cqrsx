@@ -19,7 +19,13 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
 - `cqrsx/src/mongodb` — read models and projection checkpoints in MongoDB (feature `mongodb`).
 - `cqrsx/src/task` — a task as data: `NewTask`, format, attempt, policies.
 - `cqrsx/src/worker` — running tasks: handlers, dispatcher, adapters, executor, queue port, runtime.
-- `cqrsx/src/host` — lifecycle and signals (feature `host`).
+- `cqrsx/src/mutex.rs` — `lock`, `get_mut`: the one public helper that takes a `std::sync::Mutex` (rule 10).
+- `cqrsx-engine/src` — the engine, a crate of its own on top of `cqrsx` (the core does not know it): `lib.rs` (`Cqrs`),
+  `build.rs` (`Builder`, the assembly over the stores), `executor.rs`, `settings.rs`, `module.rs`, `setup.rs`, `outcome.rs`,
+  `views.rs`, `memory.rs`; `postgres.rs` (feature `postgres`), `mongodb.rs` (feature `mongodb`), `http.rs` and `serve.rs` with
+  `serve/{lifecycle,signal,error,logging}.rs` (feature `http`).
+- `cqrsx-engine/tests` — integration tests of the engine; `engine.rs` runs it on PostgreSQL and MongoDB containers
+  (fixtures from `cqrsx/tests/support/`, until they move to `cqrsx-fixtures`).
 - `cqrsx/tests` — integration tests; `postgres.rs` and `mongo.rs` start PostgreSQL and MongoDB via
   `testcontainers` (fixtures in `tests/support/`).
 - `cqrsx/doc/components.md` — architecture and naming contract. Read it before adding components.
@@ -38,9 +44,9 @@ defects are fixed wherever found.
 Every change ships with tests. Cover new code paths, including error branches, with unit tests
 next to the code, integration tests in `cqrsx/tests`, or doctests.
 
-Verification target: CI enforces **97% line coverage** for the workspace and for `cqrsx` alone.
-Keep every runtime feature (`postgres`, `host`, `logging`, `mongodb`) compiling and tested
-on its own and with `--no-default-features`.
+Verification target: CI enforces **97% line coverage** for the workspace and for `cqrsx` and `cqrsx-engine` alone.
+Keep every feature compiling and tested on its own and with `--no-default-features`: `postgres` and `mongodb`
+in the core; `postgres`, `mongodb` and `http` in the engine.
 
 Integration tests need the Podman API socket; `DOCKER_HOST` must point to it
 (`unix:///run/podman/podman.sock` in this environment). Fix failures, never relax thresholds or
@@ -54,9 +60,12 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-features
 cargo test --locked -p cqrsx --no-default-features            # core without PostgreSQL
-cargo test --locked -p cqrsx --no-default-features --features postgres   # also: host, logging, mongodb, http
+cargo test --locked -p cqrsx --no-default-features --features postgres   # also: mongodb
+cargo test --locked -p cqrsx-engine --no-default-features     # engine in memory
+cargo test --locked -p cqrsx-engine --no-default-features --features postgres   # also: mongodb, http
 cargo llvm-cov --locked --workspace --all-features --fail-under-lines 97
 cargo llvm-cov --locked -p cqrsx --all-features --fail-under-lines 97
+cargo llvm-cov --locked -p cqrsx-engine --all-features --fail-under-lines 97
 ```
 
-Before finishing: fmt, clippy, full tests and both coverage runs must pass.
+Before finishing: fmt, clippy, full tests and all three coverage runs must pass.

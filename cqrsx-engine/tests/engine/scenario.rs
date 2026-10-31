@@ -4,10 +4,10 @@
 use crate::modules::*;
 use cqrsx::{
     command::{CommandGatewayError, causation::CORRELATION_ID},
-    engine::Cqrs,
     journal::repository::PersistedEventRepository,
     memory::task_queue::TaskStatus,
 };
+use cqrsx_engine::Cqrs;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
@@ -44,7 +44,7 @@ async fn the_box_office_and_the_wallets_run_through_their_modules_in_memory() {
 
     assert_eq!(cqrs.run_tasks().await, 2, "the step, then the e-mail its command published");
     assert_eq!(*outbox.0.lock().unwrap(), ["fox:A1"]);
-    let tasks = cqrs.outbox().tasks();
+    let tasks = cqrs.outbox().unwrap().tasks();
     let delivered: Vec<(&str, TaskStatus)> = tasks
         .iter()
         .map(|task| (task.entry.task.format().task_type(), task.status))
@@ -67,7 +67,7 @@ async fn the_box_office_and_the_wallets_run_through_their_modules_in_memory() {
         "fox",
         "the label is kept in the metadata"
     );
-    let recorded = cqrs.journal().events::<Wallet>("fox").await.unwrap();
+    let recorded = cqrs.journal().unwrap().events::<Wallet>("fox").await.unwrap();
     assert_eq!(recorded[0].metadata[CORRELATION_ID], chain);
 
     cqrs.catch_up().await;

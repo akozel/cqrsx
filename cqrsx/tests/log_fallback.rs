@@ -1,4 +1,4 @@
-#![cfg(all(feature = "postgres", feature = "host"))]
+#![cfg(feature = "postgres")]
 // Test code: a panic is the failed check (rule 8 of .claude/rules/rust-style.md); clippy.toml allows it only inside
 // `#[test]` functions, not in the helpers of this crate.
 #![allow(
@@ -25,7 +25,6 @@ use cqrsx::journal::AggregateContext;
 use cqrsx::journal::EventStore;
 use cqrsx::{
     command::{CommandGatewayError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
-    host::error::HostError,
     journal::persisted::PersistedEventStore,
     postgres::outbox::PostgresEventRepositoryWithOutbox,
     task::{attempt::TaskAttempt, format::TaskFormat},
@@ -187,19 +186,6 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         executor.execute(&"private_id".into(), ()).await,
         Err(CommandGatewayError::Unavailable)
     ));
-    let panic = tokio::spawn(async {
-        panic!("private_panic_payload");
-    })
-    .await
-    .unwrap_err();
-    let panic_id = panic.id().to_string();
-    HostError::TaskRuntimeJoin(panic).log("host stopped");
-    let cancelled = tokio::spawn(std::future::pending::<()>());
-    cancelled.abort();
-    let cancelled = cancelled.await.unwrap_err();
-    let cancelled_id = cancelled.id().to_string();
-    HostError::TaskRuntimeJoin(cancelled).log("host stopped");
-
     let stop = CancellationToken::new();
     let id = Uuid::new_v4();
     let queue = Arc::new(Queue {
@@ -235,10 +221,6 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
     assert_eq!(log.matches("command execution failed").count(), 2);
     assert!(log.contains("storage_category=\"pool_closed\""));
     assert!(log.contains("category=\"unexpected\""));
-    assert!(log.contains(&panic_id));
-    assert!(log.contains(&cancelled_id));
-    assert!(log.contains("panicked=true cancelled=false"));
-    assert!(log.contains("panicked=false cancelled=true"));
     assert!(log.contains("concurrency=1 buffer_capacity=1 buffer_refill_percent=25 lease_seconds=60"));
     assert!(log.contains("task failed"));
     assert!(log.contains(&id.to_string()));

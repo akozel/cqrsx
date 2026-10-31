@@ -31,6 +31,7 @@ impl LoggingConfig {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
 
+    #[cfg(test)]
     pub fn level_filter(&self) -> LevelFilter {
         self.level_filter
     }
@@ -100,5 +101,42 @@ mod tests {
         for value in ["invalid", "6", "-1", " info ", "cqrsx=debug", "info,sqlx=warn"] {
             assert!(LoggingConfig::from_lookup(|_| Some(value.into())).is_err());
         }
+    }
+
+    // The process logger can be installed once and never removed: this test runs alone in a process of its own.
+    #[test]
+    fn logger_installation_is_explicit_and_duplicate_installation_is_fallible() {
+        use crate::test_support;
+        use std::error::Error;
+
+        if test_support::scenario().is_some() {
+            assert!(!tracing::dispatcher::has_been_set());
+            let expected = std::env::var("RUST_LOG")
+                .ok()
+                .unwrap_or_else(|| "info".into())
+                .parse::<tracing::level_filters::LevelFilter>();
+            match (LoggingConfig::from_env(), expected) {
+                (Ok(actual), Ok(expected)) => assert_eq!(actual.level_filter(), expected),
+                (Err(_), Err(_)) => {}
+                _ => panic!("from_env must retain level parsing"),
+            }
+            let config = LoggingConfig::from_lookup(|_| None).unwrap();
+            assert!(!tracing::dispatcher::has_been_set());
+            config.try_init().unwrap();
+            assert!(tracing::dispatcher::has_been_set());
+            let error = config.try_init().unwrap_err();
+            assert!(error.source().is_some());
+            assert_eq!(error.to_string(), "unable to initialize process logger");
+            assert_eq!(format!("{error:?}"), error.to_string());
+            return;
+        }
+        test_support::isolated(
+            concat!(
+                module_path!(),
+                "::logger_installation_is_explicit_and_duplicate_installation_is_fallible"
+            ),
+            "logger",
+            |_| {},
+        );
     }
 }

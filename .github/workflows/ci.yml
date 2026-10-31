@@ -106,6 +106,9 @@ jobs:
       - name: cqrsx coverage (97%)
         run: cargo llvm-cov --locked -p cqrsx --all-features --color never --fail-under-lines 97
 
+      - name: cqrsx-engine coverage (97%)
+        run: cargo llvm-cov --locked -p cqrsx-engine --all-features --color never --fail-under-lines 97
+
   tests:
     needs: build
     name: Workspace tests and doctests
@@ -125,23 +128,30 @@ jobs:
 
   features:
     needs: build
-    name: Independent runtime features (${{ matrix.features }})
+    name: Independent features of ${{ matrix.package }} (${{ matrix.features }})
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        features: ["", "--features postgres", "--features host", "--features logging", "--features mongodb"]
+        include:
+          - { package: cqrsx, features: "" }
+          - { package: cqrsx, features: "--features postgres" }
+          - { package: cqrsx, features: "--features mongodb" }
+          - { package: cqrsx-engine, features: "" }
+          - { package: cqrsx-engine, features: "--features postgres" }
+          - { package: cqrsx-engine, features: "--features mongodb" }
+          - { package: cqrsx-engine, features: "--features http" }
     steps:
       - uses: actions/checkout@v6
       - run: rustup toolchain install --no-self-update
-      - run: cargo check --locked -p cqrsx --no-default-features --lib ${{ matrix.features }}
-      - run: cargo test --locked -p cqrsx --no-default-features ${{ matrix.features }}
+      - run: cargo check --locked -p ${{ matrix.package }} --no-default-features --lib ${{ matrix.features }}
+      - run: cargo test --locked -p ${{ matrix.package }} --no-default-features ${{ matrix.features }}
       - name: Upload minimized property regressions
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: runtime-feature-regressions-${{ strategy.job-index }}
+          name: feature-regressions-${{ strategy.job-index }}
           path: target/stage4/proptest-regressions.txt
           if-no-files-found: ignore
 

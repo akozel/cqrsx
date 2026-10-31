@@ -6,8 +6,8 @@ use crate::{
     },
     domain::aggregate::Aggregate,
     journal::{EventStore, persisted::PersistedEventStore},
-    locking::lock,
     memory::event_repository::MemEventRepository,
+    mutex::lock,
     task::NewTask,
     testing::mem_store::MemStore,
 };
@@ -285,8 +285,9 @@ mod tests {
             format!("{executor:?}"),
             format!(
                 "TestCommandExecutor {{ executor: StoreCommandExecutor {{ attempt: CommandAttempt {{ aggregate_type: \"stack\", \
-                 task_planner: true, .. }}, retry_policy: {:?}, commit_wakeup: false, observer: false, .. }}, .. }}",
-                AggregateConflictRetryPolicy::default()
+                 task_planner: true, .. }}, retry_policy: {:?}, lock_limits: {:?}, commit_wakeup: false, observer: false, .. }}, .. }}",
+                AggregateConflictRetryPolicy::default(),
+                LockLimits::default()
             )
         );
     }

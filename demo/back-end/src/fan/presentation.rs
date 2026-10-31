@@ -3,7 +3,7 @@
 pub mod wallet;
 
 use axum::{Router, routing::get};
-use cqrsx::engine::Cqrs;
+use cqrsx_engine::Cqrs;
 use std::sync::Arc;
 
 /// The routes of the ledger.

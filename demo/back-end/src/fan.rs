@@ -23,13 +23,11 @@ use crate::{
         infrastructure::http_mailer::{HttpMailer, MailClientSettings},
     },
 };
-use cqrsx::{
-    engine::{
-        module::Module,
-        settings::duration_text,
-        setup::{Setup, SetupError},
-    },
-    task::policy::Retry,
+use cqrsx::task::policy::Retry;
+use cqrsx_engine::{
+    module::Module,
+    settings::duration_text,
+    setup::{Setup, SetupError},
 };
 use std::{num::NonZeroU16, sync::Arc};
 
@@ -90,9 +88,9 @@ mod tests {
     use super::*;
     use cqrsx::{
         command::locks::LockLimits,
-        engine::settings::Settings,
         worker::runtime::{config::TaskRuntimeConfig, worker_pool_config::TaskWorkerPoolConfig},
     };
+    use cqrsx_engine::settings::Settings;
     use std::time::Duration;
 
     /// The mail settings of the demo's engine: its defaults, or its task runtime with a handler that may run a second

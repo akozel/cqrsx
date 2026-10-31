@@ -22,7 +22,7 @@ use crate::{
     diagnostics,
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::PersistenceError,
-    locking::lock,
+    mutex::lock,
     projection::EventHandler,
     unwinding::{Panicked, unwinding},
 };

@@ -7,10 +7,10 @@ use crate::{
 };
 use cqrsx::{
     domain::aggregate::Aggregate,
-    engine::{Cqrs, build::Builder, settings::Settings},
     task::policy::Policies,
     view::{View, repository::StoredView},
 };
+use cqrsx_engine::{Cqrs, build::Builder, settings::Settings};
 use std::{collections::HashMap, future::Future, sync::Arc};
 
 /// The modules of the box office as `main.rs` registers them, over the variables `pairs` (full names) and the demo's

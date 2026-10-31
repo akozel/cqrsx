@@ -1,9 +1,9 @@
 //! The views of an engine in MongoDB (feature `mongodb`): [`MongoDb`] keeps the views and their checkpoints in one
 //! database (`Builder::projections`); the journal stays in PostgreSQL. Its settings are [`MongoSettings`]; the client
 //! connects lazily, when a view or a checkpoint is first read or written.
-use crate::engine::settings::{Read, SettingsError, duration_text};
+use crate::settings::{Read, SettingsError, duration_text};
 #[cfg(feature = "postgres")]
-use crate::engine::{build::BuildError, settings::Settings};
+use crate::{build::BuildError, settings::Settings};
 #[cfg(feature = "postgres")]
 use mongodb::Client;
 use mongodb::options::ClientOptions;
@@ -153,7 +153,7 @@ impl MongoPlan {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::settings::{Defaults, Settings};
+    use crate::settings::{Defaults, Settings};
 
     fn pool_size(value: Option<&str>) -> Result<NonZeroU32, SettingsError> {
         let lookup = |name: &str| {

@@ -9,12 +9,6 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use chrono::NaiveDate;
-use cqrsx::engine::{
-    Cqrs,
-    mongodb::MongoDb,
-    postgres::{Postgres, PostgresPools},
-    settings::{DEFAULT_SNAPSHOT_EVERY, Settings},
-};
 use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
 use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat};
 use cqrsx::worker::TaskResult;
@@ -39,6 +33,12 @@ use cqrsx::{
     },
     reactions::ReactionsPlanner,
     view::{View, projection::ViewProjection, repository::ViewRepository},
+};
+use cqrsx_engine::{
+    Cqrs,
+    mongodb::MongoDb,
+    postgres::{Postgres, PostgresPools},
+    settings::{DEFAULT_SNAPSHOT_EVERY, Settings},
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,
@@ -93,7 +93,7 @@ fn committed(answer: &Result<CommitReport<Concert>, CommandGatewayError<ConcertE
 }
 
 /// The engine of the process over the variables of nobody: its modules as `main.rs` registers them.
-fn process() -> cqrsx::engine::build::Builder {
+fn process() -> cqrsx_engine::build::Builder {
     Cqrs::from_lookup("ENCORE", |_| None)
         .defaults(DEMO_DEFAULTS)
         .module(concert::module)

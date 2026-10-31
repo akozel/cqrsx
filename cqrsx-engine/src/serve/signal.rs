@@ -34,7 +34,7 @@ mod tests {
 
     #[test]
     fn registering_signal_observation_waits_without_sending_os_signals() {
-        use crate::env::test_support;
+        use crate::test_support;
         if test_support::scenario().is_some() {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {

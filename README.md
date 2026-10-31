@@ -5,6 +5,8 @@ It provides aggregates and command handling, event and snapshot persistence,
 projections, a transactional outbox, and a durable task queue with retries.
 PostgreSQL stores data, and Tokio runs background tasks.
 
+The workspace has three crates: [`cqrsx`](cqrsx/README.md), the core; [`cqrsx-engine`](cqrsx-engine/README.md), which
+assembles an application from the core's components; and `cqrsx-macros`, the derive macros.
 For architecture details, see [components and terminology](cqrsx/doc/components.md).
 
 ## Requirements
@@ -87,10 +89,13 @@ own MongoDB `8.2` containers for the `mongodb` feature;
 they do not require the Compose database. The first run needs access to the image
 registry.
 
-Run core tests without PostgreSQL:
+Run the tests of each crate without its optional stores and with each feature on its own:
 
 ```bash
-cargo test --locked -p cqrsx --no-default-features
+cargo test --locked -p cqrsx --no-default-features                       # core without PostgreSQL
+cargo test --locked -p cqrsx --no-default-features --features postgres   # also: mongodb
+cargo test --locked -p cqrsx-engine --no-default-features                # engine in memory
+cargo test --locked -p cqrsx-engine --no-default-features --features postgres   # also: mongodb, http
 ```
 
 ## Code coverage
@@ -109,4 +114,5 @@ The full coverage run requires the Podman API socket configured in the Tests sec
 cargo llvm-cov --workspace --all-features --html --open --ignore-filename-regex '(^|/)main\.rs$' --fail-under-lines 97
 ```
 
-Open `target/llvm-cov/html/index.html` in your browser.
+Open `target/llvm-cov/html/index.html` in your browser. CI also requires 97% for the core and the engine on their
+own: `cargo llvm-cov --locked -p cqrsx --all-features --fail-under-lines 97` and the same with `-p cqrsx-engine`.

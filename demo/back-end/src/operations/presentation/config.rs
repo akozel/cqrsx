@@ -10,7 +10,7 @@ use crate::{
     },
 };
 use axum::{Json, extract::State};
-use cqrsx::engine::Cqrs;
+use cqrsx_engine::Cqrs;
 use serde_json::{Value, json};
 use std::sync::Arc;
 

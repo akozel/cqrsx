@@ -2,7 +2,7 @@
 //! processor without a database.
 use crate::{
     journal::feed::Position,
-    locking::lock,
+    mutex::lock,
     projection::checkpoint::{
         CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest, RebuildRequests,
         RebuildState,

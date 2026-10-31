@@ -12,11 +12,11 @@ use crate::{
 };
 use async_trait::async_trait;
 use cqrsx::{
-    engine::{Cqrs, views::ViewsError},
     journal::feed::Position,
     projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, RebuildRequest},
     view::verify::Verification,
 };
+use cqrsx_engine::{Cqrs, views::ViewsError};
 use std::{sync::Arc, time::Duration};
 
 /// The views of the engine.

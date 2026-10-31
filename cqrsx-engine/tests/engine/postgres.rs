@@ -1,11 +1,8 @@
 //! The modules of `modules.rs` on the engine over PostgreSQL 18.6, with their views in MongoDB 8.2 or in PostgreSQL:
 //! a command, the task its reaction published, the command of the task's chain, the view; the pools the engine opens.
 use crate::{modules::*, mongo_container::Mongo, postgres_container::Postgres as Database};
-use cqrsx::{
-    command::causation::CORRELATION_ID,
-    engine::{Cqrs, build::BuildError, mongodb::MongoDb, postgres::Postgres, settings::Defaults, views::JournalTotals},
-    journal::feed::Position,
-};
+use cqrsx::{command::causation::CORRELATION_ID, journal::feed::Position};
+use cqrsx_engine::{Cqrs, build::BuildError, mongodb::MongoDb, postgres::Postgres, settings::Defaults, views::JournalTotals};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
@@ -91,7 +88,7 @@ async fn book_and_follow_the_chain(cqrs: &Cqrs, outbox: &Outbox) {
     assert_eq!(owners, [("halls", Some("node-a"))]);
 }
 
-fn engine(url: String, read_db: String, outbox: &Arc<Outbox>) -> cqrsx::engine::build::Builder {
+fn engine(url: String, read_db: String, outbox: &Arc<Outbox>) -> cqrsx_engine::build::Builder {
     let mail: Arc<Mailer> = outbox.clone();
     Cqrs::from_lookup("SHOP", move |name| match name {
         "SHOP_NODE_NAME" => Some("node-a".to_owned()),

@@ -3,10 +3,10 @@
 //! under the application's prefix (`ENCORE_SNAPSHOT_EVERY` for the prefix `ENCORE`), the task runtime's from its own
 //! `OUTBOX_*` variables, and takes the application's [`Defaults`] where a variable is absent.
 #[cfg(feature = "mongodb")]
-use crate::engine::mongodb::MongoSettings;
+use crate::mongodb::MongoSettings;
 #[cfg(feature = "postgres")]
-use crate::engine::postgres::PostgresSettings;
-use crate::{
+use crate::postgres::PostgresSettings;
+use cqrsx::{
     command::{
         locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits, LockLimitsError},
         retry::AggregateConflictRetryPolicy,
@@ -90,9 +90,9 @@ pub(crate) fn variables() -> Vec<&'static str> {
         NODE_NAME,
     ];
     #[cfg(feature = "postgres")]
-    names.extend(crate::engine::postgres::VARIABLES);
+    names.extend(crate::postgres::VARIABLES);
     #[cfg(feature = "mongodb")]
-    names.extend(crate::engine::mongodb::VARIABLES);
+    names.extend(crate::mongodb::VARIABLES);
     #[cfg(feature = "http")]
     names.push(HTTP_ADDR);
     names.extend(OUTBOX);
@@ -384,6 +384,11 @@ impl Settings {
         let (locks, projection) = (&self.lock_limits, &self.processor);
         let delivery = projection.delivery_limits();
         let worker = self.task_runtime.worker_pool();
+        // The stores' and the process's own entries are appended only with their features.
+        #[cfg_attr(
+            not(any(feature = "postgres", feature = "mongodb", feature = "http")),
+            expect(unused_mut, reason = "nothing is appended without a feature")
+        )]
         let mut entries = vec![
             (name(SNAPSHOT_EVERY), self.snapshot_every.to_string()),
             (name(LOCK_MAX_WAIT), duration_text(locks.max_wait())),
@@ -622,7 +627,7 @@ fn lease_budget(runtime: &TaskRuntimeConfig) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::worker::runtime::worker_pool_config::{TaskWorkerPoolConfig, TaskWorkerPoolConfigError};
+    use cqrsx::worker::runtime::worker_pool_config::{TaskWorkerPoolConfig, TaskWorkerPoolConfigError};
     use std::collections::{HashMap, HashSet};
 
     /// What the demo of the repository sets where its variables are absent: the task runtime and the settle the moved
@@ -732,19 +737,14 @@ mod tests {
         );
     }
 
-    #[cfg(feature = "postgres")]
     #[test]
     fn durations_are_whole_seconds_or_milliseconds() {
-        use crate::postgres::pool::StatementTimeout;
         assert_eq!(duration_text(Duration::ZERO), "0 s");
         assert_eq!(duration_text(Duration::from_secs(30)), "30 s");
         assert_eq!(duration_text(Duration::from_millis(10_000)), "10 s");
         assert_eq!(duration_text(Duration::from_millis(250)), "250 ms");
         assert_eq!(duration_text(Duration::from_millis(1500)), "1500 ms");
         assert_eq!(duration_text(Duration::from_micros(1500)), "1500000 ns");
-        assert_eq!(StatementTimeout::Default.to_string(), "4 s");
-        assert_eq!(StatementTimeout::Custom(Duration::from_millis(2500)).to_string(), "2500 ms");
-        assert_eq!(StatementTimeout::Unlimited.to_string(), "unlimited");
     }
 
     #[cfg(feature = "postgres")]

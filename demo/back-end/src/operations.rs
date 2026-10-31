@@ -13,7 +13,7 @@ use crate::{
     },
     shared::application::activity::ActivityHub,
 };
-use cqrsx::engine::{
+use cqrsx_engine::{
     module::Module,
     setup::{Setup, SetupError},
 };
@@ -58,7 +58,7 @@ fn replay(setup: &Setup) -> Result<Replay, SetupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::engine::settings::Settings;
+    use cqrsx_engine::settings::Settings;
     use std::{collections::HashMap, time::Duration};
 
     const SLOW_DELAY: &str = "ENCORE_REPLAY_SLOW_DELAY_MS";

@@ -97,16 +97,6 @@ pub(crate) fn log_lock_refused(aggregate_type: &str, refused: crate::command::lo
     );
 }
 
-/// A command for an aggregate type the engine does not know: a wiring fault, logged without the id.
-pub(crate) fn log_unregistered_aggregate(aggregate_type: &str) {
-    tracing::error!(
-        component = "engine",
-        operation = "execute",
-        aggregate_type = safe_type(aggregate_type),
-        "no module registers the aggregate type of the command"
-    );
-}
-
 /// A task handler ran a command of an aggregate type the assembly gave no executor: the command did not run, the task
 /// is retried. A wiring fault, hence `error`; no id, no payload.
 pub(crate) fn log_missing_executor(aggregate_type: &str) {
@@ -165,7 +155,7 @@ pub(crate) fn log_broken_invariant(component: &'static str, invariant: &'static 
     tracing::error!(component, invariant, "an invariant of cqrsx is broken");
 }
 
-/// A thread panicked while it held the mutex `lock`; the crate clears the poison and goes on (see `locking`). A bug, hence
+/// A thread panicked while it held the mutex `lock`; the crate clears the poison and goes on (see `mutex`). A bug, hence
 /// `error`.
 pub(crate) fn log_poisoned_lock(lock: &'static str) {
     tracing::error!(

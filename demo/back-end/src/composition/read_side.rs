@@ -113,7 +113,7 @@ async fn a_read_model_is_verified_by_the_engine_under_the_name_of_its_view() {
     };
     let (cqrs, _) = test_app().await;
     let cqrs = Arc::new(cqrs);
-    let journal = cqrs.journal();
+    let journal = cqrs.journal().unwrap();
     journal
         .persist::<Concert>(&[SerializedEvent::try_from(&announced).unwrap()], None)
         .await

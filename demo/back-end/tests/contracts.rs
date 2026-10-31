@@ -54,15 +54,12 @@ use cqrsx::{
         runtime::prepare,
     },
 };
-use cqrsx::{
-    engine::{
-        Cqrs,
-        build::{BuildError, Builder},
-        settings::{Settings, duration_text},
-        setup::Setup,
-    },
-    projection::checkpoint::CheckpointKey,
-    task::policy::Policies,
+use cqrsx::{projection::checkpoint::CheckpointKey, task::policy::Policies};
+use cqrsx_engine::{
+    Cqrs,
+    build::{BuildError, Builder},
+    settings::{Settings, duration_text},
+    setup::Setup,
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,

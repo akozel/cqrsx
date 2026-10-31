@@ -1,7 +1,7 @@
 //! The lease keeper of an owner: extends the checkpoint's lease while the owner works and notices when the
 //! lease is lost, by the store's answer or by the local deadline.
 use crate::{
-    locking::lock,
+    mutex::lock,
     projection::{
         checkpoint::{CheckpointKey, CheckpointStore, LeaseToken},
         processor::Operation,

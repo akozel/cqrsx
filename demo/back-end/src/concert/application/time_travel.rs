@@ -4,13 +4,11 @@ use crate::{
     concert::domain::{Concert, ConcertEvent},
     shared::{application::StorageError, domain::ConcertId},
 };
-use cqrsx::{
-    domain::{
-        aggregate::Aggregate,
-        event::{EventEnvelope, Events},
-    },
-    engine::Cqrs,
+use cqrsx::domain::{
+    aggregate::Aggregate,
+    event::{EventEnvelope, Events},
 };
+use cqrsx_engine::Cqrs;
 use serde_json::{Value, json};
 
 /// One row of the timeline under the slider.

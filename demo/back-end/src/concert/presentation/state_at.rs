@@ -8,7 +8,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use cqrsx::engine::Cqrs;
+use cqrsx_engine::Cqrs;
 use serde_json::Value;
 use std::sync::Arc;
 

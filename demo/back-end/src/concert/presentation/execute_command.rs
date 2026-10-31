@@ -17,7 +17,8 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::NaiveDate;
-use cqrsx::{command::CommandGatewayError, domain::rejection::Rejection, engine::Cqrs};
+use cqrsx::{command::CommandGatewayError, domain::rejection::Rejection};
+use cqrsx_engine::Cqrs;
 use serde::Deserialize;
 use serde_json::{Value, json};
 use std::sync::Arc;

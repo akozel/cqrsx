@@ -25,7 +25,7 @@ pub mod shared;
 #[cfg(test)]
 pub mod testing;
 
-use cqrsx::engine::settings::Defaults;
+use cqrsx_engine::settings::Defaults;
 
 /// The demo's values of the engine's settings where they differ from the library's, used only when the variable is
 /// absent (`demo/.env.example` shows each), and the name of its connections (PostgreSQL's `application_name`, MongoDB's

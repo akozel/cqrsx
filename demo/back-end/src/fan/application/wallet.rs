@@ -6,7 +6,8 @@ use crate::{
     fan::application::views::fan_wallet::FanWalletView,
     shared::domain::{FanId, FanLedgerId},
 };
-use cqrsx::{engine::views::ViewQuery, journal::PersistenceError, view::repository::StoredView};
+use cqrsx::{journal::PersistenceError, view::repository::StoredView};
+use cqrsx_engine::views::ViewQuery;
 use serde::Serialize;
 
 /// One ledger behind the wallet: the concert, the document version and the last event applied.

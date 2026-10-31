@@ -1,14 +1,16 @@
 //! The stores of the engine in memory, and what a test does with an engine: run the tasks, let the views catch up.
 #[cfg(feature = "postgres")]
-use crate::postgres::task_queue::PostgresTaskQueue;
-use crate::{
+use crate::ViewStore;
+use crate::{Cqrs, Journal};
+#[cfg(feature = "postgres")]
+use cqrsx::postgres::task_queue::PostgresTaskQueue;
+use cqrsx::{
     domain::aggregate::Aggregate,
-    engine::{Cqrs, Journal},
-    locking::lock,
     memory::{
         checkpoint_store::MemCheckpointStore, event_repository::MemEventRepository, task_queue::MemTaskQueue,
         view_repository::MemViewRepository,
     },
+    mutex::lock,
     view::View,
     worker::{
         adapter::boxed::BoxedTaskAdapter,
@@ -25,7 +27,7 @@ use std::{
 };
 
 /// The stores of the engine in memory: the journal with its outbox, the task queue over that outbox, the checkpoints
-/// of the processors and the repository of every view. An engine over other stores keeps them empty.
+/// of the processors and the repository of every view. Which of them an engine hands out depends on where it keeps its stores (`Cqrs::journal`, `outbox`, `checkpoints`).
 pub(crate) struct MemoryBackend {
     pub(crate) journal: MemEventRepository,
     pub(crate) queue: Arc<MemTaskQueue>,
@@ -56,20 +58,27 @@ impl MemoryBackend {
 }
 
 impl Cqrs {
-    /// The journal in memory: the events, the snapshots and the outbox of every aggregate type.
-    pub fn journal(&self) -> &MemEventRepository {
-        &self.memory.journal
+    /// The journal in memory: the events, the snapshots and the outbox of every aggregate type; `None` when the engine
+    /// keeps its journal in PostgreSQL.
+    pub fn journal(&self) -> Option<&MemEventRepository> {
+        matches!(self.journal, Journal::Memory).then_some(&self.memory.journal)
     }
 
-    /// The task queue over the journal's outbox in memory: every task with its delivery.
-    pub fn outbox(&self) -> &MemTaskQueue {
-        &self.memory.queue
+    /// The task queue over the journal's outbox in memory: every task with its delivery; `None` when the engine keeps
+    /// its journal, and with it the outbox, in PostgreSQL.
+    pub fn outbox(&self) -> Option<&MemTaskQueue> {
+        matches!(self.journal, Journal::Memory).then_some(self.memory.queue.as_ref())
     }
 
     /// The checkpoints of the processors in memory, e.g. for a test that plays an owner or a store that does not
-    /// answer.
-    pub fn checkpoints(&self) -> &MemCheckpointStore {
-        &self.memory.checkpoints
+    /// answer; `None` when the engine keeps its views, and with them the checkpoints, in PostgreSQL or MongoDB.
+    pub fn checkpoints(&self) -> Option<&MemCheckpointStore> {
+        let in_memory = match &self.journal {
+            Journal::Memory => true,
+            #[cfg(feature = "postgres")]
+            Journal::Postgres(_) => matches!(self.view_store, ViewStore::Memory),
+        };
+        in_memory.then_some(self.memory.checkpoints.as_ref())
     }
 
     /// The documents of the view `V` of the aggregate `A` in memory, e.g. for a test that writes them by hand; `None`
@@ -137,9 +146,9 @@ impl Cqrs {
 
 #[cfg(test)]
 mod tests {
-    use crate::{
+    use crate::{Cqrs, test_support::*};
+    use cqrsx::{
         command::causation::{CAUSATION_ID, CORRELATION_ID, SOURCE},
-        engine::{Cqrs, test_support::*},
         journal::repository::PersistedEventRepository,
         memory::task_queue::TaskStatus,
         projection::checkpoint::CheckpointStore,
@@ -148,7 +157,7 @@ mod tests {
     use std::{sync::atomic::Ordering, time::Duration};
 
     fn statuses(cqrs: &Cqrs) -> Vec<(String, TaskStatus, i32)> {
-        let tasks = cqrs.outbox().tasks();
+        let tasks = cqrs.outbox().unwrap().tasks();
         tasks
             .into_iter()
             .map(|task| (task.entry.task.format().to_string(), task.status, task.attempts))
@@ -181,8 +190,8 @@ mod tests {
         tokio::time::advance(Duration::from_secs(1)).await;
         assert_eq!(cqrs.run_tasks().await, 1);
         assert_eq!(mailbox.sent(), ["fox:A1"]);
-        let step = &cqrs.outbox().tasks()[0].entry.task;
-        let recorded = cqrs.journal().events::<Wallet>("fox").await.unwrap();
+        let step = &cqrs.outbox().unwrap().tasks()[0].entry.task;
+        let recorded = cqrs.journal().unwrap().events::<Wallet>("fox").await.unwrap();
         let metadata = &recorded[0].metadata;
         let correlation = booked.tasks[0].metadata()[CORRELATION_ID].clone();
         assert_eq!(
@@ -230,9 +239,9 @@ mod tests {
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        cqrs.outbox().lose_settlements(true);
+        cqrs.outbox().unwrap().lose_settlements(true);
         assert_eq!(cqrs.run_tasks().await, 2);
-        cqrs.outbox().lose_settlements(false);
+        cqrs.outbox().unwrap().lose_settlements(false);
         tokio::time::advance(cqrs.settings().task_lease()).await;
         assert_eq!(cqrs.run_tasks().await, 0, "returned, they wait the redelivery backoff");
         tokio::time::advance(Duration::from_secs(6)).await;
@@ -273,7 +282,7 @@ mod tests {
         let halls = cqrs.documents::<Hall, Show>().unwrap();
         assert!(halls.load("s-1").await.unwrap().is_some(), "the processor wrote it");
         assert!(cqrs.documents::<Tickets, Wallet>().unwrap().list().await.unwrap().is_empty());
-        let rows = cqrs.checkpoints().status(None).await.unwrap();
+        let rows = cqrs.checkpoints().unwrap().status(None).await.unwrap();
         assert_eq!(rows.len(), 2, "both processors registered their rows");
         let wallets_only = Cqrs::in_memory().module(wallets).build().await.unwrap();
         assert!(wallets_only.documents::<Hall, Show>().is_none(), "no such view");

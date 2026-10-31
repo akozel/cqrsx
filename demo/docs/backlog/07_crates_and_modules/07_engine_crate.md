@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-31 ([результаты](#результаты)) |
 | Ценность | высокая: сборка приложения отделена от компонентов; без этого адаптеры не могут стать крейтами (цикл) |
 | Цена | средняя–высокая: новый крейт, `impl Cqrs` по файлам, тесты движка, демо |
 | Зависимости | 06 |
@@ -39,7 +39,8 @@
   Рабочие становятся публичными с документацией (это сборка обработчиков и зависимостей для того, кто собирает
   приложение) или их работа переезжает в движок — выбор по каждой в плане; тестовые — тест переходит на наблюдаемое
   поведение (настройки видны в ответах и логах) или переезжает в ядро. Публичный API ради одного теста не появляется.
-- **Помощники:** логи движка (`log_unregistered_aggregate`, `log_missing_executor`) переезжают из `diagnostics`.
+- **Помощники:** лог движка `log_unregistered_aggregate` переезжает из `diagnostics`; `log_missing_executor` остаётся в
+  ядре — его зовёт `worker/context.rs` (исправлено при утверждении плана 2026-10-31).
   Закрытый `cqrsx/src/locking.rs` становится публичным `cqrsx/src/mutex.rs` (`cqrsx::mutex::{lock, get_mut}`, решение 6
   эпика): документация модуля описывает контракт для пользователя — под мьютексом одна короткая операция над
   контейнером, без пользовательского кода и без `.await`; блокировка, которая охраняет изменение в несколько шагов, сюда
@@ -63,3 +64,29 @@
 фичи уходят; импорты `cqrsx::engine::…` → `cqrsx_engine::…`; `tests/architecture.rs`: презентации —
 `cqrsx_engine::Cqrs`, запреты application — `cqrsx_engine::serve`… вместо `cqrsx::host`, `cqrsx::logging`.
 `CLAUDE.md` (крейты, прогоны фич), `components.md`, README.
+
+## Результаты
+
+2026-10-31, на HEAD `cc9e44c` плюс правки задачи.
+
+- **Крейт `cqrsx-engine`:** `Cqrs` (в `lib.rs`), `Builder` и сборка (`build.rs`), `Executor` (`executor.rs`), `Module`,
+  `Setup`, `Settings`, запросы витрин, точки входа команд, `serve`; `host` и `logging` — закрытые части `serve`, публичны
+  `Builder::serve`, `Cqrs::serve`, `StartupError`, `ReadSideStopped`. Ядро не зависит от движка (`grep cqrsx_engine
+  cqrsx/src` пуст). Фичи движка: `postgres`, `mongodb` (включает `postgres`), `http`, по умолчанию — ничего; у ядра
+  остались `postgres` и `mongodb` (до задачи 08).
+- **Закрытое ядра, которым пользовался движок:** `TaskDispatcher::assemble`, `TaskHandlers::assembled`,
+  `Dependencies::{shared, merged}` — публичные с документацией; `cqrsx::mutex::{lock, get_mut}` — публичный модуль с
+  контрактом (решение 6); `log_unregistered_aggregate` — в движке; `impl Display for StatementTimeout` — у своего
+  типа (правило 15); пределы блокировок — в `Debug` исполнителя, тесты движка читают настройки через `Debug`; четыре
+  тестовых доступа ядра удалены. `journal()`, `outbox()`, `checkpoints()` отвечают `Option`.
+- **Рабочая область:** `[workspace.dependencies]` и `[workspace.lints]`, `lints.workspace = true`. `unused_mut` без фич
+  исправлен (`expect`). README ядра разделён: Quick start (doctest), «Running on PostgreSQL» и «Configuration» — в
+  README движка дословно. CI — матрицы фич ядра и движка (с `http`, которого не было), покрытие движка.
+- **Правило архитектуры демо** распознаёт все крейты фреймворка (`FRAMEWORK`) — домену `cqrsx_engine` запрещён,
+  презентации разрешён только `cqrsx_engine::Cqrs`, слою application запрещены `cqrsx_engine::serve`, `cqrsx_postgres`,
+  `cqrsx_mongodb`; закреплено тестом `every_crate_of_the_framework_is_under_the_rules`.
+- **Тесты:** 877 (было 875: тест `Display` у `StatementTimeout`, часть `log_fallback.rs` про `HostError` — юнит-тест
+  движка в дочернем процессе), демо 175 (+1 тест правила), ignored 0. Покрытие строк: рабочая область 98,23 %, `cqrsx`
+  98,05 %, `cqrsx-engine` 98,35 %. Эталоны демо без изменений.
+- **Временно, до задачи 08:** тесты движка подключают фикстуры контейнеров ядра через `#[path]`; копии `capture` и
+  `isolated` (около 90 строк) лежат в `cqrsx-engine/src/test_support.rs`; `safe_type` (6 строк) продублирован.

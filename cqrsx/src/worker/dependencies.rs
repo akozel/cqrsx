@@ -55,13 +55,15 @@ impl Dependencies {
         stored.downcast_ref::<Arc<T>>().map(|dependency| &**dependency)
     }
 
-    /// The dependency of type `T`, shared, if it is provided.
-    pub(crate) fn shared<T: ?Sized + 'static>(&self) -> Option<Arc<T>> {
+    /// The dependency of type `T`, shared (an `Arc` to hand to a task or a handler that outlives the borrow), if it is
+    /// provided.
+    pub fn shared<T: ?Sized + 'static>(&self) -> Option<Arc<T>> {
         self.0.get(&TypeId::of::<T>())?.downcast_ref::<Arc<T>>().cloned()
     }
 
-    /// These dependencies and `other`'s; a type `other` provides too is `other`'s.
-    pub(crate) fn merged(mut self, other: &Dependencies) -> Self {
+    /// These dependencies and `other`'s; a type `other` provides too is `other`'s. For an assembly that gathers the
+    /// dependencies of several modules.
+    pub fn merged(mut self, other: &Dependencies) -> Self {
         Arc::make_mut(&mut self.0).extend(other.0.iter().map(|(id, dependency)| (*id, dependency.clone())));
         self
     }

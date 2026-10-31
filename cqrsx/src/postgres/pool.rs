@@ -2,7 +2,7 @@ use sqlx::{
     Connection, PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-use std::{num::NonZeroU32, time::Duration};
+use std::{fmt, num::NonZeroU32, time::Duration};
 
 /// The pool size `connect_pool` uses: SQLx's own default.
 pub const DEFAULT_MAX_CONNECTIONS: NonZeroU32 = NonZeroU32::new(10).expect("10 is not zero");
@@ -34,6 +34,25 @@ pub enum StatementTimeout {
     Custom(Duration),
     /// No cap (`statement_timeout = 0`), whatever the server or role configures.
     Unlimited,
+}
+
+/// The cap as a setting's description writes it: whole seconds, else whole milliseconds, else nanoseconds (`4 s`,
+/// `2500 ms`), or `unlimited`.
+impl fmt::Display for StatementTimeout {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let timeout = match self {
+            Self::Default => DEFAULT_STATEMENT_TIMEOUT,
+            Self::Custom(timeout) => *timeout,
+            Self::Unlimited => return f.write_str("unlimited"),
+        };
+        if timeout.subsec_nanos() == 0 {
+            write!(f, "{} s", timeout.as_secs())
+        } else if timeout.subsec_nanos().is_multiple_of(1_000_000) {
+            write!(f, "{} ms", timeout.as_millis())
+        } else {
+            write!(f, "{} ns", timeout.as_nanos())
+        }
+    }
 }
 
 impl StatementTimeout {
@@ -159,6 +178,17 @@ mod tests {
         assert!(!needs_ping(threshold - Duration::from_millis(1), threshold));
         assert!(!needs_ping(threshold, threshold));
         assert!(needs_ping(threshold + Duration::from_millis(1), threshold));
+    }
+
+    #[test]
+    fn a_statement_timeout_is_written_as_the_settings_write_durations() {
+        assert_eq!(StatementTimeout::Default.to_string(), "4 s");
+        assert_eq!(StatementTimeout::Custom(Duration::from_millis(2500)).to_string(), "2500 ms");
+        assert_eq!(
+            StatementTimeout::Custom(Duration::from_micros(1500)).to_string(),
+            "1500000 ns"
+        );
+        assert_eq!(StatementTimeout::Unlimited.to_string(), "unlimited");
     }
 
     #[test]

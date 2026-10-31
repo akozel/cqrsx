@@ -2,7 +2,8 @@
 //! are empty, e.g. after a wipe).
 use crate::{concert::application::views::concert_hall::ConcertHallView, shared::presentation::error::ApiError};
 use axum::{Json, extract::State};
-use cqrsx::{engine::Cqrs, view::repository::StoredView};
+use cqrsx::view::repository::StoredView;
+use cqrsx_engine::Cqrs;
 use serde_json::{Value, json};
 use std::sync::Arc;
 

@@ -13,7 +13,7 @@
 //! - waiting commands take the lock first in, first out, skipping those that gave up;
 //! - a key has a registry entry exactly while a command holds or awaits its lock, so an idle registry is empty;
 //! - the commands counted as waiting for a key never exceed `max_waiters`; the holder is not counted.
-use crate::{domain::aggregate::AggregateKey, locking::lock};
+use crate::{domain::aggregate::AggregateKey, mutex::lock};
 use std::{
     collections::HashMap,
     fmt,
@@ -146,7 +146,6 @@ impl AggregateLockRegistry {
         }
     }
 
-    #[cfg(test)]
     pub(crate) fn limits(&self) -> LockLimits {
         self.limits
     }

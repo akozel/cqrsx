@@ -4,11 +4,8 @@ use crate::{
     concert::application::views::concert_hall::ConcertHallView,
     shared::{application::StorageError, domain::ConcertId},
 };
-use cqrsx::{
-    engine::{Cqrs, views::ViewsError},
-    projection::checkpoint::CheckpointError,
-    view::View,
-};
+use cqrsx::{projection::checkpoint::CheckpointError, view::View};
+use cqrsx_engine::{Cqrs, views::ViewsError};
 
 /// Asks the owner of the halls to rebuild the hall of `concert_id`. A store that fails, or the halls' row not
 /// registered yet (the read side is starting), is a storage error with a message for the operator.
@@ -42,7 +39,7 @@ mod tests {
             starting.0,
             "the read side is starting: its checkpoints are not registered yet"
         );
-        let store = cqrs.checkpoints();
+        let store = cqrs.checkpoints().unwrap();
         store.register(&halls()).await.unwrap();
         rebuild_hall(&cqrs, &c1).await.unwrap();
         let owner = store

@@ -9,14 +9,14 @@ use axum::{
 };
 use chrono::NaiveDate;
 use cqrsx::{
-    engine::{
-        Cqrs,
-        build::Builder,
-        mongodb::MongoDb,
-        postgres::{Postgres, PostgresPools},
-    },
     projection::checkpoint::{CheckpointKey, CheckpointStore},
     view::repository::StoredView,
+};
+use cqrsx_engine::{
+    Cqrs,
+    build::Builder,
+    mongodb::MongoDb,
+    postgres::{Postgres, PostgresPools},
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,
@@ -104,8 +104,9 @@ async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrs>) {
         CheckpointKey::of::<ConcertHallView, Concert>(),
         CheckpointKey::of::<FanWalletView, Fan>(),
     ] {
-        cqrs.checkpoints().register(&key).await.unwrap();
+        cqrs.checkpoints().unwrap().register(&key).await.unwrap();
         cqrs.checkpoints()
+            .unwrap()
             .claim(&key, owner, Duration::from_secs(60))
             .await
             .unwrap()
@@ -338,7 +339,7 @@ async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
         (status, body),
         (StatusCode::ACCEPTED, json!({ "outcome": "requested", "concert_id": "c-1" }))
     );
-    cqrs.checkpoints().set_unavailable(true);
+    cqrs.checkpoints().unwrap().set_unavailable(true);
     let (status, body) = send(&router, post("/api/concerts/c-1/rebuild")).await;
     assert_eq!(
         (status, body["outcome"].as_str()),

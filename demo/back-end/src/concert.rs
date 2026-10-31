@@ -12,7 +12,7 @@ use crate::{
     },
     shared::application::TicketLimit,
 };
-use cqrsx::engine::{
+use cqrsx_engine::{
     module::Module,
     setup::{Setup, SetupError},
 };
@@ -33,7 +33,7 @@ pub fn module(setup: &Setup) -> Result<Module, SetupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::engine::Cqrs;
+    use cqrsx_engine::Cqrs;
 
     async fn limit(value: Option<&'static str>) -> Result<TicketLimit, String> {
         let cqrs = Cqrs::from_lookup("ENCORE", move |name| {

@@ -1,17 +1,17 @@
 //! Fixtures of the engine's tests: a box office of shows and the fans' wallets as two modules, a step of a chain and an
 //! e-mail between them, a view of each.
 use crate::{
+    Cqrs,
+    module::Module,
+    setup::{Setup, SetupError},
+};
+use cqrsx::{
     command::CommandGatewayError,
     domain::{
         aggregate::Aggregate,
         command::{Command, Decide, Label},
         event::{EventEnvelope, Events},
         rejection::Rejection,
-    },
-    engine::{
-        Cqrs,
-        module::Module,
-        setup::{Setup, SetupError},
     },
     reactions::{Decided, Reactions, Then},
     task::{
@@ -198,6 +198,27 @@ impl Decide<Wallet> for Record {
     }
 }
 
+/// An aggregate no module registers: the type of a command the engine does not know.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Stranger;
+
+impl Aggregate for Stranger {
+    const TYPE: &'static str = "stranger";
+    type Id = String;
+    type Command = Record;
+    type Event = WalletEvent;
+    type Error = AlreadyRecorded;
+    type Rules = ();
+
+    fn apply(&mut self, _: WalletEvent) {}
+}
+
+impl Decide<Stranger> for Record {
+    fn decide(self, _: &Stranger, _: &()) -> Result<WalletEvent, AlreadyRecorded> {
+        Ok(WalletEvent::Recorded { seat: self.seat })
+    }
+}
+
 /// A recorded ticket is mailed to its fan.
 impl Reactions for Wallet {
     fn react(decided: &Decided<'_, Self>, then: &mut Then) {
@@ -371,5 +392,110 @@ pub(crate) fn ready<F: std::future::Future>(future: F) -> F::Output {
     match std::pin::pin!(future).poll(&mut context) {
         std::task::Poll::Ready(output) => output,
         std::task::Poll::Pending => panic!("the future waits"),
+    }
+}
+
+/// Captures the log lines of the engine's own diagnostics (until the tests share a fixtures crate with the core).
+pub(crate) use logs::capture;
+
+mod logs {
+    use std::{
+        future::Future,
+        io,
+        sync::{Arc, Mutex},
+    };
+    use tracing::instrument::WithSubscriber;
+
+    #[derive(Clone, Default)]
+    struct Writer(Arc<Mutex<Vec<u8>>>);
+
+    impl io::Write for Writer {
+        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(bytes);
+            Ok(bytes.len())
+        }
+
+        fn flush(&mut self) -> io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Writer {
+        type Writer = Self;
+
+        fn make_writer(&'a self) -> Self {
+            self.clone()
+        }
+    }
+
+    /// The output of `work` and the `ERROR` lines it logged, one subscriber for this task alone.
+    pub(crate) async fn capture<T>(work: impl Future<Output = T>) -> (T, String) {
+        capture_at(tracing::Level::ERROR, work).await
+    }
+
+    /// The output of `work` and the lines of `level` and above it logged.
+    pub(crate) async fn capture_at<T>(level: tracing::Level, work: impl Future<Output = T>) -> (T, String) {
+        let writer = Writer::default();
+        let dispatch = tracing::Dispatch::new(
+            tracing_subscriber::fmt()
+                .with_writer(writer.clone())
+                .with_max_level(level)
+                .with_ansi(false)
+                .without_time()
+                .finish(),
+        );
+        tracing::dispatcher::with_default(&dispatch, || {
+            // Prime shared callsites that parallel tests may register without a subscriber.
+            crate::diagnostics::log_unregistered_aggregate("prime");
+            tracing::callsite::rebuild_interest_cache();
+            writer.0.lock().unwrap().clear();
+        });
+        let result = work.with_subscriber(dispatch).await;
+        let text = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
+        (result, text)
+    }
+}
+
+/// The environment of a test that must run alone in a process of its own: the child process re-runs one test with the
+/// scenario's name in the environment.
+pub(crate) use process::{isolated, scenario};
+
+mod process {
+    use std::process::Command;
+
+    /// The scenario this process was started for, `None` in the process that started it.
+    pub(crate) fn scenario() -> Option<String> {
+        std::env::var("CQRS_RUNTIME_TEST_ENV_SCENARIO").ok()
+    }
+
+    /// Runs the unit test `test` (its `module_path!()` and name) again in a child process with the `scenario`, after
+    /// `configure` set its environment; the child must pass exactly that test.
+    pub(crate) fn isolated(test: &str, scenario: &str, configure: impl FnOnce(&mut Command)) {
+        let mut child = Command::new(std::env::current_exe().unwrap());
+        child.args(["--exact", test.split_once("::").unwrap().1, "--nocapture"]);
+        for name in [
+            "OUTBOX_STORAGE_TIMEOUT_MS",
+            "OUTBOX_WORKER_CONCURRENCY",
+            "OUTBOX_QUEUE_CAPACITY",
+            "OUTBOX_QUEUE_REFILL_PERCENT",
+            "OUTBOX_POLL_INTERVAL_MS",
+            "OUTBOX_HANDLER_TIMEOUT_SECS",
+            "OUTBOX_LEASE_SECS",
+        ] {
+            child.env_remove(name);
+        }
+        child.env("CQRS_RUNTIME_TEST_ENV_SCENARIO", scenario);
+        configure(&mut child);
+        let result = child.output().unwrap();
+        assert!(
+            result.status.success(),
+            "isolated {scenario} test failed:\n{}\n{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+        assert!(
+            String::from_utf8_lossy(&result.stdout).contains("1 passed"),
+            "the requested unit test must run"
+        );
     }
 }

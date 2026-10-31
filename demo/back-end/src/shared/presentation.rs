@@ -7,7 +7,8 @@ use crate::shared::{
     domain::{ConcertId, FanId},
     presentation::error::ApiError,
 };
-use cqrsx::{engine::Cqrs, view::repository::StoredView};
+use cqrsx::view::repository::StoredView;
+use cqrsx_engine::Cqrs;
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::sync::Arc;

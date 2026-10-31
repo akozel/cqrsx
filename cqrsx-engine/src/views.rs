@@ -1,7 +1,7 @@
 //! The views of an engine: the queries of one view ([`ViewQuery`]) and the operations over all of them ([`Views`]).
-use crate::{
+use crate::Cqrs;
+use cqrsx::{
     domain::aggregate::Aggregate,
-    engine::Cqrs,
     journal::{PersistenceError, feed::Position, repository::PersistedEventRepository},
     memory::event_repository::MemEventRepository,
     projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
@@ -58,13 +58,13 @@ impl Counts for MemEventRepository {
 }
 
 #[cfg(feature = "postgres")]
-impl Counts for crate::postgres::event_repository::PostgresEventRepository {
+impl Counts for cqrsx::postgres::event_repository::PostgresEventRepository {
     fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
-        crate::postgres::event_repository::PostgresEventRepository::count_after::<A>(self, after, cap)
+        cqrsx::postgres::event_repository::PostgresEventRepository::count_after::<A>(self, after, cap)
     }
 
     async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
-        let totals = crate::postgres::event_repository::PostgresEventRepository::totals::<A>(self).await?;
+        let totals = cqrsx::postgres::event_repository::PostgresEventRepository::totals::<A>(self).await?;
         Ok(JournalTotals {
             events: totals.events,
             aggregates: totals.aggregates,
@@ -362,7 +362,7 @@ impl Cqrs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{settings::Settings, test_support::*};
+    use crate::{settings::Settings, test_support::*};
 
     async fn book_every(cqrs: &Cqrs, bookings: &[(&str, &str, &str)]) {
         for (show, seat, fan) in bookings {
@@ -469,7 +469,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_commit_wakes_the_processors_of_its_type_before_their_poll() {
         let config = Settings::default().processor();
-        let hour = crate::projection::processor::config::ProcessorConfig::try_new(
+        let hour = cqrsx::projection::processor::config::ProcessorConfig::try_new(
             Duration::from_secs(3600),
             config.page_size(),
             config.lease(),

@@ -11,16 +11,16 @@
 #[path = "engine/modules.rs"]
 mod modules;
 #[cfg(all(feature = "postgres", feature = "mongodb"))]
-#[path = "support/mongo.rs"]
+#[path = "../../cqrsx/tests/support/mongo.rs"]
 mod mongo_container;
 #[cfg(all(feature = "postgres", feature = "mongodb"))]
-#[path = "support/port_lease.rs"]
+#[path = "../../cqrsx/tests/support/port_lease.rs"]
 mod port_lease;
 #[cfg(all(feature = "postgres", feature = "mongodb"))]
 #[path = "engine/postgres.rs"]
 mod postgres;
 #[cfg(all(feature = "postgres", feature = "mongodb"))]
-#[path = "support/postgres.rs"]
+#[path = "../../cqrsx/tests/support/postgres.rs"]
 mod postgres_container;
 #[path = "engine/scenario.rs"]
 mod scenario;

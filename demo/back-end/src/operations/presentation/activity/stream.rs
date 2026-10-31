@@ -11,7 +11,7 @@ use axum::{
     extract::State,
     response::sse::{Event, KeepAlive, Sse},
 };
-use cqrsx::engine::Cqrs;
+use cqrsx_engine::Cqrs;
 use futures::{StreamExt, stream};
 use serde_json::json;
 use std::{convert::Infallible, sync::Arc, time::Duration};

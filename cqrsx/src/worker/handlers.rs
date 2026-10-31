@@ -73,8 +73,9 @@ impl TaskHandlers {
         Self::default()
     }
 
-    /// The handlers of `adapters` with `dependencies`: what the modules of an engine registered.
-    pub(crate) fn assembled(adapters: Vec<BoxedTaskAdapter>, dependencies: Dependencies) -> Self {
+    /// The handlers of `adapters` with `dependencies` already provided, to which more can still be registered: for an
+    /// assembly that gathered both from several modules, as `cqrsx-engine` does.
+    pub fn assembled(adapters: Vec<BoxedTaskAdapter>, dependencies: Dependencies) -> Self {
         Self {
             adapters,
             dependencies,

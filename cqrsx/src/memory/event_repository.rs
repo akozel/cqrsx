@@ -9,8 +9,8 @@ use crate::{
         serialized_event::SerializedEvent,
         snapshot::{SerializedSnapshot, SnapshotUpdate},
     },
-    locking::lock,
     memory::task_queue::Delivery,
+    mutex::lock,
     task::NewTask,
 };
 use serde_json::Value;

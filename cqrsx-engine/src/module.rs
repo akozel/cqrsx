@@ -1,8 +1,8 @@
 //! A module: what one part of an application plugs into the engine, registered in its root.
-use crate::{
+use crate::{Cqrs, build::BuildError};
+use cqrsx::{
     command::observer::AnyCommandObserver,
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
-    engine::{Cqrs, build::BuildError},
     projection::processor::observer::ProjectionObserver,
     reactions::Reactions,
     task::{
