@@ -5,7 +5,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote};
 use syn::{Data, DeriveInput, Error, Fields};
 
-/// `impl ::cqrsx::domain::event::EventKind` with the `name` and the `version` of `#[event(name = "…", version = "…")]`.
+/// `impl ::cqrsx::domain::event::Event` with the `name` and the `version` of `#[event(name = "…", version = "…")]`.
 pub(crate) fn expand_event(input: &DeriveInput) -> syn::Result<TokenStream> {
     let attribute = Pairs::parse(&input.attrs, "event", &["name", "version"])?;
     let Some(span) = attribute.span else {
@@ -26,15 +26,15 @@ pub(crate) fn expand_event(input: &DeriveInput) -> syn::Result<TokenStream> {
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics ::cqrsx::domain::event::EventKind for #ident #type_generics #where_clause {
+        impl #impl_generics ::cqrsx::domain::event::Event for #ident #type_generics #where_clause {
             const NAME: &'static str = #name;
             const VERSION: &'static str = #version;
         }
     })
 }
 
-/// `impl ::cqrsx::domain::event::DomainEvent` for an enum whose every variant carries one event type: the name and
-/// the version of a value are the `EventKind` of its variant's type.
+/// `impl ::cqrsx::domain::event::Events` for an enum whose every variant carries one event type: the name and
+/// the version of a value are the `Event` of its variant's type.
 pub(crate) fn expand_events(input: &DeriveInput) -> syn::Result<TokenStream> {
     let Data::Enum(data) = &input.data else {
         return Err(Error::new_spanned(
@@ -59,7 +59,7 @@ pub(crate) fn expand_events(input: &DeriveInput) -> syn::Result<TokenStream> {
     let arms = |constant: &str| {
         let constant = format_ident!("{constant}");
         payloads.iter().map(move |(variant, payload)| {
-            quote! { Self::#variant(_) => <#payload as ::cqrsx::domain::event::EventKind>::#constant, }
+            quote! { Self::#variant(_) => <#payload as ::cqrsx::domain::event::Event>::#constant, }
         })
     };
     let (names, versions) = (arms("NAME"), arms("VERSION"));
@@ -67,7 +67,7 @@ pub(crate) fn expand_events(input: &DeriveInput) -> syn::Result<TokenStream> {
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics ::cqrsx::domain::event::DomainEvent for #ident #type_generics #where_clause {
+        impl #impl_generics ::cqrsx::domain::event::Events for #ident #type_generics #where_clause {
             fn event_type(&self) -> &'static str {
                 match *self { #(#names)* }
             }
@@ -97,7 +97,7 @@ mod tests {
         .unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl ::cqrsx::domain::event::EventKind for BookingCancelled {
+            impl ::cqrsx::domain::event::Event for BookingCancelled {
                 const NAME: &'static str = "BookingCancelled";
                 const VERSION: &'static str = "1.0";
             }
@@ -114,7 +114,7 @@ mod tests {
         .unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl<'a, T: Clone> ::cqrsx::domain::event::EventKind for Wrapped<'a, T> where T: Send {
+            impl<'a, T: Clone> ::cqrsx::domain::event::Event for Wrapped<'a, T> where T: Send {
                 const NAME: &'static str = "Wrapped";
                 const VERSION: &'static str = "2";
             }
@@ -194,19 +194,19 @@ mod tests {
         .unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl ::cqrsx::domain::event::DomainEvent for ConcertEvent {
+            impl ::cqrsx::domain::event::Events for ConcertEvent {
                 fn event_type(&self) -> &'static str {
                     match *self {
-                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::domain::event::EventKind>::NAME,
+                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::domain::event::Event>::NAME,
                         Self::BookingCancelled(_) =>
-                            <events::BookingCancelled as ::cqrsx::domain::event::EventKind>::NAME,
+                            <events::BookingCancelled as ::cqrsx::domain::event::Event>::NAME,
                     }
                 }
                 fn event_version(&self) -> &'static str {
                     match *self {
-                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::domain::event::EventKind>::VERSION,
+                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::domain::event::Event>::VERSION,
                         Self::BookingCancelled(_) =>
-                            <events::BookingCancelled as ::cqrsx::domain::event::EventKind>::VERSION,
+                            <events::BookingCancelled as ::cqrsx::domain::event::Event>::VERSION,
                     }
                 }
             }
@@ -219,12 +219,12 @@ mod tests {
         let expanded = expand_events(&parse_quote! { enum Either<T: Send> where T: Sync { One(T) } }).unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl<T: Send> ::cqrsx::domain::event::DomainEvent for Either<T> where T: Sync {
+            impl<T: Send> ::cqrsx::domain::event::Events for Either<T> where T: Sync {
                 fn event_type(&self) -> &'static str {
-                    match *self { Self::One(_) => <T as ::cqrsx::domain::event::EventKind>::NAME, }
+                    match *self { Self::One(_) => <T as ::cqrsx::domain::event::Event>::NAME, }
                 }
                 fn event_version(&self) -> &'static str {
-                    match *self { Self::One(_) => <T as ::cqrsx::domain::event::EventKind>::VERSION, }
+                    match *self { Self::One(_) => <T as ::cqrsx::domain::event::Event>::VERSION, }
                 }
             }
         };
@@ -236,7 +236,7 @@ mod tests {
         let expanded = expand_events(&parse_quote! { enum Never {} }).unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl ::cqrsx::domain::event::DomainEvent for Never {
+            impl ::cqrsx::domain::event::Events for Never {
                 fn event_type(&self) -> &'static str { match *self {} }
                 fn event_version(&self) -> &'static str { match *self {} }
             }

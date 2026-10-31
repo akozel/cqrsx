@@ -2,14 +2,13 @@
 //! every task type, the order and the ids of several tasks of one format, a delayed task, labels kept in the
 //! metadata, and a redelivered step that publishes nothing twice.
 use cqrsx::{
-    Task,
     command::{CommandExecutor, CommandGatewayError, causation::Causation},
-    domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+    domain::{aggregate::Aggregate, command::Decide, event::Events},
     journal::persisted::PersistedEventStore,
     memory::event_repository::MemEventRepository,
     reactions::{Decided, Reactions, ReactionsPlanner, Then},
     task::{
-        DEFAULT_MAX_ATTEMPTS, NewTask, TaskSchedule,
+        DEFAULT_MAX_ATTEMPTS, NewTask, Task, TaskSchedule,
         attempt::TaskAttempt,
         format::TaskFormat,
         policy::{Policies, PolicyName, Retry, TaskPolicy},
@@ -31,7 +30,7 @@ enum ShowEvent {
     Booked { seat: String, fan: String },
 }
 
-impl DomainEvent for ShowEvent {
+impl Events for ShowEvent {
     fn event_type(&self) -> &'static str {
         "booked"
     }
@@ -84,7 +83,7 @@ enum WalletEvent {
     Recorded { ticket: String },
 }
 
-impl DomainEvent for WalletEvent {
+impl Events for WalletEvent {
     fn event_type(&self) -> &'static str {
         "recorded"
     }

@@ -25,7 +25,7 @@ use cqrsx::{
         metadata::CommandMetadata,
         observer::{CommandObserver, CommandReport, Outcome},
     },
-    domain::event::{DomainEvent, EventEnvelope},
+    domain::event::{EventEnvelope, Events},
     journal::{EventStore, feed::Position},
     memory::checkpoint_store::MemCheckpointStore,
     projection::{
@@ -33,12 +33,7 @@ use cqrsx::{
         processor::observer::{Applied, Failed, FailureCategory, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
     },
     reactions::ReactionsPlanner,
-    task::{
-        NewTask,
-        attempt::TaskAttempt,
-        format::{TaskFormat, TaskPayload},
-        policy::redelivery_backoff,
-    },
+    task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat, policy::redelivery_backoff},
     testing::{
         command_executor::TestCommandExecutor,
         mem_store::{MemStore, MemStoreAggregateContext},
@@ -388,7 +383,7 @@ fn mail_context(attempt: TaskAttempt, config: &Config, activity: &Arc<ActivityHu
 }
 
 /// Attempt `number` of a task with `payload`, in the causation chain of a command.
-fn attempt<P: TaskPayload + Serialize>(payload: &P, number: i32) -> TaskAttempt {
+fn attempt<P: Task + Serialize>(payload: &P, number: i32) -> TaskAttempt {
     TaskAttempt::try_new(
         Uuid::now_v7(),
         TaskFormat::try_new(P::TASK_TYPE, P::TASK_VERSION).unwrap(),
@@ -695,7 +690,7 @@ fn cancel(seat: &str, fan_id: &str, metadata: &CommandMetadata) -> ConcertComman
 }
 
 /// The metadata of the command a task of `payload` issues, in the causation chain of `cause`.
-fn step<P: TaskPayload + Serialize>(payload: &P, cause: &CommandMetadata) -> CommandMetadata {
+fn step<P: Task + Serialize>(payload: &P, cause: &CommandMetadata) -> CommandMetadata {
     let attempt = TaskAttempt::try_new(
         Uuid::now_v7(),
         TaskFormat::of::<P>(),
@@ -1130,7 +1125,7 @@ impl TaskQueue for MemQueue {
 }
 
 /// Attempt `number` of a task with `payload` under a lease of a minute.
-fn leased<P: TaskPayload + Serialize>(payload: &P, number: i32) -> LeasedTask {
+fn leased<P: Task + Serialize>(payload: &P, number: i32) -> LeasedTask {
     LeasedTask::new(
         attempt(payload, number),
         TaskLease::new(Uuid::new_v4(), tokio::time::Instant::now() + Duration::from_secs(60)),

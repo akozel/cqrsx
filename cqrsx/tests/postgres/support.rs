@@ -31,7 +31,7 @@ pub(super) struct DummyTaskV1 {
     pub(super) value: String,
 }
 
-impl TaskPayload for DummyTaskV1 {
+impl Task for DummyTaskV1 {
     const TASK_TYPE: &'static str = "dummy_task";
     const TASK_VERSION: i32 = 1;
 }
@@ -59,7 +59,7 @@ pub(super) enum TestEvent {
     Recorded { value: String },
 }
 
-impl DomainEvent for TestEvent {
+impl Events for TestEvent {
     fn event_type(&self) -> &'static str {
         "recorded"
     }

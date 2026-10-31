@@ -24,7 +24,7 @@ enum CommandEvent {
     Recorded { values: Vec<String> },
 }
 
-impl DomainEvent for CommandEvent {
+impl Events for CommandEvent {
     fn event_type(&self) -> &'static str {
         "recorded"
     }
@@ -549,7 +549,7 @@ struct Counted(Vec<String>);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct Counted1(String);
 
-impl DomainEvent for Counted1 {
+impl Events for Counted1 {
     fn event_type(&self) -> &'static str {
         "counted"
     }

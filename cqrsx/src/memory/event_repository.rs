@@ -77,11 +77,11 @@ struct Journal {
 ///
 /// ```
 /// # mod example {
-/// # use cqrsx::domain::{aggregate::Aggregate, command::Decide, event::DomainEvent};
+/// # use cqrsx::domain::{aggregate::Aggregate, command::Decide, event::Events};
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// # pub struct Counted;
-/// # impl DomainEvent for Counted {
+/// # impl Events for Counted {
 /// #     fn event_type(&self) -> &'static str { "counted" }
 /// #     fn event_version(&self) -> &'static str { "1" }
 /// # }

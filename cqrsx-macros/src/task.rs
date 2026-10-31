@@ -5,7 +5,7 @@ use proc_macro2::{Ident, Literal, TokenStream, TokenTree};
 use quote::quote;
 use syn::{Attribute, Data, DeriveInput, Error, Field, LitStr, Meta, ext::IdentExt};
 
-/// `impl ::cqrsx::task::format::TaskPayload` with the `name` and the `version` of `#[task(name = "…", version = N)]`
+/// `impl ::cqrsx::task::Task` with the `name` and the `version` of `#[task(name = "…", version = N)]`
 /// and, when the struct has fields `#[label]`, their names in field order as `LABELS`.
 pub(crate) fn expand_task(input: &DeriveInput) -> syn::Result<TokenStream> {
     let attribute = Pairs::parse(&input.attrs, "task", &["name", "version"])?;
@@ -33,7 +33,7 @@ pub(crate) fn expand_task(input: &DeriveInput) -> syn::Result<TokenStream> {
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics ::cqrsx::task::format::TaskPayload for #ident #type_generics #where_clause {
+        impl #impl_generics ::cqrsx::task::Task for #ident #type_generics #where_clause {
             const TASK_TYPE: &'static str = #name;
             const TASK_VERSION: i32 = #number;
             #labels
@@ -133,7 +133,7 @@ mod tests {
         .unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl ::cqrsx::task::format::TaskPayload for RecordCancellation {
+            impl ::cqrsx::task::Task for RecordCancellation {
                 const TASK_TYPE: &'static str = "encore_record_cancellation";
                 const TASK_VERSION: i32 = 1;
             }
@@ -146,7 +146,7 @@ mod tests {
         .unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl<'a, T> ::cqrsx::task::format::TaskPayload for Greeting<'a, T> where T: Clone {
+            impl<'a, T> ::cqrsx::task::Task for Greeting<'a, T> where T: Clone {
                 const TASK_TYPE: &'static str = "greeting";
                 const TASK_VERSION: i32 = 2000000000;
             }
@@ -173,7 +173,7 @@ mod tests {
         .unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl ::cqrsx::task::format::TaskPayload for IssueRefund {
+            impl ::cqrsx::task::Task for IssueRefund {
                 const TASK_TYPE: &'static str = "issue_refund";
                 const TASK_VERSION: i32 = 1;
                 const LABELS: &'static [&'static str] = &["tenant", "type"];

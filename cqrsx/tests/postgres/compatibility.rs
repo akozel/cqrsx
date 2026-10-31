@@ -3,7 +3,7 @@ use super::support::Database;
 use cqrsx::postgres::event_repository::PostgresEventRepository;
 use cqrsx::{
     command::framework::CqrsFramework,
-    domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+    domain::{aggregate::Aggregate, command::Decide, event::Events},
     journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
 };
 use serde::{Deserialize, Serialize};
@@ -21,7 +21,7 @@ pub enum Event {
     ValueSet { value: i64 },
 }
 
-impl DomainEvent for Event {
+impl Events for Event {
     fn event_type(&self) -> &'static str {
         "ValueSet"
     }

@@ -1,7 +1,7 @@
 //! `RecordCancellation`: a cancelled booking is marked in the fan's ledger. Rules R10, R11; the
 //! accepted fact is [`TicketCancelled`].
 use crate::fan::domain::{Fan, FanError, FanEvent, TicketState, events::TicketCancelled};
-use cqrsx::{Command, domain::command::Decide};
+use cqrsx::domain::command::{Command, Decide};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Command)]

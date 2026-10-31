@@ -11,10 +11,7 @@ use serde::Serialize;
 use serde_json::json;
 use uuid::Uuid;
 
-use cqrsx::task::{
-    attempt::TaskAttempt,
-    format::{TaskFormat, TaskPayload},
-};
+use cqrsx::task::{Task, attempt::TaskAttempt, format::TaskFormat};
 use cqrsx::worker::{
     TaskResult,
     adapter::TaskAdapter,
@@ -33,7 +30,7 @@ pub(crate) struct DummyTask {
     pub(crate) value: &'static str,
 }
 
-impl TaskPayload for DummyTask {
+impl Task for DummyTask {
     const TASK_TYPE: &'static str = "dummy_task";
     const TASK_VERSION: i32 = 1;
 }

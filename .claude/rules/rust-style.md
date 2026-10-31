@@ -110,7 +110,7 @@ a wrong result, a wrong doc) is fixed wherever it is found. Lints in `[lints]` k
 31. `format!`/`write!` instead of `+` for more than two strings and instead of `str::replace` templating.
 32. No `unsafe`, no unstable features. `#[rustfmt::skip]` only for alignment with a readability reason.
 33. A derive or procedural macro implements an ordinary public trait that can be written by hand
-    (`CommandInfo`, `Decide`, `EventKind`, …). Derives are welcome where they remove boilerplate from
+    (`Command`, `Decide`, `Event`, …). Derives are welcome where they remove boilerplate from
     application code.
 
 ## Documentation

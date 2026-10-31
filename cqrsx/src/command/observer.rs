@@ -4,7 +4,7 @@
 //! [`AnyCommandObserver`].
 use crate::{
     command::{CommandGatewayError, CommitReport},
-    domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
+    domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
     task::{NewTask, format::TaskFormat},
 };
 use std::{any::Any, collections::HashMap, fmt};
@@ -19,7 +19,7 @@ use std::{any::Any, collections::HashMap, fmt};
 /// its commits, unless, on a multi-threaded runtime, the caller's thread is preempted between the release of the lock
 /// and the call long enough for the next command of the aggregate to commit and report first.
 ///
-/// The core reads neither [`CommandInfo`] nor [`Rejection`]:
+/// The core reads neither [`Command`] nor [`Rejection`]:
 /// an observer that names a command or a rejection bounds its implementation on them. An observer does not block and
 /// does not panic: a panic is the command's (its commit stays, the caller panics).
 ///
@@ -27,7 +27,7 @@ use std::{any::Any, collections::HashMap, fmt};
 /// use cqrsx::{
 ///     command::{CommandExecutor, observer::{CommandObserver, CommandReport, Outcome}},
 ///     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
-///     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+///     domain::{aggregate::Aggregate, command::Decide, event::Events},
 /// };
 /// use serde::{Deserialize, Serialize};
 /// use std::sync::{Arc, Mutex};
@@ -36,7 +36,7 @@ use std::{any::Any, collections::HashMap, fmt};
 /// struct Counter(u32);
 /// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// struct Incremented;
-/// impl DomainEvent for Incremented {
+/// impl Events for Incremented {
 ///     fn event_type(&self) -> &'static str { "incremented" }
 ///     fn event_version(&self) -> &'static str { "1" }
 /// }
@@ -169,7 +169,7 @@ pub trait AnyCommandObserver: Send + Sync {
 }
 
 /// One command of any aggregate type: what [`CommandReport`] holds, with the command as what is known of it
-/// ([`CommandInfo`]) and a rejection as what is reported of it ([`Rejection`]).
+/// ([`Command`]) and a rejection as what is reported of it ([`Rejection`]).
 pub struct AnyCommandReport<'a> {
     /// The aggregate's type, `A::TYPE`.
     pub aggregate_type: &'static str,
@@ -177,7 +177,7 @@ pub struct AnyCommandReport<'a> {
     pub aggregate_id: String,
     /// The aggregate's id as its type, for an observer that knows the type (`id.downcast_ref::<LedgerId>()`).
     pub id: &'a (dyn Any + Send + Sync),
-    pub command: &'a dyn CommandInfo,
+    pub command: &'a dyn Command,
     pub metadata: &'a HashMap<String, String>,
     pub outcome: AnyOutcome<'a>,
 }
@@ -219,7 +219,7 @@ impl<'a> AnyCommandReport<'a> {
     pub fn of<A>(report: &CommandReport<'a, A>) -> Self
     where
         A: Aggregate,
-        A::Command: CommandInfo,
+        A::Command: Command,
         A::Error: Rejection,
     {
         Self {
@@ -244,7 +244,7 @@ mod tests {
     use crate::{
         domain::{
             command::{Decide, Label},
-            event::DomainEvent,
+            event::Events,
         },
         task::format::TaskFormat,
     };
@@ -258,7 +258,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Booked;
 
-    impl DomainEvent for Booked {
+    impl Events for Booked {
         fn event_type(&self) -> &'static str {
             "booked"
         }
@@ -271,7 +271,7 @@ mod tests {
     /// A booking of the tests: its fan is its label.
     struct Book;
 
-    impl CommandInfo for Book {
+    impl Command for Book {
         fn name(&self) -> &'static str {
             "Book"
         }

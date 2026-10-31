@@ -150,7 +150,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     struct Said;
 
-    impl crate::domain::event::DomainEvent for Said {
+    impl crate::domain::event::Events for Said {
         fn event_type(&self) -> &'static str {
             "said"
         }

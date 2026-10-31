@@ -7,7 +7,7 @@ use crate::{
 use cqrsx::{
     domain::{
         aggregate::Aggregate,
-        event::{DomainEvent, EventEnvelope},
+        event::{EventEnvelope, Events},
     },
     engine::Cqrs,
 };

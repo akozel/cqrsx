@@ -1,12 +1,12 @@
 //! A module: what one part of an application plugs into the engine, registered in its root.
 use crate::{
     command::observer::AnyCommandObserver,
-    domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
+    domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
     engine::{Cqrs, build::BuildError},
     projection::processor::observer::ProjectionObserver,
     reactions::Reactions,
     task::{
-        format::TaskPayload,
+        Task,
         policy::{Policies, PolicyError, PolicyName, Retry},
     },
     view::View,
@@ -109,11 +109,11 @@ impl Module {
     }
 
     /// The aggregate type `A` with its `rules`: one executor of its commands, with its reactions. What is known of a
-    /// command ([`CommandInfo`]) and the code of a rejection ([`Rejection`]) are what an observer of every command names.
+    /// command ([`Command`]) and the code of a rejection ([`Rejection`]) are what an observer of every command names.
     pub fn aggregate<A>(mut self, rules: A::Rules) -> Self
     where
         A: Reactions + Clone + 'static,
-        A::Command: CommandInfo + Clone,
+        A::Command: Command + Clone,
         A::Error: Rejection + Send + 'static,
     {
         self.aggregates.push(AggregateEntry {
@@ -135,15 +135,15 @@ impl Module {
     }
 
     /// The task type of `handler`; [`TaskEntry::policy`] binds it to a policy.
-    pub fn task<P, H>(self, handler: H) -> TaskEntry
+    pub fn task<T, H>(self, handler: H) -> TaskEntry
     where
-        P: TaskPayload + DeserializeOwned + Send + 'static,
-        H: TaskHandler<P> + 'static,
+        T: Task + DeserializeOwned + Send + 'static,
+        H: TaskHandler<T> + 'static,
     {
         TaskEntry {
             module: self,
-            adapter: BoxedTaskAdapter::json::<P, H>(handler),
-            bind: Policies::with_task::<P>,
+            adapter: BoxedTaskAdapter::json::<T, H>(handler),
+            bind: Policies::with_task::<T>,
         }
     }
 

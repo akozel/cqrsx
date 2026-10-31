@@ -30,14 +30,14 @@ use uuid::Uuid;
 /// The runtime builds one per attempt; [`new`](Self::new) builds one for calling a handler outside it, in its tests:
 ///
 /// ```
-/// use cqrsx::task::{attempt::TaskAttempt, format::TaskPayload};
+/// use cqrsx::task::{attempt::TaskAttempt, Task};
 /// use cqrsx::worker::context::TaskContext;
 /// use serde::Serialize;
 /// use std::time::Duration;
 ///
 /// #[derive(Serialize)]
 /// struct Ping {}
-/// impl TaskPayload for Ping {
+/// impl Task for Ping {
 ///     const TASK_TYPE: &'static str = "ping";
 ///     const TASK_VERSION: i32 = 1;
 /// }
@@ -206,7 +206,7 @@ mod tests {
             causation::{CAUSATION_ID, COMMAND_ID, CORRELATION_ID, SOURCE},
             metadata::RECORDED_AT,
         },
-        domain::{command::Decide, event::DomainEvent},
+        domain::{command::Decide, event::Events},
         task::format::TaskFormat,
         worker::test_support::DummyTask,
     };
@@ -221,7 +221,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Recorded;
 
-    impl DomainEvent for Recorded {
+    impl Events for Recorded {
         fn event_type(&self) -> &'static str {
             "Recorded"
         }

@@ -14,7 +14,7 @@ use crate::{
 use cqrsx::{
     command::CommandExecutor,
     reactions::ReactionsPlanner,
-    task::{attempt::TaskAttempt, format::TaskPayload},
+    task::{Task, attempt::TaskAttempt},
     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
     worker::context::{Executors, TaskContext},
 };
@@ -31,7 +31,7 @@ pub fn fans(store: MemStore<Fan>) -> (Arc<TestCommandExecutor<Fan>>, TestCommand
 }
 
 /// The first claim of `payload`, carrying the correlation id of the command that published it.
-pub fn attempt<P: TaskPayload>(payload: &P, correlation_id: Uuid) -> TaskAttempt {
+pub fn attempt<P: Task>(payload: &P, correlation_id: Uuid) -> TaskAttempt {
     TaskAttempt::try_first(payload, json!({ "correlation_id": correlation_id })).unwrap()
 }
 

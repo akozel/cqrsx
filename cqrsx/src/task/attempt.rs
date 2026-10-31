@@ -1,9 +1,6 @@
 //! Immutable handler-visible input without queue ownership credentials.
 use super::{move_labels, validate_metadata, validate_payload};
-use crate::task::{
-    TaskValidationError,
-    format::{TaskFormat, TaskPayload},
-};
+use crate::task::{Task, TaskValidationError, format::TaskFormat};
 use serde_json::Value;
 use uuid::Uuid;
 /// Immutable input for one claim, carrying the stable task ID and claim number.
@@ -42,7 +39,7 @@ impl TaskAttempt {
     /// The first claim of a new task carrying `payload` and `metadata`, with a random task ID;
     /// for invoking task handlers outside the runtime, e.g. in their tests. The fields of `P::LABELS` move from the
     /// payload to the metadata, as in a published task.
-    pub fn try_first<P: TaskPayload>(payload: &P, metadata: Value) -> Result<Self, TaskValidationError> {
+    pub fn try_first<P: Task>(payload: &P, metadata: Value) -> Result<Self, TaskValidationError> {
         let format = TaskFormat::of::<P>();
         let payload = serde_json::to_value(payload).map_err(|_| TaskValidationError::Serialization)?;
         let mut attempt = Self::try_new(Uuid::new_v4(), format, payload, metadata, 1)?;
@@ -91,7 +88,7 @@ mod tests {
         struct Greeting<'a> {
             name: &'a str,
         }
-        impl TaskPayload for Greeting<'_> {
+        impl Task for Greeting<'_> {
             const TASK_TYPE: &'static str = "greeting";
             const TASK_VERSION: i32 = 2;
         }
@@ -112,7 +109,7 @@ mod tests {
     fn a_first_attempt_rejects_what_no_task_could_carry() {
         #[derive(serde::Serialize)]
         struct Text(&'static str);
-        impl TaskPayload for Text {
+        impl Task for Text {
             const TASK_TYPE: &'static str = "text";
             const TASK_VERSION: i32 = 1;
         }
@@ -122,7 +119,7 @@ mod tests {
                 Err(serde::ser::Error::custom("broken"))
             }
         }
-        impl TaskPayload for Broken {
+        impl Task for Broken {
             const TASK_TYPE: &'static str = "broken";
             const TASK_VERSION: i32 = 1;
         }

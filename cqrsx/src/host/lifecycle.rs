@@ -707,7 +707,7 @@ mod tests {
             domain::{
                 aggregate::Aggregate,
                 command::Decide,
-                event::{DomainEvent, EventEnvelope},
+                event::{EventEnvelope, Events},
             },
             memory::{
                 checkpoint_store::MemCheckpointStore, event_repository::MemEventRepository, view_repository::MemViewRepository,
@@ -725,7 +725,7 @@ mod tests {
         #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
         struct Counted;
 
-        impl DomainEvent for Counted {
+        impl Events for Counted {
             fn event_type(&self) -> &'static str {
                 "counted"
             }

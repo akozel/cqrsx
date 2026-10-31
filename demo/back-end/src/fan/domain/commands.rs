@@ -6,10 +6,10 @@ pub mod record_ticket;
 pub use record_cancellation::RecordCancellation;
 pub use record_ticket::RecordTicket;
 
-use cqrsx::Commands;
+use cqrsx::domain::command::{Command, Decide};
 
 /// The derive routes every variant to its command's decision and reports it to the activity feed by its name.
-#[derive(Debug, Clone, PartialEq, Eq, Commands)]
+#[derive(Debug, Clone, PartialEq, Eq, Command, Decide)]
 pub enum FanCommand {
     RecordTicket(RecordTicket),
     RecordCancellation(RecordCancellation),
@@ -18,7 +18,7 @@ pub enum FanCommand {
 #[cfg(test)]
 mod tests {
     use crate::fan::domain::test_support::{cancel, record};
-    use cqrsx::domain::command::CommandInfo;
+    use cqrsx::domain::command::Command;
     use uuid::Uuid;
 
     /// The activity feed names a ledger's command by its type; its fan is the ledger's, its id not the command's.

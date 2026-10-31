@@ -25,7 +25,7 @@ struct Put {
     item: String,
 }
 
-impl DomainEvent for Put {
+impl Events for Put {
     fn event_type(&self) -> &'static str {
         "put"
     }

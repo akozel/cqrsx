@@ -15,16 +15,17 @@ pub(crate) mod test_support;
 use crate::{
     command::CommandGatewayError,
     domain::rejection::Rejection,
-    task::format::TaskPayload,
+    task::Task,
     worker::{context::TaskContext, dependencies::DependencyId},
 };
+pub use cqrsx_macros::task_handler;
 use serde::de::DeserializeOwned;
 use std::{fmt, future::Future};
 
 /// Application-owned operation receiving its decoded durable DTO and the context of its attempt
 /// ([`TaskContext`]: the attempt, the pause of its retry, the dependencies, the command executors).
 ///
-/// Write it as a function with [`#[task_handler]`](crate::task_handler): the attribute implements this trait and lists
+/// Write it as a function with [`#[task_handler]`](crate::worker::task_handler): the attribute implements this trait and lists
 /// the function's dependencies. By hand, implement it with an ordinary `async fn`, without `#[async_trait]`; the
 /// native future must be `Send`. Business validation, DTO conversion, the classification of the outcome
 /// ([`TaskResult`]) and safe reasons remain with the handler; the pause before a retry is the policy's.
@@ -39,13 +40,13 @@ use std::{fmt, future::Future};
 /// Both ports return native Send futures without invocation boxes.
 /// Holding non-Send state across an await is rejected:
 /// ```compile_fail
-/// use cqrsx::task::format::TaskPayload;
+/// use cqrsx::task::Task;
 /// use cqrsx::worker::{TaskHandler, TaskResult, context::TaskContext};
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Serialize, Deserialize)]
 /// struct Payload {}
-/// impl TaskPayload for Payload {
+/// impl Task for Payload {
 ///     const TASK_TYPE: &'static str = "non_send_example";
 ///     const TASK_VERSION: i32 = 1;
 /// }
@@ -74,9 +75,8 @@ use std::{fmt, future::Future};
 ///
 /// ```
 /// use cqrsx::{
-///     Task, task_handler,
-///     task::attempt::TaskAttempt,
-///     worker::{TaskHandler, TaskResult, context::TaskContext, dependencies::DependencyId},
+///     task::{Task, attempt::TaskAttempt},
+///     worker::{TaskHandler, TaskResult, context::TaskContext, dependencies::DependencyId, task_handler},
 /// };
 /// use serde::{Deserialize, Serialize};
 /// use std::time::Duration;
@@ -120,8 +120,8 @@ use std::{fmt, future::Future};
 /// The function is `async`:
 ///
 /// ```compile_fail
-/// use cqrsx::{task_handler, worker::TaskResult};
-/// # #[derive(serde::Serialize, serde::Deserialize, cqrsx::Task)]
+/// use cqrsx::worker::{TaskResult, task_handler};
+/// # #[derive(serde::Serialize, serde::Deserialize, cqrsx::task::Task)]
 /// # #[task(name = "ping", version = 1)]
 /// # struct Ping {}
 /// #[task_handler]
@@ -133,7 +133,7 @@ use std::{fmt, future::Future};
 /// takes its task first, by value:
 ///
 /// ```compile_fail
-/// use cqrsx::{task_handler, worker::{TaskResult, context::TaskContext}};
+/// use cqrsx::worker::{TaskResult, context::TaskContext, task_handler};
 /// #[task_handler]
 /// async fn ping(ctx: &TaskContext) -> TaskResult {
 ///     TaskResult::done()
@@ -143,8 +143,8 @@ use std::{fmt, future::Future};
 /// and every dependency by reference:
 ///
 /// ```compile_fail
-/// use cqrsx::{task_handler, worker::TaskResult};
-/// # #[derive(serde::Serialize, serde::Deserialize, cqrsx::Task)]
+/// use cqrsx::worker::{TaskResult, task_handler};
+/// # #[derive(serde::Serialize, serde::Deserialize, cqrsx::task::Task)]
 /// # #[task(name = "ping", version = 1)]
 /// # struct Ping {}
 /// #[task_handler]
@@ -152,9 +152,9 @@ use std::{fmt, future::Future};
 ///     TaskResult::done()
 /// }
 /// ```
-pub trait TaskHandler<P>: Send + Sync
+pub trait TaskHandler<T>: Send + Sync
 where
-    P: TaskPayload + DeserializeOwned + Send + 'static,
+    T: Task + DeserializeOwned + Send + 'static,
 {
     /// The dependencies the assembly must provide for this handler
     /// ([`TaskHandlers::build`](crate::worker::handlers::TaskHandlers::build) refuses it otherwise); `#[task_handler]` lists
@@ -162,7 +162,7 @@ where
     const DEPENDENCIES: &'static [DependencyId] = &[];
 
     /// Perform one replay-safe operation; the executor settles its result.
-    fn handle(&self, task: P, ctx: &TaskContext) -> impl Future<Output = TaskResult> + Send;
+    fn handle(&self, task: T, ctx: &TaskContext) -> impl Future<Output = TaskResult> + Send;
 }
 
 /// What a task handler answers for one attempt: done, try again, or stop.

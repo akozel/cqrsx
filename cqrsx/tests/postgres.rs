@@ -26,7 +26,7 @@ use std::{
 use chrono::{DateTime, Utc};
 use cqrsx::domain::aggregate::Aggregate;
 use cqrsx::domain::command::Decide;
-use cqrsx::domain::event::DomainEvent;
+use cqrsx::domain::event::Events;
 use cqrsx::journal::PersistenceError;
 use cqrsx::journal::repository::PersistedEventRepository;
 use cqrsx::journal::serialized_event::{EventFormat, SerializedEvent};
@@ -38,10 +38,7 @@ use cqrsx::{
         pool::{ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, StatementTimeout, connect_pool, connect_pool_with},
         task_queue::PostgresTaskQueue,
     },
-    task::{
-        NewTask, TaskSchedule,
-        format::{TaskFormat, TaskPayload},
-    },
+    task::{NewTask, Task, TaskSchedule, format::TaskFormat},
     worker::{
         TaskResult,
         adapter::TaskAdapter,

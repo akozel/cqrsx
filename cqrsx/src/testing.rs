@@ -16,7 +16,7 @@
 //! # use serde::Serialize;
 //! # use serde_json::Value;
 //! # use cqrsx::domain::aggregate::Aggregate;
-//! # use cqrsx::domain::event::DomainEvent;
+//! # use cqrsx::domain::event::Events;
 //! # use cqrsx::domain::event::EventEnvelope;
 //! # use cqrsx::projection::EventHandler;
 //! # use cqrsx::view::View;
@@ -89,7 +89,7 @@
 //! #     CustomerDataPopulated,
 //! # }
 //! #
-//! # impl DomainEvent for CustomerEvent {
+//! # impl Events for CustomerEvent {
 //! #     fn event_type(&self) -> &'static str {
 //! #         match self {
 //! #             Self::NameAdded { .. } => "NameAdded",
@@ -175,7 +175,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -193,7 +193,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -268,7 +268,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -286,7 +286,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -361,7 +361,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -379,7 +379,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -456,7 +456,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -474,7 +474,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",

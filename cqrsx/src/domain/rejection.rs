@@ -2,17 +2,19 @@
 //!
 //! An aggregate refuses a command with its `Error`; the API answers with it and an activity feed records it. Both
 //! need the same two things of the refusal: a stable code (a key the UI texts are looked up by) and the values those
-//! texts interpolate. `#[derive(cqrsx::Rejection)]` on the error enum writes them from the variants.
+//! texts interpolate. `#[derive(Rejection)]` on the error enum writes them from the variants.
+
+pub use cqrsx_macros::Rejection;
 
 /// A business refusal as the API and the activity feed report it.
 ///
 /// The code is a contract (UI translations and log readers key on it), so it never changes for a rule; the params
-/// are the values the texts interpolate. `#[derive(cqrsx::Rejection)]` on an enum implements both: the code of a
+/// are the values the texts interpolate. `#[derive(Rejection)]` on an enum implements both: the code of a
 /// variant is its name in snake case, or what `#[rejection(code = "…")]` gives; its params are its named fields as a
 /// JSON object, `{}` for a unit variant. The fields are serialized with their `Serialize` implementations.
 ///
 /// ```
-/// use cqrsx::{Rejection, domain::rejection::Rejection as _};
+/// use cqrsx::domain::rejection::Rejection;
 /// use serde_json::json;
 ///
 /// #[derive(Debug, thiserror::Error, Rejection)]
@@ -37,7 +39,7 @@
 /// The params are named, so a tuple variant does not compile:
 ///
 /// ```compile_fail
-/// # use cqrsx::Rejection;
+/// # use cqrsx::domain::rejection::Rejection;
 /// #[derive(Debug, thiserror::Error, Rejection)]
 /// pub enum ConcertError {
 ///     #[error("this concert has not been announced")]

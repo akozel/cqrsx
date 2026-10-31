@@ -1,10 +1,11 @@
-//! What a command is to the domain: what is known of it ([`CommandInfo`], [`Label`]) and how it decides ([`Decide`]).
+//! What a command is to the domain: what is known of it ([`Command`], [`Label`]) and how it decides ([`Decide`]).
 use crate::domain::aggregate::Aggregate;
+pub use cqrsx_macros::{Command, Decide};
 use uuid::Uuid;
 
 /// What is known of a command besides its decision: what an observer reports it by and what an assembly takes its id
-/// from. `#[derive(cqrsx::Command)]` implements it on a command type, `#[derive(cqrsx::Commands)]` on the aggregate's
-/// enum of commands, by the variant's type; the core does not read it.
+/// from. `#[derive(Command)]` implements it on a command type and on the aggregate's enum of commands, by the
+/// variant's type; the core does not read it.
 ///
 /// - [`name`](Self::name): the command type's name, `"CancelBooking"`.
 /// - [`command_id`](Self::command_id): the field marked `#[command_id]`, when the business id is the id of the command
@@ -13,10 +14,7 @@ use uuid::Uuid;
 ///   an activity feed shows and filters a command by.
 ///
 /// ```
-/// use cqrsx::{
-///     Command, Commands,
-///     domain::command::{CommandInfo, Label},
-/// };
+/// use cqrsx::domain::command::{Command, Decide, Label};
 /// use uuid::Uuid;
 ///
 /// #[derive(Command)]
@@ -53,7 +51,7 @@ use uuid::Uuid;
 /// One field at most is the command id:
 ///
 /// ```compile_fail
-/// #[derive(cqrsx::Command)]
+/// #[derive(cqrsx::domain::command::Command)]
 /// struct BookSeat {
 ///     #[command_id]
 ///     booking_id: uuid::Uuid,
@@ -65,13 +63,24 @@ use uuid::Uuid;
 /// and it is a `Uuid`:
 ///
 /// ```compile_fail
-/// #[derive(cqrsx::Command)]
+/// #[derive(cqrsx::domain::command::Command)]
 /// struct BookSeat {
 ///     #[command_id]
 ///     booking_id: String,
 /// }
 /// ```
-pub trait CommandInfo {
+///
+/// On an enum of commands the derive delegates to the variants, so the attributes belong to their structs:
+///
+/// ```compile_fail
+/// #[derive(cqrsx::domain::command::Command)]
+/// struct BookSeat;
+/// #[derive(cqrsx::domain::command::Command)]
+/// enum ConcertCommand {
+///     BookSeat(#[label] BookSeat),
+/// }
+/// ```
+pub trait Command {
     /// The name of the command's type.
     fn name(&self) -> &'static str;
 
@@ -106,13 +115,13 @@ pub struct Label {
 /// decision reads the state and never changes it.
 ///
 /// Each command type decides in its own file; the aggregate's enum of commands, one command type per variant,
-/// routes every variant to its type's decision with `#[derive(cqrsx::Commands)]`, which is what
+/// routes every variant to its type's decision with `#[derive(Decide)]` (and reports it with `#[derive(Command)]`), which is what
 /// `type Command` of the aggregate names:
 ///
 /// ```
 /// use cqrsx::{
-///     Command, Commands,
-///     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent}, testing::TestFramework,
+///     domain::{aggregate::Aggregate, command::{Command, Decide}, event::Events},
+///     testing::TestFramework,
 /// };
 /// use serde::{Deserialize, Serialize};
 ///
@@ -127,7 +136,7 @@ pub struct Label {
 ///     Taken(String),
 /// }
 ///
-/// impl DomainEvent for ShelfEvent {
+/// impl Events for ShelfEvent {
 ///     fn event_type(&self) -> &'static str {
 ///         match self {
 ///             Self::Put(_) => "put",
@@ -195,7 +204,7 @@ pub struct Label {
 /// }
 ///
 /// /// The commands of the shelf: the derive routes each to its own `decide`.
-/// #[derive(Commands)]
+/// #[derive(Command, Decide)]
 /// enum ShelfCommand {
 ///     Put(Put),
 ///     Take(Take),
@@ -214,23 +223,30 @@ pub struct Label {
 /// Every variant carries one command type, and a struct variant does not compile:
 ///
 /// ```compile_fail
-/// #[derive(cqrsx::Commands)]
+/// #[derive(cqrsx::domain::command::Decide)]
 /// enum ShelfCommand {
 ///     Put { item: String },
 /// }
 /// ```
 ///
+/// `Decide` goes on an enum; a struct writes `Decide<A>` by hand:
+///
+/// ```compile_fail
+/// #[derive(cqrsx::domain::command::Decide)]
+/// struct PutOne;
+/// ```
+///
 /// Nor does a variant whose type does not decide the aggregate (`Take` decides nothing here):
 ///
 /// ```compile_fail
-/// use cqrsx::{Command, Commands, domain::{aggregate::Aggregate, command::Decide, event::DomainEvent}};
+/// use cqrsx::domain::{aggregate::Aggregate, command::{Command, Decide}, event::Events};
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Default, Serialize, Deserialize)]
 /// struct Shelf;
 /// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// struct Put;
-/// impl DomainEvent for Put {
+/// impl Events for Put {
 ///     fn event_type(&self) -> &'static str { "put" }
 ///     fn event_version(&self) -> &'static str { "1" }
 /// }
@@ -253,7 +269,7 @@ pub struct Label {
 /// }
 /// #[derive(Command)]
 /// struct Take;
-/// #[derive(Commands)]
+/// #[derive(Command, Decide)]
 /// enum ShelfCommand {
 ///     Put(PutOne),
 ///     Take(Take),
@@ -262,7 +278,7 @@ pub struct Label {
 #[diagnostic::on_unimplemented(
     message = "`{Self}` does not decide the commands of `{A}`",
     label = "no `Decide<{A}>` for this type",
-    note = "implement `Decide<{A}>` for it, or `#[derive(cqrsx::Commands)]` on an enum of command types that do"
+    note = "implement `Decide<{A}>` for it, or `#[derive(Command, Decide)]` on an enum of command types that do"
 )]
 pub trait Decide<A: Aggregate>: Sized {
     /// The event this command decides on `state`, the committed state of its aggregate, or the rejection.
@@ -273,16 +289,12 @@ pub trait Decide<A: Aggregate>: Sized {
 mod tests {
     use super::*;
 
+    /// Derived inside cqrsx itself: `extern crate self as cqrsx` lets the expansion's `::cqrsx` paths resolve here.
+    #[derive(crate::domain::command::Command)]
     struct Ping;
 
-    impl CommandInfo for Ping {
-        fn name(&self) -> &'static str {
-            "Ping"
-        }
-    }
-
     #[test]
-    fn a_command_info_written_by_hand_has_no_id_and_no_labels_unless_it_says_so() {
+    fn a_command_info_derived_inside_the_core_has_no_id_and_no_labels_unless_it_says_so() {
         assert_eq!((Ping.name(), Ping.command_id(), Ping.labels()), ("Ping", None, vec![]));
     }
 }

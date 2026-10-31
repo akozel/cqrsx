@@ -6,7 +6,7 @@ pub mod ticket_recorded;
 pub use ticket_cancelled::TicketCancelled;
 pub use ticket_recorded::TicketRecorded;
 
-use cqrsx::Events;
+use cqrsx::domain::event::Events;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Events)]
@@ -20,7 +20,7 @@ pub enum FanEvent {
 #[cfg(test)]
 mod wire_format_tests {
     use super::*;
-    use cqrsx::domain::event::DomainEvent;
+    use cqrsx::domain::event::Events;
     use serde_json::{Value, json};
 
     fn round_trip(document: Value, event_type: &str) {

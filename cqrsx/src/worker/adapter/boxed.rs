@@ -1,6 +1,6 @@
 //! One adapter type over adapters of different types, so one dispatcher can hold them all.
 
-use crate::task::format::{TaskFormat, TaskPayload};
+use crate::task::{Task, format::TaskFormat};
 use crate::worker::{
     TaskHandler, TaskResult,
     adapter::{TaskAdapter, json::JsonTaskAdapter},
@@ -59,12 +59,12 @@ impl BoxedTaskAdapter {
     }
 
     /// A [`JsonTaskAdapter`] for `handler`.
-    pub fn json<P, H>(handler: H) -> Self
+    pub fn json<T, H>(handler: H) -> Self
     where
-        P: TaskPayload + DeserializeOwned + Send + 'static,
-        H: TaskHandler<P> + 'static,
+        T: Task + DeserializeOwned + Send + 'static,
+        H: TaskHandler<T> + 'static,
     {
-        Self::new(JsonTaskAdapter::<P, H>::new(handler))
+        Self::new(JsonTaskAdapter::<T, H>::new(handler))
     }
 }
 
@@ -102,7 +102,7 @@ mod tests {
     struct Greeting {
         name: String,
     }
-    impl TaskPayload for Greeting {
+    impl Task for Greeting {
         const TASK_TYPE: &'static str = "greeting";
         const TASK_VERSION: i32 = 1;
     }
@@ -111,7 +111,7 @@ mod tests {
     struct Invoice {
         amount: u32,
     }
-    impl TaskPayload for Invoice {
+    impl Task for Invoice {
         const TASK_TYPE: &'static str = "invoice";
         const TASK_VERSION: i32 = 2;
     }
@@ -163,8 +163,8 @@ mod tests {
         }
     }
 
-    fn attempt<P: TaskPayload>(payload: serde_json::Value) -> TaskAttempt {
-        TaskAttempt::try_new(Uuid::new_v4(), TaskFormat::of::<P>(), payload, json!({}), 1).unwrap()
+    fn attempt<T: Task>(payload: serde_json::Value) -> TaskAttempt {
+        TaskAttempt::try_new(Uuid::new_v4(), TaskFormat::of::<T>(), payload, json!({}), 1).unwrap()
     }
 
     #[tokio::test]

@@ -10,11 +10,11 @@
 //!
 //! ```
 //! # mod example {
-//! # use cqrsx::{domain::{aggregate::Aggregate, command::Decide, event::{DomainEvent, EventEnvelope}}, view::View};
+//! # use cqrsx::{domain::{aggregate::Aggregate, command::Decide, event::{Events, EventEnvelope}}, view::View};
 //! # use serde::{Deserialize, Serialize};
 //! # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 //! # pub struct Counted;
-//! # impl DomainEvent for Counted {
+//! # impl Events for Counted {
 //! #     fn event_type(&self) -> &'static str { "counted" }
 //! #     fn event_version(&self) -> &'static str { "1" }
 //! # }
@@ -199,7 +199,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        domain::{command::Decide, event::DomainEvent},
+        domain::{command::Decide, event::Events},
         journal::serialized_event::SerializedEvent,
         memory::{event_repository::MemEventRepository, view_repository::MemViewRepository},
         view::repository::ViewContext,
@@ -210,7 +210,7 @@ mod tests {
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     struct Added(i64);
 
-    impl DomainEvent for Added {
+    impl Events for Added {
         fn event_type(&self) -> &'static str {
             "added"
         }

@@ -1,5 +1,5 @@
 use crate::shared::domain::venue::SeatId;
-use cqrsx::Rejection;
+use cqrsx::domain::rejection::Rejection;
 use thiserror::Error;
 
 /// Business-rule rejections R1–R8 as the API reports them (`{ code, params }`); texts live in the

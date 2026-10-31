@@ -10,19 +10,13 @@
     clippy::indexing_slicing
 )]
 use cqrsx::{
-    Command, Commands, Event, Events, Rejection, Task,
     domain::{
         aggregate::Aggregate,
-        command::{CommandInfo, Decide, Label},
-        event::{DomainEvent, EventKind},
-        rejection::Rejection as _,
+        command::{Command, Decide, Label},
+        event::{Event, Events},
+        rejection::Rejection,
     },
-    task::{
-        NewTask,
-        attempt::TaskAttempt,
-        format::{TaskFormat, TaskPayload},
-    },
-    task_handler,
+    task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat},
     testing::TestFramework,
     worker::{
         TaskHandler, TaskResult,
@@ -31,6 +25,7 @@ use cqrsx::{
         dependencies::DependencyId,
         dispatcher::TaskDispatcherError,
         handlers::TaskHandlers,
+        task_handler,
     },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -278,7 +273,7 @@ enum Counted {
     Reset,
 }
 
-impl DomainEvent for Counted {
+impl Events for Counted {
     fn event_type(&self) -> &'static str {
         "counted"
     }
@@ -335,19 +330,19 @@ impl Decide<Tally> for Reset {
     }
 }
 
-#[derive(Commands)]
+#[derive(Command, Decide)]
 enum TallyCommand {
     Add(Add),
     Reset(Reset),
 }
 
 /// A generic enum of commands: one variant, its type a parameter.
-#[derive(Commands)]
+#[derive(Command, Decide)]
 enum Only<C> {
     One(C),
 }
 
-#[derive(Commands)]
+#[derive(Command, Decide)]
 enum NoCommand {}
 
 #[test]
@@ -407,6 +402,51 @@ fn derived_commands_route_every_variant_to_its_decision_and_report_it() {
     // An enum without commands decides nothing; it only has to compile.
     let _: fn(NoCommand) -> Result<Counted, OverTheLimit> = |never| never.decide(&Tally(0), &0);
     let _: fn(&NoCommand) -> &'static str = |never| never.name();
+}
+
+/// An enum of commands that only reports itself: `Command` on an enum does not need `Decide`.
+#[derive(Command)]
+enum Reported {
+    Reset(Reset),
+}
+
+#[test]
+fn a_command_enum_without_decide_still_reports_its_command() {
+    let reported = Reported::Reset(Reset { by: "ops".into() });
+    assert_eq!(
+        (reported.name(), reported.command_id(), reported.labels()),
+        (
+            "Reset",
+            None,
+            vec![Label {
+                name: "by",
+                value: "ops".to_owned()
+            }]
+        )
+    );
+}
+
+/// An enum of commands that only decides: `Decide` on an enum does not need `Command` (its variants may lack it).
+#[derive(Decide)]
+enum Silent {
+    Reset(Silenced),
+}
+
+struct Silenced;
+
+impl Decide<Tally> for Silenced {
+    fn decide(self, _: &Tally, _: &u32) -> Result<Counted, OverTheLimit> {
+        Ok(Counted::Reset)
+    }
+}
+
+#[test]
+fn a_decide_enum_without_command_decides_through_its_variant() {
+    assert_eq!(
+        Silent::Reset(Silenced).decide(&Tally(4), &5),
+        Ok(Counted::Reset),
+        "the decision needs no information about the command"
+    );
 }
 
 /// What a task handler may be given besides its task: a port, by a trait object.

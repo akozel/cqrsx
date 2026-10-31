@@ -44,16 +44,16 @@ use std::{
 ///         planner::{Decision, TaskPlanError, TaskPlanner},
 ///     },
 ///     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
-///     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+///     domain::{aggregate::Aggregate, command::Decide, event::Events},
 /// };
-/// use cqrsx::task::{NewTask, format::TaskPayload};
+/// use cqrsx::task::{NewTask, Task};
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Clone, Default, Serialize, Deserialize)]
 /// struct Counter(u32);
 /// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 /// struct Incremented;
-/// impl DomainEvent for Incremented {
+/// impl Events for Incremented {
 ///     fn event_type(&self) -> &'static str { "incremented" }
 ///     fn event_version(&self) -> &'static str { "1" }
 /// }
@@ -79,7 +79,7 @@ use std::{
 /// }
 /// #[derive(Serialize)]
 /// struct Notify {}
-/// impl TaskPayload for Notify {
+/// impl Task for Notify {
 ///     const TASK_TYPE: &'static str = "notify";
 ///     const TASK_VERSION: i32 = 1;
 /// }
@@ -243,9 +243,9 @@ mod tests {
             causation::Causation,
             planner::{Decision, TaskPlanError},
         },
-        domain::{command::Decide, event::DomainEvent},
+        domain::{command::Decide, event::Events},
         journal::repository::PersistedEventRepository,
-        task::format::TaskPayload,
+        task::Task,
         testing::unavailable_store::UnavailableStore,
     };
     use serde::{Deserialize, Serialize};
@@ -257,7 +257,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Pushed(u8);
 
-    impl DomainEvent for Pushed {
+    impl Events for Pushed {
         fn event_type(&self) -> &'static str {
             "pushed"
         }
@@ -297,7 +297,7 @@ mod tests {
         value: u8,
     }
 
-    impl TaskPayload for Notify {
+    impl Task for Notify {
         const TASK_TYPE: &'static str = "notify";
         const TASK_VERSION: i32 = 1;
     }

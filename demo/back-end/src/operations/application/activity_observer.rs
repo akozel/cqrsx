@@ -1,6 +1,6 @@
 //! The engine's reports as activity log entries: what the command executors did (`command.*`, one observer for every
 //! aggregate) and what the feed and the X-ray show of the read side (`projection.*`, an observer per read model). The
-//! modules write nothing for the feed: an entry names a command by what its derives say of it (`CommandInfo`: its
+//! modules write nothing for the feed: an entry names a command by what its derives say of it (`Command`: its
 //! type's name and its `#[label]` fields) and a rejection by its code and params (`Rejection`). An executor calls its
 //! observer on the caller's task and a processor on its own, so every method only publishes.
 use crate::shared::{application::activity::ActivityHub, domain::FanLedgerId};
@@ -9,7 +9,7 @@ use cqrsx::{
         causation::{COMMAND_ID, CORRELATION_ID, SOURCE},
         observer::{self, AnyCommandReport, AnyOutcome, CommandObserver, CommandReport},
     },
-    domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
+    domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
     projection::processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
 };
 use serde_json::{Value, json};
@@ -88,7 +88,7 @@ impl observer::AnyCommandObserver for CommandActivityObserver {
 impl<A> CommandObserver<A> for CommandActivityObserver
 where
     A: Aggregate,
-    A::Command: CommandInfo,
+    A::Command: Command,
     A::Error: Rejection,
 {
     fn command(&self, report: &CommandReport<'_, A>) {
@@ -179,7 +179,7 @@ mod tests {
     use crate::shared::domain::ConcertId;
     use cqrsx::command::observer::Outcome;
     use cqrsx::{
-        domain::{command::Decide, event::DomainEvent},
+        domain::{command::Decide, event::Events},
         journal::feed::Position,
         projection::processor::observer::FailureCategory,
         task::{NewTask, format::TaskFormat},
@@ -280,7 +280,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Booked;
 
-    impl DomainEvent for Booked {
+    impl Events for Booked {
         fn event_type(&self) -> &'static str {
             "booked"
         }
@@ -290,31 +290,31 @@ mod tests {
         }
     }
 
-    #[derive(Debug, thiserror::Error, cqrsx::Rejection)]
+    #[derive(Debug, thiserror::Error, cqrsx::domain::rejection::Rejection)]
     enum Refused {
         #[error("seat {seat} is taken")]
         SeatTaken { seat: String },
     }
 
-    #[derive(cqrsx::Command)]
+    #[derive(cqrsx::domain::command::Command)]
     struct Book {
         seat: String,
         #[label]
         fan_id: String,
     }
 
-    #[derive(cqrsx::Command)]
+    #[derive(cqrsx::domain::command::Command)]
     struct Announce {
         artist: String,
     }
 
-    #[derive(cqrsx::Commands)]
+    #[derive(cqrsx::domain::command::Command, cqrsx::domain::command::Decide)]
     enum HallCommand {
         Book(Book),
         Announce(Announce),
     }
 
-    #[derive(cqrsx::Command)]
+    #[derive(cqrsx::domain::command::Command)]
     struct Record {
         seat: String,
     }

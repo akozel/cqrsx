@@ -17,7 +17,7 @@ struct History {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Appended(i32);
 
-impl cqrsx::domain::event::DomainEvent for Appended {
+impl cqrsx::domain::event::Events for Appended {
     fn event_type(&self) -> &'static str {
         "Appended"
     }

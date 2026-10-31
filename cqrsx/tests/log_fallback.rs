@@ -21,8 +21,8 @@ use cqrsx::command::AggregateError;
 use cqrsx::command::framework::CqrsFramework;
 use cqrsx::domain::aggregate::Aggregate;
 use cqrsx::domain::command::Decide;
-use cqrsx::domain::event::DomainEvent;
 use cqrsx::domain::event::EventEnvelope;
+use cqrsx::domain::event::Events;
 use cqrsx::journal::AggregateContext;
 use cqrsx::journal::EventStore;
 use cqrsx::{
@@ -69,7 +69,7 @@ impl log::Log for RecordingLogger {
 struct ProbeAggregate;
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 struct ProbeEvent;
-impl DomainEvent for ProbeEvent {
+impl Events for ProbeEvent {
     fn event_type(&self) -> &'static str {
         "recorded"
     }

@@ -42,7 +42,7 @@ use crate::{
         framework::CqrsFramework,
         observer::{AnyCommandObserver, AnyCommandReport, CommandObserver, CommandReport},
     },
-    domain::{aggregate::Aggregate, command::CommandInfo, event::EventEnvelope, rejection::Rejection},
+    domain::{aggregate::Aggregate, command::Command, event::EventEnvelope, rejection::Rejection},
     engine::{
         build::BuildError,
         module::{ObservedProcessor, ProjectionObservers},
@@ -220,7 +220,7 @@ impl Cqrs {
     fn install_aggregate<A>(&mut self, rules: Box<dyn Any + Send>) -> Result<(), BuildError>
     where
         A: Reactions + Clone + 'static,
-        A::Command: CommandInfo + Clone,
+        A::Command: Command + Clone,
         A::Error: Rejection + Send + 'static,
     {
         // The entry of `A` holds the rules of `A`.
@@ -252,7 +252,7 @@ impl Cqrs {
     fn executor<A, S>(&mut self, store: S, rules: A::Rules) -> CommandExecutorCore<A, S>
     where
         A: Reactions + 'static,
-        A::Command: CommandInfo + Clone,
+        A::Command: Command + Clone,
         A::Error: Rejection,
         S: EventStore<A>,
     {
@@ -273,7 +273,7 @@ impl Cqrs {
     fn postgres_executor<A>(&mut self, pool: sqlx::PgPool, rules: A::Rules) -> PostgresCommandExecutor<A>
     where
         A: Reactions + 'static,
-        A::Command: CommandInfo + Clone,
+        A::Command: Command + Clone,
         A::Error: Rejection,
     {
         let settings = &self.settings;
@@ -290,7 +290,7 @@ impl Cqrs {
     /// The observer of every command, as the observer of the commands of `A`.
     fn commands_observer<A: Aggregate>(&self) -> Option<Arc<dyn CommandObserver<A>>>
     where
-        A::Command: CommandInfo,
+        A::Command: Command,
         A::Error: Rejection,
     {
         let observer = self.command_observer.clone()?;
@@ -430,7 +430,7 @@ struct Commands(Arc<dyn AnyCommandObserver>);
 
 impl<A: Aggregate> CommandObserver<A> for Commands
 where
-    A::Command: CommandInfo,
+    A::Command: Command,
     A::Error: Rejection,
 {
     fn command(&self, report: &CommandReport<'_, A>) {

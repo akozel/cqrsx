@@ -178,17 +178,12 @@ fn externals(layer: Option<Layer>) -> Externals {
         Some(Layer::Domain) => Externals {
             forbidden: &["sqlx", "mongodb", "axum", "tokio"],
             test_only: &["serde_json", "cqrsx::testing", "cqrsx::memory"],
-            // The derive macros of the domain's contracts (what is known of a command, the enum of commands, an
-            // event's name and version, the enum of events, the code and params of a rejection), the decision of a
-            // command, and the traits of the commands and the rejections, which the domain's tests call.
+            // The contracts of the domain, each with its derive macro under the same path (backlog 07/05): what is
+            // known of a command (`Command`), the decision of a command (`Decide`), an event's name and version and
+            // the enum of events (`domain::event`), the code and params of a rejection (`domain::rejection`).
             cqrsx_allowed: Some(&[
-                "cqrsx::Command",
-                "cqrsx::Commands",
-                "cqrsx::Event",
-                "cqrsx::Events",
-                "cqrsx::Rejection",
                 "cqrsx::domain::aggregate",
-                "cqrsx::domain::command::CommandInfo",
+                "cqrsx::domain::command::Command",
                 "cqrsx::domain::command::Decide",
                 "cqrsx::domain::event",
                 "cqrsx::domain::rejection",
@@ -218,7 +213,8 @@ fn externals(layer: Option<Layer>) -> Externals {
             // The handler takes the engine as its state and hands it a command from the source "ui" (backlog 05/12,
             // design 04 and 07), answers its outcome (the error of a command) and, for a refused one, its code and
             // params (05/04): the rejection trait. A read model is read through the engine's view, a stored document is
-            // what it answers (05/10, design 06). Nothing else.
+            // what it answers (05/10, design 06). Nothing else. The path `domain::rejection::Rejection` names the trait
+            // and its derive alike (backlog 07/05, decision 2), so a presentation may name both.
             cqrsx_allowed: Some(&[
                 "cqrsx::engine::Cqrs",
                 "cqrsx::command::CommandGatewayError",
@@ -783,20 +779,26 @@ fn the_module_rules_catch_a_reach_into_another_module() {
 fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for (file, code) in [
-        ("concert/domain/x.rs", "use cqrsx::{Event, Events, Rejection};\n"),
+        (
+            "concert/domain/x.rs",
+            "use cqrsx::domain::{event::{Event, Events}, rejection::Rejection};\n",
+        ),
         (
             "concert/domain/x.rs",
             "#[cfg(test)]\nmod tests { use cqrsx::domain::rejection::Rejection; }\n",
         ),
-        ("fan/application/x.rs", "use cqrsx::{Task, domain::rejection::Rejection};\n"),
+        (
+            "fan/application/x.rs",
+            "use cqrsx::{task::Task, domain::rejection::Rejection};\n",
+        ),
         ("concert/presentation/x.rs", "use cqrsx::domain::rejection::Rejection;\n"),
     ] {
         assert!(check(file, code).is_empty(), "{file}: {code}");
     }
     for (file, code) in [
-        ("concert/domain/x.rs", "use cqrsx::Task;\n"),
-        ("concert/presentation/x.rs", "use cqrsx::Event;\n"),
-        ("fan/presentation/x.rs", "use cqrsx::domain::event::DomainEvent;\n"),
+        ("concert/domain/x.rs", "use cqrsx::task::Task;\n"),
+        ("concert/presentation/x.rs", "use cqrsx::domain::event::Event;\n"),
+        ("fan/presentation/x.rs", "use cqrsx::domain::event::Events;\n"),
     ] {
         let broken = check(file, code);
         assert_eq!(broken.len(), 1, "{file}: {code}");
@@ -819,7 +821,7 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
     for code in [
         "use cqrsx::command::CommandExecutor;\n",
         "use cqrsx::command::metadata::CommandMetadata;\n",
-        "use cqrsx::domain::command::CommandInfo;\n",
+        "use cqrsx::domain::command::Command;\n",
         "use cqrsx::command::observer::CommandObserver;\n",
         "use cqrsx::command::CommitReport;\n",
         "use cqrsx::testing::command_executor::TestCommandExecutor;\n",
@@ -864,8 +866,8 @@ fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_th
 fn the_command_derives_and_the_decide_contract_are_visible_in_the_domain() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::{Command, Commands, domain::command::Decide};\n",
-        "#[cfg(test)]\nmod tests { use cqrsx::domain::command::CommandInfo; }\n",
+        "use cqrsx::domain::command::{Command, Decide};\n",
+        "#[cfg(test)]\nmod tests { use cqrsx::domain::command::Command; }\n",
     ] {
         assert!(check("concert/domain/x.rs", code).is_empty(), "{code}");
     }
@@ -873,6 +875,7 @@ fn the_command_derives_and_the_decide_contract_are_visible_in_the_domain() {
         "use cqrsx::projection::EventHandler;\n",
         "use cqrsx::command::CommandExecutor;\n",
         "use cqrsx::command::planner::TaskPlanner;\n",
+        "use cqrsx::domain::command::Label;\n",
     ] {
         let broken = check("fan/domain/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}");

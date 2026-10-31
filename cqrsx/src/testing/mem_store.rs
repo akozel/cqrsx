@@ -24,7 +24,7 @@ use std::{
 /// # use serde::Serialize;
 /// # use serde_json::Value;
 /// # use cqrsx::domain::aggregate::Aggregate;
-/// # use cqrsx::domain::event::DomainEvent;
+/// # use cqrsx::domain::event::Events;
 /// # use cqrsx::domain::event::EventEnvelope;
 /// # use cqrsx::projection::EventHandler;
 /// # use cqrsx::view::View;
@@ -42,7 +42,7 @@ use std::{
 /// #     SomethingElseWasDone,
 /// # }
 /// #
-/// # impl DomainEvent for MyEvents {
+/// # impl Events for MyEvents {
 /// #     fn event_type(&self) -> &'static str {
 /// #         match self {
 /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -258,7 +258,7 @@ where
 mod tests {
     // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
     // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-    use crate::domain::{aggregate::Aggregate, command::Decide, event::DomainEvent};
+    use crate::domain::{aggregate::Aggregate, command::Decide, event::Events};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -332,7 +332,7 @@ mod tests {
         description: String,
     }
 
-    impl DomainEvent for TestEvent {
+    impl Events for TestEvent {
         fn event_type(&self) -> &'static str {
             match self {
                 Self::Created(_) => "Created",

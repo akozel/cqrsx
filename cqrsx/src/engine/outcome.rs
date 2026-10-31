@@ -2,7 +2,7 @@
 use crate::{
     command::{CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
     diagnostics,
-    domain::{aggregate::Aggregate, command::CommandInfo},
+    domain::{aggregate::Aggregate, command::Command},
     engine::Cqrs,
 };
 use std::fmt;
@@ -34,7 +34,7 @@ impl Source<'_> {
     pub async fn execute<A>(&self, id: &A::Id, command: A::Command) -> Outcome<A>
     where
         A: Aggregate + Clone + 'static,
-        A::Command: CommandInfo + Clone + 'static,
+        A::Command: Command + Clone + 'static,
         A::Error: Send + 'static,
     {
         self.run(None, id, command).await
@@ -45,7 +45,7 @@ impl Source<'_> {
     pub async fn execute_with_id<A>(&self, command_id: Uuid, id: &A::Id, command: A::Command) -> Outcome<A>
     where
         A: Aggregate + Clone + 'static,
-        A::Command: CommandInfo + Clone + 'static,
+        A::Command: Command + Clone + 'static,
         A::Error: Send + 'static,
     {
         self.run(Some(command_id), id, command).await
@@ -54,7 +54,7 @@ impl Source<'_> {
     async fn run<A>(&self, given: Option<Uuid>, id: &A::Id, command: A::Command) -> Outcome<A>
     where
         A: Aggregate + Clone + 'static,
-        A::Command: CommandInfo + Clone + 'static,
+        A::Command: Command + Clone + 'static,
         A::Error: Send + 'static,
     {
         let mut metadata = CommandMetadata::root(self.source.clone());

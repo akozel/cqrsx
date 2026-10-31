@@ -1,26 +1,29 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::domain::aggregate::Aggregate;
+pub use cqrsx_macros::{Event, Events};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, fmt};
 
-/// A `DomainEvent` represents any business change in the state of an `Aggregate`.
+/// An aggregate's `Events` represents any business change in the state of an `Aggregate`: the enum of its events,
+/// one event type per variant.
 ///
-/// `DomainEvent`s are immutable, and when
+/// Events are immutable, and when
 /// [event sourcing](https://martinfowler.com/eaaDev/EventSourcing.html)
 /// is used they are the single source of truth.
 ///
-/// The name of a `DomainEvent` should always be in the past tense, e.g.,
+/// The name of an event should always be in the past tense, e.g.,
 /// - AdminPrivilegesGranted
 /// - EmailAddressChanged
 /// - DependencyAdded
 ///
 /// To simplify serialization, an event should be an enum, and each variant should carry any
 /// important information. With one event type per variant (`SeatBooked(SeatBooked)`),
-/// `#[derive(cqrsx::Events)]` implements this trait from the [`EventKind`] of each variant's type;
+/// `#[derive(Events)]` implements this trait from the [`Event`] of each variant's type;
 /// the example below implements it by hand.
 ///
-/// The `DomainEvent` trait provides event type and version; events must also derive a
+/// The `Events` trait provides the event type and version (`A::Event` of an `Aggregate` is such an enum, while
+/// the trait [`Event`] is one event type); events must also derive a
 /// number of standard traits.
 /// - `Clone` - events may be cloned throughout the framework, particularly when applied to event_handlers
 /// - `Serialize` and `Deserialize` - required for persistence
@@ -34,7 +37,7 @@ use std::{collections::HashMap, fmt};
 /// # use serde::Serialize;
 /// # use serde_json::Value;
 /// # use cqrsx::domain::aggregate::Aggregate;
-/// # use cqrsx::domain::event::DomainEvent;
+/// # use cqrsx::domain::event::Events;
 /// # use cqrsx::domain::event::EventEnvelope;
 /// # use cqrsx::projection::EventHandler;
 /// # use cqrsx::view::View;
@@ -107,7 +110,7 @@ use std::{collections::HashMap, fmt};
 /// #     CustomerDataPopulated,
 /// # }
 /// #
-/// # impl DomainEvent for CustomerEvent {
+/// # impl Events for CustomerEvent {
 /// #     fn event_type(&self) -> &'static str {
 /// #         match self {
 /// #             Self::NameAdded { .. } => "NameAdded",
@@ -129,7 +132,7 @@ use std::{collections::HashMap, fmt};
 /// # }
 /// # use example::Customer;
 /// # use cqrsx::domain::aggregate::Aggregate;
-/// # use cqrsx::domain::event::DomainEvent;
+/// # use cqrsx::domain::event::Events;
 /// # use serde::Serialize;
 /// # use serde::Deserialize;
 /// #[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
@@ -138,7 +141,7 @@ use std::{collections::HashMap, fmt};
 ///     EmailUpdated{ new_email: String },
 /// }
 /// ```
-pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::Debug + Sync + Send {
+pub trait Events: Serialize + DeserializeOwned + Clone + PartialEq + fmt::Debug + Sync + Send {
     /// A name specifying the event, used for event upcasting: a constant of the type, so encoding and decoding an
     /// event never allocate it.
     fn event_type(&self) -> &'static str;
@@ -146,19 +149,16 @@ pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::D
     fn event_version(&self) -> &'static str;
 }
 
-/// The stored name and version of one event type, what `#[derive(cqrsx::Event)]` writes from its
+/// The stored name and version of one event type, what `#[derive(Event)]` writes from its
 /// `#[event(name = "…", version = "…")]`.
 ///
 /// Both are stored with every event of the type (`event_type`, `event_version`) and read back by the
 /// upcasters, so a published name and version never change: a new meaning is a new version. An
-/// aggregate's enum of events takes them from the type of each variant with `#[derive(cqrsx::Events)]`,
-/// which implements [`DomainEvent`].
+/// aggregate's enum of events takes them from the type of each variant with `#[derive(Events)]`,
+/// which implements [`Events`].
 ///
 /// ```
-/// use cqrsx::{
-///     Event, Events,
-///     domain::event::{DomainEvent, EventKind},
-/// };
+/// use cqrsx::domain::event::{Event, Events};
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
@@ -192,7 +192,7 @@ pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::D
 /// Every variant carries one event type, so a variant with fields of its own does not compile:
 ///
 /// ```compile_fail
-/// # use cqrsx::{Event, Events};
+/// # use cqrsx::domain::event::{Event, Events};
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
 /// # #[event(name = "SeatBooked", version = "1.0")]
@@ -210,7 +210,7 @@ pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::D
 /// version of its neighbour:
 ///
 /// ```compile_fail
-/// # use cqrsx::{Event, Events};
+/// # use cqrsx::domain::event::{Event, Events};
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
 /// # #[event(name = "SeatBooked", version = "1.0")]
@@ -232,7 +232,7 @@ pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::D
 /// And `Event` needs its attribute:
 ///
 /// ```compile_fail
-/// # use cqrsx::Event;
+/// # use cqrsx::domain::event::Event;
 /// # use serde::{Deserialize, Serialize};
 /// #[derive(Clone, Debug, PartialEq, Serialize, Deserialize, Event)]
 /// pub struct SeatBooked {
@@ -242,9 +242,9 @@ pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::D
 #[diagnostic::on_unimplemented(
     message = "`{Self}` has no stored event name and version",
     label = "not an event type",
-    note = "derive `cqrsx::Event` on it, with `#[event(name = \"…\", version = \"…\")]`"
+    note = "derive `cqrsx::domain::event::Event` on it, with `#[event(name = \"…\", version = \"…\")]`"
 )]
-pub trait EventKind {
+pub trait Event {
     /// The name stored with every event of the type: `event_type`.
     const NAME: &'static str;
     /// The version stored with every event of the type: `event_version`.

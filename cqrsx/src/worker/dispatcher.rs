@@ -236,7 +236,7 @@ mod tests {
 
     #[tokio::test]
     async fn typed_adapters_route_versions_separately_and_reject_duplicate_formats() {
-        use crate::task::format::TaskPayload;
+        use crate::task::Task;
         use crate::worker::{TaskHandler, adapter::json::JsonTaskAdapter};
         use serde::{Deserialize, Serialize};
         use serde_json::json;
@@ -245,7 +245,7 @@ mod tests {
         struct Payload<const VERSION: i32> {
             value: String,
         }
-        impl<const VERSION: i32> TaskPayload for Payload<VERSION> {
+        impl<const VERSION: i32> Task for Payload<VERSION> {
             const TASK_TYPE: &'static str = "versioned_operation";
             const TASK_VERSION: i32 = VERSION;
         }

@@ -25,7 +25,7 @@ and [Fan](../../demo/back-end/src/fan/domain/aggregate.rs).
 ## Commands and decisions
 
 Each command implements `Decide<A>`: given the current aggregate and its rules it returns one event or
-a rejection, without side effects. `Command` and `Commands` derive the information the engine needs;
+a rejection, without side effects. `Command` and `Decide` derive, for an aggregate's enum of commands, the information the engine needs and the routing of the decision;
 `Rejection` supplies a code and parameters. A caller uses `cqrs.from("ui").execute::<A>(id, command)`;
 inside a task, `ctx.execute::<A>` continues the task's causation. The executor serializes commands per
 key in a process; an optimistic conflict across processes reloads and retries the decision. See

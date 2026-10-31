@@ -11,7 +11,7 @@ use cqrsx::{
         planner::{Decision, TaskPlanError, TaskPlanner},
         retry::AggregateConflictRetryPolicy,
     },
-    domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+    domain::{aggregate::Aggregate, command::Decide, event::Events},
     journal::{
         PersistenceError,
         feed::{FeedEntry, Position},
@@ -21,11 +21,7 @@ use cqrsx::{
         snapshot::{SerializedSnapshot, SnapshotUpdate},
     },
     memory::event_repository::MemEventRepository,
-    task::{
-        NewTask,
-        attempt::TaskAttempt,
-        format::{TaskFormat, TaskPayload},
-    },
+    task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat},
     testing::command_executor::TestCommandExecutor,
 };
 use proptest::prelude::*;
@@ -51,7 +47,7 @@ struct Booked {
     fan: String,
 }
 
-impl DomainEvent for Booked {
+impl Events for Booked {
     fn event_type(&self) -> &'static str {
         "booked"
     }
@@ -104,7 +100,7 @@ struct Recorded {
     ticket: String,
 }
 
-impl DomainEvent for Recorded {
+impl Events for Recorded {
     fn event_type(&self) -> &'static str {
         "recorded"
     }
@@ -146,7 +142,7 @@ struct RecordInWallet {
     ticket: String,
 }
 
-impl TaskPayload for RecordInWallet {
+impl Task for RecordInWallet {
     const TASK_TYPE: &'static str = "record_in_wallet";
     const TASK_VERSION: i32 = 1;
 }
@@ -158,7 +154,7 @@ struct MailTicket {
     ticket: String,
 }
 
-impl TaskPayload for MailTicket {
+impl Task for MailTicket {
     const TASK_TYPE: &'static str = "mail_ticket";
     const TASK_VERSION: i32 = 1;
 }
@@ -281,7 +277,7 @@ struct Balance {
     after: i64,
 }
 
-impl TaskPayload for Balance {
+impl Task for Balance {
     const TASK_TYPE: &'static str = "balance";
     const TASK_VERSION: i32 = 1;
 }

@@ -9,7 +9,7 @@ pub use booking_cancelled::BookingCancelled;
 pub use concert_announced::ConcertAnnounced;
 pub use seat_booked::SeatBooked;
 
-use cqrsx::Events;
+use cqrsx::domain::event::Events;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize, Events)]
@@ -25,7 +25,7 @@ pub enum ConcertEvent {
 #[cfg(test)]
 mod wire_format_tests {
     use super::*;
-    use cqrsx::domain::event::DomainEvent;
+    use cqrsx::domain::event::Events;
     use serde_json::{Value, json};
 
     fn round_trip(document: Value, event_type: &str) {

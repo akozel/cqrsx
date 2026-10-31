@@ -38,7 +38,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -56,7 +56,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -144,7 +144,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -162,7 +162,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -250,7 +250,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -268,7 +268,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -364,7 +364,7 @@ where
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -382,7 +382,7 @@ where
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",

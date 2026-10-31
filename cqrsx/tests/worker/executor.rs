@@ -96,7 +96,7 @@ impl TaskQueue for BorrowedQueue<'_> {
 
 #[derive(Serialize, Deserialize)]
 struct Payload {}
-impl cqrsx::task::format::TaskPayload for Payload {
+impl cqrsx::task::Task for Payload {
     const TASK_TYPE: &'static str = "native_runtime";
     const TASK_VERSION: i32 = 1;
 }

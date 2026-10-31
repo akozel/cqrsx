@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-31 ([результаты](#результаты)) |
 | Ценность | средняя–высокая: derive называется как трейт, который реализует, и импортируется вместе с ним одним путём |
 | Цена | средняя: трейты, макросы, их сообщения об ошибках, все реализации в тестах ядра и в демо |
 | Зависимости | 04 |
@@ -57,3 +57,27 @@ Derive реэкспортируются из корня крейта, трейт
 список домена без отдельных `cqrsx::Command`, `cqrsx::Event`… — они под путями модулей. `cqrsx-macros/README.md`,
 `components.md` (строка «Derive macros» и упоминания трейтов), README, `typical_scenario.md`,
 `.claude/rules/rust-style.md` (правило 33 называет `CommandInfo`, `EventKind`).
+
+## Результаты
+
+2026-10-31, на HEAD `0c12bec` плюс правки задачи.
+
+- **Имена:** `EventKind` → `Event`, `DomainEvent` → `Events`, `CommandInfo` → `Command`, `TaskPayload` → `Task` (из
+  `task/format.rs` в `task.rs`), `TaskHandler<P>` → `TaskHandler<T>`. Derive лежит рядом со своим трейтом:
+  `domain::event::{Event, Events}`, `domain::command::{Command, Decide}`, `domain::rejection::Rejection`, `task::Task`,
+  `worker::task_handler`; реэкспорт derive из корня `lib.rs` удалён, остался скрытый `__private`.
+- **Макросы:** `derive(Commands)` удалён — enum команд пишет `#[derive(Command, Decide)]`; `Command` на enum делегирует
+  сведения варианту, `Decide` — новый derive только для enum (прежний блок маршрутизации дословно). Новые ошибки:
+  `Command` на union, `Decide` на struct или union, `#[command_id]`/`#[label]` на поле варианта enum. `extern crate self
+  as cqrsx;` даёт ядру его derive (проверено юнит-тестом `domain/command.rs`). Документация `Aggregate` объясняет
+  `A::Event` (enum, `Events`) против трейта `Event` и `A::Command` против трейта `Command`.
+- **Правило архитектуры демо** пересчитано без ослабления, кроме принятого следствия решения 2: presentation, называя
+  `domain::rejection::Rejection`, получает и трейт, и derive (записано в комментарии `architecture.rs`). Домену
+  по-прежнему не виден `Label` — закреплено строкой-нарушением.
+- **Числа:** тестов 874 (было 867: +3 макросов, +2 `tests/derives.rs`, +2 doctest), демо 174, ignored 0;
+  `compile_fail`-doctest'ов 25 (было 23), причины отказа проверены выводом компилятора. Покрытие строк: рабочая область
+  98,27 %, `cqrsx` 98,17 %; файлы макросов — 100 %.
+- **Документы:** `cqrsx-macros/README.md`, `components.md`, README крейта, `typical_scenario.md`, правило 33
+  `rust-style.md` поправлены; заголовки всех живых документов совпадают с HEAD.
+- **Приёмка, круг 1:** дописаны докстроки `Aggregate::{Command, Event}`, перенесены строки длиннее 130 (две — оркестратор).
+  Попутно в результатах задачи 01 исправлены проценты покрытия: регионы были подписаны как строки.

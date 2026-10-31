@@ -9,7 +9,7 @@ use crate::engine::postgres::{Postgres, PostgresPools};
 #[cfg(test)]
 use crate::{
     command::observer::CommandObserver,
-    domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
+    domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
     engine::Commands,
     projection::processor::observer::ProjectionObserver,
     worker::dependencies::MissingDependency,
@@ -487,7 +487,7 @@ impl Registrations {
     /// The observer of every command, as the observer of the commands of `A`.
     pub(crate) fn command_observer<A: Aggregate>(&self) -> Option<Arc<dyn CommandObserver<A>>>
     where
-        A::Command: CommandInfo,
+        A::Command: Command,
         A::Error: Rejection,
     {
         Some(Arc::new(Commands(self.cqrs.command_observer.clone()?)))

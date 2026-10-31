@@ -1,105 +1,7 @@
 //! Versioned wire DTO contract and checked routing key.
-use serde::Serialize;
+use crate::task::Task;
 use std::fmt;
 use thiserror::Error;
-/// Versioned wire DTO. Retain supported versions while queued work exists.
-///
-/// The type and the version are stored with every queued task and route it to its handler, so they never
-/// change for a payload's shape; `#[derive(cqrsx::Task)]` writes them from `#[task(name = "…", version = N)]`.
-///
-/// ```
-/// use cqrsx::{Task, task::{NewTask, format::{TaskFormat, TaskPayload}}};
-/// use serde::Serialize;
-///
-/// #[derive(Serialize, Task)]
-/// #[task(name = "send_e_ticket", version = 2)]
-/// struct SendETicket {
-///     seat: String,
-/// }
-///
-/// assert_eq!((SendETicket::TASK_TYPE, SendETicket::TASK_VERSION), ("send_e_ticket", 2));
-/// assert_eq!(TaskFormat::of::<SendETicket>().to_string(), "send_e_ticket v2");
-/// let task = NewTask::try_new(SendETicket { seat: "B4".into() }).unwrap();
-/// assert_eq!(task.payload()["seat"], "B4");
-/// ```
-///
-/// A version is positive, as [`TaskFormat::try_new`] requires; the derive refuses another at compile time:
-///
-/// ```compile_fail
-/// # use cqrsx::Task;
-/// # use serde::Serialize;
-/// #[derive(Serialize, Task)]
-/// #[task(name = "send_e_ticket", version = 0)]
-/// struct SendETicket {
-///     seat: String,
-/// }
-/// ```
-///
-/// A field marked `#[label]` is kept in the task's metadata, under its name, instead of its body: what is said of the
-/// task besides its business data (a tenant, say), never a copy of the body. [`NewTask::try_new`](crate::task::NewTask::try_new)
-/// moves it there, and the JSON adapter puts it back before it decodes the payload, so the handler gets the whole
-/// value:
-///
-/// ```
-/// use cqrsx::{Task, task::{NewTask, format::TaskPayload}};
-/// use serde::Serialize;
-/// use serde_json::json;
-///
-/// #[derive(Serialize, Task)]
-/// #[task(name = "issue_refund", version = 1)]
-/// struct IssueRefund {
-///     amount: u32,
-///     #[label]
-///     tenant: String,
-/// }
-///
-/// assert_eq!(IssueRefund::LABELS, ["tenant"]);
-/// let task = NewTask::try_new(IssueRefund { amount: 80, tenant: "acme".into() }).unwrap();
-/// assert_eq!(task.payload(), &json!({ "amount": 80 }));
-/// assert_eq!(task.metadata(), &json!({ "tenant": "acme" }));
-/// ```
-///
-/// A label moves under its field's name, so a serde attribute that renames or drops the key does not compile:
-///
-/// ```compile_fail
-/// # use cqrsx::Task;
-/// # use serde::Serialize;
-/// #[derive(Serialize, Task)]
-/// #[task(name = "issue_refund", version = 1)]
-/// struct IssueRefund {
-///     amount: u32,
-///     #[label]
-///     #[serde(rename = "tenant_id")]
-///     tenant: String,
-/// }
-/// ```
-///
-/// A `TaskPayload` written by hand is checked when its format is taken ([`TaskFormat::of`]), so `cargo build` refuses
-/// a version below 1 there:
-///
-/// ```compile_fail,E0080
-/// use cqrsx::task::format::{TaskFormat, TaskPayload};
-/// use serde::Serialize;
-///
-/// #[derive(Serialize)]
-/// struct SendETicket {}
-///
-/// impl TaskPayload for SendETicket {
-///     const TASK_TYPE: &'static str = "send_e_ticket";
-///     const TASK_VERSION: i32 = 0;
-/// }
-///
-/// fn main() {
-///     println!("{}", TaskFormat::of::<SendETicket>());
-/// }
-/// ```
-pub trait TaskPayload: Serialize {
-    const TASK_TYPE: &'static str;
-    const TASK_VERSION: i32;
-    /// The fields kept in the task's metadata instead of its body, by name (`#[label]`); none by default.
-    const LABELS: &'static [&'static str] = &[];
-}
-
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum TaskFormatError {
     #[error("task type must not be empty")]
@@ -133,8 +35,8 @@ impl TaskFormat {
     /// The format of `T`. Its constants obey the rules of [`try_new`](Self::try_new), checked when the compiler
     /// instantiates this function for `T`: a payload type with an empty `TASK_TYPE` or a `TASK_VERSION` below 1 fails
     /// `cargo build` (a check made after monomorphization, which `cargo check` may not report), whether its
-    /// `TaskPayload` is derived or written by hand.
-    pub fn of<T: TaskPayload>() -> Self {
+    /// `Task` is derived or written by hand.
+    pub fn of<T: Task>() -> Self {
         const {
             assert!(!T::TASK_TYPE.is_empty(), "the task type must not be empty");
             assert!(T::TASK_VERSION > 0, "the task version must be positive");

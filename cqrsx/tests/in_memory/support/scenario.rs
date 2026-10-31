@@ -7,7 +7,7 @@ use serde::Serialize;
 
 use cqrsx::domain::aggregate::Aggregate;
 use cqrsx::domain::command::Decide;
-use cqrsx::domain::event::DomainEvent;
+use cqrsx::domain::event::Events;
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct TestAggregate {
@@ -98,7 +98,7 @@ pub struct SomethingElse {
     pub description: String,
 }
 
-impl DomainEvent for TestEvent {
+impl Events for TestEvent {
     fn event_type(&self) -> &'static str {
         match self {
             Self::Created(_) => "Created",

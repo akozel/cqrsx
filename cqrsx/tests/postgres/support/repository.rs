@@ -3,8 +3,8 @@
 
 use cqrsx::domain::aggregate::Aggregate;
 use cqrsx::domain::command::Decide;
-use cqrsx::domain::event::DomainEvent;
 use cqrsx::domain::event::EventEnvelope;
+use cqrsx::domain::event::Events;
 use cqrsx::journal::serialized_event::SerializedEvent;
 use cqrsx::journal::snapshot::SerializedSnapshot;
 use cqrsx::view::View;
@@ -60,7 +60,7 @@ pub struct SomethingElse {
     pub description: String,
 }
 
-impl DomainEvent for TestEvent {
+impl Events for TestEvent {
     fn event_type(&self) -> &'static str {
         match self {
             Self::Created(_) => "Created",
@@ -132,7 +132,7 @@ pub(crate) fn serialized_snapshot(
 pub(crate) mod customer {
     use cqrsx::domain::aggregate::Aggregate;
     use cqrsx::domain::command::Decide;
-    use cqrsx::domain::event::DomainEvent;
+    use cqrsx::domain::event::Events;
     use serde::Deserialize;
     use serde::Serialize;
 
@@ -197,7 +197,7 @@ pub(crate) mod customer {
         CustomerDataPopulated,
     }
 
-    impl DomainEvent for CustomerEvent {
+    impl Events for CustomerEvent {
         fn event_type(&self) -> &'static str {
             match self {
                 Self::NameAdded { .. } => "NameAdded",

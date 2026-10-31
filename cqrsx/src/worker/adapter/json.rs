@@ -1,36 +1,33 @@
 //! Checked format registration and decoding for one versioned task operation.
 
-use crate::task::{
-    decode_with_labels,
-    format::{TaskFormat, TaskPayload},
-};
+use crate::task::{Task, decode_with_labels, format::TaskFormat};
 use crate::worker::{TaskHandler, TaskResult, adapter::TaskAdapter, context::TaskContext, dependencies::DependencyId};
 use serde::de::DeserializeOwned;
 use std::{fmt, marker::PhantomData};
 
 /// Adapt a typed operation to the dispatcher and executor interface.
 ///
-/// Checks `P`'s format during construction. Each delivery must match that format
+/// Checks `T`'s format during construction. Each delivery must match that format
 /// and deserialize successfully before the operation is called. Structural
 /// failures fail the task, with sanitized expected type/version diagnostics;
 /// payloads, metadata, actual arbitrary type names and serde errors are omitted.
 /// Decoding reads the JSON payload in place, and a label (`#[label]`) from the
-/// metadata, copying neither. Unknown field handling follows `P`'s serde settings.
+/// metadata, copying neither. Unknown field handling follows `T`'s serde settings.
 /// Business results pass unchanged.
 ///
 /// One handler serves every delivery and every worker; its dependencies are the
 /// handler's ([`TaskHandler::DEPENDENCIES`]). Register separate adapters for separate
 /// DTO versions, or use [`TaskAdapter`] for a custom multi-version handler. This
 /// adapter requires no optional runtime feature.
-pub struct JsonTaskAdapter<P, H> {
+pub struct JsonTaskAdapter<T, H> {
     handler: H,
     format: TaskFormat,
-    // `fn() -> P`: the adapter makes payloads, it holds none, so it is `Sync` whatever `P` is.
-    payload: PhantomData<fn() -> P>,
+    // `fn() -> T`: the adapter makes payloads, it holds none, so it is `Sync` whatever `T` is.
+    payload: PhantomData<fn() -> T>,
 }
 
 // By hand: the handler need not be `Debug`.
-impl<P, H> fmt::Debug for JsonTaskAdapter<P, H> {
+impl<T, H> fmt::Debug for JsonTaskAdapter<T, H> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("JsonTaskAdapter")
             .field("format", &self.format)
@@ -38,17 +35,17 @@ impl<P, H> fmt::Debug for JsonTaskAdapter<P, H> {
     }
 }
 
-impl<P, H> JsonTaskAdapter<P, H>
+impl<T, H> JsonTaskAdapter<T, H>
 where
-    P: TaskPayload + DeserializeOwned + Send + 'static,
-    H: TaskHandler<P>,
+    T: Task + DeserializeOwned + Send + 'static,
+    H: TaskHandler<T>,
 {
-    /// The adapter of `handler` for the payloads of `P`, without I/O, environment lookup or type erasure; `P`'s format
+    /// The adapter of `handler` for the payloads of `T`, without I/O, environment lookup or type erasure; `T`'s format
     /// is checked when this compiles ([`TaskFormat::of`]).
     pub fn new(handler: H) -> Self {
         Self {
             handler,
-            format: TaskFormat::of::<P>(),
+            format: TaskFormat::of::<T>(),
             payload: PhantomData,
         }
     }
@@ -60,10 +57,10 @@ where
     }
 }
 
-impl<P, H> TaskAdapter for JsonTaskAdapter<P, H>
+impl<T, H> TaskAdapter for JsonTaskAdapter<T, H>
 where
-    P: TaskPayload + DeserializeOwned + Send + 'static,
-    H: TaskHandler<P>,
+    T: Task + DeserializeOwned + Send + 'static,
+    H: TaskHandler<T>,
 {
     fn formats(&self) -> Vec<TaskFormat> {
         vec![self.format.clone()]
@@ -78,10 +75,10 @@ where
         if delivery.format() != &self.format {
             return TaskResult::fail(format!("unsupported task format for {}", self.safe_format()));
         }
-        let decoded = if P::LABELS.is_empty() {
-            P::deserialize(delivery.payload())
+        let decoded = if T::LABELS.is_empty() {
+            T::deserialize(delivery.payload())
         } else {
-            decode_with_labels(P::LABELS, delivery.payload(), delivery.metadata())
+            decode_with_labels(T::LABELS, delivery.payload(), delivery.metadata())
         };
         match decoded {
             Ok(payload) => self.handler.handle(payload, ctx).await,
@@ -115,7 +112,7 @@ mod tests {
         marker: Cell<u8>,
     }
 
-    impl<const VERSION: i32> TaskPayload for Payload<VERSION> {
+    impl<const VERSION: i32> Task for Payload<VERSION> {
         const TASK_TYPE: &'static str = "test_operation";
         const TASK_VERSION: i32 = VERSION;
     }
@@ -274,7 +271,7 @@ mod tests {
             Err(serde::de::Error::custom("private_serde_error_sentinel"))
         }
     }
-    impl TaskPayload for PrivatePayload {
+    impl Task for PrivatePayload {
         const TASK_TYPE: &'static str = "private_expected_type\nsecret@example.com";
         const TASK_VERSION: i32 = 4;
     }
@@ -310,7 +307,7 @@ mod tests {
         tenant: String,
     }
 
-    impl TaskPayload for Labelled {
+    impl Task for Labelled {
         const TASK_TYPE: &'static str = "labelled";
         const TASK_VERSION: i32 = 1;
         const LABELS: &'static [&'static str] = &["tenant"];

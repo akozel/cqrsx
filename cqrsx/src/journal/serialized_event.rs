@@ -3,7 +3,7 @@
 use crate::{
     domain::{
         aggregate::Aggregate,
-        event::{DomainEvent, EventEnvelope},
+        event::{EventEnvelope, Events},
     },
     journal::{PersistenceError, upcaster::EventUpcaster},
 };

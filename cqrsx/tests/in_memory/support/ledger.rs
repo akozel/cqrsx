@@ -1,4 +1,4 @@
-use cqrsx::domain::{aggregate::Aggregate, command::Decide, event::DomainEvent};
+use cqrsx::domain::{aggregate::Aggregate, command::Decide, event::Events};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 
@@ -9,7 +9,7 @@ pub(crate) struct Ledger {
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Delta(pub i32);
-impl DomainEvent for Delta {
+impl Events for Delta {
     fn event_type(&self) -> &'static str {
         "delta"
     }

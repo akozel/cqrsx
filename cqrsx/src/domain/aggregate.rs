@@ -1,6 +1,6 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::domain::{command::Decide, event::DomainEvent};
+use crate::domain::{command::Decide, event::Events};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fmt, hash::Hash, str::FromStr};
 
@@ -15,7 +15,7 @@ use std::{fmt, hash::Hash, str::FromStr};
 ///
 /// The aggregate holds the state and how every event changes it ([`apply`](Self::apply)). The rules are the
 /// commands': every command decides itself on the committed state ([`Decide`]), one event or a rejection, and the
-/// aggregate's [`Command`](Self::Command), usually an enum with `#[derive(cqrsx::Commands)]`, routes each to its
+/// aggregate's [`Command`](Self::Command), usually an enum with `#[derive(Command, Decide)]`, routes each to its
 /// own decision.
 ///
 /// # Example of a 'Customer' aggregate
@@ -23,7 +23,7 @@ use std::{fmt, hash::Hash, str::FromStr};
 /// # mod example {
 /// # use serde::Deserialize;
 /// # use serde::Serialize;
-/// # use cqrsx::domain::event::DomainEvent;
+/// # use cqrsx::domain::event::Events;
 /// #
 /// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
 /// # #[error("{0}")]
@@ -45,7 +45,7 @@ use std::{fmt, hash::Hash, str::FromStr};
 /// #     CustomerDataPopulated,
 /// # }
 /// #
-/// # impl DomainEvent for CustomerEvent {
+/// # impl Events for CustomerEvent {
 /// #     fn event_type(&self) -> &'static str {
 /// #         match self {
 /// #             Self::NameAdded { .. } => "NameAdded",
@@ -121,10 +121,14 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// formats it once per command. The text is stored, so it never changes for an id; [`FromStr`] parses it back.
     type Id: fmt::Display + FromStr + Clone + Eq + Hash + Send + Sync + 'static;
     /// Specifies the inbound command used to make changes in the state of the Aggregate: it decides itself
-    /// ([`Decide`]), and it is `Send`, so that the future that executes it is.
+    /// ([`Decide`]), and it is `Send`, so that the future that executes it is. Usually an enum of the aggregate's
+    /// command types, one per variant (`#[derive(Command, Decide)]`); the trait
+    /// [`Command`](crate::domain::command::Command) describes one command type.
     type Command: Decide<Self> + Send;
-    /// Specifies the published events representing some change in state of the Aggregate.
-    type Event: DomainEvent;
+    /// Specifies the published events representing some change in state of the Aggregate: the enum of the
+    /// aggregate's events ([`Events`]), one event type per variant; the trait
+    /// [`Event`](crate::domain::event::Event) is the stored name and version of one such type.
+    type Event: Events;
     /// The error returned when a command fails due to business logic.
     /// This is used to provide feedback to the user as to the nature of why the command was refused.
     type Error: std::error::Error;
@@ -143,7 +147,7 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// # mod example {
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// #
     /// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
     /// # #[error("{0}")]
@@ -165,7 +169,7 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// #     CustomerDataPopulated,
     /// # }
     /// #
-    /// # impl DomainEvent for CustomerEvent {
+    /// # impl Events for CustomerEvent {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::NameAdded { .. } => "NameAdded",
@@ -252,7 +256,7 @@ impl AggregateKey {
 /// read; its one command decides a zero delta and is never executed.
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::domain::{aggregate::Aggregate, command::Decide, event::DomainEvent};
+    use crate::domain::{aggregate::Aggregate, command::Decide, event::Events};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
@@ -262,7 +266,7 @@ pub(crate) mod tests {
     }
     #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
     pub(crate) struct Delta(pub i32);
-    impl DomainEvent for Delta {
+    impl Events for Delta {
         fn event_type(&self) -> &'static str {
             "delta"
         }

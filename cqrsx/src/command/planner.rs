@@ -16,9 +16,9 @@
 //! ```
 //! use cqrsx::{
 //!     command::planner::{Decision, TaskPlanError, TaskPlanner},
-//!     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+//!     domain::{aggregate::Aggregate, command::Decide, event::Events},
 //! };
-//! use cqrsx::task::{NewTask, format::TaskPayload};
+//! use cqrsx::task::{NewTask, Task};
 //! use serde::{Deserialize, Serialize};
 //! use std::collections::HashMap;
 //!
@@ -30,7 +30,7 @@
 //! enum OrderEvent {
 //!     Placed { total: u32 },
 //! }
-//! impl DomainEvent for OrderEvent {
+//! impl Events for OrderEvent {
 //!     fn event_type(&self) -> &'static str { "placed" }
 //!     fn event_version(&self) -> &'static str { "1" }
 //! }
@@ -57,13 +57,13 @@
 //!
 //! #[derive(Serialize)]
 //! struct Ship { order_id: String }
-//! impl TaskPayload for Ship {
+//! impl Task for Ship {
 //!     const TASK_TYPE: &'static str = "ship";
 //!     const TASK_VERSION: i32 = 1;
 //! }
 //! #[derive(Serialize)]
 //! struct Invoice { order_id: String, total: u32 }
-//! impl TaskPayload for Invoice {
+//! impl Task for Invoice {
 //!     const TASK_TYPE: &'static str = "invoice";
 //!     const TASK_VERSION: i32 = 1;
 //! }
@@ -277,8 +277,8 @@ impl<A: Aggregate> Planning<A> {
 mod tests {
     use super::*;
     use crate::{
-        domain::{command::Decide, event::DomainEvent},
-        task::{TaskSchedule, format::TaskPayload},
+        domain::{command::Decide, event::Events},
+        task::{Task, TaskSchedule},
     };
     use proptest::prelude::*;
     use serde::{Deserialize, Serialize};
@@ -299,7 +299,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Counted(u32);
 
-    impl DomainEvent for Counted {
+    impl Events for Counted {
         fn event_type(&self) -> &'static str {
             "counted"
         }
@@ -332,7 +332,7 @@ mod tests {
         value: u32,
     }
 
-    impl TaskPayload for Ping {
+    impl Task for Ping {
         const TASK_TYPE: &'static str = "ping";
         const TASK_VERSION: i32 = 1;
     }
@@ -340,7 +340,7 @@ mod tests {
     #[derive(Serialize)]
     struct Pong {}
 
-    impl TaskPayload for Pong {
+    impl Task for Pong {
         const TASK_TYPE: &'static str = "pong";
         const TASK_VERSION: i32 = 1;
     }

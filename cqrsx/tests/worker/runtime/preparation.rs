@@ -1,5 +1,5 @@
 use super::*;
-use cqrsx::task::{format::TaskPayload, policy::Policies};
+use cqrsx::task::{Task, policy::Policies};
 use cqrsx::worker::{TaskHandler, dependencies::DependencyId, handlers::TaskHandlers};
 
 #[tokio::test]
@@ -39,7 +39,7 @@ struct Greeting {
     value: String,
 }
 
-impl TaskPayload for Greeting {
+impl Task for Greeting {
     const TASK_TYPE: &'static str = "dummy_task";
     const TASK_VERSION: i32 = 1;
 }

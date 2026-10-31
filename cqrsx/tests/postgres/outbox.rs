@@ -19,7 +19,7 @@ enum TestEvent {
     Recorded { value: String },
 }
 
-impl DomainEvent for TestEvent {
+impl Events for TestEvent {
     fn event_type(&self) -> &'static str {
         "recorded"
     }

@@ -241,8 +241,8 @@ mod tests {
     };
 
     use crate::domain::command::Decide;
-    use crate::domain::event::DomainEvent;
     use crate::domain::event::EventEnvelope;
+    use crate::domain::event::Events;
     use crate::journal::AggregateContext;
     use serde::{Deserialize, Serialize};
 
@@ -256,7 +256,7 @@ mod tests {
     };
     use crate::domain::aggregate::Aggregate;
     use crate::journal::EventStore;
-    use crate::task::{NewTask, format::TaskPayload};
+    use crate::task::{NewTask, Task};
     use std::time::Duration;
     use thiserror::Error;
 
@@ -275,7 +275,7 @@ mod tests {
         Recorded(String),
     }
 
-    impl DomainEvent for DummyEvent {
+    impl Events for DummyEvent {
         fn event_type(&self) -> &'static str {
             "recorded"
         }
@@ -379,7 +379,7 @@ mod tests {
         value: String,
     }
 
-    impl TaskPayload for DummyTask {
+    impl Task for DummyTask {
         const TASK_TYPE: &'static str = "dummy";
         const TASK_VERSION: i32 = 1;
     }
@@ -1186,7 +1186,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Added(u32);
 
-    impl DomainEvent for Added {
+    impl Events for Added {
         fn event_type(&self) -> &'static str {
             "added"
         }
@@ -1283,7 +1283,7 @@ mod tests {
         after: u32,
     }
 
-    impl TaskPayload for Total {
+    impl Task for Total {
         const TASK_TYPE: &'static str = "total";
         const TASK_VERSION: i32 = 1;
     }

@@ -17,19 +17,19 @@
 //! - `host`: optional process signals and coordinated component shutdown.
 //! - `http`: optional HTTP routes of the modules and `serve` of an engine (axum 0.8).
 //! - `logging`: optional explicit logger configuration and installation.
-//! - [`Command`], [`Commands`], [`Event`], [`Events`], [`Task`], [`Rejection`]: derive macros (crate
-//!   `cqrsx-macros`) for what is known of a command, an aggregate's enum of commands, an event type's
-//!   stored name and version, an aggregate's enum of events, a task's wire format and a rejection's
-//!   code and params; [`task_handler`]: a task handler written as a function. The contracts they implement
-//!   live in their modules ([`domain::command::CommandInfo`], [`domain::command::Decide`],
-//!   [`domain::event::EventKind`], [`domain::event::DomainEvent`], [`task::format::TaskPayload`],
-//!   [`domain::rejection::Rejection`], [`worker::TaskHandler`]).
+//! - Derive macros (crate `cqrsx-macros`) live next to the trait each implements: `Event` and `Events`
+//!   ([`domain::event`]: an event type's stored name and version, an aggregate's enum of events), `Command` and
+//!   `Decide` ([`domain::command`]: what is known of a command, how an enum of commands decides), `Rejection`
+//!   ([`domain::rejection`]: a rejection's code and params), `Task` ([`task`]: a task's wire format) and the
+//!   attribute `task_handler` ([`worker`]: a task handler written as a function).
 //!
 //! Applications own business transitions and repeat-safe task effects. The README below is the
 //! guide: a complete in-memory example (compiled with the doctests), the PostgreSQL assembly, the
 //! configuration and the rules.
 //!
 #![doc = include_str!("../README.md")]
+
+extern crate self as cqrsx;
 
 pub mod command;
 mod diagnostics;
@@ -54,8 +54,6 @@ pub mod testing;
 mod unwinding;
 pub mod view;
 pub mod worker;
-
-pub use cqrsx_macros::{Command, Commands, Event, Events, Rejection, Task, task_handler};
 
 /// What the expansions of the derive macros name; not an API.
 #[doc(hidden)]

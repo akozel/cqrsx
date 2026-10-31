@@ -8,14 +8,7 @@
 //! pause before a retry ([`Policies::pause`]); the registry is shared (`Arc`), so a clone costs nothing.
 //!
 //! ```
-//! use cqrsx::{
-//!     Task,
-//!     task::{
-//!         DEFAULT_MAX_ATTEMPTS,
-//!         format::TaskFormat,
-//!         policy::{Policies, PolicyName, Retry, TaskPolicy},
-//!     },
-//! };
+//! use cqrsx::task::{DEFAULT_MAX_ATTEMPTS, Task, format::TaskFormat, policy::{Policies, PolicyName, Retry, TaskPolicy}};
 //! use serde::Serialize;
 //! use std::{num::NonZeroU16, time::Duration};
 //!
@@ -58,10 +51,7 @@
 //!     println!("{NONE}");
 //! }
 //! ```
-use crate::task::{
-    DEFAULT_MAX_ATTEMPTS,
-    format::{TaskFormat, TaskPayload},
-};
+use crate::task::{DEFAULT_MAX_ATTEMPTS, Task, format::TaskFormat};
 use std::{
     collections::{HashMap, hash_map::Entry},
     fmt,
@@ -171,7 +161,7 @@ impl Policies {
     }
 
     /// Binds the task type `T` to the policy `name`, which must be defined already; a type is bound once.
-    pub fn with_task<T: TaskPayload>(mut self, name: PolicyName) -> Result<Self, PolicyError> {
+    pub fn with_task<T: Task>(mut self, name: PolicyName) -> Result<Self, PolicyError> {
         let format = TaskFormat::of::<T>();
         let table = Arc::make_mut(&mut self.0);
         if !table.policies.contains_key(&name) {
@@ -244,7 +234,7 @@ mod tests {
     #[derive(Serialize)]
     struct Step {}
 
-    impl TaskPayload for Step {
+    impl Task for Step {
         const TASK_TYPE: &'static str = "step";
         const TASK_VERSION: i32 = 1;
     }
@@ -252,7 +242,7 @@ mod tests {
     #[derive(Serialize)]
     struct Mail {}
 
-    impl TaskPayload for Mail {
+    impl Task for Mail {
         const TASK_TYPE: &'static str = "mail";
         const TASK_VERSION: i32 = 1;
     }
@@ -260,7 +250,7 @@ mod tests {
     #[derive(Serialize)]
     struct Unbound {}
 
-    impl TaskPayload for Unbound {
+    impl Task for Unbound {
         const TASK_TYPE: &'static str = "unbound";
         const TASK_VERSION: i32 = 1;
     }

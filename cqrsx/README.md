@@ -22,19 +22,13 @@ in the fan's wallet, a second task mails it, and the hall view catches up. It ru
 
 ```rust
 use cqrsx::{
-    engine::Cqrs,
-    Command, Event, Events, Rejection, Task,
     command::CommandGatewayError,
-    view::View,
-    domain::{aggregate::Aggregate, command::Decide, event::EventEnvelope},
+    domain::{aggregate::Aggregate, command::{Command, Decide}, event::{Event, EventEnvelope, Events}, rejection::Rejection},
+    engine::{Cqrs, module::Module, setup::{Setup, SetupError}},
     reactions::{Decided, Reactions, Then},
-    engine::{
-        module::Module,
-        setup::{Setup, SetupError},
-    },
-    task::policy::{PolicyName, Retry},
-    task_handler,
-    worker::{TaskResult, context::TaskContext},
+    task::{Task, policy::{PolicyName, Retry}},
+    view::View,
+    worker::{TaskResult, context::TaskContext, task_handler},
 };
 use serde::{Deserialize, Serialize};
 use std::{

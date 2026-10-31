@@ -1,8 +1,5 @@
 //! Adapter contracts work without the postgres feature or erased futures.
-use cqrsx::task::{
-    attempt::TaskAttempt,
-    format::{TaskFormat, TaskPayload},
-};
+use cqrsx::task::{Task, attempt::TaskAttempt, format::TaskFormat};
 use cqrsx::worker::{
     TaskHandler, TaskResult,
     adapter::{TaskAdapter, json::JsonTaskAdapter},
@@ -41,7 +38,7 @@ struct Payload {
     #[serde(skip)]
     mutable: Cell<u8>,
 }
-impl TaskPayload for Payload {
+impl Task for Payload {
     const TASK_TYPE: &'static str = "native_adapter";
     const TASK_VERSION: i32 = 1;
 }

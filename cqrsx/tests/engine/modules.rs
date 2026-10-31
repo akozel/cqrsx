@@ -1,18 +1,24 @@
 //! The modules of the engine's tests: a box office whose bookings go into the fans' wallets by a step of a chain, whose
 //! recorded tickets are mailed through a dependency, with a view of the halls; written with the derive macros.
 use cqrsx::{
-    Command, Event, Events, Rejection, Task,
     command::CommandGatewayError,
-    domain::{aggregate::Aggregate, command::Decide, event::EventEnvelope},
+    domain::{
+        aggregate::Aggregate,
+        command::{Command, Decide},
+        event::{Event, EventEnvelope, Events},
+        rejection::Rejection,
+    },
     engine::{
         module::Module,
         setup::{Setup, SetupError},
     },
     reactions::{Decided, Reactions, Then},
-    task::policy::{PolicyName, Retry},
-    task_handler,
+    task::{
+        Task,
+        policy::{PolicyName, Retry},
+    },
     view::View,
-    worker::{TaskResult, context::TaskContext},
+    worker::{TaskResult, context::TaskContext, task_handler},
 };
 use serde::{Deserialize, Serialize};
 use std::{

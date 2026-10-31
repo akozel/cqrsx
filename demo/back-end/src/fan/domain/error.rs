@@ -1,4 +1,4 @@
-use cqrsx::Rejection;
+use cqrsx::domain::rejection::Rejection;
 use thiserror::Error;
 use uuid::Uuid;
 

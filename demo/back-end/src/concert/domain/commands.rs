@@ -9,11 +9,11 @@ pub use announce_concert::AnnounceConcert;
 pub use book_seat::BookSeat;
 pub use cancel_booking::CancelBooking;
 
-use cqrsx::Commands;
+use cqrsx::domain::command::{Command, Decide};
 
 /// Internal command shape; the HTTP DTO is a separate type that fills the generated identifiers
 /// (`booking_id` / `cancellation_id` = `command_id`).
-#[derive(Debug, Clone, PartialEq, Eq, Commands)]
+#[derive(Debug, Clone, PartialEq, Eq, Command, Decide)]
 pub enum ConcertCommand {
     AnnounceConcert(AnnounceConcert),
     BookSeat(BookSeat),
@@ -23,7 +23,7 @@ pub enum ConcertCommand {
 #[cfg(test)]
 mod tests {
     use crate::concert::domain::test_support::{announce, book, cancel};
-    use cqrsx::domain::command::CommandInfo;
+    use cqrsx::domain::command::Command;
     use uuid::Uuid;
 
     /// What the activity feed names a command by, and the id a booking and a cancellation share with their command.

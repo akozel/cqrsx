@@ -30,11 +30,11 @@ use std::{fmt, marker::PhantomData};
 ///
 /// ```no_run
 /// # mod example {
-/// # use cqrsx::{domain::{aggregate::Aggregate, command::Decide, event::{DomainEvent, EventEnvelope}}, view::View};
+/// # use cqrsx::{domain::{aggregate::Aggregate, command::Decide, event::{Events, EventEnvelope}}, view::View};
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// # pub struct Counted;
-/// # impl DomainEvent for Counted {
+/// # impl Events for Counted {
 /// #     fn event_type(&self) -> &'static str { "counted" }
 /// #     fn event_version(&self) -> &'static str { "1" }
 /// # }

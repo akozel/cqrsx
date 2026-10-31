@@ -5,7 +5,7 @@ use crate::shared::domain::{
     FanId,
     venue::{SeatId, Zone},
 };
-use cqrsx::Event;
+use cqrsx::domain::event::Event;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

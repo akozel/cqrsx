@@ -103,7 +103,7 @@ where
     /// # use serde::Serialize;
     /// # use cqrsx::journal::snapshot::SnapshotUpdate;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -121,7 +121,7 @@ where
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -269,7 +269,7 @@ where
     /// # use serde::Serialize;
     /// # use cqrsx::journal::snapshot::SnapshotUpdate;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -287,7 +287,7 @@ where
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -629,7 +629,7 @@ pub(crate) mod tests {
     // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
     // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
     use crate::{
-        domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+        domain::{aggregate::Aggregate, command::Decide, event::Events},
         journal::{
             PersistenceError, repository::PersistedEventRepository, serialized_event::SerializedEvent,
             snapshot::SerializedSnapshot,
@@ -649,7 +649,7 @@ pub(crate) mod tests {
         SomethingWasDone,
     }
 
-    impl DomainEvent for TestEvents {
+    impl Events for TestEvents {
         fn event_type(&self) -> &'static str {
             match self {
                 Self::Started => "Started",
@@ -838,7 +838,7 @@ pub(crate) mod tests {
         use std::collections::HashMap;
 
         use crate::command::AggregateError;
-        use crate::domain::event::DomainEvent;
+        use crate::domain::event::Events;
         use crate::journal::EventStore;
         use crate::journal::PersistenceError;
         use crate::journal::persisted::EventStoreAggregateContext;
@@ -962,7 +962,7 @@ pub(crate) mod tests {
         use serde_json::json;
 
         use crate::command::AggregateError;
-        use crate::domain::event::DomainEvent;
+        use crate::domain::event::Events;
         use crate::journal::EventStore;
         use crate::journal::PersistenceError;
         use crate::journal::persisted::EventStoreAggregateContext;
@@ -1387,7 +1387,7 @@ mod contract_tests {
 mod serialization_failure_tests {
     use super::tests::MockRepo;
     use super::*;
-    use crate::domain::{command::Decide, event::DomainEvent};
+    use crate::domain::{command::Decide, event::Events};
     use serde::{Deserialize, Serialize, Serializer};
     #[derive(Clone, Debug, PartialEq, Deserialize)]
     struct Event(bool);
@@ -1400,7 +1400,7 @@ mod serialization_failure_tests {
             }
         }
     }
-    impl DomainEvent for Event {
+    impl Events for Event {
         fn event_type(&self) -> &'static str {
             "event"
         }
@@ -1523,7 +1523,7 @@ mod serialization_failure_tests {
             panic!("invalid batch serialized event")
         }
     }
-    impl DomainEvent for GuardedEvent {
+    impl Events for GuardedEvent {
         fn event_type(&self) -> &'static str {
             "guarded"
         }

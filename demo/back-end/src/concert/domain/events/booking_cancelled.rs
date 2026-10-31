@@ -2,7 +2,7 @@
 //! [refund](crate::concert::application::reactions) workflow through the
 //! `encore_record_cancellation` task the workflow plans from this event and commits with it.
 use crate::shared::domain::{FanId, venue::SeatId};
-use cqrsx::Event;
+use cqrsx::domain::event::Event;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 

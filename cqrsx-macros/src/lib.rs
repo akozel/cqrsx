@@ -1,6 +1,7 @@
-//! Derive macros of cqrsx and its attribute for task handlers. Use them through cqrsx, which re-exports them as
-//! `cqrsx::{Command, Commands, Event, Events, Task, Rejection, task_handler}`: the expansions name `::cqrsx` paths
-//! only.
+//! Derive macros of cqrsx and its attribute for task handlers. Use them through cqrsx, which re-exports each next to
+//! the trait it implements (`cqrsx::domain::event::{Event, Events}`, `cqrsx::domain::command::{Command, Decide}`,
+//! `cqrsx::task::Task`, `cqrsx::domain::rejection::Rejection`, `cqrsx::worker::task_handler`): the expansions name
+//! `::cqrsx` paths only.
 //!
 //! Every entry point is one call of its expansion, a function over `proc_macro2` that the unit tests call directly;
 //! what does not compile is shown by the `compile_fail` examples of cqrsx.
@@ -16,10 +17,13 @@ use proc_macro2::TokenStream as TokenStream2;
 use syn::{DeriveInput, ItemFn};
 
 /// What an observer knows of one command besides its decision: on a struct, implements
-/// `cqrsx::domain::command::CommandInfo`. Its name is the type's (`CancelBooking`); the field marked `#[command_id]`, a
+/// `cqrsx::domain::command::Command`. Its name is the type's (`CancelBooking`); the field marked `#[command_id]`, a
 /// `Uuid` and at most one, is the command's id; the fields marked `#[label]` are its labels, in field order, each as
-/// its name and its `Display`. An enum, a second `#[command_id]`, an attribute with arguments or on a field without a
-/// name, and a command id that is not a `Uuid` do not compile. Examples: `cqrsx::domain::command::CommandInfo`.
+/// its name and its `Display`. On an enum of commands, every variant carrying one command type
+/// (`CancelBooking(CancelBooking)`), it implements the same by delegation to the variant's type. A second
+/// `#[command_id]`, an attribute with arguments or on a field without a name, an attribute on a field of an enum's
+/// variant, a command id that is not a `Uuid`, a variant without exactly one field and a union do not compile.
+/// Examples: `cqrsx::domain::command::Command`.
 #[proc_macro_derive(Command, attributes(command_id, label))]
 pub fn derive_command(input: TokenStream) -> TokenStream {
     run(command::expand_command, input.into()).into()
@@ -27,41 +31,42 @@ pub fn derive_command(input: TokenStream) -> TokenStream {
 
 /// An aggregate's enum of commands, every variant carrying one command type (`CancelBooking(CancelBooking)`):
 /// implements `cqrsx::domain::command::Decide<A>` for every aggregate `A` that each variant's type decides, by
-/// handing the command to that type's `decide`, and `cqrsx::domain::command::CommandInfo` by the same delegation. The
-/// derive does not know the aggregate: `ConcertCommand: Decide<Concert>` holds once every variant decides `Concert`.
-/// A variant without exactly one field does not compile, nor does a variant whose type does not decide the
-/// aggregate the enum is the command of. Examples: `cqrsx::domain::command::Decide`.
-#[proc_macro_derive(Commands)]
-pub fn derive_commands(input: TokenStream) -> TokenStream {
-    run(command::expand_commands, input.into()).into()
+/// handing the command to that type's `decide`. The derive does not know the aggregate: `ConcertCommand:
+/// Decide<Concert>` holds once every variant decides `Concert`. A variant without exactly one field does not compile,
+/// nor does a variant whose type does not decide the aggregate the enum is the command of, nor a struct or a union:
+/// a struct writes `Decide<A>` by hand. The enum usually derives `Command` too. Examples:
+/// `cqrsx::domain::command::Decide`.
+#[proc_macro_derive(Decide)]
+pub fn derive_decide(input: TokenStream) -> TokenStream {
+    run(command::expand_decide, input.into()).into()
 }
 
 /// The stored name and version of one event type: `#[event(name = "BookingCancelled", version = "1.0")]` on the
-/// type implements `cqrsx::domain::event::EventKind` with them. Both are stored with every event of the type and
+/// type implements `cqrsx::domain::event::Event` with them. Both are stored with every event of the type and
 /// never change. A missing attribute or key, another key, a key given twice, a value that is not a string and an
-/// empty value do not compile. Examples: `cqrsx::domain::event::EventKind`.
+/// empty value do not compile. Examples: `cqrsx::domain::event::Event`.
 #[proc_macro_derive(Event, attributes(event))]
 pub fn derive_event(input: TokenStream) -> TokenStream {
     run(event::expand_event, input.into()).into()
 }
 
 /// An aggregate's enum of events, every variant carrying one event type (`SeatBooked(SeatBooked)`): implements
-/// `cqrsx::domain::event::DomainEvent`, whose `event_type` and `event_version` are the `EventKind` of the variant's
+/// `cqrsx::domain::event::Events`, whose `event_type` and `event_version` are the `Event` of the variant's
 /// type. A variant without exactly one field, or whose type has no `#[derive(Event)]`, does not compile; other
-/// attributes of the enum (`#[serde(tag = "type")]`) stay as they are. Examples: `cqrsx::domain::event::EventKind`.
+/// attributes of the enum (`#[serde(tag = "type")]`) stay as they are. Examples: `cqrsx::domain::event::Event`.
 #[proc_macro_derive(Events)]
 pub fn derive_events(input: TokenStream) -> TokenStream {
     run(event::expand_events, input.into()).into()
 }
 
 /// The wire format of a task's payload: `#[task(name = "encore_record_cancellation", version = 1)]` on the type
-/// implements `cqrsx::task::format::TaskPayload` with them (`TASK_TYPE`, `TASK_VERSION`). A queued task keeps them, so
+/// implements `cqrsx::task::Task` with them (`TASK_TYPE`, `TASK_VERSION`). A queued task keeps them, so
 /// they never change. The fields of a struct marked `#[label]` are its `LABELS`, in field order: the task keeps them
 /// in its metadata, not in its body. A missing attribute or key, another key, a key given twice, a type that is not a
 /// string or is empty and a version that is not a positive `i32` do not compile; nor does a `#[label]` with arguments,
 /// twice, on a field without a name or off a struct, on a field whose key `#[serde(rename, flatten, skip,
 /// skip_serializing)]` changes or drops, or with `#[serde(rename_all)]` on the struct. Examples:
-/// `cqrsx::task::format::TaskPayload`.
+/// `cqrsx::task::Task`.
 #[proc_macro_derive(Task, attributes(task, label))]
 pub fn derive_task(input: TokenStream) -> TokenStream {
     run(task::expand_task, input.into()).into()

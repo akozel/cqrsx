@@ -74,7 +74,7 @@ where
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -92,7 +92,7 @@ where
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -209,7 +209,7 @@ where
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -227,7 +227,7 @@ where
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -333,7 +333,7 @@ where
     /// # use serde::Serialize;
     /// # use serde_json::Value;
     /// # use cqrsx::domain::aggregate::Aggregate;
-    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::Events;
     /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
@@ -351,7 +351,7 @@ where
     /// #     SomethingElseWasDone,
     /// # }
     /// #
-    /// # impl DomainEvent for MyEvents {
+    /// # impl Events for MyEvents {
     /// #     fn event_type(&self) -> &'static str {
     /// #         match self {
     /// #             Self::SomethingWasDone => "SomethingWasDone",
@@ -496,12 +496,9 @@ mod tests {
             causation::Causation,
             planner::{Decision, TaskPlanError},
         },
-        domain::event::DomainEvent,
+        domain::event::Events,
         journal::persisted::tests::{TestAggregate, TestCommands, TestService},
-        task::{
-            NewTask,
-            format::{TaskFormat, TaskPayload},
-        },
+        task::{NewTask, Task, format::TaskFormat},
         testing::mem_store::MemStore,
     };
     use serde::{Deserialize, Serialize};
@@ -564,7 +561,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Echoed(u32);
 
-    impl DomainEvent for Echoed {
+    impl Events for Echoed {
         fn event_type(&self) -> &'static str {
             "echoed"
         }
@@ -604,7 +601,7 @@ mod tests {
         total: u32,
     }
 
-    impl TaskPayload for Shout {
+    impl Task for Shout {
         const TASK_TYPE: &'static str = "shout";
         const TASK_VERSION: i32 = 1;
     }
@@ -779,7 +776,7 @@ mod tests {
     #[derive(Serialize)]
     struct Whisper {}
 
-    impl TaskPayload for Whisper {
+    impl Task for Whisper {
         const TASK_TYPE: &'static str = "whisper";
         const TASK_VERSION: i32 = 1;
     }

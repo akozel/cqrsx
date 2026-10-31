@@ -152,14 +152,14 @@ fn uuid_v5(namespace: &Uuid, name: &[u8]) -> Uuid {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::format::{TaskFormat, TaskPayload};
+    use crate::task::{Task, format::TaskFormat};
     use proptest::prelude::*;
     use serde_json::json;
 
     #[derive(serde::Serialize)]
     struct Ship {}
 
-    impl TaskPayload for Ship {
+    impl Task for Ship {
         const TASK_TYPE: &'static str = "ship_order";
         const TASK_VERSION: i32 = 1;
     }

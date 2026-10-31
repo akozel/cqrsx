@@ -2,7 +2,7 @@
 use crate::{
     command::CommandExecutor,
     domain::aggregate::Aggregate,
-    task::format::TaskPayload,
+    task::Task,
     worker::{
         TaskHandler,
         adapter::{TaskAdapter, boxed::BoxedTaskAdapter},
@@ -24,8 +24,8 @@ use std::sync::Arc;
 ///
 /// ```
 /// use cqrsx::{
-///     Task, task_handler,
-///     worker::{TaskResult, context::TaskContext, handlers::TaskHandlers},
+///     task::Task,
+///     worker::{TaskResult, context::TaskContext, handlers::TaskHandlers, task_handler},
 /// };
 /// use serde::{Deserialize, Serialize};
 /// use std::sync::Arc;
@@ -82,14 +82,14 @@ impl TaskHandlers {
         }
     }
 
-    /// `handler` for the tasks of its payload type `P`, decoded from JSON
+    /// `handler` for the tasks of its payload type `T`, decoded from JSON
     /// ([`JsonTaskAdapter`](super::adapter::json::JsonTaskAdapter)).
-    pub fn handler<P, H>(mut self, handler: H) -> Self
+    pub fn handler<T, H>(mut self, handler: H) -> Self
     where
-        P: TaskPayload + DeserializeOwned + Send + 'static,
-        H: TaskHandler<P> + 'static,
+        T: Task + DeserializeOwned + Send + 'static,
+        H: TaskHandler<T> + 'static,
     {
-        self.adapters.push(BoxedTaskAdapter::json::<P, H>(handler));
+        self.adapters.push(BoxedTaskAdapter::json::<T, H>(handler));
         self
     }
 
@@ -138,7 +138,7 @@ mod tests {
     use super::*;
     use crate::{
         command::{CommandGatewayError, CommitReport},
-        domain::{command::Decide, event::DomainEvent},
+        domain::{command::Decide, event::Events},
         task::{attempt::TaskAttempt, format::TaskFormat},
         worker::{
             TaskResult,
@@ -156,7 +156,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
     struct Recorded;
 
-    impl DomainEvent for Recorded {
+    impl Events for Recorded {
         fn event_type(&self) -> &'static str {
             "Recorded"
         }
@@ -205,7 +205,7 @@ mod tests {
         ledger: String,
     }
 
-    impl TaskPayload for Record {
+    impl Task for Record {
         const TASK_TYPE: &'static str = "record";
         const TASK_VERSION: i32 = 1;
     }
@@ -213,7 +213,7 @@ mod tests {
     #[derive(Serialize, Deserialize)]
     struct Stamp {}
 
-    impl TaskPayload for Stamp {
+    impl Task for Stamp {
         const TASK_TYPE: &'static str = "stamp";
         const TASK_VERSION: i32 = 1;
     }
@@ -256,7 +256,7 @@ mod tests {
         }
     }
 
-    fn attempt<P: TaskPayload + Serialize>(payload: &P) -> TaskAttempt {
+    fn attempt<P: Task + Serialize>(payload: &P) -> TaskAttempt {
         TaskAttempt::try_first(payload, json!({})).unwrap()
     }
 

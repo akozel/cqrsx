@@ -1,7 +1,4 @@
-use crate::task::{
-    attempt::TaskAttempt,
-    format::{TaskFormat, TaskPayload},
-};
+use crate::task::{Task, attempt::TaskAttempt, format::TaskFormat};
 use crate::worker::{
     TaskResult,
     adapter::TaskAdapter,
@@ -30,7 +27,7 @@ pub(crate) struct DummyTask {
     pub(crate) value: &'static str,
 }
 
-impl TaskPayload for DummyTask {
+impl Task for DummyTask {
     const TASK_TYPE: &'static str = "dummy_task";
     const TASK_VERSION: i32 = 1;
 }

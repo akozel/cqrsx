@@ -8,7 +8,7 @@ use std::{
 use thiserror::Error;
 
 /// What the task handlers use besides their tasks, by type: an HTTP client, a mail service, a clock. A handler names
-/// a dependency by a parameter of its type (`mail: &Mailer` in a [`#[task_handler]`](crate::task_handler) function);
+/// a dependency by a parameter of its type (`mail: &Mailer` in a [`#[task_handler]`](crate::worker::task_handler) function);
 /// the assembly provides it once for every worker ([`TaskHandlers::provide`](super::handlers::TaskHandlers::provide))
 /// and refuses a handler whose dependency nobody provided.
 ///

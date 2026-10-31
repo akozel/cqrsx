@@ -5,7 +5,7 @@ use cqrsx::{
     domain::{
         aggregate::Aggregate,
         command::Decide,
-        event::{DomainEvent, EventEnvelope},
+        event::{EventEnvelope, Events},
     },
     journal::{persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     memory::event_repository::MemEventRepository,
@@ -36,7 +36,7 @@ pub(crate) struct Ledger(pub(crate) Vec<i32>);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Delta(pub(crate) i32);
 
-impl DomainEvent for Delta {
+impl Events for Delta {
     fn event_type(&self) -> &'static str {
         "delta"
     }

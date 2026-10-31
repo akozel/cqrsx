@@ -13,12 +13,11 @@
 //!
 //! ```
 //! use cqrsx::{
-//!     Task,
 //!     command::CommandExecutor,
-//!     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
-//!     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+//!     domain::{aggregate::Aggregate, command::Decide, event::Events},
 //!     reactions::{Decided, Reactions, ReactionsPlanner, Then},
-//!     task::policy::Policies,
+//!     task::{Task, policy::Policies},
+//!     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
 //! };
 //! use serde::{Deserialize, Serialize};
 //! use std::{collections::HashMap, time::Duration};
@@ -32,7 +31,7 @@
 //!     Reserved,
 //!     Paid { total: u32 },
 //! }
-//! impl DomainEvent for OrderEvent {
+//! impl Events for OrderEvent {
 //!     fn event_type(&self) -> &'static str {
 //!         match self {
 //!             OrderEvent::Reserved => "reserved",
@@ -101,7 +100,7 @@
 //!
 //! ```compile_fail
 //! use cqrsx::{
-//!     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+//!     domain::{aggregate::Aggregate, command::Decide, event::Events},
 //!     reactions::{Decided, Reactions, Then},
 //! };
 //! use serde::{Deserialize, Serialize};
@@ -113,7 +112,7 @@
 //!     Reserved,
 //!     Paid,
 //! }
-//! impl DomainEvent for OrderEvent {
+//! impl Events for OrderEvent {
 //!     fn event_type(&self) -> &'static str { "order" }
 //!     fn event_version(&self) -> &'static str { "1" }
 //! }
@@ -141,7 +140,7 @@
 use crate::{
     command::planner::{Decision, TaskPlanError, TaskPlanner},
     domain::aggregate::Aggregate,
-    task::{NewTask, TaskSchedule, TaskValidationError, format::TaskPayload, policy::Policies},
+    task::{NewTask, Task, TaskSchedule, TaskValidationError, policy::Policies},
 };
 use std::{collections::HashMap, fmt, marker::PhantomData, time::Duration};
 
@@ -211,14 +210,14 @@ pub struct Then {
 
 impl Then {
     /// A task of `payload`, eligible at once.
-    pub fn task(&mut self, payload: impl TaskPayload) {
+    pub fn task(&mut self, payload: impl Task) {
         if self.refused.is_none() {
             self.keep(NewTask::try_new(payload));
         }
     }
 
     /// A task of `payload`, eligible `delay` after the commit; the delay is relative, a reaction has no clock.
-    pub fn task_after(&mut self, delay: Duration, payload: impl TaskPayload) {
+    pub fn task_after(&mut self, delay: Duration, payload: impl Task) {
         if self.refused.is_none() {
             self.keep(NewTask::try_new(payload).and_then(|task| task.with_schedule(TaskSchedule::After(delay))));
         }
@@ -300,7 +299,7 @@ mod tests {
     use super::*;
     use crate::{
         command::{CommandExecutor, CommandGatewayError, causation::Causation, planner::Planning},
-        domain::{command::Decide, event::DomainEvent},
+        domain::{command::Decide, event::Events},
         journal::repository::PersistedEventRepository,
         memory::event_repository::MemEventRepository,
         task::{
@@ -338,7 +337,7 @@ mod tests {
         Overdue,
     }
 
-    impl DomainEvent for Sale {
+    impl Events for Sale {
         fn event_type(&self) -> &'static str {
             "sale"
         }
@@ -376,7 +375,7 @@ mod tests {
         source: Option<String>,
     }
 
-    impl TaskPayload for Receipt {
+    impl Task for Receipt {
         const TASK_TYPE: &'static str = "receipt";
         const TASK_VERSION: i32 = 1;
     }
@@ -386,7 +385,7 @@ mod tests {
         value: u32,
     }
 
-    impl TaskPayload for Ping {
+    impl Task for Ping {
         const TASK_TYPE: &'static str = "ping";
         const TASK_VERSION: i32 = 1;
     }
@@ -394,7 +393,7 @@ mod tests {
     #[derive(Serialize)]
     struct Pong {}
 
-    impl TaskPayload for Pong {
+    impl Task for Pong {
         const TASK_TYPE: &'static str = "pong";
         const TASK_VERSION: i32 = 1;
     }
@@ -408,7 +407,7 @@ mod tests {
         }
     }
 
-    impl TaskPayload for Unserializable {
+    impl Task for Unserializable {
         const TASK_TYPE: &'static str = "unserializable";
         const TASK_VERSION: i32 = 1;
     }
@@ -425,7 +424,7 @@ mod tests {
         }
     }
 
-    impl TaskPayload for Counted {
+    impl Task for Counted {
         const TASK_TYPE: &'static str = "counted";
         const TASK_VERSION: i32 = 1;
     }

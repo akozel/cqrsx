@@ -1,7 +1,9 @@
 # cqrsx-macros
 
-Procedural macros for [cqrsx](../cqrsx/README.md), re-exported by `cqrsx`; applications normally import
-them from that crate. The macro crate has no feature flags. Examples of the derives and handler together
+Procedural macros for [cqrsx](../cqrsx/README.md). Each derive is re-exported by `cqrsx` next to the trait it
+implements (`cqrsx::domain::event::{Event, Events}`, `cqrsx::domain::command::{Command, Decide}`,
+`cqrsx::task::Task`, `cqrsx::domain::rejection::Rejection`, `cqrsx::worker::task_handler`), so one `use` brings
+the trait and its derive. The macro crate has no feature flags. Examples of the derives and handler together
 are in [`cqrsx/tests/engine/modules.rs`](../cqrsx/tests/engine/modules.rs).
 
 ## Events
@@ -12,8 +14,9 @@ version. `#[derive(Events)]` delegates the aggregate's event enum to the single 
 ## Commands
 
 `#[derive(Command)]` implements command information on a struct; `#[command_id]` marks at most one UUID
-and `#[label]` identifies a named displayable field. `#[derive(Commands)]` delegates an enum of
-single-command variants to each command's `Decide` and information implementations.
+and `#[label]` identifies a named displayable field. On an enum of single-command variants it delegates to
+each command's implementation. `#[derive(Decide)]` (an enum only) delegates the decision to each
+command's `Decide`; an aggregate's enum of commands derives `Command, Decide`.
 
 ## Tasks and labels
 

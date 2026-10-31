@@ -4,8 +4,8 @@ use crate::{
     command::CommandGatewayError,
     domain::{
         aggregate::Aggregate,
-        command::{CommandInfo, Decide, Label},
-        event::{DomainEvent, EventEnvelope},
+        command::{Command, Decide, Label},
+        event::{EventEnvelope, Events},
         rejection::Rejection,
     },
     engine::{
@@ -15,7 +15,7 @@ use crate::{
     },
     reactions::{Decided, Reactions, Then},
     task::{
-        format::TaskPayload,
+        Task,
         policy::{PolicyName, Retry},
     },
     view::View,
@@ -45,7 +45,7 @@ pub(crate) enum ShowEvent {
     Booked { seat: String, fan: String },
 }
 
-impl DomainEvent for ShowEvent {
+impl Events for ShowEvent {
     fn event_type(&self) -> &'static str {
         "booked"
     }
@@ -63,7 +63,7 @@ pub(crate) struct Book {
     pub(crate) booking_id: Option<Uuid>,
 }
 
-impl CommandInfo for Book {
+impl Command for Book {
     fn name(&self) -> &'static str {
         "Book"
     }
@@ -141,7 +141,7 @@ pub(crate) enum WalletEvent {
     Recorded { seat: String },
 }
 
-impl DomainEvent for WalletEvent {
+impl Events for WalletEvent {
     fn event_type(&self) -> &'static str {
         "recorded"
     }
@@ -156,7 +156,7 @@ pub(crate) struct Record {
     pub(crate) seat: String,
 }
 
-impl CommandInfo for Record {
+impl Command for Record {
     fn name(&self) -> &'static str {
         "Record"
     }
@@ -216,7 +216,7 @@ pub(crate) struct RecordTicket {
     pub(crate) seat: String,
 }
 
-impl TaskPayload for RecordTicket {
+impl Task for RecordTicket {
     const TASK_TYPE: &'static str = "record_ticket";
     const TASK_VERSION: i32 = 1;
 }
@@ -240,7 +240,7 @@ pub(crate) struct MailTicket {
     pub(crate) seat: String,
 }
 
-impl TaskPayload for MailTicket {
+impl Task for MailTicket {
     const TASK_TYPE: &'static str = "mail_ticket";
     const TASK_VERSION: i32 = 1;
 }

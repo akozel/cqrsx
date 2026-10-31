@@ -7,16 +7,115 @@ pub mod attempt;
 pub mod format;
 pub mod policy;
 
-use crate::{
-    diagnostics,
-    task::format::{TaskFormat, TaskPayload},
-};
+use crate::{diagnostics, task::format::TaskFormat};
 use chrono::{DateTime, Utc};
-use serde::de::{DeserializeOwned, value::MapDeserializer};
+pub use cqrsx_macros::Task;
+use serde::{
+    Serialize,
+    de::{DeserializeOwned, value::MapDeserializer},
+};
 use serde_json::{Map, Value, json};
 use std::{num::NonZeroU16, time::Duration};
 use thiserror::Error;
 use uuid::Uuid;
+
+/// Versioned wire DTO. Retain supported versions while queued work exists.
+///
+/// The type and the version are stored with every queued task and route it to its handler, so they never
+/// change for a payload's shape; `#[derive(Task)]` writes them from `#[task(name = "…", version = N)]`.
+///
+/// ```
+/// use cqrsx::task::{NewTask, Task, format::TaskFormat};
+/// use serde::Serialize;
+///
+/// #[derive(Serialize, Task)]
+/// #[task(name = "send_e_ticket", version = 2)]
+/// struct SendETicket {
+///     seat: String,
+/// }
+///
+/// assert_eq!((SendETicket::TASK_TYPE, SendETicket::TASK_VERSION), ("send_e_ticket", 2));
+/// assert_eq!(TaskFormat::of::<SendETicket>().to_string(), "send_e_ticket v2");
+/// let task = NewTask::try_new(SendETicket { seat: "B4".into() }).unwrap();
+/// assert_eq!(task.payload()["seat"], "B4");
+/// ```
+///
+/// A version is positive, as [`TaskFormat::try_new`] requires; the derive refuses another at compile time:
+///
+/// ```compile_fail
+/// # use cqrsx::task::Task;
+/// # use serde::Serialize;
+/// #[derive(Serialize, Task)]
+/// #[task(name = "send_e_ticket", version = 0)]
+/// struct SendETicket {
+///     seat: String,
+/// }
+/// ```
+///
+/// A field marked `#[label]` is kept in the task's metadata, under its name, instead of its body: what is said of the
+/// task besides its business data (a tenant, say), never a copy of the body. [`NewTask::try_new`](crate::task::NewTask::try_new)
+/// moves it there, and the JSON adapter puts it back before it decodes the payload, so the handler gets the whole
+/// value:
+///
+/// ```
+/// use cqrsx::task::{NewTask, Task};
+/// use serde::Serialize;
+/// use serde_json::json;
+///
+/// #[derive(Serialize, Task)]
+/// #[task(name = "issue_refund", version = 1)]
+/// struct IssueRefund {
+///     amount: u32,
+///     #[label]
+///     tenant: String,
+/// }
+///
+/// assert_eq!(IssueRefund::LABELS, ["tenant"]);
+/// let task = NewTask::try_new(IssueRefund { amount: 80, tenant: "acme".into() }).unwrap();
+/// assert_eq!(task.payload(), &json!({ "amount": 80 }));
+/// assert_eq!(task.metadata(), &json!({ "tenant": "acme" }));
+/// ```
+///
+/// A label moves under its field's name, so a serde attribute that renames or drops the key does not compile:
+///
+/// ```compile_fail
+/// # use cqrsx::task::Task;
+/// # use serde::Serialize;
+/// #[derive(Serialize, Task)]
+/// #[task(name = "issue_refund", version = 1)]
+/// struct IssueRefund {
+///     amount: u32,
+///     #[label]
+///     #[serde(rename = "tenant_id")]
+///     tenant: String,
+/// }
+/// ```
+///
+/// A `Task` written by hand is checked when its format is taken ([`TaskFormat::of`]), so `cargo build` refuses
+/// a version below 1 there:
+///
+/// ```compile_fail,E0080
+/// use cqrsx::task::{Task, format::TaskFormat};
+/// use serde::Serialize;
+///
+/// #[derive(Serialize)]
+/// struct SendETicket {}
+///
+/// impl Task for SendETicket {
+///     const TASK_TYPE: &'static str = "send_e_ticket";
+///     const TASK_VERSION: i32 = 0;
+/// }
+///
+/// fn main() {
+///     println!("{}", TaskFormat::of::<SendETicket>());
+/// }
+/// ```
+pub trait Task: Serialize {
+    const TASK_TYPE: &'static str;
+    const TASK_VERSION: i32;
+    /// The fields kept in the task's metadata instead of its body, by name (`#[label]`); none by default.
+    const LABELS: &'static [&'static str] = &[];
+}
 
 /// The attempt budget of a task that sets none of its own: no [`with_max_attempts`](NewTask::with_max_attempts) and
 /// no policy of its type (`task::policy::Policies`).
@@ -55,7 +154,7 @@ pub struct NewTask {
 impl NewTask {
     /// A task of `payload`; the fields of `T::LABELS` move from its body to its metadata. Refused when the payload
     /// does not serialize to a JSON object.
-    pub fn try_new<T: TaskPayload>(payload: T) -> Result<Self, TaskValidationError> {
+    pub fn try_new<T: Task>(payload: T) -> Result<Self, TaskValidationError> {
         let task = Self::from_payload(
             TaskFormat::of::<T>(),
             serde_json::to_value(payload).map_err(|_| TaskValidationError::Serialization)?,
@@ -239,7 +338,7 @@ mod tests {
                 Err(serde::ser::Error::custom("broken"))
             }
         }
-        impl TaskPayload for Broken {
+        impl Task for Broken {
             const TASK_TYPE: &'static str = "broken";
             const TASK_VERSION: i32 = 1;
         }
@@ -267,7 +366,7 @@ mod tests {
         tenant: &'static str,
     }
 
-    impl TaskPayload for Labelled {
+    impl Task for Labelled {
         const TASK_TYPE: &'static str = "labelled";
         const TASK_VERSION: i32 = 1;
         const LABELS: &'static [&'static str] = &["tenant", "absent"];
