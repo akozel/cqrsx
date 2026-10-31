@@ -39,17 +39,15 @@ use crate::{
 };
 use chrono::NaiveDate;
 use cqrsx::{
-    cqrs::{
-        command::{CommandExecutor, causation::Causation},
-        reactions::ReactionsPlanner,
-        testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
-    },
+    command::{CommandExecutor, causation::Causation},
+    cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
     engine::{
         Cqrs,
         build::BuildError,
         settings::Settings,
         setup::{Setup, SetupError},
     },
+    reactions::ReactionsPlanner,
     task::{
         TaskSchedule,
         adapter::boxed::BoxedTaskAdapter,

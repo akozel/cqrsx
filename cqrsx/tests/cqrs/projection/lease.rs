@@ -1,6 +1,6 @@
 //! Ownership: one owner, hand-over on a stop, a crash or a lost lease, stale owners, store outages.
 use crate::projection::support::{Harness, LEASE, POLL, key};
-use cqrsx::cqrs::store::feed::Position;
+use cqrsx::journal::feed::Position;
 use std::time::Duration;
 use tokio::time::Instant;
 

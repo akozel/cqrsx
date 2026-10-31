@@ -19,8 +19,10 @@
 //! - the std mutex guarding the entries is never held across an `.await`.
 use super::config::DeliveryLimits;
 use crate::{
-    cqrs::{aggregate::Aggregate, event::EventEnvelope, event_handler::EventHandler, store::PersistenceError},
+    cqrs::event_handler::EventHandler,
     diagnostics,
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::PersistenceError,
     locking::lock,
     unwinding::{Panicked, unwinding},
 };
@@ -428,7 +430,7 @@ impl<A: Aggregate> Drop for Worker<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::store::persisted::tests::{TestAggregate, TestEvents};
+    use crate::journal::persisted::tests::{TestAggregate, TestEvents};
     use async_trait::async_trait;
     use std::{
         collections::HashSet,
@@ -1031,7 +1033,7 @@ mod tests {
 
     mod model {
         use super::*;
-        use crate::cqrs::store::serialized_event::tests::property_config;
+        use crate::journal::serialized_event::tests::property_config;
         use proptest::prelude::*;
 
         const KEYS: usize = 3;

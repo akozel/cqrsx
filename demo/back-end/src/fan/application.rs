@@ -22,10 +22,7 @@ mod tests {
     };
     use crate::fan::domain::{Fan, FanCommand, FanError};
     use cqrsx::{
-        cqrs::{
-            CommitReport,
-            command::{CommandExecutor, CommandGatewayError},
-        },
+        command::{CommandExecutor, CommandGatewayError, CommitReport},
         task::result::TaskResult,
     };
     use std::{collections::HashMap, sync::Arc};

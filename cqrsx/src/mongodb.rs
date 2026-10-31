@@ -14,7 +14,7 @@
 pub mod checkpoint_store;
 pub mod view_repository;
 
-use crate::cqrs::store::PersistenceError;
+use crate::journal::PersistenceError;
 use ::mongodb::error::{Error, ErrorKind, WriteFailure};
 
 /// The server's code for a duplicate key.

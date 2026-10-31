@@ -1,4 +1,4 @@
-use crate::cqrs::AggregateError;
+use crate::command::AggregateError;
 use std::{error::Error, future::Future, num::NonZeroUsize, time::Duration};
 use thiserror::Error;
 #[derive(Clone, Copy, Debug, Error, PartialEq, Eq)]

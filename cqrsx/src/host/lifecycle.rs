@@ -703,21 +703,25 @@ mod tests {
 
     mod processors {
         use super::*;
-        use crate::cqrs::{
-            aggregate::Aggregate,
-            command::decide::Decide,
-            event::{DomainEvent, EventEnvelope},
-            projection::{
-                View, ViewProjection,
-                processor::{
-                    ProjectionProcessor,
-                    config::ProcessorConfig,
-                    observer::{LeaseEvent, ProjectionObserver},
+        use crate::{
+            cqrs::{
+                projection::{
+                    View, ViewProjection,
+                    processor::{
+                        ProjectionProcessor,
+                        config::ProcessorConfig,
+                        observer::{LeaseEvent, ProjectionObserver},
+                    },
+                },
+                testing::{
+                    mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
+                    mem_view_repository::MemViewRepository,
                 },
             },
-            testing::{
-                mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
-                mem_view_repository::MemViewRepository,
+            domain::{
+                aggregate::Aggregate,
+                command::Decide,
+                event::{DomainEvent, EventEnvelope},
             },
         };
         use serde::{Deserialize, Serialize};

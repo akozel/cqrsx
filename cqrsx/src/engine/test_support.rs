@@ -1,12 +1,12 @@
 //! Fixtures of the engine's tests: a box office of shows and the fans' wallets as two modules, a step of a chain and an
 //! e-mail between them, a view of each.
 use crate::{
-    cqrs::{
+    command::CommandGatewayError,
+    cqrs::projection::View,
+    domain::{
         aggregate::Aggregate,
-        command::{CommandGatewayError, CommandInfo, Label, decide::Decide},
+        command::{CommandInfo, Decide, Label},
         event::{DomainEvent, EventEnvelope},
-        projection::View,
-        reactions::{Decided, Reactions, Then},
         rejection::Rejection,
     },
     engine::{
@@ -14,6 +14,7 @@ use crate::{
         module::Module,
         setup::{Setup, SetupError},
     },
+    reactions::{Decided, Reactions, Then},
     task::{
         context::TaskContext,
         dependencies::DependencyId,

@@ -6,11 +6,8 @@ use crate::{
     support::{Ledger, NAME, Node, Recording, caught_up, commit_all, until},
 };
 use cqrsx::{
-    cqrs::{
-        CqrsFramework,
-        command::{executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
-        store::{feed::Position, persisted::PersistedEventStore, repository::PersistedEventRepository},
-    },
+    command::{executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits},
+    journal::{feed::Position, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     mongodb::checkpoint_store::PROJECTION_CHECKPOINTS_COLLECTION,
     postgres::{event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox},
 };

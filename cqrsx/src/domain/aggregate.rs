@@ -1,6 +1,6 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{command::decide::Decide, event::DomainEvent};
+use crate::domain::{command::Decide, event::DomainEvent};
 use serde::{Serialize, de::DeserializeOwned};
 use std::{fmt, hash::Hash, str::FromStr};
 
@@ -23,7 +23,7 @@ use std::{fmt, hash::Hash, str::FromStr};
 /// # mod example {
 /// # use serde::Deserialize;
 /// # use serde::Serialize;
-/// # use cqrsx::cqrs::event::DomainEvent;
+/// # use cqrsx::domain::event::DomainEvent;
 /// #
 /// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
 /// # #[error("{0}")]
@@ -69,7 +69,7 @@ use std::{fmt, hash::Hash, str::FromStr};
 /// # use example::CustomerError;
 /// # use example::CustomerCommand;
 /// # use example::CustomerService;
-/// use cqrsx::cqrs::{aggregate::Aggregate, command::decide::Decide};
+/// use cqrsx::domain::{aggregate::Aggregate, command::Decide};
 /// # use serde::Serialize;
 /// # use serde::Deserialize;
 /// #[derive(Default,Serialize,Deserialize)]
@@ -117,7 +117,7 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     const TYPE: &'static str;
     /// The id of an instance, e.g. a validated newtype. Its [`Display`](fmt::Display) is the instance's text: the
     /// key of its lock, of its events, snapshots and tasks in the store, and of the ids of its
-    /// tasks ([`Causation::task_id`](crate::cqrs::command::causation::Causation::task_id)); the command executor
+    /// tasks ([`Causation::task_id`](crate::command::causation::Causation::task_id)); the command executor
     /// formats it once per command. The text is stored, so it never changes for an id; [`FromStr`] parses it back.
     type Id: fmt::Display + FromStr + Clone + Eq + Hash + Send + Sync + 'static;
     /// Specifies the inbound command used to make changes in the state of the Aggregate: it decides itself
@@ -143,7 +143,7 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// # mod example {
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
-    /// # use cqrsx::cqrs::event::DomainEvent;
+    /// # use cqrsx::domain::event::DomainEvent;
     /// #
     /// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
     /// # #[error("{0}")]
@@ -191,8 +191,8 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// # use example::CustomerService;
     /// # use serde::Serialize;
     /// # use serde::Deserialize;
-    /// use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::command::decide::Decide;
+    /// use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::command::Decide;
     /// #[derive(Default,Serialize,Deserialize)]
     /// # struct Customer {
     /// #     name: Option<String>,
@@ -252,7 +252,7 @@ impl AggregateKey {
 /// read; its one command decides a zero delta and is never executed.
 #[cfg(test)]
 pub(crate) mod tests {
-    use crate::cqrs::{aggregate::Aggregate, command::decide::Decide, event::DomainEvent};
+    use crate::domain::{aggregate::Aggregate, command::Decide, event::DomainEvent};
     use serde::{Deserialize, Serialize};
 
     #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]

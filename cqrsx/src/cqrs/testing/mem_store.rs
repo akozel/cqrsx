@@ -3,12 +3,9 @@
 // A test helper the engine does not use (rule 8 of the code guidelines): a poisoned lock fails the test that poisoned it.
 #![allow(clippy::unwrap_used)]
 use crate::{
-    cqrs::{
-        AggregateError,
-        aggregate::Aggregate,
-        event::EventEnvelope,
-        store::{AggregateContext, EventStore},
-    },
+    command::AggregateError,
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{AggregateContext, EventStore},
     task::NewTask,
 };
 use std::{
@@ -26,16 +23,16 @@ use std::{
 /// # use serde::Deserialize;
 /// # use serde::Serialize;
 /// # use serde_json::Value;
-/// # use cqrsx::cqrs::aggregate::Aggregate;
-/// # use cqrsx::cqrs::event::DomainEvent;
-/// # use cqrsx::cqrs::event::EventEnvelope;
+/// # use cqrsx::domain::aggregate::Aggregate;
+/// # use cqrsx::domain::event::DomainEvent;
+/// # use cqrsx::domain::event::EventEnvelope;
 /// # use cqrsx::cqrs::event_handler::EventHandler;
 /// # use cqrsx::cqrs::projection::View;
-/// # use cqrsx::cqrs::command::decide::Decide;
-/// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-/// # use cqrsx::cqrs::store::PersistenceError;
-/// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-/// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+/// # use cqrsx::domain::command::Decide;
+/// # use cqrsx::journal::repository::PersistedEventRepository;
+/// # use cqrsx::journal::PersistenceError;
+/// # use cqrsx::journal::serialized_event::SerializedEvent;
+/// # use cqrsx::journal::snapshot::SerializedSnapshot;
 /// # use cqrsx::cqrs::projection::repository::ViewContext;
 /// # use cqrsx::cqrs::projection::repository::ViewRepository;
 /// #
@@ -101,7 +98,7 @@ use std::{
 /// # }
 /// # use example::MyAggregate;
 /// # use example::MyService;
-/// use cqrsx::cqrs::CqrsFramework;
+/// use cqrsx::command::framework::CqrsFramework;
 /// use cqrsx::cqrs::testing::mem_store::MemStore;
 ///
 /// let store = MemStore::<MyAggregate>::default();
@@ -183,7 +180,7 @@ impl<A: Aggregate> EventStore<A> for MemStore<A> {
         }
         let aggregate_id = context.aggregate_id;
         let current_sequence = context.current_sequence;
-        crate::cqrs::store::checked_counter_add(current_sequence, events.len())?;
+        crate::journal::checked_counter_add(current_sequence, events.len())?;
         let wrapped_events = Self::wrap_events(&aggregate_id, current_sequence, events, &metadata);
         let new_events_qty = wrapped_events.len();
         if new_events_qty == 0 {
@@ -261,7 +258,7 @@ where
 mod tests {
     // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
     // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-    use crate::cqrs::{aggregate::Aggregate, command::decide::Decide, event::DomainEvent};
+    use crate::domain::{aggregate::Aggregate, command::Decide, event::DomainEvent};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -360,7 +357,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_sequence_overflow_is_atomic_and_last_sequence_is_supported() {
-        use crate::cqrs::aggregate::tests::{Delta, Ledger};
+        use crate::domain::aggregate::tests::{Delta, Ledger};
         let store = MemStore::<Ledger>::default();
         for (sequence, count) in [(usize::MAX, 1), (usize::MAX - 1, 2)] {
             let context = MemStoreAggregateContext {
@@ -451,7 +448,7 @@ mod tests {
 #[cfg(test)]
 mod store_tests {
     use super::*;
-    use crate::cqrs::aggregate::tests::*;
+    use crate::domain::aggregate::tests::*;
     #[tokio::test]
     async fn clones_observe_the_same_envelopes() {
         let store = MemStore::<Ledger>::default();
@@ -479,7 +476,7 @@ mod store_tests {
 
     #[tokio::test]
     async fn tasks_commit_only_with_an_event() {
-        use crate::cqrs::aggregate::tests::{Delta, Ledger};
+        use crate::domain::aggregate::tests::{Delta, Ledger};
         let store = MemStore::<Ledger>::default();
         let task = NewTask::from_payload(
             crate::task::format::TaskFormat::try_new("notify", 1).unwrap(),

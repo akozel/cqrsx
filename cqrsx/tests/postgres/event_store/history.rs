@@ -40,7 +40,7 @@ async fn both_adapters_report_missing_tables_and_row_decode_failures() {
 
 mod contracts {
     struct DeltaUpcaster(&'static str, &'static str, fn(Value) -> Value);
-    impl cqrsx::cqrs::store::upcaster::EventUpcaster for DeltaUpcaster {
+    impl cqrsx::journal::upcaster::EventUpcaster for DeltaUpcaster {
         fn can_upcast(&self, format: EventFormat<'_>) -> bool {
             format.event_type == "delta" && format.event_version == self.0
         }
@@ -79,7 +79,7 @@ mod contracts {
             .unwrap();
         assert!(matches!(
             PersistedEventStore::<_, Ledger>::new(repo).load_aggregate("one").await,
-            Err(cqrsx::cqrs::AggregateError::DeserializationError(_))
+            Err(cqrsx::command::AggregateError::DeserializationError(_))
         ));
         db.close().await;
     }
@@ -109,12 +109,12 @@ mod contracts {
             .unwrap();
         assert!(matches!(
             store.load_aggregate("upcast").await,
-            Err(cqrsx::cqrs::AggregateError::DeserializationError(_))
+            Err(cqrsx::command::AggregateError::DeserializationError(_))
         ));
         db.close().await;
     }
 
-    fn delta_upcasters() -> Vec<Box<dyn cqrsx::cqrs::store::upcaster::EventUpcaster>> {
+    fn delta_upcasters() -> Vec<Box<dyn cqrsx::journal::upcaster::EventUpcaster>> {
         vec![
             Box::new(DeltaUpcaster("0", "0.5", |v| v["old"].clone())),
             Box::new(DeltaUpcaster("0.5", "1", |v| json!(v.as_i64().unwrap() + 1))),

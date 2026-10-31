@@ -4,15 +4,13 @@
 //! type's name and its `#[label]` fields) and a rejection by its code and params (`Rejection`). An executor calls its
 //! observer on the caller's task and a processor on its own, so every method only publishes.
 use crate::shared::{application::activity::ActivityHub, domain::FanLedgerId};
-use cqrsx::cqrs::{
-    aggregate::Aggregate,
+use cqrsx::{
     command::{
-        CommandInfo,
         causation::{COMMAND_ID, CORRELATION_ID, SOURCE},
         observer::{self, AnyCommandReport, AnyOutcome, CommandObserver, CommandReport},
     },
-    projection::processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
-    rejection::Rejection,
+    cqrs::projection::processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
+    domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -179,11 +177,11 @@ impl ProjectionObserver for ActivityObserver {
 mod tests {
     use super::*;
     use crate::shared::domain::ConcertId;
-    use cqrsx::cqrs::command::observer::Outcome;
+    use cqrsx::command::observer::Outcome;
     use cqrsx::{
-        cqrs::{
-            command::decide::Decide, event::DomainEvent, projection::processor::observer::FailureCategory, store::feed::Position,
-        },
+        cqrs::projection::processor::observer::FailureCategory,
+        domain::{command::Decide, event::DomainEvent},
+        journal::feed::Position,
         task::{NewTask, format::TaskFormat},
     };
     use serde::{Deserialize, Serialize};

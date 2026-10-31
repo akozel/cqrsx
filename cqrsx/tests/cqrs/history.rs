@@ -1,15 +1,15 @@
 use std::collections::HashMap;
 use {
-    cqrsx::cqrs::AggregateError, cqrsx::cqrs::event::EventEnvelope, cqrsx::cqrs::store::EventStore,
-    cqrsx::cqrs::store::persisted::PersistedEventStore, cqrsx::cqrs::store::repository::PersistedEventRepository,
-    cqrsx::cqrs::store::serialized_event::SerializedEvent, cqrsx::cqrs::testing::mem_event_repository::MemEventRepository,
-    cqrsx::cqrs::testing::mem_store::MemStore,
+    cqrsx::command::AggregateError, cqrsx::cqrs::testing::mem_event_repository::MemEventRepository,
+    cqrsx::cqrs::testing::mem_store::MemStore, cqrsx::domain::event::EventEnvelope, cqrsx::journal::EventStore,
+    cqrsx::journal::persisted::PersistedEventStore, cqrsx::journal::repository::PersistedEventRepository,
+    cqrsx::journal::serialized_event::SerializedEvent,
 };
 
 mod snapshots {
     use super::*;
     use proptest::prelude::*;
-    use {crate::support::ledger::*, crate::support::property_config, cqrsx::cqrs::CqrsFramework};
+    use {crate::support::ledger::*, crate::support::property_config, cqrsx::command::framework::CqrsFramework};
     proptest! {
         #![proptest_config(property_config())]
         #[test]
@@ -48,7 +48,7 @@ mod snapshots {
 mod memory {
     use super::*;
     use proptest::prelude::*;
-    use {crate::support::ledger::*, crate::support::property_config, cqrsx::cqrs::CqrsFramework};
+    use {crate::support::ledger::*, crate::support::property_config, cqrsx::command::framework::CqrsFramework};
 
     proptest! {
         #![proptest_config(property_config())]

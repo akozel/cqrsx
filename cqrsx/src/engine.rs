@@ -36,32 +36,29 @@ use crate::postgres::{
     view_repository::PostgresViewRepository,
 };
 use crate::{
+    command::{
+        AggregateError, CommandExecutor, CommandGatewayError, CommitReport,
+        executor::CommandExecutorCore,
+        framework::CqrsFramework,
+        observer::{AnyCommandObserver, AnyCommandReport, CommandObserver, CommandReport},
+    },
     cqrs::{
-        AggregateError, CommitReport, CqrsFramework,
-        aggregate::Aggregate,
-        command::{
-            CommandExecutor, CommandGatewayError, CommandInfo,
-            executor::CommandExecutorCore,
-            observer::{AnyCommandObserver, AnyCommandReport, CommandObserver, CommandReport},
-            wakeup::CommitWakeup,
-        },
-        event::EventEnvelope,
         projection::{
             RebuildableProjection, View, ViewProjection, checkpoint::CheckpointStore, processor::ProjectionProcessor,
             repository::ViewRepository, runtime::ProjectionRuntime,
         },
-        reactions::{Reactions, ReactionsPlanner},
-        rejection::Rejection,
-        store::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
         testing::mem_event_repository::MemEventRepository,
     },
+    domain::{aggregate::Aggregate, command::CommandInfo, event::EventEnvelope, rejection::Rejection},
     engine::{
         build::BuildError,
         module::{ObservedProcessor, ProjectionObservers},
         settings::Settings,
         views::{CheckpointOps, Counts, Registry},
     },
+    journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     locking::get_mut,
+    reactions::{Reactions, ReactionsPlanner},
     task::{
         adapter::boxed::BoxedTaskAdapter,
         context::Executors,

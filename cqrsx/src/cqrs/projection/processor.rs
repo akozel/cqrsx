@@ -22,7 +22,7 @@
 //!
 //! ```
 //! # mod example {
-//! # use cqrsx::cqrs::{aggregate::Aggregate, command::decide::Decide, event::{DomainEvent, EventEnvelope}, projection::View};
+//! # use cqrsx::{domain::{aggregate::Aggregate, command::Decide, event::{DomainEvent, EventEnvelope}}, cqrs::projection::View};
 //! # use serde::{Deserialize, Serialize};
 //! # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 //! # pub struct Counted;
@@ -55,14 +55,22 @@
 //! # }
 //! # }
 //! # use example::{Counted, Counter, Total};
-//! # use cqrsx::cqrs::event::EventEnvelope;
-//! use cqrsx::cqrs::{
-//!     projection::{
-//!         ViewProjection, checkpoint::CheckpointStore, processor::{ProjectionProcessor, config::ProcessorConfig},
-//!         repository::ViewRepository,
+//! # use cqrsx::domain::event::EventEnvelope;
+//! use cqrsx::{
+//!     cqrs::{
+//!         projection::{
+//!             ViewProjection,
+//!             checkpoint::CheckpointStore,
+//!             processor::{ProjectionProcessor, config::ProcessorConfig},
+//!             repository::ViewRepository,
+//!         },
+//!         testing::{
+//!             mem_checkpoint_store::MemCheckpointStore,
+//!             mem_event_repository::MemEventRepository,
+//!             mem_view_repository::MemViewRepository,
+//!         },
 //!     },
-//!     store::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
-//!     testing::{mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
+//!     journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
 //! };
 //! use std::{sync::Arc, time::Duration};
 //! use tokio_util::sync::CancellationToken;
@@ -110,8 +118,6 @@ mod rebuild;
 
 use crate::{
     cqrs::{
-        aggregate::Aggregate,
-        command::wakeup::CommitWakeup,
         event_handler::EventHandler,
         projection::{
             RebuildableProjection,
@@ -124,9 +130,10 @@ use crate::{
                 rebuild::{Bounded, HistoryRebuilder},
             },
         },
-        store::{repository::PersistedEventRepository, upcaster::EventUpcaster},
     },
     diagnostics,
+    domain::aggregate::Aggregate,
+    journal::{repository::PersistedEventRepository, upcaster::EventUpcaster, wakeup::CommitWakeup},
 };
 use std::{fmt, sync::Arc};
 use tokio::{sync::Semaphore, time::Instant};

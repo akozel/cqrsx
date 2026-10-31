@@ -3,14 +3,12 @@
 //! statement on the process's pool, bounded by its `StatementTimeout`; the writes of an owner are fenced
 //! by its lease token, the lease compares against `clock_timestamp()` of the server.
 use crate::{
-    cqrs::{
-        projection::checkpoint::{
-            CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest,
-            RebuildRequests, RebuildState,
-        },
-        store::feed::Position,
+    cqrs::projection::checkpoint::{
+        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest, RebuildRequests,
+        RebuildState,
     },
     diagnostics,
+    journal::feed::Position,
 };
 use sqlx::{PgPool, Row, postgres::PgRow};
 use std::time::Duration;

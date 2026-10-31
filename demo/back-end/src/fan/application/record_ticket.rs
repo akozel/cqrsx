@@ -9,7 +9,7 @@ use crate::{
 };
 use cqrsx::{
     Task,
-    cqrs::command::CommandGatewayError,
+    command::CommandGatewayError,
     task::{context::TaskContext, result::TaskResult},
     task_handler,
 };
@@ -71,7 +71,7 @@ mod tests {
         application::test_support::{attempt, fans, ledger, steps, ticket},
         domain::{FanEvent, events::TicketRecorded},
     };
-    use cqrsx::cqrs::{store::EventStore, testing::mem_store::MemStore};
+    use cqrsx::{cqrs::testing::mem_store::MemStore, journal::EventStore};
     use serde_json::json;
 
     #[tokio::test]

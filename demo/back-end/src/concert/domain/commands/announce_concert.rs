@@ -5,7 +5,7 @@ use crate::{
     shared::domain::venue::VENUE,
 };
 use chrono::NaiveDate;
-use cqrsx::{Command, cqrs::command::decide::Decide};
+use cqrsx::{Command, domain::command::Decide};
 
 /// The organiser's concert: nobody's, so it has no label for the activity feed.
 #[derive(Debug, Clone, PartialEq, Eq, Command)]

@@ -5,11 +5,10 @@ use super::{
     planner::{Planning, TaskPlanner},
     retry::retry_on_aggregate_conflict,
 };
-use crate::cqrs::{
-    AggregateError, CommitReport, CqrsFramework,
-    aggregate::{Aggregate, AggregateKey},
-    command::{retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
-    store::EventStore,
+use crate::{
+    command::{AggregateError, CommitReport, framework::CqrsFramework, retry::AggregateConflictRetryPolicy},
+    domain::aggregate::{Aggregate, AggregateKey},
+    journal::{EventStore, wakeup::CommitWakeup},
 };
 use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 
@@ -241,22 +240,22 @@ mod tests {
         },
     };
 
-    use crate::cqrs::command::decide::Decide;
-    use crate::cqrs::event::DomainEvent;
-    use crate::cqrs::event::EventEnvelope;
-    use crate::cqrs::store::AggregateContext;
+    use crate::domain::command::Decide;
+    use crate::domain::event::DomainEvent;
+    use crate::domain::event::EventEnvelope;
+    use crate::journal::AggregateContext;
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use crate::cqrs::AggregateError;
-    use crate::cqrs::CqrsFramework;
-    use crate::cqrs::aggregate::Aggregate;
-    use crate::cqrs::command::{
+    use crate::command::AggregateError;
+    use crate::command::framework::CqrsFramework;
+    use crate::command::{
         causation::Causation,
         locks::LockLimits,
         planner::{Decision, TaskPlanError},
     };
-    use crate::cqrs::store::EventStore;
+    use crate::domain::aggregate::Aggregate;
+    use crate::journal::EventStore;
     use crate::task::{NewTask, format::TaskPayload};
     use std::time::Duration;
     use thiserror::Error;

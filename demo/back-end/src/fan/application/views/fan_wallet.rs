@@ -11,7 +11,7 @@ use crate::{
     },
     shared::domain::FanLedgerId,
 };
-use cqrsx::cqrs::{event::EventEnvelope, projection::View};
+use cqrsx::{cqrs::projection::View, domain::event::EventEnvelope};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

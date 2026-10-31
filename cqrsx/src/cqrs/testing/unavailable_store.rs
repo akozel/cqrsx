@@ -1,15 +1,15 @@
 //! An event store that is never reachable.
 use crate::{
-    cqrs::{
-        AggregateError, aggregate::Aggregate, event::EventEnvelope, store::EventStore,
-        testing::mem_store::MemStoreAggregateContext,
-    },
+    command::AggregateError,
+    cqrs::testing::mem_store::MemStoreAggregateContext,
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::EventStore,
     task::NewTask,
 };
 use std::{collections::HashMap, error::Error};
 
 /// Every call fails with [`AggregateError::DatabaseConnectionError`], which the command boundary
-/// reports as [`Unavailable`](crate::cqrs::command::CommandGatewayError::Unavailable). Drives the
+/// reports as [`Unavailable`](crate::command::CommandGatewayError::Unavailable). Drives the
 /// "storage unavailable" branches of a use case and proves that a path never touches storage.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableStore;
@@ -43,7 +43,7 @@ impl<A: Aggregate> EventStore<A> for UnavailableStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::store::persisted::tests::TestAggregate;
+    use crate::journal::persisted::tests::TestAggregate;
 
     #[tokio::test]
     async fn every_call_fails_as_a_connection_error() {

@@ -12,7 +12,7 @@
 /// JSON object, `{}` for a unit variant. The fields are serialized with their `Serialize` implementations.
 ///
 /// ```
-/// use cqrsx::{Rejection, cqrs::rejection::Rejection as _};
+/// use cqrsx::{Rejection, domain::rejection::Rejection as _};
 /// use serde_json::json;
 ///
 /// #[derive(Debug, thiserror::Error, Rejection)]

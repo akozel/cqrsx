@@ -1,15 +1,13 @@
 //! An in-memory `PersistedEventRepository` with the write rules of the PostgreSQL one, its outbox and a
 //! position per commit: for tests of everything that reads a journal, without a database.
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        store::{
-            PersistenceError,
-            feed::{FeedEntry, Position},
-            repository::PersistedEventRepository,
-            serialized_event::SerializedEvent,
-            snapshot::{SerializedSnapshot, SnapshotUpdate},
-        },
+    domain::aggregate::Aggregate,
+    journal::{
+        PersistenceError,
+        feed::{FeedEntry, Position},
+        repository::PersistedEventRepository,
+        serialized_event::SerializedEvent,
+        snapshot::{SerializedSnapshot, SnapshotUpdate},
     },
     locking::lock,
     task::{NewTask, testing::mem_task_queue::Delivery},
@@ -78,7 +76,7 @@ struct Journal {
 ///
 /// ```
 /// # mod example {
-/// # use cqrsx::cqrs::{aggregate::Aggregate, command::decide::Decide, event::DomainEvent};
+/// # use cqrsx::domain::{aggregate::Aggregate, command::Decide, event::DomainEvent};
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// # pub struct Counted;
@@ -105,11 +103,11 @@ struct Journal {
 /// # }
 /// # }
 /// # use example::{Counted, Counter};
-/// # use cqrsx::cqrs::event::EventEnvelope;
-/// use cqrsx::cqrs::store::{feed::Position, repository::PersistedEventRepository, serialized_event::SerializedEvent};
+/// # use cqrsx::domain::event::EventEnvelope;
+/// use cqrsx::journal::{feed::Position, repository::PersistedEventRepository, serialized_event::SerializedEvent};
 /// use cqrsx::cqrs::testing::mem_event_repository::MemEventRepository;
 ///
-/// # async fn example() -> Result<(), cqrsx::cqrs::store::PersistenceError> {
+/// # async fn example() -> Result<(), cqrsx::journal::PersistenceError> {
 /// # let event = |id: &str, sequence| SerializedEvent::try_from(&EventEnvelope::<Counter> {
 /// #     aggregate_id: id.into(), sequence, payload: Counted, metadata: Default::default() }).unwrap();
 /// let journal = MemEventRepository::default();
@@ -393,10 +391,15 @@ impl PersistedEventRepository for MemEventRepository {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::{
-        aggregate::tests::{Delta, Ledger},
-        event::EventEnvelope,
-        store::{EventStore, persisted::PersistedEventStore, persisted::tests::TestAggregate},
+    use crate::{
+        domain::{
+            aggregate::tests::{Delta, Ledger},
+            event::EventEnvelope,
+        },
+        journal::{
+            EventStore,
+            persisted::{PersistedEventStore, tests::TestAggregate},
+        },
     };
     use std::{collections::HashMap, future::Future};
 
@@ -621,8 +624,8 @@ mod tests {
     async fn held_loads_wait_for_a_permit_and_the_rest_of_the_journal_does_not() {
         let journal = MemEventRepository::default();
         journal.persist::<Ledger>(&[delta("a", 1, 3)], None).await.unwrap();
-        let store = PersistedEventStore::<_, Ledger>::new(journal.clone())
-            .with_snapshots(crate::cqrs::store::persisted::tests::every(10));
+        let store =
+            PersistedEventStore::<_, Ledger>::new(journal.clone()).with_snapshots(crate::journal::persisted::tests::every(10));
         let gate = journal.hold_loads();
         let mut load = Box::pin(store.load_aggregate("a"));
         let waiting = std::future::poll_fn(|cx| std::task::Poll::Ready(load.as_mut().poll(cx).is_pending())).await;

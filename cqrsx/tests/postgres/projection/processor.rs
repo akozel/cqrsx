@@ -4,26 +4,22 @@ use crate::{
     support::{Database, ledger::Ledger},
 };
 use cqrsx::{
-    cqrs::{
-        CqrsFramework,
-        aggregate::Aggregate,
-        command::{
-            CommandExecutor, executor::CommandExecutorCore, locks::LockLimits, retry::AggregateConflictRetryPolicy,
-            wakeup::CommitWakeup,
-        },
-        event::EventEnvelope,
-        projection::{
-            View, ViewProjection,
-            checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
-            processor::{
-                ProjectionProcessor,
-                config::{DeliveryLimits, ProcessorConfig},
-                observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
-            },
-            repository::ViewRepository,
-        },
-        store::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
+    command::{
+        CommandExecutor, executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits,
+        retry::AggregateConflictRetryPolicy,
     },
+    cqrs::projection::{
+        View, ViewProjection,
+        checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
+        processor::{
+            ProjectionProcessor,
+            config::{DeliveryLimits, ProcessorConfig},
+            observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
+        },
+        repository::ViewRepository,
+    },
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     postgres::{
         checkpoint_store::PostgresCheckpointStore,
         command::{PostgresCommandConfig, PostgresCommandExecutor},

@@ -1,12 +1,10 @@
 //! `PostgresCheckpointStore`: one statement per operation, fenced by the lease token, and the schema's rules.
 use crate::support::Database;
 use cqrsx::{
-    cqrs::{
-        projection::checkpoint::{
-            CheckpointError, CheckpointKey, CheckpointStore, LeaseToken, RebuildRequest, RebuildRequests, RebuildState,
-        },
-        store::feed::Position,
+    cqrs::projection::checkpoint::{
+        CheckpointError, CheckpointKey, CheckpointStore, LeaseToken, RebuildRequest, RebuildRequests, RebuildState,
     },
+    journal::feed::Position,
     postgres::{PROJECTION_CHECKPOINTS_SCHEMA, checkpoint_store::PostgresCheckpointStore},
 };
 use serde_json::{Value, json};

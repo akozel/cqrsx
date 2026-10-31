@@ -15,13 +15,10 @@ use super::{
     observer::{Advanced, Applied, Failed, FailureCategory, RebuildEvent, RebuildReason, Rebuilt, Waiting},
 };
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        event::EventEnvelope,
-        projection::checkpoint::{CheckpointStore, Claimed, LeaseToken},
-        store::{PersistenceError, feed::Position, repository::PersistedEventRepository},
-    },
+    cqrs::projection::checkpoint::{CheckpointStore, Claimed, LeaseToken},
     diagnostics,
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{PersistenceError, feed::Position, repository::PersistedEventRepository},
 };
 use std::{
     collections::{HashMap, HashSet, VecDeque},

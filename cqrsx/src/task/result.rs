@@ -1,5 +1,5 @@
 //! What a task handler answers for one attempt.
-use crate::cqrs::{command::CommandGatewayError, rejection::Rejection};
+use crate::{command::CommandGatewayError, domain::rejection::Rejection};
 use std::fmt;
 
 /// What a task handler answers for one attempt: done, try again, or stop.

@@ -1,13 +1,11 @@
 //! An in-memory view repository with the version rules of the PostgreSQL one.
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        projection::{
-            View,
-            repository::{StoredView, ViewContext, ViewRepository},
-        },
-        store::PersistenceError,
+    cqrs::projection::{
+        View,
+        repository::{StoredView, ViewContext, ViewRepository},
     },
+    domain::aggregate::Aggregate,
+    journal::PersistenceError,
     locking::lock,
 };
 use serde_json::Value;
@@ -177,10 +175,10 @@ where
 mod tests {
     use super::*;
     use crate::cqrs::event_handler::EventHandler;
-    use crate::cqrs::{
-        event::EventEnvelope,
-        projection::ViewProjection,
-        store::persisted::tests::{TestAggregate, TestEvents},
+    use crate::{
+        cqrs::projection::ViewProjection,
+        domain::event::EventEnvelope,
+        journal::persisted::tests::{TestAggregate, TestEvents},
     };
     use serde::{Deserialize, Serialize, Serializer};
 

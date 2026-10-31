@@ -19,7 +19,7 @@ pub enum FanError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::cqrs::rejection::Rejection;
+    use cqrsx::domain::rejection::Rejection;
     use serde_json::{Value, json};
 
     /// The codes are the contract of the activity log and the task-outcome mapping.

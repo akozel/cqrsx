@@ -3,7 +3,7 @@
 //! The checks of [`TestFramework`](super::TestFramework): a test helper whose panic is the failed check (rule 8 of the
 //! code guidelines), so the panic lints are allowed here.
 #![allow(clippy::panic)]
-use crate::cqrs::aggregate::Aggregate;
+use crate::domain::aggregate::Aggregate;
 use std::fmt;
 
 /// Validation object for the `TestFramework` package.
@@ -37,16 +37,16 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
     /// # use serde_json::Value;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// #
@@ -143,16 +143,16 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
     /// # use serde_json::Value;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// #
@@ -249,16 +249,16 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
     /// # use serde_json::Value;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// #
@@ -363,16 +363,16 @@ where
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
     /// # use serde_json::Value;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// #
@@ -465,7 +465,7 @@ where
 #[cfg(test)]
 mod contract_tests {
     use super::*;
-    use crate::cqrs::{aggregate::tests::*, command::decide::Decide};
+    use crate::domain::{aggregate::tests::*, command::Decide};
 
     #[test]
     #[should_panic(expected = "expected error, received event")]
@@ -516,7 +516,7 @@ mod contract_tests {
 #[cfg(test)]
 mod inspection_tests {
     use super::*;
-    use crate::cqrs::aggregate::tests::{Ledger, Rejected};
+    use crate::domain::aggregate::tests::{Ledger, Rejected};
     #[test]
     fn a_validator_prints_its_result() {
         let validator = AggregateResultValidator::<Ledger>::new(Err(Rejected));

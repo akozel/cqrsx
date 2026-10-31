@@ -3,13 +3,13 @@
 use crate::postgres::task_queue::PostgresTaskQueue;
 use crate::{
     cqrs::{
-        aggregate::Aggregate,
         projection::View,
         testing::{
             mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
             mem_view_repository::MemViewRepository,
         },
     },
+    domain::aggregate::Aggregate,
     engine::{Cqrs, Journal},
     locking::lock,
     task::{
@@ -141,12 +141,10 @@ impl Cqrs {
 #[cfg(test)]
 mod tests {
     use crate::{
-        cqrs::{
-            command::causation::{CAUSATION_ID, CORRELATION_ID, SOURCE},
-            projection::{checkpoint::CheckpointStore, repository::ViewRepository},
-            store::repository::PersistedEventRepository,
-        },
+        command::causation::{CAUSATION_ID, CORRELATION_ID, SOURCE},
+        cqrs::projection::{checkpoint::CheckpointStore, repository::ViewRepository},
         engine::{Cqrs, test_support::*},
+        journal::repository::PersistedEventRepository,
         task::testing::mem_task_queue::TaskStatus,
     };
     use std::{sync::atomic::Ordering, time::Duration};

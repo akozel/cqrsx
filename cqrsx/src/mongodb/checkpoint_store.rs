@@ -3,14 +3,12 @@
 //! atomic statement on that document; the writes of an owner are fenced by its lease token, and the lease
 //! compares against the clock of the server (`$$NOW`).
 use crate::{
-    cqrs::{
-        projection::checkpoint::{
-            CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest,
-            RebuildRequests, RebuildState,
-        },
-        store::feed::Position,
+    cqrs::projection::checkpoint::{
+        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest, RebuildRequests,
+        RebuildState,
     },
     diagnostics,
+    journal::feed::Position,
     mongodb::is_duplicate_key,
 };
 use ::mongodb::{

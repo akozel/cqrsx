@@ -11,12 +11,12 @@
 )]
 use cqrsx::{
     Command, Commands, Event, Events, Rejection, Task,
-    cqrs::{
+    cqrs::testing::TestFramework,
+    domain::{
         aggregate::Aggregate,
-        command::{CommandInfo, Label, decide::Decide},
+        command::{CommandInfo, Decide, Label},
         event::{DomainEvent, EventKind},
         rejection::Rejection as _,
-        testing::TestFramework,
     },
     task::{
         NewTask,

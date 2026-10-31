@@ -18,7 +18,7 @@ pub enum FanCommand {
 #[cfg(test)]
 mod tests {
     use crate::fan::domain::test_support::{cancel, record};
-    use cqrsx::cqrs::command::CommandInfo;
+    use cqrsx::domain::command::CommandInfo;
     use uuid::Uuid;
 
     /// The activity feed names a ledger's command by its type; its fan is the ledger's, its id not the command's.

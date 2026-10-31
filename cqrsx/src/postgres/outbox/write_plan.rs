@@ -1,6 +1,6 @@
 //! Checked single-event and snapshot decisions before any SQL work.
 use crate::{
-    cqrs::store::{PersistenceError, serialized_event::SerializedEvent, snapshot::SnapshotUpdate},
+    journal::{PersistenceError, serialized_event::SerializedEvent, snapshot::SnapshotUpdate},
     task::NewTask,
 };
 use serde_json::Value;
@@ -29,7 +29,7 @@ pub(super) enum SnapshotWrite {
     },
 }
 impl SnapshotWrite {
-    fn try_new(update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>) -> Result<Self, PersistenceError> {
+    fn try_new(update: Option<crate::journal::snapshot::SnapshotUpdate>) -> Result<Self, PersistenceError> {
         match update {
             None => Ok(Self::None),
             Some(SnapshotUpdate {
@@ -72,7 +72,7 @@ impl SnapshotWrite {
 impl<'a> WritePlan<'a> {
     pub(super) fn try_new(
         events: &'a [SerializedEvent],
-        snapshot: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
+        snapshot: Option<crate::journal::snapshot::SnapshotUpdate>,
         tasks: &[NewTask],
     ) -> Result<Self, PersistenceError> {
         match events {

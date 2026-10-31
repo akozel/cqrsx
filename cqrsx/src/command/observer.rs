@@ -3,12 +3,8 @@
 //! aggregate type (an activity feed in a module that names no aggregate) hears the same report with the type erased:
 //! [`AnyCommandObserver`].
 use crate::{
-    cqrs::{
-        CommitReport,
-        aggregate::Aggregate,
-        command::{CommandGatewayError, CommandInfo},
-        rejection::Rejection,
-    },
+    command::{CommandGatewayError, CommitReport},
+    domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
     task::{NewTask, format::TaskFormat},
 };
 use std::{any::Any, collections::HashMap, fmt};
@@ -28,15 +24,10 @@ use std::{any::Any, collections::HashMap, fmt};
 /// does not panic: a panic is the command's (its commit stays, the caller panics).
 ///
 /// ```
-/// use cqrsx::cqrs::{
-///     aggregate::Aggregate,
-///     command::{
-///         CommandExecutor,
-///         decide::Decide,
-///         observer::{CommandObserver, CommandReport, Outcome},
-///     },
-///     event::DomainEvent,
-///     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+/// use cqrsx::{
+///     command::{CommandExecutor, observer::{CommandObserver, CommandReport, Outcome}},
+///     cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+///     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
 /// };
 /// use serde::{Deserialize, Serialize};
 /// use std::sync::{Arc, Mutex};
@@ -251,8 +242,8 @@ impl<'a> AnyCommandReport<'a> {
 mod tests {
     use super::*;
     use crate::{
-        cqrs::{
-            command::{Label, decide::Decide},
+        domain::{
+            command::{Decide, Label},
             event::DomainEvent,
         },
         task::format::TaskFormat,

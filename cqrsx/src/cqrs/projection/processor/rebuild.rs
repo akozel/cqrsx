@@ -1,15 +1,14 @@
 //! The rebuild of one key from its history, and the bound on the documents a processor writes at once.
 use crate::{
     cqrs::{
-        aggregate::Aggregate,
-        event::EventEnvelope,
         event_handler::EventHandler,
         projection::{RebuildableProjection, processor::delivery::Rebuilder},
-        store::{
-            PersistenceError, repository::PersistedEventRepository, serialized_event::deserialize_events, upcaster::EventUpcaster,
-        },
     },
     diagnostics,
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{
+        PersistenceError, repository::PersistedEventRepository, serialized_event::deserialize_events, upcaster::EventUpcaster,
+    },
 };
 use async_trait::async_trait;
 use std::{sync::Arc, time::Duration};
@@ -120,11 +119,13 @@ impl<A: Aggregate + 'static, R: PersistedEventRepository + 'static> Rebuilder fo
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::{
-        aggregate::tests::{Delta, Ledger},
-        projection::{View, ViewProjection, repository::ViewRepository},
-        store::serialized_event::SerializedEvent,
-        testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
+    use crate::{
+        cqrs::{
+            projection::{View, ViewProjection, repository::ViewRepository},
+            testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
+        },
+        domain::aggregate::tests::{Delta, Ledger},
+        journal::serialized_event::SerializedEvent,
     };
     use serde::{Deserialize, Serialize};
     use std::{

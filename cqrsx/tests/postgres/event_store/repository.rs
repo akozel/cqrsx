@@ -1,10 +1,10 @@
-use cqrsx::cqrs::store::snapshot::SnapshotUpdate;
+use cqrsx::journal::snapshot::SnapshotUpdate;
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use super::support::Database;
 use super::support::repository::*;
 use crate::event;
-use cqrsx::cqrs::store::PersistenceError;
+use cqrsx::journal::PersistenceError;
 use sqlx::postgres::PgPoolOptions;
 
 // Characterization of the open snapshot issue, not the desired future contract.
@@ -17,7 +17,7 @@ struct History {
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 struct Appended(i32);
 
-impl cqrsx::cqrs::event::DomainEvent for Appended {
+impl cqrsx::domain::event::DomainEvent for Appended {
     fn event_type(&self) -> &'static str {
         "Appended"
     }
@@ -26,7 +26,7 @@ impl cqrsx::cqrs::event::DomainEvent for Appended {
     }
 }
 
-impl cqrsx::cqrs::aggregate::Aggregate for History {
+impl cqrsx::domain::aggregate::Aggregate for History {
     const TYPE: &'static str = "snapshot_reapplication_characterization";
     type Id = String;
     type Command = i32;
@@ -39,7 +39,7 @@ impl cqrsx::cqrs::aggregate::Aggregate for History {
     }
 }
 
-impl cqrsx::cqrs::command::decide::Decide<History> for i32 {
+impl cqrsx::domain::command::Decide<History> for i32 {
     fn decide(self, _: &History, _: &()) -> Result<Appended, std::convert::Infallible> {
         Ok(Appended(self))
     }
@@ -48,7 +48,7 @@ impl cqrsx::cqrs::command::decide::Decide<History> for i32 {
 #[tokio::test]
 async fn snapshot_command_applies_one_event_once() {
     use cqrsx::{
-        cqrs::command::{CommandExecutor, locks::LockLimits},
+        command::{CommandExecutor, locks::LockLimits},
         postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
     };
     let db = Database::new().await;
@@ -64,7 +64,7 @@ async fn snapshot_command_applies_one_event_once() {
     assert_eq!(context.aggregate.entries, vec![7]);
     db.close().await;
 }
-use cqrsx::cqrs::store::repository::PersistedEventRepository;
+use cqrsx::journal::repository::PersistedEventRepository;
 use cqrsx::postgres::event_repository::PostgresEventRepository;
 
 #[tokio::test]
@@ -341,9 +341,9 @@ async fn snapshot_repositories() {
 }
 use super::support::repository::customer::Customer;
 use super::support::repository::customer::CustomerEvent;
-use cqrsx::cqrs::store::EventStore;
-use cqrsx::cqrs::store::persisted::PersistedEventStore;
-use cqrsx::cqrs::store::upcaster::NumericVersionUpcaster;
+use cqrsx::journal::EventStore;
+use cqrsx::journal::persisted::PersistedEventStore;
+use cqrsx::journal::upcaster::NumericVersionUpcaster;
 use serde_json::Value;
 use std::collections::HashMap;
 async fn simple_es_commit_and_load_test(event_store: PersistedEventStore<PostgresEventRepository, Customer>) {

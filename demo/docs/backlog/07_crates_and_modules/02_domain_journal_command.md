@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-31 ([результаты](#результаты)) |
 | Ценность | высокая: контракты домена отделены от исполнения, журнал — от команд; путь `cqrsx::cqrs::…` исчезает |
 | Цена | средняя: переезд файлов, пути в ядре, тестах, демо и документах |
 | Зависимости | 01 |
@@ -51,3 +51,24 @@
 Импорты демо; `tests/architecture.rs`: список домена — `cqrsx::domain::…` вместо `cqrsx::cqrs::{aggregate, event,
 rejection}` и `cqrsx::cqrs::command::{CommandInfo, decide}`; презентации — `cqrsx::command::CommandGatewayError`.
 `components.md` (таблица и «Source layout»), README, `typical_scenario.md`, `lib.rs` (описание модулей).
+
+## Результаты
+
+2026-10-31, на HEAD `582bc64` плюс правки задачи. Поведение не менялось: переезды файлов и правка путей.
+
+- **Дерево:** `cqrs/{aggregate,event,rejection}` → `domain/`; `decide` и `CommandInfo`/`Label` → `domain/command.rs`
+  (`cqrsx::domain::command::Decide`, модуля `decide` больше нет); `cqrs/store*` → `journal*`; `command/wakeup` →
+  `journal/wakeup`; `CqrsFramework` из `cqrs.rs` → `command/framework.rs`; `CommitReport`, `AggregateError` и два
+  `From<…> for AggregateError` → `command.rs`; `reactions` — на верхний уровень. В `cqrs` остались `event_handler`,
+  `projection`, `testing`.
+- **Что тронуто:** 20 переименований файлов; пути в 73 файлах `cqrsx/src`, 37 `cqrsx/tests`, 4 `cqrsx-macros`, 40
+  `demo/back-end`; `components.md` (инвентарь и «Source layout»), `cqrsx/README.md`, `CLAUDE.md`, `lib.rs`; новые шапки
+  модулей `domain`, `journal`, `command`, `command::framework`, `cqrs`.
+- **Доказательство:** 867 тестов рабочей области и 174 демо, ignored 0; имена всех 793 обычных тестов найдены по новым
+  путям, 74 doctest'а на месте; сверка удалённых и добавленных строк после нормализации путей — расхождения только в
+  документации и видимости тестового кода; fmt, clippy, матрица фич, `cargo doc -D warnings` зелёные; эталоны демо не
+  менялись; старых путей нет (кроме `#[path]` каталога тестов `tests/cqrs/` — задача 03).
+- **Отступления:** `pub(in crate::cqrs)` → `pub(crate)` в тестовых модулях `journal/persisted.rs` и
+  `journal/serialized_event.rs`; список домена в `tests/architecture.rs` называет `domain::command::Decide` и
+  `CommandInfo`, а не весь `domain::command` (иначе домену был бы виден `Label`).
+- **Остаётся:** цикл `journal ↔ command` через `AggregateError` в сигнатурах `EventStore` — задача 06.

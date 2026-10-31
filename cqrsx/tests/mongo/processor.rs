@@ -6,13 +6,13 @@ use crate::{
 };
 use cqrsx::{
     cqrs::{
-        command::wakeup::CommitWakeup,
         projection::{
             checkpoint::{CheckpointStore, RebuildRequest},
             repository::ViewRepository,
         },
         testing::mem_event_repository::MemEventRepository,
     },
+    journal::wakeup::CommitWakeup,
     mongodb::checkpoint_store::{MongoCheckpointStore, PROJECTION_CHECKPOINTS_COLLECTION},
 };
 use mongodb::bson::Document;

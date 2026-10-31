@@ -5,7 +5,7 @@ use crate::fan::{
     application::{issue_refund::IssueRefundV1, send_e_ticket::SendETicketV1},
     domain::{Fan, FanEvent},
 };
-use cqrsx::cqrs::reactions::{Decided, Reactions, Then};
+use cqrsx::reactions::{Decided, Reactions, Then};
 
 /// A ticket in the fan's ledger is mailed; a ticket cancelled in the fan's ledger is refunded. The fan is the
 /// ledger's.
@@ -31,7 +31,7 @@ mod tests {
             domain::{ConcertId, venue::SeatId},
         },
     };
-    use cqrsx::cqrs::reactions::ReactionsPlanner;
+    use cqrsx::reactions::ReactionsPlanner;
     use serde_json::json;
     use uuid::Uuid;
 
@@ -118,9 +118,9 @@ mod tests {
                 domain::{ConcertId, FanId, FanLedgerId},
             },
         };
-        use cqrsx::cqrs::{
+        use cqrsx::{
             command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata},
-            testing::{command_executor::TestCommandExecutor, mem_store::MemStore, unavailable_store::UnavailableStore},
+            cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore, unavailable_store::UnavailableStore},
         };
         use std::sync::Arc;
         use uuid::Uuid;

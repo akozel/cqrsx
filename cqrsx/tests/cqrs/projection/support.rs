@@ -3,35 +3,36 @@
 //! that can be stopped or crashed. A crash is `JoinHandle::abort`: the key workers of the crashed node
 //! finish their current job, like a slow owner that lost its lease, so every check holds for both outcomes.
 use crate::support::ledger::{Command, Delta, Ledger, Services};
-use cqrsx::cqrs::{
-    CqrsFramework,
-    aggregate::Aggregate,
-    command::{executor::CommandExecutorCore, locks::LockLimits, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup},
-    event::EventEnvelope,
-    projection::{
-        View, ViewProjection,
-        checkpoint::{
-            CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest,
-            RebuildRequests,
+use cqrsx::{
+    command::{executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits, retry::AggregateConflictRetryPolicy},
+    cqrs::{
+        projection::{
+            View, ViewProjection,
+            checkpoint::{
+                CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest,
+                RebuildRequests,
+            },
+            processor::{
+                ProjectionProcessor,
+                config::ProcessorConfig,
+                observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
+            },
+            repository::{StoredView, ViewContext, ViewRepository},
         },
-        processor::{
-            ProjectionProcessor,
-            config::ProcessorConfig,
-            observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
+        testing::{
+            mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
+            mem_view_repository::MemViewRepository,
         },
-        repository::{StoredView, ViewContext, ViewRepository},
     },
-    store::{
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{
         EventStore, PersistenceError,
         feed::{FeedEntry, Position},
         persisted::PersistedEventStore,
         repository::PersistedEventRepository,
         serialized_event::{EventFormat, SerializedEvent},
         snapshot::{SerializedSnapshot, SnapshotUpdate},
-    },
-    testing::{
-        mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
-        mem_view_repository::MemViewRepository,
+        wakeup::CommitWakeup,
     },
 };
 use serde::{Deserialize, Serialize};
@@ -701,7 +702,7 @@ impl Harness {
         name: &str,
         owner: &str,
         config: ProcessorConfig,
-        upcasters: Vec<Box<dyn cqrsx::cqrs::store::upcaster::EventUpcaster>>,
+        upcasters: Vec<Box<dyn cqrsx::journal::upcaster::EventUpcaster>>,
     ) -> Node {
         let projection = Arc::new(ViewProjection::new(self.views.clone()));
         let processor = ProjectionProcessor::new(name, self.journal.clone(), self.checkpoints.clone(), projection, config)
@@ -823,7 +824,7 @@ impl Harness {
 /// Turns a version-0 delta nobody can read into a zero delta of the current version.
 pub(crate) struct Heal;
 
-impl cqrsx::cqrs::store::upcaster::EventUpcaster for Heal {
+impl cqrsx::journal::upcaster::EventUpcaster for Heal {
     fn can_upcast(&self, format: EventFormat<'_>) -> bool {
         format.event_type == "delta" && format.event_version == "0"
     }

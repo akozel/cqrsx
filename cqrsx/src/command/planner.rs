@@ -7,20 +7,16 @@
 //! The core then stamps every planned task with the command's causation and gives it an id derived from
 //! the command ([`Causation::task_id`]).
 //!
-//! An application writes the [`Reactions`](crate::cqrs::reactions::Reactions) of its aggregates: one `match` over
-//! the events, run by [`ReactionsPlanner`](crate::cqrs::reactions::ReactionsPlanner), a planner like any other. The
+//! An application writes the [`Reactions`](crate::reactions::Reactions) of its aggregates: one `match` over
+//! the events, run by [`ReactionsPlanner`](crate::reactions::ReactionsPlanner), a planner like any other. The
 //! planner, its [`Decision`] and the tuples stay the building block underneath: a business process may read as one
 //! type that plans for every aggregate type it reacts to, and an aggregate's executor registers one planner, a tuple
 //! of the processes that react to it. A planner is a plain function of a [`Decision`], so a test builds one by hand:
 //!
 //! ```
-//! use cqrsx::cqrs::{
-//!     aggregate::Aggregate,
-//!     command::{
-//!         decide::Decide,
-//!         planner::{Decision, TaskPlanError, TaskPlanner},
-//!     },
-//!     event::DomainEvent,
+//! use cqrsx::{
+//!     command::planner::{Decision, TaskPlanError, TaskPlanner},
+//!     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
 //! };
 //! use cqrsx::task::{NewTask, format::TaskPayload};
 //! use serde::{Deserialize, Serialize};
@@ -117,10 +113,8 @@
 //! assert_eq!(tasks[1].payload()["total"], 30);
 //! ```
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        command::causation::{Causation, CausationError},
-    },
+    command::causation::{Causation, CausationError},
+    domain::aggregate::Aggregate,
     task::{NewTask, TaskValidationError, format::TaskFormat},
 };
 use std::{collections::HashMap, error::Error, fmt};
@@ -283,7 +277,7 @@ impl<A: Aggregate> Planning<A> {
 mod tests {
     use super::*;
     use crate::{
-        cqrs::{command::decide::Decide, event::DomainEvent},
+        domain::{command::Decide, event::DomainEvent},
         task::{TaskSchedule, format::TaskPayload},
     };
     use proptest::prelude::*;

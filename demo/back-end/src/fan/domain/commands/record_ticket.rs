@@ -7,7 +7,7 @@ use crate::{
         venue::{SeatId, Zone},
     },
 };
-use cqrsx::{Command, cqrs::command::decide::Decide};
+use cqrsx::{Command, domain::command::Decide};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Command)]

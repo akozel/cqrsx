@@ -5,12 +5,12 @@
 use crate::projection::support::{Harness, Node, key};
 use crate::support::ledger::Ledger;
 use crate::support::property_config;
-use cqrsx::cqrs::{
-    projection::{
+use cqrsx::{
+    cqrs::projection::{
         checkpoint::{CheckpointStore, RebuildRequest},
         repository::StoredView,
     },
-    store::{feed::Position, repository::PersistedEventRepository},
+    journal::{feed::Position, repository::PersistedEventRepository},
 };
 use proptest::prelude::*;
 use std::{collections::HashMap, time::Duration};

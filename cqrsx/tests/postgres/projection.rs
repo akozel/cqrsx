@@ -2,11 +2,11 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use super::support::Database;
 use super::support::repository::*;
-use cqrsx::cqrs::event::EventEnvelope;
 use cqrsx::cqrs::projection::View;
 use cqrsx::cqrs::projection::repository::StoredView;
 use cqrsx::cqrs::projection::repository::ViewContext;
 use cqrsx::cqrs::projection::repository::ViewRepository;
+use cqrsx::domain::event::EventEnvelope;
 use cqrsx::postgres::view_repository::PostgresViewRepository;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
@@ -99,7 +99,7 @@ async fn test_valid_view_repository() {
 #[tokio::test]
 async fn stress_optimistic_view_create_and_update_has_one_winner() {
     use super::support::repository::{finish_writers, wait_for_writers};
-    use cqrsx::cqrs::store::PersistenceError;
+    use cqrsx::journal::PersistenceError;
     use tokio::task::JoinSet;
     let db = Database::new().await;
     create_view(&db.pool).await;
@@ -172,13 +172,12 @@ async fn stress_optimistic_view_create_and_update_has_one_winner() {
 #[tokio::test]
 async fn stress_two_writers_of_one_document_converge() {
     use super::support::repository::{finish_writers, wait_for_writers};
-    use cqrsx::cqrs::{
-        event::EventEnvelope,
-        event_handler::EventHandler,
-        projection::ViewProjection,
-        store::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
-    };
     use cqrsx::postgres::event_repository::PostgresEventRepository;
+    use cqrsx::{
+        cqrs::{event_handler::EventHandler, projection::ViewProjection},
+        domain::event::EventEnvelope,
+        journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+    };
     let db = Database::new().await;
     create_view(&db.pool).await;
     for initial in [0usize, 1] {
@@ -270,7 +269,7 @@ async fn stress_two_writers_of_one_document_converge() {
 
 #[tokio::test]
 async fn missing_and_corrupt_views_and_sql_failures_are_explicit() {
-    use cqrsx::cqrs::store::PersistenceError;
+    use cqrsx::journal::PersistenceError;
     let db = Database::new().await;
     create_view(&db.pool).await;
     let repo = PostgresViewRepository::<TestView, TestAggregate>::new(db.pool.clone());
@@ -315,7 +314,7 @@ async fn missing_and_corrupt_views_and_sql_failures_are_explicit() {
 /// as a payload that is no view does, instead of panicking in the handler of the projection or in a query.
 #[tokio::test]
 async fn columns_of_other_types_are_deserialization_errors_not_panics() {
-    use cqrsx::cqrs::store::PersistenceError;
+    use cqrsx::journal::PersistenceError;
     let db = Database::new().await;
     sqlx::raw_sql(
         "CREATE TABLE mistyped_view (view_id text PRIMARY KEY, version integer NOT NULL, last_sequence bigint NOT NULL, payload text NOT NULL);
@@ -340,7 +339,7 @@ async fn columns_of_other_types_are_deserialization_errors_not_panics() {
 
 #[tokio::test]
 async fn unrelated_view_uniqueness_is_technical_and_stale_versions_are_conflicts() {
-    use cqrsx::cqrs::store::PersistenceError;
+    use cqrsx::journal::PersistenceError;
     let db = Database::new().await;
     create_view(&db.pool).await;
     sqlx::query("CREATE UNIQUE INDEX unrelated_view ON test_view ((payload::text))")
@@ -403,7 +402,7 @@ const IDS: [&str; 8] = [
 /// queries order by the bytes of the ids all the same.
 #[tokio::test]
 async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
-    use cqrsx::cqrs::store::PersistenceError;
+    use cqrsx::journal::PersistenceError;
     let db = Database::new().await;
     sqlx::raw_sql(r#"CREATE TABLE test_view (view_id text COLLATE "und-x-icu" PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)"#)
         .execute(&db.pool)

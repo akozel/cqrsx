@@ -27,14 +27,12 @@ use crate::{
 };
 use chrono::NaiveDate;
 use cqrsx::{
-    cqrs::{
-        command::{
-            CommandGatewayError,
-            locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits},
-            retry::AggregateConflictRetryPolicy,
-        },
-        projection::processor::config::ProcessorConfig,
+    command::{
+        CommandGatewayError,
+        locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits},
+        retry::AggregateConflictRetryPolicy,
     },
+    cqrs::projection::processor::config::ProcessorConfig,
     engine::{
         Cqrs,
         build::BuildError,

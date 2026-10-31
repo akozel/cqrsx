@@ -4,13 +4,13 @@ use super::{
     error::PostgresRepositoryError,
     event_repository::{decode_usize, encode_bigint, row_decode_error},
 };
-use crate::cqrs::{
-    aggregate::Aggregate,
-    projection::{
+use crate::{
+    cqrs::projection::{
         View,
         repository::{StoredView, ViewContext, ViewRepository},
     },
-    store::PersistenceError,
+    domain::aggregate::Aggregate,
+    journal::PersistenceError,
 };
 use serde_json::Value;
 use sqlx::{Pool, Postgres, Row, postgres::PgRow};
@@ -71,16 +71,16 @@ where
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
     /// # use serde_json::Value;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// #

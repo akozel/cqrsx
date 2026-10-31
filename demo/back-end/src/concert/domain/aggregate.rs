@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use chrono::NaiveDate;
-use cqrsx::cqrs::aggregate::Aggregate;
+use cqrsx::domain::aggregate::Aggregate;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;

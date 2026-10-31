@@ -22,7 +22,7 @@ use crate::shared::application::{
 };
 use async_trait::async_trait;
 use cqrsx::{
-    cqrs::command::causation::CORRELATION_ID,
+    command::causation::CORRELATION_ID,
     task::{attempt::TaskAttempt, context::TaskContext, result::TaskResult},
 };
 use reqwest::StatusCode;

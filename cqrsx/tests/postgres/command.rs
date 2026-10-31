@@ -1,8 +1,8 @@
 use super::*;
-use cqrsx::cqrs::store::EventStore;
-use cqrsx::cqrs::store::persisted::PersistedEventStore;
+use cqrsx::journal::EventStore;
+use cqrsx::journal::persisted::PersistedEventStore;
 use cqrsx::{
-    cqrs::command::{
+    command::{
         CommandExecutor, CommandGatewayError,
         causation::Causation,
         locks::LockLimits,
@@ -631,11 +631,11 @@ mod contracts {
         durable: Arc<tokio::sync::Notify>,
     }
     impl EventStore<Ledger> for CommitBoundary {
-        type Context = cqrsx::cqrs::store::persisted::EventStoreAggregateContext<Ledger>;
-        async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::cqrs::AggregateError<Rejected>> {
+        type Context = cqrsx::journal::persisted::EventStoreAggregateContext<Ledger>;
+        async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::command::AggregateError<Rejected>> {
             self.inner.load_events(id).await
         }
-        async fn load_aggregate(&self, id: &str) -> Result<Self::Context, cqrsx::cqrs::AggregateError<Rejected>> {
+        async fn load_aggregate(&self, id: &str) -> Result<Self::Context, cqrsx::command::AggregateError<Rejected>> {
             self.loads.fetch_add(1, Ordering::SeqCst);
             self.inner.load_aggregate(id).await
         }
@@ -645,7 +645,7 @@ mod contracts {
             context: Self::Context,
             metadata: HashMap<String, String>,
             tasks: &[NewTask],
-        ) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::cqrs::AggregateError<Rejected>> {
+        ) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::command::AggregateError<Rejected>> {
             let attempt = self.commits.fetch_add(1, Ordering::SeqCst);
             if self.mode == 0 && attempt == 0 {
                 PostgresEventRepository::new(self.pool.clone())
@@ -655,7 +655,7 @@ mod contracts {
             }
             let result = self.inner.commit(events, context, metadata, tasks).await?;
             if self.mode == 1 {
-                return Err(cqrsx::cqrs::AggregateError::DatabaseConnectionError(
+                return Err(cqrsx::command::AggregateError::DatabaseConnectionError(
                     "response lost after real commit".into(),
                 ));
             }
@@ -683,7 +683,7 @@ mod contracts {
             Err(PersistenceError::UnknownError(_))
         ));
         assert_eq!(database_state(&db.pool).await, before);
-        use cqrsx::cqrs::command::{CommandGatewayError, executor::CommandExecutorCore};
+        use cqrsx::command::{CommandGatewayError, executor::CommandExecutorCore};
         let loads = Arc::new(AtomicUsize::new(0));
         let commits = Arc::new(AtomicUsize::new(0));
         let executor = CommandExecutorCore::new(
@@ -699,7 +699,7 @@ mod contracts {
                 (),
             ),
             Default::default(),
-            cqrsx::cqrs::command::locks::LockLimits::default(),
+            cqrsx::command::locks::LockLimits::default(),
         );
         assert!(matches!(
             executor.execute(&"command".into(), 2).await,
@@ -713,7 +713,7 @@ mod contracts {
 
     #[tokio::test]
     async fn command_retry_rechecks_balance_and_unknown_or_cancelled_response_keeps_durable_commit() {
-        use cqrsx::cqrs::command::{CommandGatewayError, executor::CommandExecutorCore, retry::AggregateConflictRetryPolicy};
+        use cqrsx::command::{CommandGatewayError, executor::CommandExecutorCore, retry::AggregateConflictRetryPolicy};
         let db = Database::new().await;
         for mode in 0..3 {
             let id = format!("boundary-{mode}");
@@ -738,7 +738,7 @@ mod contracts {
                     (),
                 ),
                 AggregateConflictRetryPolicy::try_new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
-                cqrsx::cqrs::command::locks::LockLimits::default(),
+                cqrsx::command::locks::LockLimits::default(),
             );
             if mode == 2 {
                 let id = id.clone();

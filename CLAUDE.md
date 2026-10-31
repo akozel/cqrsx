@@ -7,7 +7,11 @@ Event Sourcing: aggregates and command handling, event and snapshot persistence,
 a transactional outbox, and a durable task queue with retries. PostgreSQL stores data (MongoDB may
 hold the read side), Tokio runs background tasks. No binary: `cargo run` is unavailable.
 
-- `cqrsx/src/cqrs` — aggregates, command execution, event store, projections, test helpers.
+- `cqrsx/src/domain` — aggregates, events, how a command decides, rejections.
+- `cqrsx/src/journal` — event store, repositories, snapshots, feed, commit wake-up.
+- `cqrsx/src/command` — command execution: framework, executors, locks, retry, causation, task planning.
+- `cqrsx/src/reactions.rs` — the tasks that follow each event of an aggregate.
+- `cqrsx/src/cqrs` — event handlers, projections, test helpers.
 - `cqrsx/src/postgres` — event repository, outbox, task queue (feature `postgres`).
 - `cqrsx/src/mongodb` — read models and projection checkpoints in MongoDB (feature `mongodb`).
 - `cqrsx/src/task` — task runtime, workers, executors, adapters (feature `worker`).

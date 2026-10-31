@@ -9,7 +9,7 @@ use crate::{
         venue::{SeatId, Zone},
     },
 };
-use cqrsx::cqrs::aggregate::Aggregate;
+use cqrsx::domain::aggregate::Aggregate;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use uuid::Uuid;

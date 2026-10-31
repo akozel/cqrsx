@@ -2,10 +2,10 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use std::collections::HashMap;
 
-use cqrsx::cqrs::AggregateError;
-use cqrsx::cqrs::CqrsFramework;
-use cqrsx::cqrs::store::EventStore;
+use cqrsx::command::AggregateError;
+use cqrsx::command::framework::CqrsFramework;
 use cqrsx::cqrs::testing::mem_store::MemStore;
+use cqrsx::journal::EventStore;
 
 use crate::support::scenario::*;
 
@@ -69,13 +69,9 @@ async fn framework_test() {
 mod contracts {
     use super::*;
     use cqrsx::{
-        cqrs::{
-            command::{
-                CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits, retry::AggregateConflictRetryPolicy,
-                wakeup::CommitWakeup,
-            },
-            event::EventEnvelope,
-        },
+        command::{CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits, retry::AggregateConflictRetryPolicy},
+        domain::event::EventEnvelope,
+        journal::wakeup::CommitWakeup,
         task::NewTask,
     };
     use std::{
@@ -86,8 +82,8 @@ mod contracts {
         time::Duration,
     };
     use {
-        crate::support::ledger::*, cqrsx::cqrs::store::AggregateContext, cqrsx::cqrs::store::EventStore,
-        cqrsx::cqrs::testing::mem_store::MemStore, cqrsx::cqrs::testing::mem_store::MemStoreAggregateContext,
+        crate::support::ledger::*, cqrsx::cqrs::testing::mem_store::MemStore,
+        cqrsx::cqrs::testing::mem_store::MemStoreAggregateContext, cqrsx::journal::AggregateContext, cqrsx::journal::EventStore,
     };
 
     type Calls = Arc<Mutex<Vec<&'static str>>>;

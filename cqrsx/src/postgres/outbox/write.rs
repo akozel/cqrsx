@@ -1,10 +1,8 @@
 //! Compile a checked write into one atomic modifying CTE statement.
 use super::write_plan::SnapshotWrite;
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        store::{PersistenceError, serialized_event::SerializedEvent},
-    },
+    domain::aggregate::Aggregate,
+    journal::{PersistenceError, serialized_event::SerializedEvent},
     task::{NewTask, TaskSchedule},
 };
 use chrono::{DateTime, Utc};

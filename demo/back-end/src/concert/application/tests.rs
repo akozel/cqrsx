@@ -13,8 +13,8 @@ use crate::{
     testing::test_app,
 };
 use cqrsx::{
-    cqrs::store::{EventStore, persisted::PersistedEventStore},
     engine::Cqrs,
+    journal::{EventStore, persisted::PersistedEventStore},
     task::{
         format::TaskFormat,
         queue::{TaskQueue, settlement::SettlementRequest},

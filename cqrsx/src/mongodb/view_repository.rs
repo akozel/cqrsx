@@ -1,13 +1,11 @@
 //! Read-model documents in a MongoDB collection.
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        projection::{
-            View,
-            repository::{StoredView, ViewContext, ViewRepository},
-        },
-        store::PersistenceError,
+    cqrs::projection::{
+        View,
+        repository::{StoredView, ViewContext, ViewRepository},
     },
+    domain::aggregate::Aggregate,
+    journal::PersistenceError,
     mongodb::{is_duplicate_key, persistence},
 };
 use ::mongodb::{
@@ -32,7 +30,7 @@ use std::{fmt, marker::PhantomData};
 ///
 /// ```no_run
 /// # mod example {
-/// # use cqrsx::cqrs::{aggregate::Aggregate, command::decide::Decide, event::{DomainEvent, EventEnvelope}, projection::View};
+/// # use cqrsx::{domain::{aggregate::Aggregate, command::Decide, event::{DomainEvent, EventEnvelope}}, cqrs::projection::View};
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// # pub struct Counted;
@@ -216,7 +214,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::{aggregate::tests::Ledger, event::EventEnvelope};
+    use crate::domain::{aggregate::tests::Ledger, event::EventEnvelope};
     use serde::Serialize;
 
     /// A view BSON cannot hold: an unsigned value beyond `Int64`.

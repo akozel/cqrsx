@@ -30,7 +30,7 @@ pub enum ConcertError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::cqrs::rejection::Rejection;
+    use cqrsx::domain::rejection::Rejection;
     use serde_json::{Value, json};
 
     /// The codes are the API contract: the front-end i18n files translate exactly these keys.

@@ -7,7 +7,7 @@ mod publication;
 #[path = "outbox/rollback.rs"]
 mod rollback;
 
-use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+use cqrsx::journal::snapshot::SerializedSnapshot;
 
 const AGGREGATE_ID: &str = "outbox-test-aggregate";
 

@@ -1,11 +1,8 @@
 //! What a task handler gets besides its task: the attempt, the pause of its retry, its dependencies and the command
 //! executors of the application.
 use crate::{
-    cqrs::{
-        CommitReport,
-        aggregate::Aggregate,
-        command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata},
-    },
+    command::{CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
+    domain::aggregate::Aggregate,
     task::{
         attempt::TaskAttempt,
         dependencies::{Dependencies, MissingDependency},
@@ -206,14 +203,11 @@ pub struct ExecutorTwice(pub &'static str);
 mod tests {
     use super::*;
     use crate::{
-        cqrs::{
-            command::{
-                causation::{CAUSATION_ID, COMMAND_ID, CORRELATION_ID, SOURCE},
-                decide::Decide,
-                metadata::RECORDED_AT,
-            },
-            event::DomainEvent,
+        command::{
+            causation::{CAUSATION_ID, COMMAND_ID, CORRELATION_ID, SOURCE},
+            metadata::RECORDED_AT,
         },
+        domain::{command::Decide, event::DomainEvent},
         task::{format::TaskFormat, test_support::DummyTask},
     };
     use serde::{Deserialize, Serialize};

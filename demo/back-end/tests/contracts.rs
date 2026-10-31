@@ -20,30 +20,16 @@
 use axum::{Json, Router, http::StatusCode, routing::post};
 use chrono::NaiveDate;
 use cqrsx::{
-    cqrs::projection::checkpoint::CheckpointKey,
-    engine::{
-        Cqrs,
-        build::{BuildError, Builder},
-        settings::{Settings, duration_text},
-        setup::Setup,
+    command::{
+        AggregateError, CommandExecutor,
+        metadata::CommandMetadata,
+        observer::{CommandObserver, CommandReport, Outcome},
     },
-    task::policy::Policies,
-};
-use cqrsx::{
     cqrs::{
-        AggregateError,
-        command::{
-            CommandExecutor,
-            metadata::CommandMetadata,
-            observer::{CommandObserver, CommandReport, Outcome},
-        },
-        event::{DomainEvent, EventEnvelope},
         projection::{
             checkpoint::CheckpointStore,
             processor::observer::{Applied, Failed, FailureCategory, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
         },
-        reactions::ReactionsPlanner,
-        store::{EventStore, feed::Position},
         testing::{
             command_executor::TestCommandExecutor,
             mem_checkpoint_store::MemCheckpointStore,
@@ -51,6 +37,9 @@ use cqrsx::{
             unavailable_store::UnavailableStore,
         },
     },
+    domain::event::{DomainEvent, EventEnvelope},
+    journal::{EventStore, feed::Position},
+    reactions::ReactionsPlanner,
     task::{
         NewTask,
         adapter::boxed::BoxedTaskAdapter,
@@ -70,6 +59,16 @@ use cqrsx::{
         result::TaskResult,
         runtime::prepare,
     },
+};
+use cqrsx::{
+    cqrs::projection::checkpoint::CheckpointKey,
+    engine::{
+        Cqrs,
+        build::{BuildError, Builder},
+        settings::{Settings, duration_text},
+        setup::Setup,
+    },
+    task::policy::Policies,
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,

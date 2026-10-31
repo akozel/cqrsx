@@ -2,7 +2,7 @@
 //! with, whatever races the commands ran into, and every refused plan writes nothing.
 use super::*;
 use cqrsx::{
-    cqrs::command::{
+    command::{
         CommandExecutor, CommandGatewayError,
         causation::Causation,
         executor::CommandExecutorCore,

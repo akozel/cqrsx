@@ -386,7 +386,7 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
 mod tests {
     use super::*;
     use crate::operations::application::ledger::LedgerTotals;
-    use cqrsx::cqrs::{store::feed::Position, testing::mem_checkpoint_store::MemCheckpointStore};
+    use cqrsx::{cqrs::testing::mem_checkpoint_store::MemCheckpointStore, journal::feed::Position};
     use std::collections::HashMap;
 
     fn halls() -> CheckpointKey {

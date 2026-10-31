@@ -12,14 +12,12 @@ use crate::{
 };
 use async_trait::async_trait;
 use cqrsx::{
-    cqrs::{
-        projection::{
-            checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, RebuildRequest},
-            verify::Verification,
-        },
-        store::feed::Position,
+    cqrs::projection::{
+        checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, RebuildRequest},
+        verify::Verification,
     },
     engine::{Cqrs, views::ViewsError},
+    journal::feed::Position,
 };
 use std::{sync::Arc, time::Duration};
 

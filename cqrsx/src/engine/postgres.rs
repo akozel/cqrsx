@@ -451,10 +451,8 @@ mod tests {
     #[tokio::test]
     async fn the_executors_over_postgres_take_the_settings_of_the_engine() {
         use crate::{
-            cqrs::{
-                command::{locks::LockLimits, retry::AggregateConflictRetryPolicy},
-                projection::processor::config::ProcessorConfig,
-            },
+            command::{locks::LockLimits, retry::AggregateConflictRetryPolicy},
+            cqrs::projection::processor::config::ProcessorConfig,
             engine::{Cqrs, Executor, test_support::*},
             task::runtime::config::TaskRuntimeConfig,
         };

@@ -2,7 +2,10 @@
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{aggregate::Aggregate, event::EventEnvelope, store::PersistenceError};
+use crate::{
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::PersistenceError,
+};
 use async_trait::async_trait;
 use std::sync::Arc;
 
@@ -16,7 +19,7 @@ use std::sync::Arc;
 /// A handler never executes a command, not even from a task it spawns: it writes its read model and
 /// nothing else, and a follow-up started there would be recorded nowhere, repeated by every replay of the
 /// journal and lost by a crash. Plan the follow-up as an outbox task from the command's decision instead
-/// ([`TaskPlanner`](crate::cqrs::command::planner::TaskPlanner)); the framework does not detect the mistake
+/// ([`TaskPlanner`](crate::command::planner::TaskPlanner)); the framework does not detect the mistake
 /// (see the naming and integration rules in `doc/components.md`).
 #[async_trait]
 pub trait EventHandler<A: Aggregate>: Send + Sync {
@@ -51,7 +54,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::store::persisted::tests::TestAggregate;
+    use crate::journal::persisted::tests::TestAggregate;
 
     struct Unnamed;
 

@@ -1,5 +1,5 @@
 use super::*;
-use cqrsx::{cqrs::store::feed::Position, postgres::event_repository::LedgerTotals};
+use cqrsx::{journal::feed::Position, postgres::event_repository::LedgerTotals};
 
 #[tokio::test]
 async fn totals_count_the_events_and_aggregates_of_one_type_only() {

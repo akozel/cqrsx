@@ -1,17 +1,17 @@
 //! The views of an engine: the queries of one view ([`ViewQuery`]) and the operations over all of them ([`Views`]).
 use crate::{
     cqrs::{
-        aggregate::Aggregate,
         projection::{
             View,
             checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
             repository::{StoredView, ViewRepository},
             verify::{Verification, verify},
         },
-        store::{PersistenceError, feed::Position, repository::PersistedEventRepository},
         testing::mem_event_repository::MemEventRepository,
     },
+    domain::aggregate::Aggregate,
     engine::Cqrs,
+    journal::{PersistenceError, feed::Position, repository::PersistedEventRepository},
 };
 use std::{
     any::{Any, TypeId, type_name},

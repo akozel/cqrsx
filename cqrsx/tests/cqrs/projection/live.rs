@@ -1,19 +1,21 @@
 //! Live delivery: pages, the window, failures of one key, poison events, concurrency.
 use crate::projection::support::{Balance, Harness, Heal, POLL, RETRY_BASE, config, delta, old_delta};
 use crate::support::ledger::{Command, Ledger};
-use cqrsx::cqrs::{
-    event::EventEnvelope,
-    projection::{
-        View, ViewProjection,
-        checkpoint::CheckpointStore,
-        processor::{
-            ProjectionProcessor,
-            config::{DeliveryLimits, ProcessorConfig},
+use cqrsx::{
+    cqrs::{
+        projection::{
+            View, ViewProjection,
+            checkpoint::CheckpointStore,
+            processor::{
+                ProjectionProcessor,
+                config::{DeliveryLimits, ProcessorConfig},
+            },
+            repository::ViewRepository,
         },
-        repository::ViewRepository,
+        testing::mem_view_repository::MemViewRepository,
     },
-    store::{feed::Position, repository::PersistedEventRepository, upcaster::EventUpcaster},
-    testing::mem_view_repository::MemViewRepository,
+    domain::event::EventEnvelope,
+    journal::{feed::Position, repository::PersistedEventRepository, upcaster::EventUpcaster},
 };
 use serde::{Deserialize, Serialize};
 use std::{collections::HashMap, sync::Arc, time::Duration};

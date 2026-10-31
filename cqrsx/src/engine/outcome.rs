@@ -1,11 +1,8 @@
 //! A command from an entry point of the application ([`Source`]) and what became of it ([`Outcome`]).
 use crate::{
-    cqrs::{
-        CommitReport,
-        aggregate::Aggregate,
-        command::{CommandExecutor, CommandGatewayError, CommandInfo, metadata::CommandMetadata},
-    },
+    command::{CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
     diagnostics,
+    domain::{aggregate::Aggregate, command::CommandInfo},
     engine::Cqrs,
 };
 use std::fmt;
@@ -86,15 +83,13 @@ impl Cqrs {
 #[cfg(test)]
 mod tests {
     use crate::{
-        cqrs::{
-            command::{
-                CommandGatewayError,
-                causation::{CAUSATION_ID, COMMAND_ID, CORRELATION_ID, SOURCE},
-                metadata::RECORDED_AT,
-            },
-            store::repository::PersistedEventRepository,
+        command::{
+            CommandGatewayError,
+            causation::{CAUSATION_ID, COMMAND_ID, CORRELATION_ID, SOURCE},
+            metadata::RECORDED_AT,
         },
         engine::{Cqrs, test_support::*},
+        journal::repository::PersistedEventRepository,
     };
     use std::collections::BTreeSet;
     use uuid::Uuid;

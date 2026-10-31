@@ -24,13 +24,10 @@ in the fan's wallet, a second task mails it, and the hall view catches up. It ru
 use cqrsx::{
     engine::Cqrs,
     Command, Event, Events, Rejection, Task,
-    cqrs::{
-        aggregate::Aggregate,
-        command::{CommandGatewayError, decide::Decide},
-        event::EventEnvelope,
-        projection::View,
-        reactions::{Decided, Reactions, Then},
-    },
+    command::CommandGatewayError,
+    cqrs::projection::View,
+    domain::{aggregate::Aggregate, command::Decide, event::EventEnvelope},
+    reactions::{Decided, Reactions, Then},
     engine::{
         module::Module,
         setup::{Setup, SetupError},

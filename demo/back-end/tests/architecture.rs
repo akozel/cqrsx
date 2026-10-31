@@ -187,11 +187,11 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::Event",
                 "cqrsx::Events",
                 "cqrsx::Rejection",
-                "cqrsx::cqrs::aggregate",
-                "cqrsx::cqrs::command::CommandInfo",
-                "cqrsx::cqrs::command::decide",
-                "cqrsx::cqrs::event",
-                "cqrsx::cqrs::rejection",
+                "cqrsx::domain::aggregate",
+                "cqrsx::domain::command::CommandInfo",
+                "cqrsx::domain::command::Decide",
+                "cqrsx::domain::event",
+                "cqrsx::domain::rejection",
                 "cqrsx::cqrs::testing",
             ]),
         },
@@ -220,8 +220,8 @@ fn externals(layer: Option<Layer>) -> Externals {
             // what it answers (05/10, design 06). Nothing else.
             cqrsx_allowed: Some(&[
                 "cqrsx::engine::Cqrs",
-                "cqrsx::cqrs::command::CommandGatewayError",
-                "cqrsx::cqrs::rejection",
+                "cqrsx::command::CommandGatewayError",
+                "cqrsx::domain::rejection",
                 "cqrsx::cqrs::projection::repository::StoredView",
             ]),
         },
@@ -685,10 +685,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ("concert/domain/x.rs", "use crate::concert::application::app::ConcertApp;\n"),
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
         ("concert/domain/x.rs", "use cqrsx::postgres::pool::connect_pool;\n"),
-        (
-            "concert/presentation/x.rs",
-            "use cqrsx::cqrs::command::planner::TaskPlanner;\n",
-        ),
+        ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
         ("fan/application/x.rs", "use cqrsx::cqrs::testing::mem_store::MemStore;\n"),
         ("concert.rs", "use crate::fan::domain::Fan;\n"),
     ] {
@@ -784,17 +781,17 @@ fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
         ("concert/domain/x.rs", "use cqrsx::{Event, Events, Rejection};\n"),
         (
             "concert/domain/x.rs",
-            "#[cfg(test)]\nmod tests { use cqrsx::cqrs::rejection::Rejection; }\n",
+            "#[cfg(test)]\nmod tests { use cqrsx::domain::rejection::Rejection; }\n",
         ),
-        ("fan/application/x.rs", "use cqrsx::{Task, cqrs::rejection::Rejection};\n"),
-        ("concert/presentation/x.rs", "use cqrsx::cqrs::rejection::Rejection;\n"),
+        ("fan/application/x.rs", "use cqrsx::{Task, domain::rejection::Rejection};\n"),
+        ("concert/presentation/x.rs", "use cqrsx::domain::rejection::Rejection;\n"),
     ] {
         assert!(check(file, code).is_empty(), "{file}: {code}");
     }
     for (file, code) in [
         ("concert/domain/x.rs", "use cqrsx::Task;\n"),
         ("concert/presentation/x.rs", "use cqrsx::Event;\n"),
-        ("fan/presentation/x.rs", "use cqrsx::cqrs::event::DomainEvent;\n"),
+        ("fan/presentation/x.rs", "use cqrsx::domain::event::DomainEvent;\n"),
     ] {
         let broken = check(file, code);
         assert_eq!(broken.len(), 1, "{file}: {code}");
@@ -808,18 +805,18 @@ fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
 fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::{cqrs::command::CommandGatewayError, engine::Cqrs};\n",
-        "fn f(e: cqrsx::cqrs::command::CommandGatewayError<()>) {}\n",
+        "use cqrsx::{command::CommandGatewayError, engine::Cqrs};\n",
+        "fn f(e: cqrsx::command::CommandGatewayError<()>) {}\n",
         "fn f(cqrs: &cqrsx::engine::Cqrs) {}\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
     }
     for code in [
-        "use cqrsx::cqrs::command::CommandExecutor;\n",
-        "use cqrsx::cqrs::command::metadata::CommandMetadata;\n",
-        "use cqrsx::cqrs::command::CommandInfo;\n",
-        "use cqrsx::cqrs::command::observer::CommandObserver;\n",
-        "use cqrsx::cqrs::CommitReport;\n",
+        "use cqrsx::command::CommandExecutor;\n",
+        "use cqrsx::command::metadata::CommandMetadata;\n",
+        "use cqrsx::domain::command::CommandInfo;\n",
+        "use cqrsx::command::observer::CommandObserver;\n",
+        "use cqrsx::command::CommitReport;\n",
         "use cqrsx::cqrs::testing::command_executor::TestCommandExecutor;\n",
         "use cqrsx::postgres::command::PostgresCommandExecutor;\n",
         "use cqrsx::engine::build::Builder;\n",
@@ -862,15 +859,15 @@ fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_th
 fn the_command_derives_and_the_decide_contract_are_visible_in_the_domain() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::{Command, Commands, cqrs::command::decide::Decide};\n",
-        "#[cfg(test)]\nmod tests { use cqrsx::cqrs::command::CommandInfo; }\n",
+        "use cqrsx::{Command, Commands, domain::command::Decide};\n",
+        "#[cfg(test)]\nmod tests { use cqrsx::domain::command::CommandInfo; }\n",
     ] {
         assert!(check("concert/domain/x.rs", code).is_empty(), "{code}");
     }
     for code in [
         "use cqrsx::cqrs::event_sink::EventSink;\n",
-        "use cqrsx::cqrs::command::CommandExecutor;\n",
-        "use cqrsx::cqrs::command::planner::TaskPlanner;\n",
+        "use cqrsx::command::CommandExecutor;\n",
+        "use cqrsx::command::planner::TaskPlanner;\n",
     ] {
         let broken = check("fan/domain/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}");

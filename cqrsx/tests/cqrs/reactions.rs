@@ -3,14 +3,11 @@
 //! metadata, and a redelivered step that publishes nothing twice.
 use cqrsx::{
     Task,
-    cqrs::{
-        aggregate::Aggregate,
-        command::{CommandExecutor, CommandGatewayError, causation::Causation, decide::Decide},
-        event::DomainEvent,
-        reactions::{Decided, Reactions, ReactionsPlanner, Then},
-        store::persisted::PersistedEventStore,
-        testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
-    },
+    command::{CommandExecutor, CommandGatewayError, causation::Causation},
+    cqrs::testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
+    domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+    journal::persisted::PersistedEventStore,
+    reactions::{Decided, Reactions, ReactionsPlanner, Then},
     task::{
         DEFAULT_MAX_ATTEMPTS, NewTask, TaskSchedule,
         attempt::TaskAttempt,

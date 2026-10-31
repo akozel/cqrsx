@@ -93,7 +93,7 @@ impl Causation {
         }))
     }
 
-    /// The four keys for [`execute_with_metadata`](crate::cqrs::command::CommandExecutor::execute_with_metadata);
+    /// The four keys for [`execute_with_metadata`](crate::command::CommandExecutor::execute_with_metadata);
     /// applications may add their own.
     pub fn event_metadata(&self) -> HashMap<String, String> {
         HashMap::from([

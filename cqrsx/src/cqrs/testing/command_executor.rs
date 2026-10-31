@@ -1,20 +1,17 @@
 //! A command executor over a test event store or an in-memory journal, for use-case tests.
 use crate::{
-    cqrs::{
-        CommitReport, CqrsFramework,
-        aggregate::Aggregate,
-        command::{
-            CommandExecutor, CommandGatewayError,
-            executor::CommandExecutorCore,
-            locks::LockLimits,
-            observer::CommandObserver,
-            planner::{Planning, TaskPlanner},
-            retry::AggregateConflictRetryPolicy,
-            wakeup::CommitWakeup,
-        },
-        store::{EventStore, persisted::PersistedEventStore},
-        testing::{mem_event_repository::MemEventRepository, mem_store::MemStore},
+    command::{
+        CommandExecutor, CommandGatewayError, CommitReport,
+        executor::CommandExecutorCore,
+        framework::CqrsFramework,
+        locks::LockLimits,
+        observer::CommandObserver,
+        planner::{Planning, TaskPlanner},
+        retry::AggregateConflictRetryPolicy,
     },
+    cqrs::testing::{mem_event_repository::MemEventRepository, mem_store::MemStore},
+    domain::aggregate::Aggregate,
+    journal::{EventStore, persisted::PersistedEventStore, wakeup::CommitWakeup},
     locking::lock,
     task::NewTask,
 };
@@ -39,15 +36,14 @@ use std::{
 /// the processors the same journal and the executor their [`CommitWakeup`].
 ///
 /// ```
-/// use cqrsx::cqrs::{
-///     aggregate::Aggregate,
+/// use cqrsx::{
 ///     command::{
-///         CommandExecutor, CommandGatewayError, causation::Causation,
-///         decide::Decide,
+///         CommandExecutor, CommandGatewayError,
+///         causation::Causation,
 ///         planner::{Decision, TaskPlanError, TaskPlanner},
 ///     },
-///     event::DomainEvent,
-///     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+///     cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+///     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
 /// };
 /// use cqrsx::task::{NewTask, format::TaskPayload};
 /// use serde::{Deserialize, Serialize};
@@ -242,16 +238,13 @@ where
 mod tests {
     use super::*;
     use crate::{
-        cqrs::{
-            command::{
-                causation::Causation,
-                decide::Decide,
-                planner::{Decision, TaskPlanError},
-            },
-            event::DomainEvent,
-            store::repository::PersistedEventRepository,
-            testing::unavailable_store::UnavailableStore,
+        command::{
+            causation::Causation,
+            planner::{Decision, TaskPlanError},
         },
+        cqrs::testing::unavailable_store::UnavailableStore,
+        domain::{command::Decide, event::DomainEvent},
+        journal::repository::PersistedEventRepository,
         task::format::TaskPayload,
     };
     use serde::{Deserialize, Serialize};
@@ -424,8 +417,8 @@ mod tests {
     struct Outcomes(Mutex<Vec<String>>);
 
     impl CommandObserver<Stack> for Outcomes {
-        fn command(&self, report: &crate::cqrs::command::observer::CommandReport<'_, Stack>) {
-            use crate::cqrs::command::observer::Outcome;
+        fn command(&self, report: &crate::command::observer::CommandReport<'_, Stack>) {
+            use crate::command::observer::Outcome;
             let outcome = match report.outcome {
                 Outcome::Accepted { tasks } => format!("accepted with {} tasks", tasks.len()),
                 Outcome::Rejected(error) => format!("rejected: {error}"),

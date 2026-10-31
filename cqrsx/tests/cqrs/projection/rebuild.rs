@@ -1,12 +1,12 @@
 //! Rebuilds: the whole journal by cursor, one key on request, a document healed after a gap, next to live delivery.
 use crate::projection::support::{Harness, Heal, NAME, POLL, RETRY_BASE, config, delta, key, old_delta};
 use crate::support::ledger::Ledger;
-use cqrsx::cqrs::{
-    projection::{
+use cqrsx::{
+    cqrs::projection::{
         checkpoint::{CheckpointStore, RebuildRequest},
         processor::config::{DeliveryLimits, ProcessorConfig},
     },
-    store::repository::PersistedEventRepository,
+    journal::repository::PersistedEventRepository,
 };
 use std::{sync::Arc, time::Duration};
 use tokio::time::Instant;

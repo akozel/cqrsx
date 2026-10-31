@@ -25,7 +25,7 @@ pub enum ConcertEvent {
 #[cfg(test)]
 mod wire_format_tests {
     use super::*;
-    use cqrsx::cqrs::event::DomainEvent;
+    use cqrsx::domain::event::DomainEvent;
     use serde_json::{Value, json};
 
     fn round_trip(document: Value, event_type: &str) {

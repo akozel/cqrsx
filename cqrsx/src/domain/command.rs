@@ -1,5 +1,97 @@
-//! How a command decides: the rules of one command on the state of its aggregate, one event or a rejection.
-use crate::cqrs::aggregate::Aggregate;
+//! What a command is to the domain: what is known of it ([`CommandInfo`], [`Label`]) and how it decides ([`Decide`]).
+use crate::domain::aggregate::Aggregate;
+use uuid::Uuid;
+
+/// What is known of a command besides its decision: what an observer reports it by and what an assembly takes its id
+/// from. `#[derive(cqrsx::Command)]` implements it on a command type, `#[derive(cqrsx::Commands)]` on the aggregate's
+/// enum of commands, by the variant's type; the core does not read it.
+///
+/// - [`name`](Self::name): the command type's name, `"CancelBooking"`.
+/// - [`command_id`](Self::command_id): the field marked `#[command_id]`, when the business id is the id of the command
+///   (a booking, a cancellation); a `Uuid`, at most one field. Without it, `None`: the id is not the command's.
+/// - [`labels`](Self::labels): the fields marked `#[label]`, in field order, each as its name and its `Display`; what
+///   an activity feed shows and filters a command by.
+///
+/// ```
+/// use cqrsx::{
+///     Command, Commands,
+///     domain::command::{CommandInfo, Label},
+/// };
+/// use uuid::Uuid;
+///
+/// #[derive(Command)]
+/// struct CancelBooking {
+///     seat: String,
+///     #[label]
+///     fan_id: String,
+///     #[command_id]
+///     cancellation_id: Uuid,
+///     #[label]
+///     reason: u8,
+/// }
+///
+/// #[derive(Command)]
+/// struct AnnounceConcert {
+///     artist: String,
+/// }
+///
+/// let cancellation_id = Uuid::now_v7();
+/// let cancel = CancelBooking { seat: "B4".into(), fan_id: "fox".into(), cancellation_id, reason: 2 };
+/// assert_eq!(cancel.name(), "CancelBooking");
+/// assert_eq!(cancel.command_id(), Some(cancellation_id));
+/// assert_eq!(
+///     cancel.labels(),
+///     [
+///         Label { name: "fan_id", value: "fox".to_owned() },
+///         Label { name: "reason", value: "2".to_owned() },
+///     ]
+/// );
+/// let announce = AnnounceConcert { artist: "Radiohead".into() };
+/// assert_eq!((announce.name(), announce.command_id(), announce.labels()), ("AnnounceConcert", None, vec![]));
+/// ```
+///
+/// One field at most is the command id:
+///
+/// ```compile_fail
+/// #[derive(cqrsx::Command)]
+/// struct BookSeat {
+///     #[command_id]
+///     booking_id: uuid::Uuid,
+///     #[command_id]
+///     request_id: uuid::Uuid,
+/// }
+/// ```
+///
+/// and it is a `Uuid`:
+///
+/// ```compile_fail
+/// #[derive(cqrsx::Command)]
+/// struct BookSeat {
+///     #[command_id]
+///     booking_id: String,
+/// }
+/// ```
+pub trait CommandInfo {
+    /// The name of the command's type.
+    fn name(&self) -> &'static str;
+
+    /// The id of the command, when a field of it is (`#[command_id]`); `None` by default.
+    fn command_id(&self) -> Option<Uuid> {
+        None
+    }
+
+    /// The labels of the command in field order (`#[label]`); none by default.
+    fn labels(&self) -> Vec<Label> {
+        Vec::new()
+    }
+}
+
+/// A labelled field of a command (`#[label]`): its name and its value as its `Display` writes it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Label {
+    pub name: &'static str,
+    pub value: String,
+}
 
 /// The rules of a command: what it decides on the committed state of its aggregate `A`, with the aggregate's
 /// [`Rules`](Aggregate::Rules).
@@ -20,7 +112,7 @@ use crate::cqrs::aggregate::Aggregate;
 /// ```
 /// use cqrsx::{
 ///     Command, Commands,
-///     cqrs::{aggregate::Aggregate, command::decide::Decide, event::DomainEvent, testing::TestFramework},
+///     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent}, cqrs::testing::TestFramework,
 /// };
 /// use serde::{Deserialize, Serialize};
 ///
@@ -131,7 +223,7 @@ use crate::cqrs::aggregate::Aggregate;
 /// Nor does a variant whose type does not decide the aggregate (`Take` decides nothing here):
 ///
 /// ```compile_fail
-/// use cqrsx::{Command, Commands, cqrs::{aggregate::Aggregate, command::decide::Decide, event::DomainEvent}};
+/// use cqrsx::{Command, Commands, domain::{aggregate::Aggregate, command::Decide, event::DomainEvent}};
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Default, Serialize, Deserialize)]
@@ -175,4 +267,22 @@ use crate::cqrs::aggregate::Aggregate;
 pub trait Decide<A: Aggregate>: Sized {
     /// The event this command decides on `state`, the committed state of its aggregate, or the rejection.
     fn decide(self, state: &A, rules: &A::Rules) -> Result<A::Event, A::Error>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct Ping;
+
+    impl CommandInfo for Ping {
+        fn name(&self) -> &'static str {
+            "Ping"
+        }
+    }
+
+    #[test]
+    fn a_command_info_written_by_hand_has_no_id_and_no_labels_unless_it_says_so() {
+        assert_eq!((Ping.name(), Ping.command_id(), Ping.labels()), ("Ping", None, vec![]));
+    }
 }

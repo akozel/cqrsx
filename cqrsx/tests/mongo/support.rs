@@ -1,11 +1,8 @@
 //! The fixtures of the MongoDB suite: a ledger with its balance view, processors whose views and checkpoint
 //! live in MongoDB, commands over any journal, and the waits for the read side to catch up.
 use cqrsx::{
+    command::{executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits},
     cqrs::{
-        CqrsFramework,
-        aggregate::Aggregate,
-        command::{decide::Decide, executor::CommandExecutorCore, locks::LockLimits, wakeup::CommitWakeup},
-        event::{DomainEvent, EventEnvelope},
         projection::{
             View, ViewProjection,
             checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore},
@@ -16,9 +13,14 @@ use cqrsx::{
             },
             repository::ViewRepository,
         },
-        store::{persisted::PersistedEventStore, repository::PersistedEventRepository},
         testing::mem_event_repository::MemEventRepository,
     },
+    domain::{
+        aggregate::Aggregate,
+        command::Decide,
+        event::{DomainEvent, EventEnvelope},
+    },
+    journal::{persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     mongodb::{checkpoint_store::MongoCheckpointStore, view_repository::MongoViewRepository},
 };
 use mongodb::Database;

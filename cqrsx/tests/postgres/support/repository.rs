@@ -1,13 +1,13 @@
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 
-use cqrsx::cqrs::aggregate::Aggregate;
-use cqrsx::cqrs::command::decide::Decide;
-use cqrsx::cqrs::event::DomainEvent;
-use cqrsx::cqrs::event::EventEnvelope;
 use cqrsx::cqrs::projection::View;
-use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+use cqrsx::domain::aggregate::Aggregate;
+use cqrsx::domain::command::Decide;
+use cqrsx::domain::event::DomainEvent;
+use cqrsx::domain::event::EventEnvelope;
+use cqrsx::journal::serialized_event::SerializedEvent;
+use cqrsx::journal::snapshot::SerializedSnapshot;
 use serde::Deserialize;
 use serde::Serialize;
 use serde_json::Value;
@@ -130,9 +130,9 @@ pub(crate) fn serialized_snapshot(
 }
 
 pub(crate) mod customer {
-    use cqrsx::cqrs::aggregate::Aggregate;
-    use cqrsx::cqrs::command::decide::Decide;
-    use cqrsx::cqrs::event::DomainEvent;
+    use cqrsx::domain::aggregate::Aggregate;
+    use cqrsx::domain::command::Decide;
+    use cqrsx::domain::event::DomainEvent;
     use serde::Deserialize;
     use serde::Serialize;
 

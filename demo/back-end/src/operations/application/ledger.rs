@@ -2,7 +2,7 @@
 //! (`engine::EngineViews`); tests use in-memory doubles.
 use crate::shared::application::StorageError;
 use async_trait::async_trait;
-use cqrsx::cqrs::store::feed::Position;
+use cqrsx::journal::feed::Position;
 
 /// Size of the event ledger, for progress reporting.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]

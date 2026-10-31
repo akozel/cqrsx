@@ -5,7 +5,7 @@ use crate::{
     shared::{application::StorageError, domain::ConcertId},
 };
 use cqrsx::{
-    cqrs::{
+    domain::{
         aggregate::Aggregate,
         event::{DomainEvent, EventEnvelope},
     },

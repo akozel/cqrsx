@@ -23,7 +23,7 @@ pub enum ConcertCommand {
 #[cfg(test)]
 mod tests {
     use crate::concert::domain::test_support::{announce, book, cancel};
-    use cqrsx::cqrs::command::CommandInfo;
+    use cqrsx::domain::command::CommandInfo;
     use uuid::Uuid;
 
     /// What the activity feed names a command by, and the id a booking and a cancellation share with their command.

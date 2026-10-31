@@ -8,7 +8,7 @@
     clippy::unreachable,
     clippy::indexing_slicing
 )]
-use cqrsx::cqrs::store::persisted::PersistedEventStore;
+use cqrsx::journal::persisted::PersistedEventStore;
 use cqrsx::task::{attempt::TaskAttempt, queue::lease::TaskLease};
 use std::collections::HashMap;
 
@@ -23,12 +23,12 @@ use std::{
 };
 
 use chrono::{DateTime, Utc};
-use cqrsx::cqrs::aggregate::Aggregate;
-use cqrsx::cqrs::command::decide::Decide;
-use cqrsx::cqrs::event::DomainEvent;
-use cqrsx::cqrs::store::PersistenceError;
-use cqrsx::cqrs::store::repository::PersistedEventRepository;
-use cqrsx::cqrs::store::serialized_event::{EventFormat, SerializedEvent};
+use cqrsx::domain::aggregate::Aggregate;
+use cqrsx::domain::command::Decide;
+use cqrsx::domain::event::DomainEvent;
+use cqrsx::journal::PersistenceError;
+use cqrsx::journal::repository::PersistedEventRepository;
+use cqrsx::journal::serialized_event::{EventFormat, SerializedEvent};
 #[cfg(feature = "worker")]
 use cqrsx::task::runtime::worker_pool_config::TaskWorkerPoolConfig;
 use cqrsx::{
@@ -58,15 +58,15 @@ use sqlx::{PgPool, Row, postgres::PgPoolOptions};
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
-use cqrsx::cqrs::{
-    CqrsFramework,
-    event::EventEnvelope,
-    store::{
+use cqrsx::postgres::event_repository::PostgresEventRepository;
+use cqrsx::{
+    command::framework::CqrsFramework,
+    domain::event::EventEnvelope,
+    journal::{
         EventStore,
         snapshot::{SerializedSnapshot, SnapshotUpdate},
     },
 };
-use cqrsx::postgres::event_repository::PostgresEventRepository;
 use support::ledger::*;
 use support::repository::{finish_writers, wait_for_writers};
 use support::*;

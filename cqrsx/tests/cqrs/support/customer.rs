@@ -1,8 +1,8 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use cqrsx::cqrs::aggregate::Aggregate;
-use cqrsx::cqrs::command::decide::Decide;
-use cqrsx::cqrs::event::DomainEvent;
+use cqrsx::domain::aggregate::Aggregate;
+use cqrsx::domain::command::Decide;
+use cqrsx::domain::event::DomainEvent;
 use serde::Deserialize;
 use serde::Serialize;
 

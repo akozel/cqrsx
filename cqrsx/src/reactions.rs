@@ -14,13 +14,10 @@
 //! ```
 //! use cqrsx::{
 //!     Task,
-//!     cqrs::{
-//!         aggregate::Aggregate,
-//!         command::{CommandExecutor, decide::Decide},
-//!         event::DomainEvent,
-//!         reactions::{Decided, Reactions, ReactionsPlanner, Then},
-//!         testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
-//!     },
+//!     command::CommandExecutor,
+//!     cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+//!     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+//!     reactions::{Decided, Reactions, ReactionsPlanner, Then},
 //!     task::policy::Policies,
 //! };
 //! use serde::{Deserialize, Serialize};
@@ -103,10 +100,8 @@
 //! A new event without a branch does not compile:
 //!
 //! ```compile_fail
-//! use cqrsx::cqrs::{
-//!     aggregate::Aggregate,
-//!     command::decide::Decide,
-//!     event::DomainEvent,
+//! use cqrsx::{
+//!     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
 //!     reactions::{Decided, Reactions, Then},
 //! };
 //! use serde::{Deserialize, Serialize};
@@ -144,10 +139,8 @@
 //! }
 //! ```
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        command::planner::{Decision, TaskPlanError, TaskPlanner},
-    },
+    command::planner::{Decision, TaskPlanError, TaskPlanner},
+    domain::aggregate::Aggregate,
     task::{NewTask, TaskSchedule, TaskValidationError, format::TaskPayload, policy::Policies},
 };
 use std::{collections::HashMap, fmt, marker::PhantomData, time::Duration};
@@ -306,12 +299,10 @@ impl<A: Reactions> TaskPlanner<A> for ReactionsPlanner<A> {
 mod tests {
     use super::*;
     use crate::{
-        cqrs::{
-            command::{CommandExecutor, CommandGatewayError, causation::Causation, decide::Decide, planner::Planning},
-            event::DomainEvent,
-            store::repository::PersistedEventRepository,
-            testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
-        },
+        command::{CommandExecutor, CommandGatewayError, causation::Causation, planner::Planning},
+        cqrs::testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
+        domain::{command::Decide, event::DomainEvent},
+        journal::repository::PersistedEventRepository,
         task::{
             DEFAULT_MAX_ATTEMPTS,
             format::TaskFormat,

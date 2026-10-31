@@ -16,7 +16,7 @@ use crate::concert::{
     application::fan_ledger,
     domain::{Concert, ConcertEvent},
 };
-use cqrsx::cqrs::reactions::{Decided, Reactions, Then};
+use cqrsx::reactions::{Decided, Reactions, Then};
 
 /// A booked seat starts the delivery: the ticket goes to the fan's ledger. A cancelled booking starts the refund:
 /// the cancellation goes to the fan's ledger. An announcement starts nothing.
@@ -41,7 +41,7 @@ mod tests {
         fan::application::record_ticket::RecordTicketV1,
         shared::application::test_support::{formats, plan},
     };
-    use cqrsx::{cqrs::reactions::ReactionsPlanner, task::format::TaskFormat};
+    use cqrsx::{reactions::ReactionsPlanner, task::format::TaskFormat};
     use serde_json::json;
     use uuid::Uuid;
 
@@ -140,11 +140,9 @@ mod tests {
             domain::ConcertError,
         };
         use cqrsx::{
-            cqrs::{
-                command::{CommandGatewayError, metadata::CommandMetadata},
-                store::EventStore,
-                testing::{mem_store::MemStore, unavailable_store::UnavailableStore},
-            },
+            command::{CommandGatewayError, metadata::CommandMetadata},
+            cqrs::testing::{mem_store::MemStore, unavailable_store::UnavailableStore},
+            journal::EventStore,
             task::format::TaskFormat,
         };
         use serde_json::{Value, json};

@@ -1,14 +1,12 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        store::{
-            PersistenceError,
-            feed::{FeedEntry, Position},
-            serialized_event::SerializedEvent,
-            snapshot::{SerializedSnapshot, SnapshotUpdate},
-        },
+    domain::aggregate::Aggregate,
+    journal::{
+        PersistenceError,
+        feed::{FeedEntry, Position},
+        serialized_event::SerializedEvent,
+        snapshot::{SerializedSnapshot, SnapshotUpdate},
     },
     task::NewTask,
 };
@@ -16,7 +14,7 @@ use std::future::Future;
 
 /// The persistence behind a `PersistedEventStore`: the events and snapshots of every aggregate,
 /// written one commit per transaction, and the journal of an aggregate type read in commit order
-/// (`feed_after`, `head`, `aggregate_ids_after`; see `store::feed`).
+/// (`feed_after`, `head`, `aggregate_ids_after`; see `journal::feed`).
 pub trait PersistedEventRepository: Send + Sync {
     /// Returns all events for a single aggregate instance.
     fn events<A: Aggregate>(
@@ -41,7 +39,7 @@ pub trait PersistedEventRepository: Send + Sync {
     fn persist<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
+        snapshot_update: Option<crate::journal::snapshot::SnapshotUpdate>,
     ) -> impl Future<Output = Result<(), PersistenceError>> + Send;
 
     /// Commits the events, the snapshot and the tasks planned from them in one transaction. A repository

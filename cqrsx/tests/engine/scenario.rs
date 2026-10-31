@@ -3,11 +3,9 @@
 //! halls; the commands, the tasks, the view and the chain's causation, written with the derive macros.
 use crate::modules::*;
 use cqrsx::{
-    cqrs::{
-        command::{CommandGatewayError, causation::CORRELATION_ID},
-        store::repository::PersistedEventRepository,
-    },
+    command::{CommandGatewayError, causation::CORRELATION_ID},
     engine::Cqrs,
+    journal::repository::PersistedEventRepository,
     task::testing::mem_task_queue::TaskStatus,
 };
 use std::{collections::BTreeMap, sync::Arc};

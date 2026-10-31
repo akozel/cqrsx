@@ -3,13 +3,15 @@ use crate::{
     mongo_container::Mongo,
     support::{Balance, NAME, history, views},
 };
-use cqrsx::cqrs::{
-    event_handler::EventHandler,
-    projection::{
-        ViewProjection,
-        repository::{StoredView, ViewContext, ViewRepository},
+use cqrsx::{
+    cqrs::{
+        event_handler::EventHandler,
+        projection::{
+            ViewProjection,
+            repository::{StoredView, ViewContext, ViewRepository},
+        },
     },
-    store::PersistenceError,
+    journal::PersistenceError,
 };
 use mongodb::bson::{Bson, Document, doc};
 use std::sync::Arc;

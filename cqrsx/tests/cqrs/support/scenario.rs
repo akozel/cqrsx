@@ -5,9 +5,9 @@ use std::collections::HashMap;
 use serde::Deserialize;
 use serde::Serialize;
 
-use cqrsx::cqrs::aggregate::Aggregate;
-use cqrsx::cqrs::command::decide::Decide;
-use cqrsx::cqrs::event::DomainEvent;
+use cqrsx::domain::aggregate::Aggregate;
+use cqrsx::domain::command::Decide;
+use cqrsx::domain::event::DomainEvent;
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct TestAggregate {

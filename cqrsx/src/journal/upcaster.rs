@@ -1,6 +1,6 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::store::serialized_event::{EventFormat, SerializedEvent};
+use crate::journal::serialized_event::{EventFormat, SerializedEvent};
 use serde_json::Value;
 use std::{
     fmt::{self, Debug, Display, Formatter},
@@ -72,10 +72,10 @@ impl From<ParseIntError> for NumericVersionError {
 /// version configured on the upcaster.
 ///
 /// ```
-/// use cqrsx::cqrs::store::upcaster::EventUpcaster;
-/// use cqrsx::cqrs::store::upcaster::NumericVersionUpcaster;
+/// use cqrsx::journal::upcaster::EventUpcaster;
+/// use cqrsx::journal::upcaster::NumericVersionUpcaster;
 /// use serde_json::Value;
-/// use cqrsx::cqrs::store::serialized_event::SerializedEvent;
+/// use cqrsx::journal::serialized_event::SerializedEvent;
 ///
 /// let upcast_function = Box::new(|payload: Value| match payload {
 ///             Value::Object(mut object_map) => {
@@ -185,15 +185,15 @@ impl EventUpcaster for NumericVersionUpcaster {
 mod test {
     use std::str::FromStr;
 
-    use crate::cqrs::store::serialized_event::{EventFormat, SerializedEvent};
+    use crate::journal::serialized_event::{EventFormat, SerializedEvent};
     use serde_json::Value;
     use serde_json::json;
 
-    use crate::cqrs::store::upcaster::EventPayloadTransform;
-    use crate::cqrs::store::upcaster::EventUpcaster;
-    use crate::cqrs::store::upcaster::NumericVersion;
-    use crate::cqrs::store::upcaster::NumericVersionError;
-    use crate::cqrs::store::upcaster::NumericVersionUpcaster;
+    use crate::journal::upcaster::EventPayloadTransform;
+    use crate::journal::upcaster::EventUpcaster;
+    use crate::journal::upcaster::NumericVersion;
+    use crate::journal::upcaster::NumericVersionError;
+    use crate::journal::upcaster::NumericVersionUpcaster;
 
     fn semantic_version(major_version: u32, minor_version: u32, patch: u32) -> NumericVersion {
         NumericVersion {

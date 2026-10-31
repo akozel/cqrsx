@@ -6,6 +6,14 @@ use crate::engine::module::ObservedProcessor;
 use crate::engine::mongodb::MongoDb;
 #[cfg(feature = "postgres")]
 use crate::engine::postgres::{Postgres, PostgresPools};
+#[cfg(test)]
+use crate::{
+    command::observer::CommandObserver,
+    cqrs::projection::processor::observer::ProjectionObserver,
+    domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
+    engine::Commands,
+    task::dependencies::MissingDependency,
+};
 use crate::{
     cqrs::projection::runtime::ProjectionRuntime,
     engine::{
@@ -24,17 +32,6 @@ use crate::{
         handlers::TaskHandlers,
         policy::{Policies, PolicyError, TaskPolicy},
     },
-};
-#[cfg(test)]
-use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        command::{CommandInfo, observer::CommandObserver},
-        projection::processor::observer::ProjectionObserver,
-        rejection::Rejection,
-    },
-    engine::Commands,
-    task::dependencies::MissingDependency,
 };
 #[cfg(test)]
 use std::any::TypeId;
@@ -521,19 +518,17 @@ impl Registrations {
 mod tests {
     use super::*;
     use crate::{
-        cqrs::command::observer::{AnyCommandObserver, CommandReport},
-        cqrs::testing::mem_view_repository::MemViewRepository,
-        cqrs::{
-            command::{
-                locks::LockLimits,
-                observer::{AnyCommandReport, AnyOutcome},
-                retry::AggregateConflictRetryPolicy,
-            },
-            projection::{
-                View,
-                processor::config::{DeliveryLimits, ProcessorConfig},
-            },
+        command::observer::{AnyCommandObserver, CommandReport},
+        command::{
+            locks::LockLimits,
+            observer::{AnyCommandReport, AnyOutcome},
+            retry::AggregateConflictRetryPolicy,
         },
+        cqrs::projection::{
+            View,
+            processor::config::{DeliveryLimits, ProcessorConfig},
+        },
+        cqrs::testing::mem_view_repository::MemViewRepository,
         engine::test_support::*,
         task::{
             dependencies::DependencyId, dispatcher::TaskDispatcherError, format::TaskFormat, policy::Retry, result::TaskResult,
@@ -919,7 +914,7 @@ mod tests {
         let again = ui.execute::<Wallet>(&"fox".into(), Record { seat: "A1".into() }).await;
         assert_eq!(
             again.unwrap_err(),
-            crate::cqrs::command::CommandGatewayError::Domain(AlreadyRecorded)
+            crate::command::CommandGatewayError::Domain(AlreadyRecorded)
         );
         assert_eq!(
             *log.0.lock().unwrap(),
@@ -950,7 +945,7 @@ mod tests {
         assert_eq!(registrations.take_rules::<Show>(), Some(()));
         assert_eq!(registrations.take_rules::<Show>(), None, "once");
         assert_eq!(
-            registrations.take_rules::<crate::cqrs::aggregate::tests::Ledger>(),
+            registrations.take_rules::<crate::domain::aggregate::tests::Ledger>(),
             None,
             "not an aggregate type of the modules"
         );
@@ -967,13 +962,13 @@ mod tests {
             aggregate_id: &"s-1".to_owned(),
             command: &book("A1", "fox"),
             metadata: &metadata,
-            outcome: crate::cqrs::command::observer::Outcome::Accepted { tasks: &[] },
+            outcome: crate::command::observer::Outcome::Accepted { tasks: &[] },
         });
         observer.command(&CommandReport {
             aggregate_id: &"s-1".to_owned(),
             command: &book("A2", "fox"),
             metadata: &metadata,
-            outcome: crate::cqrs::command::observer::Outcome::Unavailable,
+            outcome: crate::command::observer::Outcome::Unavailable,
         });
         assert_eq!(
             *log.0.lock().unwrap(),

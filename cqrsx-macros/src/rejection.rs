@@ -5,7 +5,7 @@ use proc_macro2::TokenStream;
 use quote::quote;
 use syn::{Data, DeriveInput, Error, Fields, Ident, LitStr, ext::IdentExt};
 
-/// `impl ::cqrsx::cqrs::rejection::Rejection` for an enum of rejections: the code of a variant is its name in snake
+/// `impl ::cqrsx::domain::rejection::Rejection` for an enum of rejections: the code of a variant is its name in snake
 /// case unless `#[rejection(code = "…")]` gives it, its params are its named fields as a JSON object (a unit variant
 /// has `{}`).
 pub(crate) fn expand_rejection(input: &DeriveInput) -> syn::Result<TokenStream> {
@@ -57,7 +57,7 @@ pub(crate) fn expand_rejection(input: &DeriveInput) -> syn::Result<TokenStream> 
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics ::cqrsx::cqrs::rejection::Rejection for #ident #type_generics #where_clause {
+        impl #impl_generics ::cqrsx::domain::rejection::Rejection for #ident #type_generics #where_clause {
             fn code(&self) -> &'static str {
                 match *self { #(#code_arms)* }
             }
@@ -95,7 +95,7 @@ mod tests {
         .unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl ::cqrsx::cqrs::rejection::Rejection for ConcertError {
+            impl ::cqrsx::domain::rejection::Rejection for ConcertError {
                 fn code(&self) -> &'static str {
                     match *self {
                         Self::ConcertNotFound { .. } => "concert_not_found",
@@ -121,7 +121,7 @@ mod tests {
         let expanded = expand_rejection(&parse_quote! { enum Refused<T: Clone> where T: Send { Late { by: T } } }).unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl<T: Clone> ::cqrsx::cqrs::rejection::Rejection for Refused<T> where T: Send {
+            impl<T: Clone> ::cqrsx::domain::rejection::Rejection for Refused<T> where T: Send {
                 fn code(&self) -> &'static str {
                     match *self { Self::Late { .. } => "late", }
                 }
@@ -168,7 +168,7 @@ mod tests {
         let expanded = expand_rejection(&parse_quote! { enum Never {} }).unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl ::cqrsx::cqrs::rejection::Rejection for Never {
+            impl ::cqrsx::domain::rejection::Rejection for Never {
                 fn code(&self) -> &'static str { match *self {} }
                 fn params(&self) -> ::cqrsx::__private::serde_json::Value { match *self {} }
             }

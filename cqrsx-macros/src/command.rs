@@ -5,7 +5,7 @@ use proc_macro2::TokenStream;
 use quote::{format_ident, quote, quote_spanned};
 use syn::{Data, DeriveInput, Error, Fields, Ident, LitStr, Type, ext::IdentExt, parse_quote, spanned::Spanned};
 
-/// `impl ::cqrsx::cqrs::command::CommandInfo` for a struct: the type's name, the field `#[command_id]` (at most one) and
+/// `impl ::cqrsx::domain::command::CommandInfo` for a struct: the type's name, the field `#[command_id]` (at most one) and
 /// the fields `#[label]`, in field order, each as its name and its `Display`.
 pub(crate) fn expand_command(input: &DeriveInput) -> syn::Result<TokenStream> {
     let Data::Struct(data) = &input.data else {
@@ -45,29 +45,29 @@ pub(crate) fn expand_command(input: &DeriveInput) -> syn::Result<TokenStream> {
     };
     let labels = labels
         .iter()
-        .map(|(key, field)| quote! { ::cqrsx::cqrs::command::Label { name: #key, value: ::std::string::ToString::to_string(&self.#field) } });
+        .map(|(key, field)| quote! { ::cqrsx::domain::command::Label { name: #key, value: ::std::string::ToString::to_string(&self.#field) } });
     let ident = &input.ident;
     let name = LitStr::new(&ident.unraw().to_string(), ident.span());
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics ::cqrsx::cqrs::command::CommandInfo for #ident #type_generics #where_clause {
+        impl #impl_generics ::cqrsx::domain::command::CommandInfo for #ident #type_generics #where_clause {
             fn name(&self) -> &'static str {
                 #name
             }
             fn command_id(&self) -> ::core::option::Option<::cqrsx::__private::Uuid> {
                 #command_id
             }
-            fn labels(&self) -> ::std::vec::Vec<::cqrsx::cqrs::command::Label> {
+            fn labels(&self) -> ::std::vec::Vec<::cqrsx::domain::command::Label> {
                 ::std::vec![#(#labels),*]
             }
         }
     })
 }
 
-/// For an enum whose every variant carries one command type: `impl<A> ::cqrsx::cqrs::command::decide::Decide<A>` where
+/// For an enum whose every variant carries one command type: `impl<A> ::cqrsx::domain::command::Decide<A>` where
 /// every variant's type decides `A` (a `match` that hands each variant to its type's `decide`), and
-/// `impl ::cqrsx::cqrs::command::CommandInfo` by the same delegation, where every variant's type has it.
+/// `impl ::cqrsx::domain::command::CommandInfo` by the same delegation, where every variant's type has it.
 pub(crate) fn expand_commands(input: &DeriveInput) -> syn::Result<TokenStream> {
     let Data::Enum(data) = &input.data else {
         return Err(Error::new_spanned(
@@ -94,15 +94,15 @@ pub(crate) fn expand_commands(input: &DeriveInput) -> syn::Result<TokenStream> {
     let mut generics = input.generics.clone();
     generics.params.push(parse_quote!(#aggregate));
     let predicates = &mut generics.make_where_clause().predicates;
-    predicates.push(parse_quote!(#aggregate: ::cqrsx::cqrs::aggregate::Aggregate));
+    predicates.push(parse_quote!(#aggregate: ::cqrsx::domain::aggregate::Aggregate));
     for (_, command) in &variants {
-        predicates.push(parse_quote!(#command: ::cqrsx::cqrs::command::decide::Decide<#aggregate>));
+        predicates.push(parse_quote!(#command: ::cqrsx::domain::command::Decide<#aggregate>));
     }
     let (impl_generics, _, where_clause) = generics.split_for_impl();
     let mut info = input.generics.clone();
     let predicates = &mut info.make_where_clause().predicates;
     for (_, command) in &variants {
-        predicates.push(parse_quote!(#command: ::cqrsx::cqrs::command::CommandInfo));
+        predicates.push(parse_quote!(#command: ::cqrsx::domain::command::CommandInfo));
     }
     let (info_generics, _, info_where) = info.split_for_impl();
     let (_, type_generics, _) = input.generics.split_for_impl();
@@ -114,7 +114,7 @@ pub(crate) fn expand_commands(input: &DeriveInput) -> syn::Result<TokenStream> {
     } else {
         let arms = variants.iter().map(|(variant, _)| {
             quote! {
-                Self::#variant(command) => ::cqrsx::cqrs::command::decide::Decide::<#aggregate>::decide(command, state, rules),
+                Self::#variant(command) => ::cqrsx::domain::command::Decide::<#aggregate>::decide(command, state, rules),
             }
         });
         quote! { match self { #(#arms)* } }
@@ -122,34 +122,34 @@ pub(crate) fn expand_commands(input: &DeriveInput) -> syn::Result<TokenStream> {
     let delegate = |method: &str| {
         let method = format_ident!("{method}");
         let arms = variants.iter().map(move |(variant, _)| {
-            quote! { Self::#variant(ref command) => ::cqrsx::cqrs::command::CommandInfo::#method(command), }
+            quote! { Self::#variant(ref command) => ::cqrsx::domain::command::CommandInfo::#method(command), }
         });
         quote! { match *self { #(#arms)* } }
     };
     let (name, command_id, labels) = (delegate("name"), delegate("command_id"), delegate("labels"));
     Ok(quote! {
         #[automatically_derived]
-        impl #impl_generics ::cqrsx::cqrs::command::decide::Decide<#aggregate> for #ident #type_generics #where_clause {
+        impl #impl_generics ::cqrsx::domain::command::Decide<#aggregate> for #ident #type_generics #where_clause {
             fn decide(
                 self,
                 state: &#aggregate,
-                rules: &<#aggregate as ::cqrsx::cqrs::aggregate::Aggregate>::Rules,
+                rules: &<#aggregate as ::cqrsx::domain::aggregate::Aggregate>::Rules,
             ) -> ::core::result::Result<
-                <#aggregate as ::cqrsx::cqrs::aggregate::Aggregate>::Event,
-                <#aggregate as ::cqrsx::cqrs::aggregate::Aggregate>::Error,
+                <#aggregate as ::cqrsx::domain::aggregate::Aggregate>::Event,
+                <#aggregate as ::cqrsx::domain::aggregate::Aggregate>::Error,
             > {
                 #decide
             }
         }
         #[automatically_derived]
-        impl #info_generics ::cqrsx::cqrs::command::CommandInfo for #ident #type_generics #info_where {
+        impl #info_generics ::cqrsx::domain::command::CommandInfo for #ident #type_generics #info_where {
             fn name(&self) -> &'static str {
                 #name
             }
             fn command_id(&self) -> ::core::option::Option<::cqrsx::__private::Uuid> {
                 #command_id
             }
-            fn labels(&self) -> ::std::vec::Vec<::cqrsx::cqrs::command::Label> {
+            fn labels(&self) -> ::std::vec::Vec<::cqrsx::domain::command::Label> {
                 #labels
             }
         }
@@ -182,17 +182,17 @@ mod tests {
         .unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl ::cqrsx::cqrs::command::CommandInfo for CancelBooking {
+            impl ::cqrsx::domain::command::CommandInfo for CancelBooking {
                 fn name(&self) -> &'static str {
                     "CancelBooking"
                 }
                 fn command_id(&self) -> ::core::option::Option<::cqrsx::__private::Uuid> {
                     ::core::option::Option::Some(self.cancellation_id)
                 }
-                fn labels(&self) -> ::std::vec::Vec<::cqrsx::cqrs::command::Label> {
+                fn labels(&self) -> ::std::vec::Vec<::cqrsx::domain::command::Label> {
                     ::std::vec![
-                        ::cqrsx::cqrs::command::Label { name: "fan_id", value: ::std::string::ToString::to_string(&self.fan_id) },
-                        ::cqrsx::cqrs::command::Label { name: "type", value: ::std::string::ToString::to_string(&self.r#type) }
+                        ::cqrsx::domain::command::Label { name: "fan_id", value: ::std::string::ToString::to_string(&self.fan_id) },
+                        ::cqrsx::domain::command::Label { name: "type", value: ::std::string::ToString::to_string(&self.r#type) }
                     ]
                 }
             }
@@ -208,7 +208,7 @@ mod tests {
         assert!(expanded.contains(":: std :: vec ! []"), "{expanded}");
         let generic = expand_command(&parse_quote! { struct Wrap<'a, T: Clone>(&'a T) where T: Send; }).unwrap();
         let expected = quote! {
-            impl<'a, T: Clone> ::cqrsx::cqrs::command::CommandInfo for Wrap<'a, T> where T: Send
+            impl<'a, T: Clone> ::cqrsx::domain::command::CommandInfo for Wrap<'a, T> where T: Send
         };
         assert!(generic.to_string().contains(&expected.to_string()), "{generic}");
     }
@@ -261,48 +261,48 @@ mod tests {
         .unwrap();
         let expected = quote! {
             #[automatically_derived]
-            impl<__A> ::cqrsx::cqrs::command::decide::Decide<__A> for ConcertCommand
+            impl<__A> ::cqrsx::domain::command::Decide<__A> for ConcertCommand
             where
-                __A: ::cqrsx::cqrs::aggregate::Aggregate,
-                BookSeat: ::cqrsx::cqrs::command::decide::Decide<__A>,
-                commands::CancelBooking: ::cqrsx::cqrs::command::decide::Decide<__A>
+                __A: ::cqrsx::domain::aggregate::Aggregate,
+                BookSeat: ::cqrsx::domain::command::Decide<__A>,
+                commands::CancelBooking: ::cqrsx::domain::command::Decide<__A>
             {
                 fn decide(
                     self,
                     state: &__A,
-                    rules: &<__A as ::cqrsx::cqrs::aggregate::Aggregate>::Rules,
+                    rules: &<__A as ::cqrsx::domain::aggregate::Aggregate>::Rules,
                 ) -> ::core::result::Result<
-                    <__A as ::cqrsx::cqrs::aggregate::Aggregate>::Event,
-                    <__A as ::cqrsx::cqrs::aggregate::Aggregate>::Error,
+                    <__A as ::cqrsx::domain::aggregate::Aggregate>::Event,
+                    <__A as ::cqrsx::domain::aggregate::Aggregate>::Error,
                 > {
                     match self {
-                        Self::BookSeat(command) => ::cqrsx::cqrs::command::decide::Decide::<__A>::decide(command, state, rules),
-                        Self::CancelBooking(command) => ::cqrsx::cqrs::command::decide::Decide::<__A>::decide(command, state, rules),
+                        Self::BookSeat(command) => ::cqrsx::domain::command::Decide::<__A>::decide(command, state, rules),
+                        Self::CancelBooking(command) => ::cqrsx::domain::command::Decide::<__A>::decide(command, state, rules),
                     }
                 }
             }
             #[automatically_derived]
-            impl ::cqrsx::cqrs::command::CommandInfo for ConcertCommand
+            impl ::cqrsx::domain::command::CommandInfo for ConcertCommand
             where
-                BookSeat: ::cqrsx::cqrs::command::CommandInfo,
-                commands::CancelBooking: ::cqrsx::cqrs::command::CommandInfo
+                BookSeat: ::cqrsx::domain::command::CommandInfo,
+                commands::CancelBooking: ::cqrsx::domain::command::CommandInfo
             {
                 fn name(&self) -> &'static str {
                     match *self {
-                        Self::BookSeat(ref command) => ::cqrsx::cqrs::command::CommandInfo::name(command),
-                        Self::CancelBooking(ref command) => ::cqrsx::cqrs::command::CommandInfo::name(command),
+                        Self::BookSeat(ref command) => ::cqrsx::domain::command::CommandInfo::name(command),
+                        Self::CancelBooking(ref command) => ::cqrsx::domain::command::CommandInfo::name(command),
                     }
                 }
                 fn command_id(&self) -> ::core::option::Option<::cqrsx::__private::Uuid> {
                     match *self {
-                        Self::BookSeat(ref command) => ::cqrsx::cqrs::command::CommandInfo::command_id(command),
-                        Self::CancelBooking(ref command) => ::cqrsx::cqrs::command::CommandInfo::command_id(command),
+                        Self::BookSeat(ref command) => ::cqrsx::domain::command::CommandInfo::command_id(command),
+                        Self::CancelBooking(ref command) => ::cqrsx::domain::command::CommandInfo::command_id(command),
                     }
                 }
-                fn labels(&self) -> ::std::vec::Vec<::cqrsx::cqrs::command::Label> {
+                fn labels(&self) -> ::std::vec::Vec<::cqrsx::domain::command::Label> {
                     match *self {
-                        Self::BookSeat(ref command) => ::cqrsx::cqrs::command::CommandInfo::labels(command),
-                        Self::CancelBooking(ref command) => ::cqrsx::cqrs::command::CommandInfo::labels(command),
+                        Self::BookSeat(ref command) => ::cqrsx::domain::command::CommandInfo::labels(command),
+                        Self::CancelBooking(ref command) => ::cqrsx::domain::command::CommandInfo::labels(command),
                     }
                 }
             }
@@ -318,18 +318,18 @@ mod tests {
         .unwrap()
         .to_string();
         let decide = quote! {
-            impl<'a, T: Clone, __A> ::cqrsx::cqrs::command::decide::Decide<__A> for Wrapped<'a, T>
+            impl<'a, T: Clone, __A> ::cqrsx::domain::command::Decide<__A> for Wrapped<'a, T>
             where
                 T: Send,
-                __A: ::cqrsx::cqrs::aggregate::Aggregate,
-                Note<'a, T>: ::cqrsx::cqrs::command::decide::Decide<__A>
+                __A: ::cqrsx::domain::aggregate::Aggregate,
+                Note<'a, T>: ::cqrsx::domain::command::Decide<__A>
         };
         assert!(expanded.contains(&decide.to_string()), "{expanded}");
         let info = quote! {
-            impl<'a, T: Clone> ::cqrsx::cqrs::command::CommandInfo for Wrapped<'a, T>
+            impl<'a, T: Clone> ::cqrsx::domain::command::CommandInfo for Wrapped<'a, T>
             where
                 T: Send,
-                Note<'a, T>: ::cqrsx::cqrs::command::CommandInfo
+                Note<'a, T>: ::cqrsx::domain::command::CommandInfo
         };
         assert!(expanded.contains(&info.to_string()), "{expanded}");
     }

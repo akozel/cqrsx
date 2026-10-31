@@ -1,13 +1,11 @@
 //! An in-memory `CheckpointStore` with the rules of the PostgreSQL one: for tests of a projection
 //! processor without a database.
 use crate::{
-    cqrs::{
-        projection::checkpoint::{
-            CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest,
-            RebuildRequests, RebuildState,
-        },
-        store::feed::Position,
+    cqrs::projection::checkpoint::{
+        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest, RebuildRequests,
+        RebuildState,
     },
+    journal::feed::Position,
     locking::lock,
 };
 use chrono::{DateTime, TimeDelta, Utc};

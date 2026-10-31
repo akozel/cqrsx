@@ -7,17 +7,15 @@ use crate::engine::mongodb::MongoSettings;
 #[cfg(feature = "postgres")]
 use crate::engine::postgres::PostgresSettings;
 use crate::{
-    cqrs::{
-        command::{
-            locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits, LockLimitsError},
-            retry::AggregateConflictRetryPolicy,
-        },
-        projection::processor::config::{
-            DEFAULT_DELIVERY_CAPACITY, DEFAULT_DELIVERY_MAX_BATCH, DEFAULT_PROCESSOR_CONCURRENCY, DEFAULT_PROCESSOR_LEASE,
-            DEFAULT_PROCESSOR_PAGE_SIZE, DEFAULT_PROCESSOR_POLL_INTERVAL, DEFAULT_PROCESSOR_REBUILD_PAGE,
-            DEFAULT_PROCESSOR_RETRY_BASE, DEFAULT_PROCESSOR_RETRY_MAX, DEFAULT_PROCESSOR_SETTLE, DeliveryLimits,
-            DeliveryLimitsError, ProcessorConfig, ProcessorConfigError,
-        },
+    command::{
+        locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits, LockLimitsError},
+        retry::AggregateConflictRetryPolicy,
+    },
+    cqrs::projection::processor::config::{
+        DEFAULT_DELIVERY_CAPACITY, DEFAULT_DELIVERY_MAX_BATCH, DEFAULT_PROCESSOR_CONCURRENCY, DEFAULT_PROCESSOR_LEASE,
+        DEFAULT_PROCESSOR_PAGE_SIZE, DEFAULT_PROCESSOR_POLL_INTERVAL, DEFAULT_PROCESSOR_REBUILD_PAGE,
+        DEFAULT_PROCESSOR_RETRY_BASE, DEFAULT_PROCESSOR_RETRY_MAX, DEFAULT_PROCESSOR_SETTLE, DeliveryLimits, DeliveryLimitsError,
+        ProcessorConfig, ProcessorConfigError,
     },
     task::{
         queue::{lease::LEASE_SAFETY_MARGIN, storage_config::TaskStorageConfig},

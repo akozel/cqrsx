@@ -87,7 +87,7 @@ fn find_sqlx<'e>(source: &'e (dyn std::error::Error + 'static)) -> Option<&'e sq
 }
 
 /// A command refused before it ran: no lock for its aggregate. Expected under overload, hence `warn`.
-pub(crate) fn log_lock_refused(aggregate_type: &str, refused: crate::cqrs::command::locks::LockRefused) {
+pub(crate) fn log_lock_refused(aggregate_type: &str, refused: crate::command::locks::LockRefused) {
     tracing::warn!(
         component = "command",
         operation = "lock",
@@ -278,7 +278,7 @@ pub(crate) mod test_support {
         tracing::dispatcher::with_default(&dispatch, || {
             // Prime shared callsites that parallel tests may register without a subscriber.
             super::log_command_failure("prime", "unexpected", &io::Error::other("prime"));
-            super::log_lock_refused("prime", crate::cqrs::command::locks::LockRefused::TimedOut);
+            super::log_lock_refused("prime", crate::command::locks::LockRefused::TimedOut);
             super::log_missing_executor("prime");
             super::log_projection_batch_failure("prime", "prime", "prime", 1, &io::Error::other("prime"));
             super::log_projection_batch_panic("prime", "prime", "prime", 1);
@@ -506,7 +506,7 @@ mod tests {
     #[cfg(feature = "postgres")]
     #[tokio::test]
     async fn projection_batch_diagnostics_log_one_safe_event_per_batch_with_the_storage_category() {
-        let source = crate::cqrs::store::PersistenceError::UnknownError(Box::new(sqlx::Error::PoolTimedOut));
+        let source = crate::journal::PersistenceError::UnknownError(Box::new(sqlx::Error::PoolTimedOut));
         let (_, log) = test_support::capture(async {
             log_projection_batch_failure("concert_halls", "private_type\nmail@example.com", "deliver", 3, &source);
             log_projection_batch_failure(

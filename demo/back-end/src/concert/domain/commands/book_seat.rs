@@ -3,7 +3,7 @@ use crate::{
     concert::domain::{Concert, ConcertError, ConcertEvent, ConcertRules, events::SeatBooked},
     shared::domain::{FanId, venue::VENUE},
 };
-use cqrsx::{Command, cqrs::command::decide::Decide};
+use cqrsx::{Command, domain::command::Decide};
 use uuid::Uuid;
 
 #[derive(Debug, Clone, PartialEq, Eq, Command)]

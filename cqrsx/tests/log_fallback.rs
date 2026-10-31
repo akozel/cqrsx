@@ -17,16 +17,16 @@ use std::{
     time::Duration,
 };
 
-use cqrsx::cqrs::AggregateError;
-use cqrsx::cqrs::CqrsFramework;
-use cqrsx::cqrs::aggregate::Aggregate;
-use cqrsx::cqrs::command::decide::Decide;
-use cqrsx::cqrs::event::DomainEvent;
-use cqrsx::cqrs::event::EventEnvelope;
-use cqrsx::cqrs::store::AggregateContext;
-use cqrsx::cqrs::store::EventStore;
+use cqrsx::command::AggregateError;
+use cqrsx::command::framework::CqrsFramework;
+use cqrsx::domain::aggregate::Aggregate;
+use cqrsx::domain::command::Decide;
+use cqrsx::domain::event::DomainEvent;
+use cqrsx::domain::event::EventEnvelope;
+use cqrsx::journal::AggregateContext;
+use cqrsx::journal::EventStore;
 use cqrsx::{
-    cqrs::command::{
+    command::{
         CommandExecutor, CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits,
         retry::AggregateConflictRetryPolicy,
     },

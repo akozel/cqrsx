@@ -316,10 +316,12 @@ impl TaskQueue for MemTaskQueue {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::{
-        aggregate::tests::{Delta, Ledger},
-        event::EventEnvelope,
-        store::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+    use crate::{
+        domain::{
+            aggregate::tests::{Delta, Ledger},
+            event::EventEnvelope,
+        },
+        journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
     };
     use serde_json::json;
     use std::{collections::HashMap, num::NonZeroU16};

@@ -2,17 +2,14 @@
 //! recorded tickets are mailed through a dependency, with a view of the halls; written with the derive macros.
 use cqrsx::{
     Command, Event, Events, Rejection, Task,
-    cqrs::{
-        aggregate::Aggregate,
-        command::{CommandGatewayError, decide::Decide},
-        event::EventEnvelope,
-        projection::View,
-        reactions::{Decided, Reactions, Then},
-    },
+    command::CommandGatewayError,
+    cqrs::projection::View,
+    domain::{aggregate::Aggregate, command::Decide, event::EventEnvelope},
     engine::{
         module::Module,
         setup::{Setup, SetupError},
     },
+    reactions::{Decided, Reactions, Then},
     task::{
         context::TaskContext,
         policy::{PolicyName, Retry},

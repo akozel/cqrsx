@@ -18,13 +18,11 @@ use cqrsx::engine::{
 use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
 use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat, result::TaskResult};
 use cqrsx::{
+    command::{
+        CommandExecutor, CommandGatewayError, CommitReport, locks::LockLimits, metadata::CommandMetadata,
+        retry::AggregateConflictRetryPolicy,
+    },
     cqrs::{
-        CommitReport,
-        aggregate::Aggregate,
-        command::{
-            CommandExecutor, CommandGatewayError, locks::LockLimits, metadata::CommandMetadata,
-            retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup,
-        },
         projection::{
             View, ViewProjection,
             checkpoint::{CheckpointKey, CheckpointStore},
@@ -34,15 +32,16 @@ use cqrsx::{
             },
             repository::ViewRepository,
         },
-        reactions::ReactionsPlanner,
-        store::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
         testing::{mem_checkpoint_store::MemCheckpointStore, mem_view_repository::MemViewRepository},
     },
+    domain::aggregate::Aggregate,
+    journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     postgres::{
         EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA,
         command::{PostgresCommandConfig, PostgresCommandExecutor},
         event_repository::PostgresEventRepository,
     },
+    reactions::ReactionsPlanner,
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,

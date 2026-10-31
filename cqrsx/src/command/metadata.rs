@@ -1,6 +1,6 @@
 //! The metadata of a command: who caused it ([`Causation`]) and when it was issued, stored with every event it
 //! commits.
-use crate::{cqrs::command::causation::Causation, task::attempt::TaskAttempt};
+use crate::{command::causation::Causation, task::attempt::TaskAttempt};
 use chrono::{SecondsFormat, Utc};
 use std::collections::HashMap;
 
@@ -11,11 +11,11 @@ pub const RECORDED_AT: &str = "recorded_at";
 /// Who issued a command, how it relates to earlier work ([`Causation`]: for a root the three ids are equal; a command
 /// a task issues inherits the task's correlation id and points its causation id at the task), plus when
 /// ([`RECORDED_AT`]). Its map ([`to_map`](Self::to_map)) travels through
-/// [`execute_with_metadata`](crate::cqrs::command::CommandExecutor::execute_with_metadata) and is stored with every
+/// [`execute_with_metadata`](crate::command::CommandExecutor::execute_with_metadata) and is stored with every
 /// event the command commits; the core stamps the causation on the tasks it plans.
 ///
 /// ```
-/// use cqrsx::cqrs::command::metadata::{CommandMetadata, RECORDED_AT};
+/// use cqrsx::command::metadata::{CommandMetadata, RECORDED_AT};
 ///
 /// let metadata = CommandMetadata::root("ui");
 /// let map = metadata.to_map();

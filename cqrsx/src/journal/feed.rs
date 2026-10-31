@@ -6,8 +6,8 @@
 //! by a command that loaded event `n`, after its commit; between aggregates it is the order in which
 //! the transactions got their ids, the same at every read. A reader remembers the greatest position
 //! it applied and asks for what comes after it
-//! ([`PersistedEventRepository::feed_after`](crate::cqrs::store::repository::PersistedEventRepository::feed_after)).
-use crate::cqrs::store::serialized_event::SerializedEvent;
+//! ([`PersistedEventRepository::feed_after`](crate::journal::repository::PersistedEventRepository::feed_after)).
+use crate::journal::serialized_event::SerializedEvent;
 use std::{fmt, num::ParseIntError, str::FromStr};
 
 /// A position in the journal of one aggregate type; [`Position::START`] lies before every event.

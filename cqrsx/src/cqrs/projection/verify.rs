@@ -10,7 +10,7 @@
 //!
 //! ```
 //! # mod example {
-//! # use cqrsx::cqrs::{aggregate::Aggregate, command::decide::Decide, event::{DomainEvent, EventEnvelope}, projection::View};
+//! # use cqrsx::{domain::{aggregate::Aggregate, command::Decide, event::{DomainEvent, EventEnvelope}}, cqrs::projection::View};
 //! # use serde::{Deserialize, Serialize};
 //! # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 //! # pub struct Counted;
@@ -43,11 +43,13 @@
 //! # }
 //! # }
 //! # use example::{Counted, Counter, Total};
-//! # use cqrsx::cqrs::event::EventEnvelope;
-//! use cqrsx::cqrs::{
-//!     projection::verify::verify,
-//!     store::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
-//!     testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
+//! # use cqrsx::domain::event::EventEnvelope;
+//! use cqrsx::{
+//!     cqrs::{
+//!         projection::verify::verify,
+//!         testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
+//!     },
+//!     journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
 //! };
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
@@ -64,14 +66,13 @@
 //! # Ok(()) }
 //! # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(example()).unwrap();
 //! ```
-use crate::cqrs::{
-    aggregate::Aggregate,
-    event::EventEnvelope,
-    projection::{
+use crate::{
+    cqrs::projection::{
         View,
         repository::{StoredView, ViewRepository},
     },
-    store::{PersistenceError, repository::PersistedEventRepository},
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{PersistenceError, repository::PersistedEventRepository},
 };
 use serde::Serialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -199,12 +200,13 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::{
-        command::decide::Decide,
-        event::DomainEvent,
-        projection::repository::ViewContext,
-        store::serialized_event::SerializedEvent,
-        testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
+    use crate::{
+        cqrs::{
+            projection::repository::ViewContext,
+            testing::{mem_event_repository::MemEventRepository, mem_view_repository::MemViewRepository},
+        },
+        domain::{command::Decide, event::DomainEvent},
+        journal::serialized_event::SerializedEvent,
     };
     use serde::Deserialize;
     use std::sync::Arc;

@@ -12,11 +12,9 @@ use crate::{
     },
 };
 use cqrsx::{
-    cqrs::{
-        command::CommandExecutor,
-        reactions::ReactionsPlanner,
-        testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
-    },
+    command::CommandExecutor,
+    cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+    reactions::ReactionsPlanner,
     task::{
         attempt::TaskAttempt,
         context::{Executors, TaskContext},

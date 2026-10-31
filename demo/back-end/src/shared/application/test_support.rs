@@ -6,10 +6,8 @@ use crate::shared::application::{
 };
 use async_trait::async_trait;
 use cqrsx::{
-    cqrs::{
-        aggregate::Aggregate,
-        command::planner::{Decision, TaskPlanError, TaskPlanner},
-    },
+    command::planner::{Decision, TaskPlanError, TaskPlanner},
+    domain::aggregate::Aggregate,
     task::{NewTask, context::TaskContext, result::TaskResult},
 };
 use std::{collections::HashMap, sync::Mutex};

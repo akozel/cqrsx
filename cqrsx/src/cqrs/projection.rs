@@ -8,12 +8,13 @@ pub mod verify;
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{
-    aggregate::Aggregate,
-    event::EventEnvelope,
-    event_handler::EventHandler,
-    projection::repository::{StoredView, ViewContext, ViewRepository},
-    store::{PersistenceError, PersistenceErrorObserver, checked_counter_add},
+use crate::{
+    cqrs::{
+        event_handler::EventHandler,
+        projection::repository::{StoredView, ViewContext, ViewRepository},
+    },
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{PersistenceError, PersistenceErrorObserver, checked_counter_add},
 };
 use async_trait::async_trait;
 use serde::{Serialize, de::DeserializeOwned};
@@ -95,16 +96,16 @@ where
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
     /// # use serde_json::Value;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// # use cqrsx::cqrs::projection::repository::StoredView;
@@ -250,16 +251,16 @@ where
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
     /// # use serde_json::Value;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// # use cqrsx::cqrs::projection::repository::StoredView;
@@ -394,16 +395,16 @@ where
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
     /// # use serde_json::Value;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// # use cqrsx::cqrs::projection::repository::StoredView;
@@ -705,9 +706,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::{
-        projection::repository::StoredView,
-        store::persisted::tests::{TestAggregate, TestEvents},
+    use crate::{
+        cqrs::projection::repository::StoredView,
+        journal::persisted::tests::{TestAggregate, TestEvents},
     };
     use serde::{Deserialize, Serialize};
     use std::{ops::RangeInclusive, sync::Mutex};
@@ -1129,8 +1130,8 @@ mod tests {
 
     mod model {
         use super::*;
-        use crate::cqrs::store::serialized_event::tests::property_config;
         use crate::cqrs::testing::mem_view_repository::MemViewRepository;
+        use crate::journal::serialized_event::tests::property_config;
         use proptest::prelude::*;
 
         /// One delivery: `len` consecutive sequences starting `offset` away from the next expected event,

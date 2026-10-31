@@ -2,8 +2,9 @@
 //! a command, the task its reaction published, the command of the task's chain, the view; the pools the engine opens.
 use crate::{modules::*, mongo_container::Mongo, postgres_container::Postgres as Database};
 use cqrsx::{
-    cqrs::{command::causation::CORRELATION_ID, store::feed::Position},
+    command::causation::CORRELATION_ID,
     engine::{Cqrs, build::BuildError, mongodb::MongoDb, postgres::Postgres, settings::Defaults, views::JournalTotals},
+    journal::feed::Position,
 };
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;

@@ -6,15 +6,13 @@ mod write;
 
 use self::sql_query::SqlQueryFactory;
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        store::{
-            PersistenceError,
-            feed::{FeedEntry, Position},
-            repository::PersistedEventRepository,
-            serialized_event::SerializedEvent,
-            snapshot::SerializedSnapshot,
-        },
+    domain::aggregate::Aggregate,
+    journal::{
+        PersistenceError,
+        feed::{FeedEntry, Position},
+        repository::PersistedEventRepository,
+        serialized_event::SerializedEvent,
+        snapshot::SerializedSnapshot,
     },
     postgres::error::PostgresRepositoryError,
 };
@@ -77,7 +75,7 @@ impl PersistedEventRepository for PostgresEventRepository {
     async fn persist<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
+        snapshot_update: Option<crate::journal::snapshot::SnapshotUpdate>,
     ) -> Result<(), PersistenceError> {
         self.persist_batch::<A>(events, snapshot_update).await
     }
@@ -219,7 +217,7 @@ mod configuration_tests {
         )
         .unwrap();
         let error = repository
-            .persist_with_tasks::<crate::cqrs::aggregate::tests::Ledger>(&[event], None, &[task])
+            .persist_with_tasks::<crate::domain::aggregate::tests::Ledger>(&[event], None, &[task])
             .await
             .unwrap_err();
         assert!(error.to_string().contains("no outbox"), "{error}");

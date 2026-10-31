@@ -1,6 +1,10 @@
 //! Reusable CQRS, transactional outbox and durable task execution.
 //!
-//! - [`cqrs`]: aggregates, commands, event persistence, projections and testing tools.
+//! - [`domain`]: what the domain writes: aggregates, events, how a command decides, rejections.
+//! - [`journal`]: the event store, its repositories, snapshots, upcasters, the feed and the commit wake-up.
+//! - [`command`]: executing a command: executors, aggregate locks, conflict retry, causation, observers and task planning.
+//! - [`reactions`]: the tasks that follow each event of an aggregate.
+//! - [`cqrs`]: event handlers, projections and testing tools.
 //! - [`task`]: durable work, handlers, adapters, queues and the optional worker runtime.
 //! - [`engine`]: an application of modules assembled from these components: commands, views and tasks; in memory or
 //!   over PostgreSQL and MongoDB, its settings read from the environment, served with its HTTP routes (`http`).
@@ -13,9 +17,9 @@
 //!   `cqrsx-macros`) for what is known of a command, an aggregate's enum of commands, an event type's
 //!   stored name and version, an aggregate's enum of events, a task's wire format and a rejection's
 //!   code and params; [`task_handler`]: a task handler written as a function. The contracts they implement
-//!   live in their modules ([`cqrs::command::CommandInfo`], [`cqrs::command::decide::Decide`],
-//!   [`cqrs::event::EventKind`], [`cqrs::event::DomainEvent`], [`task::format::TaskPayload`],
-//!   [`cqrs::rejection::Rejection`], [`task::handler::TaskHandler`]).
+//!   live in their modules ([`domain::command::CommandInfo`], [`domain::command::Decide`],
+//!   [`domain::event::EventKind`], [`domain::event::DomainEvent`], [`task::format::TaskPayload`],
+//!   [`domain::rejection::Rejection`], [`task::handler::TaskHandler`]).
 //!
 //! Applications own business transitions and repeat-safe task effects. The README below is the
 //! guide: a complete in-memory example (compiled with the doctests), the PostgreSQL assembly, the
@@ -23,12 +27,15 @@
 //!
 #![doc = include_str!("../README.md")]
 
+pub mod command;
 pub mod cqrs;
 mod diagnostics;
+pub mod domain;
 pub mod engine;
 mod env;
 #[cfg(feature = "host")]
 pub mod host;
+pub mod journal;
 mod locking;
 #[cfg(feature = "logging")]
 pub mod logging;
@@ -36,6 +43,7 @@ pub mod logging;
 pub mod mongodb;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+pub mod reactions;
 pub mod task;
 mod unwinding;
 

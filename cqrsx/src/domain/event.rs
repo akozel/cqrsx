@@ -1,6 +1,6 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::aggregate::Aggregate;
+use crate::domain::aggregate::Aggregate;
 use serde::{Serialize, de::DeserializeOwned};
 use std::{collections::HashMap, fmt};
 
@@ -33,16 +33,16 @@ use std::{collections::HashMap, fmt};
 /// # use serde::Deserialize;
 /// # use serde::Serialize;
 /// # use serde_json::Value;
-/// # use cqrsx::cqrs::aggregate::Aggregate;
-/// # use cqrsx::cqrs::event::DomainEvent;
-/// # use cqrsx::cqrs::event::EventEnvelope;
+/// # use cqrsx::domain::aggregate::Aggregate;
+/// # use cqrsx::domain::event::DomainEvent;
+/// # use cqrsx::domain::event::EventEnvelope;
 /// # use cqrsx::cqrs::event_handler::EventHandler;
 /// # use cqrsx::cqrs::projection::View;
-/// # use cqrsx::cqrs::command::decide::Decide;
-/// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-/// # use cqrsx::cqrs::store::PersistenceError;
-/// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-/// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+/// # use cqrsx::domain::command::Decide;
+/// # use cqrsx::journal::repository::PersistedEventRepository;
+/// # use cqrsx::journal::PersistenceError;
+/// # use cqrsx::journal::serialized_event::SerializedEvent;
+/// # use cqrsx::journal::snapshot::SerializedSnapshot;
 /// # use cqrsx::cqrs::projection::repository::ViewContext;
 /// # use cqrsx::cqrs::projection::repository::ViewRepository;
 /// #
@@ -128,8 +128,8 @@ use std::{collections::HashMap, fmt};
 /// # }
 /// # }
 /// # use example::Customer;
-/// # use cqrsx::cqrs::aggregate::Aggregate;
-/// # use cqrsx::cqrs::event::DomainEvent;
+/// # use cqrsx::domain::aggregate::Aggregate;
+/// # use cqrsx::domain::event::DomainEvent;
 /// # use serde::Serialize;
 /// # use serde::Deserialize;
 /// #[derive(Clone,Debug,Serialize,Deserialize,PartialEq)]
@@ -157,7 +157,7 @@ pub trait DomainEvent: Serialize + DeserializeOwned + Clone + PartialEq + fmt::D
 /// ```
 /// use cqrsx::{
 ///     Event, Events,
-///     cqrs::event::{DomainEvent, EventKind},
+///     domain::event::{DomainEvent, EventKind},
 /// };
 /// use serde::{Deserialize, Serialize};
 ///

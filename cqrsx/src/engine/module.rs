@@ -1,13 +1,10 @@
 //! A module: what one part of an application plugs into the engine, registered in its root.
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        command::{CommandInfo, observer::AnyCommandObserver},
-        projection::{View, processor::observer::ProjectionObserver},
-        reactions::Reactions,
-        rejection::Rejection,
-    },
+    command::observer::AnyCommandObserver,
+    cqrs::projection::{View, processor::observer::ProjectionObserver},
+    domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
     engine::{Cqrs, build::BuildError},
+    reactions::Reactions,
     task::{
         adapter::boxed::BoxedTaskAdapter,
         dependencies::Dependencies,

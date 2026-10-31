@@ -1,5 +1,5 @@
 use super::*;
-use cqrsx::cqrs::event::EventEnvelope;
+use cqrsx::domain::event::EventEnvelope;
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct Ledger(pub(crate) Vec<i32>);
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]

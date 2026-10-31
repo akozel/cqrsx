@@ -1,9 +1,11 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{
-    aggregate::Aggregate,
-    event::{DomainEvent, EventEnvelope},
-    store::{PersistenceError, upcaster::EventUpcaster},
+use crate::{
+    domain::{
+        aggregate::Aggregate,
+        event::{DomainEvent, EventEnvelope},
+    },
+    journal::{PersistenceError, upcaster::EventUpcaster},
 };
 use serde_json::Value;
 use std::convert::TryFrom;
@@ -139,8 +141,8 @@ enum EnvelopeMismatch {
 }
 
 #[cfg(test)]
-pub(in crate::cqrs) mod tests {
-    pub(in crate::cqrs) fn property_config() -> proptest::test_runner::Config {
+pub(crate) mod tests {
+    pub(crate) fn property_config() -> proptest::test_runner::Config {
         proptest::test_runner::Config {
             cases: 1024,
             failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
@@ -151,8 +153,8 @@ pub(in crate::cqrs) mod tests {
     }
 
     use super::*;
-    use crate::cqrs::aggregate::tests::*;
-    use crate::cqrs::store::upcaster::NumericVersionUpcaster;
+    use crate::domain::aggregate::tests::*;
+    use crate::journal::upcaster::NumericVersionUpcaster;
     use proptest::prelude::*;
     use std::collections::HashMap;
 

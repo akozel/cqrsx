@@ -1,6 +1,6 @@
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{AggregateError, store::PersistenceError};
+use crate::{command::AggregateError, journal::PersistenceError};
 use sqlx::Error;
 
 #[derive(Debug, thiserror::Error)]

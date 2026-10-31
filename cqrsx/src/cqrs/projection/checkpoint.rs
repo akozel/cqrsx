@@ -7,10 +7,10 @@
 //! means the lease was lost, and the owner stops at once. The lease compares against the clock of the
 //! store, so the clocks of the nodes do not matter; an owner keeps a conservative local deadline anchored
 //! before each request, as the task queue does.
-use crate::cqrs::{
-    aggregate::Aggregate,
-    projection::{View, processor::observer::FailureCategory},
-    store::feed::Position,
+use crate::{
+    cqrs::projection::{View, processor::observer::FailureCategory},
+    domain::aggregate::Aggregate,
+    journal::feed::Position,
 };
 use chrono::{DateTime, Utc};
 use std::{error::Error, future::Future, time::Duration};
@@ -242,7 +242,7 @@ pub trait CheckpointStore: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::cqrs::{aggregate::tests::Ledger, event::EventEnvelope};
+    use crate::domain::{aggregate::tests::Ledger, event::EventEnvelope};
     use serde::{Deserialize, Serialize};
     use std::collections::HashSet;
 

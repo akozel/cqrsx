@@ -3,14 +3,12 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use super::{LedgerTotals, PostgresEventRepository, decode_count, decode_usize, encode_bigint, row_decode_error};
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        store::{
-            PersistenceError,
-            feed::{FeedEntry, Position},
-            serialized_event::SerializedEvent,
-            snapshot::SerializedSnapshot,
-        },
+    domain::aggregate::Aggregate,
+    journal::{
+        PersistenceError,
+        feed::{FeedEntry, Position},
+        serialized_event::SerializedEvent,
+        snapshot::SerializedSnapshot,
     },
     postgres::error::PostgresRepositoryError,
 };
@@ -27,7 +25,7 @@ impl PostgresEventRepository {
     /// one query. Other aggregate types in the same table are not counted.
     ///
     /// ```
-    /// use cqrsx::cqrs::{aggregate::Aggregate, store::PersistenceError};
+    /// use cqrsx::{domain::aggregate::Aggregate, journal::PersistenceError};
     /// use cqrsx::postgres::event_repository::{LedgerTotals, PostgresEventRepository};
     ///
     /// async fn history_size<A: Aggregate>(repository: &PostgresEventRepository) -> Result<LedgerTotals, PersistenceError> {
@@ -52,7 +50,7 @@ impl PostgresEventRepository {
     /// the feed index and stops at `cap`, which must be positive.
     ///
     /// ```
-    /// use cqrsx::cqrs::{aggregate::Aggregate, store::{PersistenceError, feed::Position}};
+    /// use cqrsx::{domain::aggregate::Aggregate, journal::{PersistenceError, feed::Position}};
     /// use cqrsx::postgres::event_repository::{DEFAULT_COUNT_AFTER_CAP, PostgresEventRepository};
     ///
     /// async fn lag<A: Aggregate>(repository: &PostgresEventRepository, checkpoint: Position) -> Result<u64, PersistenceError> {

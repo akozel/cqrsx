@@ -4,14 +4,12 @@ mod write_plan;
 
 use self::write_plan::WritePlan;
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        store::{
-            PersistenceError,
-            repository::PersistedEventRepository,
-            serialized_event::SerializedEvent,
-            snapshot::{SerializedSnapshot, SnapshotUpdate},
-        },
+    domain::aggregate::Aggregate,
+    journal::{
+        PersistenceError,
+        repository::PersistedEventRepository,
+        serialized_event::SerializedEvent,
+        snapshot::{SerializedSnapshot, SnapshotUpdate},
     },
     postgres::event_repository::PostgresEventRepository,
     task::NewTask,
@@ -83,13 +81,13 @@ impl PersistedEventRepository for PostgresEventRepositoryWithOutbox {
 
     async fn feed_after<A: Aggregate>(
         &self,
-        after: crate::cqrs::store::feed::Position,
+        after: crate::journal::feed::Position,
         limit: usize,
-    ) -> Result<Vec<crate::cqrs::store::feed::FeedEntry>, PersistenceError> {
+    ) -> Result<Vec<crate::journal::feed::FeedEntry>, PersistenceError> {
         self.reader.feed_after::<A>(after, limit).await
     }
 
-    async fn head<A: Aggregate>(&self) -> Result<crate::cqrs::store::feed::Position, PersistenceError> {
+    async fn head<A: Aggregate>(&self) -> Result<crate::journal::feed::Position, PersistenceError> {
         self.reader.head::<A>().await
     }
 

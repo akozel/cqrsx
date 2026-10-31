@@ -1,7 +1,7 @@
 //! What a projection processor reports while it runs: for status pages, event feeds and tests. Every
 //! method has an empty body, so an observer implements what it needs. Reports with borrowed strings come
 //! by reference, the small `Copy` events by value.
-use crate::cqrs::store::feed::Position;
+use crate::journal::feed::Position;
 use std::{fmt, time::Duration};
 
 /// Observes one processor. Called on the processor's task, so an observer returns quickly and never

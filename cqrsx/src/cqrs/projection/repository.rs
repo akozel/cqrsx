@@ -1,6 +1,6 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::cqrs::{aggregate::Aggregate, projection::View, store::PersistenceError};
+use crate::{cqrs::projection::View, domain::aggregate::Aggregate, journal::PersistenceError};
 use std::future::Future;
 
 /// Handles the database access needed for a ViewProjection.

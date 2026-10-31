@@ -89,7 +89,7 @@ pub fn mailer(setup: &Setup) -> Result<Arc<Mailer>, SetupError> {
 mod tests {
     use super::*;
     use cqrsx::{
-        cqrs::command::locks::LockLimits,
+        command::locks::LockLimits,
         engine::settings::Settings,
         task::runtime::{config::TaskRuntimeConfig, worker_pool_config::TaskWorkerPoolConfig},
     };

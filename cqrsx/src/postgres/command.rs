@@ -1,13 +1,10 @@
 use crate::{
-    cqrs::{
-        CommitReport, CqrsFramework,
-        aggregate::Aggregate,
-        command::{
-            CommandExecutor, CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits, observer::CommandObserver,
-            planner::TaskPlanner, retry::AggregateConflictRetryPolicy, wakeup::CommitWakeup,
-        },
-        store::persisted::PersistedEventStore,
+    command::{
+        CommandExecutor, CommandGatewayError, CommitReport, executor::CommandExecutorCore, framework::CqrsFramework,
+        locks::LockLimits, observer::CommandObserver, planner::TaskPlanner, retry::AggregateConflictRetryPolicy,
     },
+    domain::aggregate::Aggregate,
+    journal::{persisted::PersistedEventStore, wakeup::CommitWakeup},
     postgres::outbox::PostgresEventRepositoryWithOutbox,
 };
 use sqlx::PgPool;
@@ -153,7 +150,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
     struct Said;
 
-    impl crate::cqrs::event::DomainEvent for Said {
+    impl crate::domain::event::DomainEvent for Said {
         fn event_type(&self) -> &'static str {
             "said"
         }
@@ -174,7 +171,7 @@ mod tests {
         fn apply(&mut self, _: Said) {}
     }
 
-    impl crate::cqrs::command::decide::Decide<Quiet> for () {
+    impl crate::domain::command::Decide<Quiet> for () {
         fn decide(self, _: &Quiet, _: &()) -> Result<Said, std::convert::Infallible> {
             Ok(Said)
         }
@@ -185,8 +182,8 @@ mod tests {
     impl TaskPlanner<Quiet> for NoTasks {
         fn plan(
             &self,
-            _: &crate::cqrs::command::planner::Decision<'_, Quiet>,
-        ) -> Result<Vec<crate::task::NewTask>, crate::cqrs::command::planner::TaskPlanError> {
+            _: &crate::command::planner::Decision<'_, Quiet>,
+        ) -> Result<Vec<crate::task::NewTask>, crate::command::planner::TaskPlanError> {
             Ok(Vec::new())
         }
     }
@@ -240,8 +237,8 @@ mod tests {
     struct Heard(std::sync::Mutex<Vec<&'static str>>);
 
     impl CommandObserver<Quiet> for Heard {
-        fn command(&self, report: &crate::cqrs::command::observer::CommandReport<'_, Quiet>) {
-            use crate::cqrs::command::observer::Outcome;
+        fn command(&self, report: &crate::command::observer::CommandReport<'_, Quiet>) {
+            use crate::command::observer::Outcome;
             self.0.lock().unwrap().push(match report.outcome {
                 Outcome::Unavailable => "unavailable",
                 Outcome::Accepted { .. } | Outcome::Rejected(_) | Outcome::Conflict => "ran",

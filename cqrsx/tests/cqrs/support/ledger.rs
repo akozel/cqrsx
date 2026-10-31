@@ -1,4 +1,4 @@
-use cqrsx::cqrs::{aggregate::Aggregate, command::decide::Decide, event::DomainEvent};
+use cqrsx::domain::{aggregate::Aggregate, command::Decide, event::DomainEvent};
 use serde::{Deserialize, Serialize};
 use std::sync::{Arc, Mutex};
 

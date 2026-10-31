@@ -1,6 +1,7 @@
 //! The assembly of an application's task handlers into the one dispatcher every worker shares.
 use crate::{
-    cqrs::{aggregate::Aggregate, command::CommandExecutor},
+    command::CommandExecutor,
+    domain::aggregate::Aggregate,
     task::{
         adapter::{TaskAdapter, boxed::BoxedTaskAdapter},
         context::Executors,
@@ -136,11 +137,8 @@ impl TaskHandlers {
 mod tests {
     use super::*;
     use crate::{
-        cqrs::{
-            CommitReport,
-            command::{CommandGatewayError, decide::Decide},
-            event::DomainEvent,
-        },
+        command::{CommandGatewayError, CommitReport},
+        domain::{command::Decide, event::DomainEvent},
         task::{
             attempt::TaskAttempt,
             context::{ExecutorTwice, TaskContext},

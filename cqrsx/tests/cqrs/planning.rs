@@ -2,28 +2,24 @@
 //! conflicted attempts, and two executors racing like two nodes.
 use crate::support::ledger::{Command, Delta, Ledger, Rejected, Services};
 use cqrsx::{
-    cqrs::{
-        CqrsFramework,
-        aggregate::Aggregate,
-        command::{
-            CommandExecutor, CommandGatewayError,
-            causation::Causation,
-            decide::Decide,
-            executor::CommandExecutorCore,
-            locks::LockLimits,
-            planner::{Decision, TaskPlanError, TaskPlanner},
-            retry::AggregateConflictRetryPolicy,
-        },
-        event::DomainEvent,
-        store::{
-            PersistenceError,
-            feed::{FeedEntry, Position},
-            persisted::PersistedEventStore,
-            repository::PersistedEventRepository,
-            serialized_event::SerializedEvent,
-            snapshot::{SerializedSnapshot, SnapshotUpdate},
-        },
-        testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
+    command::{
+        CommandExecutor, CommandGatewayError,
+        causation::Causation,
+        executor::CommandExecutorCore,
+        framework::CqrsFramework,
+        locks::LockLimits,
+        planner::{Decision, TaskPlanError, TaskPlanner},
+        retry::AggregateConflictRetryPolicy,
+    },
+    cqrs::testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
+    domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+    journal::{
+        PersistenceError,
+        feed::{FeedEntry, Position},
+        persisted::PersistedEventStore,
+        repository::PersistedEventRepository,
+        serialized_event::SerializedEvent,
+        snapshot::{SerializedSnapshot, SnapshotUpdate},
     },
     task::{
         NewTask,

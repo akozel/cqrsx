@@ -5,14 +5,16 @@ pub mod repository;
 pub mod serialized_event;
 pub mod snapshot;
 pub mod upcaster;
+pub mod wakeup;
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::{
-    cqrs::{AggregateError, aggregate::Aggregate, event::EventEnvelope},
+    command::AggregateError,
+    domain::{aggregate::Aggregate, event::EventEnvelope},
     task::NewTask,
 };
-use std::{collections::HashMap, error, future::Future};
+use std::{collections::HashMap, future::Future};
 
 /// The abstract central source for loading past events and committing new events.
 pub trait EventStore<A>: Send + Sync
@@ -20,7 +22,7 @@ where
     A: Aggregate,
 {
     /// Provides the current state of an aggregate along with surrounding context.
-    /// This is used by the [CqrsFramework](crate::cqrs::CqrsFramework) when loading
+    /// This is used by the [CqrsFramework](crate::command::framework::CqrsFramework) when loading
     /// an aggregate in order to handle incoming commands.
     type Context: AggregateContext<A>;
 
@@ -56,10 +58,10 @@ where
 }
 
 /// Validate a complete batch before applying or serializing any of its events.
-pub(crate) fn checked_counter_add(current: usize, count: usize) -> Result<usize, crate::cqrs::store::PersistenceError> {
+pub(crate) fn checked_counter_add(current: usize, count: usize) -> Result<usize, crate::journal::PersistenceError> {
     current
         .checked_add(count)
-        .ok_or_else(|| crate::cqrs::store::PersistenceError::UnknownError("event sequence or snapshot version overflow".into()))
+        .ok_or_else(|| crate::journal::PersistenceError::UnknownError("event sequence or snapshot version overflow".into()))
 }
 
 /// Errors for implementations of a persistent event store.
@@ -89,32 +91,11 @@ pub enum PersistenceError {
     },
 }
 
-impl<T: std::error::Error> From<PersistenceError> for AggregateError<T> {
-    fn from(err: PersistenceError) -> Self {
-        match err {
-            PersistenceError::OptimisticLockError => Self::AggregateConflict,
-            PersistenceError::ConnectionError(error) => Self::DatabaseConnectionError(error),
-            PersistenceError::DeserializationError(error) => Self::DeserializationError(error),
-            PersistenceError::UnknownError(error) => Self::UnexpectedError(error),
-            gap @ PersistenceError::SequenceGap { .. } => Self::UnexpectedError(Box::new(gap)),
-        }
-    }
-}
-
 impl From<serde_json::Error> for PersistenceError {
     fn from(err: serde_json::Error) -> Self {
         match err.classify() {
             serde_json::error::Category::Data | serde_json::error::Category::Syntax => Self::DeserializationError(Box::new(err)),
             serde_json::error::Category::Io | serde_json::error::Category::Eof => Self::UnknownError(Box::new(err)),
-        }
-    }
-}
-
-impl<T: error::Error> From<serde_json::error::Error> for AggregateError<T> {
-    fn from(err: serde_json::error::Error) -> Self {
-        match err.classify() {
-            serde_json::error::Category::Data | serde_json::error::Category::Syntax => Self::DeserializationError(Box::new(err)),
-            serde_json::error::Category::Io | serde_json::error::Category::Eof => Self::UnexpectedError(Box::new(err)),
         }
     }
 }
@@ -126,8 +107,8 @@ impl<T: error::Error> From<serde_json::error::Error> for AggregateError<T> {
 /// The observer does not recover, suppress or replace the failure.
 ///
 /// ```rust
-/// use {cqrsx::cqrs::store::PersistenceError};
-/// use {cqrsx::cqrs::store::PersistenceErrorObserver};
+/// use {cqrsx::journal::PersistenceError};
+/// use {cqrsx::journal::PersistenceErrorObserver};
 /// fn create_error_observer() {
 ///     // An error handler that panics when any persistence error is encountered.
 ///     let error_observer: Box<PersistenceErrorObserver> = Box::new(error_observer);

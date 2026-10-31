@@ -2,12 +2,10 @@
 //! clock, and the documented document.
 use crate::mongo_container::Mongo;
 use cqrsx::{
-    cqrs::{
-        projection::checkpoint::{
-            CheckpointError, CheckpointKey, CheckpointStore, LeaseToken, RebuildRequest, RebuildRequests, RebuildState,
-        },
-        store::feed::Position,
+    cqrs::projection::checkpoint::{
+        CheckpointError, CheckpointKey, CheckpointStore, LeaseToken, RebuildRequest, RebuildRequests, RebuildState,
     },
+    journal::feed::Position,
     mongodb::checkpoint_store::{MongoCheckpointStore, PROJECTION_CHECKPOINTS_COLLECTION},
 };
 use mongodb::{

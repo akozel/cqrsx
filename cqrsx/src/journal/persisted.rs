@@ -1,17 +1,14 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::{
-    cqrs::{
-        AggregateError,
-        aggregate::Aggregate,
-        event::EventEnvelope,
-        store::{
-            AggregateContext, EventStore, PersistenceError,
-            repository::PersistedEventRepository,
-            serialized_event::{SerializedEvent, deserialize_events, serialize_events},
-            snapshot::{SerializedSnapshot, SnapshotUpdate},
-            upcaster::EventUpcaster,
-        },
+    command::AggregateError,
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{
+        AggregateContext, EventStore, PersistenceError,
+        repository::PersistedEventRepository,
+        serialized_event::{SerializedEvent, deserialize_events, serialize_events},
+        snapshot::{SerializedSnapshot, SnapshotUpdate},
+        upcaster::EventUpcaster,
     },
     task::NewTask,
 };
@@ -104,17 +101,17 @@ where
     /// # use async_trait::async_trait;
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
-    /// # use cqrsx::cqrs::store::snapshot::SnapshotUpdate;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::journal::snapshot::SnapshotUpdate;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// #
@@ -214,20 +211,20 @@ where
     /// #     async fn persist<A: Aggregate>(
     /// #         &self,
     /// #         _events: &[SerializedEvent],
-    /// #         _snapshot_update: Option<cqrsx::cqrs::store::snapshot::SnapshotUpdate>,
+    /// #         _snapshot_update: Option<cqrsx::journal::snapshot::SnapshotUpdate>,
     /// #     ) -> Result<(), PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
     /// #     async fn feed_after<A: Aggregate>(
     /// #         &self,
-    /// #         _after: cqrsx::cqrs::store::feed::Position,
+    /// #         _after: cqrsx::journal::feed::Position,
     /// #         _limit: usize,
-    /// #     ) -> Result<Vec<cqrsx::cqrs::store::feed::FeedEntry>, PersistenceError> {
+    /// #     ) -> Result<Vec<cqrsx::journal::feed::FeedEntry>, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
-    /// #     async fn head<A: Aggregate>(&self) -> Result<cqrsx::cqrs::store::feed::Position, PersistenceError> {
+    /// #     async fn head<A: Aggregate>(&self) -> Result<cqrsx::journal::feed::Position, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
@@ -244,8 +241,8 @@ where
     /// # use example::MyService;
     /// # use example::MyDatabaseConnection;
     /// # use example::MyEventRepository;
-    /// # use cqrsx::cqrs::CqrsFramework;
-    /// # use cqrsx::cqrs::store::persisted::PersistedEventStore;
+    /// # use cqrsx::command::framework::CqrsFramework;
+    /// # use cqrsx::journal::persisted::PersistedEventStore;
     /// # fn config(my_db_connection: MyDatabaseConnection) {
     /// let repo = MyEventRepository::new(my_db_connection);
     /// let store = PersistedEventStore::<MyEventRepository,MyAggregate>::new(repo);
@@ -270,17 +267,17 @@ where
     /// # use async_trait::async_trait;
     /// # use serde::Deserialize;
     /// # use serde::Serialize;
-    /// # use cqrsx::cqrs::store::snapshot::SnapshotUpdate;
-    /// # use cqrsx::cqrs::aggregate::Aggregate;
-    /// # use cqrsx::cqrs::event::DomainEvent;
-    /// # use cqrsx::cqrs::event::EventEnvelope;
+    /// # use cqrsx::journal::snapshot::SnapshotUpdate;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::DomainEvent;
+    /// # use cqrsx::domain::event::EventEnvelope;
     /// # use cqrsx::cqrs::event_handler::EventHandler;
     /// # use cqrsx::cqrs::projection::View;
-    /// # use cqrsx::cqrs::command::decide::Decide;
-    /// # use cqrsx::cqrs::store::repository::PersistedEventRepository;
-    /// # use cqrsx::cqrs::store::PersistenceError;
-    /// # use cqrsx::cqrs::store::serialized_event::SerializedEvent;
-    /// # use cqrsx::cqrs::store::snapshot::SerializedSnapshot;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
     /// # use cqrsx::cqrs::projection::repository::ViewContext;
     /// # use cqrsx::cqrs::projection::repository::ViewRepository;
     /// #
@@ -380,20 +377,20 @@ where
     /// #     async fn persist<A: Aggregate>(
     /// #         &self,
     /// #         _events: &[SerializedEvent],
-    /// #         _snapshot_update: Option<cqrsx::cqrs::store::snapshot::SnapshotUpdate>,
+    /// #         _snapshot_update: Option<cqrsx::journal::snapshot::SnapshotUpdate>,
     /// #     ) -> Result<(), PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
     /// #     async fn feed_after<A: Aggregate>(
     /// #         &self,
-    /// #         _after: cqrsx::cqrs::store::feed::Position,
+    /// #         _after: cqrsx::journal::feed::Position,
     /// #         _limit: usize,
-    /// #     ) -> Result<Vec<cqrsx::cqrs::store::feed::FeedEntry>, PersistenceError> {
+    /// #     ) -> Result<Vec<cqrsx::journal::feed::FeedEntry>, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
-    /// #     async fn head<A: Aggregate>(&self) -> Result<cqrsx::cqrs::store::feed::Position, PersistenceError> {
+    /// #     async fn head<A: Aggregate>(&self) -> Result<cqrsx::journal::feed::Position, PersistenceError> {
     /// #         todo!()
     /// #     }
     /// #
@@ -410,8 +407,8 @@ where
     /// # use example::MyService;
     /// # use example::MyDatabaseConnection;
     /// # use example::MyEventRepository;
-    /// # use cqrsx::cqrs::CqrsFramework;
-    /// # use cqrsx::cqrs::store::persisted::PersistedEventStore;
+    /// # use cqrsx::command::framework::CqrsFramework;
+    /// # use cqrsx::journal::persisted::PersistedEventStore;
     /// # use std::num::NonZeroUsize;
     /// # fn config(my_db_connection: MyDatabaseConnection) {
     /// const SNAPSHOT_EVERY: NonZeroUsize = NonZeroUsize::new(100).unwrap();
@@ -506,7 +503,7 @@ where
     ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
         let aggregate_id = context.aggregate_id.clone();
         let last_sequence = context.current_sequence;
-        crate::cqrs::store::checked_counter_add(last_sequence, events.len())?;
+        crate::journal::checked_counter_add(last_sequence, events.len())?;
 
         let snapshot_prefix_len = self
             .snapshot_policy
@@ -514,7 +511,7 @@ where
         let snapshot_update = if snapshot_prefix_len == 0 {
             None
         } else {
-            let next_version = crate::cqrs::store::checked_counter_add(context.snapshot_version.unwrap_or(0), 1)?;
+            let next_version = crate::journal::checked_counter_add(context.snapshot_version.unwrap_or(0), 1)?;
             Some(Self::update_snapshot_with_events(
                 &events,
                 context,
@@ -628,14 +625,12 @@ impl<A: Aggregate> TryFrom<SerializedSnapshot> for EventStoreAggregateContext<A>
 }
 
 #[cfg(test)]
-pub(in crate::cqrs) mod tests {
+pub(crate) mod tests {
     // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
     // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-    use crate::cqrs::{
-        aggregate::Aggregate,
-        command::decide::Decide,
-        event::DomainEvent,
-        store::{
+    use crate::{
+        domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
+        journal::{
             PersistenceError, repository::PersistedEventRepository, serialized_event::SerializedEvent,
             snapshot::SerializedSnapshot,
         },
@@ -644,12 +639,12 @@ pub(in crate::cqrs) mod tests {
     use std::{collections::HashMap, num::NonZeroUsize, sync::Mutex};
 
     /// A snapshot interval of `events` events, which is positive in every test.
-    pub(in crate::cqrs) fn every(events: usize) -> NonZeroUsize {
+    pub(crate) fn every(events: usize) -> NonZeroUsize {
         NonZeroUsize::new(events).expect("a snapshot interval of a test is positive")
     }
 
     #[derive(Debug, Serialize, Deserialize, PartialEq, Clone)]
-    pub(in crate::cqrs) enum TestEvents {
+    pub(crate) enum TestEvents {
         Started,
         SomethingWasDone,
     }
@@ -667,14 +662,14 @@ pub(in crate::cqrs) mod tests {
     }
 
     #[derive(Debug, Serialize, Deserialize)]
-    pub(in crate::cqrs) enum TestCommands {
+    pub(crate) enum TestCommands {
         DoSomething,
         BadCommand,
     }
 
     #[derive(Debug, thiserror::Error)]
     #[error("{0}")]
-    pub(in crate::cqrs) struct TestError(String);
+    pub(crate) struct TestError(String);
 
     impl From<&str> for TestError {
         fn from(msg: &str) -> Self {
@@ -683,11 +678,11 @@ pub(in crate::cqrs) mod tests {
     }
 
     #[derive(Clone)]
-    pub(in crate::cqrs) struct TestService;
+    pub(crate) struct TestService;
 
     #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-    pub(in crate::cqrs) struct TestAggregate {
-        pub(in crate::cqrs) something_happened: usize,
+    pub(crate) struct TestAggregate {
+        pub(crate) something_happened: usize,
     }
 
     impl Aggregate for TestAggregate {
@@ -717,23 +712,23 @@ pub(in crate::cqrs) mod tests {
         }
     }
 
-    pub(in crate::cqrs) struct MockRepo {
+    pub(crate) struct MockRepo {
         persist_error: Mutex<Option<PersistenceError>>,
         events_result: Mutex<Option<Result<Vec<SerializedEvent>, PersistenceError>>>,
         last_events_result: Mutex<Option<Result<Vec<SerializedEvent>, PersistenceError>>>,
         snapshot_result: Mutex<Option<Result<Option<SerializedSnapshot>, PersistenceError>>>,
         #[allow(clippy::type_complexity)]
         persist_check:
-            Mutex<Option<Box<dyn FnOnce(&[SerializedEvent], Option<crate::cqrs::store::snapshot::SnapshotUpdate>) + Send>>>,
+            Mutex<Option<Box<dyn FnOnce(&[SerializedEvent], Option<crate::journal::snapshot::SnapshotUpdate>) + Send>>>,
     }
 
     impl MockRepo {
-        pub(in crate::cqrs) fn with_commit_error(error: PersistenceError) -> Self {
+        pub(crate) fn with_commit_error(error: PersistenceError) -> Self {
             let repo = Self::with_commit(Box::new(|_, _| panic!("failed persist must not succeed")));
             *repo.persist_error.lock().unwrap() = Some(error);
             repo
         }
-        pub(in crate::cqrs) fn with_events(result: Result<Vec<SerializedEvent>, PersistenceError>) -> Self {
+        pub(crate) fn with_events(result: Result<Vec<SerializedEvent>, PersistenceError>) -> Self {
             Self {
                 events_result: Mutex::new(Some(result)),
                 last_events_result: Mutex::new(None),
@@ -742,7 +737,7 @@ pub(in crate::cqrs) mod tests {
                 persist_check: Mutex::new(None),
             }
         }
-        pub(in crate::cqrs) fn with_last_events(
+        pub(crate) fn with_last_events(
             last_events: Result<Vec<SerializedEvent>, PersistenceError>,
             snapshot: Result<Option<SerializedSnapshot>, PersistenceError>,
         ) -> Self {
@@ -754,7 +749,7 @@ pub(in crate::cqrs) mod tests {
                 persist_check: Mutex::new(None),
             }
         }
-        pub(in crate::cqrs) fn with_snapshot(result: Result<Option<SerializedSnapshot>, PersistenceError>) -> Self {
+        pub(crate) fn with_snapshot(result: Result<Option<SerializedSnapshot>, PersistenceError>) -> Self {
             Self {
                 events_result: Mutex::new(None),
                 last_events_result: Mutex::new(None),
@@ -764,8 +759,8 @@ pub(in crate::cqrs) mod tests {
             }
         }
         #[allow(clippy::type_complexity)]
-        pub(in crate::cqrs) fn with_commit(
-            test_function: Box<dyn FnOnce(&[SerializedEvent], Option<crate::cqrs::store::snapshot::SnapshotUpdate>) + Send>,
+        pub(crate) fn with_commit(
+            test_function: Box<dyn FnOnce(&[SerializedEvent], Option<crate::journal::snapshot::SnapshotUpdate>) + Send>,
         ) -> Self {
             Self {
                 events_result: Mutex::new(None),
@@ -794,7 +789,7 @@ pub(in crate::cqrs) mod tests {
         async fn persist<A: Aggregate>(
             &self,
             events: &[SerializedEvent],
-            snapshot_update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
+            snapshot_update: Option<crate::journal::snapshot::SnapshotUpdate>,
         ) -> Result<(), PersistenceError> {
             if let Some(error) = self.persist_error.lock().unwrap().take() {
                 return Err(error);
@@ -806,13 +801,13 @@ pub(in crate::cqrs) mod tests {
 
         async fn feed_after<A: Aggregate>(
             &self,
-            _: crate::cqrs::store::feed::Position,
+            _: crate::journal::feed::Position,
             _: usize,
-        ) -> Result<Vec<crate::cqrs::store::feed::FeedEntry>, PersistenceError> {
+        ) -> Result<Vec<crate::journal::feed::FeedEntry>, PersistenceError> {
             panic!("not called by these tests")
         }
 
-        async fn head<A: Aggregate>(&self) -> Result<crate::cqrs::store::feed::Position, PersistenceError> {
+        async fn head<A: Aggregate>(&self) -> Result<crate::journal::feed::Position, PersistenceError> {
             panic!("not called by these tests")
         }
 
@@ -821,10 +816,10 @@ pub(in crate::cqrs) mod tests {
         }
     }
 
-    pub(in crate::cqrs) const TEST_AGGREGATE_ID: &str = "test-aggregate-C";
-    pub(in crate::cqrs) const EVENT_VERSION: &str = "1.0";
+    pub(crate) const TEST_AGGREGATE_ID: &str = "test-aggregate-C";
+    pub(crate) const EVENT_VERSION: &str = "1.0";
 
-    pub(in crate::cqrs) fn test_serialized_event(seq: usize, event: TestEvents) -> SerializedEvent {
+    pub(crate) fn test_serialized_event(seq: usize, event: TestEvents) -> SerializedEvent {
         let event_type = event.event_type().to_owned();
         let event_version = event.event_version().to_owned();
         let payload = serde_json::to_value(event).unwrap();
@@ -842,18 +837,18 @@ pub(in crate::cqrs) mod tests {
     mod event_store_test {
         use std::collections::HashMap;
 
-        use crate::cqrs::AggregateError;
-        use crate::cqrs::event::DomainEvent;
-        use crate::cqrs::store::EventStore;
-        use crate::cqrs::store::PersistenceError;
-        use crate::cqrs::store::persisted::EventStoreAggregateContext;
-        use crate::cqrs::store::persisted::PersistedEventStore;
-        use crate::cqrs::store::persisted::tests::EVENT_VERSION;
-        use crate::cqrs::store::persisted::tests::MockRepo;
-        use crate::cqrs::store::persisted::tests::TEST_AGGREGATE_ID;
-        use crate::cqrs::store::persisted::tests::TestAggregate;
-        use crate::cqrs::store::persisted::tests::TestEvents;
-        use crate::cqrs::store::persisted::tests::test_serialized_event;
+        use crate::command::AggregateError;
+        use crate::domain::event::DomainEvent;
+        use crate::journal::EventStore;
+        use crate::journal::PersistenceError;
+        use crate::journal::persisted::EventStoreAggregateContext;
+        use crate::journal::persisted::PersistedEventStore;
+        use crate::journal::persisted::tests::EVENT_VERSION;
+        use crate::journal::persisted::tests::MockRepo;
+        use crate::journal::persisted::tests::TEST_AGGREGATE_ID;
+        use crate::journal::persisted::tests::TestAggregate;
+        use crate::journal::persisted::tests::TestEvents;
+        use crate::journal::persisted::tests::test_serialized_event;
 
         #[tokio::test]
         async fn load() {
@@ -966,20 +961,20 @@ pub(in crate::cqrs) mod tests {
 
         use serde_json::json;
 
-        use crate::cqrs::AggregateError;
-        use crate::cqrs::event::DomainEvent;
-        use crate::cqrs::store::EventStore;
-        use crate::cqrs::store::PersistenceError;
-        use crate::cqrs::store::persisted::EventStoreAggregateContext;
-        use crate::cqrs::store::persisted::PersistedEventStore;
-        use crate::cqrs::store::persisted::tests::EVENT_VERSION;
-        use crate::cqrs::store::persisted::tests::MockRepo;
-        use crate::cqrs::store::persisted::tests::TEST_AGGREGATE_ID;
-        use crate::cqrs::store::persisted::tests::TestAggregate;
-        use crate::cqrs::store::persisted::tests::TestEvents;
-        use crate::cqrs::store::persisted::tests::every;
-        use crate::cqrs::store::persisted::tests::test_serialized_event;
-        use crate::cqrs::store::snapshot::SerializedSnapshot;
+        use crate::command::AggregateError;
+        use crate::domain::event::DomainEvent;
+        use crate::journal::EventStore;
+        use crate::journal::PersistenceError;
+        use crate::journal::persisted::EventStoreAggregateContext;
+        use crate::journal::persisted::PersistedEventStore;
+        use crate::journal::persisted::tests::EVENT_VERSION;
+        use crate::journal::persisted::tests::MockRepo;
+        use crate::journal::persisted::tests::TEST_AGGREGATE_ID;
+        use crate::journal::persisted::tests::TestAggregate;
+        use crate::journal::persisted::tests::TestEvents;
+        use crate::journal::persisted::tests::every;
+        use crate::journal::persisted::tests::test_serialized_event;
+        use crate::journal::snapshot::SerializedSnapshot;
 
         #[tokio::test]
         async fn load() {
@@ -1267,8 +1262,8 @@ pub(in crate::cqrs) mod tests {
         .unwrap();
         let context = super::EventStoreAggregateContext::empty(TEST_AGGREGATE_ID);
         let result =
-            crate::cqrs::store::EventStore::commit(&store, vec![TestEvents::Started], context, HashMap::new(), &[task]).await;
-        let Err(crate::cqrs::AggregateError::UnexpectedError(error)) = result else {
+            crate::journal::EventStore::commit(&store, vec![TestEvents::Started], context, HashMap::new(), &[task]).await;
+        let Err(crate::command::AggregateError::UnexpectedError(error)) = result else {
             panic!("a repository without an outbox refuses tasks");
         };
         assert_eq!(
@@ -1292,7 +1287,7 @@ pub(in crate::cqrs) mod tests {
 mod contract_tests {
     use super::tests::*;
     use super::*;
-    use crate::cqrs::store::serialized_event::tests::property_config;
+    use crate::journal::serialized_event::tests::property_config;
     use proptest::prelude::*;
 
     proptest! {
@@ -1392,7 +1387,7 @@ mod contract_tests {
 mod serialization_failure_tests {
     use super::tests::MockRepo;
     use super::*;
-    use crate::cqrs::{command::decide::Decide, event::DomainEvent};
+    use crate::domain::{command::Decide, event::DomainEvent};
     use serde::{Deserialize, Serialize, Serializer};
     #[derive(Clone, Debug, PartialEq, Deserialize)]
     struct Event(bool);

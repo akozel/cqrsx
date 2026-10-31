@@ -1,7 +1,7 @@
 //! The journal of one aggregate type read in commit order: pages below the snapshot horizon, the
 //! head and the aggregate ids page by page.
 use super::*;
-use cqrsx::cqrs::store::feed::{FeedEntry, Position};
+use cqrsx::journal::feed::{FeedEntry, Position};
 use std::collections::BTreeSet;
 
 /// Writes one `Ledger` event inside `tx` without committing: the transaction keeps its id and holds

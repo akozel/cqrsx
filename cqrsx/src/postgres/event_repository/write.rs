@@ -3,10 +3,8 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use super::{PostgresEventRepository, encode_bigint};
 use crate::{
-    cqrs::{
-        aggregate::Aggregate,
-        store::{PersistenceError, serialized_event::SerializedEvent, snapshot::SnapshotUpdate},
-    },
+    domain::aggregate::Aggregate,
+    journal::{PersistenceError, serialized_event::SerializedEvent, snapshot::SnapshotUpdate},
     postgres::error::PostgresRepositoryError,
 };
 use sqlx::{Postgres, Transaction};
@@ -15,7 +13,7 @@ impl PostgresEventRepository {
     pub(super) async fn persist_batch<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<crate::cqrs::store::snapshot::SnapshotUpdate>,
+        snapshot_update: Option<crate::journal::snapshot::SnapshotUpdate>,
     ) -> Result<(), PersistenceError> {
         // Validate the entire request before beginning a transaction or writing rows.
         for event in events {

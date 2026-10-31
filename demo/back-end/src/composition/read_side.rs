@@ -11,14 +11,13 @@ use crate::{
     testing::test_app,
 };
 use chrono::NaiveDate;
-use cqrsx::cqrs::{
-    aggregate::Aggregate,
-    event::EventEnvelope,
-    projection::{
+use cqrsx::{
+    cqrs::projection::{
         View,
         verify::{Difference, DifferenceKind, Verification, verify},
     },
-    store::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
 };
 use mongodb::bson::{from_bson, to_bson};
 use std::{

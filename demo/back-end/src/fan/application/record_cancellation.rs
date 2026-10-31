@@ -6,7 +6,7 @@ use crate::{
 };
 use cqrsx::{
     Task,
-    cqrs::command::CommandGatewayError,
+    command::CommandGatewayError,
     task::{context::TaskContext, result::TaskResult},
     task_handler,
 };
@@ -64,7 +64,7 @@ mod tests {
         record_ticket::record_ticket,
         test_support::{attempt, fans, ledger, steps, ticket},
     };
-    use cqrsx::cqrs::{store::EventStore, testing::mem_store::MemStore};
+    use cqrsx::{cqrs::testing::mem_store::MemStore, journal::EventStore};
     use uuid::Uuid;
 
     fn cancellation(booking_id: Uuid) -> RecordCancellationV1 {

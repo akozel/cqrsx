@@ -6,7 +6,8 @@ use crate::{
     shared::application::{activity::ActivityHub, mail::Mailer, test_support::RecordingMailer},
 };
 use cqrsx::{
-    cqrs::{aggregate::Aggregate, projection::View, projection::repository::StoredView},
+    cqrs::projection::{View, repository::StoredView},
+    domain::aggregate::Aggregate,
     engine::{Cqrs, build::Builder, settings::Settings},
     task::policy::Policies,
 };

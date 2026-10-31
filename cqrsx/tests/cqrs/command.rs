@@ -1,5 +1,5 @@
 use crate::support::ledger::*;
-use cqrsx::cqrs::command::CommandExecutor;
+use cqrsx::command::CommandExecutor;
 use std::{
     collections::HashMap,
     io,
@@ -10,9 +10,9 @@ use std::{
     time::Duration,
 };
 use {
-    cqrsx::cqrs::AggregateError, cqrsx::cqrs::CqrsFramework, cqrsx::cqrs::command::CommandGatewayError,
-    cqrsx::cqrs::command::executor::CommandExecutorCore, cqrsx::cqrs::command::retry::AggregateConflictRetryPolicy,
-    cqrsx::cqrs::event::EventEnvelope, cqrsx::cqrs::store::EventStore,
+    cqrsx::command::AggregateError, cqrsx::command::CommandGatewayError, cqrsx::command::executor::CommandExecutorCore,
+    cqrsx::command::framework::CqrsFramework, cqrsx::command::retry::AggregateConflictRetryPolicy,
+    cqrsx::domain::event::EventEnvelope, cqrsx::journal::EventStore,
 };
 #[derive(Clone)]
 struct LostAcknowledgementStore {
@@ -55,7 +55,7 @@ async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command(
     let executor = CommandExecutorCore::new(
         CqrsFramework::new(store, Services(commands)),
         AggregateConflictRetryPolicy::try_new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
-        cqrsx::cqrs::command::locks::LockLimits::default(),
+        cqrsx::command::locks::LockLimits::default(),
     );
     assert_eq!(
         CommandExecutor::execute(&executor, &"lost-ack".into(), Command::Adjust(1)).await,

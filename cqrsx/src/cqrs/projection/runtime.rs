@@ -1,8 +1,8 @@
 //! Several projection processors run as one: for a host that starts the read side next to its task runtime.
-use crate::cqrs::{
-    aggregate::Aggregate,
-    projection::{checkpoint::CheckpointStore, processor::ProjectionProcessor},
-    store::repository::PersistedEventRepository,
+use crate::{
+    cqrs::projection::{checkpoint::CheckpointStore, processor::ProjectionProcessor},
+    domain::aggregate::Aggregate,
+    journal::repository::PersistedEventRepository,
 };
 use std::{collections::HashMap, fmt, future::Future, pin::Pin};
 use thiserror::Error;
