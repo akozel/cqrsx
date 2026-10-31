@@ -14,8 +14,8 @@ services:
       - encore-pg:/var/lib/postgresql
       - ./infra/postgres/00-inspector-role.sql:/docker-entrypoint-initdb.d/00-inspector-role.sql:ro,z
       # Event-store and outbox schemas are NOT copied: the demo mounts the library's own SQL files.
-      - ../cqrsx/sql/001-event-store.sql:/docker-entrypoint-initdb.d/10-event-store.sql:ro,z
-      - ../cqrsx/sql/002-transactional-outbox.sql:/docker-entrypoint-initdb.d/20-outbox.sql:ro,z
+      - ../cqrsx-postgres/sql/001-event-store.sql:/docker-entrypoint-initdb.d/10-event-store.sql:ro,z
+      - ../cqrsx-postgres/sql/002-transactional-outbox.sql:/docker-entrypoint-initdb.d/20-outbox.sql:ro,z
       - ./infra/postgres/30-grants.sql:/docker-entrypoint-initdb.d/30-grants.sql:ro,z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cqrsx -d encore"]
@@ -35,7 +35,7 @@ services:
       retries: 30
 
   # Profile "app": the whole stack from images (make full). Build context is the repository root
-  # because the back-end needs ../cqrsx.
+  # because the images need the root `Cargo.toml` and the crates of the framework.
   backend:
     profiles: ["app"]
     build:

@@ -1,9 +1,15 @@
-# Build context: repository root. The sidecar does not depend on cqrsx, but shares the demo workspace.
+# Build context: repository root. The sidecar does not depend on cqrsx, but shares the demo workspace. The crates of
+# the framework inherit their dependencies and lints from the root workspace, so the image copies the root
+# `Cargo.toml` and every member of its `members`, or cargo stops with `failed to find a workspace root`.
 FROM docker.io/library/rust:1.98-bookworm AS build
 WORKDIR /src
-COPY rust-toolchain.toml rustfmt.toml ./
+COPY Cargo.toml rust-toolchain.toml rustfmt.toml ./
 COPY cqrsx ./cqrsx
+COPY cqrsx-engine ./cqrsx-engine
+COPY cqrsx-fixtures ./cqrsx-fixtures
 COPY cqrsx-macros ./cqrsx-macros
+COPY cqrsx-mongodb ./cqrsx-mongodb
+COPY cqrsx-postgres ./cqrsx-postgres
 COPY demo/Cargo.toml demo/Cargo.lock ./demo/
 COPY demo/back-end ./demo/back-end
 COPY demo/sidecar ./demo/sidecar

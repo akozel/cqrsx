@@ -8,19 +8,13 @@
     clippy::unreachable,
     clippy::indexing_slicing
 )]
+#[cfg(all(feature = "postgres", feature = "mongodb"))]
+#[path = "engine/database.rs"]
+mod database;
 #[path = "engine/modules.rs"]
 mod modules;
 #[cfg(all(feature = "postgres", feature = "mongodb"))]
-#[path = "../../cqrsx/tests/support/mongo.rs"]
-mod mongo_container;
-#[cfg(all(feature = "postgres", feature = "mongodb"))]
-#[path = "../../cqrsx/tests/support/port_lease.rs"]
-mod port_lease;
-#[cfg(all(feature = "postgres", feature = "mongodb"))]
 #[path = "engine/postgres.rs"]
 mod postgres;
-#[cfg(all(feature = "postgres", feature = "mongodb"))]
-#[path = "../../cqrsx/tests/support/postgres.rs"]
-mod postgres_container;
 #[path = "engine/scenario.rs"]
 mod scenario;

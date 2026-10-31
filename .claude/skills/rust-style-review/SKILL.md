@@ -1,6 +1,6 @@
 ---
 name: rust-style-review
-description: Check Rust code of this repository (cqrsx, cqrsx-macros, demo) against the project's code guidelines in .claude/rules/rust-style.md, report verified findings by rule and, when asked, fix them and enable the matching lints. Use when the user asks for a guidelines, style or code-quality review or audit of the Rust code.
+description: Check Rust code of this repository (cqrsx, cqrsx-engine, cqrsx-postgres, cqrsx-mongodb, cqrsx-macros, cqrsx-fixtures, demo) against the project's code guidelines in .claude/rules/rust-style.md, report verified findings by rule and, when asked, fix them and enable the matching lints. Use when the user asks for a guidelines, style or code-quality review or audit of the Rust code.
 ---
 
 # Rust style review
@@ -18,7 +18,7 @@ are). `--lib` keeps test code out:
 cargo clippy --locked -p cqrsx --lib --all-features --message-format=short -- -W clippy::wildcard_enum_match_arm
 ```
 
-Already in `[lints]` of `cqrsx` and `cqrsx-macros`, so plain `cargo clippy` reports them:
+Already in `[lints]` of every crate (`lints.workspace = true`), so plain `cargo clippy` reports them:
 - `deny` since epic 06, ticket 03: `unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`,
   `indexing_slicing` (rules 6–8). Tests are allowed by `clippy.toml` at the workspace root; the assertion helpers
   (`testing::validator`, `MemStore`) and the integration-test crates allow them with `#![allow(..)]`.

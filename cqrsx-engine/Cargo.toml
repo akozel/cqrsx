@@ -8,13 +8,15 @@ description = "The engine of cqrsx: modules assembled into one application over 
 
 [features]
 default = []
-postgres = ["cqrsx/postgres", "dep:sqlx"]
-mongodb = ["postgres", "cqrsx/mongodb", "dep:mongodb"]
+postgres = ["dep:cqrsx-postgres", "dep:sqlx"]
+mongodb = ["postgres", "dep:cqrsx-mongodb", "dep:mongodb"]
 http = ["dep:axum", "dep:tower-http", "dep:tracing-subscriber", "tokio/net", "tokio/signal"]
 
 [dependencies]
 axum = { workspace = true, optional = true }
 cqrsx.workspace = true
+cqrsx-mongodb = { workspace = true, optional = true }
+cqrsx-postgres = { workspace = true, optional = true }
 mongodb = { workspace = true, optional = true }
 serde.workspace = true
 serde_json.workspace = true
@@ -28,16 +30,14 @@ tracing-subscriber = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
-chrono.workspace = true
+cqrsx-fixtures.workspace = true
 log.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sqlx.workspace = true
 mongodb.workspace = true
-testcontainers.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
 tracing = { workspace = true, features = ["log"] }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 uuid.workspace = true
 
 [lints]

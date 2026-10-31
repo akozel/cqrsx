@@ -11,8 +11,8 @@
 //! - [`task`]: a task as data: what a command publishes, a delivery attempt and the policies of the task types.
 //! - [`worker`]: running tasks: handlers, dispatcher, adapters, queue port, executor and the worker runtime.
 //! - [`mutex`]: the one helper that takes a `std::sync::Mutex` (shared with `cqrsx-engine`).
-//! - `postgres`: PostgreSQL adapters, atomic outbox publication and canonical SQL assets.
-//! - `mongodb`: optional MongoDB read side: read-model documents and projection checkpoints.
+//! - [`diagnostics`]: what the crates of the framework share about log lines: a safe name as a log field and the
+//!   category and code of a failed storage operation.
 //! - Derive macros (crate `cqrsx-macros`) live next to the trait each implements: `Event` and `Events`
 //!   ([`domain::event`]: an event type's stored name and version, an aggregate's enum of events), `Command` and
 //!   `Decide` ([`domain::command`]: what is known of a command, how an enum of commands decides), `Rejection`
@@ -20,23 +20,21 @@
 //!   attribute `task_handler` ([`worker`]: a task handler written as a function).
 //!
 //! Applications own business transitions and repeat-safe task effects. The application is assembled from these
-//! components by the engine, the crate `cqrsx-engine`. The README below describes the core and the rules.
+//! components by the engine, the crate `cqrsx-engine`. The stores live in crates of their own, which the core does not
+//! know: `cqrsx-postgres` (journal, outbox, task queue, checkpoints, views) and `cqrsx-mongodb` (views and checkpoints).
+//! The README below describes the core and the rules.
 //!
 #![doc = include_str!("../README.md")]
 
 extern crate self as cqrsx;
 
 pub mod command;
-mod diagnostics;
+pub mod diagnostics;
 pub mod domain;
 mod env;
 pub mod journal;
 pub mod memory;
-#[cfg(feature = "mongodb")]
-pub mod mongodb;
 pub mod mutex;
-#[cfg(feature = "postgres")]
-pub mod postgres;
 pub mod projection;
 pub mod reactions;
 pub mod task;

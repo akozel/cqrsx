@@ -85,15 +85,17 @@ RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-f
 
 The test parallelism and seed match the CI settings. Integration tests automatically
 create their own PostgreSQL `18.6-alpine` containers and apply the schemas, and their
-own MongoDB `8.2` containers for the `mongodb` feature;
+own MongoDB `8.2` containers for the `cqrsx-mongodb` tests and the engine's `mongodb` feature (the containers come
+from the `cqrsx-fixtures` crate);
 they do not require the Compose database. The first run needs access to the image
 registry.
 
-Run the tests of each crate without its optional stores and with each feature on its own:
+The core and the stores (`cqrsx-postgres`, `cqrsx-mongodb`) have no features; the engine has three. Run the tests
+of the crates one by one and of the engine with each feature on its own:
 
 ```bash
-cargo test --locked -p cqrsx --no-default-features                       # core without PostgreSQL
-cargo test --locked -p cqrsx --no-default-features --features postgres   # also: mongodb
+cargo test --locked -p cqrsx                                              # core, in memory
+cargo test --locked -p cqrsx-postgres                                     # also: -p cqrsx-mongodb
 cargo test --locked -p cqrsx-engine --no-default-features                # engine in memory
 cargo test --locked -p cqrsx-engine --no-default-features --features postgres   # also: mongodb, http
 ```
@@ -114,5 +116,6 @@ The full coverage run requires the Podman API socket configured in the Tests sec
 cargo llvm-cov --workspace --all-features --html --open --ignore-filename-regex '(^|/)main\.rs$' --fail-under-lines 97
 ```
 
-Open `target/llvm-cov/html/index.html` in your browser. CI also requires 97% for the core and the engine on their
-own: `cargo llvm-cov --locked -p cqrsx --all-features --fail-under-lines 97` and the same with `-p cqrsx-engine`.
+Open `target/llvm-cov/html/index.html` in your browser. CI also requires 97% for the core, the stores and the engine on their
+own: `cargo llvm-cov --locked -p cqrsx --fail-under-lines 97` and the same with `-p cqrsx-postgres`, `-p cqrsx-mongodb`
+and, with `--all-features`, `-p cqrsx-engine`.

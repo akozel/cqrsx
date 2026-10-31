@@ -9,7 +9,6 @@ use axum::{
     http::{Request, StatusCode, header},
 };
 use chrono::NaiveDate;
-use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
 use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat};
 use cqrsx::worker::TaskResult;
 use cqrsx::{
@@ -20,10 +19,6 @@ use cqrsx::{
     domain::aggregate::Aggregate,
     journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     memory::{checkpoint_store::MemCheckpointStore, view_repository::MemViewRepository},
-    postgres::{
-        EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA, event_repository::PostgresEventRepository,
-        outbox::PostgresEventRepositoryWithOutbox,
-    },
     projection::{
         checkpoint::{CheckpointKey, CheckpointStore},
         processor::{
@@ -39,6 +34,12 @@ use cqrsx_engine::{
     mongodb::MongoDb,
     postgres::{Postgres, PostgresPools},
     settings::{DEFAULT_SNAPSHOT_EVERY, Settings},
+};
+use cqrsx_postgres::{
+    EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA,
+    event_repository::PostgresEventRepository,
+    outbox::PostgresEventRepositoryWithOutbox,
+    pool::{ConnectionPingPolicy, StatementTimeout, connect_pool},
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,
@@ -144,7 +145,7 @@ async fn database() -> (PgPool, testcontainers::ContainerAsync<GenericImage>) {
         loop {
             if let Ok(pool) = connect_pool(
                 options.clone(),
-                ConnectionPingPolicy::Idle(cqrsx::postgres::pool::DEFAULT_IDLE_PING_AFTER),
+                ConnectionPingPolicy::Idle(cqrsx_postgres::pool::DEFAULT_IDLE_PING_AFTER),
                 StatementTimeout::Default,
             )
             .await

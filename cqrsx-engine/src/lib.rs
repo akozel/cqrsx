@@ -38,8 +38,6 @@ use crate::{
     settings::Settings,
     views::{CheckpointOps, Registry},
 };
-#[cfg(feature = "postgres")]
-use cqrsx::postgres::event_repository::PostgresEventRepository;
 use cqrsx::{
     command::observer::AnyCommandObserver,
     domain::{aggregate::Aggregate, event::EventEnvelope},
@@ -53,6 +51,8 @@ use cqrsx::{
         dispatcher::TaskDispatcher,
     },
 };
+#[cfg(feature = "postgres")]
+use cqrsx_postgres::event_repository::PostgresEventRepository;
 use std::{
     any::{Any, TypeId, type_name},
     collections::{BTreeMap, HashMap},

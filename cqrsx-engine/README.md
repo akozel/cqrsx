@@ -345,8 +345,8 @@ application prefix. Module-specific variables are read through `Setup` with that
 
 | Feature | Adds | Default |
 |---|---|---|
-| `postgres` | the journal, the outbox and the task queue in PostgreSQL (`Builder::event_store`) and the views in PostgreSQL (`Builder::projections`) | no |
-| `mongodb` | the views and the checkpoints of their processors in MongoDB; includes `postgres` | no |
+| `postgres` | the journal, the outbox and the task queue in PostgreSQL (`Builder::event_store`) and the views in PostgreSQL (`Builder::projections`), over the crate `cqrsx-postgres` | no |
+| `mongodb` | the views and the checkpoints of their processors in MongoDB, over the crate `cqrsx-mongodb`; includes `postgres` | no |
 | `http` | the HTTP routes of the modules and `serve` (axum 0.8, `TraceLayer`): the process logger, the shutdown signals and the coordinated stop of the server, the task runtime and the processors | no |
 
 Without a feature the engine runs on in-memory stores.

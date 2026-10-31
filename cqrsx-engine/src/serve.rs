@@ -17,12 +17,12 @@ use crate::{
     build::{BuildError, Builder},
     setup::SetupError,
 };
-#[cfg(feature = "postgres")]
-use cqrsx::postgres::task_queue::PostgresTaskQueue;
 use cqrsx::{
     mutex::lock,
     worker::runtime::{TaskRuntimeError, prepare},
 };
+#[cfg(feature = "postgres")]
+use cqrsx_postgres::task_queue::PostgresTaskQueue;
 use lifecycle::run_with_processors;
 use signal::shutdown_signal;
 use std::{

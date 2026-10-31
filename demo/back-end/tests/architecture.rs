@@ -194,8 +194,6 @@ fn externals(layer: Option<Layer>) -> Externals {
         },
         Some(Layer::Application) => Externals {
             forbidden: &[
-                "cqrsx::postgres",
-                "cqrsx::mongodb",
                 "cqrsx::worker::adapter",
                 "cqrsx::worker::dispatcher",
                 "cqrsx::worker::runtime",
@@ -689,7 +687,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ),
         ("concert/domain/x.rs", "use crate::concert::application::app::ConcertApp;\n"),
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
-        ("concert/domain/x.rs", "use cqrsx::postgres::pool::connect_pool;\n"),
+        ("concert/domain/x.rs", "use cqrsx_postgres::pool::connect_pool;\n"),
         ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
         ("fan/application/x.rs", "use cqrsx::testing::mem_store::MemStore;\n"),
         (
@@ -910,7 +908,7 @@ fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_th
         "use cqrsx::view::projection::ViewProjection;\n",
         "use cqrsx::view::repository::ViewContext;\n",
         "use cqrsx::view::verify::verify;\n",
-        "use cqrsx::mongodb::view_repository::MongoViewRepository;\n",
+        "use cqrsx_mongodb::view_repository::MongoViewRepository;\n",
         "use cqrsx::memory::view_repository::MemViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
@@ -948,14 +946,14 @@ fn the_checker_sees_grouped_imports_inline_paths_and_ignores_comments_and_string
         "use crate::{application::x, infrastructure::{mongo::Repo as R, self}};\n\
          // use crate::presentation::http;\n\
          let s = \"sqlx::query\"; let r = r#\"mongodb::x\"#; let c = '\"';\n\
-         fn f<'a>() { cqrsx::postgres::connect(); }\n\
+         fn f<'a>() { cqrsx_postgres::connect(); }\n\
          #[cfg(test)]\nmod tests { use serde_json::json; }\n",
     );
     let found: Vec<String> = paths(&code).into_iter().map(|(_, p)| p).collect();
     assert!(found.contains(&"crate::application::x".to_owned()), "{found:?}");
     assert!(found.contains(&"crate::infrastructure::mongo::Repo".to_owned()), "{found:?}");
     assert!(found.contains(&"crate::infrastructure".to_owned()), "{found:?}");
-    assert!(found.contains(&"cqrsx::postgres::connect".to_owned()), "{found:?}");
+    assert!(found.contains(&"cqrsx_postgres::connect".to_owned()), "{found:?}");
     assert!(found.contains(&"serde_json::json".to_owned()), "{found:?}");
     assert!(
         !found

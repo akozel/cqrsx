@@ -1,7 +1,19 @@
-//! Fixed diagnostic context, independent of error Display/Debug and payloads.
+//! The diagnostics contract of the crates of the framework: what a log field may carry, and what a storage adapter
+//! tells the core's logs about a failed operation.
+//!
+//! Public, for the crates that write log lines of their own or wrap a storage's errors:
+//! - [`safe_type`]: a name chosen by the application as a log field, never a free text;
+//! - [`StorageFailure`]: the fixed category and the code of a failed storage operation. An adapter wraps the error of
+//!   its driver in it; the core finds it in the chain of sources of a failed command or projection batch and writes
+//!   `storage_category` and `sqlstate` fields, without knowing the driver.
+//!
+//! The log lines of the core are private: their fields are fixed, and no id, payload or error text reaches them.
 use crate::projection::processor::{Operation, observer::FailureCategory};
+use std::{error::Error, fmt};
 
-pub(crate) fn safe_type(value: &str) -> &str {
+/// An application-chosen name (an aggregate or task type) as a log field: itself when it is a plain identifier of
+/// ASCII letters, digits and `_`, else `unknown`. The name is never trusted into a log as it is.
+pub fn safe_type(value: &str) -> &str {
     if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         value
     } else {
@@ -9,61 +21,86 @@ pub(crate) fn safe_type(value: &str) -> &str {
     }
 }
 
-#[cfg(feature = "postgres")]
-pub(crate) fn sqlx_kind(error: &sqlx::Error) -> &'static str {
-    match error {
-        sqlx::Error::Io(_) => "io",
-        sqlx::Error::Tls(_) => "tls",
-        sqlx::Error::Database(_) => "database",
-        sqlx::Error::PoolTimedOut => "pool_timeout",
-        sqlx::Error::PoolClosed => "pool_closed",
-        sqlx::Error::Decode(_) | sqlx::Error::ColumnDecode { .. } => "decode",
-        sqlx::Error::Configuration(_) => "configuration",
-        _ => "other",
+/// A failure of a storage operation with the two facts a log may carry: a fixed `category` word (`io`, `pool_closed`,
+/// ...) and the storage's own `code` (for PostgreSQL, the SQLSTATE), never the message of the driver.
+///
+/// A storage adapter wraps the error of its driver in it where the error becomes a [`PersistenceError`] (or another
+/// error of the core); the core then logs `storage_category` and `sqlstate` for a failed command or projection batch.
+/// The wrapper is transparent: `Display`, `Debug` and [`source`](Error::source) are those of the cause, so the text of
+/// every error that holds it is the one the driver's error gave. To reach the driver's error, find the `StorageFailure`
+/// in the chain of sources (`downcast_ref::<StorageFailure>()`) and take [`cause`](Self::cause).
+///
+/// [`PersistenceError`]: crate::journal::PersistenceError
+pub struct StorageFailure {
+    category: &'static str,
+    code: Option<String>,
+    cause: Box<dyn Error + Send + Sync + 'static>,
+}
+
+impl StorageFailure {
+    /// `category` is a fixed word the adapter chooses; `code` is the storage's code, when it gave a valid one.
+    pub fn new(category: &'static str, code: Option<String>, cause: impl Error + Send + Sync + 'static) -> Self {
+        Self {
+            category,
+            code,
+            cause: Box::new(cause),
+        }
+    }
+
+    /// The fixed category word.
+    pub fn category(&self) -> &'static str {
+        self.category
+    }
+
+    /// The storage's code, when there is one.
+    pub fn code(&self) -> Option<&str> {
+        self.code.as_deref()
+    }
+
+    /// The error of the driver.
+    pub fn cause(&self) -> &(dyn Error + Send + Sync + 'static) {
+        &*self.cause
     }
 }
 
-#[cfg(feature = "postgres")]
-pub(crate) fn sqlstate(error: &sqlx::Error) -> Option<std::borrow::Cow<'_, str>> {
-    let code = error.as_database_error()?.code()?;
-    (code.len() == 5 && code.bytes().all(|c| c.is_ascii_uppercase() || c.is_ascii_digit())).then_some(code)
-}
-
-#[cfg(feature = "postgres")]
-pub(crate) fn log_sqlx_failure(operation: &'static str, error: &sqlx::Error) {
-    tracing::error!(component = "postgres", operation, category = sqlx_kind(error), sqlstate = ?sqlstate(error), "storage operation failed");
-}
-
-/// A fixed word for a MongoDB driver error.
-#[cfg(feature = "mongodb")]
-pub(crate) fn mongodb_kind(error: &::mongodb::error::Error) -> &'static str {
-    use ::mongodb::error::ErrorKind;
-    match error.kind.as_ref() {
-        ErrorKind::Io(_) => "io",
-        ErrorKind::ServerSelection { .. } => "server_selection",
-        ErrorKind::Command(_) => "command",
-        ErrorKind::Write(_) => "write",
-        ErrorKind::BsonDeserialization(_) | ErrorKind::BsonSerialization(_) => "bson",
-        _ => "other",
+impl fmt::Debug for StorageFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Debug::fmt(&self.cause, f)
     }
 }
 
-#[cfg(feature = "mongodb")]
-pub(crate) fn log_mongodb_failure(operation: &'static str, error: &::mongodb::error::Error) {
-    tracing::error!(component = "mongodb", operation, category = mongodb_kind(error), code = ?crate::mongodb::server_code(error), "storage operation failed");
+impl fmt::Display for StorageFailure {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        fmt::Display::fmt(&self.cause, f)
+    }
+}
+
+impl Error for StorageFailure {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        self.cause.source()
+    }
+}
+
+/// The first [`StorageFailure`] in `source`'s chain: the only technical detail safe to log.
+fn find_storage<'e>(source: &'e (dyn Error + 'static)) -> Option<&'e StorageFailure> {
+    let mut current = Some(source);
+    while let Some(error) = current {
+        if let Some(failure) = error.downcast_ref::<StorageFailure>() {
+            return Some(failure);
+        }
+        current = error.source();
+    }
+    None
 }
 
 pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, source: &(dyn std::error::Error + 'static)) {
     // These details are inspected before CommandGatewayError intentionally discards
     // technical sources. They never change the outward error or retry policy.
-    #[cfg(feature = "postgres")]
-    if let Some(error) = find_sqlx(source) {
+    if let Some(failure) = find_storage(source) {
         tracing::error!(component = "command", operation = "execute", aggregate_type = safe_type(aggregate_type), category,
-            storage_category = sqlx_kind(error), sqlstate = ?sqlstate(error), "command execution failed");
+            storage_category = failure.category(), sqlstate = ?failure.code(), "command execution failed");
         return;
     }
-    #[cfg(not(feature = "postgres"))]
-    let _ = source;
     tracing::error!(
         component = "command",
         operation = "execute",
@@ -71,19 +108,6 @@ pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, 
         category,
         "command execution failed"
     );
-}
-
-/// The first SQLx error in `source`'s chain: the only technical detail safe to log.
-#[cfg(feature = "postgres")]
-fn find_sqlx<'e>(source: &'e (dyn std::error::Error + 'static)) -> Option<&'e sqlx::Error> {
-    let mut current = Some(source);
-    while let Some(error) = current {
-        if let Some(error) = error.downcast_ref::<sqlx::Error>() {
-            return Some(error);
-        }
-        current = error.source();
-    }
-    None
 }
 
 /// A command refused before it ran: no lock for its aggregate. Expected under overload, hence `warn`.
@@ -118,15 +142,12 @@ pub(crate) fn log_projection_batch_failure(
     jobs: usize,
     source: &(dyn std::error::Error + 'static),
 ) {
-    #[cfg(feature = "postgres")]
-    if let Some(error) = find_sqlx(source) {
+    if let Some(failure) = find_storage(source) {
         tracing::error!(component = "projection", operation, projection = safe_type(projection),
-            aggregate_type = safe_type(aggregate_type), jobs, storage_category = sqlx_kind(error),
-            sqlstate = ?sqlstate(error), "projection batch failed");
+            aggregate_type = safe_type(aggregate_type), jobs, storage_category = failure.category(),
+            sqlstate = ?failure.code(), "projection batch failed");
         return;
     }
-    #[cfg(not(feature = "postgres"))]
-    let _ = source;
     tracing::error!(
         component = "projection",
         operation,
@@ -225,108 +246,43 @@ pub(crate) fn log_task_handler_panic(attempt: &crate::task::attempt::TaskAttempt
 
 #[cfg(test)]
 pub(crate) mod test_support {
-    use std::{
-        future::Future,
-        io,
-        sync::{Arc, Mutex},
-    };
-    use tracing::instrument::WithSubscriber;
+    use super::*;
+    use std::{future::Future, io};
 
-    #[derive(Clone, Default)]
-    struct Writer(Arc<Mutex<Vec<u8>>>);
-    impl io::Write for Writer {
-        fn write(&mut self, bytes: &[u8]) -> io::Result<usize> {
-            self.0.lock().unwrap().extend_from_slice(bytes);
-            Ok(bytes.len())
-        }
-        fn flush(&mut self) -> io::Result<()> {
-            Ok(())
-        }
-    }
-    impl<'a> tracing_subscriber::fmt::MakeWriter<'a> for Writer {
-        type Writer = Self;
-        fn make_writer(&'a self) -> Self {
-            self.clone()
-        }
-    }
-
+    /// The output of `work` and the `ERROR` lines it logged, one subscriber for this task alone.
     pub(crate) async fn capture<T>(work: impl Future<Output = T>) -> (T, String) {
         capture_at(tracing::Level::ERROR, work).await
     }
 
+    /// The output of `work` and the lines of `level` and above it logged.
     pub(crate) async fn capture_at<T>(level: tracing::Level, work: impl Future<Output = T>) -> (T, String) {
-        let writer = Writer::default();
-        let dispatch = tracing::Dispatch::new(
-            tracing_subscriber::fmt()
-                .with_writer(writer.clone())
-                .with_max_level(level)
-                .with_ansi(false)
-                .without_time()
-                .finish(),
-        );
-        tracing::dispatcher::with_default(&dispatch, || {
-            // Prime shared callsites that parallel tests may register without a subscriber.
-            super::log_command_failure("prime", "unexpected", &io::Error::other("prime"));
-            super::log_lock_refused("prime", crate::command::locks::LockRefused::TimedOut);
-            super::log_missing_executor("prime");
-            super::log_projection_batch_failure("prime", "prime", "prime", 1, &io::Error::other("prime"));
-            super::log_projection_batch_panic("prime", "prime", "prime", 1);
-            super::log_projection_event("prime", "prime", "prime");
-            super::log_poisoned_lock("prime");
-            super::log_broken_invariant("prime", "prime");
-            super::log_projection_failure("prime", "prime", super::Operation::Page, super::FailureCategory::Unknown, 1);
-            #[cfg(feature = "postgres")]
-            {
-                super::log_command_failure("prime", "unexpected", &sqlx::Error::RowNotFound);
-                super::log_projection_batch_failure("prime", "prime", "prime", 1, &sqlx::Error::RowNotFound);
-                super::log_sqlx_failure("prime", &sqlx::Error::RowNotFound);
-            }
-            #[cfg(feature = "mongodb")]
-            super::log_mongodb_failure("prime", &::mongodb::error::Error::custom("prime"));
-            tracing::callsite::rebuild_interest_cache();
-            writer.0.lock().unwrap().clear();
-        });
-        let result = work.with_subscriber(dispatch).await;
-        let text = String::from_utf8(writer.0.lock().unwrap().clone()).unwrap();
-        (result, text)
+        cqrsx_fixtures::logs::capture_at(level, prime, work).await
     }
 
-    #[cfg(test)]
-    mod tests {
-        use super::*;
-        use std::io::Write;
-
-        #[test]
-        fn writer_clones_append_to_shared_buffer_and_flush_preserves_bytes() {
-            let mut writer = Writer::default();
-            let mut clone = writer.clone();
-            writer.write_all(b"first event\n").unwrap();
-            clone.write_all(b"second event\n").unwrap();
-            clone.flush().unwrap();
-            assert_eq!(*writer.0.lock().unwrap(), b"first event\nsecond event\n");
-        }
-
-        #[tokio::test]
-        async fn capture_keeps_subscriber_across_await_and_filters_by_level() {
-            let (result, log) = capture(async {
-                tracing::info!("filtered info event");
-                tokio::task::yield_now().await;
-                tracing::error!("captured error event");
-                42
-            })
-            .await;
-            assert_eq!(result, 42);
-            assert!(log.contains("captured error event"));
-            assert!(!log.contains("filtered info event"));
-            assert!(!log.contains("prime"));
-
-            let (_, log) = capture_at(tracing::Level::INFO, async {
-                tokio::task::yield_now().await;
-                tracing::info!("captured info event");
-            })
-            .await;
-            assert!(log.contains("captured info event"));
-        }
+    /// Touches every log line of the crate under the capturing subscriber, so that no callsite that parallel tests
+    /// registered without a subscriber stays disabled.
+    fn prime() {
+        log_command_failure("prime", "unexpected", &io::Error::other("prime"));
+        log_command_failure(
+            "prime",
+            "unexpected",
+            &StorageFailure::new("prime", None, io::Error::other("prime")),
+        );
+        log_lock_refused("prime", crate::command::locks::LockRefused::TimedOut);
+        log_missing_executor("prime");
+        log_projection_batch_failure("prime", "prime", "prime", 1, &io::Error::other("prime"));
+        log_projection_batch_failure(
+            "prime",
+            "prime",
+            "prime",
+            1,
+            &StorageFailure::new("prime", None, io::Error::other("prime")),
+        );
+        log_projection_batch_panic("prime", "prime", "prime", 1);
+        log_projection_event("prime", "prime", "prime");
+        log_poisoned_lock("prime");
+        log_broken_invariant("prime", "prime");
+        log_projection_failure("prime", "prime", Operation::Page, FailureCategory::Unknown, 1);
     }
 }
 
@@ -387,84 +343,21 @@ mod tests {
         assert_eq!(safe_type(""), "unknown");
     }
 
-    #[cfg(feature = "postgres")]
     #[derive(Debug, thiserror::Error)]
-    #[error("private_database_message_payload_query_constraint")]
-    struct DatabaseFault {
-        code: Option<&'static str>,
+    #[error("private_wrapper")]
+    struct Wrapper(#[source] Box<dyn std::error::Error + Send + Sync>);
+
+    #[derive(Debug, thiserror::Error)]
+    #[error("private_cause")]
+    struct Cause {
+        #[source]
+        inner: std::io::Error,
     }
 
-    #[cfg(feature = "postgres")]
-    impl sqlx::error::DatabaseError for DatabaseFault {
-        fn message(&self) -> &str {
-            "private_database_message"
-        }
-        fn code(&self) -> Option<std::borrow::Cow<'_, str>> {
-            self.code.map(Into::into)
-        }
-        fn as_error(&self) -> &(dyn std::error::Error + Send + Sync + 'static) {
-            self
-        }
-        fn as_error_mut(&mut self) -> &mut (dyn std::error::Error + Send + Sync + 'static) {
-            self
-        }
-        fn into_error(self: Box<Self>) -> Box<dyn std::error::Error + Send + Sync + 'static> {
-            self
-        }
-        fn kind(&self) -> sqlx::error::ErrorKind {
-            sqlx::error::ErrorKind::Other
-        }
-    }
-
-    #[cfg(feature = "postgres")]
     #[tokio::test]
-    async fn sqlstate_validation_rejects_malformed_codes_without_logging_them() {
-        for code in ["42P01", "23505", "00000", "ABCDE", "12345"] {
-            let error = sqlx::Error::Database(Box::new(DatabaseFault { code: Some(code) }));
-            assert_eq!(sqlstate(&error).as_deref(), Some(code));
-            let (_, log) = test_support::capture(async { log_sqlx_failure("connect", &error) }).await;
-            assert!(log.contains(&format!("sqlstate=Some(\"{code}\")")));
-            assert!(!log.contains("private_"));
-        }
-
-        for code in [
-            None,
-            Some(""),
-            Some("1234"),
-            Some("123456"),
-            Some("42p01"),
-            Some("42_01"),
-            Some("42\n01"),
-            Some("42\u{0}01"),
-            Some("éABC"),
-            Some("１２３４５"),
-        ] {
-            let error = sqlx::Error::Database(Box::new(DatabaseFault { code }));
-            assert_eq!(sqlstate(&error), None);
-            let (_, log) = test_support::capture(async {
-                log_sqlx_failure("settle", &error);
-                log_command_failure("Account", "connection", &error);
-            })
-            .await;
-            assert_eq!(log.lines().count(), 2);
-            for line in log.lines() {
-                assert!(line.contains("sqlstate=None"));
-                assert!(!line.contains("private_"));
-            }
-        }
-        assert_eq!(sqlstate(&sqlx::Error::PoolClosed), None);
-    }
-
-    #[cfg(feature = "postgres")]
-    #[tokio::test]
-    async fn command_diagnostics_find_nested_sqlx_source_and_emit_one_safe_event() {
-        #[derive(Debug, thiserror::Error)]
-        #[error("private_wrapper")]
-        struct Wrapper(#[source] Box<dyn std::error::Error + Send + Sync>);
-
-        let source = Wrapper(Box::new(Wrapper(Box::new(sqlx::Error::Database(Box::new(DatabaseFault {
-            code: Some("23505"),
-        }))))));
+    async fn command_diagnostics_find_a_nested_storage_failure_and_emit_one_safe_event() {
+        let failure = StorageFailure::new("database", Some("23505".into()), std::io::Error::other("private_driver"));
+        let source = Wrapper(Box::new(Wrapper(Box::new(failure))));
         let (_, log) = test_support::capture(async {
             log_command_failure("private_type\nmail@example.com", "deserialization", &source);
         })
@@ -492,10 +385,63 @@ mod tests {
         assert!(!log.contains("private_"));
     }
 
-    #[cfg(feature = "postgres")]
+    #[tokio::test]
+    async fn a_storage_failure_without_a_code_logs_its_category_and_no_code() {
+        let failure = StorageFailure::new("pool_closed", None, std::io::Error::other("private_driver"));
+        let (_, log) = test_support::capture(async { log_command_failure("Account", "connection", &failure) }).await;
+        assert_eq!(log.lines().count(), 1);
+        assert!(
+            log.contains("storage_category=\"pool_closed\"") && log.contains("sqlstate=None"),
+            "{log}"
+        );
+        assert!(!log.contains("private_"));
+    }
+
+    #[tokio::test]
+    async fn a_projection_batch_failure_logs_the_code_of_the_storage_failure() {
+        let source = crate::journal::PersistenceError::ConnectionError(Box::new(StorageFailure::new(
+            "database",
+            Some("40001".into()),
+            std::io::Error::other("private_driver"),
+        )));
+        let (_, log) =
+            test_support::capture(async { log_projection_batch_failure("halls", "Concert", "deliver", 2, &source) }).await;
+        assert_eq!(log.lines().count(), 1, "{log}");
+        assert!(
+            log.contains("storage_category=\"database\"") && log.contains("sqlstate=Some(\"40001\")"),
+            "{log}"
+        );
+        assert!(!log.contains("private_"), "{log}");
+    }
+
+    #[test]
+    fn a_storage_failure_is_transparent_and_hands_out_its_facts_and_its_cause() {
+        use std::error::Error as _;
+        let failure = StorageFailure::new(
+            "io",
+            Some("08006".into()),
+            Cause {
+                inner: std::io::Error::other("deeper"),
+            },
+        );
+        assert_eq!((failure.category(), failure.code()), ("io", Some("08006")));
+        let cause = Cause {
+            inner: std::io::Error::other("deeper"),
+        };
+        assert_eq!(failure.to_string(), cause.to_string());
+        assert_eq!(format!("{failure:?}"), format!("{cause:?}"));
+        assert_eq!(failure.source().unwrap().to_string(), "deeper");
+        assert!(failure.cause().is::<Cause>());
+        assert_eq!(StorageFailure::new("other", None, cause).code(), None);
+    }
+
     #[tokio::test]
     async fn projection_batch_diagnostics_log_one_safe_event_per_batch_with_the_storage_category() {
-        let source = crate::journal::PersistenceError::UnknownError(Box::new(sqlx::Error::PoolTimedOut));
+        let source = crate::journal::PersistenceError::UnknownError(Box::new(StorageFailure::new(
+            "pool_timeout",
+            None,
+            std::io::Error::other("private_driver"),
+        )));
         let (_, log) = test_support::capture(async {
             log_projection_batch_failure("concert_halls", "private_type\nmail@example.com", "deliver", 3, &source);
             log_projection_batch_failure(
@@ -533,84 +479,6 @@ mod tests {
             "{log}"
         );
         assert!(!log.contains("private_") && !log.contains("mail@example.com"), "{log}");
-    }
-
-    #[cfg(feature = "postgres")]
-    #[tokio::test]
-    async fn logging_preserves_database_error_identity_and_downcasting() {
-        let fault: Box<dyn sqlx::error::DatabaseError> = Box::new(DatabaseFault { code: Some("42P01") });
-        let identity = std::ptr::from_ref(fault.downcast_ref::<DatabaseFault>());
-        let error = sqlx::Error::Database(fault);
-        let (_, log) = test_support::capture(async {
-            log_sqlx_failure("claim", &error);
-            log_command_failure("Account", "deserialization", &error);
-        })
-        .await;
-        assert!(!log.contains("private_"));
-        let sqlx::Error::Database(mut fault) = error else {
-            panic!("database error must be preserved")
-        };
-        assert_eq!(fault.message(), "private_database_message");
-        assert_eq!(fault.kind(), sqlx::error::ErrorKind::Other);
-        assert_eq!(
-            std::ptr::from_ref(fault.as_error_mut().downcast_mut::<DatabaseFault>().unwrap()),
-            identity
-        );
-        let fault = fault.into_error().downcast::<DatabaseFault>().unwrap();
-        assert_eq!(std::ptr::from_ref(fault.as_ref()), identity);
-        assert_eq!(fault.code, Some("42P01"));
-    }
-
-    #[cfg(feature = "postgres")]
-    #[tokio::test]
-    async fn sqlx_classification_uses_fixed_categories_and_valid_sqlstate_only() {
-        use std::io;
-        let errors = [
-            (sqlx::Error::Io(io::Error::other("private_io")), "io"),
-            (sqlx::Error::Tls(Box::new(io::Error::other("private_tls"))), "tls"),
-            (sqlx::Error::PoolTimedOut, "pool_timeout"),
-            (sqlx::Error::PoolClosed, "pool_closed"),
-            (sqlx::Error::Decode(Box::new(io::Error::other("private_decode"))), "decode"),
-            (
-                sqlx::Error::ColumnDecode {
-                    index: "private_column".into(),
-                    source: Box::new(io::Error::other("private_decode")),
-                },
-                "decode",
-            ),
-            (
-                sqlx::Error::Configuration(Box::new(io::Error::other("private_url"))),
-                "configuration",
-            ),
-            (sqlx::Error::Protocol("private_protocol".into()), "other"),
-            (
-                sqlx::Error::Database(Box::new(DatabaseFault { code: Some("42P01") })),
-                "database",
-            ),
-        ];
-        let (_, log) = test_support::capture(async {
-            for (error, category) in &errors {
-                assert_eq!(sqlx_kind(error), *category);
-                log_sqlx_failure("claim", error);
-                log_command_failure("Invoice", "unexpected", error);
-            }
-            for code in [None, Some("private_code"), Some("42p01"), Some("1234"), Some("123456")] {
-                let error = sqlx::Error::Database(Box::new(DatabaseFault { code }));
-                assert!(sqlstate(&error).is_none());
-                log_sqlx_failure("settle", &error);
-            }
-            #[derive(Debug, thiserror::Error)]
-            #[error("private_wrapper")]
-            struct Wrapper(#[source] sqlx::Error);
-            log_command_failure("Invoice", "unexpected", &Wrapper(sqlx::Error::PoolClosed));
-        })
-        .await;
-        assert!(log.contains("42P01"));
-        assert!(log.contains("storage_category=\"pool_closed\""));
-        assert!(!log.contains("private_"));
-        for (_, category) in errors {
-            assert!(log.contains(category));
-        }
     }
 }
 
@@ -690,41 +558,5 @@ mod task_failure_tests {
         assert!(!log.contains("secret"));
         assert!(!log.contains("alice@example.com"));
         assert!(!log.contains("token"));
-    }
-}
-
-#[cfg(all(test, feature = "mongodb"))]
-mod mongodb_tests {
-    use super::{log_mongodb_failure, mongodb_kind, test_support};
-    use crate::mongodb::test_support::*;
-
-    #[tokio::test]
-    async fn mongodb_failures_log_a_fixed_category_and_the_server_code_without_the_message() {
-        let errors = [io(), command(11000), write(121), write_concern(64), bson(), custom()];
-        assert_eq!(
-            errors.each_ref().map(mongodb_kind),
-            ["io", "command", "write", "write", "bson", "other"]
-        );
-        let (_, log) = test_support::capture(async {
-            for error in &errors {
-                log_mongodb_failure("claim", error);
-            }
-        })
-        .await;
-        assert_eq!(log.matches("storage operation failed").count(), errors.len(), "{log}");
-        assert_eq!(log.matches("component=\"mongodb\"").count(), errors.len(), "{log}");
-        assert_eq!(log.matches("operation=\"claim\"").count(), errors.len(), "{log}");
-        for (category, code) in [
-            ("command", "Some(11000)"),
-            ("write", "Some(121)"),
-            ("write", "Some(64)"),
-            ("io", "None"),
-        ] {
-            assert!(
-                log.contains(&format!("category=\"{category}\" code={code}")),
-                "{category} {code}: {log}"
-            );
-        }
-        assert!(!log.contains("private_"), "{log}");
     }
 }

@@ -1,0 +1,29 @@
+[package]
+name = "cqrsx-postgres"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "The PostgreSQL stores of cqrsx: event repository, outbox publication, task queue, projection checkpoints, views"
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+cqrsx.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+cqrsx-fixtures.workspace = true
+log.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
+tokio-util.workspace = true
+
+[lints]
+workspace = true

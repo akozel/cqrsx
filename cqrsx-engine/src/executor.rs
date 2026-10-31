@@ -1,6 +1,4 @@
 //! The executor of one aggregate type over the engine's stores, and the adapter of the observer of every command.
-#[cfg(feature = "postgres")]
-use cqrsx::postgres::outbox::PostgresEventRepositoryWithOutbox;
 use cqrsx::{
     command::{
         CommandExecutor, CommandGatewayError, CommitReport,
@@ -11,6 +9,8 @@ use cqrsx::{
     journal::persisted::PersistedEventStore,
     memory::event_repository::MemEventRepository,
 };
+#[cfg(feature = "postgres")]
+use cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox;
 use std::{collections::HashMap, sync::Arc};
 
 /// The executor of one aggregate type over the engine's journal: the variants are the stores, so a command from an

@@ -87,7 +87,7 @@ pub const PERSONAS: [Persona; 4] = [
 pub const TRUNCATE_SQL: &str = "TRUNCATE TABLE events, snapshots, transactional_outbox RESTART IDENTITY";
 /// `(logical database, collection)` of the read models.
 pub const READ_MODELS: [(&str, &str); 2] = [("encore_read", "concert_halls"), ("encore_read", "fan_wallets")];
-/// The checkpoints of the read models' projections: `cqrsx::mongodb::checkpoint_store::
+/// The checkpoints of the read models' projections: `cqrsx_mongodb::checkpoint_store::
 /// PROJECTION_CHECKPOINTS_COLLECTION` in the read database (the sidecar does not depend on cqrsx).
 pub const PROJECTION_CHECKPOINTS: (&str, &str) = ("encore_read", "projection_checkpoints");
 /// What 🧨 drops, in this order: the documents, then the checkpoints.

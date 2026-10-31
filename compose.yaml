@@ -11,9 +11,9 @@ services:
       - "${CQRSX_POSTGRES_PORT:-5433}:5432"
     volumes:
       - cqrsx_postgres_data:/var/lib/postgresql
-      - ./cqrsx/sql/001-event-store.sql:/docker-entrypoint-initdb.d/001-event-store.sql:ro,Z
-      - ./cqrsx/sql/002-transactional-outbox.sql:/docker-entrypoint-initdb.d/002-transactional-outbox.sql:ro,Z
-      - ./cqrsx/sql/003-projection-checkpoints.sql:/docker-entrypoint-initdb.d/003-projection-checkpoints.sql:ro,Z
+      - ./cqrsx-postgres/sql/001-event-store.sql:/docker-entrypoint-initdb.d/001-event-store.sql:ro,Z
+      - ./cqrsx-postgres/sql/002-transactional-outbox.sql:/docker-entrypoint-initdb.d/002-transactional-outbox.sql:ro,Z
+      - ./cqrsx-postgres/sql/003-projection-checkpoints.sql:/docker-entrypoint-initdb.d/003-projection-checkpoints.sql:ro,Z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cqrsx -d cqrsx"]
       interval: 5s

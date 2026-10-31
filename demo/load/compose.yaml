@@ -20,8 +20,8 @@ services:
     volumes:
       # The library's own schemas, exactly as the demo mounts them. No inspector/admin roles here:
       # there is no sidecar on this stand.
-      - ${LOAD_HOST_DIR:-.}/../../cqrsx/sql/001-event-store.sql:/docker-entrypoint-initdb.d/10-event-store.sql:ro,z
-      - ${LOAD_HOST_DIR:-.}/../../cqrsx/sql/002-transactional-outbox.sql:/docker-entrypoint-initdb.d/20-outbox.sql:ro,z
+      - ${LOAD_HOST_DIR:-.}/../../cqrsx-postgres/sql/001-event-store.sql:/docker-entrypoint-initdb.d/10-event-store.sql:ro,z
+      - ${LOAD_HOST_DIR:-.}/../../cqrsx-postgres/sql/002-transactional-outbox.sql:/docker-entrypoint-initdb.d/20-outbox.sql:ro,z
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U cqrsx -d encore"]
       interval: 2s

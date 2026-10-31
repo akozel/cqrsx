@@ -88,6 +88,8 @@ cqrsx/src/
 │                   executor, queue, runtime
 ├── memory.rs, memory/
 │                   бэкенд в памяти: event_repository, task_queue, checkpoint_store, view_repository
+├── diagnostics.rs  safe_type, StorageFailure: что адаптеры дают логам ядра (публичный, задача 08); лог-строки ядра —
+│                   закрытые
 └── mutex.rs        lock, get_mut: std::sync::Mutex по правилу 10 (публичный: им пользуются движок и cqrsx-testing)
 ```
 
@@ -108,7 +110,7 @@ cqrsx/src/
 | 05 | [Имена derive и трейтов; derive рядом с трейтом](05_derive_and_trait_names.md) | средняя–высокая | средняя | 04 | сделано 2026-10-31 |
 | 06 | [Исполнение команд: одна ступень, журнал без ошибок команды, без пресетов PostgreSQL](06_command_execution.md) | высокая | средняя–высокая | 05 | сделано 2026-10-31 |
 | 07 | [Крейт `cqrsx-engine`: движок, `serve`, `host`, `logging`](07_engine_crate.md) | высокая | средняя–высокая | 06 | сделано 2026-10-31 |
-| 08 | [Крейты `cqrsx-postgres`, `cqrsx-mongodb`, `cqrsx-fixtures`; ядро без фич](08_backend_crates.md) | высокая | средняя–высокая | 07 | предложено |
+| 08 | [Крейты `cqrsx-postgres`, `cqrsx-mongodb`, `cqrsx-fixtures`; ядро без фич](08_backend_crates.md) | высокая | средняя–высокая | 07 | сделано |
 | 09 | [Крейт `cqrsx-testing`](09_testing_crate.md) | средняя | средняя | 08 | предложено |
 | 10 | [Итог: документы, CLAUDE.md, правило архитектуры демо по крейтам, сверка тестов и покрытия](10_final.md) | высокая | низкая–средняя | 09 | предложено |
 

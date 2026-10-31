@@ -69,15 +69,19 @@ Whole applications are tested with `Cqrs::in_memory()` of [`cqrsx-engine`](../cq
 
 The lower-level building blocks and their contracts are in [`doc/components.md`](doc/components.md).
 
-## Features
+## Stores
 
-| Feature | Adds | Default |
-|---|---|---|
-| `postgres` | the PostgreSQL event store, outbox publication, task queue, view repository and pools | yes |
-| `mongodb` | the MongoDB read side: a view repository and the checkpoint store of projection processors | no |
+The core has no features and does not know a database: aggregates, command execution, the in-memory stores,
+projections, the projection processor with its checkpoints and the task contracts. The stores are crates of their own,
+which implement its ports:
 
-Without PostgreSQL the core still compiles and tests: aggregates, the framework, the in-memory stores,
-projections, the projection processor with its checkpoints and the task contracts.
+| Crate | Holds |
+|---|---|
+| [`cqrsx-postgres`](../cqrsx-postgres/src/lib.rs) | the PostgreSQL event store, outbox publication, task queue, checkpoints, view repository and pools |
+| [`cqrsx-mongodb`](../cqrsx-mongodb/src/lib.rs) | the MongoDB read side: a view repository and the checkpoint store of projection processors |
+
+A store that wraps the error of its driver in `cqrsx::diagnostics::StorageFailure` gives the core's logs the category and
+the code of the failure. The engine ([`cqrsx-engine`](../cqrsx-engine/README.md)) assembles the stores by its features.
 
 ## Further reading
 
@@ -86,10 +90,10 @@ projections, the projection processor with its checkpoints and the task contract
 - [`../demo`](../demo/README.md): a complete application on the library, with a UI, an X-ray of both
   databases and load tests.
 - [`../README.md`](../README.md): building, the local database, the test suite and coverage.
-- [`sql/`](sql/): the canonical schemas and the operator script that requeues a failed task.
+- [`../cqrsx-postgres/sql/`](../cqrsx-postgres/sql/): the canonical schemas and the operator script that requeues a failed task.
 
 ## Attribution
 
-The CQRS framework and the PostgreSQL event and view repositories include modified code from
+The CQRS framework and (in `cqrsx-postgres`) the PostgreSQL event and view repositories include modified code from
 [`cqrs-es` and `postgres-es` 0.5.0](https://github.com/serverlesstechnology/cqrs), Apache-2.0,
-copyright 2023 Serverless Technology Consulting, LLC; see [`licenses/`](licenses/).
+copyright 2023 Serverless Technology Consulting, LLC; see [`licenses/`](licenses/) and, for the repositories, [`../cqrsx-postgres/licenses/`](../cqrsx-postgres/licenses/).

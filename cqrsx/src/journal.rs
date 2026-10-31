@@ -61,6 +61,10 @@ pub(crate) fn checked_counter_add(current: usize, count: usize) -> Result<usize,
 }
 
 /// Errors for implementations of a persistent event store.
+///
+/// A store that can tell the category and the code of a failure wraps the error of its driver in
+/// [`StorageFailure`](crate::diagnostics::StorageFailure) before it boxes it here; the logs of a failed command or
+/// projection batch then carry them.
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
     /// Optimistic locking conflict occurred while committing and aggregate.

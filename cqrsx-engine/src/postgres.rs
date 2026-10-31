@@ -6,7 +6,7 @@ use crate::{
     build::BuildError,
     settings::{Read, Settings, SettingsError, duration_text},
 };
-use cqrsx::postgres::pool::{
+use cqrsx_postgres::pool::{
     ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, DEFAULT_MAX_CONNECTIONS, StatementTimeout, connect_pool_with,
 };
 use sqlx::{
@@ -447,8 +447,8 @@ mod tests {
                 retry::AggregateConflictRetryPolicy,
             },
             journal::persisted::PersistedEventStore,
-            postgres::outbox::PostgresEventRepositoryWithOutbox,
         };
+        use cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox;
         use std::sync::{Arc, Mutex};
         /// Notes the outcome of every command.
         #[derive(Default)]

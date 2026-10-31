@@ -58,13 +58,13 @@ impl Counts for MemEventRepository {
 }
 
 #[cfg(feature = "postgres")]
-impl Counts for cqrsx::postgres::event_repository::PostgresEventRepository {
+impl Counts for cqrsx_postgres::event_repository::PostgresEventRepository {
     fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
-        cqrsx::postgres::event_repository::PostgresEventRepository::count_after::<A>(self, after, cap)
+        cqrsx_postgres::event_repository::PostgresEventRepository::count_after::<A>(self, after, cap)
     }
 
     async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
-        let totals = cqrsx::postgres::event_repository::PostgresEventRepository::totals::<A>(self).await?;
+        let totals = cqrsx_postgres::event_repository::PostgresEventRepository::totals::<A>(self).await?;
         Ok(JournalTotals {
             events: totals.events,
             aggregates: totals.aggregates,

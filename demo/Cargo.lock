@@ -530,13 +530,10 @@ dependencies = [
  "async-trait",
  "chrono",
  "cqrsx-macros",
- "futures",
- "mongodb",
  "rand 0.10.3",
  "serde",
  "serde_json",
  "sha1 0.10.7",
- "sqlx",
  "thiserror",
  "tokio",
  "tokio-util",
@@ -550,6 +547,8 @@ version = "0.1.0"
 dependencies = [
  "axum",
  "cqrsx",
+ "cqrsx-mongodb",
+ "cqrsx-postgres",
  "mongodb",
  "serde",
  "serde_json",
@@ -571,6 +570,37 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "cqrsx-mongodb"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "cqrsx",
+ "mongodb",
+ "serde",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
+]
+
+[[package]]
+name = "cqrsx-postgres"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "chrono",
+ "cqrsx",
+ "futures",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "thiserror",
+ "tokio",
+ "tracing",
+ "uuid",
 ]
 
 [[package]]
@@ -873,6 +903,7 @@ dependencies = [
  "chrono",
  "cqrsx",
  "cqrsx-engine",
+ "cqrsx-postgres",
  "dotenvy",
  "futures",
  "http-body-util",

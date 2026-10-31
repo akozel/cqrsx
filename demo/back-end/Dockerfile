@@ -1,11 +1,19 @@
-# Build context: repository root (needs cqrsx/, cqrsx-macros/ and demo/). `podman compose --profile app up --build`
+# Build context: repository root. The crates of the framework inherit their dependencies and lints from the root
+# workspace, so the image copies the root `Cargo.toml` and every member of its `members` (a crate of the framework
+# that the demo does not use is never compiled).
+# `podman compose --profile app up --build`
 FROM docker.io/library/rust:1.98-bookworm AS build
 WORKDIR /src
 COPY rust-toolchain.toml rustfmt.toml ./
 # The pinned toolchain in its own layer: downloaded once, not on every source change.
 RUN rustup show active-toolchain || rustup toolchain install
+COPY Cargo.toml ./
 COPY cqrsx ./cqrsx
+COPY cqrsx-engine ./cqrsx-engine
+COPY cqrsx-fixtures ./cqrsx-fixtures
 COPY cqrsx-macros ./cqrsx-macros
+COPY cqrsx-mongodb ./cqrsx-mongodb
+COPY cqrsx-postgres ./cqrsx-postgres
 COPY demo/Cargo.toml demo/Cargo.lock ./demo/
 COPY demo/back-end ./demo/back-end
 COPY demo/sidecar ./demo/sidecar
@@ -15,7 +23,8 @@ COPY demo/sidecar ./demo/sidecar
 # sources are touched first, so they are always recompiled. The binary is copied out of the cache.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/demo/target \
-    find cqrsx cqrsx-macros demo/back-end demo/sidecar -type f -exec touch {} + \
+    find cqrsx cqrsx-engine cqrsx-fixtures cqrsx-macros cqrsx-mongodb cqrsx-postgres demo/back-end demo/sidecar \
+        -type f -exec touch {} + \
     && cd demo && cargo build --release --locked -p encore-backend \
     && cp target/release/encore-backend /usr/local/bin/encore-backend
 

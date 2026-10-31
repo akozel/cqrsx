@@ -1,8 +1,9 @@
 //! The modules of `modules.rs` on the engine over PostgreSQL 18.6, with their views in MongoDB 8.2 or in PostgreSQL:
 //! a command, the task its reaction published, the command of the task's chain, the view; the pools the engine opens.
-use crate::{modules::*, mongo_container::Mongo, postgres_container::Postgres as Database};
+use crate::{database::Database, modules::*};
 use cqrsx::{command::causation::CORRELATION_ID, journal::feed::Position};
 use cqrsx_engine::{Cqrs, build::BuildError, mongodb::MongoDb, postgres::Postgres, settings::Defaults, views::JournalTotals};
+use cqrsx_fixtures::mongo::Mongo;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 

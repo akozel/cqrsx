@@ -6,7 +6,8 @@ paths:
 # Rust code guidelines
 
 The [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html) adapted to this project
-(agreed 2026-10-30). It applies to all Rust code: `cqrsx` and `cqrsx-macros` are library code, the demo is
+(agreed 2026-10-30). It applies to all Rust code: `cqrsx`, `cqrsx-engine`, `cqrsx-postgres`, `cqrsx-mongodb`
+and `cqrsx-macros` are library code, the demo is
 application code where API rules are strong recommendations and simplicity beats generality. Google rules that
 are not listed here are not adopted. `/rust-style-review` checks code against these rules; findings cite the
 rule numbers.
@@ -42,9 +43,9 @@ a wrong result, a wrong doc) is fixed wherever it is found. Lints in `[lints]` k
 7. Hence no `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!`, `unimplemented!` or `assert!` outside tests,
    and no indexing or slicing that can go out of range: use `get()`, iterators and patterns. Values given by the
    caller (version strings, names) are checked by a `try_new` that returns `Result`.
-8. Exceptions: tests and the test helpers (`testing`), where a panic is the failed check; such a public
-   helper documents it in `# Panics` and its assertion message explains the violation instead of repeating the
-   condition. A panic in user code (a handler) is caught at the boundary and becomes an error (rule 11).
+8. Exceptions: tests and the test helpers (`testing`, the crate `cqrsx-fixtures`), where a panic is the failed
+   check; such a public helper documents it in `# Panics` and its assertion message explains the violation instead
+   of repeating the condition. A panic in user code (a handler) is caught at the boundary and becomes an error (rule 11).
 9. Pattern matching instead of check-then-unwrap: `if let`, `let … else`, `match`.
 10. Mutexes: under a `std::sync::Mutex` only short operations, no user code and no `.await`. Lock through one
     shared helper (`cqrsx::mutex::{lock, get_mut}`): on poison it logs `error!` naming the lock, calls `clear_poison()` and continues. A lock that

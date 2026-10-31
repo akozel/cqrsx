@@ -5,23 +5,15 @@ edition = "2024"
 rust-version = "1.98"
 publish = false
 
-[features]
-default = ["postgres"]
-mongodb = ["dep:mongodb"]
-postgres = ["dep:sqlx", "dep:futures"]
-
 [dependencies]
 async-channel.workspace = true
 async-trait.workspace = true
 chrono.workspace = true
 cqrsx-macros.workspace = true
-futures = { workspace = true, optional = true }
-mongodb = { workspace = true, optional = true }
 rand.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 sha1.workspace = true
-sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -29,11 +21,10 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+cqrsx-fixtures.workspace = true
 log.workspace = true
 proptest.workspace = true
-testcontainers.workspace = true
 tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
-tracing-subscriber = { workspace = true, features = ["env-filter"] }
 
 [lints]
 workspace = true

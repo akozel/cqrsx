@@ -16,11 +16,6 @@ use crate::{
     ViewStore,
     postgres::{Postgres, PostgresPools},
 };
-#[cfg(feature = "postgres")]
-use cqrsx::postgres::{
-    checkpoint_store::PostgresCheckpointStore, event_repository::PostgresEventRepository,
-    outbox::PostgresEventRepositoryWithOutbox, view_repository::PostgresViewRepository,
-};
 use cqrsx::{
     command::{executor::StoreCommandExecutor, observer::CommandObserver},
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
@@ -43,6 +38,11 @@ use cqrsx::{
 };
 #[cfg(test)]
 use cqrsx::{projection::processor::observer::ProjectionObserver, worker::dependencies::MissingDependency};
+#[cfg(feature = "postgres")]
+use cqrsx_postgres::{
+    checkpoint_store::PostgresCheckpointStore, event_repository::PostgresEventRepository,
+    outbox::PostgresEventRepositoryWithOutbox, view_repository::PostgresViewRepository,
+};
 use std::{
     any::{Any, TypeId},
     collections::{BTreeMap, HashSet, btree_map::Entry},
@@ -404,7 +404,7 @@ impl Cqrs {
             };
             match stores.views {
                 Views::Postgres => {
-                    self.checkpoints = Arc::new(cqrsx::postgres::checkpoint_store::PostgresCheckpointStore::new(
+                    self.checkpoints = Arc::new(cqrsx_postgres::checkpoint_store::PostgresCheckpointStore::new(
                         pools.main.clone(),
                     ));
                     self.view_store = crate::ViewStore::Postgres;
@@ -416,7 +416,7 @@ impl Cqrs {
                         None => crate::mongodb::client(&self.settings).await?,
                     };
                     let database = client.database(self.settings.mongodb().read_db());
-                    self.checkpoints = Arc::new(cqrsx::mongodb::checkpoint_store::MongoCheckpointStore::new(&database));
+                    self.checkpoints = Arc::new(cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(&database));
                     self.view_store = crate::ViewStore::MongoDb(database);
                 }
                 Views::Memory => {}
@@ -627,8 +627,8 @@ impl Cqrs {
                     }
                     #[cfg(feature = "mongodb")]
                     ViewStore::MongoDb(database) => {
-                        let documents = Arc::new(cqrsx::mongodb::view_repository::MongoViewRepository::<V, A>::new(database));
-                        let checkpoints = Arc::new(cqrsx::mongodb::checkpoint_store::MongoCheckpointStore::new(database));
+                        let documents = Arc::new(cqrsx_mongodb::view_repository::MongoViewRepository::<V, A>::new(database));
+                        let checkpoints = Arc::new(cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(database));
                         self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
                     }
                 }

@@ -2,8 +2,6 @@
 #[cfg(feature = "postgres")]
 use crate::ViewStore;
 use crate::{Cqrs, Journal};
-#[cfg(feature = "postgres")]
-use cqrsx::postgres::task_queue::PostgresTaskQueue;
 use cqrsx::{
     domain::aggregate::Aggregate,
     memory::{
@@ -19,6 +17,8 @@ use cqrsx::{
         queue::TaskQueue,
     },
 };
+#[cfg(feature = "postgres")]
+use cqrsx_postgres::task_queue::PostgresTaskQueue;
 use std::{
     any::{Any, TypeId},
     collections::HashMap,
