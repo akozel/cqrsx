@@ -79,13 +79,13 @@ pub fn derive_rejection(input: TokenStream) -> TokenStream {
 
 /// A task handler written as a function: `#[task_handler] async fn issue_refund(task: IssueRefund, ctx: &TaskContext,
 /// mail: &Mailer) -> TaskResult`. The function becomes a value of its name (a unit struct) that implements
-/// `cqrsx::task::handler::TaskHandler<IssueRefund>`, registered as `.handler(issue_refund)`; the function itself is its
+/// `cqrsx::worker::TaskHandler<IssueRefund>`, registered as `.handler(issue_refund)`; the function itself is its
 /// method `call`, for a test to call with its task, a context and its dependencies. The first parameter is the task, by
 /// value; `&TaskContext` is the attempt's context, wherever it stands; every other `&D` is a dependency, taken from
 /// the context by its type and listed in `TaskHandler::DEPENDENCIES`, so the assembly refuses a handler whose
 /// dependency nobody provided. A function that is not `async`, generic, a method, without a task, with a task by
 /// reference, a dependency by value or without a result, and arguments to the attribute, do not compile. Examples:
-/// `cqrsx::task::handler::TaskHandler`.
+/// `cqrsx::worker::TaskHandler`.
 #[proc_macro_attribute]
 pub fn task_handler(attribute: TokenStream, item: TokenStream) -> TokenStream {
     run_attribute(task_handler::expand_task_handler, &attribute.into(), item.into()).into()

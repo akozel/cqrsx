@@ -2,13 +2,10 @@
 use super::{milliseconds, storage_error};
 use crate::{
     postgres::task_queue::PostgresTaskQueue,
-    task::{
-        attempt::TaskAttempt,
-        format::TaskFormat,
-        queue::{
-            QueueRequestError, TaskProcessingError,
-            lease::{LeasedTask, TaskLease},
-        },
+    task::{attempt::TaskAttempt, format::TaskFormat},
+    worker::queue::{
+        QueueRequestError, TaskProcessingError,
+        lease::{LeasedTask, TaskLease},
     },
 };
 use sqlx::{FromRow, Row, postgres::PgRow};

@@ -32,12 +32,9 @@ use cqrsx::{
         module::Module,
         setup::{Setup, SetupError},
     },
-    task::{
-        context::TaskContext,
-        policy::{PolicyName, Retry},
-        result::TaskResult,
-    },
+    task::policy::{PolicyName, Retry},
     task_handler,
+    worker::{TaskResult, context::TaskContext},
 };
 use serde::{Deserialize, Serialize};
 use std::{
@@ -407,7 +404,6 @@ The lower-level building blocks and their contracts are in [`doc/components.md`]
 | Feature | Adds | Default |
 |---|---|---|
 | `postgres` | the PostgreSQL event store, outbox publication, task queue, view repository and pools | yes |
-| `worker` | the task runtime: worker pool, polling, supervision, graceful drain | yes |
 | `host` | process signals and the coordinated shutdown of inbound server and task runtime | no |
 | `logging` | `LoggingConfig`: an explicit `tracing` subscriber from `RUST_LOG` | no |
 | `mongodb` | the MongoDB read side: a view repository and the checkpoint store of projection processors | no |

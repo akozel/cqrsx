@@ -1,6 +1,6 @@
 #[cfg(test)]
-use crate::task::runtime::worker_pool_config::TaskWorkerPoolConfigError;
-use crate::{host::error::HostError, projection::runtime::ProjectionRuntime, task::runtime::TaskRuntimeError};
+use crate::worker::runtime::worker_pool_config::TaskWorkerPoolConfigError;
+use crate::{host::error::HostError, projection::runtime::ProjectionRuntime, worker::runtime::TaskRuntimeError};
 use std::{future::Future, io};
 use thiserror::Error;
 use tokio::task::JoinError;

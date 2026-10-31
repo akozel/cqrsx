@@ -16,10 +16,8 @@ use cqrsx::{
     engine::Cqrs,
     journal::{EventStore, persisted::PersistedEventStore},
     memory::task_queue::TaskStatus,
-    task::{
-        format::TaskFormat,
-        queue::{TaskQueue, settlement::SettlementRequest},
-    },
+    task::format::TaskFormat,
+    worker::queue::{TaskQueue, settlement::SettlementRequest},
 };
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc, time::Duration};

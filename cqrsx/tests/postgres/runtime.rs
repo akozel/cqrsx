@@ -3,10 +3,8 @@ use std::sync::Mutex;
 use super::*;
 use cqrsx::{
     postgres::task_runtime::prepare_task_runtime,
-    task::{
-        dispatcher::TaskDispatcherError, policy::Policies, queue::storage_config::TaskStorageConfig,
-        runtime::config::TaskRuntimeConfig,
-    },
+    task::policy::Policies,
+    worker::{dispatcher::TaskDispatcherError, queue::storage_config::TaskStorageConfig, runtime::config::TaskRuntimeConfig},
 };
 
 struct DummyHandler(Arc<Mutex<Vec<(Uuid, String)>>>);

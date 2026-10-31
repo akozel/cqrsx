@@ -1,22 +1,11 @@
-//! Durable task publication, handling, delivery and execution.
+//! A task as data: what a command publishes with its events and what a delivery attempt carries.
 //!
 //! Business sequencing belongs to aggregate transitions. A task represents one
-//! replay-safe operation; delivery may be concurrent, out of order and repeated.
-pub mod adapter;
+//! replay-safe operation; delivery may be concurrent, out of order and repeated. Running tasks is the work of the
+//! `worker` module.
 pub mod attempt;
-pub mod context;
-pub mod dependencies;
-pub mod dispatcher;
-pub mod executor;
 pub mod format;
-pub mod handler;
-pub mod handlers;
 pub mod policy;
-pub mod queue;
-pub mod result;
-pub mod runtime;
-#[cfg(test)]
-pub(crate) mod test_support;
 
 use crate::{
     diagnostics,
@@ -182,7 +171,11 @@ fn move_labels(labels: &[&str], payload: &mut Value, metadata: &mut Value) {
 /// Decodes `P` from the fields of the `payload` object and the keys `labels` it lacks, taken back from the `metadata`
 /// object: the body a labelled payload decodes from, read in place, neither object copied. The payload is an object:
 /// every constructor validates it. Were it not (a bug, logged), `P` decodes from the payload alone.
-fn decode_with_labels<P: DeserializeOwned>(labels: &[&str], payload: &Value, metadata: &Value) -> Result<P, serde_json::Error> {
+pub(crate) fn decode_with_labels<P: DeserializeOwned>(
+    labels: &[&str],
+    payload: &Value,
+    metadata: &Value,
+) -> Result<P, serde_json::Error> {
     let Value::Object(fields) = payload else {
         diagnostics::log_broken_invariant("task", "the payload of a task is an object");
         return P::deserialize(payload);
@@ -213,7 +206,7 @@ mod tests {
     use super::*;
     use crate::task::attempt::TaskAttempt;
     use crate::task::format::TaskFormatError;
-    use crate::task::test_support::DummyTask;
+    use crate::worker::test_support::DummyTask;
     use serde::{Deserialize, Serialize, Serializer};
     #[test]
     fn construction_validates_format_objects_attempts_and_schedule() {

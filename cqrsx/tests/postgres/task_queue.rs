@@ -1,5 +1,5 @@
 use super::*;
-use cqrsx::task::queue::{
+use cqrsx::worker::queue::{
     QueueRequestError,
     settlement::{SettlementResult, TaskFailureCause},
 };

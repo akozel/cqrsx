@@ -8,7 +8,8 @@
 //! - [`view`]: read models, their projection, repository and verification.
 //! - [`memory`]: the backend in memory: journal, checkpoints, views and a task queue.
 //! - [`testing`]: tools for testing aggregates and commands downstream.
-//! - [`task`]: durable work, handlers, adapters, queues and the optional worker runtime.
+//! - [`task`]: a task as data: what a command publishes, a delivery attempt and the policies of the task types.
+//! - [`worker`]: running tasks: handlers, dispatcher, adapters, queue port, executor and the worker runtime.
 //! - [`engine`]: an application of modules assembled from these components: commands, views and tasks; in memory or
 //!   over PostgreSQL and MongoDB, its settings read from the environment, served with its HTTP routes (`http`).
 //! - `postgres`: PostgreSQL adapters, atomic outbox publication and canonical SQL assets.
@@ -22,7 +23,7 @@
 //!   code and params; [`task_handler`]: a task handler written as a function. The contracts they implement
 //!   live in their modules ([`domain::command::CommandInfo`], [`domain::command::Decide`],
 //!   [`domain::event::EventKind`], [`domain::event::DomainEvent`], [`task::format::TaskPayload`],
-//!   [`domain::rejection::Rejection`], [`task::handler::TaskHandler`]).
+//!   [`domain::rejection::Rejection`], [`worker::TaskHandler`]).
 //!
 //! Applications own business transitions and repeat-safe task effects. The README below is the
 //! guide: a complete in-memory example (compiled with the doctests), the PostgreSQL assembly, the
@@ -52,6 +53,7 @@ pub mod task;
 pub mod testing;
 mod unwinding;
 pub mod view;
+pub mod worker;
 
 pub use cqrsx_macros::{Command, Commands, Event, Events, Rejection, Task, task_handler};
 

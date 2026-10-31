@@ -19,18 +19,19 @@ use cqrsx::{
     },
     task::{
         NewTask,
-        adapter::{TaskAdapter, json::JsonTaskAdapter},
         attempt::TaskAttempt,
-        context::TaskContext,
-        dependencies::DependencyId,
-        dispatcher::TaskDispatcherError,
         format::{TaskFormat, TaskPayload},
-        handler::TaskHandler,
-        handlers::TaskHandlers,
-        result::TaskResult,
     },
     task_handler,
     testing::TestFramework,
+    worker::{
+        TaskHandler, TaskResult,
+        adapter::{TaskAdapter, json::JsonTaskAdapter},
+        context::TaskContext,
+        dependencies::DependencyId,
+        dispatcher::TaskDispatcherError,
+        handlers::TaskHandlers,
+    },
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;

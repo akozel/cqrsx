@@ -2,13 +2,11 @@
 use super::{milliseconds, storage_error};
 use crate::{
     postgres::task_queue::PostgresTaskQueue,
-    task::{
-        attempt::TaskAttempt,
-        queue::{
-            QueueRequestError, TaskProcessingError,
-            lease::LeasedTask,
-            settlement::{SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
-        },
+    task::attempt::TaskAttempt,
+    worker::queue::{
+        QueueRequestError, TaskProcessingError,
+        lease::LeasedTask,
+        settlement::{SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
     },
 };
 use sqlx::Row;
@@ -105,7 +103,7 @@ mod tests {
 
     #[test]
     fn confirmed_settlement_rejects_unknown_status_and_missing_failure_cause() {
-        let task = crate::task::test_support::claimed();
+        let task = crate::worker::test_support::claimed();
         for status in [Some("unexpected"), Some("failed")] {
             assert_eq!(
                 settlement_result(task.attempt(), status, None),

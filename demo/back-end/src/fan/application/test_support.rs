@@ -14,12 +14,9 @@ use crate::{
 use cqrsx::{
     command::CommandExecutor,
     reactions::ReactionsPlanner,
-    task::{
-        attempt::TaskAttempt,
-        context::{Executors, TaskContext},
-        format::TaskPayload,
-    },
+    task::{attempt::TaskAttempt, format::TaskPayload},
     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+    worker::context::{Executors, TaskContext},
 };
 use serde_json::json;
 use std::sync::Arc;

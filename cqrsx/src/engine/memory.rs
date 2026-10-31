@@ -9,13 +9,13 @@ use crate::{
         checkpoint_store::MemCheckpointStore, event_repository::MemEventRepository, task_queue::MemTaskQueue,
         view_repository::MemViewRepository,
     },
-    task::{
+    view::View,
+    worker::{
         adapter::boxed::BoxedTaskAdapter,
         dispatcher::TaskDispatcher,
         executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
         queue::TaskQueue,
     },
-    view::View,
 };
 use std::{
     any::{Any, TypeId},

@@ -5,7 +5,7 @@ use syn::{Error, FnArg, ItemFn, PatType, ReturnType, Type, TypeReference};
 
 /// A function `async fn name(task: T, …) -> TaskResult` becomes the value `name`, a handler of the tasks `T`: a unit
 /// struct of the function's name with the function as its method `call` and an implementation of
-/// `::cqrsx::task::handler::TaskHandler<T>`. The first parameter is the task, by value; a parameter `&TaskContext` is
+/// `::cqrsx::worker::TaskHandler<T>`. The first parameter is the task, by value; a parameter `&TaskContext` is
 /// the attempt's context, wherever it stands; every other parameter `&D` is a dependency, taken from the context by
 /// its type and listed in `DEPENDENCIES` for the assembly to check.
 pub(crate) fn expand_task_handler(attribute: &TokenStream, function: &ItemFn) -> syn::Result<TokenStream> {
@@ -63,11 +63,11 @@ pub(crate) fn expand_task_handler(attribute: &TokenStream, function: &ItemFn) ->
             let #name = match ctx.dependency::<#elem>() {
                 ::core::result::Result::Ok(dependency) => dependency,
                 ::core::result::Result::Err(missing) => {
-                    return ::cqrsx::task::result::TaskResult::fail(::std::string::ToString::to_string(&missing));
+                    return ::cqrsx::worker::TaskResult::fail(::std::string::ToString::to_string(&missing));
                 }
             };
         });
-        dependencies.push(quote! { ::cqrsx::task::dependencies::DependencyId::of::<#elem>() });
+        dependencies.push(quote! { ::cqrsx::worker::dependencies::DependencyId::of::<#elem>() });
         arguments.push(quote! { #name });
     }
     let (vis, ident, inputs, output, block) = (
@@ -91,15 +91,15 @@ pub(crate) fn expand_task_handler(attribute: &TokenStream, function: &ItemFn) ->
             #vis async fn call(&self, #inputs) #output #block
         }
 
-        impl ::cqrsx::task::handler::TaskHandler<#task> for #ident {
-            const DEPENDENCIES: &'static [::cqrsx::task::dependencies::DependencyId] = &[#(#dependencies),*];
+        impl ::cqrsx::worker::TaskHandler<#task> for #ident {
+            const DEPENDENCIES: &'static [::cqrsx::worker::dependencies::DependencyId] = &[#(#dependencies),*];
 
             #[allow(unused_variables)]
             async fn handle(
                 &self,
                 task: #task,
-                ctx: &::cqrsx::task::context::TaskContext,
-            ) -> ::cqrsx::task::result::TaskResult {
+                ctx: &::cqrsx::worker::context::TaskContext,
+            ) -> ::cqrsx::worker::TaskResult {
                 #(#resolved)*
                 self.call(#(#arguments),*).await
             }
@@ -152,20 +152,20 @@ mod tests {
                 }
             }
 
-            impl ::cqrsx::task::handler::TaskHandler<IssueRefund> for issue_refund {
-                const DEPENDENCIES: &'static [::cqrsx::task::dependencies::DependencyId] =
-                    &[::cqrsx::task::dependencies::DependencyId::of::<Mailer>()];
+            impl ::cqrsx::worker::TaskHandler<IssueRefund> for issue_refund {
+                const DEPENDENCIES: &'static [::cqrsx::worker::dependencies::DependencyId] =
+                    &[::cqrsx::worker::dependencies::DependencyId::of::<Mailer>()];
 
                 #[allow(unused_variables)]
                 async fn handle(
                     &self,
                     task: IssueRefund,
-                    ctx: &::cqrsx::task::context::TaskContext,
-                ) -> ::cqrsx::task::result::TaskResult {
+                    ctx: &::cqrsx::worker::context::TaskContext,
+                ) -> ::cqrsx::worker::TaskResult {
                     let dependency_2 = match ctx.dependency::<Mailer>() {
                         ::core::result::Result::Ok(dependency) => dependency,
                         ::core::result::Result::Err(missing) => {
-                            return ::cqrsx::task::result::TaskResult::fail(::std::string::ToString::to_string(&missing));
+                            return ::cqrsx::worker::TaskResult::fail(::std::string::ToString::to_string(&missing));
                         }
                     };
                     self.call(task, ctx, dependency_2).await
@@ -180,7 +180,7 @@ mod tests {
         let expanded = expand_task_handler(
             &TokenStream::new(),
             &parse_quote! {
-                async fn audit(entry: Entry, clock: &dyn Clock, context: &cqrsx::task::context::TaskContext, log: &Log) -> TaskResult {
+                async fn audit(entry: Entry, clock: &dyn Clock, context: &cqrsx::worker::context::TaskContext, log: &Log) -> TaskResult {
                     TaskResult::done()
                 }
             },
@@ -189,8 +189,8 @@ mod tests {
         .to_string();
         let dependencies = quote! {
             &[
-                ::cqrsx::task::dependencies::DependencyId::of::<dyn Clock>(),
-                ::cqrsx::task::dependencies::DependencyId::of::<Log>()
+                ::cqrsx::worker::dependencies::DependencyId::of::<dyn Clock>(),
+                ::cqrsx::worker::dependencies::DependencyId::of::<Log>()
             ]
         };
         assert!(expanded.contains(&dependencies.to_string()), "{expanded}");
@@ -285,7 +285,7 @@ mod tests {
     #[test]
     fn only_a_reference_to_a_type_named_task_context_is_the_context() {
         assert!(is_context(&parse_quote! { TaskContext }));
-        assert!(is_context(&parse_quote! { ::cqrsx::task::context::TaskContext }));
+        assert!(is_context(&parse_quote! { ::cqrsx::worker::context::TaskContext }));
         assert!(!is_context(&parse_quote! { Context }));
         assert!(!is_context(&parse_quote! { <T as Trait>::TaskContext }));
         assert!(!is_context(&parse_quote! { [TaskContext] }));

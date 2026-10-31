@@ -1,9 +1,9 @@
 use crate::{
     postgres::task_queue::PostgresTaskQueue,
-    task::{
+    task::policy::Policies,
+    worker::{
         adapter::TaskAdapter,
         dispatcher::TaskDispatcher,
-        policy::Policies,
         runtime::{TaskRuntime, config::TaskRuntimeConfig, prepare},
     },
 };

@@ -43,8 +43,8 @@ use cqrsx::{
         attempt::TaskAttempt,
         format::TaskFormat,
         policy::{Retry, TaskPolicy},
-        result::TaskResult,
     },
+    worker::TaskResult,
 };
 use std::{collections::HashMap, num::NonZeroU16, sync::Arc, time::Duration};
 

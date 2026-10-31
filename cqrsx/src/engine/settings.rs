@@ -17,7 +17,7 @@ use crate::{
         DEFAULT_PROCESSOR_RETRY_BASE, DEFAULT_PROCESSOR_RETRY_MAX, DEFAULT_PROCESSOR_SETTLE, DeliveryLimits, DeliveryLimitsError,
         ProcessorConfig, ProcessorConfigError,
     },
-    task::{
+    worker::{
         queue::{lease::LEASE_SAFETY_MARGIN, storage_config::TaskStorageConfig},
         runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
     },
@@ -622,7 +622,7 @@ fn lease_budget(runtime: &TaskRuntimeConfig) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::task::runtime::worker_pool_config::{TaskWorkerPoolConfig, TaskWorkerPoolConfigError};
+    use crate::worker::runtime::worker_pool_config::{TaskWorkerPoolConfig, TaskWorkerPoolConfigError};
     use std::collections::{HashMap, HashSet};
 
     /// What the demo of the repository sets where its variables are absent: the task runtime and the settle the moved

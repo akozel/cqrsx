@@ -87,7 +87,7 @@ own MongoDB `8.2` containers for the `mongodb` feature;
 they do not require the Compose database. The first run needs access to the image
 registry.
 
-Run core tests without PostgreSQL or the worker runtime:
+Run core tests without PostgreSQL:
 
 ```bash
 cargo test --locked -p cqrsx --no-default-features

@@ -9,13 +9,10 @@ use cqrsx::{
         setup::{Setup, SetupError},
     },
     reactions::{Decided, Reactions, Then},
-    task::{
-        context::TaskContext,
-        policy::{PolicyName, Retry},
-        result::TaskResult,
-    },
+    task::policy::{PolicyName, Retry},
     task_handler,
     view::View,
+    worker::{TaskResult, context::TaskContext},
 };
 use serde::{Deserialize, Serialize};
 use std::{

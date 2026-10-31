@@ -10,8 +10,8 @@ use crate::{
 use cqrsx::{
     Task,
     command::CommandGatewayError,
-    task::{context::TaskContext, result::TaskResult},
     task_handler,
+    worker::{TaskResult, context::TaskContext},
 };
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;

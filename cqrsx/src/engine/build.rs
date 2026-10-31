@@ -12,7 +12,7 @@ use crate::{
     domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
     engine::Commands,
     projection::processor::observer::ProjectionObserver,
-    task::dependencies::MissingDependency,
+    worker::dependencies::MissingDependency,
 };
 use crate::{
     engine::{
@@ -24,13 +24,13 @@ use crate::{
         views::CheckpointOps,
     },
     projection::runtime::ProjectionRuntime,
-    task::{
+    task::policy::{Policies, PolicyError, TaskPolicy},
+    worker::{
         adapter::boxed::BoxedTaskAdapter,
         context::Executors,
         dependencies::Dependencies,
         dispatcher::{TaskDispatcher, TaskDispatcherError},
         handlers::TaskHandlers,
-        policy::{Policies, PolicyError, TaskPolicy},
     },
 };
 #[cfg(test)]
@@ -527,11 +527,9 @@ mod tests {
         engine::test_support::*,
         memory::view_repository::MemViewRepository,
         projection::processor::config::{DeliveryLimits, ProcessorConfig},
-        task::{
-            dependencies::DependencyId, dispatcher::TaskDispatcherError, format::TaskFormat, policy::Retry, result::TaskResult,
-            runtime::config::TaskRuntimeConfig,
-        },
+        task::{format::TaskFormat, policy::Retry},
         view::View,
+        worker::{TaskResult, dependencies::DependencyId, dispatcher::TaskDispatcherError, runtime::config::TaskRuntimeConfig},
     };
     use serde_json::json;
     use std::{

@@ -200,9 +200,9 @@ fn externals(layer: Option<Layer>) -> Externals {
             forbidden: &[
                 "cqrsx::postgres",
                 "cqrsx::mongodb",
-                "cqrsx::task::adapter",
-                "cqrsx::task::dispatcher",
-                "cqrsx::task::runtime",
+                "cqrsx::worker::adapter",
+                "cqrsx::worker::dispatcher",
+                "cqrsx::worker::runtime",
                 "cqrsx::host",
                 "cqrsx::logging",
                 "sqlx",

@@ -2,12 +2,10 @@
 use super::storage_error;
 use crate::{
     postgres::task_queue::PostgresTaskQueue,
-    task::{
-        format::TaskFormat,
-        queue::{
-            QueueRequestError, TaskProcessingError,
-            settlement::{LeaseRecoveryReport, TaskFailure, TaskFailureCause},
-        },
+    task::format::TaskFormat,
+    worker::queue::{
+        QueueRequestError, TaskProcessingError,
+        settlement::{LeaseRecoveryReport, TaskFailure, TaskFailureCause},
     },
 };
 use sqlx::{FromRow, Row, postgres::PgRow};

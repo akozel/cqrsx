@@ -49,13 +49,11 @@ use cqrsx::{
     reactions::ReactionsPlanner,
     task::{
         TaskSchedule,
-        adapter::boxed::BoxedTaskAdapter,
-        dispatcher::TaskDispatcher,
         format::TaskFormat,
-        handlers::TaskHandlers,
         policy::{Policies, Retry, TaskPolicy},
     },
     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+    worker::{adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, handlers::TaskHandlers},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;

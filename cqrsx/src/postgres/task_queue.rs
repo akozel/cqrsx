@@ -4,13 +4,11 @@ mod claim;
 mod recovery;
 mod settlement;
 
-use crate::task::{
-    format::TaskFormat,
-    queue::{
-        QueueRequestError, TaskProcessingError, TaskQueue,
-        lease::LeasedTask,
-        settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult},
-    },
+use crate::task::format::TaskFormat;
+use crate::worker::queue::{
+    QueueRequestError, TaskProcessingError, TaskQueue,
+    lease::LeasedTask,
+    settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult},
 };
 use sqlx::PgPool;
 use std::time::Duration;
@@ -70,7 +68,7 @@ mod config_tests {
             .unwrap();
         pool.close().await;
         let queue = PostgresTaskQueue::new(pool);
-        let task = crate::task::test_support::claimed();
+        let task = crate::worker::test_support::claimed();
         let (_, log) = crate::diagnostics::test_support::capture(async {
             assert_eq!(
                 queue

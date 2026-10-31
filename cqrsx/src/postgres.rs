@@ -2,7 +2,6 @@ pub mod command;
 pub mod outbox;
 pub mod pool;
 pub mod task_queue;
-#[cfg(feature = "worker")]
 pub mod task_runtime;
 
 /// Canonical PostgreSQL event-store schema used by this runtime.

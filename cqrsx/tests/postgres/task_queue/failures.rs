@@ -1,5 +1,5 @@
 use super::*;
-use cqrsx::task::queue::settlement::{SettlementResult, TaskFailureCause};
+use cqrsx::worker::queue::settlement::{SettlementResult, TaskFailureCause};
 
 #[tokio::test]
 async fn deferred_commit_failures_roll_back_claim_settlement_and_recovery() {

@@ -6,13 +6,11 @@ use crate::{
     projection::processor::observer::ProjectionObserver,
     reactions::Reactions,
     task::{
-        adapter::boxed::BoxedTaskAdapter,
-        dependencies::Dependencies,
         format::TaskPayload,
-        handler::TaskHandler,
         policy::{Policies, PolicyError, PolicyName, Retry},
     },
     view::View,
+    worker::{TaskHandler, adapter::boxed::BoxedTaskAdapter, dependencies::Dependencies},
 };
 use serde::de::DeserializeOwned;
 use std::{

@@ -9,7 +9,8 @@
     clippy::indexing_slicing
 )]
 use cqrsx::journal::persisted::PersistedEventStore;
-use cqrsx::task::{attempt::TaskAttempt, queue::lease::TaskLease};
+use cqrsx::task::attempt::TaskAttempt;
+use cqrsx::worker::queue::lease::TaskLease;
 use std::collections::HashMap;
 
 use std::{
@@ -29,8 +30,7 @@ use cqrsx::domain::event::DomainEvent;
 use cqrsx::journal::PersistenceError;
 use cqrsx::journal::repository::PersistedEventRepository;
 use cqrsx::journal::serialized_event::{EventFormat, SerializedEvent};
-#[cfg(feature = "worker")]
-use cqrsx::task::runtime::worker_pool_config::TaskWorkerPoolConfig;
+use cqrsx::worker::runtime::worker_pool_config::TaskWorkerPoolConfig;
 use cqrsx::{
     postgres::{
         EVENT_STORE_SCHEMA, PROJECTION_CHECKPOINTS_SCHEMA, REQUEUE_FAILED_OUTBOX_TASK, TRANSACTIONAL_OUTBOX_SCHEMA,
@@ -40,21 +40,22 @@ use cqrsx::{
     },
     task::{
         NewTask, TaskSchedule,
+        format::{TaskFormat, TaskPayload},
+    },
+    worker::{
+        TaskResult,
         adapter::TaskAdapter,
         context::TaskContext,
         dispatcher::TaskDispatcher,
         executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
-        format::{TaskFormat, TaskPayload},
         queue::{
             TaskProcessingError, TaskQueue, lease::LeasedTask, settlement::SettlementRequest, storage_config::TaskStorageConfig,
         },
-        result::TaskResult,
     },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use sqlx::{PgPool, Row, postgres::PgPoolOptions};
-#[cfg(feature = "worker")]
 use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
@@ -89,7 +90,6 @@ mod port_lease;
 mod postgres_container;
 #[path = "postgres/projection.rs"]
 mod projection;
-#[cfg(feature = "worker")]
 #[path = "postgres/runtime.rs"]
 mod runtime;
 #[path = "postgres/schema.rs"]

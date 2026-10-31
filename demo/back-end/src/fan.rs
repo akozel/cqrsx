@@ -91,7 +91,7 @@ mod tests {
     use cqrsx::{
         command::locks::LockLimits,
         engine::settings::Settings,
-        task::runtime::{config::TaskRuntimeConfig, worker_pool_config::TaskWorkerPoolConfig},
+        worker::runtime::{config::TaskRuntimeConfig, worker_pool_config::TaskWorkerPoolConfig},
     };
     use std::time::Duration;
 

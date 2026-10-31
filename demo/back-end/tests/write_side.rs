@@ -16,7 +16,8 @@ use cqrsx::engine::{
     settings::{DEFAULT_SNAPSHOT_EVERY, Settings},
 };
 use cqrsx::postgres::pool::{ConnectionPingPolicy, StatementTimeout, connect_pool};
-use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat, result::TaskResult};
+use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat};
+use cqrsx::worker::TaskResult;
 use cqrsx::{
     command::{
         CommandExecutor, CommandGatewayError, CommitReport, locks::LockLimits, metadata::CommandMetadata,

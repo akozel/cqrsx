@@ -1,4 +1,4 @@
-use crate::task::runtime::TaskRuntimeError;
+use crate::worker::runtime::TaskRuntimeError;
 use std::{fmt, io};
 use thiserror::Error;
 use tokio::task::JoinError;
@@ -86,7 +86,7 @@ mod tests {
 
     #[tokio::test]
     async fn io_and_dispatcher_diagnostics_preserve_sources_without_rendering_private_text() {
-        use crate::task::runtime::worker_pool_config::TaskWorkerPoolConfigError;
+        use crate::worker::runtime::worker_pool_config::TaskWorkerPoolConfigError;
 
         let (_, log) = crate::diagnostics::test_support::capture(async {
             for error in [

@@ -24,16 +24,11 @@
 //!   stops after the effect and before its settlement.
 use crate::{
     memory::event_repository::{MemEventRepository, OutboxEntry, OutboxRow},
-    task::{
-        NewTask, TaskSchedule,
-        attempt::TaskAttempt,
-        format::TaskFormat,
-        queue::{
-            QueueRequestError, TaskProcessingError, TaskQueue,
-            lease::{LeasedTask, TaskLease},
-            retry::redelivery_backoff,
-            settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
-        },
+    task::{NewTask, TaskSchedule, attempt::TaskAttempt, format::TaskFormat, policy::redelivery_backoff},
+    worker::queue::{
+        QueueRequestError, TaskProcessingError, TaskQueue,
+        lease::{LeasedTask, TaskLease},
+        settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
     },
 };
 use chrono::Utc;

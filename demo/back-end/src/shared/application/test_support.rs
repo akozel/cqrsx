@@ -8,7 +8,8 @@ use async_trait::async_trait;
 use cqrsx::{
     command::planner::{Decision, TaskPlanError, TaskPlanner},
     domain::aggregate::Aggregate,
-    task::{NewTask, context::TaskContext, result::TaskResult},
+    task::NewTask,
+    worker::{TaskResult, context::TaskContext},
 };
 use std::{collections::HashMap, sync::Mutex};
 

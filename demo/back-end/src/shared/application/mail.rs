@@ -2,7 +2,7 @@
 //! doubles.
 use crate::shared::application::activity::ActivityHub;
 use async_trait::async_trait;
-use cqrsx::task::{context::TaskContext, result::TaskResult};
+use cqrsx::worker::{TaskResult, context::TaskContext};
 
 /// An e-mail for the external mail service.
 #[derive(Debug, Clone, PartialEq, Eq)]

@@ -14,7 +14,7 @@ use crate::{
         signal::shutdown_signal,
     },
     locking::lock,
-    task::runtime::{TaskRuntimeError, prepare},
+    worker::runtime::{TaskRuntimeError, prepare},
 };
 use std::{
     future::{Future, IntoFuture},

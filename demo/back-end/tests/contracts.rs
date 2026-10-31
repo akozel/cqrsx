@@ -35,27 +35,28 @@ use cqrsx::{
     reactions::ReactionsPlanner,
     task::{
         NewTask,
-        adapter::boxed::BoxedTaskAdapter,
         attempt::TaskAttempt,
-        context::TaskContext,
-        dependencies::Dependencies,
-        dispatcher::TaskDispatcher,
-        executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
         format::{TaskFormat, TaskPayload},
-        handler::TaskHandler,
-        queue::{
-            TaskProcessingError, TaskQueue,
-            lease::{LeasedTask, TaskLease},
-            retry::redelivery_backoff,
-            settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
-        },
-        result::TaskResult,
-        runtime::prepare,
+        policy::redelivery_backoff,
     },
     testing::{
         command_executor::TestCommandExecutor,
         mem_store::{MemStore, MemStoreAggregateContext},
         unavailable_store::UnavailableStore,
+    },
+    worker::{
+        TaskHandler, TaskResult,
+        adapter::boxed::BoxedTaskAdapter,
+        context::TaskContext,
+        dependencies::Dependencies,
+        dispatcher::TaskDispatcher,
+        executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
+        queue::{
+            TaskProcessingError, TaskQueue,
+            lease::{LeasedTask, TaskLease},
+            settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
+        },
+        runtime::prepare,
     },
 };
 use cqrsx::{

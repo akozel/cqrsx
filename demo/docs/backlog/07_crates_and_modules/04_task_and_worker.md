@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-31 ([результаты](#результаты)) |
 | Ценность | высокая: снимает цикл `cqrs ↔ task`; исчезают 22 `cfg(feature = "worker")` и правило «конфиг задач компилируется без фичи» |
 | Цена | средняя |
 | Зависимости | 03 |
@@ -51,3 +51,26 @@ runtime — вызывает команды обратно (`ctx.execute`, `From
 Импорты демо (`TaskContext`, `TaskResult`, `Policies`, `TaskAttempt`); `tests/architecture.rs`: запреты слоя
 application — `cqrsx::worker::{adapter, dispatcher, runtime}` вместо `cqrsx::task::{…}`. `components.md`, README,
 `typical_scenario.md`, `CLAUDE.md` (фичи и прогоны).
+
+## Результаты
+
+2026-10-31, на HEAD `4fd439a` плюс правки задачи. Поведение не менялось: переезды, пути и удаление фичи.
+
+- **`task`** — только данные: `NewTask`, `TaskSchedule`, `TaskValidationError`, `DEFAULT_MAX_ATTEMPTS`, `format`,
+  `attempt`, `policy` с `redelivery_backoff` (из `task/queue/retry.rs`, который удалён); его рабочий код не называет ни
+  одного модуля ядра, кроме закрытого `diagnostics`.
+- **`worker`** — исполнение: `TaskHandler` и `TaskResult` в `worker.rs`, затем `context`, `dependencies`, `handlers`,
+  `dispatcher`, `adapter`, `executor`, `queue`, `runtime`; цикл `command ↔ task` исчез (`worker` выше `command`, рабочий
+  код `command/**` не называет `worker`). `decode_with_labels` в `task.rs` стала `pub(crate)`: её зовёт
+  `worker::adapter::json`, который раньше был потомком `task`.
+- **Фича `worker` удалена:** `async-channel` — обычная зависимость, `default = ["postgres"]`, `host = ["tokio/signal"]`;
+  41 `cfg(feature = "worker")` убран; `CLAUDE.md`, README крейта и корневой, `components.md`, `.github/workflows/ci.yml`
+  (из матрицы убран `--features worker`) поправлены.
+- **Тесты:** бинарник `task` стал `worker` (29 тестов); раскрытия `#[task_handler]` называют `::cqrsx::worker::…`.
+  Тестов 867, демо 174, ignored 0; имена совпадают с точностью до префикса. Матрица без фич теперь включает исполнение
+  задач: 575 тестов (раньше столько давал прогон с `worker`). `compile_fail`-doctest'ы отказывают по своим причинам, не
+  по путям (проверено выводом компилятора).
+- **Правило архитектуры демо:** слою application запрещены `cqrsx::worker::{adapter, dispatcher, runtime}`, как раньше
+  `cqrsx::task::{…}`.
+- **Находки:** `clippy -p cqrsx --no-default-features --all-targets` (прогнан впервые) падает на старом `unused_mut` в
+  `engine/settings.rs:389` — задача 07; в матрице CI нет `http` — задачи 07–08.

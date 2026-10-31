@@ -1,6 +1,6 @@
 use super::*;
-use cqrsx::task::queue::lease::TaskLease;
-use cqrsx::task::{executor::default_executor::DefaultTaskExecutor, queue::storage_config::TaskStorageConfig};
+use cqrsx::worker::queue::lease::TaskLease;
+use cqrsx::worker::{executor::default_executor::DefaultTaskExecutor, queue::storage_config::TaskStorageConfig};
 
 struct LostReplyQueue {
     inner: PostgresTaskQueue,
@@ -31,7 +31,7 @@ impl TaskQueue for LostReplyQueue {
         &self,
         task: &LeasedTask,
         outcome: SettlementRequest,
-    ) -> Result<cqrsx::task::queue::settlement::SettlementResult, TaskProcessingError> {
+    ) -> Result<cqrsx::worker::queue::settlement::SettlementResult, TaskProcessingError> {
         let result = self.inner.settle(task, outcome).await?;
         if self.lose_settle_reply.load(Ordering::SeqCst) {
             std::future::pending::<()>().await;
@@ -42,7 +42,7 @@ impl TaskQueue for LostReplyQueue {
     async fn recover_expired(
         &self,
         limit: usize,
-    ) -> Result<cqrsx::task::queue::settlement::LeaseRecoveryReport, TaskProcessingError> {
+    ) -> Result<cqrsx::worker::queue::settlement::LeaseRecoveryReport, TaskProcessingError> {
         self.inner.recover_expired(limit).await
     }
 }
@@ -415,7 +415,6 @@ async fn runtime_deadline_includes_connection_acquisition() {
     db.close().await;
 }
 
-#[cfg(feature = "worker")]
 #[tokio::test]
 async fn shutdown_after_committed_claim_or_settlement_preserves_durable_outcomes() {
     for stage in ["claim", "settle"] {
@@ -434,7 +433,7 @@ async fn shutdown_after_committed_claim_or_settlement_preserves_durable_outcomes
         ));
         let calls = Arc::new(AtomicUsize::new(0));
         let shutdown = CancellationToken::new();
-        let worker = tokio::spawn(cqrsx::task::runtime::supervisor::run(
+        let worker = tokio::spawn(cqrsx::worker::runtime::supervisor::run(
             queue.clone(),
             executor.clone(),
             dispatcher(CountingAdapter(calls.clone())),

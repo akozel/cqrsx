@@ -208,8 +208,7 @@ pub(crate) fn log_projection_failure(
     );
 }
 
-#[cfg(feature = "worker")]
-pub(crate) fn log_task_failure(task: &crate::task::queue::settlement::TaskFailure) {
+pub(crate) fn log_task_failure(task: &crate::worker::queue::settlement::TaskFailure) {
     let task_type = task.format.task_type();
     let safe_type = crate::diagnostics::safe_type(task_type);
     tracing::error!(
@@ -660,13 +659,11 @@ mod projection_tests {
     }
 }
 
-#[cfg(all(test, feature = "worker"))]
+#[cfg(test)]
 mod task_failure_tests {
     use super::{log_task_failure, test_support};
-    use crate::task::{
-        format::TaskFormat,
-        queue::settlement::{TaskFailure, TaskFailureCause},
-    };
+    use crate::task::format::TaskFormat;
+    use crate::worker::queue::settlement::{TaskFailure, TaskFailureCause};
 
     #[tokio::test]
     async fn confirmed_failure_events_contain_identity_and_safe_reason_only() {

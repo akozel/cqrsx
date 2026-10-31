@@ -8,7 +8,7 @@
     clippy::unreachable,
     clippy::indexing_slicing
 )]
-use cqrsx::task::queue::storage_config::TaskStorageConfig;
+use cqrsx::worker::queue::storage_config::TaskStorageConfig;
 
 use std::{
     collections::HashMap,
@@ -32,19 +32,18 @@ use cqrsx::{
     },
     host::error::HostError,
     postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
-    task::{
+    task::{attempt::TaskAttempt, format::TaskFormat},
+    worker::{
+        TaskResult,
         adapter::TaskAdapter,
-        attempt::TaskAttempt,
         context::TaskContext,
         dispatcher::TaskDispatcher,
         executor::default_executor::DefaultTaskExecutor,
-        format::TaskFormat,
         queue::{
             TaskProcessingError, TaskQueue,
             lease::{LeasedTask, TaskLease},
             settlement::{LeaseRecoveryReport, SettlementRequest, SettlementResult, TaskFailure, TaskFailureCause},
         },
-        result::TaskResult,
         runtime::{self, worker_pool_config::TaskWorkerPoolConfig},
     },
 };

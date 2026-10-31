@@ -56,14 +56,14 @@ use crate::{
         RebuildableProjection, checkpoint::CheckpointStore, processor::ProjectionProcessor, runtime::ProjectionRuntime,
     },
     reactions::{Reactions, ReactionsPlanner},
-    task::{
+    task::policy::Policies,
+    view::{View, projection::ViewProjection, repository::ViewRepository},
+    worker::{
         adapter::boxed::BoxedTaskAdapter,
         context::Executors,
         dependencies::{Dependencies, MissingDependency},
         dispatcher::TaskDispatcher,
-        policy::Policies,
     },
-    view::{View, projection::ViewProjection, repository::ViewRepository},
 };
 use std::{
     any::{Any, TypeId, type_name},

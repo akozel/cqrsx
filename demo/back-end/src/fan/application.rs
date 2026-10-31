@@ -23,7 +23,7 @@ mod tests {
     use crate::fan::domain::{Fan, FanCommand, FanError};
     use cqrsx::{
         command::{CommandExecutor, CommandGatewayError, CommitReport},
-        task::result::TaskResult,
+        worker::TaskResult,
     };
     use std::{collections::HashMap, sync::Arc};
     use uuid::Uuid;

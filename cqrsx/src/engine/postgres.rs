@@ -454,7 +454,7 @@ mod tests {
             command::{locks::LockLimits, retry::AggregateConflictRetryPolicy},
             engine::{Cqrs, Executor, test_support::*},
             projection::processor::config::ProcessorConfig,
-            task::runtime::config::TaskRuntimeConfig,
+            worker::runtime::config::TaskRuntimeConfig,
         };
         let lazy = || {
             PgPoolOptions::new()

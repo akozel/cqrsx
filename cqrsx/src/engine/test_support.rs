@@ -15,14 +15,11 @@ use crate::{
     },
     reactions::{Decided, Reactions, Then},
     task::{
-        context::TaskContext,
-        dependencies::DependencyId,
         format::TaskPayload,
-        handler::TaskHandler,
         policy::{PolicyName, Retry},
-        result::TaskResult,
     },
     view::View,
+    worker::{TaskHandler, TaskResult, context::TaskContext, dependencies::DependencyId},
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
