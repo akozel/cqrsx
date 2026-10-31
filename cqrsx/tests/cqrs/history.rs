@@ -92,3 +92,55 @@ mod memory {
         }
     }
 }
+
+mod upcasting {
+    use super::*;
+    use crate::projection::support::{Heal, delta, old_delta};
+    use crate::support::ledger::{Delta, Ledger};
+    use std::num::NonZeroUsize;
+
+    async fn journal() -> MemEventRepository {
+        let repo = MemEventRepository::default();
+        repo.persist::<Ledger>(&[old_delta("k", 1), delta("k", 2, 5)], None)
+            .await
+            .unwrap();
+        repo
+    }
+
+    #[tokio::test]
+    async fn the_upcasters_of_a_store_reshape_old_events_on_load_in_the_aggregate_and_the_event_list() {
+        let repo = journal().await;
+        let plain = PersistedEventStore::<_, Ledger>::new(repo.clone());
+        assert!(plain.load_events("k").await.is_err(), "nobody reads the version-0 event");
+
+        let store = PersistedEventStore::<_, Ledger>::new(repo).with_upcasters(vec![Box::new(Heal)]);
+        let events = store.load_events("k").await.unwrap();
+        assert_eq!(
+            events
+                .iter()
+                .map(|event| (event.sequence, event.payload.clone()))
+                .collect::<Vec<_>>(),
+            [(1, Delta(0)), (2, Delta(5))]
+        );
+        let context = store.load_aggregate("k").await.unwrap();
+        assert_eq!(
+            (context.aggregate.balance, context.aggregate.history.clone()),
+            (5, vec![0, 5])
+        );
+    }
+
+    #[tokio::test]
+    async fn a_cloned_store_reads_the_same_journal_through_the_same_upcasters_and_keeps_its_policy() {
+        let store = PersistedEventStore::<_, Ledger>::new(journal().await)
+            .with_snapshots(NonZeroUsize::new(3).unwrap())
+            .with_upcasters(vec![Box::new(Heal)]);
+        let clone = store.clone();
+        assert_eq!(format!("{clone:?}"), format!("{store:?}"));
+        assert!(format!("{clone:?}").contains("Every(3)") && format!("{clone:?}").contains("upcasters: 1"));
+        assert_eq!(clone.load_aggregate("k").await.unwrap().aggregate.history, [0, 5]);
+        // A commit through the clone is visible through the original: one journal.
+        let context = clone.load_aggregate("k").await.unwrap();
+        clone.commit(vec![Delta(2)], context, HashMap::new(), &[]).await.unwrap();
+        assert_eq!(store.load_aggregate("k").await.unwrap().aggregate.history, [0, 5, 2]);
+    }
+}

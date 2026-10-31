@@ -428,3 +428,126 @@ async fn a_failed_history_read_is_retried_and_the_rebuild_finishes() {
     assert_eq!(h.caught_up(&["a"]).await.failures, 0);
     node.stop().await;
 }
+
+#[tokio::test(start_paused = true)]
+async fn a_rebuild_step_after_the_lease_is_lost_ends_the_ownership_and_the_new_owner_finishes_the_rebuild() {
+    for step in ["begin_rebuild", "advance_rebuild", "finish_rebuild"] {
+        let h = Harness::new();
+        h.commit("a", 1).await;
+        let a_store = h.fork_checkpoints();
+        let a = h.node_isolated("A", a_store.clone());
+        h.caught_up(&["a"]).await;
+        a_store.fail("extend", usize::MAX); // A loses touch with the store: its lease runs out
+        a_store.fail("claim", usize::MAX); // and never gets the row back
+        let gate = a_store.gate_before(step);
+        assert_eq!(
+            h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
+            RebuildRequest::Accepted
+        );
+        gate.reached().await; // A is about to take this step of the rebuild
+        let b = h.node("B");
+        h.until(async || h.status().await.owner.as_deref() == Some("B")).await;
+        gate.release(); // the step reaches the store with A's token, which is stale now
+        h.until(async || h.observer.count("lease:Lost") == 1).await;
+        h.until(async || h.observer.count("rebuild:Finished") >= 1).await;
+        assert!(
+            h.status().await.rebuild_cursor.is_none() && h.status().await.owner.as_deref() == Some("B"),
+            "{step}: the rebuild is finished by B, who holds the row"
+        );
+        assert_eq!(
+            h.view("a").await.unwrap().view.history,
+            [(1, 1)],
+            "{step}: the document is the fold of the journal"
+        );
+        b.stop().await;
+        a.stop().await;
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failed_key_listing_is_a_failure_of_the_round_and_the_rebuild_finishes_after_the_pause() {
+    let h = Harness::new();
+    h.commit("a", 1).await;
+    h.commit("b", 2).await;
+    let node = h.node("n1");
+    h.caught_up(&["a", "b"]).await;
+    h.journal.fail("ids", 1);
+    h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap();
+    h.until(async || h.observer.count("rebuild:Finished") == 1).await;
+    assert!(
+        h.observer
+            .events()
+            .iter()
+            .any(|event| event.starts_with("failed:") && event.contains(":connection:-:1")),
+        "{:?}",
+        h.observer.events()
+    );
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1)]);
+    assert_eq!(h.view("b").await.unwrap().view.history, [(1, 2)]);
+    node.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_requested_while_its_live_job_runs_is_rebuilt_behind_the_job() {
+    let h = Harness::new();
+    h.commit("a", 1).await;
+    let node = h.node("n1");
+    h.caught_up(&["a"]).await;
+    let gate = h.views.gate("a");
+    h.commit("a", 2).await;
+    gate.reached().await; // the live job of a:2 is in flight
+    h.checkpoints.request_rebuild_key(&key(), "a").await.unwrap();
+    h.run_for(POLL * 4).await; // the owner has seen the request and has to keep it waiting
+    assert_eq!(h.observer.count("rebuilt:a:Requested"), 0, "not while the live job runs");
+    gate.release();
+    h.until(async || h.observer.count("rebuilt:a:Requested") == 1).await;
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2)]);
+    node.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_key_requested_again_while_its_rebuild_runs_ends_in_the_fold_of_the_journal() {
+    let h = Harness::new();
+    h.commit("a", 1).await;
+    h.commit("a", 2).await;
+    let node = h.node("n1");
+    h.caught_up(&["a"]).await;
+    let read = h.journal.gate_after_history();
+    h.checkpoints.request_rebuild_key(&key(), "a").await.unwrap();
+    read.reached().await; // the first rebuild of `a` is in flight
+    h.checkpoints.request_rebuild_key(&key(), "a").await.unwrap();
+    h.run_for(POLL * 4).await; // the owner has seen the second request and keeps it waiting
+    read.release();
+    h.until(async || h.observer.count("rebuilt:a:Requested") >= 1).await;
+    h.run_for(POLL * 4).await;
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2)]);
+    assert_eq!(h.observer.count("failed:"), 0, "{:?}", h.observer.events());
+    h.commit("a", 3).await;
+    h.caught_up(&["a"]).await;
+    assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2), (3, 3)]);
+    node.stop().await;
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_failing_checkpoint_statement_of_a_rebuild_is_retried_and_the_rebuild_finishes() {
+    for statement in ["take_requests", "begin_rebuild", "advance_rebuild", "finish_rebuild"] {
+        let h = Harness::new();
+        h.commit("a", 1).await;
+        let node = h.node("n1");
+        h.caught_up(&["a"]).await;
+        h.checkpoints.fail(statement, 1);
+        h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap();
+        h.until(async || h.observer.count("rebuild:Finished") == 1).await;
+        assert!(
+            h.checkpoints.calls(statement) >= 2,
+            "{statement} is called again after its failure"
+        );
+        assert!(
+            h.observer.events().iter().any(|event| event.starts_with("failed:")),
+            "{statement}: the failure is reported: {:?}",
+            h.observer.events()
+        );
+        assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1)], "{statement}");
+        node.stop().await;
+    }
+}

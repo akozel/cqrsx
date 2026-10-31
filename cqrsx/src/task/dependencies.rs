@@ -175,4 +175,32 @@ mod tests {
             format!("the dependency `{}` is not provided", TIME.name())
         );
     }
+
+    #[test]
+    fn a_shared_handle_is_the_provided_one_and_missing_for_a_type_nobody_provided() {
+        let clock: Arc<Time> = Arc::new(Fixed(7));
+        let name = Arc::new(String::from("fox"));
+        let dependencies = Dependencies::default().provide(clock.clone()).provide(name.clone());
+        assert!(Arc::ptr_eq(&dependencies.shared::<Time>().unwrap(), &clock));
+        assert!(Arc::ptr_eq(&dependencies.shared::<String>().unwrap(), &name));
+        assert!(dependencies.shared::<u32>().is_none());
+    }
+
+    #[test]
+    fn merged_dependencies_keep_what_only_one_side_has_and_take_the_others_where_both_have_one() {
+        let left: Arc<Time> = Arc::new(Fixed(1));
+        let right: Arc<Time> = Arc::new(Fixed(2));
+        let left_only = Dependencies::default().provide(left).provide(Arc::new(String::from("left")));
+        let right_only = Dependencies::default().provide(right).provide(Arc::new(7_u32));
+        let merged = left_only.clone().merged(&right_only);
+        assert_eq!(merged.get::<Time>().map(Clock::now), Some(2), "the other side's");
+        assert_eq!(merged.get::<String>().map(String::as_str), Some("left"));
+        assert_eq!(merged.get::<u32>(), Some(&7));
+        assert_eq!(
+            left_only.get::<Time>().map(Clock::now),
+            Some(1),
+            "the receiver's origin is untouched"
+        );
+        assert!(right_only.get::<String>().is_none());
+    }
 }

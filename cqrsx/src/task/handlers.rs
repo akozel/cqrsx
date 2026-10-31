@@ -327,6 +327,43 @@ mod tests {
         assert_eq!(refusal(TaskHandlers::new()), TaskDispatcherError::Empty);
     }
 
+    #[tokio::test]
+    async fn assembled_handlers_are_built_with_the_dependencies_they_were_given() {
+        let adapters = vec![BoxedTaskAdapter::json::<Record, _>(RecordHandler)];
+        let dependencies = Dependencies::default().provide(Arc::new(String::from("module")));
+        let dispatcher = TaskHandlers::assembled(adapters, dependencies)
+            .executor::<Ledger, _>(Arc::new(Conflicting))
+            .build()
+            .unwrap();
+        let record = Record { ledger: "fox".into() };
+        assert_eq!(
+            dispatcher.dispatch(Arc::new(attempt(&record)), Duration::ZERO).await,
+            TaskResult::retry("module: conflict")
+        );
+        let adapters = vec![BoxedTaskAdapter::json::<Record, _>(RecordHandler)];
+        assert_eq!(
+            TaskHandlers::assembled(adapters, Dependencies::default()).build().err(),
+            Some(TaskDispatcherError::MissingDependency {
+                format: TaskFormat::of::<Record>(),
+                dependency: DependencyId::of::<String>().name(),
+            })
+        );
+    }
+
+    #[test]
+    fn the_first_refusal_is_the_one_reported() {
+        let twice = TaskHandlers::new()
+            .handler(StampHandler)
+            .executor(Arc::new(Conflicting))
+            .executor(Arc::new(Conflicting))
+            .executor(Arc::new(Conflicting))
+            .handler(RecordHandler); // would be refused for its dependency too, but the executor came first
+        assert_eq!(
+            twice.build().err(),
+            Some(TaskDispatcherError::ExecutorTwice(ExecutorTwice("Ledger")))
+        );
+    }
+
     /// A second registration of the stamp's format.
     struct StampHandlerAdapter;
 

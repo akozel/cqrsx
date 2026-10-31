@@ -363,3 +363,23 @@ where
         Ok(claimed.map(|claimed| (claimed, anchor)))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::Operation;
+
+    #[test]
+    fn operations_are_named_by_the_words_of_the_log_lines() {
+        let named: Vec<_> = [
+            Operation::Feed,
+            Operation::Head,
+            Operation::Checkpoints,
+            Operation::Page,
+            Operation::Rebuild,
+            Operation::Lease,
+        ]
+        .map(Operation::as_str)
+        .into();
+        assert_eq!(named, ["feed", "head", "checkpoints", "page", "rebuild", "lease"]);
+    }
+}
