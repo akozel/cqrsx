@@ -2,7 +2,7 @@
 //! processors side by side until a signal, then stopped in order: the server, the task runtime, the processors (they
 //! finish what is in flight and give their checkpoints back), the pools.
 #[cfg(feature = "postgres")]
-use crate::postgres::task_runtime::prepare_task_runtime;
+use crate::postgres::task_queue::PostgresTaskQueue;
 use crate::{
     engine::{
         Cqrs, Journal,
@@ -131,9 +131,15 @@ impl Cqrs {
         match &self.journal {
             Journal::Memory => Box::pin(prepare(self.memory.queue.clone(), dispatcher, config, policies).run(shutdown)),
             #[cfg(feature = "postgres")]
-            Journal::Postgres(pools) => {
-                Box::pin(prepare_task_runtime(pools.main.clone(), dispatcher, config, policies).run(shutdown))
-            }
+            Journal::Postgres(pools) => Box::pin(
+                prepare(
+                    Arc::new(PostgresTaskQueue::new(pools.main.clone())),
+                    dispatcher,
+                    config,
+                    policies,
+                )
+                .run(shutdown),
+            ),
         }
     }
 

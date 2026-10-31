@@ -2,7 +2,6 @@ use std::sync::Mutex;
 
 use super::*;
 use cqrsx::{
-    postgres::task_runtime::prepare_task_runtime,
     task::policy::Policies,
     worker::{dispatcher::TaskDispatcherError, queue::storage_config::TaskStorageConfig, runtime::config::TaskRuntimeConfig},
 };
@@ -47,8 +46,8 @@ async fn two_live_workers_complete_every_supported_task_and_quarantine_bad_paylo
     // A startup failure must leave existing durable work unclaimed: a dispatcher that cannot be built never runs.
     let failed = TaskDispatcher::<DummyHandler>::try_new(vec![]);
     assert!(matches!(failed, Err(TaskDispatcherError::Empty)));
-    let left = prepare_task_runtime(db.pool.clone(), Arc::new(dispatcher()), config.clone(), Policies::default());
-    let right = prepare_task_runtime(db.pool.clone(), Arc::new(dispatcher()), config, Policies::default());
+    let left = task_runtime(&db.pool, Arc::new(dispatcher()), config.clone(), Policies::default());
+    let right = task_runtime(&db.pool, Arc::new(dispatcher()), config, Policies::default());
     for task in [&first, &second, &bad] {
         assert_worker_state(&db.pool, task.id(), "pending", 0, None).await;
     }
@@ -131,8 +130,8 @@ async fn one_worker_pool_routes_two_registered_task_types() {
     .unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
-    let prepared = prepare_task_runtime(
-        db.pool.clone(),
+    let prepared = task_runtime(
+        &db.pool,
         Arc::new(dispatcher),
         TaskRuntimeConfig::try_new(
             TaskStorageConfig::default(),
@@ -238,7 +237,7 @@ async fn old_terminal_tasks_are_retained_while_old_pending_and_processing_tasks_
     )
     .unwrap();
     let config = TaskRuntimeConfig::try_new(TaskStorageConfig::default(), workers).unwrap();
-    let prepared = prepare_task_runtime(db.pool.clone(), Arc::new(dispatcher), config, Policies::default());
+    let prepared = task_runtime(&db.pool, Arc::new(dispatcher), config, Policies::default());
     let shutdown = CancellationToken::new();
     let runtime = tokio::spawn(prepared.run(shutdown.clone()));
     let progress = tokio::time::timeout(Duration::from_secs(10), async {

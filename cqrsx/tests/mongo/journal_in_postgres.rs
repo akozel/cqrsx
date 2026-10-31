@@ -6,7 +6,7 @@ use crate::{
     support::{Ledger, NAME, Node, Recording, caught_up, commit_all, until},
 };
 use cqrsx::{
-    command::{executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits},
+    command::{executor::StoreCommandExecutor, locks::LockLimits},
     journal::{feed::Position, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     mongodb::checkpoint_store::PROJECTION_CHECKPOINTS_COLLECTION,
     postgres::{event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox},
@@ -18,9 +18,14 @@ use std::sync::Arc;
 /// Commits `per_key` commands on every key through PostgreSQL.
 async fn commit(pool: &PgPool, wakeup: &CommitWakeup, keys: &[&str], per_key: i32) {
     let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
-    let framework = CqrsFramework::new(PersistedEventStore::<_, Ledger>::new(repository), ());
     let executor = Arc::new(
-        CommandExecutorCore::new(framework, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()),
+        StoreCommandExecutor::new(
+            PersistedEventStore::<_, Ledger>::new(repository),
+            (),
+            Default::default(),
+            LockLimits::default(),
+        )
+        .with_commit_wakeup(wakeup.clone()),
     );
     commit_all(keys, per_key, move |id, value| {
         let executor = executor.clone();

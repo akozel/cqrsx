@@ -79,7 +79,7 @@ mod contracts {
             .unwrap();
         assert!(matches!(
             PersistedEventStore::<_, Ledger>::new(repo).load_aggregate("one").await,
-            Err(cqrsx::command::AggregateError::DeserializationError(_))
+            Err(cqrsx::journal::PersistenceError::DeserializationError(_))
         ));
         db.close().await;
     }
@@ -109,7 +109,7 @@ mod contracts {
             .unwrap();
         assert!(matches!(
             store.load_aggregate("upcast").await,
-            Err(cqrsx::command::AggregateError::DeserializationError(_))
+            Err(cqrsx::journal::PersistenceError::DeserializationError(_))
         ));
         db.close().await;
     }

@@ -223,10 +223,12 @@ async fn record_in_wallet(
 #[tokio::test]
 async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type() {
     let journal = MemEventRepository::default();
-    let shows = TestCommandExecutor::<Show, _>::over_journal(journal.clone(), ())
-        .with_task_planner(ReactionsPlanner::<Show>::new(policies()));
-    let wallets = TestCommandExecutor::<Wallet, _>::over_journal(journal.clone(), ())
-        .with_task_planner(ReactionsPlanner::<Wallet>::new(policies()));
+    let shows = TestCommandExecutor::<Show, _>::configured(PersistedEventStore::new(journal.clone()), (), |executor| {
+        executor.with_task_planner(ReactionsPlanner::<Show>::new(policies()))
+    });
+    let wallets = TestCommandExecutor::<Wallet, _>::configured(PersistedEventStore::new(journal.clone()), (), |executor| {
+        executor.with_task_planner(ReactionsPlanner::<Wallet>::new(policies()))
+    });
 
     let root = Causation::root("ui");
     let book = Book {

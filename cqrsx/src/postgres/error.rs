@@ -1,6 +1,6 @@
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-use crate::{command::AggregateError, journal::PersistenceError};
+use crate::journal::PersistenceError;
 use sqlx::Error;
 
 #[derive(Debug, thiserror::Error)]
@@ -20,17 +20,6 @@ impl From<sqlx::Error> for PostgresRepositoryError {
         match &err {
             Error::Io(_) | Error::Tls(_) => Self::ConnectionError(Box::new(err)),
             _ => Self::UnknownError(Box::new(err)),
-        }
-    }
-}
-
-impl<T: std::error::Error> From<PostgresRepositoryError> for AggregateError<T> {
-    fn from(err: PostgresRepositoryError) -> Self {
-        match err {
-            PostgresRepositoryError::OptimisticLock => Self::AggregateConflict,
-            PostgresRepositoryError::ConnectionError(error) => Self::DatabaseConnectionError(error),
-            PostgresRepositoryError::DeserializationError(error) => Self::DeserializationError(error),
-            PostgresRepositoryError::UnknownError(error) => Self::UnexpectedError(error),
         }
     }
 }
@@ -58,9 +47,10 @@ impl From<PostgresRepositoryError> for PersistenceError {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::AggregateError;
     use std::{convert::Infallible, io};
     #[test]
-    fn postgres_categories_retain_causes_across_both_boundaries() {
+    fn postgres_categories_retain_causes_through_persistence_to_the_command_error() {
         for category in 0..4 {
             let make = || {
                 let cause = Box::new(io::Error::other("original"));
@@ -71,26 +61,22 @@ mod tests {
                     _ => PostgresRepositoryError::UnknownError(cause),
                 }
             };
-            for aggregate in [
-                AggregateError::<Infallible>::from(make()),
-                AggregateError::<Infallible>::from(PersistenceError::from(make())),
-            ] {
-                if category != 0 {
-                    use std::error::Error as _;
-                    assert_eq!(
-                        aggregate.source().unwrap().downcast_ref::<io::Error>().unwrap().to_string(),
-                        "original"
-                    );
+            let aggregate = AggregateError::<Infallible>::from(PersistenceError::from(make()));
+            if category != 0 {
+                use std::error::Error as _;
+                assert_eq!(
+                    aggregate.source().unwrap().downcast_ref::<io::Error>().unwrap().to_string(),
+                    "original"
+                );
+            }
+            match (category, aggregate) {
+                (0, AggregateError::AggregateConflict) => {}
+                (1, AggregateError::DatabaseConnectionError(e))
+                | (2, AggregateError::DeserializationError(e))
+                | (3, AggregateError::UnexpectedError(e)) => {
+                    assert_eq!(e.downcast_ref::<io::Error>().unwrap().to_string(), "original")
                 }
-                match (category, aggregate) {
-                    (0, AggregateError::AggregateConflict) => {}
-                    (1, AggregateError::DatabaseConnectionError(e))
-                    | (2, AggregateError::DeserializationError(e))
-                    | (3, AggregateError::UnexpectedError(e)) => {
-                        assert_eq!(e.downcast_ref::<io::Error>().unwrap().to_string(), "original")
-                    }
-                    _ => panic!("incorrect aggregate mapping"),
-                }
+                _ => panic!("incorrect aggregate mapping"),
             }
             let persistence = PersistenceError::from(make());
             if category != 0 {

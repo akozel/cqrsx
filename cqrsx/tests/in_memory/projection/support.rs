@@ -4,7 +4,7 @@
 //! finish their current job, like a slow owner that lost its lease, so every check holds for both outcomes.
 use crate::support::ledger::{Command, Delta, Ledger, Services};
 use cqrsx::{
-    command::{executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits, retry::AggregateConflictRetryPolicy},
+    command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{
         EventStore, PersistenceError,
@@ -631,7 +631,7 @@ pub(crate) struct Harness {
     pub(crate) wakeup: CommitWakeup,
     pub(crate) observer: Arc<Recording>,
     pub(crate) config: ProcessorConfig,
-    executor: Arc<CommandExecutorCore<Ledger, Store>>,
+    executor: Arc<StoreCommandExecutor<Ledger, Store>>,
 }
 
 pub(crate) fn config() -> ProcessorConfig {
@@ -654,10 +654,14 @@ impl Harness {
     pub(crate) fn with_config(config: ProcessorConfig) -> Self {
         let journal = MemEventRepository::default();
         let wakeup = CommitWakeup::new();
-        let framework = CqrsFramework::new(PersistedEventStore::new(journal.clone()), Services::default());
         let executor = Arc::new(
-            CommandExecutorCore::new(framework, AggregateConflictRetryPolicy::default(), LockLimits::default())
-                .with_commit_wakeup(wakeup.clone()),
+            StoreCommandExecutor::new(
+                PersistedEventStore::new(journal.clone()),
+                Services::default(),
+                AggregateConflictRetryPolicy::default(),
+                LockLimits::default(),
+            )
+            .with_commit_wakeup(wakeup.clone()),
         );
         Self {
             journal: Arc::new(Journal::new(journal)),

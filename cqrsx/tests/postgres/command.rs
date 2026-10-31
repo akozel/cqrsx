@@ -1,17 +1,13 @@
 use super::*;
+use cqrsx::command::{
+    CommandExecutor, CommandGatewayError,
+    causation::Causation,
+    observer::{CommandObserver, CommandReport, Outcome},
+    planner::{Decision, TaskPlanError, TaskPlanner},
+    retry::AggregateConflictRetryPolicy,
+};
 use cqrsx::journal::EventStore;
 use cqrsx::journal::persisted::PersistedEventStore;
-use cqrsx::{
-    command::{
-        CommandExecutor, CommandGatewayError,
-        causation::Causation,
-        locks::LockLimits,
-        observer::{CommandObserver, CommandReport, Outcome},
-        planner::{Decision, TaskPlanError, TaskPlanner},
-        retry::AggregateConflictRetryPolicy,
-    },
-    postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
-};
 use thiserror::Error;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -71,15 +67,6 @@ impl Decide<CommandAggregate> for Command {
     }
 }
 
-/// The default retry policy and lock limits.
-fn config(interval: usize) -> PostgresCommandConfig {
-    PostgresCommandConfig::new(
-        std::num::NonZeroUsize::new(interval).unwrap(),
-        AggregateConflictRetryPolicy::default(),
-        LockLimits::default(),
-    )
-}
-
 fn record(value: &str, expected_count: usize) -> Command {
     Command::Record {
         value: value.to_owned(),
@@ -99,8 +86,8 @@ impl TaskPlanner<CommandAggregate> for LastValue {
     }
 }
 
-fn planned_executor(pool: &PgPool, interval: usize) -> PostgresCommandExecutor<CommandAggregate> {
-    PostgresCommandExecutor::new(pool.clone(), config(interval), ()).with_task_planner(LastValue)
+fn planned_executor(pool: &PgPool, interval: usize) -> PostgresExecutor<CommandAggregate> {
+    executor::<CommandAggregate>(pool, interval, ()).with_task_planner(LastValue)
 }
 
 /// The id the core derives for the first task of `causation`'s command on `aggregate_id`.
@@ -290,7 +277,7 @@ async fn the_observer_reports_the_metadata_and_the_tasks_the_commit_stored() {
 #[tokio::test]
 async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_object() {
     let db = Database::new().await;
-    let executor = PostgresCommandExecutor::<CommandAggregate>::new(db.pool.clone(), config(1), ());
+    let executor = executor::<CommandAggregate>(&db.pool, 1, ());
     let metadata = HashMap::from([
         ("command_id".to_owned(), "cmd-1".to_owned()),
         ("source".to_owned(), "integration".to_owned()),
@@ -354,7 +341,7 @@ async fn parallel_commands_publish_the_tasks_of_their_own_decisions() {
 #[tokio::test]
 async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     let db = Database::new().await;
-    let executor = PostgresCommandExecutor::<CommandAggregate>::new(db.pool.clone(), config(2), ());
+    let executor = executor::<CommandAggregate>(&db.pool, 2, ());
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     executor.execute(&"snapshot".into(), record("first", 0)).await.unwrap();
     assert!(repository.snapshot::<CommandAggregate>("snapshot").await.unwrap().is_none());
@@ -385,7 +372,7 @@ async fn the_constructor_needs_no_connection_and_closed_pool_errors_remain_unava
     let pool = sqlx::postgres::PgPoolOptions::new()
         .connect_lazy("postgres://localhost/unused")
         .unwrap();
-    let executor = PostgresCommandExecutor::<CommandAggregate>::new(pool.clone(), config(1), ());
+    let executor = executor::<CommandAggregate>(&pool, 1, ());
     assert_eq!(pool.size(), 0);
     pool.close().await;
     assert_eq!(
@@ -431,7 +418,7 @@ impl Decide<CappedAggregate> for String {
 #[tokio::test]
 async fn rules_decide_and_the_metadata_is_stored_with_every_event() {
     let db = Database::new().await;
-    let executor = PostgresCommandExecutor::<CappedAggregate>::new(db.pool.clone(), config(10), Cap(2));
+    let executor = executor::<CappedAggregate>(&db.pool, 10, Cap(2));
     let metadata = HashMap::from([("source".to_owned(), "test".to_owned())]);
     for value in ["first", "second"] {
         executor
@@ -465,16 +452,7 @@ async fn rules_decide_and_the_metadata_is_stored_with_every_event() {
 async fn aggregate_locks_accept_forty_parallel_commands_without_conflicts() {
     let db = Database::new().await;
     let single_attempt = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-    let config = PostgresCommandConfig::new(
-        std::num::NonZeroUsize::new(10).unwrap(),
-        single_attempt,
-        LockLimits::default(),
-    );
-    let executor = Arc::new(PostgresCommandExecutor::<CappedAggregate>::new(
-        db.pool.clone(),
-        config,
-        Cap(40),
-    ));
+    let executor = Arc::new(executor_with::<CappedAggregate>(&db.pool, 10, single_attempt, Cap(40)));
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..40 {
         let executor = executor.clone();
@@ -499,13 +477,7 @@ async fn two_executors_with_their_own_locks_meet_only_in_the_database() {
     let db = Database::new().await;
     // Like two nodes: each executor has its own locks, the optimistic check decides between them.
     let nodes: Vec<_> = (0..2)
-        .map(|_| {
-            Arc::new(PostgresCommandExecutor::<CappedAggregate>::new(
-                db.pool.clone(),
-                config(10),
-                Cap(40),
-            ))
-        })
+        .map(|_| Arc::new(executor::<CappedAggregate>(&db.pool, 10, Cap(40))))
         .collect();
     let mut commands = tokio::task::JoinSet::new();
     for index in 0..40 {
@@ -599,8 +571,7 @@ impl TaskPlanner<Counted> for CountedTasks {
 async fn rules_that_are_not_clone_serve_the_executor_which_commits_event_snapshot_and_task_at_once() {
     let db = Database::new().await;
     let decided = Arc::new(AtomicUsize::new(0));
-    let executor = PostgresCommandExecutor::<Counted>::new(db.pool.clone(), config(1), Counter(decided.clone()))
-        .with_task_planner(CountedTasks);
+    let executor = executor::<Counted>(&db.pool, 1, Counter(decided.clone())).with_task_planner(CountedTasks);
     let causation = Causation::root("integration");
     let report = executor
         .execute_with_metadata(&"core".into(), "accepted".into(), causation.event_metadata())
@@ -632,10 +603,10 @@ mod contracts {
     }
     impl EventStore<Ledger> for CommitBoundary {
         type Context = cqrsx::journal::persisted::EventStoreAggregateContext<Ledger>;
-        async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::command::AggregateError<Rejected>> {
+        async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
             self.inner.load_events(id).await
         }
-        async fn load_aggregate(&self, id: &str) -> Result<Self::Context, cqrsx::command::AggregateError<Rejected>> {
+        async fn load_aggregate(&self, id: &str) -> Result<Self::Context, cqrsx::journal::PersistenceError> {
             self.loads.fetch_add(1, Ordering::SeqCst);
             self.inner.load_aggregate(id).await
         }
@@ -645,7 +616,7 @@ mod contracts {
             context: Self::Context,
             metadata: HashMap<String, String>,
             tasks: &[NewTask],
-        ) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::command::AggregateError<Rejected>> {
+        ) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
             let attempt = self.commits.fetch_add(1, Ordering::SeqCst);
             if self.mode == 0 && attempt == 0 {
                 PostgresEventRepository::new(self.pool.clone())
@@ -655,7 +626,7 @@ mod contracts {
             }
             let result = self.inner.commit(events, context, metadata, tasks).await?;
             if self.mode == 1 {
-                return Err(cqrsx::command::AggregateError::DatabaseConnectionError(
+                return Err(cqrsx::journal::PersistenceError::ConnectionError(
                     "response lost after real commit".into(),
                 ));
             }
@@ -683,21 +654,19 @@ mod contracts {
             Err(PersistenceError::UnknownError(_))
         ));
         assert_eq!(database_state(&db.pool).await, before);
-        use cqrsx::command::{CommandGatewayError, executor::CommandExecutorCore};
+        use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor};
         let loads = Arc::new(AtomicUsize::new(0));
         let commits = Arc::new(AtomicUsize::new(0));
-        let executor = CommandExecutorCore::new(
-            CqrsFramework::new(
-                CommitBoundary {
-                    inner: PersistedEventStore::new(PostgresEventRepository::new(db.pool.clone())),
-                    pool: db.pool.clone(),
-                    mode: 3,
-                    loads: loads.clone(),
-                    commits: commits.clone(),
-                    durable: Arc::default(),
-                },
-                (),
-            ),
+        let executor = StoreCommandExecutor::new(
+            CommitBoundary {
+                inner: PersistedEventStore::new(PostgresEventRepository::new(db.pool.clone())),
+                pool: db.pool.clone(),
+                mode: 3,
+                loads: loads.clone(),
+                commits: commits.clone(),
+                durable: Arc::default(),
+            },
+            (),
             Default::default(),
             cqrsx::command::locks::LockLimits::default(),
         );
@@ -713,7 +682,7 @@ mod contracts {
 
     #[tokio::test]
     async fn command_retry_rechecks_balance_and_unknown_or_cancelled_response_keeps_durable_commit() {
-        use cqrsx::command::{CommandGatewayError, executor::CommandExecutorCore, retry::AggregateConflictRetryPolicy};
+        use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor, retry::AggregateConflictRetryPolicy};
         let db = Database::new().await;
         for mode in 0..3 {
             let id = format!("boundary-{mode}");
@@ -725,18 +694,16 @@ mod contracts {
             let loads = Arc::new(AtomicUsize::new(0));
             let commits = Arc::new(AtomicUsize::new(0));
             let durable = Arc::new(tokio::sync::Notify::new());
-            let executor = CommandExecutorCore::new(
-                CqrsFramework::new(
-                    CommitBoundary {
-                        inner: PersistedEventStore::new(PostgresEventRepository::new(pool.clone())),
-                        pool: pool.clone(),
-                        mode,
-                        loads: loads.clone(),
-                        commits: commits.clone(),
-                        durable: durable.clone(),
-                    },
-                    (),
-                ),
+            let executor = StoreCommandExecutor::new(
+                CommitBoundary {
+                    inner: PersistedEventStore::new(PostgresEventRepository::new(pool.clone())),
+                    pool: pool.clone(),
+                    mode,
+                    loads: loads.clone(),
+                    commits: commits.clone(),
+                    durable: durable.clone(),
+                },
+                (),
                 AggregateConflictRetryPolicy::try_new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
                 cqrsx::command::locks::LockLimits::default(),
             );

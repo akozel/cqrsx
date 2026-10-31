@@ -25,8 +25,9 @@ use uuid::Uuid;
 /// The ledgers' executor, which plans with its reactions as in production, for the handlers, and a clone of it (for
 /// the task records).
 pub fn fans(store: MemStore<Fan>) -> (Arc<TestCommandExecutor<Fan>>, TestCommandExecutor<Fan>) {
-    let executor =
-        TestCommandExecutor::new(store, ()).with_task_planner(ReactionsPlanner::<Fan>::new(crate::testing::policies()));
+    let executor = TestCommandExecutor::configured(store, (), |executor| {
+        executor.with_task_planner(ReactionsPlanner::<Fan>::new(crate::testing::policies()))
+    });
     (Arc::new(executor.clone()), executor)
 }
 

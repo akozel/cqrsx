@@ -10,7 +10,6 @@ pub mod wakeup;
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::{
-    command::AggregateError,
     domain::{aggregate::Aggregate, event::EventEnvelope},
     task::NewTask,
 };
@@ -22,17 +21,14 @@ where
     A: Aggregate,
 {
     /// Provides the current state of an aggregate along with surrounding context.
-    /// This is used by the [CqrsFramework](crate::command::framework::CqrsFramework) when loading
+    /// This is used by the command executor (`StoreCommandExecutor`) when loading
     /// an aggregate in order to handle incoming commands.
     type Context: AggregateContext<A>;
 
     /// Load all events for a particular `aggregate_id`
-    fn load_events(
-        &self,
-        aggregate_id: &str,
-    ) -> impl Future<Output = Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>>> + Send;
+    fn load_events(&self, aggregate_id: &str) -> impl Future<Output = Result<Vec<EventEnvelope<A>>, PersistenceError>> + Send;
     /// Load aggregate at current state
-    fn load_aggregate(&self, aggregate_id: &str) -> impl Future<Output = Result<Self::Context, AggregateError<A::Error>>> + Send;
+    fn load_aggregate(&self, aggregate_id: &str) -> impl Future<Output = Result<Self::Context, PersistenceError>> + Send;
     /// Commit new events and the tasks planned from them using the last committed aggregate context.
     /// The tasks commit atomically with the events or the commit fails before writing anything; a task
     /// never commits without an event. A store without an outbox refuses non-empty `tasks`.
@@ -42,7 +38,7 @@ where
         context: Self::Context,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
-    ) -> impl Future<Output = Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>>> + Send;
+    ) -> impl Future<Output = Result<Vec<EventEnvelope<A>>, PersistenceError>> + Send;
 }
 
 /// Returns the aggregate as well as the context around it.
@@ -103,41 +99,7 @@ impl From<serde_json::Error> for PersistenceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::convert::Infallible;
     use std::io;
-    #[test]
-    fn persistence_categories_preserve_boxed_cause() {
-        let cause = || Box::new(io::Error::other("original cause")) as Box<dyn std::error::Error + Send + Sync>;
-        assert!(matches!(
-            AggregateError::<Infallible>::from(PersistenceError::OptimisticLockError),
-            AggregateError::AggregateConflict
-        ));
-        let cases = [
-            PersistenceError::ConnectionError(cause()),
-            PersistenceError::DeserializationError(cause()),
-            PersistenceError::UnknownError(cause()),
-        ];
-        for (index, error) in cases.into_iter().enumerate() {
-            let error = AggregateError::<Infallible>::from(error);
-            let boxed = match (index, error) {
-                (0, AggregateError::DatabaseConnectionError(e))
-                | (1, AggregateError::DeserializationError(e))
-                | (2, AggregateError::UnexpectedError(e)) => e,
-                _ => panic!("technical categories must not become conflicts"),
-            };
-            assert_eq!(boxed.downcast_ref::<io::Error>().unwrap().to_string(), "original cause");
-        }
-        let AggregateError::UnexpectedError(boxed) =
-            AggregateError::<Infallible>::from(PersistenceError::SequenceGap { expected: 2, found: 5 })
-        else {
-            panic!("a sequence gap is a technical category")
-        };
-        assert_eq!(boxed.to_string(), "sequence gap: expected event 2, found 5");
-        assert!(matches!(
-            boxed.downcast_ref::<PersistenceError>(),
-            Some(PersistenceError::SequenceGap { expected: 2, found: 5 })
-        ));
-    }
     fn serde_errors() -> Vec<serde_json::Error> {
         struct BrokenReader;
         impl io::Read for BrokenReader {
@@ -167,19 +129,6 @@ mod tests {
                 PersistenceError::UnknownError(e) if !deserialization => assert!(e.is::<serde_json::Error>()),
                 _ => panic!("incorrect serde category"),
             }
-        }
-        for error in serde_errors() {
-            let deserialization = matches!(
-                error.classify(),
-                serde_json::error::Category::Data | serde_json::error::Category::Syntax
-            );
-            let original = error.to_string();
-            let mapped = AggregateError::<Infallible>::from(error);
-            assert_eq!(mapped.to_string(), original);
-            assert!(
-                matches!(mapped, AggregateError::DeserializationError(_) if deserialization)
-                    || matches!(mapped, AggregateError::UnexpectedError(_) if !deserialization)
-            );
         }
     }
 }

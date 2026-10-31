@@ -58,7 +58,6 @@ use uuid::Uuid;
 
 use cqrsx::postgres::event_repository::PostgresEventRepository;
 use cqrsx::{
-    command::framework::CqrsFramework,
     domain::event::EventEnvelope,
     journal::{
         EventStore,

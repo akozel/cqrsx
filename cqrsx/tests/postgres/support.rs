@@ -214,3 +214,53 @@ pub(crate) mod repository;
 pub(crate) async fn database_state(pool: &PgPool) -> Value {
     sqlx::query_scalar("SELECT jsonb_build_object('events', (SELECT coalesce(jsonb_agg(to_jsonb(e) ORDER BY aggregate_type, aggregate_id, sequence), '[]') FROM events e), 'snapshots', (SELECT coalesce(jsonb_agg(to_jsonb(s) ORDER BY aggregate_type, aggregate_id, last_sequence), '[]') FROM snapshots s), 'tasks', (SELECT coalesce(jsonb_agg(to_jsonb(t) ORDER BY id), '[]') FROM transactional_outbox t))").fetch_one(pool).await.unwrap()
 }
+
+/// The command executor of `A` over the outbox repository on `pool`, snapshots every `snapshot_every` events, the
+/// default conflict retry and the default lock limits: what the engine builds for an aggregate type.
+pub(super) fn executor<A: cqrsx::domain::aggregate::Aggregate + 'static>(
+    pool: &PgPool,
+    snapshot_every: usize,
+    rules: A::Rules,
+) -> PostgresExecutor<A> {
+    executor_with(
+        pool,
+        snapshot_every,
+        cqrsx::command::retry::AggregateConflictRetryPolicy::default(),
+        rules,
+    )
+}
+
+/// Like [`executor`] with the conflict retry `retry`.
+pub(super) fn executor_with<A: cqrsx::domain::aggregate::Aggregate + 'static>(
+    pool: &PgPool,
+    snapshot_every: usize,
+    retry: cqrsx::command::retry::AggregateConflictRetryPolicy,
+    rules: A::Rules,
+) -> PostgresExecutor<A> {
+    let store = cqrsx::journal::persisted::PersistedEventStore::new(
+        cqrsx::postgres::outbox::PostgresEventRepositoryWithOutbox::new(pool.clone()),
+    )
+    .with_snapshots(std::num::NonZeroUsize::new(snapshot_every).unwrap());
+    cqrsx::command::executor::StoreCommandExecutor::new(store, rules, retry, cqrsx::command::locks::LockLimits::default())
+}
+
+/// The executor type of [`executor`].
+pub(super) type PostgresExecutor<A> = cqrsx::command::executor::StoreCommandExecutor<
+    A,
+    cqrsx::journal::persisted::PersistedEventStore<cqrsx::postgres::outbox::PostgresEventRepositoryWithOutbox, A>,
+>;
+
+/// The task runtime over the task queue on `pool`.
+pub(super) fn task_runtime<A: cqrsx::worker::adapter::TaskAdapter + 'static>(
+    pool: &PgPool,
+    dispatcher: Arc<TaskDispatcher<A>>,
+    config: cqrsx::worker::runtime::config::TaskRuntimeConfig,
+    policies: cqrsx::task::policy::Policies,
+) -> cqrsx::worker::runtime::TaskRuntime<cqrsx::postgres::task_queue::PostgresTaskQueue, A> {
+    cqrsx::worker::runtime::prepare(
+        Arc::new(cqrsx::postgres::task_queue::PostgresTaskQueue::new(pool.clone())),
+        dispatcher,
+        config,
+        policies,
+    )
+}

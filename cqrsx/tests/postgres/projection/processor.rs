@@ -4,18 +4,12 @@ use crate::{
     support::{Database, ledger::Ledger},
 };
 use cqrsx::{
-    command::{
-        CommandExecutor, executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits,
-        retry::AggregateConflictRetryPolicy,
-    },
+    command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     postgres::{
-        checkpoint_store::PostgresCheckpointStore,
-        command::{PostgresCommandConfig, PostgresCommandExecutor},
-        event_repository::PostgresEventRepository,
-        outbox::PostgresEventRepositoryWithOutbox,
-        view_repository::PostgresViewRepository,
+        checkpoint_store::PostgresCheckpointStore, event_repository::PostgresEventRepository,
+        outbox::PostgresEventRepositoryWithOutbox, view_repository::PostgresViewRepository,
     },
     projection::{
         checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
@@ -100,10 +94,17 @@ impl ProjectionObserver for Recording {
 
 type Store = PersistedEventStore<PostgresEventRepositoryWithOutbox, Ledger>;
 
-fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<CommandExecutorCore<Ledger, Store>> {
+fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<StoreCommandExecutor<Ledger, Store>> {
     let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
-    let framework = CqrsFramework::new(PersistedEventStore::new(repository), ());
-    Arc::new(CommandExecutorCore::new(framework, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
+    Arc::new(
+        StoreCommandExecutor::new(
+            PersistedEventStore::new(repository),
+            (),
+            Default::default(),
+            LockLimits::default(),
+        )
+        .with_commit_wakeup(wakeup.clone()),
+    )
 }
 
 fn config() -> ProcessorConfig {
@@ -241,12 +242,7 @@ async fn forty_parallel_commands_to_one_key_reach_the_view_in_commit_order() {
     let (observer, wakeup, shutdown) = (Arc::new(Recording::default()), CommitWakeup::new(), CancellationToken::new());
     let running = tokio::spawn(processor(&db.pool, "node-a", &observer, &wakeup).run(shutdown.clone()));
     let single_attempt = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-    let config = PostgresCommandConfig::new(
-        std::num::NonZeroUsize::new(10).unwrap(),
-        single_attempt,
-        LockLimits::default(),
-    );
-    let executor = Arc::new(PostgresCommandExecutor::<Ledger>::new(db.pool.clone(), config, ()).with_commit_wakeup(wakeup));
+    let executor = Arc::new(crate::support::executor_with::<Ledger>(&db.pool, 10, single_attempt, ()).with_commit_wakeup(wakeup));
     let mut commands = JoinSet::new();
     for value in 1..=40 {
         let executor = executor.clone();

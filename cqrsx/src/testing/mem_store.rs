@@ -3,9 +3,8 @@
 // A test helper the engine does not use (rule 8 of the code guidelines): a poisoned lock fails the test that poisoned it.
 #![allow(clippy::unwrap_used)]
 use crate::{
-    command::AggregateError,
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{AggregateContext, EventStore},
+    journal::{AggregateContext, EventStore, PersistenceError},
     task::NewTask,
 };
 use std::{
@@ -16,7 +15,7 @@ use std::{
 
 ///  Simple memory store useful for application development and testing purposes.
 ///
-/// Creation and use in a constructing a `CqrsFramework`:
+/// Creation and use in a constructing a `StoreCommandExecutor`:
 /// ```
 /// # mod example {
 /// # use async_trait::async_trait;
@@ -98,11 +97,11 @@ use std::{
 /// # }
 /// # use example::MyAggregate;
 /// # use example::MyService;
-/// use cqrsx::command::framework::CqrsFramework;
+/// use cqrsx::command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy};
 /// use cqrsx::testing::mem_store::MemStore;
 ///
 /// let store = MemStore::<MyAggregate>::default();
-/// let cqrs = CqrsFramework::new(store, MyService);
+/// let executor = StoreCommandExecutor::new(store, MyService, AggregateConflictRetryPolicy::default(), LockLimits::default());
 /// ```
 #[derive(Debug, Clone)]
 pub struct MemStore<A: Aggregate + Send + Sync> {
@@ -119,7 +118,7 @@ impl<A: Aggregate> Default for MemStore<A> {
 type LockedEventEnvelopeMap<A> = RwLock<HashMap<String, Vec<EventEnvelope<A>>>>;
 
 impl<A: Aggregate> MemStore<A> {
-    fn load_committed_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
+    fn load_committed_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         let committed_events = self
             .events
             .read()
@@ -143,12 +142,12 @@ impl<A: Aggregate> MemStore<A> {
 impl<A: Aggregate> EventStore<A> for MemStore<A> {
     type Context = MemStoreAggregateContext<A>;
 
-    async fn load_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
+    async fn load_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         let events = self.load_committed_events(aggregate_id)?;
         Ok(events)
     }
 
-    async fn load_aggregate(&self, aggregate_id: &str) -> Result<MemStoreAggregateContext<A>, AggregateError<A::Error>> {
+    async fn load_aggregate(&self, aggregate_id: &str) -> Result<MemStoreAggregateContext<A>, PersistenceError> {
         let committed_events = self.load_events(aggregate_id).await?;
         let mut aggregate = A::default();
         let mut current_sequence = 0;
@@ -172,9 +171,9 @@ impl<A: Aggregate> EventStore<A> for MemStore<A> {
         context: MemStoreAggregateContext<A>,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
-    ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
+    ) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         if events.is_empty() && !tasks.is_empty() {
-            return Err(AggregateError::UnexpectedError(
+            return Err(PersistenceError::UnknownError(
                 "outbox tasks require a committed domain event".into(),
             ));
         }
@@ -222,7 +221,7 @@ impl<A: Aggregate> MemStore<A> {
 }
 /// Holds context for a pure event store implementation for MemStore.
 ///
-/// This is used internally by the `CqrsFramework`.
+/// This is used internally by the command executor.
 pub struct MemStoreAggregateContext<A>
 where
     A: Aggregate,
@@ -367,7 +366,7 @@ mod tests {
             };
             assert!(matches!(
                 store.commit(vec![Delta(1); count], context, HashMap::new(), &[]).await,
-                Err(AggregateError::UnexpectedError(_))
+                Err(PersistenceError::UnknownError(_))
             ));
             assert!(store.load_events("overflow").await.unwrap().is_empty());
         }
@@ -490,7 +489,7 @@ mod store_tests {
         };
         assert!(matches!(
             store.commit(vec![], context(), HashMap::new(), std::slice::from_ref(&task)).await,
-            Err(AggregateError::UnexpectedError(error)) if error.to_string() == "outbox tasks require a committed domain event"
+            Err(PersistenceError::UnknownError(error)) if error.to_string() == "outbox tasks require a committed domain event"
         ));
         assert_eq!(
             store

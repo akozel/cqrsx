@@ -89,8 +89,9 @@
 //! assert_eq!((tasks[0].format().to_string(), &tasks[0].payload()["total"]), ("ship v1".to_owned(), &30.into()));
 //!
 //! // The executor runs them after every decision and commits the tasks with the event.
-//! let orders = TestCommandExecutor::new(MemStore::<Order>::default(), ())
-//!     .with_task_planner(ReactionsPlanner::<Order>::new(Policies::default()));
+//! let orders = TestCommandExecutor::configured(MemStore::<Order>::default(), (), |executor| {
+//!     executor.with_task_planner(ReactionsPlanner::<Order>::new(Policies::default()))
+//! });
 //! let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
 //! let reserved = runtime.block_on(orders.execute(&id, None)).unwrap();
 //! assert_eq!(reserved.tasks[0].format().to_string(), "release_unpaid v1");
@@ -641,7 +642,11 @@ mod tests {
     #[tokio::test]
     async fn a_task_that_does_not_serialize_makes_the_command_unavailable_writes_nothing_and_is_logged_once() {
         let journal = MemEventRepository::default();
-        let tills = TestCommandExecutor::over_journal(journal.clone(), ()).with_task_planner(planner());
+        let tills = TestCommandExecutor::configured(
+            crate::journal::persisted::PersistedEventStore::new(journal.clone()),
+            (),
+            |executor| executor.with_task_planner(planner()),
+        );
         let (_, log) = crate::diagnostics::test_support::capture(async {
             assert_eq!(
                 tills.execute(&"private_till".into(), Sale::Broken).await,

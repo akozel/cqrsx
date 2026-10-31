@@ -133,6 +133,25 @@ fn needs_ping(idle_for: Duration, idle_ping_after: Duration) -> bool {
 mod tests {
     use super::*;
 
+    /// The stores print their pool, never the password of its URL.
+    #[tokio::test]
+    async fn the_postgres_stores_print_their_pool_without_the_password() {
+        let pool = sqlx::postgres::PgPoolOptions::new()
+            .connect_lazy("postgres://nobody:s3cret@localhost/none")
+            .unwrap();
+        let stores = [
+            format!(
+                "{:?}",
+                crate::postgres::checkpoint_store::PostgresCheckpointStore::new(pool.clone())
+            ),
+            format!("{:?}", crate::postgres::task_queue::PostgresTaskQueue::new(pool.clone())),
+            format!("{:?}", crate::postgres::outbox::PostgresEventRepositoryWithOutbox::new(pool)),
+        ];
+        for printed in stores {
+            assert!(printed.contains("pool: Pool {") && !printed.contains("s3cret"), "{printed}");
+        }
+    }
+
     #[test]
     fn only_a_connection_idle_for_longer_than_the_threshold_is_pinged() {
         let threshold = DEFAULT_IDLE_PING_AFTER;

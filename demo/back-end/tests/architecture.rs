@@ -825,7 +825,7 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
         "use cqrsx::command::observer::CommandObserver;\n",
         "use cqrsx::command::CommitReport;\n",
         "use cqrsx::testing::command_executor::TestCommandExecutor;\n",
-        "use cqrsx::postgres::command::PostgresCommandExecutor;\n",
+        "use cqrsx::command::executor::StoreCommandExecutor;\n",
         "use cqrsx::engine::build::Builder;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
@@ -935,7 +935,7 @@ fn the_process_builds_one_command_executor_per_aggregate_type() {
     for (file, code) in stripped.iter().filter(|(file, _)| !test_files.contains(file)) {
         let relative = file.strip_prefix(&src).unwrap_or(file).display().to_string();
         let production = without_test_modules(code);
-        for executor in ["PostgresCommandExecutor", "CommandExecutorCore", "TestCommandExecutor"] {
+        for executor in ["StoreCommandExecutor", "TestCommandExecutor"] {
             if production.contains(executor) {
                 built.push((relative.clone(), executor));
             }

@@ -1,15 +1,21 @@
 use std::collections::HashMap;
 use {
-    cqrsx::command::AggregateError, cqrsx::domain::event::EventEnvelope, cqrsx::journal::EventStore,
-    cqrsx::journal::persisted::PersistedEventStore, cqrsx::journal::repository::PersistedEventRepository,
-    cqrsx::journal::serialized_event::SerializedEvent, cqrsx::memory::event_repository::MemEventRepository,
+    cqrsx::command::{
+        CommandGatewayError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy,
+    },
+    cqrsx::domain::event::EventEnvelope,
+    cqrsx::journal::EventStore,
+    cqrsx::journal::persisted::PersistedEventStore,
+    cqrsx::journal::repository::PersistedEventRepository,
+    cqrsx::journal::serialized_event::SerializedEvent,
+    cqrsx::memory::event_repository::MemEventRepository,
     cqrsx::testing::mem_store::MemStore,
 };
 
 mod snapshots {
     use super::*;
     use proptest::prelude::*;
-    use {crate::support::ledger::*, crate::support::property_config, cqrsx::command::framework::CqrsFramework};
+    use {crate::support::ledger::*, crate::support::property_config};
     proptest! {
         #![proptest_config(property_config())]
         #[test]
@@ -27,7 +33,7 @@ mod snapshots {
                     for batch in commits {
                         let before=model.len();
                         let store=PersistedEventStore::<_,Ledger>::new(repo.clone()).with_snapshots(std::num::NonZeroUsize::new(interval).unwrap());
-                        if framework { CqrsFramework::new(store,Services::default()).execute(&"history".into(),Command::Adjust(batch[0])).await.unwrap(); }
+                        if framework { StoreCommandExecutor::new(store,Services::default(),AggregateConflictRetryPolicy::default(),LockLimits::default()).execute(&"history".into(),Command::Adjust(batch[0])).await.unwrap(); }
                         else { let context=store.load_aggregate("history").await.unwrap(); store.commit(batch.iter().map(|v|Delta(*v)).collect(), context, HashMap::new(), &[]).await.unwrap(); }
                         model.extend(batch);
                         let boundaries:Vec<_>=(before+1..=model.len()).filter(|n|n%interval==0).collect();
@@ -48,7 +54,7 @@ mod snapshots {
 mod memory {
     use super::*;
     use proptest::prelude::*;
-    use {crate::support::ledger::*, crate::support::property_config, cqrsx::command::framework::CqrsFramework};
+    use {crate::support::ledger::*, crate::support::property_config};
 
     proptest! {
         #![proptest_config(property_config())]
@@ -59,7 +65,7 @@ mod memory {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
                 let store = MemStore::<Ledger>::default();
-                let framework = CqrsFramework::new(store.clone(), Services::default());
+                let framework = StoreCommandExecutor::new(store.clone(), Services::default(), AggregateConflictRetryPolicy::default(), LockLimits::default());
                 let mut balances = [0i64; 3];
                 let mut accepted: [Vec<i32>; 3] = Default::default();
                 let mut metadata_history: [Vec<HashMap<String,String>>; 3] = Default::default();
@@ -73,7 +79,7 @@ mod memory {
                         result.unwrap(); balances[id] = candidate;
                         metadata_history[id].push(metadata);
                         accepted[id].push(delta);
-                    } else { assert!(matches!(result, Err(AggregateError::Domain(Rejected)))); }
+                    } else { assert!(matches!(result, Err(CommandGatewayError::Domain(Rejected)))); }
                     for other in 0..3 {
                         let other_key = format!("account-{other}");
                         let context = store.load_aggregate(&other_key).await.unwrap();

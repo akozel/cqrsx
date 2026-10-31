@@ -30,16 +30,13 @@ pub mod views;
 
 #[cfg(feature = "postgres")]
 use crate::postgres::{
-    checkpoint_store::PostgresCheckpointStore,
-    command::{PostgresCommandConfig, PostgresCommandExecutor},
-    event_repository::PostgresEventRepository,
-    view_repository::PostgresViewRepository,
+    checkpoint_store::PostgresCheckpointStore, event_repository::PostgresEventRepository,
+    outbox::PostgresEventRepositoryWithOutbox, view_repository::PostgresViewRepository,
 };
 use crate::{
     command::{
-        AggregateError, CommandExecutor, CommandGatewayError, CommitReport,
-        executor::CommandExecutorCore,
-        framework::CqrsFramework,
+        CommandExecutor, CommandGatewayError, CommitReport,
+        executor::StoreCommandExecutor,
         observer::{AnyCommandObserver, AnyCommandReport, CommandObserver, CommandReport},
     },
     domain::{aggregate::Aggregate, command::Command, event::EventEnvelope, rejection::Rejection},
@@ -49,7 +46,9 @@ use crate::{
         settings::Settings,
         views::{CheckpointOps, Counts, Registry},
     },
-    journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
+    journal::{
+        EventStore, PersistenceError, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup,
+    },
     locking::get_mut,
     memory::event_repository::MemEventRepository,
     projection::{
@@ -198,7 +197,7 @@ impl Cqrs {
 
     /// The committed events of the aggregate `id` of type `A`, from its journal alone, without a snapshot (on
     /// PostgreSQL through the pool of whole-history reads, without a statement timeout).
-    pub async fn history<A: Aggregate>(&self, id: &A::Id) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
+    pub async fn history<A: Aggregate>(&self, id: &A::Id) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         let id = id.to_string();
         match &self.journal {
             Journal::Memory => {
@@ -231,8 +230,9 @@ impl Cqrs {
             Journal::Memory => Executor::Memory(self.executor::<A, _>(self.store::<A>(), *rules)),
             #[cfg(feature = "postgres")]
             Journal::Postgres(pools) => {
-                let pool = pools.main.clone();
-                Executor::Postgres(self.postgres_executor::<A>(pool, *rules))
+                let store = PersistedEventStore::new(PostgresEventRepositoryWithOutbox::new(pools.main.clone()))
+                    .with_snapshots(self.settings.snapshot_every());
+                Executor::Postgres(self.executor::<A, _>(store, *rules))
             }
         };
         let executor = Arc::new(executor);
@@ -249,36 +249,15 @@ impl Cqrs {
 
     /// The executor of `A` over `store` as every backend builds it: the settings' conflict retry and lock limits, the
     /// reactions with the policies, the wake-up of the processors of `A`, the observer of every command.
-    fn executor<A, S>(&mut self, store: S, rules: A::Rules) -> CommandExecutorCore<A, S>
+    fn executor<A, S>(&mut self, store: S, rules: A::Rules) -> StoreCommandExecutor<A, S>
     where
         A: Reactions + 'static,
         A::Command: Command + Clone,
         A::Error: Rejection,
         S: EventStore<A>,
     {
-        let framework = CqrsFramework::new(store, rules);
         let settings = &self.settings;
-        let executor = CommandExecutorCore::new(framework, settings.conflict_retry(), settings.lock_limits())
-            .with_task_planner(ReactionsPlanner::<A>::new(self.policies.clone()))
-            .with_commit_wakeup(self.wakeup::<A>());
-        match self.commands_observer::<A>() {
-            Some(observer) => executor.with_observer(observer),
-            None => executor,
-        }
-    }
-
-    /// The executor of `A` over PostgreSQL, built as the core of [`executor`](Self::executor): the snapshot store on
-    /// the outbox repository of the main pool.
-    #[cfg(feature = "postgres")]
-    fn postgres_executor<A>(&mut self, pool: sqlx::PgPool, rules: A::Rules) -> PostgresCommandExecutor<A>
-    where
-        A: Reactions + 'static,
-        A::Command: Command + Clone,
-        A::Error: Rejection,
-    {
-        let settings = &self.settings;
-        let config = PostgresCommandConfig::new(settings.snapshot_every(), settings.conflict_retry(), settings.lock_limits());
-        let executor = PostgresCommandExecutor::new(pool, config, rules)
+        let executor = StoreCommandExecutor::new(store, rules, settings.conflict_retry(), settings.lock_limits())
             .with_task_planner(ReactionsPlanner::<A>::new(self.policies.clone()))
             .with_commit_wakeup(self.wakeup::<A>());
         match self.commands_observer::<A>() {
@@ -400,9 +379,9 @@ impl Cqrs {
 /// The executor of one aggregate type over the engine's journal: the variants are the stores, so a command from an
 /// entry point waits for the store's own future, without an allocation.
 pub(crate) enum Executor<A: Aggregate> {
-    Memory(CommandExecutorCore<A, PersistedEventStore<MemEventRepository, A>>),
+    Memory(StoreCommandExecutor<A, PersistedEventStore<MemEventRepository, A>>),
     #[cfg(feature = "postgres")]
-    Postgres(PostgresCommandExecutor<A>),
+    Postgres(StoreCommandExecutor<A, PersistedEventStore<PostgresEventRepositoryWithOutbox, A>>),
 }
 
 impl<A> CommandExecutor<A> for Executor<A>
@@ -418,7 +397,7 @@ where
         metadata: HashMap<String, String>,
     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
         match self {
-            Self::Memory(core) => core.execute_with_metadata(id, command, metadata).await,
+            Self::Memory(executor) => executor.execute_with_metadata(id, command, metadata).await,
             #[cfg(feature = "postgres")]
             Self::Postgres(executor) => executor.execute_with_metadata(id, command, metadata).await,
         }

@@ -821,7 +821,7 @@ mod tests {
             built.push((
                 executor.lock_limits(),
                 executor.retry_policy(),
-                executor.framework().store().snapshot_interval(),
+                executor.store().snapshot_interval(),
                 *config,
                 owner == cqrs.owner,
             ));

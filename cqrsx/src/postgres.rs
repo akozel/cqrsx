@@ -1,8 +1,6 @@
-pub mod command;
 pub mod outbox;
 pub mod pool;
 pub mod task_queue;
-pub mod task_runtime;
 
 /// Canonical PostgreSQL event-store schema used by this runtime.
 pub const EVENT_STORE_SCHEMA: &str = include_str!("../sql/001-event-store.sql");

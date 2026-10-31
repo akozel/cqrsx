@@ -10,9 +10,8 @@ use std::{
     time::Duration,
 };
 use {
-    cqrsx::command::AggregateError, cqrsx::command::CommandGatewayError, cqrsx::command::executor::CommandExecutorCore,
-    cqrsx::command::framework::CqrsFramework, cqrsx::command::retry::AggregateConflictRetryPolicy,
-    cqrsx::domain::event::EventEnvelope, cqrsx::journal::EventStore,
+    cqrsx::command::CommandGatewayError, cqrsx::command::executor::StoreCommandExecutor,
+    cqrsx::command::retry::AggregateConflictRetryPolicy, cqrsx::domain::event::EventEnvelope, cqrsx::journal::EventStore,
 };
 #[derive(Clone)]
 struct LostAcknowledgementStore {
@@ -22,10 +21,10 @@ struct LostAcknowledgementStore {
 
 impl EventStore<Ledger> for LostAcknowledgementStore {
     type Context = <cqrsx::testing::mem_store::MemStore<Ledger> as EventStore<Ledger>>::Context;
-    async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
+    async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
         self.inner.load_events(id).await
     }
-    async fn load_aggregate(&self, id: &str) -> Result<Self::Context, AggregateError<Rejected>> {
+    async fn load_aggregate(&self, id: &str) -> Result<Self::Context, cqrsx::journal::PersistenceError> {
         self.inner.load_aggregate(id).await
     }
     async fn commit(
@@ -34,10 +33,10 @@ impl EventStore<Ledger> for LostAcknowledgementStore {
         context: Self::Context,
         metadata: HashMap<String, String>,
         tasks: &[cqrsx::task::NewTask],
-    ) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
+    ) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
         self.inner.commit(events, context, metadata, tasks).await?;
         self.commits.fetch_add(1, Ordering::SeqCst);
-        Err(AggregateError::DatabaseConnectionError(Box::new(io::Error::other(
+        Err(cqrsx::journal::PersistenceError::ConnectionError(Box::new(io::Error::other(
             "acknowledgement lost after commit",
         ))))
     }
@@ -52,8 +51,9 @@ async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command(
     let observed = store.clone();
     let seen = Arc::new(Mutex::new(Vec::new()));
     let commands = seen.clone();
-    let executor = CommandExecutorCore::new(
-        CqrsFramework::new(store, Services(commands)),
+    let executor = StoreCommandExecutor::new(
+        store,
+        Services(commands),
         AggregateConflictRetryPolicy::try_new(3, Duration::ZERO, Duration::ZERO, 0.0).unwrap(),
         cqrsx::command::locks::LockLimits::default(),
     );

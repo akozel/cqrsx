@@ -246,9 +246,12 @@ fn the_mail_policy_pauses_as_the_mail_client_did() {
 #[tokio::test]
 async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
     let policies = policies(&[]).unwrap();
-    let concerts = TestCommandExecutor::new(MemStore::<Concert>::default(), ConcertRules::default())
-        .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()));
-    let fans = TestCommandExecutor::new(MemStore::<Fan>::default(), ()).with_task_planner(ReactionsPlanner::<Fan>::new(policies));
+    let concerts = TestCommandExecutor::configured(MemStore::<Concert>::default(), ConcertRules::default(), |executor| {
+        executor.with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
+    });
+    let fans = TestCommandExecutor::configured(MemStore::<Fan>::default(), (), |executor| {
+        executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies))
+    });
     let concert_id = ConcertId::parse("radiohead-2026-11-21").unwrap();
     let fox = FanId::parse("fox").unwrap();
     let ledger = FanLedgerId::new(&fox, &concert_id);

@@ -1,7 +1,7 @@
 //! The fixtures of the MongoDB suite: a ledger with its balance view, processors whose views and checkpoint
 //! live in MongoDB, commands over any journal, and the waits for the read side to catch up.
 use cqrsx::{
-    command::{executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits},
+    command::{executor::StoreCommandExecutor, locks::LockLimits},
     domain::{
         aggregate::Aggregate,
         command::Decide,
@@ -217,9 +217,16 @@ where
 type MemStore = PersistedEventStore<MemEventRepository, Ledger>;
 
 /// Commands over an in-memory journal that wake its processors.
-pub(crate) fn mem_ledgers(journal: &MemEventRepository, wakeup: &CommitWakeup) -> Arc<CommandExecutorCore<Ledger, MemStore>> {
-    let framework = CqrsFramework::new(PersistedEventStore::new(journal.clone()), ());
-    Arc::new(CommandExecutorCore::new(framework, Default::default(), LockLimits::default()).with_commit_wakeup(wakeup.clone()))
+pub(crate) fn mem_ledgers(journal: &MemEventRepository, wakeup: &CommitWakeup) -> Arc<StoreCommandExecutor<Ledger, MemStore>> {
+    Arc::new(
+        StoreCommandExecutor::new(
+            PersistedEventStore::new(journal.clone()),
+            (),
+            Default::default(),
+            LockLimits::default(),
+        )
+        .with_commit_wakeup(wakeup.clone()),
+    )
 }
 
 /// The fold of the key's whole history, `None` without a history.

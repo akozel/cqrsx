@@ -1,31 +1,30 @@
 //! An event store that is never reachable.
 use crate::{
-    command::AggregateError,
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::EventStore,
+    journal::{EventStore, PersistenceError},
     task::NewTask,
     testing::mem_store::MemStoreAggregateContext,
 };
-use std::{collections::HashMap, error::Error};
+use std::collections::HashMap;
 
-/// Every call fails with [`AggregateError::DatabaseConnectionError`], which the command boundary
+/// Every call fails with [`PersistenceError::ConnectionError`], which the command boundary
 /// reports as [`Unavailable`](crate::command::CommandGatewayError::Unavailable). Drives the
 /// "storage unavailable" branches of a use case and proves that a path never touches storage.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableStore;
 
-fn unavailable<E: Error>() -> AggregateError<E> {
-    AggregateError::DatabaseConnectionError("the event store is unavailable".into())
+fn unavailable() -> PersistenceError {
+    PersistenceError::ConnectionError("the event store is unavailable".into())
 }
 
 impl<A: Aggregate> EventStore<A> for UnavailableStore {
     type Context = MemStoreAggregateContext<A>;
 
-    async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
+    async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         Err(unavailable())
     }
 
-    async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<A::Error>> {
+    async fn load_aggregate(&self, _: &str) -> Result<Self::Context, PersistenceError> {
         Err(unavailable())
     }
 
@@ -35,7 +34,7 @@ impl<A: Aggregate> EventStore<A> for UnavailableStore {
         _: Self::Context,
         _: HashMap<String, String>,
         _: &[NewTask],
-    ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
+    ) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         Err(unavailable())
     }
 }
@@ -50,11 +49,11 @@ mod tests {
         let store = UnavailableStore;
         assert!(matches!(
             EventStore::<TestAggregate>::load_events(&store, "id").await,
-            Err(AggregateError::DatabaseConnectionError(error)) if error.to_string() == "the event store is unavailable"
+            Err(PersistenceError::ConnectionError(error)) if error.to_string() == "the event store is unavailable"
         ));
         assert!(matches!(
             EventStore::<TestAggregate>::load_aggregate(&store, "id").await,
-            Err(AggregateError::DatabaseConnectionError(_))
+            Err(PersistenceError::ConnectionError(_))
         ));
         let context = MemStoreAggregateContext {
             aggregate_id: "id".into(),
@@ -63,7 +62,7 @@ mod tests {
         };
         assert!(matches!(
             store.commit(vec![], context, HashMap::new(), &[]).await,
-            Err(AggregateError::DatabaseConnectionError(_))
+            Err(PersistenceError::ConnectionError(_))
         ));
     }
 }

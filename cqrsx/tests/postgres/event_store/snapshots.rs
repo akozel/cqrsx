@@ -72,7 +72,15 @@ async fn snapshot_histories(through_framework: bool) {
                         let store = PersistedEventStore::<_, Ledger>::new(PostgresEventRepository::new(db.pool.clone()))
                             .with_snapshots(std::num::NonZeroUsize::new(interval).unwrap());
                         if through_framework {
-                            CqrsFramework::new(store, ()).execute(&id, changes[0]).await.unwrap();
+                            cqrsx::command::executor::StoreCommandExecutor::new(
+                                store,
+                                (),
+                                cqrsx::command::retry::AggregateConflictRetryPolicy::default(),
+                                cqrsx::command::locks::LockLimits::default(),
+                            )
+                            .execute(&id, changes[0])
+                            .await
+                            .unwrap();
                         } else {
                             let context = store.load_aggregate(&id).await.unwrap();
                             store

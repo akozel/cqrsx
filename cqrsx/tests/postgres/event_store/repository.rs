@@ -47,13 +47,8 @@ impl cqrsx::domain::command::Decide<History> for i32 {
 
 #[tokio::test]
 async fn snapshot_command_applies_one_event_once() {
-    use cqrsx::{
-        command::{CommandExecutor, locks::LockLimits},
-        postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
-    };
     let db = Database::new().await;
-    let config = PostgresCommandConfig::new(std::num::NonZeroUsize::MIN, Default::default(), LockLimits::default());
-    let executor = PostgresCommandExecutor::<History>::new(db.pool.clone(), config, ());
+    let executor = crate::support::executor::<History>(&db.pool, 1, ());
     executor.execute(&"history".into(), 7).await.unwrap();
     let store = PersistedEventStore::<_, History>::new(PostgresEventRepository::new(db.pool.clone()))
         .with_snapshots(std::num::NonZeroUsize::MIN);

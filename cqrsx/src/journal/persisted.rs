@@ -1,7 +1,6 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use crate::{
-    command::AggregateError,
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{
         AggregateContext, EventStore, PersistenceError,
@@ -241,13 +240,13 @@ where
     /// # use example::MyService;
     /// # use example::MyDatabaseConnection;
     /// # use example::MyEventRepository;
-    /// # use cqrsx::command::framework::CqrsFramework;
+    /// # use cqrsx::command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy};
     /// # use cqrsx::journal::persisted::PersistedEventStore;
     /// # fn config(my_db_connection: MyDatabaseConnection) {
     /// let repo = MyEventRepository::new(my_db_connection);
     /// let store = PersistedEventStore::<MyEventRepository,MyAggregate>::new(repo);
     /// let service = MyService;
-    /// let cqrs = CqrsFramework::new(store, service);
+    /// let executor = StoreCommandExecutor::new(store, service, AggregateConflictRetryPolicy::default(), LockLimits::default());
     /// # }
     /// ```
     pub fn new(repo: R) -> Self {
@@ -407,14 +406,14 @@ where
     /// # use example::MyService;
     /// # use example::MyDatabaseConnection;
     /// # use example::MyEventRepository;
-    /// # use cqrsx::command::framework::CqrsFramework;
+    /// # use cqrsx::command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy};
     /// # use cqrsx::journal::persisted::PersistedEventStore;
     /// # use std::num::NonZeroUsize;
     /// # fn config(my_db_connection: MyDatabaseConnection) {
     /// const SNAPSHOT_EVERY: NonZeroUsize = NonZeroUsize::new(100).unwrap();
     /// let repo = MyEventRepository::new(my_db_connection);
     /// let store = PersistedEventStore::<MyEventRepository,MyAggregate>::new(repo).with_snapshots(SNAPSHOT_EVERY);
-    /// let cqrs = CqrsFramework::new(store, MyService);
+    /// let executor = StoreCommandExecutor::new(store, MyService, AggregateConflictRetryPolicy::default(), LockLimits::default());
     /// # }
     /// ```
     pub fn with_snapshots(mut self, snapshot_interval: NonZeroUsize) -> Self {
@@ -453,12 +452,12 @@ where
 {
     type Context = EventStoreAggregateContext<A>;
 
-    async fn load_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
+    async fn load_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         let serialized_events = self.repo.events::<A>(aggregate_id).await?;
-        Ok(deserialize_events(serialized_events, &self.event_upcasters)?)
+        deserialize_events(serialized_events, &self.event_upcasters)
     }
 
-    async fn load_aggregate(&self, aggregate_id: &str) -> Result<EventStoreAggregateContext<A>, AggregateError<A::Error>> {
+    async fn load_aggregate(&self, aggregate_id: &str) -> Result<EventStoreAggregateContext<A>, PersistenceError> {
         let mut context: EventStoreAggregateContext<A> = if self.snapshot_policy == SnapshotPolicy::Disabled {
             EventStoreAggregateContext::empty(aggregate_id)
         } else {
@@ -500,7 +499,7 @@ where
         context: EventStoreAggregateContext<A>,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
-    ) -> Result<Vec<EventEnvelope<A>>, AggregateError<A::Error>> {
+    ) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         let aggregate_id = context.aggregate_id.clone();
         let last_sequence = context.current_sequence;
         crate::journal::checked_counter_add(last_sequence, events.len())?;
@@ -538,7 +537,7 @@ where
         mut context: EventStoreAggregateContext<A>,
         prefix: usize,
         next_version: usize,
-    ) -> Result<SnapshotUpdate, AggregateError<A::Error>> {
+    ) -> Result<SnapshotUpdate, PersistenceError> {
         for event in events.iter().take(prefix).cloned() {
             context.aggregate.apply(event);
         }
@@ -837,7 +836,6 @@ pub(crate) mod tests {
     mod event_store_test {
         use std::collections::HashMap;
 
-        use crate::command::AggregateError;
         use crate::domain::event::Events;
         use crate::journal::EventStore;
         use crate::journal::PersistenceError;
@@ -867,7 +865,7 @@ pub(crate) mod tests {
             let store = PersistedEventStore::<MockRepo, TestAggregate>::new(repo);
 
             match store.load_events(TEST_AGGREGATE_ID).await {
-                Err(AggregateError::AggregateConflict) => {}
+                Err(PersistenceError::OptimisticLockError) => {}
                 _ => panic!("expected technical error"),
             }
         }
@@ -913,7 +911,7 @@ pub(crate) mod tests {
             let store = PersistedEventStore::<MockRepo, TestAggregate>::new(repo);
             let result = store.load_aggregate(TEST_AGGREGATE_ID).await;
             match result {
-                Err(AggregateError::AggregateConflict) => {}
+                Err(PersistenceError::OptimisticLockError) => {}
                 _ => panic!("expected aggregate conflict"),
             }
         }
@@ -961,7 +959,6 @@ pub(crate) mod tests {
 
         use serde_json::json;
 
-        use crate::command::AggregateError;
         use crate::domain::event::Events;
         use crate::journal::EventStore;
         use crate::journal::PersistenceError;
@@ -993,7 +990,7 @@ pub(crate) mod tests {
             let store = PersistedEventStore::<MockRepo, TestAggregate>::new(repo).with_snapshots(every(2));
             let result = store.load_events(TEST_AGGREGATE_ID).await.unwrap_err();
             match result {
-                AggregateError::AggregateConflict => {}
+                PersistenceError::OptimisticLockError => {}
                 _ => panic!("expected technical error"),
             }
         }
@@ -1034,7 +1031,7 @@ pub(crate) mod tests {
             let store = PersistedEventStore::<MockRepo, TestAggregate>::new(repo).with_snapshots(every(2));
             let result = store.load_aggregate(TEST_AGGREGATE_ID).await;
             match result {
-                Err(AggregateError::AggregateConflict) => {}
+                Err(PersistenceError::OptimisticLockError) => {}
                 _ => panic!("expected technical error"),
             }
         }
@@ -1263,7 +1260,7 @@ pub(crate) mod tests {
         let context = super::EventStoreAggregateContext::empty(TEST_AGGREGATE_ID);
         let result =
             crate::journal::EventStore::commit(&store, vec![TestEvents::Started], context, HashMap::new(), &[task]).await;
-        let Err(crate::command::AggregateError::UnexpectedError(error)) = result else {
+        let Err(PersistenceError::UnknownError(error)) = result else {
             panic!("a repository without an outbox refuses tasks");
         };
         assert_eq!(
@@ -1306,7 +1303,7 @@ mod contract_tests {
         )));
         let context = EventStoreAggregateContext::empty("a");
         assert!(
-            matches!(store.commit(vec![TestEvents::Started], context, HashMap::new(), &[]).await, Err(AggregateError::DatabaseConnectionError(e)) if e.to_string() == "persist failed")
+            matches!(store.commit(vec![TestEvents::Started], context, HashMap::new(), &[]).await, Err(PersistenceError::ConnectionError(e)) if e.to_string() == "persist failed")
         );
         let store = PersistedEventStore::<_, TestAggregate>::new(MockRepo::with_last_events(
             Err(PersistenceError::UnknownError("tail failed".into())),
@@ -1314,7 +1311,7 @@ mod contract_tests {
         ))
         .with_snapshots(every(2));
         assert!(
-            matches!(store.load_aggregate("a").await, Err(AggregateError::UnexpectedError(e)) if e.to_string() == "tail failed")
+            matches!(store.load_aggregate("a").await, Err(PersistenceError::UnknownError(e)) if e.to_string() == "tail failed")
         );
         let mut bad = test_serialized_event(1, TestEvents::Started);
         bad.payload = serde_json::json!({"unknown":true});
@@ -1322,7 +1319,7 @@ mod contract_tests {
             .with_snapshots(every(2));
         assert!(matches!(
             store.load_aggregate("a").await,
-            Err(AggregateError::DeserializationError(_))
+            Err(PersistenceError::DeserializationError(_))
         ));
         // A history that breaks in the middle: the events before the bad one are applied, then the load fails, with or
         // without snapshots; no state of the half-replayed aggregate reaches the caller.
@@ -1336,12 +1333,12 @@ mod contract_tests {
             .with_snapshots(every(2));
         assert!(matches!(
             store.load_aggregate("a").await,
-            Err(AggregateError::DeserializationError(_))
+            Err(PersistenceError::DeserializationError(_))
         ));
         let store = PersistedEventStore::<_, TestAggregate>::new(MockRepo::with_events(Ok(history)));
         assert!(matches!(
             store.load_aggregate("a").await,
-            Err(AggregateError::DeserializationError(_))
+            Err(PersistenceError::DeserializationError(_))
         ));
     }
     #[tokio::test]
@@ -1454,7 +1451,7 @@ mod serialization_failure_tests {
                 .commit(vec![Event(!snapshot)], context, HashMap::new(), &[])
                 .await
                 .unwrap_err();
-            assert!(matches!(error, AggregateError::DeserializationError(_)));
+            assert!(matches!(error, PersistenceError::DeserializationError(_)));
         }
     }
 
@@ -1473,7 +1470,7 @@ mod serialization_failure_tests {
                 .commit(vec![GuardedEvent; count], context, HashMap::new(), &[])
                 .await
                 .unwrap_err();
-            assert!(matches!(error, AggregateError::UnexpectedError(_)));
+            assert!(matches!(error, PersistenceError::UnknownError(_)));
         }
     }
     #[tokio::test]

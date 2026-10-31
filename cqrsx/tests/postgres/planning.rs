@@ -1,16 +1,13 @@
 //! Tasks planned from decisions on PostgreSQL: every published task matches the event it was committed
 //! with, whatever races the commands ran into, and every refused plan writes nothing.
 use super::*;
-use cqrsx::{
-    command::{
-        CommandExecutor, CommandGatewayError,
-        causation::Causation,
-        executor::CommandExecutorCore,
-        locks::LockLimits,
-        planner::{Decision, TaskPlanError, TaskPlanner},
-        retry::AggregateConflictRetryPolicy,
-    },
-    postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
+use cqrsx::command::{
+    CommandExecutor, CommandGatewayError,
+    causation::Causation,
+    executor::StoreCommandExecutor,
+    locks::LockLimits,
+    planner::{Decision, TaskPlanError, TaskPlanner},
+    retry::AggregateConflictRetryPolicy,
 };
 use thiserror::Error;
 
@@ -98,17 +95,9 @@ impl TaskPlanner<Shelf> for ShelfPlanner {
     }
 }
 
-fn shelf_config(snapshot_interval: usize, attempts: usize) -> PostgresCommandConfig {
+fn shelves(pool: &PgPool, snapshot_interval: usize, attempts: usize, planner: ShelfPlanner) -> PostgresExecutor<Shelf> {
     let retry = AggregateConflictRetryPolicy::try_new(attempts, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-    PostgresCommandConfig::new(
-        std::num::NonZeroUsize::new(snapshot_interval).unwrap(),
-        retry,
-        LockLimits::default(),
-    )
-}
-
-fn shelves(pool: &PgPool, snapshot_interval: usize, attempts: usize, planner: ShelfPlanner) -> PostgresCommandExecutor<Shelf> {
-    PostgresCommandExecutor::new(pool.clone(), shelf_config(snapshot_interval, attempts), 1_000).with_task_planner(planner)
+    executor_with::<Shelf>(pool, snapshot_interval, retry, 1_000).with_task_planner(planner)
 }
 
 fn put(item: impl Into<String>) -> ShelfCommand {
@@ -415,11 +404,8 @@ async fn a_plan_at_the_bind_limit_commits_and_one_more_task_is_refused_before_an
 async fn a_store_without_an_outbox_refuses_planned_tasks_and_writes_nothing() {
     let db = Database::new().await;
     let store = || PersistedEventStore::<_, Shelf>::new(PostgresEventRepository::new(db.pool.clone()));
-    let planned = CommandExecutorCore::new(
-        CqrsFramework::new(store(), 10).with_task_planner(ShelfPlanner::one_per_item()),
-        AggregateConflictRetryPolicy::default(),
-        LockLimits::default(),
-    );
+    let planned = StoreCommandExecutor::new(store(), 10, AggregateConflictRetryPolicy::default(), LockLimits::default())
+        .with_task_planner(ShelfPlanner::one_per_item());
     let before = database_state(&db.pool).await;
     assert_eq!(
         planned
@@ -428,11 +414,7 @@ async fn a_store_without_an_outbox_refuses_planned_tasks_and_writes_nothing() {
         Err(CommandGatewayError::Unavailable)
     );
     assert_eq!(database_state(&db.pool).await, before);
-    let unplanned = CommandExecutorCore::new(
-        CqrsFramework::new(store(), 10),
-        AggregateConflictRetryPolicy::default(),
-        LockLimits::default(),
-    );
+    let unplanned = StoreCommandExecutor::new(store(), 10, AggregateConflictRetryPolicy::default(), LockLimits::default());
     let report = CommandExecutor::execute(&unplanned, &"s".into(), put("a")).await.unwrap();
     assert_eq!((report.events.len(), report.tasks.len()), (1, 0));
     db.close().await;

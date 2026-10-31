@@ -5,8 +5,7 @@ use cqrsx::{
     command::{
         CommandExecutor, CommandGatewayError,
         causation::Causation,
-        executor::CommandExecutorCore,
-        framework::CqrsFramework,
+        executor::StoreCommandExecutor,
         locks::LockLimits,
         planner::{Decision, TaskPlanError, TaskPlanner},
         retry::AggregateConflictRetryPolicy,
@@ -215,8 +214,12 @@ async fn record_in_wallet(
 #[tokio::test]
 async fn a_process_plans_across_two_aggregates_and_the_chain_keeps_its_correlation() {
     let journal = MemEventRepository::default();
-    let shows = TestCommandExecutor::<Show, _>::over_journal(journal.clone(), ()).with_task_planner(Delivery);
-    let wallets = TestCommandExecutor::<Wallet, _>::over_journal(journal.clone(), ()).with_task_planner(Delivery);
+    let shows = TestCommandExecutor::<Show, _>::configured(PersistedEventStore::new(journal.clone()), (), |executor| {
+        executor.with_task_planner(Delivery)
+    });
+    let wallets = TestCommandExecutor::<Wallet, _>::configured(PersistedEventStore::new(journal.clone()), (), |executor| {
+        executor.with_task_planner(Delivery)
+    });
 
     let root = Causation::root("ui");
     let booking = shows
@@ -384,9 +387,10 @@ fn no_delay(attempts: usize) -> AggregateConflictRetryPolicy {
 fn ledger_executor(
     journal: Interfering,
     attempts: usize,
-) -> CommandExecutorCore<Ledger, PersistedEventStore<Interfering, Ledger>> {
-    CommandExecutorCore::new(
-        CqrsFramework::new(PersistedEventStore::new(journal), Services::default()),
+) -> StoreCommandExecutor<Ledger, PersistedEventStore<Interfering, Ledger>> {
+    StoreCommandExecutor::new(
+        PersistedEventStore::new(journal),
+        Services::default(),
         no_delay(attempts),
         LockLimits::default(),
     )

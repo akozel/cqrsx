@@ -448,6 +448,68 @@ mod tests {
     }
 
     /// G-01, G-05, G-07: the executor of an aggregate over PostgreSQL is the core of the settings, as in memory.
+    /// An executor over PostgreSQL is the command executor over the outbox repository: it prints its attempt, and
+    /// a store that does not answer is `Unavailable` and heard as such by its observer.
+    #[tokio::test]
+    async fn an_executor_over_postgres_prints_its_attempt_and_reports_an_unreachable_store_to_its_observer() {
+        use crate::{
+            command::{
+                CommandGatewayError,
+                executor::StoreCommandExecutor,
+                locks::LockLimits,
+                observer::{CommandObserver, CommandReport, Outcome},
+                retry::AggregateConflictRetryPolicy,
+            },
+            engine::test_support::{Book, Show},
+            journal::persisted::PersistedEventStore,
+            postgres::outbox::PostgresEventRepositoryWithOutbox,
+        };
+        use std::sync::{Arc, Mutex};
+        /// Notes the outcome of every command.
+        #[derive(Default)]
+        struct Heard(Mutex<Vec<&'static str>>);
+        impl CommandObserver<Show> for Heard {
+            fn command(&self, report: &CommandReport<'_, Show>) {
+                self.0.lock().unwrap().push(match report.outcome {
+                    Outcome::Unavailable => "unavailable",
+                    Outcome::Accepted { .. } | Outcome::Rejected(_) | Outcome::Conflict => "ran",
+                });
+            }
+        }
+        // Nobody listens on port 1: the first acquire fails at once.
+        let pool = PgPoolOptions::new()
+            .acquire_timeout(Duration::from_millis(100))
+            .connect_lazy("postgres://nobody@127.0.0.1:1/none")
+            .unwrap();
+        let store = PersistedEventStore::new(PostgresEventRepositoryWithOutbox::new(pool)).with_snapshots(NonZeroUsize::MIN);
+        let heard = Arc::new(Heard::default());
+        let executor =
+            StoreCommandExecutor::<Show, _>::new(store, (), AggregateConflictRetryPolicy::default(), LockLimits::default())
+                .with_commit_wakeup(crate::journal::wakeup::CommitWakeup::new())
+                .with_observer(heard.clone());
+        let printed = format!("{executor:?}");
+        assert!(
+            printed.starts_with(
+                r#"StoreCommandExecutor { attempt: CommandAttempt { aggregate_type: "show", task_planner: false, .. }"#
+            ),
+            "{printed}"
+        );
+        assert!(
+            printed.contains("commit_wakeup: true") && printed.contains("observer: true"),
+            "{printed}"
+        );
+        let book = Book {
+            seat: "A1".into(),
+            fan: "fox".into(),
+            booking_id: None,
+        };
+        assert_eq!(
+            executor.execute(&"show".into(), book).await.map(|report| report.events.len()),
+            Err(CommandGatewayError::Unavailable)
+        );
+        assert_eq!(*heard.0.lock().unwrap(), ["unavailable"]);
+    }
+
     #[tokio::test]
     async fn the_executors_over_postgres_take_the_settings_of_the_engine() {
         use crate::{
@@ -486,12 +548,11 @@ mod tests {
         let Some(Executor::Postgres(executor)) = cqrs.executor_of::<Show>() else {
             panic!("the executor of an engine over PostgreSQL is PostgreSQL's");
         };
-        let core = executor.core();
         assert_eq!(
             (
-                core.lock_limits(),
-                core.retry_policy(),
-                core.framework().store().snapshot_interval()
+                executor.lock_limits(),
+                executor.retry_policy(),
+                executor.store().snapshot_interval()
             ),
             (limits, retry, Some(3))
         );

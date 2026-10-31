@@ -2,46 +2,45 @@ use super::{
     CommandExecutor, CommandGatewayError,
     locks::{AggregateLockRegistry, LockLimits, LockRefused},
     observer::{CommandObserver, CommandReport, Outcome},
-    planner::{Planning, TaskPlanner},
+    planner::TaskPlanner,
     retry::retry_on_aggregate_conflict,
 };
 use crate::{
-    command::{AggregateError, CommitReport, framework::CqrsFramework, retry::AggregateConflictRetryPolicy},
+    command::{AggregateError, CommitReport, attempt::CommandAttempt, retry::AggregateConflictRetryPolicy},
     domain::aggregate::{Aggregate, AggregateKey},
     journal::{EventStore, wakeup::CommitWakeup},
 };
 use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 
-/// The core of command execution for one aggregate type, independent of the store: the [`CqrsFramework`] it
-/// owns for its life holds the store, the rules and the task planner. `postgres::command::PostgresCommandExecutor`
-/// and the test executor are this core over a store of their own, not other kinds of executor; build the core
-/// yourself only for a store of your own. One long-lived executor per aggregate type and process, shared (e.g. in
-/// an `Arc`) by everything that issues its commands: a second executor of the same type, whether a core or a
-/// preset, has locks of its own.
+/// The executor of the commands of one aggregate type over an [`EventStore`]: the attempt it owns
+/// for its life holds the store, the rules and the task planner. The engine, the tests and the test executor
+/// build it over a store of their own; there is no preset per database. One long-lived executor per aggregate type
+/// and process, shared (e.g. in an `Arc`) by everything that issues its commands: a second executor of the same
+/// type has locks of its own.
 ///
 /// A command first waits for its aggregate's lock, at most the lock's `max_wait`, so the executor's commands
 /// to one aggregate run one at a time, in arrival order; past the wait the command is
 /// [`CommandGatewayError::Unavailable`] and nothing is loaded, planned or written. Two executors of one
 /// aggregate type are like two processes, which meet only in the store's optimistic check. Holding the lock
-/// the command runs through the framework with bounded conflict retry: every attempt reloads the aggregate,
+/// the command runs through an attempt with bounded conflict retry: every attempt reloads the aggregate,
 /// repeats clones of the command and of its metadata and plans its tasks again from its own decision
 /// ([`with_task_planner`](Self::with_task_planner)). A commit with events wakes the aggregate type's projection
 /// processors ([`with_commit_wakeup`](Self::with_commit_wakeup)), which read the journal themselves; then the
 /// command releases the lock, tells the executor's observer what became of it
 /// ([`with_observer`](Self::with_observer)) and answers with what it committed.
 #[must_use]
-pub struct CommandExecutorCore<A: Aggregate, S: EventStore<A>> {
-    framework: CqrsFramework<A, S>,
+pub struct StoreCommandExecutor<A: Aggregate, S: EventStore<A>> {
+    attempt: CommandAttempt<A, S>,
     retry_policy: AggregateConflictRetryPolicy,
     locks: AggregateLockRegistry,
     wakeup: Option<CommitWakeup>,
     observer: Option<Arc<dyn CommandObserver<A>>>,
 }
 
-impl<A: Aggregate, S: EventStore<A>> fmt::Debug for CommandExecutorCore<A, S> {
+impl<A: Aggregate, S: EventStore<A>> fmt::Debug for StoreCommandExecutor<A, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("CommandExecutorCore")
-            .field("framework", &self.framework)
+        f.debug_struct("StoreCommandExecutor")
+            .field("attempt", &self.attempt)
             .field("retry_policy", &self.retry_policy)
             .field("commit_wakeup", &self.wakeup.is_some())
             .field("observer", &self.observer.is_some())
@@ -49,12 +48,108 @@ impl<A: Aggregate, S: EventStore<A>> fmt::Debug for CommandExecutorCore<A, S> {
     }
 }
 
-impl<A: Aggregate + 'static, S: EventStore<A>> CommandExecutorCore<A, S> {
-    /// An executor over `framework` with a lock registry of its own, bounded by `lock_limits`, that wakes nobody and
-    /// tells nobody.
-    pub fn new(framework: CqrsFramework<A, S>, retry_policy: AggregateConflictRetryPolicy, lock_limits: LockLimits) -> Self {
+impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
+    /// An executor over `store` with the rules the commands decide with ([`Aggregate::Rules`]) and a lock
+    /// registry of its own, bounded by `lock_limits`, that wakes nobody, tells nobody and plans nothing.
+    ///
+    /// For a simple in-memory `EventStore` suitable for experimentation or testing see
+    /// [MemStore](crate::testing::mem_store::MemStore); for production a
+    /// [persistent event store](crate::journal::persisted::PersistedEventStore) over a database repository.
+    ///
+    /// ```rust
+    /// # mod example {
+    /// # use async_trait::async_trait;
+    /// # use serde::Deserialize;
+    /// # use serde::Serialize;
+    /// # use serde_json::Value;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::Events;
+    /// # use cqrsx::domain::event::EventEnvelope;
+    /// # use cqrsx::projection::EventHandler;
+    /// # use cqrsx::view::View;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
+    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewRepository;
+    /// #
+    /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+    /// # pub enum MyEvents {
+    /// #     SomethingWasDone,
+    /// #     SomethingElseWasDone,
+    /// # }
+    /// #
+    /// # impl Events for MyEvents {
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
+    /// #     }
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Clone, Debug, Serialize, Deserialize)]
+    /// # pub enum MyCommands {
+    /// #     DoSomething,
+    /// #     BadCommand,
+    /// # }
+    /// #
+    /// # #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// # pub struct MyAggregate;
+    /// #
+    /// # impl Aggregate for MyAggregate {
+    /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
+    /// #     type Command = MyCommands;
+    /// #     type Event = MyEvents;
+    /// #     type Error = MyUserError;
+    /// #     type Rules = MyService;
+    /// #
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
+    /// #             MyCommands::BadCommand => Err("the expected error message".into()),
+    /// #         }
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
+    /// # #[error("{0}")]
+    /// # pub struct MyUserError(pub String);
+    /// #
+    /// # impl From<&str> for MyUserError {
+    /// #     fn from(msg: &str) -> Self {
+    /// #         Self(msg.to_string())
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Debug, Clone, Default)]
+    /// # pub struct MyService;
+    /// # }
+    /// # use example::MyAggregate;
+    /// # use example::MyService;
+    /// use cqrsx::command::executor::StoreCommandExecutor;
+    /// use cqrsx::command::locks::LockLimits;
+    /// use cqrsx::command::retry::AggregateConflictRetryPolicy;
+    /// use cqrsx::testing::mem_store::MemStore;
+    ///
+    /// let store = MemStore::<MyAggregate>::default();
+    /// let rules = MyService::default();
+    ///
+    /// let executor = StoreCommandExecutor::new(store, rules, AggregateConflictRetryPolicy::default(), LockLimits::default());
+    /// ```
+    pub fn new(store: S, rules: A::Rules, retry_policy: AggregateConflictRetryPolicy, lock_limits: LockLimits) -> Self {
         Self {
-            framework,
+            attempt: CommandAttempt::new(store, rules),
             retry_policy,
             locks: AggregateLockRegistry::new(lock_limits),
             wakeup: None,
@@ -65,17 +160,18 @@ impl<A: Aggregate + 'static, S: EventStore<A>> CommandExecutorCore<A, S> {
     /// Wakes `wakeup` after every commit with events, before the client gets its answer: the projection
     /// processors of this aggregate type then read the journal at once instead of at their next poll.
     pub fn with_commit_wakeup(mut self, wakeup: CommitWakeup) -> Self {
-        self.set_commit_wakeup(wakeup);
+        self.wakeup = Some(wakeup);
         self
     }
 
-    /// Plans every decision's follow-up tasks through `planner`, on every attempt, under the aggregate's lock
-    /// (see [`CqrsFramework::with_task_planner`]).
+    /// Plans every decision's follow-up tasks through `planner`, on every attempt, under the aggregate's lock, after
+    /// `decide` and before the commit; the tasks commit atomically with the attempt's events. One planner per
+    /// executor: a second call replaces the first, and several planners compose as a tuple.
     pub fn with_task_planner(mut self, planner: impl TaskPlanner<A> + 'static) -> Self
     where
         A::Command: Clone,
     {
-        self.set_task_planner(Planning::new(planner));
+        self.attempt = self.attempt.with_task_planner(planner);
         self
     }
 
@@ -83,24 +179,13 @@ impl<A: Aggregate + 'static, S: EventStore<A>> CommandExecutorCore<A, S> {
     /// wake-up sent, before the answer (see [`CommandObserver`]). One observer per executor: a second replaces the
     /// first.
     pub fn with_observer(mut self, observer: Arc<dyn CommandObserver<A>>) -> Self {
-        self.set_observer(observer);
+        self.observer = Some(observer);
         self
     }
 
-    pub(crate) fn set_commit_wakeup(&mut self, wakeup: CommitWakeup) {
-        self.wakeup = Some(wakeup);
-    }
-
-    pub(crate) fn set_observer(&mut self, observer: Arc<dyn CommandObserver<A>>) {
-        self.observer = Some(observer);
-    }
-
-    pub(crate) fn set_task_planner(&mut self, planning: Planning<A>) {
-        self.framework.set_task_planner(planning);
-    }
-
-    pub(crate) fn framework(&self) -> &CqrsFramework<A, S> {
-        &self.framework
+    /// The store the commands run against.
+    pub(crate) fn store(&self) -> &S {
+        self.attempt.store()
     }
 
     #[cfg(test)]
@@ -114,7 +199,7 @@ impl<A: Aggregate + 'static, S: EventStore<A>> CommandExecutorCore<A, S> {
     }
 }
 
-impl<A, S> CommandExecutorCore<A, S>
+impl<A, S> StoreCommandExecutor<A, S>
 where
     A: Aggregate + Clone + 'static,
     A::Command: Clone,
@@ -122,6 +207,99 @@ where
     S::Context: Send,
 {
     /// Executes without event metadata; see [`execute_with_metadata`](Self::execute_with_metadata).
+    ///
+    /// ```
+    /// # mod example {
+    /// # use async_trait::async_trait;
+    /// # use serde::Deserialize;
+    /// # use serde::Serialize;
+    /// # use serde_json::Value;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::Events;
+    /// # use cqrsx::domain::event::EventEnvelope;
+    /// # use cqrsx::projection::EventHandler;
+    /// # use cqrsx::view::View;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
+    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewRepository;
+    /// #
+    /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+    /// # pub enum MyEvents {
+    /// #     SomethingWasDone,
+    /// #     SomethingElseWasDone,
+    /// # }
+    /// #
+    /// # impl Events for MyEvents {
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
+    /// #     }
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Clone, Debug, Serialize, Deserialize)]
+    /// # pub enum MyCommands {
+    /// #     DoSomething,
+    /// #     BadCommand,
+    /// # }
+    /// #
+    /// # #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// # pub struct MyAggregate;
+    /// #
+    /// # impl Aggregate for MyAggregate {
+    /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
+    /// #     type Command = MyCommands;
+    /// #     type Event = MyEvents;
+    /// #     type Error = MyUserError;
+    /// #     type Rules = MyService;
+    /// #
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
+    /// #             MyCommands::BadCommand => Err("the expected error message".into()),
+    /// #         }
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
+    /// # #[error("{0}")]
+    /// # pub struct MyUserError(pub String);
+    /// #
+    /// # impl From<&str> for MyUserError {
+    /// #     fn from(msg: &str) -> Self {
+    /// #         Self(msg.to_string())
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Debug, Clone, Default)]
+    /// # pub struct MyService;
+    /// # }
+    /// # use example::MyAggregate;
+    /// # use example::MyCommands;
+    /// # use example::MyUserError;
+    /// # use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor};
+    /// # use cqrsx::testing::mem_store::MemStore;
+    /// type MyExecutor = StoreCommandExecutor<MyAggregate, MemStore<MyAggregate>>;
+    ///
+    /// async fn do_something(executor: MyExecutor) -> Result<(), CommandGatewayError<MyUserError>> {
+    ///     let committed = executor.execute(&"agg-id-F39A0C".into(), MyCommands::DoSomething).await?;
+    ///     assert_eq!(committed.events.len(), 1);
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn execute(&self, id: &A::Id, command: A::Command) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
         self.execute_with_metadata(id, command, HashMap::new()).await
     }
@@ -131,6 +309,104 @@ where
     /// attempt receives a clone of `metadata`, so a retried command commits exactly the metadata of its first
     /// attempt, and plans its tasks from its own decision. Once the lock is released the observer, if any, hears the
     /// command and its outcome; then the caller gets the answer.
+    ///
+    /// ```
+    /// # mod example {
+    /// # use async_trait::async_trait;
+    /// # use serde::Deserialize;
+    /// # use serde::Serialize;
+    /// # use serde_json::Value;
+    /// # use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::event::Events;
+    /// # use cqrsx::domain::event::EventEnvelope;
+    /// # use cqrsx::projection::EventHandler;
+    /// # use cqrsx::view::View;
+    /// # use cqrsx::domain::command::Decide;
+    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::PersistenceError;
+    /// # use cqrsx::journal::serialized_event::SerializedEvent;
+    /// # use cqrsx::journal::snapshot::SerializedSnapshot;
+    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewRepository;
+    /// #
+    /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
+    /// # pub enum MyEvents {
+    /// #     SomethingWasDone,
+    /// #     SomethingElseWasDone,
+    /// # }
+    /// #
+    /// # impl Events for MyEvents {
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::SomethingWasDone => "SomethingWasDone",
+    /// #             Self::SomethingElseWasDone => "SomethingElseWasDone",
+    /// #         }
+    /// #     }
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "0.1.0"
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Clone, Debug, Serialize, Deserialize)]
+    /// # pub enum MyCommands {
+    /// #     DoSomething,
+    /// #     BadCommand,
+    /// # }
+    /// #
+    /// # #[derive(Clone, Debug, Default, Serialize, Deserialize)]
+    /// # pub struct MyAggregate;
+    /// #
+    /// # impl Aggregate for MyAggregate {
+    /// #     const TYPE: &'static str = "MyAggregate";
+    /// #     type Id = String;
+    /// #     type Command = MyCommands;
+    /// #     type Event = MyEvents;
+    /// #     type Error = MyUserError;
+    /// #     type Rules = MyService;
+    /// #
+    /// #     fn apply(&mut self, _event: Self::Event) {}
+    /// # }
+    /// #
+    /// # impl Decide<MyAggregate> for MyCommands {
+    /// #     fn decide(self, _: &MyAggregate, _: &MyService) -> Result<MyEvents, MyUserError> {
+    /// #         match self {
+    /// #             MyCommands::DoSomething => Ok(MyEvents::SomethingWasDone),
+    /// #             MyCommands::BadCommand => Err("the expected error message".into()),
+    /// #         }
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Debug, PartialEq, Eq, thiserror::Error)]
+    /// # #[error("{0}")]
+    /// # pub struct MyUserError(pub String);
+    /// #
+    /// # impl From<&str> for MyUserError {
+    /// #     fn from(msg: &str) -> Self {
+    /// #         Self(msg.to_string())
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Debug, Clone, Default)]
+    /// # pub struct MyService;
+    /// # }
+    /// # use example::MyAggregate;
+    /// # use example::MyCommands;
+    /// # use example::MyUserError;
+    /// # use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor};
+    /// # use cqrsx::testing::mem_store::MemStore;
+    /// # use std::collections::HashMap;
+    /// # use chrono;
+    /// type MyExecutor = StoreCommandExecutor<MyAggregate, MemStore<MyAggregate>>;
+    ///
+    /// async fn do_something(executor: MyExecutor) -> Result<(), CommandGatewayError<MyUserError>> {
+    ///     let metadata = HashMap::from([("time".to_string(), chrono::Utc::now().to_rfc3339())]);
+    ///     let committed = executor
+    ///         .execute_with_metadata(&"agg-id-F39A0C".into(), MyCommands::DoSomething, metadata)
+    ///         .await?;
+    ///     assert_eq!(committed.events.len(), 1);
+    ///     Ok(())
+    /// }
+    /// ```
     pub async fn execute_with_metadata(
         &self,
         id: &A::Id,
@@ -165,9 +441,9 @@ where
             .await
             .map_err(lock_refused::<A::Error>(A::TYPE))?;
         let key = lock.key().aggregate_id(); // the id's text, formatted once: every attempt borrows it
-        let framework = &self.framework;
+        let attempt = &self.attempt;
         let report = retry_on_aggregate_conflict(self.retry_policy, move || {
-            framework.attempt(id, key, command.clone(), metadata.clone())
+            attempt.run(id, key, command.clone(), metadata.clone())
         })
         .await
         .inspect_err(|error| log_aggregate_error(A::TYPE, error))
@@ -200,7 +476,7 @@ fn log_aggregate_error<D: Error>(aggregate_type: &str, error: &AggregateError<D>
     crate::diagnostics::log_command_failure(aggregate_type, category, source);
 }
 
-impl<A, S> CommandExecutor<A> for CommandExecutorCore<A, S>
+impl<A, S> CommandExecutor<A> for StoreCommandExecutor<A, S>
 where
     A: Aggregate + Clone + 'static,
     A::Command: Clone + 'static,
@@ -214,7 +490,7 @@ where
         command: A::Command,
         metadata: HashMap<String, String>,
     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
-        CommandExecutorCore::execute_with_metadata(self, id, command, metadata).await
+        StoreCommandExecutor::execute_with_metadata(self, id, command, metadata).await
     }
 }
 
@@ -248,14 +524,13 @@ mod tests {
 
     use super::*;
     use crate::command::AggregateError;
-    use crate::command::framework::CqrsFramework;
     use crate::command::{
         causation::Causation,
         locks::LockLimits,
         planner::{Decision, TaskPlanError},
     };
     use crate::domain::aggregate::Aggregate;
-    use crate::journal::EventStore;
+    use crate::journal::{EventStore, PersistenceError};
     use crate::task::{NewTask, Task};
     use std::time::Duration;
     use thiserror::Error;
@@ -322,7 +597,7 @@ mod tests {
     struct DummyStore {
         commits: Arc<AtomicUsize>,
         conflicts: usize,
-        load_error: Option<fn() -> AggregateError<DummyError>>,
+        load_error: Option<fn() -> PersistenceError>,
         tasks: Arc<Mutex<Vec<Vec<NewTask>>>>,
     }
 
@@ -336,7 +611,7 @@ mod tests {
             }
         }
 
-        fn failing(load_error: fn() -> AggregateError<DummyError>) -> Self {
+        fn failing(load_error: fn() -> PersistenceError) -> Self {
             Self {
                 load_error: Some(load_error),
                 ..Self::new(0)
@@ -347,11 +622,11 @@ mod tests {
     impl EventStore<DummyAggregate> for DummyStore {
         type Context = DummyContext;
 
-        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
+        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, PersistenceError> {
             if let Some(error) = self.load_error {
                 return Err(error());
             }
@@ -364,10 +639,10 @@ mod tests {
             _: Self::Context,
             _: HashMap<String, String>,
             tasks: &[NewTask],
-        ) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
+        ) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
             self.tasks.lock().unwrap().push(tasks.to_vec());
             if self.commits.fetch_add(1, Ordering::SeqCst) < self.conflicts {
-                Err(AggregateError::AggregateConflict)
+                Err(PersistenceError::OptimisticLockError)
             } else {
                 Ok(Vec::new())
             }
@@ -415,12 +690,8 @@ mod tests {
         AggregateConflictRetryPolicy::try_new(max_attempts, Duration::ZERO, Duration::ZERO, 0.0).unwrap()
     }
 
-    fn dummy_executor(store: DummyStore, attempts: usize) -> CommandExecutorCore<DummyAggregate, DummyStore> {
-        CommandExecutorCore::new(
-            CqrsFramework::new(store, Arc::default()),
-            no_delay_policy(attempts),
-            LockLimits::default(),
-        )
+    fn dummy_executor(store: DummyStore, attempts: usize) -> StoreCommandExecutor<DummyAggregate, DummyStore> {
+        StoreCommandExecutor::new(store, Arc::default(), no_delay_policy(attempts), LockLimits::default())
     }
 
     #[derive(Clone, Default, Serialize, Deserialize)]
@@ -456,8 +727,9 @@ mod tests {
 
     #[tokio::test]
     async fn executor_accepts_send_commands_without_requiring_sync() {
-        let executor = Arc::new(CommandExecutorCore::new(
-            CqrsFramework::new(crate::testing::mem_store::MemStore::<SendOnlyAggregate>::default(), ()),
+        let executor = Arc::new(StoreCommandExecutor::new(
+            crate::testing::mem_store::MemStore::<SendOnlyAggregate>::default(),
+            (),
             no_delay_policy(1),
             LockLimits::default(),
         ));
@@ -474,8 +746,9 @@ mod tests {
     #[tokio::test]
     async fn a_planner_reads_a_send_only_command_and_the_future_stays_send() {
         let executor = Arc::new(
-            CommandExecutorCore::new(
-                CqrsFramework::new(crate::testing::mem_store::MemStore::<SendOnlyAggregate>::default(), ()),
+            StoreCommandExecutor::new(
+                crate::testing::mem_store::MemStore::<SendOnlyAggregate>::default(),
+                (),
                 no_delay_policy(1),
                 LockLimits::default(),
             )
@@ -532,11 +805,11 @@ mod tests {
     impl EventStore<DummyAggregate> for MetadataStore {
         type Context = DummyContext;
 
-        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
+        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, PersistenceError> {
             Ok(DummyContext(DummyAggregate))
         }
 
@@ -546,11 +819,11 @@ mod tests {
             _: Self::Context,
             metadata: HashMap<String, String>,
             _: &[NewTask],
-        ) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
+        ) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
             let mut commits = self.commits.lock().unwrap();
             commits.push(metadata);
             if commits.len() <= self.conflicts {
-                Err(AggregateError::AggregateConflict)
+                Err(PersistenceError::OptimisticLockError)
             } else {
                 Ok(Vec::new())
             }
@@ -561,14 +834,12 @@ mod tests {
         conflicts: usize,
         commits: &Arc<Mutex<Vec<HashMap<String, String>>>>,
     ) -> impl CommandExecutor<DummyAggregate> {
-        CommandExecutorCore::new(
-            CqrsFramework::new(
-                MetadataStore {
-                    conflicts,
-                    commits: commits.clone(),
-                },
-                Arc::default(),
-            ),
+        StoreCommandExecutor::new(
+            MetadataStore {
+                conflicts,
+                commits: commits.clone(),
+            },
+            Arc::default(),
             no_delay_policy(3),
             LockLimits::default(),
         )
@@ -601,14 +872,12 @@ mod tests {
             .await
             .unwrap();
         let commits_inherent = Arc::new(Mutex::new(Vec::new()));
-        let inherent = CommandExecutorCore::new(
-            CqrsFramework::new(
-                MetadataStore {
-                    conflicts: 0,
-                    commits: commits_inherent.clone(),
-                },
-                Arc::default(),
-            ),
+        let inherent = StoreCommandExecutor::new(
+            MetadataStore {
+                conflicts: 0,
+                commits: commits_inherent.clone(),
+            },
+            Arc::default(),
             no_delay_policy(1),
             LockLimits::default(),
         );
@@ -625,12 +894,8 @@ mod tests {
         let store = DummyStore::new(2);
         let commands = Arc::new(Mutex::new(Vec::new()));
         let planner = ValuePlanner::default();
-        let executor = CommandExecutorCore::new(
-            CqrsFramework::new(store.clone(), commands.clone()),
-            no_delay_policy(3),
-            LockLimits::default(),
-        )
-        .with_task_planner(planner.clone());
+        let executor = StoreCommandExecutor::new(store.clone(), commands.clone(), no_delay_policy(3), LockLimits::default())
+            .with_task_planner(planner.clone());
         let metadata = Causation::root("test").event_metadata();
 
         let report = CommandExecutor::execute_with_metadata(
@@ -683,9 +948,9 @@ mod tests {
         assert_eq!(store.commits.load(Ordering::SeqCst), 3);
 
         for error in [
-            || AggregateError::DatabaseConnectionError(Box::new(io::Error::other("connection"))),
-            || AggregateError::DeserializationError(Box::new(io::Error::other("json"))),
-            || AggregateError::UnexpectedError(Box::new(io::Error::other("unexpected"))),
+            || PersistenceError::ConnectionError(Box::new(io::Error::other("connection"))),
+            || PersistenceError::DeserializationError(Box::new(io::Error::other("json"))),
+            || PersistenceError::UnknownError(Box::new(io::Error::other("unexpected"))),
         ] {
             let executor = dummy_executor(DummyStore::failing(error), 3);
             assert_eq!(
@@ -738,12 +1003,8 @@ mod tests {
     #[tokio::test]
     async fn a_planning_failure_after_a_conflict_is_unavailable_and_writes_nothing_more() {
         let store = TallyStore::new(1);
-        let executor = CommandExecutorCore::new(
-            CqrsFramework::new(store.clone(), ()),
-            no_delay_policy(3),
-            LockLimits::default(),
-        )
-        .with_task_planner(TallyPlanner { refuse_above: Some(0) });
+        let executor = StoreCommandExecutor::new(store.clone(), (), no_delay_policy(3), LockLimits::default())
+            .with_task_planner(TallyPlanner { refuse_above: Some(0) });
         assert_eq!(
             executor.execute(&"tally".into(), 5).await,
             Err(CommandGatewayError::Unavailable)
@@ -759,9 +1020,9 @@ mod tests {
     async fn executor_logs_technical_failure_once_and_suppresses_domain_and_conflict_failures() {
         let (_, log) = crate::diagnostics::test_support::capture(async {
             for error in [
-                || AggregateError::DatabaseConnectionError(Box::new(io::Error::other("private_connection"))),
-                || AggregateError::DeserializationError(Box::new(io::Error::other("private_json"))),
-                || AggregateError::UnexpectedError(Box::new(io::Error::other("private_unexpected"))),
+                || PersistenceError::ConnectionError(Box::new(io::Error::other("private_connection"))),
+                || PersistenceError::DeserializationError(Box::new(io::Error::other("private_json"))),
+                || PersistenceError::UnknownError(Box::new(io::Error::other("private_unexpected"))),
             ] {
                 let executor = dummy_executor(DummyStore::failing(error), 3);
                 assert_eq!(
@@ -823,11 +1084,11 @@ mod tests {
     impl EventStore<DummyAggregate> for VersionedStore {
         type Context = VersionedContext;
 
-        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
+        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, PersistenceError> {
             self.loads.fetch_add(1, Ordering::SeqCst);
             if let Some(gate) = &self.load_gate {
                 gate.acquire().await.unwrap().forget();
@@ -844,7 +1105,7 @@ mod tests {
             context: Self::Context,
             _: HashMap<String, String>,
             tasks: &[NewTask],
-        ) -> Result<Vec<EventEnvelope<DummyAggregate>>, AggregateError<DummyError>> {
+        ) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
             let [DummyEvent::Recorded(value)] = &events[..] else {
                 panic!("one event per command");
             };
@@ -855,7 +1116,7 @@ mod tests {
                 .is_ok();
             if external || journal.len() != context.1 {
                 self.calls.lock().unwrap().push(format!("conflict {value}"));
-                return Err(AggregateError::AggregateConflict);
+                return Err(PersistenceError::OptimisticLockError);
             }
             journal.push(value.clone());
             self.calls.lock().unwrap().push(format!("commit {value}"));
@@ -873,7 +1134,7 @@ mod tests {
         }
     }
 
-    fn versioned_executor(store: &VersionedStore, attempts: usize) -> CommandExecutorCore<DummyAggregate, VersionedStore> {
+    fn versioned_executor(store: &VersionedStore, attempts: usize) -> StoreCommandExecutor<DummyAggregate, VersionedStore> {
         versioned_executor_with(store, attempts, LockLimits::default())
     }
 
@@ -881,12 +1142,8 @@ mod tests {
         store: &VersionedStore,
         attempts: usize,
         limits: LockLimits,
-    ) -> CommandExecutorCore<DummyAggregate, VersionedStore> {
-        CommandExecutorCore::new(
-            CqrsFramework::new(store.clone(), Arc::default()),
-            no_delay_policy(attempts),
-            limits,
-        )
+    ) -> StoreCommandExecutor<DummyAggregate, VersionedStore> {
+        StoreCommandExecutor::new(store.clone(), Arc::default(), no_delay_policy(attempts), limits)
     }
 
     fn record(value: &str) -> DummyCommand {
@@ -1244,11 +1501,11 @@ mod tests {
     impl EventStore<Tally> for TallyStore {
         type Context = TallyContext;
 
-        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<Tally>>, AggregateError<DummyError>> {
+        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<Tally>>, PersistenceError> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, _: &str) -> Result<Self::Context, PersistenceError> {
             let loads = self.loads.fetch_add(1, Ordering::SeqCst);
             Ok(TallyContext(Tally(10 * loads as u32)))
         }
@@ -1259,11 +1516,11 @@ mod tests {
             _: Self::Context,
             metadata: HashMap<String, String>,
             tasks: &[NewTask],
-        ) -> Result<Vec<EventEnvelope<Tally>>, AggregateError<DummyError>> {
+        ) -> Result<Vec<EventEnvelope<Tally>>, PersistenceError> {
             let mut attempts = self.attempts.lock().unwrap();
             attempts.push(tasks.to_vec());
             if attempts.len() <= self.conflicts {
-                return Err(AggregateError::AggregateConflict);
+                return Err(PersistenceError::OptimisticLockError);
             }
             Ok(events
                 .into_iter()
@@ -1308,12 +1565,8 @@ mod tests {
     #[tokio::test]
     async fn a_conflict_replans_from_the_fresh_state_and_keeps_the_task_ids() {
         let store = TallyStore::new(2);
-        let executor = CommandExecutorCore::new(
-            CqrsFramework::new(store.clone(), ()),
-            no_delay_policy(3),
-            LockLimits::default(),
-        )
-        .with_task_planner(TallyPlanner { refuse_above: None });
+        let executor = StoreCommandExecutor::new(store.clone(), (), no_delay_policy(3), LockLimits::default())
+            .with_task_planner(TallyPlanner { refuse_above: None });
         let report = executor
             .execute_with_metadata(&"tally".into(), 5, Causation::root("test").event_metadata())
             .await
@@ -1411,11 +1664,11 @@ mod tests {
     impl EventStore<Room> for RoomStore {
         type Context = RoomContext;
 
-        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<Room>>, AggregateError<DummyError>> {
+        async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<Room>>, PersistenceError> {
             Ok(Vec::new())
         }
 
-        async fn load_aggregate(&self, key: &str) -> Result<Self::Context, AggregateError<DummyError>> {
+        async fn load_aggregate(&self, key: &str) -> Result<Self::Context, PersistenceError> {
             self.loads.lock().unwrap().push(key.to_owned());
             self.gate.acquire().await.unwrap().forget();
             Ok(RoomContext(Room, key.to_owned()))
@@ -1427,9 +1680,9 @@ mod tests {
             context: Self::Context,
             metadata: HashMap<String, String>,
             _: &[NewTask],
-        ) -> Result<Vec<EventEnvelope<Room>>, AggregateError<DummyError>> {
+        ) -> Result<Vec<EventEnvelope<Room>>, PersistenceError> {
             if self.commits.fetch_add(1, Ordering::SeqCst) == 0 {
-                return Err(AggregateError::AggregateConflict);
+                return Err(PersistenceError::OptimisticLockError);
             }
             Ok(events
                 .into_iter()
@@ -1469,8 +1722,9 @@ mod tests {
             commits: Arc::default(),
         };
         let planner = RoomPlanner::default();
-        let executor = CommandExecutorCore::new(
-            CqrsFramework::new(store.clone(), ()),
+        let executor = StoreCommandExecutor::new(
+            store.clone(),
+            (),
             no_delay_policy(2),
             LockLimits::try_new(Duration::from_millis(100), 1).unwrap(),
         )
@@ -1522,11 +1776,7 @@ mod tests {
         );
         // The framework on its own runs one attempt and formats the id once for it.
         store.gate.add_permits(1);
-        executor
-            .framework()
-            .execute_with_metadata(&id, (), HashMap::new())
-            .await
-            .unwrap();
+        executor.attempt.execute_with_metadata(&id, (), HashMap::new()).await.unwrap();
         assert_eq!(ROOM_IDS_FORMATTED.load(Ordering::SeqCst), 2);
         assert_eq!(store.loads.lock().unwrap().last().map(String::as_str), Some("3-07"));
         assert_eq!("3".parse::<RoomId>(), Err("no room id: 3".to_owned()));
@@ -1596,7 +1846,7 @@ mod tests {
             Err(CommandGatewayError::Conflict)
         );
         let failing = dummy_executor(
-            DummyStore::failing(|| AggregateError::DatabaseConnectionError(Box::new(io::Error::other("down")))),
+            DummyStore::failing(|| PersistenceError::ConnectionError(Box::new(io::Error::other("down")))),
             1,
         )
         .with_observer(observer.clone());
@@ -1634,14 +1884,10 @@ mod tests {
     async fn the_observer_hears_the_tasks_of_the_attempt_that_committed() {
         let store = TallyStore::new(2);
         let (replaced, observer) = (Arc::new(Totals::default()), Arc::new(Totals::default()));
-        let executor = CommandExecutorCore::new(
-            CqrsFramework::new(store.clone(), ()),
-            no_delay_policy(3),
-            LockLimits::default(),
-        )
-        .with_task_planner(TallyPlanner { refuse_above: None })
-        .with_observer(replaced.clone())
-        .with_observer(observer.clone());
+        let executor = StoreCommandExecutor::new(store.clone(), (), no_delay_policy(3), LockLimits::default())
+            .with_task_planner(TallyPlanner { refuse_above: None })
+            .with_observer(replaced.clone())
+            .with_observer(observer.clone());
         let report = executor.execute(&"tally".into(), 5).await.unwrap();
         let attempts = store.attempts.lock().unwrap().clone();
         assert_eq!(attempts.len(), 3, "two conflicts, then the commit");

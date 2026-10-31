@@ -2,7 +2,6 @@
 use super::support::Database;
 use cqrsx::postgres::event_repository::PostgresEventRepository;
 use cqrsx::{
-    command::framework::CqrsFramework,
     domain::{aggregate::Aggregate, command::Decide, event::Events},
     journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
 };
@@ -94,7 +93,12 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
     }
     let store = PersistedEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
         .with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
-    let framework = CqrsFramework::new(store, ());
+    let framework = cqrsx::command::executor::StoreCommandExecutor::new(
+        store,
+        (),
+        cqrsx::command::retry::AggregateConflictRetryPolicy::default(),
+        cqrsx::command::locks::LockLimits::default(),
+    );
     framework
         .execute_with_metadata(
             &"old".into(),

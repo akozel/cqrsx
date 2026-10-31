@@ -10,8 +10,7 @@ use crate::{
 use std::{any::Any, collections::HashMap, fmt};
 
 /// Hears every command an executor ran, e.g. for an activity feed
-/// ([`CommandExecutorCore::with_observer`](super::executor::CommandExecutorCore::with_observer) and the presets'
-/// `with_observer`).
+/// ([`StoreCommandExecutor::with_observer`](super::executor::StoreCommandExecutor::with_observer)).
 ///
 /// The executor calls it once per command: after the command's attempts, once the aggregate's lock is released and
 /// the commit wake-up sent, before the caller gets its answer, on the caller's task. So the next command of the
@@ -79,7 +78,9 @@ use std::{any::Any, collections::HashMap, fmt};
 ///
 /// # tokio_test(async {
 /// let log = Arc::new(Log::default());
-/// let counters = TestCommandExecutor::new(MemStore::<Counter>::default(), 1).with_observer(log.clone());
+/// let counters = TestCommandExecutor::configured(MemStore::<Counter>::default(), 1, |executor| {
+///     executor.with_observer(log.clone())
+/// });
 /// let metadata = [("source".to_owned(), "ui".to_owned())].into();
 /// counters.execute_with_metadata(&"c-1".into(), (), metadata).await.unwrap();
 /// counters.execute(&"c-1".into(), ()).await.unwrap_err();

@@ -1,16 +1,11 @@
 //! A command executor over a test event store or an in-memory journal, for use-case tests.
 use crate::{
     command::{
-        CommandExecutor, CommandGatewayError, CommitReport,
-        executor::CommandExecutorCore,
-        framework::CqrsFramework,
-        locks::LockLimits,
-        observer::CommandObserver,
-        planner::{Planning, TaskPlanner},
+        CommandExecutor, CommandGatewayError, CommitReport, executor::StoreCommandExecutor, locks::LockLimits,
         retry::AggregateConflictRetryPolicy,
     },
     domain::aggregate::Aggregate,
-    journal::{EventStore, persisted::PersistedEventStore, wakeup::CommitWakeup},
+    journal::{EventStore, persisted::PersistedEventStore},
     locking::lock,
     memory::event_repository::MemEventRepository,
     task::NewTask,
@@ -22,19 +17,19 @@ use std::{
     sync::{Arc, Mutex},
 };
 
-/// The production command path behind [`CommandExecutor`] over a test store: one [`CommandExecutorCore`]
+/// The production command path behind [`CommandExecutor`] over a test store: one [`StoreCommandExecutor`]
 /// with aggregate locks, the default conflict retry, an optional task planner, commit wake-up and observer, plus a
 /// record of the tasks the committed calls published.
 ///
 /// *Published* tasks are those of the calls that committed (`Ok`): what their commits report, i.e. what a
 /// transactional outbox would hold. Clones share the store, the locks, the planner, the wake-up, the observer and
-/// the record, so a use case can own one clone while the test inspects another; register the planner, the
-/// wake-up and the observer before cloning.
+/// the record, so a use case can own one clone while the test inspects another. The planner, the wake-up and the
+/// observer are registered on the executor handed to [`configured`](Self::configured), before it is shared.
 ///
 /// Over a [`MemStore`] ([`new`](Self::new)) the commands only change the aggregates. Over a
 /// [`MemEventRepository`] ([`over_journal`](Self::over_journal)) they append to a journal that projection
 /// processors read, and the journal's outbox ([`MemEventRepository::outbox`]) holds the published tasks: give
-/// the processors the same journal and the executor their [`CommitWakeup`].
+/// the processors the same journal and the executor their [`CommitWakeup`](crate::journal::wakeup::CommitWakeup).
 ///
 /// ```
 /// use cqrsx::{
@@ -92,7 +87,9 @@ use std::{
 /// }
 ///
 /// # tokio_test(async {
-/// let executor = TestCommandExecutor::new(MemStore::<Counter>::default(), 1).with_task_planner(Notifier);
+/// let executor = TestCommandExecutor::configured(MemStore::<Counter>::default(), 1, |executor| {
+///     executor.with_task_planner(Notifier)
+/// });
 /// let use_case = executor.clone(); // what the application under test receives
 /// let causation = Causation::root("test");
 /// let report = use_case.execute_with_metadata(&"c-1".into(), (), causation.event_metadata()).await.unwrap();
@@ -109,7 +106,7 @@ use std::{
 /// ```
 #[must_use]
 pub struct TestCommandExecutor<A: Aggregate, S: EventStore<A> = MemStore<A>> {
-    inner: Arc<CommandExecutorCore<A, S>>,
+    inner: Arc<StoreCommandExecutor<A, S>>,
     published: Arc<Mutex<Vec<NewTask>>>,
 }
 
@@ -125,68 +122,28 @@ impl<A: Aggregate, S: EventStore<A>> fmt::Debug for TestCommandExecutor<A, S> {
 impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
     /// Execute against `store` with `rules`, the default conflict retry and the default lock limits.
     pub fn new(store: S, rules: A::Rules) -> Self {
+        Self::configured(store, rules, |executor| executor)
+    }
+
+    /// Execute against `store` with `rules` like [`new`](Self::new), on the executor `configure` returns: register the
+    /// task planner (`with_task_planner`), the commit wake-up of the projection processors under test
+    /// (`with_commit_wakeup`) and the observer of every command (`with_observer`) on it. The executor is shared only
+    /// afterwards, so every clone has them.
+    pub fn configured(
+        store: S,
+        rules: A::Rules,
+        configure: impl FnOnce(StoreCommandExecutor<A, S>) -> StoreCommandExecutor<A, S>,
+    ) -> Self {
+        let executor = StoreCommandExecutor::new(store, rules, AggregateConflictRetryPolicy::default(), LockLimits::default());
         Self {
-            inner: Arc::new(CommandExecutorCore::new(
-                CqrsFramework::new(store, rules),
-                AggregateConflictRetryPolicy::default(),
-                LockLimits::default(),
-            )),
+            inner: Arc::new(configure(executor)),
             published: Arc::default(),
-        }
-    }
-
-    /// Plans every decision's follow-up tasks through `planner`, as the production executor does.
-    ///
-    /// # Panics
-    ///
-    /// When a clone of the executor exists.
-    pub fn with_task_planner(mut self, planner: impl TaskPlanner<A> + 'static) -> Self
-    where
-        A::Command: Clone,
-    {
-        self.unshared("the task planner").set_task_planner(Planning::new(planner));
-        self
-    }
-
-    /// Wakes `wakeup` after every commit with events, for the projection processors under test.
-    ///
-    /// # Panics
-    ///
-    /// When a clone of the executor exists.
-    pub fn with_commit_wakeup(mut self, wakeup: CommitWakeup) -> Self {
-        self.unshared("the commit wake-up").set_commit_wakeup(wakeup);
-        self
-    }
-
-    /// Tells `observer` about every command of the executor and its clones, as the production executor does.
-    ///
-    /// # Panics
-    ///
-    /// When a clone of the executor exists.
-    pub fn with_observer(mut self, observer: Arc<dyn CommandObserver<A>>) -> Self {
-        self.unshared("the observer").set_observer(observer);
-        self
-    }
-
-    /// The core, for a builder method that registers `what`.
-    ///
-    /// # Panics
-    ///
-    /// When a clone of the executor exists: registering after cloning misuses the test helper.
-    #[allow(
-        clippy::panic,
-        reason = "a test helper (rule 8 of the code guidelines): the misuse is documented in `# Panics` of the builders"
-    )]
-    fn unshared(&mut self, what: &str) -> &mut CommandExecutorCore<A, S> {
-        match Arc::get_mut(&mut self.inner) {
-            Some(core) => core,
-            None => panic!("register {what} before cloning the test executor: a clone shares the executor"),
         }
     }
 
     /// The store the commands run against.
     pub fn store(&self) -> &S {
-        self.inner.framework().store()
+        self.inner.store()
     }
 
     /// The tasks of the calls that committed since the last call, in call order; clears the record.
@@ -241,10 +198,11 @@ mod tests {
     use crate::{
         command::{
             causation::Causation,
-            planner::{Decision, TaskPlanError},
+            observer::CommandObserver,
+            planner::{Decision, TaskPlanError, TaskPlanner},
         },
         domain::{command::Decide, event::Events},
-        journal::repository::PersistedEventRepository,
+        journal::{repository::PersistedEventRepository, wakeup::CommitWakeup},
         task::Task,
         testing::unavailable_store::UnavailableStore,
     };
@@ -315,13 +273,18 @@ mod tests {
         }
     }
 
+    /// A test executor over `store` that plans one notification per pushed value.
+    fn notifying<S: EventStore<Stack> + 'static>(store: S, cap: usize) -> TestCommandExecutor<Stack, S> {
+        TestCommandExecutor::configured(store, cap, |executor| executor.with_task_planner(Notifier))
+    }
+
     #[test]
-    fn an_executor_prints_its_framework_and_settings_but_not_its_tasks() {
-        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1).with_task_planner(Notifier);
+    fn an_executor_prints_its_attempt_and_settings_but_not_its_tasks() {
+        let executor = notifying(MemStore::<Stack>::default(), 1);
         assert_eq!(
             format!("{executor:?}"),
             format!(
-                "TestCommandExecutor {{ executor: CommandExecutorCore {{ framework: CqrsFramework {{ aggregate_type: \"stack\", \
+                "TestCommandExecutor {{ executor: StoreCommandExecutor {{ attempt: CommandAttempt {{ aggregate_type: \"stack\", \
                  task_planner: true, .. }}, retry_policy: {:?}, commit_wakeup: false, observer: false, .. }}, .. }}",
                 AggregateConflictRetryPolicy::default()
             )
@@ -330,7 +293,7 @@ mod tests {
 
     #[tokio::test]
     async fn published_tasks_are_those_of_the_committed_calls() {
-        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1).with_task_planner(Notifier);
+        let executor = notifying(MemStore::<Stack>::default(), 1);
         let use_case = executor.clone();
         let metadata = Causation::root("test").event_metadata();
         let report = use_case.execute_with_metadata(&"s".into(), 1, metadata).await.unwrap();
@@ -345,7 +308,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unavailable_store_is_reported_as_unavailable_and_publishes_nothing() {
-        let executor = TestCommandExecutor::<Stack, _>::new(UnavailableStore, 1).with_task_planner(Notifier);
+        let executor = notifying(UnavailableStore, 1);
         assert_eq!(executor.execute(&"s".into(), 1).await, Err(CommandGatewayError::Unavailable));
         assert!(executor.take_published_tasks().is_empty());
         let _: &UnavailableStore = executor.store();
@@ -355,9 +318,9 @@ mod tests {
     async fn a_journal_executor_publishes_into_the_journal_outbox_and_wakes_its_processors() {
         use std::{future::Future, pin::pin, task::Context, task::Waker};
         let (journal, wakeup) = (MemEventRepository::default(), CommitWakeup::new());
-        let executor = TestCommandExecutor::<Stack, _>::over_journal(journal.clone(), 2)
-            .with_task_planner(Notifier)
-            .with_commit_wakeup(wakeup.clone());
+        let executor = TestCommandExecutor::<Stack, _>::configured(PersistedEventStore::new(journal.clone()), 2, |executor| {
+            executor.with_task_planner(Notifier).with_commit_wakeup(wakeup.clone())
+        });
         let mut woken = pin!(wakeup.wait());
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
         for value in 1..=2 {
@@ -387,10 +350,12 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_commit_wakes_the_registered_wakeup_and_a_late_registration_is_refused() {
+    async fn a_commit_wakes_the_registered_wakeup_of_every_clone() {
         use std::{future::Future, pin::pin, task::Context, task::Waker};
         let wakeup = CommitWakeup::new();
-        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 5).with_commit_wakeup(wakeup.clone());
+        let executor = TestCommandExecutor::configured(MemStore::<Stack>::default(), 5, |executor| {
+            executor.with_commit_wakeup(wakeup.clone())
+        });
         let use_case = executor.clone();
         let mut woken = pin!(wakeup.wait());
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
@@ -399,18 +364,6 @@ mod tests {
             "no planner, no tasks"
         );
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_ready());
-        let late_wakeup = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            TestCommandExecutor::<Stack>::new(MemStore::<Stack>::default(), 1)
-                .clone()
-                .with_commit_wakeup(CommitWakeup::new())
-        }));
-        assert!(late_wakeup.is_err(), "a wake-up registered after a clone is refused");
-        let late_planner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            TestCommandExecutor::<Stack>::new(MemStore::<Stack>::default(), 1)
-                .clone()
-                .with_task_planner(Notifier)
-        }));
-        assert!(late_planner.is_err(), "a planner registered after a clone is refused");
     }
 
     /// Notes `id value: outcome` for every command.
@@ -434,11 +387,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_observer_hears_the_commands_of_every_clone_and_a_late_registration_is_refused() {
+    async fn the_observer_hears_the_commands_of_every_clone() {
         let outcomes = Arc::new(Outcomes::default());
-        let executor = TestCommandExecutor::new(MemStore::<Stack>::default(), 1)
-            .with_task_planner(Notifier)
-            .with_observer(outcomes.clone());
+        let executor = TestCommandExecutor::configured(MemStore::<Stack>::default(), 1, |executor| {
+            executor.with_task_planner(Notifier).with_observer(outcomes.clone())
+        });
         let use_case = executor.clone();
         assert!(use_case.execute(&"s".into(), 1).await.is_ok());
         assert_eq!(executor.execute(&"s".into(), 2).await, Err(CommandGatewayError::Domain(Full)));
@@ -446,11 +399,5 @@ mod tests {
             *outcomes.0.lock().unwrap(),
             ["s 1: accepted with 1 tasks", "s 2: rejected: full"]
         );
-        let late = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            TestCommandExecutor::<Stack>::new(MemStore::<Stack>::default(), 1)
-                .clone()
-                .with_observer(outcomes.clone())
-        }));
-        assert!(late.is_err(), "an observer registered after a clone is refused");
     }
 }

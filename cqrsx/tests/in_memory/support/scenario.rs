@@ -112,20 +112,24 @@ impl Events for TestEvent {
     }
 }
 
+#[derive(Clone)]
 pub enum TestCommand {
     CreateTest(CreateTest),
     ConfirmTest(ConfirmTest),
     DoSomethingElse(DoSomethingElse),
 }
 
+#[derive(Clone)]
 pub struct CreateTest {
     pub id: String,
 }
 
+#[derive(Clone)]
 pub struct ConfirmTest {
     pub test_name: String,
 }
 
+#[derive(Clone)]
 pub struct DoSomethingElse {
     pub description: String,
 }

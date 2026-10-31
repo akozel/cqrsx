@@ -128,8 +128,9 @@ mod tests {
         #[tokio::test]
         async fn an_unreachable_ledger_is_unavailable_and_logged() {
             let activity = Arc::new(ActivityHub::new(8, 8));
-            let fans =
-                TestCommandExecutor::<Fan, _>::new(UnavailableStore, ()).with_observer(crate::testing::command_feed(&activity));
+            let fans = TestCommandExecutor::<Fan, _>::configured(UnavailableStore, (), |executor| {
+                executor.with_observer(crate::testing::command_feed(&activity))
+            });
             let command = FanCommand::RecordCancellation(RecordCancellation {
                 booking_id: Uuid::now_v7(),
                 cancellation_id: Uuid::now_v7(),
@@ -155,8 +156,9 @@ mod tests {
         #[tokio::test]
         async fn every_ledger_command_is_logged_with_its_type_and_the_ledgers_fan() {
             let activity = Arc::new(ActivityHub::new(8, 8));
-            let fans =
-                TestCommandExecutor::<Fan>::new(MemStore::default(), ()).with_observer(crate::testing::command_feed(&activity));
+            let fans = TestCommandExecutor::<Fan>::configured(MemStore::default(), (), |executor| {
+                executor.with_observer(crate::testing::command_feed(&activity))
+            });
             fans.execute_with_metadata(&ledger(), fan_command(), CommandMetadata::root("ui").to_map())
                 .await
                 .unwrap();

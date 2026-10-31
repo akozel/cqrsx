@@ -16,9 +16,9 @@ use crate::{
 };
 use chrono::NaiveDate;
 use cqrsx::{
-    command::{AggregateError, CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
+    command::{CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
     domain::event::EventEnvelope,
-    journal::EventStore,
+    journal::{EventStore, PersistenceError},
     reactions::ReactionsPlanner,
     task::NewTask,
     testing::{
@@ -54,9 +54,11 @@ where
     S::Context: Send,
 {
     let activity = Arc::new(ActivityHub::new(64, 64));
-    let executor = TestCommandExecutor::new(store, ConcertRules::default())
-        .with_task_planner(ReactionsPlanner::<Concert>::new(crate::testing::policies()))
-        .with_observer(crate::testing::command_feed(&activity));
+    let executor = TestCommandExecutor::configured(store, ConcertRules::default(), |executor| {
+        executor
+            .with_task_planner(ReactionsPlanner::<Concert>::new(crate::testing::policies()))
+            .with_observer(crate::testing::command_feed(&activity))
+    });
     Harness { executor, activity }
 }
 
@@ -101,11 +103,11 @@ impl ProbeStore {
 impl EventStore<Concert> for ProbeStore {
     type Context = MemStoreAggregateContext<Concert>;
 
-    async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {
+    async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await
     }
 
-    async fn load_aggregate(&self, id: &str) -> Result<Self::Context, AggregateError<ConcertError>> {
+    async fn load_aggregate(&self, id: &str) -> Result<Self::Context, PersistenceError> {
         self.loads.fetch_add(1, Ordering::SeqCst);
         self.inner.load_aggregate(id).await
     }
@@ -116,7 +118,7 @@ impl EventStore<Concert> for ProbeStore {
         context: Self::Context,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
-    ) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {
+    ) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.commit(events, context, metadata, tasks).await
     }
 }

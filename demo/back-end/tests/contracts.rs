@@ -21,12 +21,12 @@ use axum::{Json, Router, http::StatusCode, routing::post};
 use chrono::NaiveDate;
 use cqrsx::{
     command::{
-        AggregateError, CommandExecutor,
+        CommandExecutor,
         metadata::CommandMetadata,
         observer::{CommandObserver, CommandReport, Outcome},
     },
     domain::event::{EventEnvelope, Events},
-    journal::{EventStore, feed::Position},
+    journal::{EventStore, PersistenceError, feed::Position},
     memory::checkpoint_store::MemCheckpointStore,
     projection::{
         checkpoint::CheckpointStore,
@@ -599,13 +599,13 @@ impl Switched {
 impl EventStore<Concert> for Switched {
     type Context = MemStoreAggregateContext<Concert>;
 
-    async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {
+    async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await
     }
 
-    async fn load_aggregate(&self, id: &str) -> Result<Self::Context, AggregateError<ConcertError>> {
+    async fn load_aggregate(&self, id: &str) -> Result<Self::Context, PersistenceError> {
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(AggregateError::DatabaseConnectionError("unreachable".into()));
+            return Err(PersistenceError::ConnectionError("unreachable".into()));
         }
         let gate = self.gate.lock().unwrap().clone();
         if let Some(gate) = gate {
@@ -620,9 +620,9 @@ impl EventStore<Concert> for Switched {
         context: Self::Context,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
-    ) -> Result<Vec<EventEnvelope<Concert>>, AggregateError<ConcertError>> {
+    ) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         if self.conflict.load(Ordering::SeqCst) {
-            return Err(AggregateError::AggregateConflict);
+            return Err(PersistenceError::OptimisticLockError);
         }
         self.inner.commit(events, context, metadata, tasks).await
     }
@@ -640,17 +640,19 @@ impl Feed {
         let config = Config::from_lookup(|_| None).unwrap();
         let policies = policies(&config).unwrap();
         let observer = Arc::new(CommandActivityObserver::new(activity.clone()));
-        let concerts = TestCommandExecutor::new(
-            store,
-            ConcertRules {
-                ticket_limit: config.ticket_limit(),
-            },
-        )
-        .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
-        .with_observer(observer.clone());
-        let fans = TestCommandExecutor::new(MemStore::default(), ())
-            .with_task_planner(ReactionsPlanner::<Fan>::new(policies))
-            .with_observer(observer);
+        let rules = ConcertRules {
+            ticket_limit: config.ticket_limit(),
+        };
+        let concerts = TestCommandExecutor::configured(store, rules, |executor| {
+            executor
+                .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
+                .with_observer(observer.clone())
+        });
+        let fans = TestCommandExecutor::configured(MemStore::default(), (), |executor| {
+            executor
+                .with_task_planner(ReactionsPlanner::<Fan>::new(policies))
+                .with_observer(observer)
+        });
         Self { concerts, fans }
     }
 
@@ -1380,9 +1382,9 @@ async fn every_mail_attempt_is_logged_with_its_values_and_settled_with_the_pause
 async fn every_answer_of_the_ledger_settles_its_step_as_the_plan_table_says() {
     let config = Config::from_lookup(|_| None).unwrap();
     let store = MemStore::<Fan>::default();
-    let fans = Arc::new(
-        TestCommandExecutor::new(store.clone(), ()).with_task_planner(ReactionsPlanner::<Fan>::new(policies(&config).unwrap())),
-    );
+    let fans = Arc::new(TestCommandExecutor::configured(store.clone(), (), |executor| {
+        executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies(&config).unwrap()))
+    }));
     let steps = step_dispatcher(fans.clone());
     let unavailable = step_dispatcher(Arc::new(TestCommandExecutor::new(UnavailableStore, ())));
     let queue = Arc::new(MemQueue::default());

@@ -2,8 +2,10 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use std::collections::HashMap;
 
-use cqrsx::command::AggregateError;
-use cqrsx::command::framework::CqrsFramework;
+use cqrsx::command::CommandGatewayError;
+use cqrsx::command::executor::StoreCommandExecutor;
+use cqrsx::command::locks::LockLimits;
+use cqrsx::command::retry::AggregateConflictRetryPolicy;
 use cqrsx::journal::EventStore;
 use cqrsx::testing::mem_store::MemStore;
 
@@ -13,7 +15,12 @@ use crate::support::scenario::*;
 async fn framework_test() {
     let event_store = MemStore::<TestAggregate>::default();
 
-    let cqrs = CqrsFramework::new(event_store.clone(), TestService);
+    let cqrs = StoreCommandExecutor::new(
+        event_store.clone(),
+        TestService,
+        AggregateConflictRetryPolicy::default(),
+        LockLimits::default(),
+    );
     let uuid = uuid::Uuid::new_v4().to_string();
     let id = uuid.clone();
     let metadata = metadata();
@@ -56,7 +63,7 @@ async fn framework_test() {
         .await
         .unwrap_err();
     match err {
-        AggregateError::Domain(payload) => {
+        CommandGatewayError::Domain(payload) => {
             assert_eq!("test already performed", payload.0.as_str());
         }
         _ => panic!("not the expected error"),
@@ -69,7 +76,7 @@ async fn framework_test() {
 mod contracts {
     use super::*;
     use cqrsx::{
-        command::{CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits, retry::AggregateConflictRetryPolicy},
+        command::{CommandGatewayError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
         domain::event::EventEnvelope,
         journal::wakeup::CommitWakeup,
         task::NewTask,
@@ -96,13 +103,13 @@ mod contracts {
     }
     impl EventStore<Ledger> for Store {
         type Context = MemStoreAggregateContext<Ledger>;
-        async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
+        async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
             self.inner.load_events(id).await
         }
-        async fn load_aggregate(&self, id: &str) -> Result<Self::Context, AggregateError<Rejected>> {
+        async fn load_aggregate(&self, id: &str) -> Result<Self::Context, cqrsx::journal::PersistenceError> {
             self.calls.lock().unwrap().push("load");
             if self.failure == Some("load") {
-                return Err(AggregateError::DatabaseConnectionError("load failed".into()));
+                return Err(cqrsx::journal::PersistenceError::ConnectionError("load failed".into()));
             }
             self.inner.load_aggregate(id).await
         }
@@ -112,25 +119,24 @@ mod contracts {
             context: Self::Context,
             metadata: HashMap<String, String>,
             tasks: &[NewTask],
-        ) -> Result<Vec<EventEnvelope<Ledger>>, AggregateError<Rejected>> {
+        ) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
             self.calls.lock().unwrap().push("commit");
             // Commit receives the unchanged committed state.
             assert!(context.aggregate().history.is_empty());
             if self.failure == Some("commit") {
-                return Err(AggregateError::AggregateConflict);
+                return Err(cqrsx::journal::PersistenceError::OptimisticLockError);
             }
             self.inner.commit(events, context, metadata, tasks).await
         }
     }
     /// An executor over `store` with one attempt per command that wakes `wakeup` after a commit with an event.
-    fn executor<S>(store: S, calls: &Calls, wakeup: &CommitWakeup) -> CommandExecutorCore<Ledger, S>
+    fn executor<S>(store: S, calls: &Calls, wakeup: &CommitWakeup) -> StoreCommandExecutor<Ledger, S>
     where
         S: EventStore<Ledger> + Send + Sync,
     {
         let services = Services(calls.clone());
         let one_attempt = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
-        CommandExecutorCore::new(CqrsFramework::new(store, services), one_attempt, LockLimits::default())
-            .with_commit_wakeup(wakeup.clone())
+        StoreCommandExecutor::new(store, services, one_attempt, LockLimits::default()).with_commit_wakeup(wakeup.clone())
     }
 
     #[tokio::test]
@@ -141,7 +147,12 @@ mod contracts {
             calls: Arc::clone(&calls),
             failure: None,
         };
-        let framework = CqrsFramework::new(store, Services(Arc::clone(&calls)));
+        let framework = StoreCommandExecutor::new(
+            store,
+            Services(Arc::clone(&calls)),
+            AggregateConflictRetryPolicy::default(),
+            LockLimits::default(),
+        );
         let metadata = HashMap::from([("trace".into(), "данные 🦀".into())]);
         let events = framework
             .execute_with_metadata(&"account".into(), Command::Adjust(5), metadata.clone())

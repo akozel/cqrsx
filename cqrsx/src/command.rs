@@ -1,5 +1,5 @@
 //! Executing a command: the executor port and its outcomes ([`CommandExecutor`], [`CommandGatewayError`],
-//! [`CommitReport`], [`AggregateError`]), one attempt ([`framework`]), the executor ([`executor`]), the aggregate
+//! [`CommitReport`], [`AggregateError`]), the executor ([`executor`]) and its private attempt, the aggregate
 //! [`locks`] that order the commands of one aggregate, bounded optimistic-conflict [`retry`], the [`causation`]
 //! convention and a command's [`metadata`], the [`planner`] of a command's follow-up tasks from its decision and the
 //! [`observer`] an executor tells about every command. How a command decides and what is known of it live in
@@ -12,9 +12,9 @@ use crate::{
 };
 use std::{collections::HashMap, error, fmt, future::Future};
 use thiserror::Error;
+mod attempt;
 pub mod causation;
 pub mod executor;
-pub mod framework;
 pub mod locks;
 pub mod metadata;
 pub mod observer;
@@ -166,6 +166,78 @@ impl<T: error::Error> From<serde_json::error::Error> for AggregateError<T> {
         match err.classify() {
             serde_json::error::Category::Data | serde_json::error::Category::Syntax => Self::DeserializationError(Box::new(err)),
             serde_json::error::Category::Io | serde_json::error::Category::Eof => Self::UnexpectedError(Box::new(err)),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::{convert::Infallible, io};
+
+    #[test]
+    fn persistence_categories_preserve_boxed_cause() {
+        let cause = || Box::new(io::Error::other("original cause")) as Box<dyn std::error::Error + Send + Sync>;
+        assert!(matches!(
+            AggregateError::<Infallible>::from(PersistenceError::OptimisticLockError),
+            AggregateError::AggregateConflict
+        ));
+        let cases = [
+            PersistenceError::ConnectionError(cause()),
+            PersistenceError::DeserializationError(cause()),
+            PersistenceError::UnknownError(cause()),
+        ];
+        for (index, error) in cases.into_iter().enumerate() {
+            let error = AggregateError::<Infallible>::from(error);
+            let boxed = match (index, error) {
+                (0, AggregateError::DatabaseConnectionError(e))
+                | (1, AggregateError::DeserializationError(e))
+                | (2, AggregateError::UnexpectedError(e)) => e,
+                _ => panic!("technical categories must not become conflicts"),
+            };
+            assert_eq!(boxed.downcast_ref::<io::Error>().unwrap().to_string(), "original cause");
+        }
+        let AggregateError::UnexpectedError(boxed) =
+            AggregateError::<Infallible>::from(PersistenceError::SequenceGap { expected: 2, found: 5 })
+        else {
+            panic!("a sequence gap is a technical category")
+        };
+        assert_eq!(boxed.to_string(), "sequence gap: expected event 2, found 5");
+        assert!(matches!(
+            boxed.downcast_ref::<PersistenceError>(),
+            Some(PersistenceError::SequenceGap { expected: 2, found: 5 })
+        ));
+    }
+
+    fn serde_errors() -> Vec<serde_json::Error> {
+        struct BrokenReader;
+        impl io::Read for BrokenReader {
+            fn read(&mut self, _: &mut [u8]) -> io::Result<usize> {
+                Err(io::Error::other("reader failed"))
+            }
+        }
+        vec![
+            serde_json::from_str::<u32>("false").unwrap_err(),
+            serde_json::from_str::<u32>("?").unwrap_err(),
+            serde_json::from_str::<u32>("").unwrap_err(),
+            serde_json::from_reader::<_, u32>(BrokenReader).unwrap_err(),
+        ]
+    }
+
+    #[test]
+    fn serde_data_syntax_eof_and_io_map_to_distinct_aggregate_errors_with_their_causes() {
+        for error in serde_errors() {
+            let deserialization = matches!(
+                error.classify(),
+                serde_json::error::Category::Data | serde_json::error::Category::Syntax
+            );
+            let original = error.to_string();
+            let mapped = AggregateError::<Infallible>::from(error);
+            assert_eq!(mapped.to_string(), original);
+            assert!(
+                matches!(mapped, AggregateError::DeserializationError(_) if deserialization)
+                    || matches!(mapped, AggregateError::UnexpectedError(_) if !deserialization)
+            );
         }
     }
 }

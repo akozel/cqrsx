@@ -17,8 +17,6 @@ use std::{
     time::Duration,
 };
 
-use cqrsx::command::AggregateError;
-use cqrsx::command::framework::CqrsFramework;
 use cqrsx::domain::aggregate::Aggregate;
 use cqrsx::domain::command::Decide;
 use cqrsx::domain::event::EventEnvelope;
@@ -26,12 +24,10 @@ use cqrsx::domain::event::Events;
 use cqrsx::journal::AggregateContext;
 use cqrsx::journal::EventStore;
 use cqrsx::{
-    command::{
-        CommandExecutor, CommandGatewayError, executor::CommandExecutorCore, locks::LockLimits,
-        retry::AggregateConflictRetryPolicy,
-    },
+    command::{CommandGatewayError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
     host::error::HostError,
-    postgres::command::{PostgresCommandConfig, PostgresCommandExecutor},
+    journal::persisted::PersistedEventStore,
+    postgres::outbox::PostgresEventRepositoryWithOutbox,
     task::{attempt::TaskAttempt, format::TaskFormat},
     worker::{
         TaskResult,
@@ -100,11 +96,15 @@ impl AggregateContext<ProbeAggregate> for ProbeContext {
 struct UnavailableStore;
 impl EventStore<ProbeAggregate> for UnavailableStore {
     type Context = ProbeContext;
-    async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<ProbeAggregate>>, AggregateError<io::Error>> {
-        Err(AggregateError::UnexpectedError(Box::new(io::Error::other("private_source"))))
+    async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<ProbeAggregate>>, cqrsx::journal::PersistenceError> {
+        Err(cqrsx::journal::PersistenceError::UnknownError(Box::new(io::Error::other(
+            "private_source",
+        ))))
     }
-    async fn load_aggregate(&self, _: &str) -> Result<ProbeContext, AggregateError<io::Error>> {
-        Err(AggregateError::UnexpectedError(Box::new(io::Error::other("private_source"))))
+    async fn load_aggregate(&self, _: &str) -> Result<ProbeContext, cqrsx::journal::PersistenceError> {
+        Err(cqrsx::journal::PersistenceError::UnknownError(Box::new(io::Error::other(
+            "private_source",
+        ))))
     }
     async fn commit(
         &self,
@@ -112,8 +112,10 @@ impl EventStore<ProbeAggregate> for UnavailableStore {
         _: ProbeContext,
         _: HashMap<String, String>,
         _: &[cqrsx::task::NewTask],
-    ) -> Result<Vec<EventEnvelope<ProbeAggregate>>, AggregateError<io::Error>> {
-        Err(AggregateError::UnexpectedError(Box::new(io::Error::other("private_source"))))
+    ) -> Result<Vec<EventEnvelope<ProbeAggregate>>, cqrsx::journal::PersistenceError> {
+        Err(cqrsx::journal::PersistenceError::UnknownError(Box::new(io::Error::other(
+            "private_source",
+        ))))
     }
 }
 
@@ -167,18 +169,17 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         .connect_lazy("postgres://localhost/unused")
         .unwrap();
     pool.close().await;
-    let config = PostgresCommandConfig::new(
-        std::num::NonZeroUsize::new(25).unwrap(),
-        AggregateConflictRetryPolicy::default(),
-        LockLimits::default(),
-    );
-    let executor = PostgresCommandExecutor::<ProbeAggregate>::new(pool, config, ());
+    let store = PersistedEventStore::new(PostgresEventRepositoryWithOutbox::new(pool))
+        .with_snapshots(std::num::NonZeroUsize::new(25).unwrap());
+    let executor =
+        StoreCommandExecutor::<ProbeAggregate, _>::new(store, (), AggregateConflictRetryPolicy::default(), LockLimits::default());
     assert!(matches!(
         executor.execute(&"private_id".into(), ()).await,
         Err(CommandGatewayError::Unavailable)
     ));
-    let executor = CommandExecutorCore::new(
-        CqrsFramework::new(UnavailableStore, ()),
+    let executor = StoreCommandExecutor::new(
+        UnavailableStore,
+        (),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
     );
