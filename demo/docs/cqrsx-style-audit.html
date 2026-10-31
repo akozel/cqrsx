@@ -88,11 +88,37 @@ tr.group td { background: var(--frame); font-family: var(--font-display); font-w
   <p class="lede">Проверка <code>cqrsx</code> и <code>cqrsx-macros</code> по <code>.claude/rules/rust-style.md</code> — 34 правилам,
   принятым 2026-10-30 на основе Google Rust Style Guide. Demo не проверялся. Код не изменён. Номера в таблицах — номера правил.</p>
   <nav class="toc" aria-label="Разделы">
-    <a href="#risk">Риск</a><a href="#panic">Panic</a><a href="#locks">Mutex</a><a href="#copies">Копирования</a>
+    <a href="#done">Сделано</a><a href="#risk">Риск</a><a href="#panic">Panic</a><a href="#locks">Mutex</a><a href="#copies">Копирования</a>
     <a href="#api">API и типы</a><a href="#names">Имена</a><a href="#modules">Модули</a><a href="#style">Стиль</a>
     <a href="#docs">Документация</a><a href="#outside">Вне правил</a><a href="#rejected">Отклонено</a><a href="#plan">Порядок</a>
   </nav>
 </header>
+
+<section aria-labelledby="done">
+  <h2 id="done">Что сделано по аудиту (эпик 06, 2026-10-31)</h2>
+  <div class="prose">
+    <p>Находки отчёта разобраны в эпике <a href="backlog/06_code_guidelines/README.md">06_code_guidelines</a>. После
+    ретроспективы 2026-10-30 правила стиля применяются к новому и изменённому коду; старый код ради стиля не
+    переписывается, дефекты исправляются везде. Места ниже указаны по HEAD e995a53 и после эпика сместились.</p>
+    <ul>
+      <li><strong>Риск</strong> — исправлено все 11 (задача 02, <code>5715a12</code>).</li>
+      <li><strong>Panic и Mutex</strong> — исправлено: panic вне тестов нет, блокировки через один помощник, lints
+      запрещают panic в обоих crate (задача 03, <code>5eea784</code>).</li>
+      <li><strong>Копирования</strong> — по замеру (задача 04, <code>8f6defb</code>): оставлены F1, F2, F3, F5 (поиск
+      ключа), F7, Н2, Н6, Н7; откатаны без видимого выигрыша по CPU F4, F5 (id при ошибке), Н3, Н4 и F5 в
+      <code>OrderedDelivery::buffer</code>; не делались Н1 (путь не используется), Н5 (убрана задачей 03), F6, Н8–Н11
+      (разовая цена).</li>
+      <li><strong>API, типы и имена</strong> — исправлено задачами 05 и 06 (<code>6b2e865</code>, <code>8b0468d</code>,
+      <code>144e0b2</code>), кроме перечисленного в README эпика, раздел «Вне эпика».</li>
+      <li><strong>Модули и стиль кода</strong> — отменено ретроспективой: делается, когда файл меняется по другому
+      поводу.</li>
+      <li><strong>Документация</strong> — исправлены неверные комментарии и описаны точки расширения задач (задача 07);
+      остальное — при правке.</li>
+      <li><strong>Вне правил</strong> — открытые находки перечислены в README эпика, раздел «Вне эпика».</li>
+    </ul>
+    <p>Замер «до эпика → после» (задача 08): регрессии нет, наборы SQL и <code>GET /api/config</code> совпадают.</p>
+  </div>
+</section>
 
 <section aria-labelledby="sum">
   <h2 id="sum">Итог</h2>

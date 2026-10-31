@@ -825,3 +825,16 @@ volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈
   `shuf --random-source` with a repeated seed text gave every pass the same order; its −21 % MongoDB operations
   per command shrank to −8 %, within noise, in the properly shuffled second series. Coverage 97.67 % (workspace)
   and 97.65 % (`cqrsx`).
+- **2026-10-31, epic 06 (cqrsx code guidelines) done.** Rules `.claude/rules/rust-style.md` (the Google Rust Style
+  Guide adapted, 34 rules), audit `docs/cqrsx-style-audit.html`, epic `docs/backlog/06_code_guidelines/`. Committed:
+  01 measurement material (`43ef190`), 02 eleven risk fixes (`5715a12`), 03 no panics outside tests, one mutex helper,
+  panic lints (`5eea784`), 05 names and API types (`6b2e865`, `8b0468d`), 06 `Debug`/`#[must_use]`/borrowed
+  parameters (`144e0b2`), retrospective (`2cb6079`: style rules apply to new and changed code only), 04 copies kept
+  by measurement (`8f6defb`: per command 191.9 → 182.0 allocations, view cost per event 6.33 → 3.31; changes that
+  made code or API harder without a visible CPU gain reverted), 07 wrong comments and extension-point docs
+  (`06cd376`), 08 final measurement. Final series `e06-base` vs `e06` (36 runs) plus repeats of the four diverging
+  points on three images (36 runs): no regression, CPU per operation not worse anywhere, SQL statement sets and
+  `GET /api/config` unchanged; the first series' −18 % on the hot four-view key was host slowdowns hitting one image.
+  `demo/load/epic06/` (the epic's isolated measurement code) deleted. Final assessment in the epic README: the
+  lasting value is the risk fixes (02), the panic and borrowing lints (03, 06) and the task-queue contract docs (07);
+  renames (05), hand-written `Debug` (06) and the copies (04, no visible CPU gain) gave little for their cost.
