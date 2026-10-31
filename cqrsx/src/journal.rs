@@ -100,26 +100,6 @@ impl From<serde_json::Error> for PersistenceError {
     }
 }
 
-/// Observes persistence errors from projection reads and event handling.
-///
-/// Borrows the original error while preserving ownership and the result for its caller.
-///
-/// The observer does not recover, suppress or replace the failure.
-///
-/// ```rust
-/// use {cqrsx::journal::PersistenceError};
-/// use {cqrsx::journal::PersistenceErrorObserver};
-/// fn create_error_observer() {
-///     // An error handler that panics when any persistence error is encountered.
-///     let error_observer: Box<PersistenceErrorObserver> = Box::new(error_observer);
-/// }
-///
-/// fn error_observer(error: &PersistenceError) {
-///     panic!("{}",error);
-/// }
-/// ```
-pub type PersistenceErrorObserver = dyn Fn(&PersistenceError) + Send + Sync + 'static;
-
 #[cfg(test)]
 mod tests {
     use super::*;

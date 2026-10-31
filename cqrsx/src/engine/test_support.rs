@@ -2,7 +2,6 @@
 //! e-mail between them, a view of each.
 use crate::{
     command::CommandGatewayError,
-    cqrs::projection::View,
     domain::{
         aggregate::Aggregate,
         command::{CommandInfo, Decide, Label},
@@ -23,6 +22,7 @@ use crate::{
         policy::{PolicyName, Retry},
         result::TaskResult,
     },
+    view::View,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};

@@ -112,7 +112,7 @@ pub struct Label {
 /// ```
 /// use cqrsx::{
 ///     Command, Commands,
-///     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent}, cqrs::testing::TestFramework,
+///     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent}, testing::TestFramework,
 /// };
 /// use serde::{Deserialize, Serialize};
 ///

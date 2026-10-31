@@ -3,7 +3,6 @@
 use cqrsx::{
     Command, Event, Events, Rejection, Task,
     command::CommandGatewayError,
-    cqrs::projection::View,
     domain::{aggregate::Aggregate, command::Decide, event::EventEnvelope},
     engine::{
         module::Module,
@@ -16,6 +15,7 @@ use cqrsx::{
         result::TaskResult,
     },
     task_handler,
+    view::View,
 };
 use serde::{Deserialize, Serialize};
 use std::{

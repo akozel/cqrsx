@@ -13,7 +13,7 @@ use crate::{
     },
     shared::domain::venue::Zone,
 };
-use cqrsx::{cqrs::projection::View, domain::event::EventEnvelope};
+use cqrsx::{domain::event::EventEnvelope, view::View};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

@@ -1,6 +1,6 @@
 #[cfg(test)]
 use crate::task::runtime::worker_pool_config::TaskWorkerPoolConfigError;
-use crate::{cqrs::projection::runtime::ProjectionRuntime, host::error::HostError, task::runtime::TaskRuntimeError};
+use crate::{host::error::HostError, projection::runtime::ProjectionRuntime, task::runtime::TaskRuntimeError};
 use std::{future::Future, io};
 use thiserror::Error;
 use tokio::task::JoinError;
@@ -704,25 +704,20 @@ mod tests {
     mod processors {
         use super::*;
         use crate::{
-            cqrs::{
-                projection::{
-                    View, ViewProjection,
-                    processor::{
-                        ProjectionProcessor,
-                        config::ProcessorConfig,
-                        observer::{LeaseEvent, ProjectionObserver},
-                    },
-                },
-                testing::{
-                    mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
-                    mem_view_repository::MemViewRepository,
-                },
-            },
             domain::{
                 aggregate::Aggregate,
                 command::Decide,
                 event::{DomainEvent, EventEnvelope},
             },
+            memory::{
+                checkpoint_store::MemCheckpointStore, event_repository::MemEventRepository, view_repository::MemViewRepository,
+            },
+            projection::processor::{
+                ProjectionProcessor,
+                config::ProcessorConfig,
+                observer::{LeaseEvent, ProjectionObserver},
+            },
+            view::{View, projection::ViewProjection},
         };
         use serde::{Deserialize, Serialize};
         use std::time::Duration;

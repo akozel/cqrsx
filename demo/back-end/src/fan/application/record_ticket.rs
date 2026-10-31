@@ -71,7 +71,7 @@ mod tests {
         application::test_support::{attempt, fans, ledger, steps, ticket},
         domain::{FanEvent, events::TicketRecorded},
     };
-    use cqrsx::{cqrs::testing::mem_store::MemStore, journal::EventStore};
+    use cqrsx::{journal::EventStore, testing::mem_store::MemStore};
     use serde_json::json;
 
     #[tokio::test]

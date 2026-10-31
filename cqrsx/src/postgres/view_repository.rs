@@ -5,12 +5,12 @@ use super::{
     event_repository::{decode_usize, encode_bigint, row_decode_error},
 };
 use crate::{
-    cqrs::projection::{
+    domain::aggregate::Aggregate,
+    journal::PersistenceError,
+    view::{
         View,
         repository::{StoredView, ViewContext, ViewRepository},
     },
-    domain::aggregate::Aggregate,
-    journal::PersistenceError,
 };
 use serde_json::Value;
 use sqlx::{Pool, Postgres, Row, postgres::PgRow};
@@ -74,15 +74,15 @@ where
     /// # use cqrsx::domain::aggregate::Aggregate;
     /// # use cqrsx::domain::event::DomainEvent;
     /// # use cqrsx::domain::event::EventEnvelope;
-    /// # use cqrsx::cqrs::event_handler::EventHandler;
-    /// # use cqrsx::cqrs::projection::View;
+    /// # use cqrsx::projection::EventHandler;
+    /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
     /// # use cqrsx::journal::repository::PersistedEventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::cqrs::projection::repository::ViewContext;
-    /// # use cqrsx::cqrs::projection::repository::ViewRepository;
+    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
     /// # pub enum MyEvents {

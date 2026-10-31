@@ -32,13 +32,13 @@ use cqrsx::{
         locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits},
         retry::AggregateConflictRetryPolicy,
     },
-    cqrs::projection::processor::config::ProcessorConfig,
     engine::{
         Cqrs,
         build::BuildError,
         settings::{DEFAULT_SNAPSHOT_EVERY, Settings, SettingsError},
         setup::Setup,
     },
+    projection::processor::config::ProcessorConfig,
     task::{
         attempt::TaskAttempt,
         format::TaskFormat,

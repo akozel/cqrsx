@@ -1,9 +1,9 @@
 //! A module: what one part of an application plugs into the engine, registered in its root.
 use crate::{
     command::observer::AnyCommandObserver,
-    cqrs::projection::{View, processor::observer::ProjectionObserver},
     domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
     engine::{Cqrs, build::BuildError},
+    projection::processor::observer::ProjectionObserver,
     reactions::Reactions,
     task::{
         adapter::boxed::BoxedTaskAdapter,
@@ -12,6 +12,7 @@ use crate::{
         handler::TaskHandler,
         policy::{Policies, PolicyError, PolicyName, Retry},
     },
+    view::View,
 };
 use serde::de::DeserializeOwned;
 use std::{

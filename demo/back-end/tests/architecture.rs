@@ -177,7 +177,7 @@ fn externals(layer: Option<Layer>) -> Externals {
     match layer {
         Some(Layer::Domain) => Externals {
             forbidden: &["sqlx", "mongodb", "axum", "tokio"],
-            test_only: &["serde_json", "cqrsx::cqrs::testing"],
+            test_only: &["serde_json", "cqrsx::testing", "cqrsx::memory"],
             // The derive macros of the domain's contracts (what is known of a command, the enum of commands, an
             // event's name and version, the enum of events, the code and params of a rejection), the decision of a
             // command, and the traits of the commands and the rejections, which the domain's tests call.
@@ -192,7 +192,8 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::domain::command::Decide",
                 "cqrsx::domain::event",
                 "cqrsx::domain::rejection",
-                "cqrsx::cqrs::testing",
+                "cqrsx::testing",
+                "cqrsx::memory",
             ]),
         },
         Some(Layer::Application) => Externals {
@@ -208,7 +209,7 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "mongodb",
                 "axum",
             ],
-            test_only: &["cqrsx::cqrs::testing"],
+            test_only: &["cqrsx::testing", "cqrsx::memory"],
             cqrsx_allowed: None,
         },
         Some(Layer::Presentation) => Externals {
@@ -222,7 +223,7 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::engine::Cqrs",
                 "cqrsx::command::CommandGatewayError",
                 "cqrsx::domain::rejection",
-                "cqrsx::cqrs::projection::repository::StoredView",
+                "cqrsx::view::repository::StoredView",
             ]),
         },
         Some(Layer::Infrastructure) | None => Externals {
@@ -686,7 +687,11 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
         ("concert/domain/x.rs", "use cqrsx::postgres::pool::connect_pool;\n"),
         ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
-        ("fan/application/x.rs", "use cqrsx::cqrs::testing::mem_store::MemStore;\n"),
+        ("fan/application/x.rs", "use cqrsx::testing::mem_store::MemStore;\n"),
+        (
+            "fan/application/x.rs",
+            "use cqrsx::memory::view_repository::MemViewRepository;\n",
+        ),
         ("concert.rs", "use crate::fan::domain::Fan;\n"),
     ] {
         assert_eq!(check(file, code).len(), 1, "{file}: {code}");
@@ -694,7 +699,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     assert!(
         check(
             "fan/application/x.rs",
-            "#[cfg(test)]\nmod tests { use cqrsx::cqrs::testing::mem_store::MemStore; use crate::testing; }\n"
+            "#[cfg(test)]\nmod tests { use cqrsx::testing::mem_store::MemStore; use crate::testing; }\n"
         )
         .is_empty(),
         "test tooling in test code"
@@ -817,7 +822,7 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
         "use cqrsx::domain::command::CommandInfo;\n",
         "use cqrsx::command::observer::CommandObserver;\n",
         "use cqrsx::command::CommitReport;\n",
-        "use cqrsx::cqrs::testing::command_executor::TestCommandExecutor;\n",
+        "use cqrsx::testing::command_executor::TestCommandExecutor;\n",
         "use cqrsx::postgres::command::PostgresCommandExecutor;\n",
         "use cqrsx::engine::build::Builder;\n",
     ] {
@@ -833,19 +838,19 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
 fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_the_read_side() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::{cqrs::projection::repository::StoredView, engine::Cqrs};\n",
-        "fn f(d: cqrsx::cqrs::projection::repository::StoredView<()>) {}\n",
+        "use cqrsx::{view::repository::StoredView, engine::Cqrs};\n",
+        "fn f(d: cqrsx::view::repository::StoredView<()>) {}\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
     }
     for code in [
-        "use cqrsx::cqrs::projection::repository::ViewRepository;\n",
+        "use cqrsx::view::repository::ViewRepository;\n",
         "use cqrsx::engine::views::Views;\n",
-        "use cqrsx::cqrs::projection::ViewProjection;\n",
-        "use cqrsx::cqrs::projection::repository::ViewContext;\n",
-        "use cqrsx::cqrs::projection::verify::verify;\n",
+        "use cqrsx::view::projection::ViewProjection;\n",
+        "use cqrsx::view::repository::ViewContext;\n",
+        "use cqrsx::view::verify::verify;\n",
         "use cqrsx::mongodb::view_repository::MongoViewRepository;\n",
-        "use cqrsx::cqrs::testing::mem_view_repository::MemViewRepository;\n",
+        "use cqrsx::memory::view_repository::MemViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}");
@@ -865,7 +870,7 @@ fn the_command_derives_and_the_decide_contract_are_visible_in_the_domain() {
         assert!(check("concert/domain/x.rs", code).is_empty(), "{code}");
     }
     for code in [
-        "use cqrsx::cqrs::event_sink::EventSink;\n",
+        "use cqrsx::projection::EventHandler;\n",
         "use cqrsx::command::CommandExecutor;\n",
         "use cqrsx::command::planner::TaskPlanner;\n",
     ] {

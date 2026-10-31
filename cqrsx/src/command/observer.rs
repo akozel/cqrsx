@@ -26,7 +26,7 @@ use std::{any::Any, collections::HashMap, fmt};
 /// ```
 /// use cqrsx::{
 ///     command::{CommandExecutor, observer::{CommandObserver, CommandReport, Outcome}},
-///     cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+///     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
 ///     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
 /// };
 /// use serde::{Deserialize, Serialize};

@@ -15,10 +15,10 @@ use crate::{
 use cqrsx::{
     engine::Cqrs,
     journal::{EventStore, persisted::PersistedEventStore},
+    memory::task_queue::TaskStatus,
     task::{
         format::TaskFormat,
         queue::{TaskQueue, settlement::SettlementRequest},
-        testing::mem_task_queue::TaskStatus,
     },
 };
 use serde_json::json;

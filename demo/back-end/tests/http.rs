@@ -9,16 +9,14 @@ use axum::{
 };
 use chrono::NaiveDate;
 use cqrsx::{
-    cqrs::projection::{
-        checkpoint::{CheckpointKey, CheckpointStore},
-        repository::StoredView,
-    },
     engine::{
         Cqrs,
         build::Builder,
         mongodb::MongoDb,
         postgres::{Postgres, PostgresPools},
     },
+    projection::checkpoint::{CheckpointKey, CheckpointStore},
+    view::repository::StoredView,
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,

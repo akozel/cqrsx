@@ -1,5 +1,5 @@
 //! Fixed diagnostic context, independent of error Display/Debug and payloads.
-use crate::cqrs::projection::processor::{Operation, observer::FailureCategory};
+use crate::projection::processor::{Operation, observer::FailureCategory};
 
 pub(crate) fn safe_type(value: &str) -> &str {
     if !value.is_empty() && value.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {

@@ -2,12 +2,12 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
 use super::support::Database;
 use super::support::repository::*;
-use cqrsx::cqrs::projection::View;
-use cqrsx::cqrs::projection::repository::StoredView;
-use cqrsx::cqrs::projection::repository::ViewContext;
-use cqrsx::cqrs::projection::repository::ViewRepository;
 use cqrsx::domain::event::EventEnvelope;
 use cqrsx::postgres::view_repository::PostgresViewRepository;
+use cqrsx::view::View;
+use cqrsx::view::repository::StoredView;
+use cqrsx::view::repository::ViewContext;
+use cqrsx::view::repository::ViewRepository;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
@@ -174,9 +174,10 @@ async fn stress_two_writers_of_one_document_converge() {
     use super::support::repository::{finish_writers, wait_for_writers};
     use cqrsx::postgres::event_repository::PostgresEventRepository;
     use cqrsx::{
-        cqrs::{event_handler::EventHandler, projection::ViewProjection},
         domain::event::EventEnvelope,
         journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+        projection::EventHandler,
+        view::projection::ViewProjection,
     };
     let db = Database::new().await;
     create_view(&db.pool).await;

@@ -14,7 +14,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
-use cqrsx::cqrs::projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest};
+use cqrsx::projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -386,7 +386,7 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
 mod tests {
     use super::*;
     use crate::operations::application::ledger::LedgerTotals;
-    use cqrsx::{cqrs::testing::mem_checkpoint_store::MemCheckpointStore, journal::feed::Position};
+    use cqrsx::{journal::feed::Position, memory::checkpoint_store::MemCheckpointStore};
     use std::collections::HashMap;
 
     fn halls() -> CheckpointKey {

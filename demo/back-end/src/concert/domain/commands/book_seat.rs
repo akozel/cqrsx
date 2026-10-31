@@ -69,7 +69,7 @@ mod tests {
         },
         shared::domain::venue::{SeatId, Zone},
     };
-    use cqrsx::cqrs::testing::TestFramework;
+    use cqrsx::testing::TestFramework;
     use uuid::Uuid;
 
     #[test]

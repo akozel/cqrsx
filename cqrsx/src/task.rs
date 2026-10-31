@@ -17,7 +17,6 @@ pub mod result;
 pub mod runtime;
 #[cfg(test)]
 pub(crate) mod test_support;
-pub mod testing;
 
 use crate::{
     diagnostics,

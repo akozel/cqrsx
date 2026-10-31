@@ -65,7 +65,7 @@ where
     /// ([`Aggregate::Rules`]).
     ///
     /// For a simple in-memory `EventStore` suitable for experimentation or testing see
-    /// [MemStore](crate::cqrs::testing::mem_store::MemStore).
+    /// [MemStore](crate::testing::mem_store::MemStore).
     ///
     /// ```rust
     /// # mod example {
@@ -76,15 +76,15 @@ where
     /// # use cqrsx::domain::aggregate::Aggregate;
     /// # use cqrsx::domain::event::DomainEvent;
     /// # use cqrsx::domain::event::EventEnvelope;
-    /// # use cqrsx::cqrs::event_handler::EventHandler;
-    /// # use cqrsx::cqrs::projection::View;
+    /// # use cqrsx::projection::EventHandler;
+    /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
     /// # use cqrsx::journal::repository::PersistedEventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::cqrs::projection::repository::ViewContext;
-    /// # use cqrsx::cqrs::projection::repository::ViewRepository;
+    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
     /// # pub enum MyEvents {
@@ -149,7 +149,7 @@ where
     /// # use example::MyAggregate;
     /// # use example::MyService;
     /// use cqrsx::command::framework::CqrsFramework;
-    /// use cqrsx::cqrs::testing::mem_store::MemStore;
+    /// use cqrsx::testing::mem_store::MemStore;
     ///
     /// let store = MemStore::<MyAggregate>::default();
     /// let rules = MyService::default();
@@ -211,15 +211,15 @@ where
     /// # use cqrsx::domain::aggregate::Aggregate;
     /// # use cqrsx::domain::event::DomainEvent;
     /// # use cqrsx::domain::event::EventEnvelope;
-    /// # use cqrsx::cqrs::event_handler::EventHandler;
-    /// # use cqrsx::cqrs::projection::View;
+    /// # use cqrsx::projection::EventHandler;
+    /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
     /// # use cqrsx::journal::repository::PersistedEventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::cqrs::projection::repository::ViewContext;
-    /// # use cqrsx::cqrs::projection::repository::ViewRepository;
+    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
     /// # pub enum MyEvents {
@@ -286,7 +286,7 @@ where
     /// # use example::MyUserError;
     /// # use cqrsx::command::AggregateError;
     /// # use cqrsx::command::framework::CqrsFramework;
-    /// # use cqrsx::cqrs::testing::mem_store::MemStore;
+    /// # use cqrsx::testing::mem_store::MemStore;
     /// # use std::collections::HashMap;
     /// # use chrono;
     /// type MyFramework = CqrsFramework<MyAggregate,MemStore<MyAggregate>>;
@@ -335,15 +335,15 @@ where
     /// # use cqrsx::domain::aggregate::Aggregate;
     /// # use cqrsx::domain::event::DomainEvent;
     /// # use cqrsx::domain::event::EventEnvelope;
-    /// # use cqrsx::cqrs::event_handler::EventHandler;
-    /// # use cqrsx::cqrs::projection::View;
+    /// # use cqrsx::projection::EventHandler;
+    /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
     /// # use cqrsx::journal::repository::PersistedEventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::cqrs::projection::repository::ViewContext;
-    /// # use cqrsx::cqrs::projection::repository::ViewRepository;
+    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
     /// # pub enum MyEvents {
@@ -410,7 +410,7 @@ where
     /// # use example::MyUserError;
     /// # use cqrsx::command::AggregateError;
     /// # use cqrsx::command::framework::CqrsFramework;
-    /// # use cqrsx::cqrs::testing::mem_store::MemStore;
+    /// # use cqrsx::testing::mem_store::MemStore;
     /// # use std::collections::HashMap;
     /// # use chrono;
     /// type MyFramework = CqrsFramework<MyAggregate,MemStore<MyAggregate>>;
@@ -496,13 +496,13 @@ mod tests {
             causation::Causation,
             planner::{Decision, TaskPlanError},
         },
-        cqrs::testing::mem_store::MemStore,
         domain::event::DomainEvent,
         journal::persisted::tests::{TestAggregate, TestCommands, TestService},
         task::{
             NewTask,
             format::{TaskFormat, TaskPayload},
         },
+        testing::mem_store::MemStore,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::{

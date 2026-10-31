@@ -22,26 +22,23 @@ use cqrsx::{
         CommandExecutor, CommandGatewayError, CommitReport, locks::LockLimits, metadata::CommandMetadata,
         retry::AggregateConflictRetryPolicy,
     },
-    cqrs::{
-        projection::{
-            View, ViewProjection,
-            checkpoint::{CheckpointKey, CheckpointStore},
-            processor::{
-                ProjectionProcessor,
-                config::{DeliveryLimits, ProcessorConfig},
-            },
-            repository::ViewRepository,
-        },
-        testing::{mem_checkpoint_store::MemCheckpointStore, mem_view_repository::MemViewRepository},
-    },
     domain::aggregate::Aggregate,
     journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
+    memory::{checkpoint_store::MemCheckpointStore, view_repository::MemViewRepository},
     postgres::{
         EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA,
         command::{PostgresCommandConfig, PostgresCommandExecutor},
         event_repository::PostgresEventRepository,
     },
+    projection::{
+        checkpoint::{CheckpointKey, CheckpointStore},
+        processor::{
+            ProjectionProcessor,
+            config::{DeliveryLimits, ProcessorConfig},
+        },
+    },
     reactions::ReactionsPlanner,
+    view::{View, projection::ViewProjection, repository::ViewRepository},
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,
@@ -811,7 +808,7 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
             .request_rebuild(&ReadSide::key(), Duration::ZERO)
             .await
             .expect("request"),
-        cqrsx::cqrs::projection::checkpoint::RebuildRequest::Accepted
+        cqrsx::projection::checkpoint::RebuildRequest::Accepted
     );
     book_all("hot-2026", 20..25).await;
     tokio::time::timeout(Duration::from_secs(10), async {

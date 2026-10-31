@@ -152,13 +152,13 @@ impl Cqrs {
 mod tests {
     use super::*;
     use crate::{
-        cqrs::projection::checkpoint::CheckpointStore,
         engine::{
             module::Module,
             settings::SettingsError,
             setup::{Setup, SetupError},
             test_support::*,
         },
+        projection::checkpoint::CheckpointStore,
     };
     use axum::{
         Router,

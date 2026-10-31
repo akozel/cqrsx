@@ -5,8 +5,9 @@ use crate::{
     shared::{application::StorageError, domain::ConcertId},
 };
 use cqrsx::{
-    cqrs::projection::{View, checkpoint::CheckpointError},
     engine::{Cqrs, views::ViewsError},
+    projection::checkpoint::CheckpointError,
+    view::View,
 };
 
 /// Asks the owner of the halls to rebuild the hall of `concert_id`. A store that fails, or the halls' row not
@@ -25,7 +26,7 @@ pub async fn rebuild_hall(cqrs: &Cqrs, concert_id: &ConcertId) -> Result<(), Sto
 mod tests {
     use super::*;
     use crate::{concert::domain::Concert, testing::test_app};
-    use cqrsx::cqrs::projection::checkpoint::{CheckpointKey, CheckpointStore};
+    use cqrsx::projection::checkpoint::{CheckpointKey, CheckpointStore};
     use std::time::Duration;
 
     fn halls() -> CheckpointKey {

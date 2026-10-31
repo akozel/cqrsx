@@ -1,12 +1,12 @@
 //! Read-model documents in a MongoDB collection.
 use crate::{
-    cqrs::projection::{
-        View,
-        repository::{StoredView, ViewContext, ViewRepository},
-    },
     domain::aggregate::Aggregate,
     journal::PersistenceError,
     mongodb::{is_duplicate_key, persistence},
+    view::{
+        View,
+        repository::{StoredView, ViewContext, ViewRepository},
+    },
 };
 use ::mongodb::{
     Collection, Database,
@@ -30,7 +30,7 @@ use std::{fmt, marker::PhantomData};
 ///
 /// ```no_run
 /// # mod example {
-/// # use cqrsx::{domain::{aggregate::Aggregate, command::Decide, event::{DomainEvent, EventEnvelope}}, cqrs::projection::View};
+/// # use cqrsx::{domain::{aggregate::Aggregate, command::Decide, event::{DomainEvent, EventEnvelope}}, view::View};
 /// # use serde::{Deserialize, Serialize};
 /// # #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 /// # pub struct Counted;
@@ -63,7 +63,7 @@ use std::{fmt, marker::PhantomData};
 /// # }
 /// # }
 /// # use example::{Counter, Total};
-/// use cqrsx::{cqrs::projection::ViewProjection, mongodb::view_repository::MongoViewRepository};
+/// use cqrsx::{view::projection::ViewProjection, mongodb::view_repository::MongoViewRepository};
 /// use std::sync::Arc;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {

@@ -4,7 +4,10 @@
 //! - [`journal`]: the event store, its repositories, snapshots, upcasters, the feed and the commit wake-up.
 //! - [`command`]: executing a command: executors, aggregate locks, conflict retry, causation, observers and task planning.
 //! - [`reactions`]: the tasks that follow each event of an aggregate.
-//! - [`cqrs`]: event handlers, projections and testing tools.
+//! - [`projection`]: the event handler, the checkpoint of a projection and the processor that feeds handlers from the journal.
+//! - [`view`]: read models, their projection, repository and verification.
+//! - [`memory`]: the backend in memory: journal, checkpoints, views and a task queue.
+//! - [`testing`]: tools for testing aggregates and commands downstream.
 //! - [`task`]: durable work, handlers, adapters, queues and the optional worker runtime.
 //! - [`engine`]: an application of modules assembled from these components: commands, views and tasks; in memory or
 //!   over PostgreSQL and MongoDB, its settings read from the environment, served with its HTTP routes (`http`).
@@ -28,7 +31,6 @@
 #![doc = include_str!("../README.md")]
 
 pub mod command;
-pub mod cqrs;
 mod diagnostics;
 pub mod domain;
 pub mod engine;
@@ -39,13 +41,17 @@ pub mod journal;
 mod locking;
 #[cfg(feature = "logging")]
 pub mod logging;
+pub mod memory;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
 #[cfg(feature = "postgres")]
 pub mod postgres;
+pub mod projection;
 pub mod reactions;
 pub mod task;
+pub mod testing;
 mod unwinding;
+pub mod view;
 
 pub use cqrsx_macros::{Command, Commands, Event, Events, Rejection, Task, task_handler};
 

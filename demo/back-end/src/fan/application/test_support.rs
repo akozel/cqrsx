@@ -13,13 +13,13 @@ use crate::{
 };
 use cqrsx::{
     command::CommandExecutor,
-    cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
     reactions::ReactionsPlanner,
     task::{
         attempt::TaskAttempt,
         context::{Executors, TaskContext},
         format::TaskPayload,
     },
+    testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
 };
 use serde_json::json;
 use std::sync::Arc;

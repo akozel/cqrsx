@@ -25,7 +25,7 @@ use cqrsx::{
     engine::Cqrs,
     Command, Event, Events, Rejection, Task,
     command::CommandGatewayError,
-    cqrs::projection::View,
+    view::View,
     domain::{aggregate::Aggregate, command::Decide, event::EventEnvelope},
     reactions::{Decided, Reactions, Then},
     engine::{

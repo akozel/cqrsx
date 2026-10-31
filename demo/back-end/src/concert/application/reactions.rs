@@ -141,9 +141,9 @@ mod tests {
         };
         use cqrsx::{
             command::{CommandGatewayError, metadata::CommandMetadata},
-            cqrs::testing::{mem_store::MemStore, unavailable_store::UnavailableStore},
             journal::EventStore,
             task::format::TaskFormat,
+            testing::{mem_store::MemStore, unavailable_store::UnavailableStore},
         };
         use serde_json::{Value, json};
         use uuid::Uuid;

@@ -6,10 +6,10 @@ use crate::{
     shared::application::{activity::ActivityHub, mail::Mailer, test_support::RecordingMailer},
 };
 use cqrsx::{
-    cqrs::projection::{View, repository::StoredView},
     domain::aggregate::Aggregate,
     engine::{Cqrs, build::Builder, settings::Settings},
     task::policy::Policies,
+    view::{View, repository::StoredView},
 };
 use std::{collections::HashMap, future::Future, sync::Arc};
 

@@ -39,7 +39,7 @@ mod tests {
         Fan, FanError,
         test_support::{cancel, cancelled, recorded},
     };
-    use cqrsx::cqrs::testing::TestFramework;
+    use cqrsx::testing::TestFramework;
     use uuid::Uuid;
 
     #[test]

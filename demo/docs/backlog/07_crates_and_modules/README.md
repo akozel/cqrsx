@@ -94,7 +94,7 @@ cqrsx/src/
 Зависимости внутри ядра — строго сверху вниз, без циклов:
 `domain → task → journal → command → reactions → projection → view → worker → memory`
 (модуль зависит только от модулей левее). Три правки, без которых цикл остаётся: `CommitWakeup` переезжает в
-журнал, `CheckpointKey::of::<V, A>()` уступает `CheckpointKey::new(V::NAME, A::TYPE)` у вызывающего, порт журнала
+журнал, `impl CheckpointKey { fn of::<V, A>() }` — в `view.rs`, порт журнала
 перестаёт возвращать ошибки команды ([задача 06](06_command_execution.md)).
 
 ## Задачи
@@ -103,7 +103,7 @@ cqrsx/src/
 |---|---|---|---|---|---|
 | 01 | [Подготовка: покрытие ядра без PostgreSQL и движка, число тестов «до»](01_preparation.md) | высокая | низкая–средняя | — | сделано 2026-10-31: ядро 97,83 %, тестов 867 |
 | 02 | [Ядро I: `domain`, `journal`, `command`, `reactions` вместо `cqrs`](02_domain_journal_command.md) | высокая | средняя | 01 | сделано 2026-10-31 |
-| 03 | [Ядро II: `projection`, `view`, `memory`, `testing` наверх](03_projection_view_memory.md) | высокая | средняя | 02 | предложено |
+| 03 | [Ядро II: `projection`, `view`, `memory`, `testing` наверх](03_projection_view_memory.md) | высокая | средняя | 02 | сделано 2026-10-31 |
 | 04 | [Ядро III: `task` — данные, `worker` — исполнение; фичи `worker` больше нет](04_task_and_worker.md) | высокая | средняя | 03 | предложено |
 | 05 | [Имена derive и трейтов; derive рядом с трейтом](05_derive_and_trait_names.md) | средняя–высокая | средняя | 04 | предложено |
 | 06 | [Исполнение команд: одна ступень, журнал без ошибок команды, без пресетов PostgreSQL](06_command_execution.md) | высокая | средняя–высокая | 05 | предложено |

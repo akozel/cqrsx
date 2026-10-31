@@ -1,4 +1,4 @@
-//! The path of `tests/cqrs/planning.rs` through modules on the engine in memory: a box office whose bookings go into
+//! The path of `tests/in_memory/planning.rs` through modules on the engine in memory: a box office whose bookings go into
 //! the fans' wallets by a step of a chain, whose recorded tickets are mailed through a dependency, with a view of the
 //! halls; the commands, the tasks, the view and the chain's causation, written with the derive macros.
 use crate::modules::*;
@@ -6,7 +6,7 @@ use cqrsx::{
     command::{CommandGatewayError, causation::CORRELATION_ID},
     engine::Cqrs,
     journal::repository::PersistedEventRepository,
-    task::testing::mem_task_queue::TaskStatus,
+    memory::task_queue::TaskStatus,
 };
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;

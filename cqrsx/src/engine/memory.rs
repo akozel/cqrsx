@@ -2,23 +2,20 @@
 #[cfg(feature = "postgres")]
 use crate::postgres::task_queue::PostgresTaskQueue;
 use crate::{
-    cqrs::{
-        projection::View,
-        testing::{
-            mem_checkpoint_store::MemCheckpointStore, mem_event_repository::MemEventRepository,
-            mem_view_repository::MemViewRepository,
-        },
-    },
     domain::aggregate::Aggregate,
     engine::{Cqrs, Journal},
     locking::lock,
+    memory::{
+        checkpoint_store::MemCheckpointStore, event_repository::MemEventRepository, task_queue::MemTaskQueue,
+        view_repository::MemViewRepository,
+    },
     task::{
         adapter::boxed::BoxedTaskAdapter,
         dispatcher::TaskDispatcher,
         executor::{TaskExecutor, default_executor::DefaultTaskExecutor},
         queue::TaskQueue,
-        testing::mem_task_queue::MemTaskQueue,
     },
+    view::View,
 };
 use std::{
     any::{Any, TypeId},
@@ -142,10 +139,11 @@ impl Cqrs {
 mod tests {
     use crate::{
         command::causation::{CAUSATION_ID, CORRELATION_ID, SOURCE},
-        cqrs::projection::{checkpoint::CheckpointStore, repository::ViewRepository},
         engine::{Cqrs, test_support::*},
         journal::repository::PersistedEventRepository,
-        task::testing::mem_task_queue::TaskStatus,
+        memory::task_queue::TaskStatus,
+        projection::checkpoint::CheckpointStore,
+        view::repository::ViewRepository,
     };
     use std::{sync::atomic::Ordering, time::Duration};
 

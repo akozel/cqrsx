@@ -12,12 +12,12 @@ use crate::{
 };
 use chrono::NaiveDate;
 use cqrsx::{
-    cqrs::projection::{
+    domain::{aggregate::Aggregate, event::EventEnvelope},
+    journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+    view::{
         View,
         verify::{Difference, DifferenceKind, Verification, verify},
     },
-    domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
 };
 use mongodb::bson::{from_bson, to_bson};
 use std::{

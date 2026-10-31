@@ -21,7 +21,7 @@ cargo clippy --locked -p cqrsx --lib --all-features --message-format=short -- -W
 Already in `[lints]` of `cqrsx` and `cqrsx-macros`, so plain `cargo clippy` reports them:
 - `deny` since epic 06, ticket 03: `unwrap_used`, `expect_used`, `panic`, `unreachable`, `todo`, `unimplemented`,
   `indexing_slicing` (rules 6–8). Tests are allowed by `clippy.toml` at the workspace root; the assertion helpers
-  (`cqrs::testing::validator`, `MemStore`) and the integration-test crates allow them with `#![allow(..)]`.
+  (`testing::validator`, `MemStore`) and the integration-test crates allow them with `#![allow(..)]`.
 - since epic 06, ticket 06: `needless_pass_by_value` (rule 3), `missing_debug_implementations` (16) and
   `return_self_not_must_use` (20) as `deny`, `unsafe_code` (32) as `forbid`. They cover test code too.
 

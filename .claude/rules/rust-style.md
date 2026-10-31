@@ -42,7 +42,7 @@ a wrong result, a wrong doc) is fixed wherever it is found. Lints in `[lints]` k
 7. Hence no `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!`, `unimplemented!` or `assert!` outside tests,
    and no indexing or slicing that can go out of range: use `get()`, iterators and patterns. Values given by the
    caller (version strings, names) are checked by a `try_new` that returns `Result`.
-8. Exceptions: tests and the test helpers (`cqrs::testing`), where a panic is the failed check; such a public
+8. Exceptions: tests and the test helpers (`testing`), where a panic is the failed check; such a public
    helper documents it in `# Panics` and its assertion message explains the violation instead of repeating the
    condition. A panic in user code (a handler) is caught at the boundary and becomes an error (rule 11).
 9. Pattern matching instead of check-then-unwrap: `if let`, `let … else`, `match`.

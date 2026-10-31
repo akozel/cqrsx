@@ -5,15 +5,11 @@ use crate::{
     support::{Balance, NAME, Node, Recording, caught_up, commit_all, key, mem_ledgers, until, views},
 };
 use cqrsx::{
-    cqrs::{
-        projection::{
-            checkpoint::{CheckpointStore, RebuildRequest},
-            repository::ViewRepository,
-        },
-        testing::mem_event_repository::MemEventRepository,
-    },
     journal::wakeup::CommitWakeup,
+    memory::event_repository::MemEventRepository,
     mongodb::checkpoint_store::{MongoCheckpointStore, PROJECTION_CHECKPOINTS_COLLECTION},
+    projection::checkpoint::{CheckpointStore, RebuildRequest},
+    view::repository::ViewRepository,
 };
 use mongodb::bson::Document;
 use std::{sync::Arc, time::Duration};

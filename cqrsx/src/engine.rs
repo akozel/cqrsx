@@ -42,13 +42,6 @@ use crate::{
         framework::CqrsFramework,
         observer::{AnyCommandObserver, AnyCommandReport, CommandObserver, CommandReport},
     },
-    cqrs::{
-        projection::{
-            RebuildableProjection, View, ViewProjection, checkpoint::CheckpointStore, processor::ProjectionProcessor,
-            repository::ViewRepository, runtime::ProjectionRuntime,
-        },
-        testing::mem_event_repository::MemEventRepository,
-    },
     domain::{aggregate::Aggregate, command::CommandInfo, event::EventEnvelope, rejection::Rejection},
     engine::{
         build::BuildError,
@@ -58,6 +51,10 @@ use crate::{
     },
     journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     locking::get_mut,
+    memory::event_repository::MemEventRepository,
+    projection::{
+        RebuildableProjection, checkpoint::CheckpointStore, processor::ProjectionProcessor, runtime::ProjectionRuntime,
+    },
     reactions::{Reactions, ReactionsPlanner},
     task::{
         adapter::boxed::BoxedTaskAdapter,
@@ -66,6 +63,7 @@ use crate::{
         dispatcher::TaskDispatcher,
         policy::Policies,
     },
+    view::{View, projection::ViewProjection, repository::ViewRepository},
 };
 use std::{
     any::{Any, TypeId, type_name},

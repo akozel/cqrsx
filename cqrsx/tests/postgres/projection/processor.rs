@@ -8,16 +8,6 @@ use cqrsx::{
         CommandExecutor, executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits,
         retry::AggregateConflictRetryPolicy,
     },
-    cqrs::projection::{
-        View, ViewProjection,
-        checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
-        processor::{
-            ProjectionProcessor,
-            config::{DeliveryLimits, ProcessorConfig},
-            observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
-        },
-        repository::ViewRepository,
-    },
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
     postgres::{
@@ -27,6 +17,15 @@ use cqrsx::{
         outbox::PostgresEventRepositoryWithOutbox,
         view_repository::PostgresViewRepository,
     },
+    projection::{
+        checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
+        processor::{
+            ProjectionProcessor,
+            config::{DeliveryLimits, ProcessorConfig},
+            observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
+        },
+    },
+    view::{View, projection::ViewProjection, repository::ViewRepository},
 };
 use serde::{Deserialize, Serialize};
 use sqlx::{PgPool, postgres::PgPoolOptions};

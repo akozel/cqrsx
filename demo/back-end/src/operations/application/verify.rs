@@ -3,7 +3,7 @@
 //! document is a difference.
 use crate::shared::application::StorageError;
 use async_trait::async_trait;
-use cqrsx::cqrs::projection::verify::Verification;
+use cqrsx::view::verify::Verification;
 use serde_json::{Map, Value, json};
 use std::sync::Arc;
 
@@ -49,7 +49,7 @@ impl VerifyService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::cqrs::projection::verify::{Difference, DifferenceKind, Verification};
+    use cqrsx::view::verify::{Difference, DifferenceKind, Verification};
 
     struct Fixed(&'static str, Result<Verification, StorageError>);
 

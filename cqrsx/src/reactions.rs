@@ -15,7 +15,7 @@
 //! use cqrsx::{
 //!     Task,
 //!     command::CommandExecutor,
-//!     cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+//!     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
 //!     domain::{aggregate::Aggregate, command::Decide, event::DomainEvent},
 //!     reactions::{Decided, Reactions, ReactionsPlanner, Then},
 //!     task::policy::Policies,
@@ -300,14 +300,15 @@ mod tests {
     use super::*;
     use crate::{
         command::{CommandExecutor, CommandGatewayError, causation::Causation, planner::Planning},
-        cqrs::testing::{command_executor::TestCommandExecutor, mem_event_repository::MemEventRepository},
         domain::{command::Decide, event::DomainEvent},
         journal::repository::PersistedEventRepository,
+        memory::event_repository::MemEventRepository,
         task::{
             DEFAULT_MAX_ATTEMPTS,
             format::TaskFormat,
             policy::{PolicyName, Retry, TaskPolicy},
         },
+        testing::command_executor::TestCommandExecutor,
     };
     use serde::{Deserialize, Serialize, Serializer};
     use serde_json::json;

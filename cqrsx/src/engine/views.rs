@@ -1,17 +1,15 @@
 //! The views of an engine: the queries of one view ([`ViewQuery`]) and the operations over all of them ([`Views`]).
 use crate::{
-    cqrs::{
-        projection::{
-            View,
-            checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
-            repository::{StoredView, ViewRepository},
-            verify::{Verification, verify},
-        },
-        testing::mem_event_repository::MemEventRepository,
-    },
     domain::aggregate::Aggregate,
     engine::Cqrs,
     journal::{PersistenceError, feed::Position, repository::PersistedEventRepository},
+    memory::event_repository::MemEventRepository,
+    projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
+    view::{
+        View,
+        repository::{StoredView, ViewRepository},
+        verify::{Verification, verify},
+    },
 };
 use std::{
     any::{Any, TypeId, type_name},
@@ -471,7 +469,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_commit_wakes_the_processors_of_its_type_before_their_poll() {
         let config = Settings::default().processor();
-        let hour = crate::cqrs::projection::processor::config::ProcessorConfig::try_new(
+        let hour = crate::projection::processor::config::ProcessorConfig::try_new(
             Duration::from_secs(3600),
             config.page_size(),
             config.lease(),

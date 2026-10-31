@@ -11,7 +11,10 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
 - `cqrsx/src/journal` — event store, repositories, snapshots, feed, commit wake-up.
 - `cqrsx/src/command` — command execution: framework, executors, locks, retry, causation, task planning.
 - `cqrsx/src/reactions.rs` — the tasks that follow each event of an aggregate.
-- `cqrsx/src/cqrs` — event handlers, projections, test helpers.
+- `cqrsx/src/projection` — event handlers, projection checkpoints, the processor that feeds them from the journal.
+- `cqrsx/src/view` — read models: `View`, their projection, repository and verification.
+- `cqrsx/src/memory` — the backend in memory: journal, checkpoints, views, task queue.
+- `cqrsx/src/testing` — downstream test tools: aggregate given/when/then, test executor, in-memory store.
 - `cqrsx/src/postgres` — event repository, outbox, task queue (feature `postgres`).
 - `cqrsx/src/mongodb` — read models and projection checkpoints in MongoDB (feature `mongodb`).
 - `cqrsx/src/task` — task runtime, workers, executors, adapters (feature `worker`).

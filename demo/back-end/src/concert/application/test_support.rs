@@ -17,14 +17,14 @@ use crate::{
 use chrono::NaiveDate;
 use cqrsx::{
     command::{AggregateError, CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
-    cqrs::testing::{
-        command_executor::TestCommandExecutor,
-        mem_store::{MemStore, MemStoreAggregateContext},
-    },
     domain::event::EventEnvelope,
     journal::EventStore,
     reactions::ReactionsPlanner,
     task::NewTask,
+    testing::{
+        command_executor::TestCommandExecutor,
+        mem_store::{MemStore, MemStoreAggregateContext},
+    },
 };
 use std::{
     collections::HashMap,

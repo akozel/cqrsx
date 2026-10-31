@@ -457,7 +457,7 @@ mod tests {
     #[tokio::test]
     async fn executor_accepts_send_commands_without_requiring_sync() {
         let executor = Arc::new(CommandExecutorCore::new(
-            CqrsFramework::new(crate::cqrs::testing::mem_store::MemStore::<SendOnlyAggregate>::default(), ()),
+            CqrsFramework::new(crate::testing::mem_store::MemStore::<SendOnlyAggregate>::default(), ()),
             no_delay_policy(1),
             LockLimits::default(),
         ));
@@ -475,7 +475,7 @@ mod tests {
     async fn a_planner_reads_a_send_only_command_and_the_future_stays_send() {
         let executor = Arc::new(
             CommandExecutorCore::new(
-                CqrsFramework::new(crate::cqrs::testing::mem_store::MemStore::<SendOnlyAggregate>::default(), ()),
+                CqrsFramework::new(crate::testing::mem_store::MemStore::<SendOnlyAggregate>::default(), ()),
                 no_delay_policy(1),
                 LockLimits::default(),
             )

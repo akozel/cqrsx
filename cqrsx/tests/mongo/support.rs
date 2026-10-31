@@ -2,26 +2,23 @@
 //! live in MongoDB, commands over any journal, and the waits for the read side to catch up.
 use cqrsx::{
     command::{executor::CommandExecutorCore, framework::CqrsFramework, locks::LockLimits},
-    cqrs::{
-        projection::{
-            View, ViewProjection,
-            checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore},
-            processor::{
-                ProjectionProcessor,
-                config::{DeliveryLimits, ProcessorConfig},
-                observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt},
-            },
-            repository::ViewRepository,
-        },
-        testing::mem_event_repository::MemEventRepository,
-    },
     domain::{
         aggregate::Aggregate,
         command::Decide,
         event::{DomainEvent, EventEnvelope},
     },
     journal::{persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
+    memory::event_repository::MemEventRepository,
     mongodb::{checkpoint_store::MongoCheckpointStore, view_repository::MongoViewRepository},
+    projection::{
+        checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore},
+        processor::{
+            ProjectionProcessor,
+            config::{DeliveryLimits, ProcessorConfig},
+            observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt},
+        },
+    },
+    view::{View, projection::ViewProjection, repository::ViewRepository},
 };
 use mongodb::Database;
 use serde::{Deserialize, Serialize};

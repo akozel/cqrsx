@@ -11,7 +11,6 @@
 )]
 use cqrsx::{
     Command, Commands, Event, Events, Rejection, Task,
-    cqrs::testing::TestFramework,
     domain::{
         aggregate::Aggregate,
         command::{CommandInfo, Decide, Label},
@@ -31,6 +30,7 @@ use cqrsx::{
         result::TaskResult,
     },
     task_handler,
+    testing::TestFramework,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use serde_json::json;

@@ -4,14 +4,12 @@ use crate::{
     support::{Balance, NAME, history, views},
 };
 use cqrsx::{
-    cqrs::{
-        event_handler::EventHandler,
-        projection::{
-            ViewProjection,
-            repository::{StoredView, ViewContext, ViewRepository},
-        },
-    },
     journal::PersistenceError,
+    projection::EventHandler,
+    view::{
+        projection::ViewProjection,
+        repository::{StoredView, ViewContext, ViewRepository},
+    },
 };
 use mongodb::bson::{Bson, Document, doc};
 use std::sync::Arc;

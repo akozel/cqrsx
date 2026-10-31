@@ -9,8 +9,8 @@ use cqrsx::{
         causation::{COMMAND_ID, CORRELATION_ID, SOURCE},
         observer::{self, AnyCommandReport, AnyOutcome, CommandObserver, CommandReport},
     },
-    cqrs::projection::processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
     domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
+    projection::processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -179,9 +179,9 @@ mod tests {
     use crate::shared::domain::ConcertId;
     use cqrsx::command::observer::Outcome;
     use cqrsx::{
-        cqrs::projection::processor::observer::FailureCategory,
         domain::{command::Decide, event::DomainEvent},
         journal::feed::Position,
+        projection::processor::observer::FailureCategory,
         task::{NewTask, format::TaskFormat},
     };
     use serde::{Deserialize, Serialize};

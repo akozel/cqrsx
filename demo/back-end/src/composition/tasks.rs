@@ -40,7 +40,6 @@ use crate::{
 use chrono::NaiveDate;
 use cqrsx::{
     command::{CommandExecutor, causation::Causation},
-    cqrs::testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
     engine::{
         Cqrs,
         build::BuildError,
@@ -56,6 +55,7 @@ use cqrsx::{
         handlers::TaskHandlers,
         policy::{Policies, Retry, TaskPolicy},
     },
+    testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
 };
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;

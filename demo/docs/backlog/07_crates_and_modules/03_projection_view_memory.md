@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | предложено |
+| Статус | сделано 2026-10-31 ([результаты](#результаты)) |
 | Ценность | высокая: машина проекций (≈ 3 000 строк) выходит из-под модели витрин; бэкенд в памяти перестаёт быть «тестовым»; модуль `cqrs` исчезает |
 | Цена | средняя |
 | Зависимости | 02 |
@@ -20,7 +20,7 @@
 |---|---|---|
 | `cqrs/event_handler.rs`, `cqrs/projection.rs` (`RebuildableProjection`) | `projection.rs` | контракты, которые ведёт процессор |
 | `cqrs/projection/processor.rs`, `processor/*` | `projection/processor.rs`, `processor/*` | без изменений |
-| `cqrs/projection/checkpoint.rs` | `projection/checkpoint.rs` | `CheckpointKey::of::<V, A>()` удаляется: вызывающий пишет `CheckpointKey::new(V::NAME, A::TYPE)` — так процессор не зависит от витрин |
+| `cqrs/projection/checkpoint.rs` | `projection/checkpoint.rs` | `CheckpointKey::of::<V, A>()` остаётся, но его `impl` переезжает в `view.rs` (inherent `impl` можно писать в любом модуле крейта): `checkpoint.rs` больше не называет `View`, процессор не зависит от витрин, вызовы в демо не меняются (решение оркестратора 2026-10-31 вместо удаления метода) |
 | `cqrs/projection/runtime.rs` | `projection/runtime.rs` | |
 | `cqrs/projection.rs` (`View`) | `view.rs` | контракт витрины |
 | `cqrs/projection.rs` (`ViewProjection`, `apply_contiguous`, их тесты) | `view/projection.rs` | |
@@ -40,11 +40,32 @@
 
 ## Поведение не меняется: чем доказано
 
-Только пути и одна замена `CheckpointKey::of` на `CheckpointKey::new` с теми же аргументами (тест ключа витрины в
-`checkpoint.rs` остаётся и проверяет то же: имя витрины и тип агрегата). Число тестов прежнее, эталоны демо байт в байт.
+Только пути и перенос `impl CheckpointKey { fn of }` в `view.rs` (тест ключа витрины переезжает вместе с ним и проверяет
+то же: имя витрины и тип агрегата). Число тестов прежнее, эталоны демо байт в байт.
 
 ## Демо и документы
 
 Импорты демо (`StoredView`, `Verification`, `RebuildRequest`, тестовые инструменты); `tests/architecture.rs`:
 презентации — `cqrsx::view::repository::StoredView`, тестовые пути — `cqrsx::testing`. `components.md`, README,
 `typical_scenario.md`.
+
+## Результаты
+
+2026-10-31, на HEAD `688e46d` плюс правки задачи. Поведение не менялось: переезды файлов и правка путей.
+
+- **Дерево:** `cqrs/event_handler` и `RebuildableProjection` → `projection.rs` (центральный контракт процессора);
+  `cqrs/projection/{checkpoint,runtime,processor}` → `projection/`; `View` и `PersistenceErrorObserver` → `view.rs`;
+  `ViewProjection` → `view/projection.rs`; `repository`, `verify` → `view/`; `Mem*` →
+  `memory/{event_repository,checkpoint_store,view_repository,task_queue}`; `testing` — на верхний уровень ядра.
+  `impl CheckpointKey { fn of }` переехал в `view.rs`, поэтому `projection/checkpoint.rs` не называет `View`. Модуля
+  `cqrs` нет; тесты `tests/cqrs/` → `tests/in_memory/`.
+- **Доказательство:** 867 тестов рабочей области и 174 демо, ignored 0; списки имён `--list` совпадают по бинарникам (в
+  doctest'ах отличаются только пути 19 имён); fmt, clippy, `cargo doc -Dwarnings`, матрица фич зелёные; рабочий код
+  `projection/**` не называет `view`, `memory`, `testing`, рабочий код `memory/**` не называет `testing`; старых путей
+  нет; `components.md` и остальные живые документы сверены с HEAD по строкам и заголовкам.
+- **Правило архитектуры демо:** `cqrsx::memory` — только для тестов слоёв domain и application, как раньше `Mem*` под
+  `cqrs::testing`; нарушение для рабочего кода application закреплено тестом. Синтетическая строка с несуществующим
+  `cqrsx::cqrs::event_sink::EventSink` заменена на `cqrsx::projection::EventHandler`.
+- **Приёмка, круг 1:** восстановлен `components.md`, обрезанный при правке на 175 строк; возвращено ограничение
+  `cqrsx::memory` в правиле архитектуры.
+- **Остаётся:** тестовые модули и doctest'ы под `projection/**` называют витрины и память (только тесты).

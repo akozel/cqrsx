@@ -9,13 +9,12 @@ use crate::engine::postgres::{Postgres, PostgresPools};
 #[cfg(test)]
 use crate::{
     command::observer::CommandObserver,
-    cqrs::projection::processor::observer::ProjectionObserver,
     domain::{aggregate::Aggregate, command::CommandInfo, rejection::Rejection},
     engine::Commands,
+    projection::processor::observer::ProjectionObserver,
     task::dependencies::MissingDependency,
 };
 use crate::{
-    cqrs::projection::runtime::ProjectionRuntime,
     engine::{
         Cqrs, Journal,
         memory::MemoryBackend,
@@ -24,6 +23,7 @@ use crate::{
         setup::{Lookup, Setup, SetupError},
         views::CheckpointOps,
     },
+    projection::runtime::ProjectionRuntime,
     task::{
         adapter::boxed::BoxedTaskAdapter,
         context::Executors,
@@ -524,16 +524,14 @@ mod tests {
             observer::{AnyCommandReport, AnyOutcome},
             retry::AggregateConflictRetryPolicy,
         },
-        cqrs::projection::{
-            View,
-            processor::config::{DeliveryLimits, ProcessorConfig},
-        },
-        cqrs::testing::mem_view_repository::MemViewRepository,
         engine::test_support::*,
+        memory::view_repository::MemViewRepository,
+        projection::processor::config::{DeliveryLimits, ProcessorConfig},
         task::{
             dependencies::DependencyId, dispatcher::TaskDispatcherError, format::TaskFormat, policy::Retry, result::TaskResult,
             runtime::config::TaskRuntimeConfig,
         },
+        view::View,
     };
     use serde_json::json;
     use std::{
@@ -775,7 +773,7 @@ mod tests {
     #[tokio::test]
     async fn a_processor_and_the_read_side_print_their_names() {
         let mut cqrs = Cqrs::in_memory().module(shows).registrations().unwrap().cqrs;
-        let checkpoints = Arc::new(crate::cqrs::testing::mem_checkpoint_store::MemCheckpointStore::default());
+        let checkpoints = Arc::new(crate::memory::checkpoint_store::MemCheckpointStore::default());
         let documents = Arc::new(MemViewRepository::<Hall, Show>::default());
         let journal = Arc::new(cqrs.memory.journal.clone());
         let processor = cqrs.processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
@@ -817,7 +815,7 @@ mod tests {
         for registrations in [defaults, set] {
             let mut cqrs = registrations.cqrs;
             let executor = cqrs.executor::<Show, _>(cqrs.store::<Show>(), ());
-            let checkpoints = Arc::new(crate::cqrs::testing::mem_checkpoint_store::MemCheckpointStore::default());
+            let checkpoints = Arc::new(crate::memory::checkpoint_store::MemCheckpointStore::default());
             let documents = Arc::new(MemViewRepository::<Hall, Show>::default());
             let journal = Arc::new(cqrs.memory.journal.clone());
             let processor = cqrs.processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);

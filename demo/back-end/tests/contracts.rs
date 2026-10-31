@@ -25,20 +25,13 @@ use cqrsx::{
         metadata::CommandMetadata,
         observer::{CommandObserver, CommandReport, Outcome},
     },
-    cqrs::{
-        projection::{
-            checkpoint::CheckpointStore,
-            processor::observer::{Applied, Failed, FailureCategory, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
-        },
-        testing::{
-            command_executor::TestCommandExecutor,
-            mem_checkpoint_store::MemCheckpointStore,
-            mem_store::{MemStore, MemStoreAggregateContext},
-            unavailable_store::UnavailableStore,
-        },
-    },
     domain::event::{DomainEvent, EventEnvelope},
     journal::{EventStore, feed::Position},
+    memory::checkpoint_store::MemCheckpointStore,
+    projection::{
+        checkpoint::CheckpointStore,
+        processor::observer::{Applied, Failed, FailureCategory, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
+    },
     reactions::ReactionsPlanner,
     task::{
         NewTask,
@@ -59,15 +52,20 @@ use cqrsx::{
         result::TaskResult,
         runtime::prepare,
     },
+    testing::{
+        command_executor::TestCommandExecutor,
+        mem_store::{MemStore, MemStoreAggregateContext},
+        unavailable_store::UnavailableStore,
+    },
 };
 use cqrsx::{
-    cqrs::projection::checkpoint::CheckpointKey,
     engine::{
         Cqrs,
         build::{BuildError, Builder},
         settings::{Settings, duration_text},
         setup::Setup,
     },
+    projection::checkpoint::CheckpointKey,
     task::policy::Policies,
 };
 use encore_backend::{
