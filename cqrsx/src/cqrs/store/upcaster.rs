@@ -8,13 +8,13 @@ use std::{
     str::FromStr,
 };
 
-/// Used to upcast and event from an older type or version to the current form. This is needed
-/// to modify the structure of events older versions are already persisted.
+/// Used to upcast an event from an older type or version to the current form. This is needed
+/// to change the structure of events whose older versions are already persisted.
 pub trait EventUpcaster: Send + Sync {
-    /// Examines and event type and version to understand if the event should be upcasted.
+    /// Examines an event type and version to decide whether the event should be upcast.
     fn can_upcast(&self, format: EventFormat<'_>) -> bool;
 
-    /// Modifies the serialized event to conform the the new structure.
+    /// Modifies the serialized event to conform to the new structure.
     fn upcast(&self, event: SerializedEvent) -> SerializedEvent;
 }
 

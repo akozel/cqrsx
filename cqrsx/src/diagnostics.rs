@@ -97,8 +97,6 @@ pub(crate) fn log_lock_refused(aggregate_type: &str, refused: crate::cqrs::comma
     );
 }
 
-/// A task handler ran a command of an aggregate type the assembly gave no executor: the command did not run, the task
-/// is retried. A wiring fault, hence `error`; no id, no payload.
 /// A command for an aggregate type the engine does not know: a wiring fault, logged without the id.
 pub(crate) fn log_unregistered_aggregate(aggregate_type: &str) {
     tracing::error!(
@@ -109,6 +107,8 @@ pub(crate) fn log_unregistered_aggregate(aggregate_type: &str) {
     );
 }
 
+/// A task handler ran a command of an aggregate type the assembly gave no executor: the command did not run, the task
+/// is retried. A wiring fault, hence `error`; no id, no payload.
 pub(crate) fn log_missing_executor(aggregate_type: &str) {
     tracing::error!(
         component = "task",

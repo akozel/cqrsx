@@ -40,6 +40,11 @@ use thiserror::Error;
 /// }
 /// ```
 pub trait TaskQueue: Send + Sync {
+    /// Takes up to `limit` ready tasks of `format` (pending and due) for `owner` in one atomic step: each one's
+    /// attempt counter grows by one, it gets a fresh lock token and a lease of `lease_duration`, measured locally
+    /// from before the request ([`LeasedTask`]). No order is promised. A row that is not a valid task is not
+    /// delivered: the PostgreSQL queue logs it and leaves it leased for [`recover_expired`](Self::recover_expired),
+    /// so it cannot block its format. A storage failure is [`Unavailable`](TaskProcessingError::Unavailable).
     fn claim(
         &self,
         format: &TaskFormat,
@@ -47,14 +52,22 @@ pub trait TaskQueue: Send + Sync {
         limit: usize,
         lease_duration: Duration,
     ) -> impl Future<Output = Result<Vec<LeasedTask>, TaskProcessingError>> + Send;
+    /// Applies `request` to a claimed task if its lease still holds: the token matches and the lease has not
+    /// expired in the database. Otherwise the answer is
+    /// [`OwnershipLost`](crate::task::queue::settlement::SettlementResult::OwnershipLost) and nothing changes. A
+    /// retry beyond the task's attempt budget fails it instead. Returns only a committed result.
     fn settle(
         &self,
         task: &LeasedTask,
         request: SettlementRequest,
     ) -> impl Future<Output = Result<SettlementResult, TaskProcessingError>> + Send;
+    /// Returns up to `limit` tasks whose lease expired to the queue, after a redelivery pause, or fails them on their
+    /// last attempt ([`LeaseExpired`](crate::task::queue::settlement::TaskFailureCause::LeaseExpired)); the report
+    /// counts both, after commit.
     fn recover_expired(&self, limit: usize) -> impl Future<Output = Result<LeaseRecoveryReport, TaskProcessingError>> + Send;
 }
 
+/// A request the queue cannot express in its storage: a limit or a duration out of range.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum QueueRequestError {
     #[error("queue batch limit is not representable")]
@@ -64,6 +77,9 @@ pub enum QueueRequestError {
     #[error("retry delay is not representable")]
     InvalidRetryDelay,
 }
+/// Why claiming, running or settling a task failed. A queue returns `InvalidRequest`, `InvalidDelivery` (data read
+/// back from storage that is not a valid task, a settlement or a failure) and `Unavailable`; the runtime adds `TimedOut` (a storage call longer than the storage timeout) and the executor
+/// `InvalidExecutionBudget` and `LeaseBudgetExhausted`.
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum TaskProcessingError {
     #[error(transparent)]

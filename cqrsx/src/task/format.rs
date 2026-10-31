@@ -108,7 +108,9 @@ pub enum TaskFormatError {
     InvalidVersion,
 }
 
-/// One durable type/version pair; also the dispatcher's routing key.
+/// One durable type/version pair; also the dispatcher's routing key. The queue stores it with every task, an
+/// adapter names the formats it handles, a worker claims the tasks of one format at a time. Built from a payload type
+/// ([`of`](Self::of)) or read back from storage ([`try_new`](Self::try_new)); displayed as `<type> v<version>`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TaskFormat {
     task_type: String,

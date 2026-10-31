@@ -104,7 +104,8 @@ impl<A: Aggregate> TryFrom<&EventEnvelope<A>> for SerializedEvent {
     }
 }
 
-/// A serialized version of a snapshot.
+/// The typed envelope of a stored event: its aggregate type, event type and event version must be `A`'s, and its
+/// payload and metadata must decode.
 impl<A: Aggregate> TryFrom<SerializedEvent> for EventEnvelope<A> {
     type Error = PersistenceError;
 

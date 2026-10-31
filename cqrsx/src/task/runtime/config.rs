@@ -1,3 +1,4 @@
+//! The task runtime's configuration: the storage budget and the worker limits, checked together.
 use crate::task::{
     queue::storage_config::{TaskStorageConfig, TaskStorageConfigError},
     runtime::worker_pool_config::{TaskWorkerPoolConfig, TaskWorkerPoolConfigError},
@@ -21,6 +22,8 @@ pub enum TaskRuntimeConfigError {
 }
 
 impl TaskRuntimeConfig {
+    /// `storage` and `worker` if they fit together: the lease covers a claim, the queued waves, the handler and the
+    /// settlement ([`validate_for_storage_timeout`](TaskWorkerPoolConfig::validate_for_storage_timeout)).
     pub fn try_new(storage: TaskStorageConfig, worker: TaskWorkerPoolConfig) -> Result<Self, TaskRuntimeConfigError> {
         worker.validate_for_storage_timeout(storage.storage_timeout())?;
         Ok(Self { storage, worker })
@@ -39,10 +42,14 @@ impl TaskRuntimeConfig {
         (self.storage, self.worker)
     }
 
+    /// [`from_lookup`](Self::from_lookup) over the process environment.
     pub fn from_env() -> Result<Self, TaskRuntimeConfigError> {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
 
+    /// The storage budget ([`TaskStorageConfig::from_lookup`], `OUTBOX_STORAGE_TIMEOUT_MS`) and the worker limits
+    /// ([`TaskWorkerPoolConfig::from_lookup`], the other `OUTBOX_*` variables), checked together as
+    /// [`try_new`](Self::try_new) checks them.
     pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Result<Self, TaskRuntimeConfigError> {
         Self::try_new(
             TaskStorageConfig::from_lookup(&mut lookup)?,

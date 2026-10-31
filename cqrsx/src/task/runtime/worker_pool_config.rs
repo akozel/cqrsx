@@ -1,3 +1,4 @@
+//! The limits of the process's task workers: how many run, how many claimed tasks wait, how long a lease lasts.
 use crate::task::queue::lease::LEASE_SAFETY_MARGIN;
 use std::time::Duration;
 use thiserror::Error;
@@ -132,9 +133,16 @@ impl TaskWorkerPoolConfig {
         // At most the capacity, as the percent is at most 100.
         usize::try_from(level).map_or(self.buffer_capacity, |level| level.min(self.buffer_capacity))
     }
+    /// [`from_lookup`](Self::from_lookup) over the process environment.
     pub fn from_env() -> Result<Self, TaskWorkerPoolConfigError> {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
+    /// The limits from the variables, each an unsigned integer with its default: `OUTBOX_WORKER_CONCURRENCY` (128),
+    /// `OUTBOX_QUEUE_CAPACITY` (128), `OUTBOX_POLL_INTERVAL_MS` (1 000), `OUTBOX_HANDLER_TIMEOUT_SECS` (15),
+    /// `OUTBOX_LEASE_SECS` (60), `OUTBOX_QUEUE_REFILL_PERCENT` (25). A missing variable takes its default, one that is
+    /// not an unsigned integer is `InvalidEnvironmentValue` with its name; the values are then checked as
+    /// [`try_new`](Self::try_new) and [`with_buffer_refill_percent`](Self::with_buffer_refill_percent) check them.
+    /// The lease against the storage timeout is checked by [`TaskRuntimeConfig`](super::config::TaskRuntimeConfig).
     pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Result<Self, TaskWorkerPoolConfigError> {
         let mut read_u64 = |name, default| {
             crate::env::read_u64(&mut lookup, name, default).map_err(|_| TaskWorkerPoolConfigError::InvalidEnvironmentValue(name))

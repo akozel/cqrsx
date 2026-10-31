@@ -28,6 +28,10 @@ use std::future::Future;
 /// }
 /// ```
 pub trait TaskAdapter: Send + Sync {
+    /// The formats this adapter handles; the dispatcher routes every attempt of these formats here. Called when the
+    /// dispatcher is assembled, not per task: a format two adapters claim fails the assembly
+    /// ([`DuplicateFormat`](crate::task::dispatcher::TaskDispatcherError::DuplicateFormat)), and so does a dispatcher
+    /// with no format at all (`Empty`). The workers claim the formats in this order.
     fn formats(&self) -> Vec<TaskFormat>;
 
     /// What the handlers behind this adapter need from the assembly; none by default.
@@ -35,5 +39,8 @@ pub trait TaskAdapter: Send + Sync {
         Vec::new()
     }
 
+    /// Handles one attempt of a task in one of [`formats`](Self::formats): `ctx` holds the attempt (payload, metadata,
+    /// attempt number), the pause a retry would get, the dependencies and the command executors. The result settles
+    /// the attempt; a panic of the future is caught by the worker and the attempt is retried.
     fn invoke(&self, ctx: &TaskContext) -> impl Future<Output = TaskResult> + Send;
 }

@@ -2,7 +2,7 @@
 
 | | |
 |---|---|
-| Статус | урезано ретроспективой 2026-10-30 |
+| Статус | сделано 2026-10-31 ([итоги](#результаты)) |
 | Ценность | средняя: неверный комментарий — дефект; у точек расширения, которые пишет пользователь библиотеки, есть описание |
 | Цена | низкая: несколько комментариев и описания около десятка трейтов и конструкторов |
 | cqrsx | места ниже |
@@ -86,5 +86,32 @@
 
 ## Критерии приёмки
 
-- [ ] Неверные комментарии исправлены.
-- [ ] Точки расширения и их модули описаны; `cargo doc --no-deps` без предупреждений.
+- [x] Неверные комментарии исправлены.
+- [x] Точки расширения и их модули описаны; `cargo doc --no-deps` без предупреждений.
+
+## Результаты
+
+Сделано 2026-10-31 на `8f6defb`, правки в рабочем дереве без коммита. Изменены только комментарии: 9 файлов `cqrsx/src`,
++56 / −9 строк, ни одной строки кода.
+
+- **Неверные комментарии:**
+  - `serialized_event.rs`: над `TryFrom<SerializedEvent> for EventEnvelope<A>` вместо «A serialized version of a
+    snapshot» — что проверяется при разборе;
+  - `diagnostics.rs`: описание `log_missing_executor` стояло над `log_unregistered_aggregate`, перенесено к своей
+    функции;
+  - `upcaster.rs`: опечатки («upcast and event», «examines and event», «conform the the»).
+- **Точки расширения:**
+  - `TaskAdapter::formats` (когда вызывается, что делает сборка с повтором формата) и `invoke` (что в контексте,
+    паника — повтор);
+  - `TaskQueue::claim`, `settle`, `recover_expired` — контракт захвата, проверки владения и возврата истёкших;
+    `QueueRequestError` и `TaskProcessingError` — кто какую ошибку возвращает (очередь, runtime, executor);
+  - `TaskFormat` — где хранится, кто по нему маршрутизирует;
+  - `from_env`/`from_lookup` `TaskStorageConfig`, `TaskWorkerPoolConfig`, `TaskRuntimeConfig` — переменные `OUTBOX_*`
+    со значениями по умолчанию и ошибками; `TaskRuntimeConfig::try_new` — проверка аренды против таймаута хранилища;
+  - `//!` у `queue/storage_config.rs`, `runtime/config.rs`, `runtime/worker_pool_config.rs` (модули трейтов его уже
+    имели).
+- **Каталог:** пустые `cqrs/event_handler/delivery/` и опустевший `cqrs/event_handler/` удалены (в git их не было,
+  только в рабочем каталоге).
+- **Проверки:** `cargo fmt --check`, `cargo clippy --workspace --all-targets --all-features -D warnings`,
+  `RUSTDOCFLAGS="-D warnings" cargo doc --no-deps -p cqrsx --all-features`. Тесты и покрытие не запускались: код не
+  менялся (правило «дешёвые проверки», как для переименований).
