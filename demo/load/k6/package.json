@@ -1,0 +1,6 @@
+{
+  "name": "encore-load-k6",
+  "private": true,
+  "type": "module",
+  "description": "k6 scripts for the Encore load stand. The package file only tells editors and `node --check` that these are ES modules; k6 runs them directly."
+}

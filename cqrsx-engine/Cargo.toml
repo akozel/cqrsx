@@ -1,0 +1,44 @@
+[package]
+name = "cqrsx-engine"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "The engine of cqrsx: modules assembled into one application over in-memory, PostgreSQL and MongoDB stores"
+
+[features]
+default = []
+postgres = ["dep:cqrsx-postgres", "dep:sqlx"]
+mongodb = ["postgres", "dep:cqrsx-mongodb", "dep:mongodb"]
+http = ["dep:axum", "dep:tower-http", "dep:tracing-subscriber", "tokio/net", "tokio/signal"]
+
+[dependencies]
+axum = { workspace = true, optional = true }
+cqrsx.workspace = true
+cqrsx-mongodb = { workspace = true, optional = true }
+cqrsx-postgres = { workspace = true, optional = true }
+mongodb = { workspace = true, optional = true }
+serde.workspace = true
+serde_json.workspace = true
+sqlx = { workspace = true, optional = true }
+thiserror.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tower-http = { workspace = true, optional = true }
+tracing.workspace = true
+tracing-subscriber = { workspace = true, optional = true }
+uuid.workspace = true
+
+[dev-dependencies]
+cqrsx-fixtures.workspace = true
+log.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+mongodb.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
+tracing = { workspace = true, features = ["log"] }
+uuid.workspace = true
+
+[lints]
+workspace = true

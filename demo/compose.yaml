@@ -1,0 +1,87 @@
+name: encore
+services:
+  postgres:
+    image: docker.io/library/postgres:18.6-alpine   # the same image as the root compose.yaml
+    # A writing transaction left idle holds the projections' journal feed (the snapshot horizon): end it.
+    command: ["postgres", "-c", "idle_in_transaction_session_timeout=30s"]
+    environment:
+      POSTGRES_USER: cqrsx
+      POSTGRES_PASSWORD: cqrsx
+      POSTGRES_DB: encore
+    ports:
+      - "127.0.0.1:${ENCORE_POSTGRES_PORT:-5434}:5432"   # 5433 belongs to the root compose
+    volumes:
+      - encore-pg:/var/lib/postgresql
+      - ./infra/postgres/00-inspector-role.sql:/docker-entrypoint-initdb.d/00-inspector-role.sql:ro,z
+      # Event-store and outbox schemas are NOT copied: the demo mounts the library's own SQL files.
+      - ../cqrsx-postgres/sql/001-event-store.sql:/docker-entrypoint-initdb.d/10-event-store.sql:ro,z
+      - ../cqrsx-postgres/sql/002-transactional-outbox.sql:/docker-entrypoint-initdb.d/20-outbox.sql:ro,z
+      - ./infra/postgres/30-grants.sql:/docker-entrypoint-initdb.d/30-grants.sql:ro,z
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cqrsx -d encore"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  mongo:
+    image: docker.io/library/mongo:8.2
+    ports:
+      - "127.0.0.1:${ENCORE_MONGO_PORT:-27018}:27017"
+    volumes:
+      - encore-mongo:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 2s
+      timeout: 5s
+      retries: 30
+
+  # Profile "app": the whole stack from images (make full). Build context is the repository root
+  # because the images need the root `Cargo.toml` and the crates of the framework.
+  backend:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: demo/back-end/Dockerfile
+    environment:
+      ENCORE_HTTP_ADDR: 0.0.0.0:8080
+      ENCORE_DATABASE_URL: postgresql://cqrsx:cqrsx@postgres:5432/encore
+      ENCORE_MONGODB_URI: mongodb://mongo:27017
+      ENCORE_MAIL_SERVICE_URL: http://sidecar:8090   # the external mail service; the demo's moody one is hosted by the sidecar
+      ENCORE_NODE_NAME: backend                      # the owner the checkpoints of the read models show
+      RUST_LOG: info
+    ports:
+      - "127.0.0.1:8080:8080"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mongo: { condition: service_healthy }
+  sidecar:
+    profiles: ["app"]
+    build:
+      context: ..
+      dockerfile: demo/sidecar/Dockerfile
+    environment:
+      SIDECAR_HTTP_ADDR: 0.0.0.0:8090
+      SIDECAR_DATABASE_URL: postgresql://encore_inspector:inspector@postgres:5432/encore
+      SIDECAR_ADMIN_DATABASE_URL: postgresql://encore_demo_admin:demo-admin@postgres:5432/encore   # DEMO ONLY: reset
+      SIDECAR_BACKEND_URL: http://backend:8080                                                     # seed + reset announce through the public API
+      # DEMO ONLY: the mail service (POST /mail) runs with its defaults: 20 % refusals, 600–1800 ms latency.
+      SIDECAR_MONGODB_URI: mongodb://mongo:27017
+      RUST_LOG: info
+    ports:
+      - "127.0.0.1:8090:8090"
+    depends_on:
+      postgres: { condition: service_healthy }
+      mongo: { condition: service_healthy }
+      backend: { condition: service_started }
+  frontend:
+    profiles: ["app"]
+    build:
+      context: ./front-end
+    ports:
+      - "127.0.0.1:8000:80"
+    depends_on:
+      - backend
+      - sidecar
+
+volumes:
+  encore-pg: {}
+  encore-mongo: {}

@@ -1,0 +1,37 @@
+# Separate workspace: the root workspace excludes `demo`, so the root `--locked` builds and the
+# 97 % coverage threshold never see the demo crates; CI checks the demo in a job of its own.
+[workspace]
+resolver = "3"
+members = ["back-end", "sidecar"]
+
+[workspace.package]
+edition = "2024"
+publish = false
+license = "Apache-2.0"
+
+[workspace.dependencies]
+cqrsx = { path = "../cqrsx" }
+cqrsx-engine = { path = "../cqrsx-engine", features = ["postgres", "mongodb", "http"] }
+cqrsx-postgres = { path = "../cqrsx-postgres" }
+cqrsx-testing = { path = "../cqrsx-testing" }
+axum = "0.8"
+tower-http = { version = "0.7", features = ["trace"] }
+tokio = { version = "1", features = ["full"] }
+tokio-util = "0.7"
+tokio-stream = { version = "0.1", features = ["sync"] }
+futures = "0.3"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4", "v7", "serde"] }
+chrono = { version = "0.4", features = ["serde"] }
+mongodb = "3.9"
+# Same major/minor as cqrsx (0.8.x) so the pool types match; runtime queries only, no `query!` macros.
+sqlx = { version = "0.8", default-features = false, features = ["json", "chrono", "uuid", "postgres", "runtime-tokio-rustls"] }
+async-trait = "0.1"
+rand = "0.10"
+thiserror = "2"
+tracing = "0.1"
+dotenvy = "0.15"
+sha2 = "0.11"
+hex = "0.4"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }

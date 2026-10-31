@@ -5,7 +5,18 @@ It provides aggregates and command handling, event and snapshot persistence,
 projections, a transactional outbox, and a durable task queue with retries.
 PostgreSQL stores data, and Tokio runs background tasks.
 
-For architecture details, see [components and terminology](cqrsx/doc/components.md).
+The workspace has seven crates:
+- [`cqrsx`](cqrsx/README.md), the core;
+- [`cqrsx-engine`](cqrsx-engine/README.md), which assembles an application from the core's components;
+- [`cqrsx-postgres`](cqrsx-postgres/src/lib.rs) and [`cqrsx-mongodb`](cqrsx-mongodb/src/lib.rs), the stores;
+- [`cqrsx-testing`](cqrsx-testing/src/lib.rs), the test tools for applications (aggregate given/when/then, a command executor,
+  event stores for tests);
+- [`cqrsx-macros`](cqrsx-macros/README.md), the derive macros;
+- `cqrsx-fixtures`, the private test fixtures of the framework (database containers, captured logs).
+
+A crate with a `README.md` includes it as its documentation; one without has a single `//!` in its `lib.rs`.
+
+For architecture details, see [components and terminology](doc/components.md).
 
 ## Requirements
 
@@ -82,14 +93,20 @@ RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-f
 ```
 
 The test parallelism and seed match the CI settings. Integration tests automatically
-create their own PostgreSQL `18.6-alpine` containers and apply the schemas;
+create their own PostgreSQL `18.6-alpine` containers and apply the schemas, and their
+own MongoDB `8.2` containers for the `cqrsx-mongodb` tests and the engine's `mongodb` feature (the containers come
+from the `cqrsx-fixtures` crate);
 they do not require the Compose database. The first run needs access to the image
 registry.
 
-Run core tests without PostgreSQL or the worker runtime:
+The core, the stores (`cqrsx-postgres`, `cqrsx-mongodb`) and `cqrsx-testing` have no features; the engine has three. Run the tests
+of the crates one by one and of the engine with each feature on its own:
 
 ```bash
-cargo test --locked -p cqrsx --no-default-features
+cargo test --locked -p cqrsx                                              # core, in memory
+cargo test --locked -p cqrsx-postgres                                     # also: -p cqrsx-mongodb, -p cqrsx-testing
+cargo test --locked -p cqrsx-engine --no-default-features                # engine in memory
+cargo test --locked -p cqrsx-engine --no-default-features --features postgres   # also: mongodb, http
 ```
 
 ## Code coverage
@@ -108,4 +125,6 @@ The full coverage run requires the Podman API socket configured in the Tests sec
 cargo llvm-cov --workspace --all-features --html --open --ignore-filename-regex '(^|/)main\.rs$' --fail-under-lines 97
 ```
 
-Open `target/llvm-cov/html/index.html` in your browser.
+Open `target/llvm-cov/html/index.html` in your browser. CI also requires 97% for the core, the stores and the engine on their
+own: `cargo llvm-cov --locked -p cqrsx --fail-under-lines 97` and the same with `-p cqrsx-postgres`, `-p cqrsx-mongodb`
+and, with `--all-features`, `-p cqrsx-engine`.

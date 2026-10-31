@@ -1,0 +1,840 @@
+# PROGRESS.md — autonomous run log for the Encore demo
+
+Resume point for an agent: read this file first, continue with the first phase that is not
+marked done, never redo committed work. Plan: `demo/PLAN.md` v1.1; facts: `demo/docs/API_MAPPING.md`.
+
+Run started 2026-10-17 ≈ 02:35 UTC, finished ≈ 06:10 UTC. **Status: P0 (Phases 0.5, 1–8, 10) and P1 (Phase 9) closed**; the remaining items are browser walk-throughs and image builds that need a machine with a browser and `podman compose`.
+
+## Engine API migration — load comparison, 2026-10-27
+
+The before/after series for epic 05 ticket 13 ran on `91dda19` and `78356bf`: 40 measured runs and eight
+checks. No clear throughput regression appeared in these short runs; WAL decreased after the documented task
+metadata exception. Some drain CPU and claim differences remain uncertain, and the comparison does not prove
+performance equivalence. The results and caveats are in [ticket 13](backlog/05_engine_api/13_measurement_before_after.md)
+and the [load report](backlog/05_engine_api/load-report.md); the user accepted the live-feed comparison limitation. Raw measurements and
+the work log are local git-ignored artifacts and may not be present in another checkout.
+The follow-up hot-key series on 2026-10-28 did not reproduce the drain CPU and claim differences, but was
+interrupted and resumed; its db profile showed lower median throughput and higher median p99 with overlapping
+ranges. Both versions passed the controlled activity-feed golden test. Details are in ticket 13.
+Ticket 14 documents the implemented module and engine API, the in-memory path and the cancellation-to-refund
+flow in `cqrsx/doc/typical_scenario.md`; the earlier seven-file design has moved there.
+
+## Step 0 — pre-flight (2026-10-17)
+
+| Check | Result |
+|---|---|
+| Toolchain (`rust-toolchain.toml`) | `rustc 1.98.1`, `cargo 1.98.1` ✅ |
+| `cargo-llvm-cov` | 0.9.1 installed ✅ |
+| crates.io (`cargo fetch --locked` in root) | ✅ (exit 0) |
+| `node` / `npm` / npm registry | node v26.11.1, npm 12.2.1, `npm view vue version` → 3.5.44 ✅ |
+| `podman` CLI / `podman-compose` | ❌ **not installed in the sandbox** (`PODMAN_COMPOSE_PROVIDER` empty) |
+| Podman API socket | `/run/podman/podman.sock` present, `DOCKER_HOST=unix:///run/podman/podman.sock`, Podman 6.1.4 answers ✅ |
+| Container networking | ❌ rootless bridge networking (**pasta**) fails on this host: `Failed to open() /dev/net/tun: No such device`. Only `NetworkMode: host` containers start. The sandbox itself runs with host networking, so host-network containers are reachable on `127.0.0.1`. |
+| Cached images | `docker.io/library/postgres:18.6-alpine`, `docker.io/library/mongo:8.2.5`, `mongo:8.2` ✅ (no pulls needed) |
+| Ports 5434, 27018, 8080, 8090, 5173 | all free ✅ |
+| Git identity | not configured in the sandbox → set repo-local to the previous commit author (`Alejandro 🦁 <101468843+akozel@users.noreply.github.com>`) |
+
+### Environment limitations and workarounds
+
+1. **No `podman compose`.** Containers are driven through the Podman Docker-compatible HTTP API
+   (`curl --unix-socket`). `demo/compose.yaml` and the `Makefile` are written for `podman compose` as
+   the plan requires, but they could not be executed here; see "Requires manual verification".
+2. **No bridge networking → `testcontainers` cannot start containers with port mappings.** To run the
+   *unchanged* cqrsx integration tests (Phase 0.5 acceptance) a tiny Docker-API shim was used
+   (`scratchpad/podman-shim.py`, outside the repo): it forwards to the real socket, rewrites
+   `POST /containers/create` to `NetworkMode: host` with `PGPORT=<requested host port>`, and reports
+   that port in `GET /containers/{id}/json`. Nothing in cqrsx or its tests was changed for this.
+   The shim lives only in the session scratchpad; it is not part of the deliverable.
+3. Demo databases (Phases 1–8) are started the same way: host-network containers listening on
+   5434 (PostgreSQL, `-c port=5434`) and 27018 (MongoDB, `--port 27018`), i.e. the same addresses the
+   plan's `compose.yaml` would publish.
+
+## Phase 0.5 — `execute_with_metadata` in cqrsx — ✅ done (commit `5407f78`)
+
+Details, diff and the output of the full root check set: `demo/docs/PHASE_0_5_REVIEW.md`.
+All ten commands from the root `CLAUDE.md` are green (integration tests through the API shim).
+
+## Phase 1 — scaffold and infrastructure — ✅ done
+
+- Written: `demo/Cargo.toml` (own workspace), `demo/.gitignore`, `exclude = ["demo"]` in the root
+  `Cargo.toml`, `compose.yaml`, `infra/postgres/{00-inspector-role,30-grants}.sql`, `.env.example`,
+  `Makefile`, `scripts/{dev,wait-db}.sh`, `back-end` and `sidecar` crates with `/health`, front-end
+  (Vite 8.3 / Vue 3.5.44 / TS 5.9 / Tailwind 4.3 / Pinia 4 / vue-i18n 11 / vitest 5 / eslint 9), README draft.
+- Verified: PostgreSQL + MongoDB started as host-network containers (sandbox stand-in for `make up`);
+  `\dt` lists `events`, `snapshots`, `transactional_outbox`; `encore_inspector` `SELECT count(*)` works
+  and `INSERT` fails with `cannot execute INSERT in a read-only transaction`; `cargo build` in `demo/` ok;
+  root `cargo build --locked --workspace --all-features` ok (part of the Phase 0.5 set), root
+  `Cargo.lock` unchanged; `GET /api/health` and `GET /inspect/health` → 200; Vite dev server serves
+  the page (`<title>Encore 🎸 · cqrsx demo</title>`) and proxies `/api/health` → 200;
+  `npm run typecheck && npm run lint && npm test && npm run build` green.
+- Decisions: TypeScript pinned to `~5.9` (npm "latest" is the 7.0 native port, untested with vue-tsc);
+  eslint `^9` (eslint 10 compatibility with `@vue/eslint-config-typescript` unverified); MongoDB image
+  `mongo:8.2` (cached locally; plan says 8.0, "9.0 allowed"); `wait-db.sh` uses bash `/dev/tcp`
+  probes instead of `pg_isready`/`mongosh` so it works without client tools on the host.
+- Manual: `make up` with a real `podman compose` (not available here).
+
+## Phase 2 — domain — ✅ done
+
+- `domain::venue`, `domain::concert` (R1–R8), `domain::fan` (R9–R11), events, errors, commands.
+- Verified: `cargo test -p encore-backend domain` → 25 passed (one test per rule with recognizable
+  names, happy paths, `is_sold_out()` after the last booking, limit from `Services`, refund from history,
+  D-02 invariant tests for both aggregates), clippy `-D warnings` clean, fmt clean.
+
+## Phase 3 — write side — ✅ done
+
+- `app::{command_service, activity, tasks, seed, personas, rebuild(lock)}`, `http::{commands, queries, activity, error}`,
+  `main.rs` with `host::lifecycle::run` (placeholder task runtime until Phase 4).
+- Verified against the running databases:
+  `POST …/commands BookSeat B4 alice` → 200 `{"outcome":"accepted","tasks":["encore_record_ticket v1"]}`;
+  the same seat for bob → 422 `seat_taken {seat:B4, by:Alice}`; `{"type":"RecordTicket"}` → 400 invalid;
+  ghost concert → 422 `concert_not_found`; `CancelBooking` → 200 with `encore_record_cancellation v1`.
+  SQL: exactly one new `events` row per accepted command, `metadata` = `{command_id, correlation_id,
+  causation_id, recorded_at (µs, Z), source: "ui"}`; outbox rows carry the same `correlation_id` and the
+  event's `aggregate_sequence`. Restart: seed logs "already announced" ×3, event counts unchanged.
+  SSE `/api/activity`: `hello` with config + backlog, then `command.accepted`; SIGINT with the SSE
+  connection open → "encore-backend stopped" within ~1 s.
+- Decision: the `encore_record_cancellation` payload needs `booking_id`/`refund` that only history knows,
+  so `ConcertCommands` reads the committed concert state (snapshot + tail) before building the task;
+  if the seat is not booked by that fan no task is built (the aggregate rejects with R7/R8 anyway).
+- Found: axum 0.8 `with_graceful_shutdown` is `IntoFuture` → `.into_future()` (API_MAPPING §4 D21).
+
+## Phase 4 — outbox and the aggregate chain — ✅ done
+
+- `outbox::{chaos, flaky_mail (MongoInbox, FlakyMailServer), chain, record_ticket, record_cancellation,
+  send_e_ticket, issue_refund, adapter (enum EncoreTaskAdapter), dispatcher (factory)}`; task runtime via
+  `prepare_task_runtime` + `host::lifecycle::run`; activity `task.attempt.*`.
+- Verified against the running databases (`backend4.log` in the scratchpad):
+  - after `BookSeat`: `SeatBooked` + `encore_record_ticket` row with the same `correlation_id`; within a
+    second a `Fan` `TicketRecorded` event with the same `correlation_id`, `causation_id = task_id`,
+    `source = task:encore_record_ticket`, plus an `encore_send_e_ticket` row; the cancellation chain
+    produced `TicketCancelled` + `encore_issue_refund` + a "💸 Refund" mail.
+  - 50 bookings (crowd fans, three concerts): 52 `record_ticket` tasks completed with exactly 1 attempt
+    each; 13 of 52 `send_e_ticket` tasks needed more than one attempt (25 %, max 5 attempts; expected
+    10 ± 5); `mail_service.inbox` holds 52 e-tickets with `deliveries = 1` each, one refund.
+  - hand-made redelivery (`UPDATE … SET status='pending', attempts=0` on a completed `record_ticket`
+    row): the task completed again, `TicketRecorded` count stayed 52, no extra `send_e_ticket` row.
+  - SIGINT with an SSE connection open and two bookings in flight: "encore-backend stopped", no
+    ERROR/WARN lines in the log, every task ended `completed`.
+- Unit tests: chaos (seeded 10 000 rolls → 0.18–0.22, `Never`/`Always`), flaky mail (`Always` → retry
+  1/2/4/8/8/8 s and nothing in the inbox; `Never` → one mail, repeat is `duplicate` with `deliveries = 2`),
+  chain outcome table, task formats. `cargo test -p encore-backend` → 37 passed; clippy/fmt clean.
+- Note: rand 0.10 renamed the extension trait to `RngExt` (`random_bool`, `random_range`).
+
+## Phase 5 — projections and read API — ✅ done
+
+- `projections::{mongo_view_repository, concert_hall (View<Concert>), fan_wallet (View<Fan>), notifying, progress}`,
+  `app::read_side`, read endpoints `GET /api/concerts`, `/api/concerts/{id}`, `/api/fans/{id}/wallet`,
+  `/api/fans/{id}/inbox`; both projections registered as `NotifyingHandler(ViewProjection)` (D-06).
+- Verified: after `BookSeat C6 alice` the `concert_halls/radiohead-2026-11-21` document shows `C6` booked with
+  `sequence`, `changed_at` from the event metadata, `sold`/`revenue` recomputed; `fan_wallets/alice`
+  appears one chain step later with `active_count: 1`; inbox lists alice's e-mails; unknown fan/concert
+  → 404 `projection_missing`. LWW unit tests (order 7→6 = 6→7, repeats harmless, tombstones, derived
+  fields, `incomplete`) → `cargo test -p encore-backend` 44 passed; clippy/fmt clean.
+- MongoDB stopped (`containers/encore-sandbox-mongo/stop`): `BookSeat E7 bob` → 200 `accepted` with
+  `warnings: [{code: projection_failed, projection: concert_halls}]` in 3.0 s (driver
+  `server_selection_timeout` set to 3 s); `GET /api/concerts/{id}` → 503 `unavailable`; after
+  `start` the chain tasks completed, the read models lag until Encore! (Phase 6).
+- Note: history written before Phase 5 is not projected until the first rebuild (expected: the
+  projections are in-process handlers without replay of the past).
+
+## Phase 6 — replay (Encore!) and the time machine — ✅ done
+
+- `app::rebuild::RebuildService` (lock + RAII guard, wipe, two `EventReplay::replay_all` passes —
+  `Concert` then `Fan` — through `ProgressHandler`, slow-motion, status), `app::time_travel`,
+  endpoints `POST /api/projections/{wipe,rebuild}`, `GET /api/projections/status`,
+  `GET /api/concerts/{id}/timeline`, `GET /api/concerts/{id}/state-at/{n}`; `scripts/compare-projections.sh`.
+- Verified against the running databases:
+  - fast rebuild of the whole history: 117 events / 56 aggregates in 114 ms; afterwards `GET /api/concerts`
+    shows all three concerts with artists (history from before Phase 5 is now projected).
+  - 🧨 wipe → `GET /api/concerts` = `[]`, `GET /api/concerts/radiohead-2026-11-21` = 404; booking a taken seat
+    after the wipe → 422 `seat_taken` (rules work from the ledger); booking a free seat → new document
+    with `incomplete: true` and only that seat.
+  - slow rebuild (80 ms/event): 119 events in 9.9 s with `rebuild.progress` per event; a second
+    rebuild → 409; a command → 423 `rebuild_in_progress`; wipe → 423; after it the document is complete
+    again (`incomplete: false`, the post-wipe booking kept).
+  - two consecutive fast rebuilds give identical documents (`compare-projections.sh` ignoring
+    `version`); pre-wipe vs post-rebuild: berlin and lisbon identical, tbilisi differs only by the seat
+    booked after the wipe. Inbox count +1 and outbox +2 rows — exactly the post-wipe booking; replay
+    itself sent no e-mail and created no task.
+  - a chain task re-queued by hand during a slow rebuild: `pending/1/rebuild_in_progress` … 3 attempts
+    about 5 s apart, `completed` after the rebuild, no duplicate `TicketRecorded` (58 = `SeatBooked`).
+  - time machine: `/timeline` lists `ConcertAnnounced`, `B4 → Alice`, `B4 ✕ (refund 80 €)` …;
+    `/state-at/2` shows `B4: Alice`, `/state-at/3` no bookings, `/state-at/999` → 404.
+- Decision (deviation from §2.7): with a 1 s retry and `max_attempts = 6` a chain task that hits the
+  rebuild lock would have **failed permanently** after ~5 s (observed once during testing). Now the
+  chain handlers wait in-process for the lock for up to 3 s (inside the 5 s handler timeout), the locked
+  outcome retries after 2 s, and chain tasks get their own budget `ENCORE_CHAIN_MAX_ATTEMPTS = 60`
+  (no chaos touches them, so the budget is only spent while the box office is closed).
+  The mail tasks keep `ENCORE_TASK_MAX_ATTEMPTS = 6` as in the plan.
+- `Fan` commands honour the rebuild lock (plan §6.2/§10) — `FanCommands::execute` returns `Locked`.
+
+## Phase 7 — sidecar — ✅ done
+
+- `sidecar/src/{postgres,mongo,state,http,main}.rs`: every poll reads PostgreSQL inside one
+  `REPEATABLE READ READ ONLY` transaction (`row_to_json` queries from API_MAPPING §6, bind parameters
+  only), whitelisted MongoDB collections, stats, one shared poller (`tokio::sync::watch`) broadcasting
+  only when the SHA-256 of the state (without `db_time`/`polled_at`) changes, SSE `/inspect/stream`
+  with a 15 s heartbeat and shutdown on signal; no `cqrsx` dependency.
+- Verified: `curl localhost:8090/inspect/postgres/events?limit=3` → rows with `metadata` keys
+  `{causation_id, command_id, correlation_id, recorded_at, source}` and the `query` text;
+  `?aggregate_id=alice` filter; snapshots (`rammstein-2026-12-05 last_sequence 20 current_snapshot 2` …);
+  outbox rows with `attempts/max_attempts/available_at`; `/inspect/postgres/tables` (P1);
+  `/inspect/mongo/encore_read/concert_halls` 200, `admin/system.users` and `encore_read/inbox` → 404
+  (whitelist); `/inspect/stats`; SSE: 20 s without commands → 1 `state` message + 1 heartbeat, with
+  a booking → 4 state messages. PostgreSQL stopped: health `degraded`, `stats.errors` =
+  `[{source: postgres, message: pool timed out…}]`, Mongo endpoints still 200, process alive; after
+  the restart health `ok` and `errors: []`. Unit tests: hash stability, whitelist, shown queries.
+- Note: `encore_inspector`'s role-level `default_transaction_read_only` and the explicit
+  `READ ONLY` transaction are both in place; the Phase 1 check proved the role cannot `INSERT`.
+
+## Phase 8 — front-end core — ✅ done (browser steps need a human)
+
+- All P0 components of §8.3: `layout/AppHeader`, `pipeline/PipelineStrip`, `app/{ConcertTabs, PersonaPicker,
+  SeatMap, SeatButton, ActionBar (🤖 🌊 and P1 ⚡), RuleBreaker, WalletPanel, EncorePanel, TimeMachine}`,
+  `xray/{XrayPanel, EventStorePanel, SnapshotsPanel, OutboxPanel, MongoPanel, MailboxPanel, ActivityFeed,
+  QueryBadge, JsonView}`, `ui/{Toasts, StatusChip, Dice, Countdown, ProgressBar, Tooltip}`; stores
+  `session, concerts, wallet, commands, activity, xray, rebuild, timemachine`; full RU/EN i18n (Appendix A);
+  confetti on `sold_out: false → true`; `prefers-reduced-motion`; X-ray 2×2 grid ≥ 1536 px, tabs below.
+- Verified without a browser: `npm run typecheck && npm run lint && npm test && npm run build` green
+  (14 vitest tests: pure functions, i18n parity incl. rule codes and chaos reasons, component smoke
+  tests with jsdom — every X-ray panel renders sidecar rows, `App.vue` mounts in EN and RU with
+  offline services and shows 40 seat buttons, toasts translate `seat_taken` with parameters);
+  Vite dev server: every module transforms (200), `/api` and `/inspect` (including both SSE streams)
+  are proxied; production build 227 kB JS / 79 kB gzip.
+- Decisions: `@` alias added to `vite.config.ts`; `vue/multi-word-component-names` disabled for the
+  four single-word UI primitives named in PLAN.md §4; `jsdom` + `@vue/test-utils` added as dev deps for
+  the smoke tests; X-ray grid breakpoint `2xl` (1536 px) instead of 1440 px (Tailwind default scale).
+- **Manual check (no browser in the sandbox):** walk through demo script steps 1–7 (README) in
+  Chrome/Firefox at 1920×1080; watch the PipelineStrip animations, the 2 s row glow, the 🎲 roll, the
+  countdown ring, confetti on SOLD OUT, sepia in time-machine mode, RU/EN switch.
+- **2026-10-17, PipelineStrip redone** after the sketch `docs/img.png`: the hand-measured HTML/SVG
+  lanes were replaced by a static Vue Flow canvas (`@vue-flow/core` 1.48) — service boundaries as group
+  nodes, components as boxes, actors as diamonds, signals as circles riding the edge paths (CSS
+  motion path). Layout data in `pipeline/graph.ts`, signal choreography in `pipeline/choreography.ts`
+  (unit-tested with fake timers), nodes/edges as Vue components. Added to the sketch: the flaky mail
+  server with its retry edge back to the outbox; read database labelled `concert_halls · fan_wallets`.
+  Second pass after the first screenshot (crooked diagonals, overflowing captions, visual noise):
+  nodes on a grid with orthogonal (smoothstep) edges, no captions on the canvas, every block and
+  frame clickable → `PipelineExplain` modal with the full story (`i18n/explain.{en,ru}.ts`), rules
+  R1–R8 / R9–R11 as a table. Third pass: page-sized fonts (13 px names, 14 px coloured frame
+  titles, zoom capped at 1), padding around the canvas, the user diamond wears the selected persona
+  (avatar + name) and its modal switches personas. Fourth pass: the diagram is a panel block in a
+  new top row (50 % width) next to the events and outbox panels; the canvas was recomposed for the
+  narrower block (mail server and mailbox in a column above the Fan service), the handlers are named
+  `Outbox worker → Fan / email`, element and frame names stay English in RU. The events and outbox
+  cards show a one-line summary of the payload (`lib/summary.ts`) and hide the raw JSON (payload +
+  metadata) behind a «▸ JSON» spoiler. Later: the JSON opens on a click on the card, outbox rows on a
+  rigid grid with business task names, a status icon whose tooltip is a table of the DB row, hover
+  tracing from tasks too. Layout: diagram (2/3, 27 rem) with events + outbox under it, the compact box
+  office on the right (1/3), the four other X-ray panels in a bottom row. Verified: typecheck, lint,
+  38 vitest tests, production build.
+  **Manual:** the geometry was authored blind — check the fit at 1280–1920 px wide, the token
+  animations and the modal in a real browser.
+
+## Phase 10 — packaging and docs — ✅ written, images NOT built here
+
+- `back-end/Dockerfile`, `sidecar/Dockerfile` (multi-stage, context = repository root),
+  `front-end/Dockerfile` + `nginx.conf` (`/api` → backend, `/inspect` → sidecar, SSE-safe:
+  HTTP/1.1, `Connection ''`, `proxy_buffering off`), root `.dockerignore` (`**/target`, `**/node_modules`),
+  `compose.yaml` profile `app`, complete `README.md` (quick start, architecture, demo script,
+  configuration, troubleshooting).
+- Environment limitation: no `podman build` / compose in the sandbox → `make full` and the image
+  builds are **untested**; README says so.
+
+## Phase 9 — polish [P1] — ✅ done (browser steps need a human)
+
+- ⚡ Race (`ActionBar`, `Promise.all` of two `BookSeat`, result card + optimistic-locking text).
+- 🔍 Verify: `app::verify` rebuilds into `concert_halls_verify` / `fan_wallets_verify` with the same
+  `ViewProjection`s, compares canonical JSON without `version`, drops the temp collections;
+  `GET /api/projections/verify` → `{"ok":true,"checked":{"concert_halls":3,"fan_wallets":53}}` live,
+  56 `missing` after a wipe, `ok` again after Encore!; button in `EncorePanel`.
+- 📸 markers, guided tour: step 0 as a modal (ⓘ Tutorial button) then chapters ①–⑤ as `ChapterCallout` popups with "Try it" actions, other panels dimmed to
+  40 %), correlation-id hover trace (event → its outbox rows and its Mongo document), `AnnounceDialog`
+  (`concert_id = <city-slug>-<4 hex>`), arrow-key navigation of the seat map, X-ray tabs on medium screens,
+  `/inspect/postgres/tables`.
+- Back-end split into `lib.rs` + `main.rs`; integration test `back-end/tests/write_side.rs`
+  (testcontainers PostgreSQL 18.6-alpine): accepted command → one event row with the metadata map and
+  one `encore_record_ticket` row on the same sequence/correlation id, rejected command → nothing.
+  Run: `DOCKER_HOST=… cargo test -p encore-backend --test write_side` → 1 passed (through the shim here).
+  Not written: the full-chain / wipe-rebuild-verify integration tests with a MongoDB container.
+- Front-end checks after the polish: typecheck, eslint, 14 vitest, build green.
+- **Manual:** demo step 8 (⚡ Race) and the chapter walkthrough in a browser.
+
+## Refactoring — clean architecture (2026-10-17) — ✅ done
+
+Branch `refactor/clean-architecture`, one commit per step; plan and rationale in
+`docs/ARCHITECTURE_OPTIONS.md` (variant B with the §11 refinements; deviations in §12).
+
+- Layout: `domain/` (shared kernel, `concert/` and `fan/` with `aggregate.rs`, `commands/` with `decide()`
+  and the rule tests, `events/`, `error.rs`), `application/` (`CommandService`, use cases per file in
+  `concert/`, `workflows/{ticket_delivery, refund}` with one file per step and the task contracts at the
+  publisher, ports, views, projections maintenance, operations), `presentation/http/<resource>/<action>.rs`,
+  `infrastructure/{postgres, mongo, mail, task_runtime}`, `bootstrap.rs` as the composition root.
+- Wire contracts unchanged: event and snapshot JSON, task formats and payloads, MongoDB documents, HTTP
+  routes and bodies, activity entries. Pinned by tests written before the domain split (step 3).
+- `tests/architecture.rs` checks the layer rules on expanded `use` trees; mutation-checked with two
+  temporary violations (a grouped `crate::infrastructure` import and `serde_json` in domain code).
+- Checks after the last step: `cargo fmt --check` ✓, `cargo clippy --workspace --all-targets -D warnings` ✓,
+  `cargo test --workspace` ✓ (back-end unit 56 → 88, architecture 2, integration `write_side` 1 against a
+  testcontainers PostgreSQL, sidecar 6), `cargo doc -p encore-backend` without warnings.
+- Equivalence: the same HTTP scenario (32 calls: announce, bookings, all rejections, chain to both
+  mails, cancellation, timeline, state-at, verify, wipe, rebuild, verify, SSE backlog) ran against the
+  `main` build and the refactored build, each on fresh isolated containers (PostgreSQL :25434, MongoDB
+  :27118, seeded chaos). Normalized responses and the deterministic activity entries are identical;
+  both builds stop on SIGTERM with "encore-backend stopped" and no ERROR lines.
+- `make check` ✓ end to end (Rust checks above plus `vue-tsc`, `eslint`, vitest 49/49 of the unchanged front-end).
+- Not run here: the browser demo script and `make full` (image builds).
+
+## cqrsx extractions — backlog 01–06 (2026-10-17)
+
+Branch `feat/cqrsx-extractions` from `refactor/clean-architecture`; plan in
+`docs/backlog/01_cqrsx_extractions/IMPLEMENTATION_PLAN_01-06.md` (epic 01 removed 2026-10-23), one commit per ticket (cqrsx change, tests, `components.md`, demo
+adoption). Wire formats of the demo are unchanged in every step.
+
+Baseline before step 01 (commit `f0e7d32`, all green):
+
+| Build | Check | Result |
+|---|---|---|
+| root | build, fmt, clippy `-D warnings` | ✓ |
+| root | `cargo test --workspace --all-features` | lib 186, `cqrs` 17, `postgres` 85 (testcontainers), `task` 28, `logging` 1, `log_fallback` 1, doctests 33 + 7 |
+| root | `--no-default-features`; `postgres`, `worker`, `host`, `logging` alone | 167; 278, 216, 240, 169 tests |
+| root | `llvm-cov --workspace` / `-p cqrsx`, threshold 97 % | 97.56 % / 97.56 % lines |
+| demo | fmt, clippy `-D warnings` | ✓ |
+| demo | `cargo test --workspace` | back-end unit 88, architecture 2, `write_side` 1 (testcontainers), sidecar 6 |
+
+Known flake (pre-existing, not caused by this series): under `llvm-cov -p cqrsx` with default test threads,
+`task_queue::timeouts::delayed_batch_keeps_the_original_task_deadline_and_skips_expired_execution` once hit its
+300 ms storage timeout (`Elapsed`); an immediate rerun on the same commit passed.
+
+| Step | Ticket | Commit | Result |
+|---|---|---|---|
+| 01 | `BoxedTaskAdapter`; demo enum adapter deleted | `70b41bc` | root tests 358 → 363, coverage 97.57 % / 97.57 %; demo 97 tests unchanged; all checks ✓ |
+| 02 | `EventHandler::name`, `FailedHandler` in `CommittedWithEventHandlerFailure`; demo `NamedHandler` deleted | `445f52e` | root tests 363 → 366, coverage 97.61 % / 97.61 %; demo 97 → 98 (`NotifyingHandler` names); all checks ✓ |
+| 03 | `PostgresCommandExecutor::new(pool, config, services).with_event_handler(Arc<dyn EventHandler>)`, `impl EventHandler for Arc<H>`; demo `Executors` and aliases deleted | `8dd8447` | root tests 366 → 369 (2 testcontainers), coverage 97.63 % / 97.63 %; demo 98, `write_side` green on PostgreSQL; all checks ✓ |
+| 04 | `cqrs::testing::{command::TestCommandExecutor, unavailable_store::UnavailableStore, mem_view_repository::MemViewRepository}`, `TaskAttempt::first`; demo `application/test_support.rs` and `MemoryReadModelStore` deleted | `7292ecd` | root tests 369 → 379 (+1 doctest), coverage 97.65 % / 97.65 %; demo 98 (unit 89 unchanged); all checks ✓ |
+| 05 | `cqrs::command::causation::Causation` (`root`, `from_task`, `event_metadata`, `stamp_task`), uuid `v7` (lock unchanged); demo `correlation_of` deleted, `CommandMetadata { causation, recorded_at }` | `051c5be` | root tests 379 → 384, coverage 97.68 % / 97.68 %; demo 98, wire guards tightened; all checks ✓ (the `--features postgres` run once failed with a transient "can't find crate" build error, the immediate rerun passed: 156 + 18 + 83 + 5 + 34 + 7) |
+| 06 | `EventReplay::set_progress_observer` (`ReplayProgress`), `with_pace`; demo `projections/progress.rs` deleted | `e54cc20` | root tests 384 → 388, coverage 97.72 % / 97.72 %; demo 98, rebuild activity sequence unchanged; all checks ✓ |
+
+Series total (`f0e7d32..e54cc20`): `cqrsx` src + tests +1806 / −40 lines (about half of it tests), demo back-end
++438 / −613 (src +407 / −599); root tests 358 → 388, coverage 97.56 % → 97.72 %; demo tests 97 → 98. Both
+breaking changes (02: `handlers: Vec<FailedHandler>`; 03: `PostgresCommandExecutor::new(pool, config, services)`)
+are listed in their commit messages. Not done here: tickets 07–10, merging into `main`, a browser walk-through.
+
+## Phase table
+
+| Phase | Status | Verified by | Manual check needed |
+|---|---|---|---|
+| 0 | done (before this run) | `API_MAPPING.md` | — |
+| 0.5 | ✅ done | all 10 root commands (PHASE_0_5_REVIEW.md) | — |
+| 1 | ✅ done | SQL via psql in container, curl /health, npm scripts | `make up` with real podman compose |
+| 2 | ✅ done | `cargo test -p encore-backend domain` (25) | — |
+| 3 | ✅ done | curl + SQL + SSE + SIGINT | — |
+| 4 | ✅ done | SQL + mongosh + log after 50 bookings, SIGINT drain, unit tests | — |
+| 5 | ✅ done | curl read API, MongoDB stop/start, LWW unit tests | — |
+| 6 | ✅ done | curl wipe/rebuild/status/time machine, compare script, SQL traces | — |
+| 7 | ✅ done | curl all /inspect endpoints, SSE counts, PostgreSQL stop/start | — |
+| 8 | ✅ done | typecheck, eslint, 14 vitest (incl. jsdom smoke), build, Vite proxy curls | demo script steps 1–7 in a browser |
+| 10 | ✅ written | files reviewed; README | `make full` (image builds) on a machine with podman |
+| 9 | ✅ done | verify curls, integration test, front-end checks | step 8 and the chapters in a browser |
+| refactor | ✅ done | fmt, clippy, 97 Rust tests, architecture test, A/B HTTP scenario vs `main` | the demo script in a browser |
+
+## Blockers
+
+None so far.
+
+## Known problems
+
+None so far.
+
+## Final state
+
+- Commits (newest first): `demo: lock testcontainers…`, `phase 9`, `phase 9 (part)`, `phase 10`, `phase 8`,
+  `phase 8 (wip)`, `phase 7`, `phase 6`, `phase 5`, `phase 4`, `phase 3`, `phase 2`, `phase 1`,
+  `Add execute_with_metadata…` (cqrsx, `5407f78`), `demo: add plan…`.
+- Last full check set (06:05 UTC): `cargo fmt --check` ✓, `cargo clippy --workspace --all-targets -D warnings` ✓,
+  `cargo test --workspace` ✓ (47 back-end unit, 3 sidecar, 1 integration through the shim),
+  `vue-tsc` ✓, `eslint` ✓, `vitest` 14/14 ✓, `vite build` ✓; root `cargo build --locked --workspace --all-features` ✓,
+  root `Cargo.lock` untouched.
+- Containers `encore-sandbox-postgres` / `encore-sandbox-mongo` stopped (volumes kept); shim stopped.
+
+## How to run tomorrow
+
+```bash
+cd demo && make up && make dev        # with a real podman compose; or start the DBs as in "Environment limitations"
+make check                            # fmt, clippy, cargo test, vue-tsc, eslint, vitest (all green at this point)
+```
+Sandbox containers `encore-sandbox-postgres` / `encore-sandbox-mongo` were stopped at the end of the run; their
+volumes (`encore-sandbox-pg`, `encore-sandbox-mongo`) keep the demo history (≈121 events).
+
+## Requires manual verification
+
+- `make up` / `make down` / `make dev` with a real `podman compose` (not available in the sandbox).
+- **2026-10-17, cast and bands renamed** (no backward compatibility): personas are now 🦊 Fox (`fox`),
+  🐼 Panda (`panda`), 🦄 Unicorn (`unicorn`) and 🤖 Arbitrage Bot (`arbitrage-bot`); the seed concerts are
+  Radiohead in Minsk (`radiohead-2026-11-21`), Rammstein in Tokyo (`rammstein-2026-12-05`) and Muse in
+  Tbilisi (`muse-2027-01-16`); concert ids are now `<artist-slug>-<yyyy-mm-dd>` (seed and announce dialog). Existing databases keep the
+  old artists (R2 ignores a repeated announce) and old fan ids, so `make reset` before `make up`.
+- **2026-10-17, diagram scenes queued**: signals no longer overlap on the canvas; scenes play one
+  after another (declared duration + 200 ms gap), and a scene that would start more than 4 s behind
+  reality is skipped. Front-end only, no back-end delay. 43 vitest tests.
+- **2026-10-17, animation speed**: the diagram header offers 0.5× · 1× · 2× (persisted as `encore.pace`);
+  the choreography scales every timer by it. 45 vitest tests.
+- **2026-10-17, forks on the diagram**: accepted scenes hold the queue only until the token reaches
+  events + outbox; the next scene (task chain, mail attempt) starts at that moment while the projection
+  branch finishes, mirroring the single transaction. 46 vitest tests.
+- **2026-10-17, the person below the diagram** (restore point: tag `restore-before-actor-rework`):
+  the bottom-left diamond is now the command side of the UI, the persona is a circle at the bottom
+  connected to both UI diamonds and to email; scenes start at and return to the person. Canvas
+  1206×472, diagram block 32 rem. 46 vitest tests.
+- **2026-10-17, demo lifecycle moved to the sidecar** (commit `aa11c79`): the back-end lost
+  `app::seed`, `ENCORE_SEED` and `seed_concerts` in `/api/config` — it carries no demo-only code. The
+  sidecar (`demo.rs`) announces the default concerts at start-up through the back-end's public API
+  (retries for 3 min) and serves `GET /inspect/demo` + `POST /inspect/reset` (TRUNCATE of the three
+  tables under the new `encore_demo_admin` role from `infra/postgres`, drop of the three collections,
+  seed again). UI: «⟲ Reset the demo» in the Encore panel (confirm → toast). New dependency: `reqwest`
+  in the sidecar. Requires `make reset` + `make up` (new role) and a rebuild of both binaries.
+  Verified: cargo fmt/clippy/test (demo workspace), front-end typecheck/lint/48 tests/build.
+  **Manual:** run `make dev`, press ⟲, check `events` holds exactly three `ConcertAnnounced`.
+- **2026-10-17, boundary audit implemented** (commits `3c1b771` cqrsx, `790ec18` demo; the audit is
+  `docs/BOUNDARY_AUDIT.md`, the decision is PLAN.md D-13, the open questions are `docs/discussions/`).
+  Back-end: lost `POST /api/projections/wipe`, `GET /api/fans/{fan_id}/inbox`, the cast and the mail
+  knobs in `/api/config`, and the whole mail simulation (`infrastructure::mail::{chaos,
+  flaky_mail_server}`, `infrastructure::mongo::inbox`, `ENCORE_TASK_FAILURE_RATE`, `_LATENCY_*`,
+  `ENCORE_CHAOS_SEED`, `ENCORE_MAIL_DB`, the `rand`, `sha2`, `hex` dependencies); gained
+  `infrastructure::mail::http_mailer::HttpMailer` (`POST {ENCORE_MAIL_SERVICE_URL}/mail` with
+  `Idempotency-Key`; 503 → retry with the 1, 2, 4, 8 s backoff, 429/5xx/unreachable → retry, 4xx →
+  permanent; tests against a stub axum server) and `PostgresLedger` over the new cqrsx
+  `PostgresEventRepository::totals::<A>()` (backlog 08: `LedgerTotals`, integration test
+  `event_store::totals`, `components.md`). Sidecar: `POST /inspect/projections/wipe`,
+  `GET /inspect/mail/{fan_id}`, `personas` in `GET /inspect/demo`, and the moody mail service
+  `POST /mail` (`sidecar/src/mail.rs` + `mail/{chaos, inbox}.rs`, `SIDECAR_MAIL_FAILURE_RATE`,
+  `_LATENCY_MIN_MS/_MAX_MS`, `_CHAOS_SEED`); `reset` unchanged. UI: `sidecar.wipe()`, `sidecar.inbox()`
+  (raw inbox docs, `_id` → `inbox_id`), `session.demo.personas`; the `projections.wiped` activity is
+  gone (the wipe no longer happens in the back-end). Compose: `ENCORE_MAIL_SERVICE_URL=http://sidecar:8090`.
+  Verified: cqrsx fmt/clippy, all-features tests (88 integration + units) and doctests, the feature matrix
+  and both `llvm-cov --fail-under-lines 97` runs; demo fmt/clippy, `cargo test --workspace`
+  (92 back-end unit, 2 architecture, 1 write_side, 14 sidecar); front-end typecheck/lint/52 tests/build.
+  Requires a rebuild of both binaries. **Manual:** `make dev`, book a seat, watch the 🎫 task go through
+  `POST /mail` in the `[sidecar]` log (some attempts 503), press 🧨 (sidecar) then ⏪ Encore!, then ⟲.
+- **2026-10-20, backlog 02/01 measurement baseline** (branch `perf/postgres`, not committed: the user
+  commits). The k6 stand `load/` is unchanged except two generic extension points in `load/run.sh`
+  (`LOAD_COMPOSE_EXTRA`, `LOAD_HOOKS`, documented in `load/README.md`). The epic's tools live in
+  `docs/backlog/02_postgres_performance/perf/`: `compose.perf.yaml` (PostgreSQL with `pg_stat_statements`
+  + `track_io_timing`), `hooks.sh` (counter snapshots before/after the burst and after the drain in
+  `counters.tsv`: cgroup CPU of back-end/PostgreSQL/MongoDB, PostgreSQL packets, commits/rollbacks, WAL
+  position, completed tasks; `pg_statements.tsv`, `pg_statements.drain.tsv`), `tools/collect.mjs`
+  (`efficiency` per command, `drain.per_task`), `matrix.sh` (`REPEAT=N` passes, `ONLY=<series|point>`),
+  reports with medians and min–max (`report.sh`, `tools/compare.mjs` with `≠`, `perf-report.html`).
+  Baseline `perf-base-` (01/02a/02b/03a × 3, pool 20, 4/4/3/4 quota) and the per-ticket point lists are
+  in the epic README. Finding: an announce is 3 statements but 18 packets = 9 round trips; sqlx 0.8.6
+  pings on every acquire AND on every return to the pool. Verified: `bash -n`, `node --check`, check runs
+  through `perf/run.sh` (02a, 03a-w8 drain) and a plain `load/run.sh` run; reports on old and new results.
+  **Manual:** open `load/results/perf-report.html` (not viewed in a browser here).
+- **2026-10-20, backlog 02/02 idle-only connection ping** (branch `perf/postgres`, not committed: the
+  user commits). cqrsx `postgres/pool.rs`: every pool takes an explicit `ConnectionPingPolicy` — `Default` (SQLx's
+  ping on every hand-out) or `Idle(d)` (`test_before_acquire(false)` + a `before_acquire` ping only for
+  connections idle longer than `d`; `DEFAULT_IDLE_PING_AFTER` = 100 ms); the rest of the pool's
+  configuration is SQLx's `PgPoolOptions`: `connect_pool_with(options, pool, policy)`,
+  `connect_pool(options, policy)`, `policy.apply(pool)`. `connect_pool_with_size` removed; the back-end
+  uses `connect_pool_with(options, PgPoolOptions::new().max_connections(n), Idle(DEFAULT_IDLE_PING_AFTER))`.
+  Tests: unit threshold and `apply`, integration "Idle at the default threshold replaces a connection idle
+  longer than it", "Idle at 60 s: a just-dead backend fails the first query, the next one gets a new
+  connection" (the documented risk), "Default replaces a just-dead backend unseen"; `components.md`
+  "Backend assembly". Measured `perf-02-` vs
+  `perf-base-` (02a-vus100, 02b-vus100, 03a-w8 × 3, with a 10 s threshold; one pass at 100 ms confirms the
+  same figures, as connections idle for well under a millisecond under load): −6 packets per command
+  (18 → 12 in 02a), statements unchanged, PostgreSQL CPU per command −4…−7 %, back-end −1…−5 %; req/s and
+  drain tasks/s within noise (02a is k6-bound at ~11k/s); p99 medians up but ranges overlap. Ticket 16 (the
+  ping SQLx sends on every return to the pool) opened. Verified: cqrsx build, fmt, clippy, full tests, the
+  feature matrix, both `llvm-cov --fail-under-lines 97` (97.74 %, `pool.rs` 100 %); demo fmt, clippy,
+  `cargo test --workspace` (99 back-end unit, 2 architecture, 1 write_side, 14 sidecar).
+- **2026-10-20, epic 02 measurement speed and power** (uncommitted). Back-end image: the pinned toolchain in
+  its own layer, cargo registry and `target` as build cache mounts, our crates touched before the build
+  (cargo's mtime freshness let a stale cached binary through for a `git archive` context); `.dockerignore`
+  skips `load/results`. A rebuild after a cqrsx change: ~21 s instead of 1.5–2.5 min. `perf/run.sh`:
+  `GENERATOR=auto|wrk|k6` (wrk image `perf/generator/`, stands in for k6 via `LOAD_K6_IMAGE`, writes k6's
+  `result.json`; ~21 ms CPU per 1000 requests against k6's ~245), `PROFILE=full|db|app` (PostgreSQL or
+  back-end on 2 cores), `BACKEND_IMAGE=` (a "before" image, `compose.image.yaml`). The epic measures one
+  point per ticket in the profile of its bottleneck, before/after interleaved. Ticket 02 remeasured
+  (02a, wrk, × 3): `db` +6 % req/s and p99 −23 % (both ≠), PostgreSQL and back-end CPU per command −6 %;
+  `full` +9 % req/s (overlapping, MongoDB-bound); `app` req/s unreliable under the quota, back-end CPU per
+  command −8 %. Mistake on the way: a `git checkout -- cqrsx/src/postgres/pool.rs` meant to undo a probe
+  edit reverted the ticket's file to HEAD; restored from the session and re-verified.
+- **2026-10-20, backlog 02/03 bound sequence parameter** (uncommitted). cqrsx `SqlQueryFactory` builds
+  `select_events_after` once with `sequence > $3`; `get_events_after` binds type, id and the watermark;
+  `fetch_events` takes an already bound `Query` for both event reads. No public API change. Tests: the
+  query text (unit), "ten watermarks on one connection → one prepared statement, with `$3`" plus the
+  exclusive lower bound (integration). Measured (01-hot-key-vus40, profile `db`, k6, before/after
+  interleaved × 3): accepted commands/s 417 → 477 (+14 %, ≠), p99 −11 %, PostgreSQL CPU per accepted
+  command −11 %, packets −5 %, statements and the 409 share unchanged. Note: pg_stat_statements normalizes
+  literals, so the old spliced texts never showed as separate rows there.
+- **2026-10-21, backlog 02/04 single-statement queue** (uncommitted). After measuring a separate queue pool
+  (its `W/10` default starved the drain, −35 %), the decision: one shared pool whose sessions carry a
+  statement timeout, and a separate uncapped pool for whole-history reads. cqrsx: `StatementTimeout::{Default
+  (4 s), Custom(Duration), Unlimited}`, a required argument of `connect_pool` / `connect_pool_with` (a startup
+  parameter of every session); claim, settle and recovery are one autocommitted statement each (recovery's
+  backoff in SQL, per row); `PostgresTaskQueue::new(PgPool)`, `prepare_task_runtime(pool, factory,
+  runtime_config)`; `PostgresTaskQueueConfig` and env `OUTBOX_POSTGRES_STATEMENT_TIMEOUT_MS` removed;
+  components.md warns that an aggregate with a long history and no snapshots can reach the cap. Demo: main
+  pool with `ENCORE_DATABASE_STATEMENT_TIMEOUT_MS`, history pool (`ENCORE_DATABASE_HISTORY_POOL_SIZE`,
+  `Unlimited`, no idle connection) for Encore!, verify, totals and the time machine. Measured (03a-w8,
+  profile `db`, shared pool 20, interleaved × 3): statements per drained task −59 %, packets −41 %, back-end
+  CPU per task −14 % (all ≠), drain tasks/s +9 % (overlapping), API during the burst −2 %. E2E (temporary
+  script): a slow rebuild of 4 s passes with the main pool capped at 1 s, verify ok before and after.
+  Verified: cqrsx build, fmt, clippy, full tests, the feature matrix, both `llvm-cov` (97.72 %); demo fmt,
+  clippy, tests.
+- **2026-10-21, backlog 02/06 conflict without an error** (uncommitted). cqrsx outbox writer: without a
+  snapshot the event insert takes `ON CONFLICT (aggregate_type, aggregate_id, sequence) DO NOTHING` and the
+  statement returns the written count (0 = `OptimisticLockError`); with a snapshot unchanged (a first snapshot
+  still fails the statement so it rolls back with the event). Test: a one-connection session with forced
+  statistics flushes sees +0 `xact_rollback` for a conflict without a snapshot, +1 for one with a first
+  snapshot (control: `1/0`). Perf hooks count PostgreSQL log ERROR lines and bytes per run. Measured
+  (01-hot-key-vus40, profile `db`, k6, interleaved × 3): throughput and PostgreSQL CPU per command unchanged
+  (within noise), rollbacks per command 7.1 → 0, WAL per command −47 %, packets −8 %, PostgreSQL log
+  5.8–17.3 MiB → 0.01 MiB per run. Verified: cqrsx full check set (97.73 %), demo tests.
+- **2026-10-21, backlog 02/05 single-query aggregate load — rejected by measurement, code reverted.**
+  Implemented and verified (full check set, 97.57 %, e2e smoke): a `get_snapshot_with_events` trait method with
+  a two-read default, one PostgreSQL statement (newest snapshot in a `MATERIALIZED` CTE, `UNION ALL` the events
+  after it), the incompatible-snapshot fallback as a second full read. Measured (profile `db`, interleaved):
+  02a +3 % req/s (new aggregates, empty result), 02b −6 % req/s and +4 % PostgreSQL CPU per command (the
+  combined statement executes in 67.6 µs against 62.4 µs for the two simple ones), hot key −12 % accepted
+  commands/s with the same number of attempts but fewer won writes. An isolation run (combined statement +
+  a fresh tail read restores the win share) showed why: on a hot key the race is decided by the time from the
+  last read's MVCC snapshot to the write, and one statement puts the snapshot's transfer and decoding inside
+  that window. Decision: reject; ticket 07 (aggregate cache) keeps the tail read last and simple.
+- **2026-10-21, backlog 02/07 aggregate cache — deferred** (docs only). A snapshot already is the cache of
+  the fold (state at S + events after S); an in-process cache is a second level of the same mechanism.
+  Without aggregate-to-node affinity it goes stale with every write by another node, the tail read stays
+  (ticket 05: it must be the last read), so only back-end JSON/replay CPU is saved, and its share is not
+  measured. Revisit with routing by `aggregate_id` or a back-end profile. Tickets 08 and 09 no longer
+  depend on it.
+- **2026-10-21, backlog 02/08 planned and split** (docs only). Ticket 08 is now the plan for per-aggregate-key
+  queues (key = aggregate type + ID): 08a, a FIFO turn per key for commands (`tokio::sync::Mutex` per key in
+  our own registry, held around the conflict retries; refusal → `Unavailable`), and 08b, ordered delivery of
+  committed events to each projection (bounded `tokio::sync::mpsc` per projection and key, a worker per
+  active key, batches, receipts; the turn is released after the hand-over; Encore! and shutdown wait for
+  `drained()`). Found on the way: `ViewProjection` applies events without an order check, so concurrent
+  handlers of one aggregate may apply them out of commit order, and handlers of a dropped request never run.
+  Decisions the same day: refusal → `Unavailable`; API may break, so `CommandOrdering` becomes a required
+  argument of the command config; every limit is configurable env → config → cqrsx with the defaults as public
+  cqrsx constants; `Ordered` delivery without per-key turns is a configuration error; a stand with two back-end
+  nodes behind nginx (round robin or hash by aggregate key) is ticket 17, done before measuring 08a.
+- **2026-10-21, backlog 02/17 two back-end nodes behind nginx** (uncommitted). The stand gets one generic
+  extension point, `LOAD_SERVICES_EXTRA` (services started with the stand, waited healthy, logs saved). The
+  epic's `perf/run.sh` gets `NODES=1|2` and `BALANCE=none|round_robin|key`: `compose.balancer.yaml` (nginx
+  1.30.6, one worker, no access log, keep-alive both ways, `X-Upstream` header, consistent hash of the
+  aggregate key taken from the path), `compose.node2.yaml` (`extends` of the stand's back-end); two nodes
+  split the profile's back-end CPU and the outbox workers; with a balancer the stand runs under a CPU quota.
+  `collect.mjs` reports the back-end as the sum of the nodes plus each node and nginx. Checked: compose
+  configs, `nginx -t`, the distribution per concert through `X-Upstream`, smoke runs, unchanged single-node
+  figures. Baseline for HEAD (profile `app`, ×3): 02b two nodes +28 % commands/s at the same CPU; hot key
+  unchanged with two nodes and −10 % with key affinity, 409 stays ~70 % — races live inside each process,
+  which is what 08a removes. A first series without the worker split was discarded (+27 % PostgreSQL CPU per
+  command from doubled queue work).
+- **2026-10-21, backlog 02/08a command turns** (uncommitted). cqrsx: `AggregateKey`, `cqrs/command/turns.rs`
+  (`CommandOrdering::{Concurrent, PerAggregate(TurnLimits)}`, `AggregateTurns`: a tokio mutex per busy key in a
+  registry of busy keys, FIFO, bounded by `max_wait` 1 s and `max_waiting` 128, refusal → `Unavailable`),
+  `CqrsCommandExecutor::with_turns` (the turn covers the conflict retries and the handlers), and
+  `PostgresCommandConfig::new(snapshot_interval, conflict_retry, ordering)` without a default. Demo:
+  `ENCORE_COMMAND_ORDERING` and the turn limits (the wait must stay below the outbox handler timeout); Encore!
+  now waits for the commands admitted before it locked the box office; neutral 503 texts; stand parameters
+  `ORDERING=`, `TURN_MAX_WAIT_MS=`, `TURN_MAX_WAITING=`. Tests include a `proptest` model of the turns.
+  Measured (×3, one and two nodes): on the hot key 409 → 0 and half the work per accepted command (PostgreSQL
+  and back-end CPU −40…−50 %, statements 33 → 10.5), no overhead on many keys; but one command holds the turn
+  ~2 ms with its inline MongoDB projection, so the key tops out at ~500 accepted/s against 600–670 for
+  concurrent commands in the `app` profile, and p50 grows to VUs × 2 ms. Demo default by the plan's rule:
+  `concurrent`; the lever is 08b (the projection out of the turn).
+- **2026-10-21, backlog 02/08b ordered projection delivery** (uncommitted). cqrsx: `CqrsFramework` split into
+  `decide_and_commit` and `notify`; `cqrs/event_handler/delivery.rs` (`HandlerDelivery::{Inline, Ordered}`,
+  `OrderedDeliveryConfig` 64/32, `DeliveryBacklog` with `drained()`) and `delivery/ordered.rs` (a mailbox per key
+  under one std mutex instead of an mpsc channel, so a job can never slip past a worker that is leaving; one
+  worker per busy key, batches, `catch_unwind` per poll); executors get `with_event_handler_via` and `backlog()`.
+  A command reserves buffer space after its turn and before it commits (bounded by the turn's `max_wait`, then
+  503 with nothing written), hands its events over in the poll that saw the commit, releases its turn, then
+  awaits the receipt; a client that leaves after the commit no longer loses its projection. Demo:
+  `ENCORE_PROJECTION_DELIVERY`, `_BUFFER`, `_MAX_BATCH`; Encore! and shutdown wait for the backlog (5 s limit);
+  stand `DELIVERY=`, `PROJECTION_BUFFER=`, `PROJECTION_MAX_BATCH=`, `VERIFY=1`. Tests include a `proptest`
+  model of the mailbox. Measured (×3, one and two nodes, verify `ok` in every run): the hot key takes
+  ~720–770 accepted/s (turn of 08a ~470–540, concurrent 460–680), 409 → 0, PostgreSQL CPU per command −60 %
+  against concurrent; batches hardly form on the stand (batch 1 = batch 32); two nodes round-robin lose 22 %
+  against concurrent (they fight over the key in the database), key affinity gains 21 %. Demo default by the
+  plan's rule: `per_aggregate` + `ordered`; unset delivery follows the ordering.
+- **2026-10-21, backlog 02/08c aggregate lock only** (uncommitted). The measurement left `concurrent` ahead only
+  for two nodes sharing a hot key round-robin, at 409 for two clients in three, so the mode is gone from cqrsx
+  and the demo: every command runs under its aggregate's lock. The mechanism is renamed turn → lock
+  (`cqrs/command/locks.rs`: `AggregateLocks`, `AggregateLock`, `LockLimits`, `LockRefused`, `DEFAULT_LOCK_*`;
+  `acquire` instead of `enter`). `CqrsCommandExecutor::new` takes the registry, `PostgresCommandConfig::new` the
+  `LockLimits`; `CommandOrdering`, `with_turns` and `OrderedDeliveryWithoutTurns` are removed, and
+  `with_event_handler_via` returns the executor. `TestCommandExecutor` shares one registry across its clones.
+  Demo: `ENCORE_COMMAND_ORDERING` removed, `ENCORE_COMMAND_TURN_*` → `ENCORE_COMMAND_LOCK_*`, unset delivery is
+  `ordered`; `.env.example` lists every lock and delivery value explicitly. Stand: `ORDERING=` removed,
+  `TURN_MAX_*` → `LOCK_MAX_*`. Tests that compared a run with and without turns now compare one shared registry
+  with registries of their own, like separate processes. No new measurement: the measured path is unchanged.
+- **2026-10-21, backlog 02/08d ordered delivery only** (uncommitted). `Inline` delivery is gone and `CqrsFramework`
+  has no event handlers: `CqrsFramework::new(store, services)`, `execute`/`execute_with_metadata` return the
+  committed events; `append_event_handler`, `decide_and_commit`, `notify`, the `AggregateError` variant for
+  handler failures, `CommittedWithEventHandlerFailure` and `EventHandlerFailure` are removed. Every handler belongs to a
+  command executor and gets its events through an ordered buffer per aggregate key:
+  `with_event_handler(handler, OrderedDeliveryConfig)` on `CqrsCommandExecutor`, `PostgresCommandExecutor` and
+  `TestCommandExecutor`; `HandlerDelivery` and `with_event_handler_via` are removed, and a failed handler's index
+  is its registration position. The handlers of one command now run side by side. Demo:
+  `ENCORE_PROJECTION_DELIVERY` removed (buffer and batch stay), the test configuration is ordered too; stand:
+  `DELIVERY=` removed. Framework tests check the returned events; handler tests moved to the executor.
+- **2026-10-23, backlog 02/08e executor API** (uncommitted). One engine, two factories: `FrameworkFactory<A>`
+  (every `Fn(Vec<NewTask>) -> CqrsFramework<A, S>` implements it), `CqrsCommandExecutor::new(factory, retry_policy,
+  lock_limits)` is long-lived and owns its lock registry and handlers; `PostgresCommandExecutor` and
+  `TestCommandExecutor` wrap one engine each (the test one in an `Arc`: clones share it, handlers are registered
+  before cloning) and run commands only through the `CommandExecutor` trait; `with_handlers`, `command_executor()`
+  and `with_retry_policy` are gone. `AggregateLocks`, `AggregateLock`, `LockRefused`, `OrderedDelivery`,
+  `DeliverySlot`, `DeliveryReceipt` and `DeliveryError` are crate-private; public are `LockLimits`, `DeliveryConfig`
+  (was `OrderedDeliveryConfig`), `DeliveryBacklog` and the defaults. `max_waiting` → `max_waiters` everywhere
+  (`ENCORE_COMMAND_LOCK_MAX_WAITERS`, stand `LOCK_MAX_WAITERS=`); internal `Lane`/`LaneRef` → `Line`/`LineRef`
+  (locks) and `KeyBuffer`/`BufferRef` (delivery). Delivery failure and panic logs carry the handler's name. Demo
+  tests that drove `OrderedDelivery` directly now go through `TestCommandExecutor<Fan>` with a held projection.
+  Known limitation recorded in `components.md`: a command future dropped while its commit is in flight may leave
+  committed events without their hand-over.
+- **2026-10-23, demo start-up and configuration tidy-up** (uncommitted). Both binaries start in three steps:
+  `Process::start()` (`.env`, logging, `Config`, connections), `bootstrap::wire(&process)` (the application
+  graph) and `process.serve(app)` (HTTP server, task runtime, stop, drain, close). Back-end: `process.rs` holds
+  the technical start and stop (the projection drain moved there from `bootstrap`), `bootstrap/` holds one
+  registry per kind of component: `aggregates/` (a module per aggregate: its command executor and the
+  handlers it feeds), `projections/` (a module per read model: collection, repository, maintenance; the index
+  collects the query ports),
+  `tasks.rs` (the outbox task handlers, moved from `infrastructure/task_runtime/dispatcher.rs`) and
+  `routes.rs` (the HTTP route table, moved from `presentation/http.rs`); `testing::process()` replaces the
+  five-argument `wire` in the router and bootstrap tests. Sidecar: `process.rs` (logging, config,
+  inspectors, server) and `bootstrap.rs` (X-ray poller and routes, demo lifecycle, mail service).
+  `.env.example` rewritten: eight sections, a description and the default per variable on a commented
+  line; README's configuration section points at it.
+- **2026-10-23, cqrsx README** (uncommitted). `cqrsx/README.md` written from scratch: what the library
+  guarantees, a path diagram, a complete in-memory quick start (aggregate, read model, outbox task, the test
+  framework and the test executor) that `lib.rs` includes as the crate documentation so it compiles and runs
+  with the doctests, a PostgreSQL assembly sketch pointing at the demo's `process.rs` and `bootstrap/`, the
+  configuration table with every default, the rules worth knowing, the testing tools and the features.
+- **2026-10-24, contiguous view documents (epic 03/01)** (uncommitted). `ViewContext` gains `last_sequence`;
+  `ViewProjection` applies only the next event of the aggregate, skips older ones and refuses a gap with
+  `PersistenceError::SequenceGap` before any write (a batch that applies nothing writes nothing).
+  `PostgresViewRepository` (column `last_sequence bigint NOT NULL CHECK (last_sequence >= 0)`),
+  `MemViewRepository` (`put(id, version, last_sequence, view)`) and the demo's `MongoViewRepository`
+  (`{ _id, version, last_sequence, view }`) store it next to the version under one optimistic check. Demo:
+  `incomplete` removed from `ConcertHallView`, `/api/concerts` and the front-end (D-15): after 🧨 wipe a booking
+  is accepted with the `projection_failed` warning, the feed names the gap and no document is created until
+  Encore!. No compatibility path: the project is unreleased, databases are recreated (`make reset`). Tests: the
+  contiguity table and a property test in `projection.rs`, `stress_two_writers_of_one_document_converge` and
+  `a_view_storage_failure_stalls_the_document_at_its_last_applied_event` on PostgreSQL,
+  `a_booking_after_a_wipe_is_recorded_but_the_read_model_refuses_the_gap` in `write_side.rs`.
+- **2026-10-24, event position in the journal (epic 03/02)** (uncommitted). `events.tx xid8 NOT NULL DEFAULT
+  pg_current_xact_id()` and `events_feed_idx (aggregate_type, tx, aggregate_id, sequence)`: every event records the
+  transaction that wrote it. `PersistedEventRepository` gains `feed_after` (a page above a position and below the
+  snapshot horizon, never cutting a transaction in two), `head` and `aggregate_ids_after`; `Position` and `FeedEntry`
+  live in `cqrs::store::feed`. New `cqrs::testing::mem_event_repository::MemEventRepository`, an in-memory repository
+  with the PostgreSQL write rules by meaning and one position per commit (`MemStore` only implements `EventStore`);
+  it replaced the fake in `tests/cqrs/history.rs`. Tests: eleven horizon, paging and key cases on PostgreSQL in
+  `tests/postgres/event_store/feed.rs`, an EXPLAIN test in `schema.rs` that keeps the feed and the head on
+  `events_feed_idx` and the keys on the primary key, in-memory tests and the snapshot property test over the new
+  repository. No upgrade asset: the project is unreleased. The sidecar's X-ray column list now shows `tx xid8`; its
+  code is unchanged. The hot-key before/after measurement moved to 03/03.
+- **2026-10-24, projection processor with a checkpoint (epic 03/03)** (uncommitted). cqrsx gains the read side
+  of the epic: `CheckpointStore` (one row per projection and aggregate type with a lease, `PostgresCheckpointStore`
+  over `PROJECTION_CHECKPOINTS_SCHEMA`, `MemCheckpointStore` for tests), `ProjectionProcessor` (claims the row,
+  extends the lease every third of it, reads the journal in pages from the checkpoint with a window of
+  `capacity − 1` pages in flight, hands every key's events to the key's worker of the ordered delivery, moves the
+  checkpoint behind the completed prefix, backs off `retry_base · 2^(n−1)` on a failed round, heals a document that
+  refused a gap in place, rebuilds the whole journal by cursor or one key on request through the same workers and
+  stops cleanly on shutdown), `RebuildableProjection::rebuild(id, history, prefix)` on `ViewProjection` (a document
+  ahead of the history read is refused, so a stale owner never rolls it back), `CommitWakeup` (the executors wake
+  the processors of their aggregate type after a commit), `ProjectionRuntime`, `ProjectionObserver`. Rebuild jobs
+  run inside `OrderedDelivery` as batches of their own (`Done::{Applied, Rebuilt}`); `tokio-util` is a core
+  dependency. Tests: the fault model F1–F24 over in-memory stores behind wrappers with gates and scripted failures
+  (`tests/cqrs/projection/*`, incl. `property_processor_matches_a_model_under_random_faults`), the checkpoint
+  statements, schema checks and six processor scenarios on PostgreSQL (`pg_terminate_backend`, a killed owner, an
+  idle writing transaction, a rebuild under commits, two nodes); coverage 97.56 %. The demo is untouched until
+  04. Measurement (G6, `01-hot-key-vus40`, profile `db`, three passes before/after the `tx` column and
+  `events_feed_idx`, overlay `perf/compose.before-feed.yaml`): accepted/s 705 → 710, CPU PostgreSQL per 1000
+  commands 1755 → 1689 ms (noise), WAL per command 4231 → 4433 B (+5 %, the index entry), `verify ok` in every run.
+- **2026-10-24, MongoDB read side in cqrsx (epic 03/04a)** (uncommitted). cqrsx gains the feature `mongodb`
+  (driver 3.9.1 without default features: `compat-3-0-0`, `rustls-tls`): `mongodb::view_repository::MongoViewRepository`
+  (the demo's document `{ _id, version, last_sequence, view }`, an unreachable server is a `ConnectionError`, a
+  duplicate insert or a stale version a conflict) and `mongodb::projection_checkpoints::MongoCheckpointStore` (one
+  document per projection and aggregate type in `projection_checkpoints`, the requested keys in its
+  `rebuild_keys` array, every operation one atomic statement by the server's `$$NOW`, strings in pipelines as
+  `$literal`, `advance_rebuild` idempotent by equality because the document cannot order the journal's keys).
+  The processor registers its row before every claim, so a dropped checkpoint collection leads to a full
+  self-rebuild; `MemCheckpointStore::clear` models the drop. Driver failures of the store log one `error` with a
+  fixed category and the server's code (`log_mongodb_failure`). Tests: `tests/mongo.rs` on testcontainers
+  `mongo:8.2` (the repository contract and a stress of concurrent writers without a lock, the checkpoint mirror of
+  the PostgreSQL tests plus the document shape and a dropped collection, the processor over an in-memory journal
+  with a rebuild and a wipe of both collections, and the journal in PostgreSQL with the read side in MongoDB); the
+  container fixtures moved to `tests/support/{port_lease,postgres,mongo}.rs`. The demo writes its read models
+  through the library repository (`infrastructure/mongo/read_model.rs`, `MongoReadModel`: queries and wipe of its
+  own); its `view_repository.rs` is gone. CI: the feature matrix and the stress step get `mongodb`.
+- **2026-10-25, the demo on the projection processors (epic 03/04)** (uncommitted). The demo's read models follow the
+  journal by themselves: one `ProjectionProcessor` per read model (`concert_halls`/`Concert`, `fan_wallets`/`Fan`)
+  with a checkpoint in MongoDB next to the documents, woken by `CommitWakeup` from the executors, reading the journal
+  through its own pool (`ENCORE_DATABASE_PROJECTION_POOL_SIZE`), configured by `ENCORE_PROJECTION_*` and named by
+  `ENCORE_NODE_NAME`; the projection runtime is a task of its own on the shared shutdown token and a panic stops the
+  process with an error. A command answers *accepted* right after the commit (D-17); `NotifyingHandler`,
+  `BoxOfficeLock`, the 423 answer, `ENCORE_CHAIN_MAX_ATTEMPTS`, the scratch collections of verify and the old
+  `EventReplay` path are gone. ⏪ Encore! asks the checkpoint rows for a rebuild (`pace_ms`, D-18, at most
+  `ENCORE_REPLAY_MAX_PACE_MS`) and the owners replace the documents in place with the box office open (D-16); a
+  watcher publishes `rebuild.started/progress/finished`, every replaced document `projection.rebuilt`;
+  `POST /api/concerts/{id}/rebuild` rebuilds one hall. `GET /api/projections/status` reports state, lag
+  (`PostgresEventRepository::count_after`, capped, D-24), owner and failures per projection and falls back to the
+  rows seen last when MongoDB does not answer. Verify (D-20) compares each document with the fold of the part of
+  its history it applied and counts documents behind apart from wrong ones. cqrsx gains `count_after` next to
+  `totals` (PostgreSQL test, EXPLAIN test). The sidecar shows and wipes `projection_checkpoints` (read models
+  first, checkpoints second). Front-end: the screen waits for the document's `projection.updated` instead of
+  reading at once, polls the status once a second, shows each projection's state/lag/owner/stall cause, verify with
+  `behind`, a per-hall rebuild button, the checkpoints tab; no 423 or warning texts. Stand: `run.sh` samples the
+  status into `projections.jsonl` (lag p50/p99, catch-up time, owners, handovers in `result.json`), waits for the
+  projections before verify and requires zero documents behind, `LOAD_CHAOS` runs `load/chaos/*.sh` in the
+  background, `ledger.tsv` counts the events; `chaos.sh` runs the scenes (each at most 5 minutes, D-22) and holds
+  them to `chaos/check.mjs`. All seven scenes passed (MongoDB pause, `kill -9` and `kill -TERM` of the owner with
+  two nodes, PostgreSQL restart, Encore! at pace 0 and 80, wipe under load); results in the ticket. Verified:
+  fmt, clippy (all and no default features), workspace tests, feature matrix, coverage 97.66 % (workspace) and
+  97.64 % (cqrsx), demo tests, front-end lint/typecheck/65 tests/build, `smoke.sh`.
+  Measurement (D-23, 42 runs, 7 points × 3 passes before/after commit `6515268`, series `perf-04-before-` /
+  `perf-04-after-`): `verify ok` with nothing behind in all 42. The ticket's expectation about cost is **not met on
+  the hot key**: accepted/s 749 → 724 (40 VU, `app`, −3 %), 758 → 713 (`db`, −6 %), 777 → 695 and 805 → 554 at 10 VU;
+  SQL statements per command 8.4 → 15.7, PostgreSQL CPU per 1000 commands +35…55 %, MongoDB +57…89 %, WAL per
+  command +8…16 % (cause not investigated). At 700 commands a second every commit wakes a processor and a page holds one or two events, so
+  the batching the executor's handler had (up to 32 commands per write, 08b) is gone. Spread bookings (`02b`) and two
+  nodes with `round_robin` are within a few percent; lag on the hot key is 1–2 events (p99 2) and the projections
+  catch up in seconds; with `BALANCE=key` the owner probably sits on another node than the one that took the command (the wake-up
+  works inside a node) and trails by 80–130 events until the next poll. Chaos scenes: see the ticket. A wake-up coalescing delay or a minimum page size in `ProcessorConfig`
+  is the obvious next step and needs its own measurement.
+- **2026-10-25, cheaper projection processor (epic 03/04, follow-up of the measurement)** (uncommitted). After the
+  D-23 measurement the user chose two changes. cqrsx: the owner reads the journal only for a reason (a wake-up, the
+  poll, a full page before, a full window, the end of a pause); a page's receipt is none, and a page short of
+  `page_size` ends the reading. `ProcessorConfig::with_settle(d)` (default 0, at most the poll interval) makes the
+  owner wait `d` after a commit's wake-up, so a burst lands in one page; shutdown and a lost lease cut the pause. The
+  demo reads `ENCORE_PROJECTION_SETTLE_MS` with its own default of 10 ms. Measurement (4 points × 3 passes × settle
+  0/10/50 ms, series `perf-04b-s*`): on the hot key (40 VU, `db`) SQL statements per command 15.7 → 11.0 (no pause) →
+  9.3 (10 ms), PostgreSQL CPU per 1000 commands 2140 → 2052 → 1682 against 1511 with the handler in the command,
+  MongoDB 1027 → 550 against 595, back-end 1891 → 1221 against 1377; the read models trail by about 10 events (p99 14).
+  50 ms saves no more PostgreSQL (1762) but more MongoDB (427) and back-end (1118), at 50 events of lag. Spread
+  bookings get faster than with the handler in the command: 3692 → 4101 (10 ms) and 4227 (50 ms) accepted per
+  second. What remains on the hot key in every processor variant: accepted/s −8…−10 %, p50 +9…10 %, PostgreSQL
+  +11 % at 40 VU (+29…33 % at 10 VU), WAL +7…10 % at 40 VU and +17…19 % at 10 VU; the cause is not established (unverified hypotheses: hint bits under data checksums, contention
+  on the last index page). `verify ok` with nothing behind in all 36 runs.
+- **2026-10-25, `CqrsCommandExecutor` renamed `CommandExecutorCore`** (uncommitted, user's decision). The name read as a
+  peer of `PostgresCommandExecutor` and `TestCommandExecutor`, while both are this core with a factory of their own
+  (field `inner`). Code, tests, `components.md`, PLAN.md, API_MAPPING.md and ticket 03/05 use the new name; older
+  entries of this log and finished tickets keep the name of their time.
+- **2026-10-25, `AggregateLocks` renamed `AggregateLockRegistry`, `AggregateLock` renamed `AggregateLockGuard`**
+  (uncommitted, user's decision). The two names differed by one letter while one is the executor's registry of locks
+  and the other the lock one command holds until it drops it. Both are private: `locks.rs`, `executor.rs` and
+  `components.md` use the new names; older entries of this log and finished tickets keep the names of their time.
+- **2026-10-25, epic 03 ticket 05: executor handlers and the old replay removed** (uncommitted). The command path
+  is lock → framework → commit with retries → wake-up → answer; `max_wait` covers the lock only.
+  `with_event_handler`, `backlog`, `CommittedWithEventHandlerFailure`, `FailedHandler`, `EventReplay`,
+  `ReplayStream`, `stream_events`/`stream_all_events` and `with_streaming_channel_size` are gone. The ordered
+  delivery became the processor's private `processor/delivery.rs`; `DeliveryConfig` became `DeliveryLimits` in
+  `processor/config.rs` (with `MIN_DELIVERY_CAPACITY`, field `delivery_limits`), and `components.md` gained the
+  `Config` / `Policy` / `Limits` naming rule with its known deviations. `DeliveryBacklog` is gone, the rebuilder is
+  required, the batch logs carry the processor's name. `TestCommandExecutor::over_journal` runs a use case over a
+  `MemEventRepository` that processors read (`PersistedEventStore` is now `Clone`); the README quick start uses
+  it. New tests cover what the removed ones did: a hot key on PostgreSQL through `PostgresCommandExecutor`, event
+  metadata in a projection, upcasters and a failed history read on the rebuild path, a core executor with
+  services that are not `Clone`. Both models carry the `property_` prefix for the CI commit seed. Coverage 97.85 %
+  (workspace and `cqrsx`).
+- **2026-10-26, epic 04 tickets 01–06 (operation costs), one go.** Measured on stage images
+  `encore-load-backend:e04-{base,03,04,05,06}` (HEAD `47733f6` plus each ticket in turn), interleaved, in one session;
+  the final table is in the epic README ("Итог 01–06"). The user's decisions after the measurement: the
+  single-UPDATE variant of 03 and ticket 05 rejected (05 reverted); one commit per accepted ticket, 01 and 02 together.
+- **Epic 04 ticket 01: the chain through the drain, WAL and waits per statement** (stand tools only). `perf/`
+  hooks snapshot `pg_stat_wal`, container memory (`anon`, page cache), CPU-quota throttling and MongoDB's
+  `opcounters` (through a `mongo-probe` container, so that `mongosh` costs MongoDB no CPU); the statement dumps
+  carry WAL records, full-page images and bytes; one psql session samples the busy sessions every 100 ms
+  (`wait_events.tsv`); the `drained` point waits for the projections. `result.json` gains `efficiency.chain`
+  (before → drained per accepted command), `cores`, `queue` (claim and settle), `waits`; `compare.mjs` takes any
+  number of batches. Baseline (`db`, pool 20, `REPEAT=3`): the window's PostgreSQL CPU per hot-key command moves
+  1092–2241 ms with the share of the chain inside the window (0.38–1.00), through the chain it is 2247–2341 ms;
+  more outbox workers take hot-key throughput (841 → 710 → 672 accepted/s at 1 / 2 / 8 workers, WAL write waits
+  24 → 45 %); a spread booking costs 2831 ms of PostgreSQL CPU per 1000 through the chain against 517 in the
+  window. The comparison of ticket 03/04 again, through the chain: the processor costs PostgreSQL 3 % less than
+  the handler in the command (2355 → 2291 ms), the same statements, WAL −1 %, back-end −14 %, MongoDB −12 % (ops
+  −40 %): the "unexplained residual" was accounting; −5 % accepted/s remain, the price of the chain running next
+  to the hot key.
+- **Epic 04 ticket 02: constant-rate runs** (stand tools only). `run.sh SOAK=<duration> RATE=<n>`: k6's open model
+  (`constant-arrival-rate`), slices of 10 s (`soak.tsv`: outbox by status, `hook_slice` adds table sizes, dead
+  rows, autovacuum, checkpoints, WAL, FPI, temp bytes; k6 per slice), `soak` in `result.json` with a verdict
+  (≥ 99 % of the rate accepted, open tasks and lag at the end no higher than from 60 s on; medians of three
+  slices), an "over time" report section, `LOAD_SOAK_MAX_S` 300, `LOAD_MIN_FREE_GB` 10. Baseline (8 workers,
+  pool 20): sustained 750 bookings/s in `db`; in `full` 1100/s passes 2 minutes but not 5 (the queue grows by
+  8k tasks a minute after 80 s: settle 0.79 ms and 290 blocks, 70 % of SQL time, the outbox at 469 MiB, dead
+  rows up to 276k between autovacuum runs, 7 checkpoints and 3.4 GiB of WAL in 5 minutes).
+- **Epic 04 ticket 03: settle by the primary key.** The status predicate is gone from settle's CTE (the CHECK
+  gives only `processing` rows a lease token); a plan test reads the prepared settle from
+  `pg_prepared_statements` and checks custom and generic plans on a table whose expired-lease index is full of
+  settled tasks (it fails with the old predicate). Drain with 8 workers 1950 → 2688 tasks/s (+38 %), settle
+  0.44 ms / 94 blocks → 0.11 / 17, PostgreSQL per booking through the chain −20 %; the hot key does not gain
+  (−1 % accepted/s: bounded by WAL waits, the freed database goes to the chain). 5-minute runs: at 900
+  bookings/s the base falls behind by 4.8k tasks a minute, with 03 the queue stays flat. The single-UPDATE variant
+  (measured only, not in the tree) settles 10 % faster but drains slower (2436 tasks/s) and breaks the test of a
+  lease expiring behind an unchanged locked row: rejected by the user, only the predicate change is kept.
+- **Epic 04 ticket 04: command CPU trifles.** `PostgresEventRepository` holds `Arc<SqlQueryFactory>` and is `Clone`
+  like `PostgresEventRepositoryWithOutbox`; the executor's factory builds the repository once and gives every
+  command a clone; the snapshot is deserialized without a clone; `EventSink` takes a `std::sync::Mutex`. Profile
+  `app`: back-end CPU per booking 473 → 449 ms per 1000 (−5 %, repeats apart), hot key −4 %; PostgreSQL and MongoDB
+  unchanged.
+- **Epic 04 ticket 05: a new view document without a read — measured, rejected and reverted.** `ViewProjection::apply_events` writes a batch that starts
+  with the aggregate's first event as a new document (version 0) first; a duplicate or a gap falls back to the reading
+  attempts, which keep all `max_attempts` (the conflict is not reported). The test doubles got the version rules of
+  the real repositories; the processor tests' `writes()` counts stored writes only. Announces (`full`, wrk): MongoDB
+  operations 2.01 → 1.01 per announce, MongoDB CPU −42 %, back-end −21 %, PostgreSQL −7 %, announces +11 %; bookings
+  −8 % MongoDB operations through the chain.
+  The user rejected it: a new document is rare in production, and the second write path makes `ViewProjection`
+  noticeably more complex. `projection.rs`, its tests, the MongoDB and `MemViewRepository` tests, the processor
+  double's write count and the `components.md` sentence are back at `47733f6`; the MongoDB counters of 01 stay.
+- **Epic 04 ticket 06: MongoDB client pool** (demo). `ENCORE_MONGODB_POOL_SIZE` with `DEFAULT_MONGODB_POOL_SIZE`,
+  stand `MONGO_POOL=`. 10 / 32 / 64 connections (`REPEAT=3`): no more announces or bookings a second, MongoDB CPU
+  per command +7…17 % with the larger pools; the default is 10, the driver's own.
+- **Epic 04 final series** (75 + 20 runs, the five stages interleaved): the accepted code (03 + 04, 06 at its
+  default) drains +39 %, a booking through the chain costs −29 % PostgreSQL CPU, announces +2 % (with 05 they were
+  +14 %); the hot key unchanged (WAL-bound); memory unchanged at every stage. Sustained bookings in `db` 750 → 850 by 2-minute runs; at 900/s for 5 minutes the base's
+  queue grows by 4.8k tasks a minute, with 03 it stays flat. Incident: the sandbox's PID 1 (`sleep infinity`) never
+  reaps orphans, the stand's samplers leave ~5 zombies a run, and after ~110 runs `pids.max` (1024) was used up
+  (docker CLI: `pthread_create failed`); the runs after 03:08 were moved to `results/superseded--e04f-pids/` and
+  measured again under a child subreaper. The host's disk (95 % full) stalls `fsync` for up to half a second, so the
+  WAL-bound points got five repeats; the full table is `backlog/04_operation_costs/results_01_06.md`.
+- **2026-10-26, epic 04 ticket 19 (claim in batches).** Ticket 08 (settle with the next claim) was rejected: one
+  transaction for many tasks. Instead the task runtime's producer now claims only once fewer than
+  `OUTBOX_QUEUE_REFILL_PERCENT` (`buffer_refill_percent`, default 25) of the buffer wait, and then fills it; before,
+  it claimed for every freed slot, one claim per task on a hot key. The stand got `QUEUE=`, `LEASE=`, `REFILL=` and
+  tasks per claim (`rows_per_call`). Measured: buffers of 2C/4C/16C cut the chain's PostgreSQL CPU by up to 23 % and
+  sped the drain up to +35 %, but any buffer above C needs a lease for a second queued wave; the user kept Q = C and a
+  30 s lease. At Q = C = 8 the threshold matters only with a backlog: 100 → 50 % −5 % PostgreSQL CPU per booking, 33,
+  25 and 10 % within noise of each other (−9…−11 %); 25 % keeps a quarter of the buffer for the workers while the
+  claim runs. The hot key is unchanged (8 workers leave no backlog to batch). A host slowdown every ~5 minutes hit
+  the same variant in every pass of a fixed-order series; shuffle the order in future series.
+- **2026-10-26, epic 04 ticket 20 (tasks from the aggregate's decision).** A cqrsx component replaces ticket 11:
+  `cqrs::command::planner::{Decision, TaskPlanner, TaskPlanError}`. An executor registers one planner per aggregate
+  type (`with_task_planner`; tuples of two to eight planners are planners). The core calls it after `handle` on
+  every attempt with events, under the aggregate's lock, stamps the command's causation on every task, derives the
+  task id (UUID v5 of the aggregate, the command id, the task format and its ordinal; random without causation)
+  and commits the tasks with that attempt's events. `execute` lost its `tasks` argument and returns
+  `CommitReport { events, tasks }`; a planner error is `Unavailable`, logged as `task_plan`. `EventStore::commit`
+  takes the tasks, a repository without an outbox refuses them (`persist_with_tasks`), `FrameworkFactory` and
+  `with_outbox` are gone, `MemEventRepository` keeps an in-memory outbox. In the demo the processes
+  `TicketDelivery` and `Refund` plan for `Concert` and `Fan`; the cancellation no longer reads the concert before
+  the command (`history_store` removed). The stand counts aggregate loads and commits (`loads/commit`). Measured
+  with `REPEAT=5` in two series of 30 runs: on the hot key loads per commit 1.29 → 1.00, statements, transactions
+  and packets per command −10…−11 %, PostgreSQL CPU per command −3…−5 %, back-end −6…−10 %, accepted/s unchanged
+  (WAL-bound); the drain control within noise. The first series was meant to be shuffled, but
+  `shuf --random-source` with a repeated seed text gave every pass the same order; its −21 % MongoDB operations
+  per command shrank to −8 %, within noise, in the properly shuffled second series. Coverage 97.67 % (workspace)
+  and 97.65 % (`cqrsx`).
+- **2026-10-31, epic 06 (cqrsx code guidelines) done.** Rules `.claude/rules/rust-style.md` (the Google Rust Style
+  Guide adapted, 34 rules), audit `docs/cqrsx-style-audit.html`, epic `docs/backlog/06_code_guidelines/`. Committed:
+  01 measurement material (`43ef190`), 02 eleven risk fixes (`5715a12`), 03 no panics outside tests, one mutex helper,
+  panic lints (`5eea784`), 05 names and API types (`6b2e865`, `8b0468d`), 06 `Debug`/`#[must_use]`/borrowed
+  parameters (`144e0b2`), retrospective (`2cb6079`: style rules apply to new and changed code only), 04 copies kept
+  by measurement (`8f6defb`: per command 191.9 → 182.0 allocations, view cost per event 6.33 → 3.31; changes that
+  made code or API harder without a visible CPU gain reverted), 07 wrong comments and extension-point docs
+  (`06cd376`), 08 final measurement. Final series `e06-base` vs `e06` (36 runs) plus repeats of the four diverging
+  points on three images (36 runs): no regression, CPU per operation not worse anywhere, SQL statement sets and
+  `GET /api/config` unchanged; the first series' −18 % on the hot four-view key was host slowdowns hitting one image.
+  `demo/load/epic06/` (the epic's isolated measurement code) deleted. Final assessment in the epic README: the
+  lasting value is the risk fixes (02), the panic and borrowing lints (03, 06) and the task-queue contract docs (07);
+  renames (05), hand-written `Debug` (06) and the copies (04, no visible CPU gain) gave little for their cost.

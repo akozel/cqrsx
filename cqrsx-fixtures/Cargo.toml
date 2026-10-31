@@ -1,0 +1,19 @@
+[package]
+name = "cqrsx-fixtures"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Test fixtures of the cqrsx crates: database containers, leased ports, captured logs, isolated test processes"
+
+[dependencies]
+mongodb.workspace = true
+sqlx.workspace = true
+testcontainers.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

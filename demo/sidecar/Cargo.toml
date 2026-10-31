@@ -1,0 +1,40 @@
+[package]
+name = "encore-sidecar"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license.workspace = true
+description = "Encore: inspector of the PostgreSQL event store, outbox and MongoDB read models, the demo lifecycle (seed, reset, wipe) and the demo's moody external mail service"
+
+# Deliberately independent of cqrsx: it shows the databases "from the outside", as they are.
+# Everything that is demo-only lives here on purpose, so the back-end stays a plain production-style
+# service: seeding the default concerts, resetting everything, wiping the read models, and the
+# simulated external mail service the back-end's tasks call over HTTP.
+[dependencies]
+axum.workspace = true
+tower-http.workspace = true
+tokio.workspace = true
+tokio-util.workspace = true
+tokio-stream.workspace = true
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+chrono.workspace = true
+mongodb.workspace = true
+sqlx.workspace = true
+rand.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+tracing-subscriber = "0.3"
+dotenvy.workspace = true
+sha2.workspace = true
+hex.workspace = true
+reqwest.workspace = true
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
+http-body-util = "0.1"
+
+[lints.clippy]
+unwrap_used = "warn"
+expect_used = "warn"

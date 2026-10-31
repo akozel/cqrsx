@@ -1,3 +1,52 @@
 [workspace]
-members = ["cqrsx"]
+members = ["cqrsx", "cqrsx-engine", "cqrsx-fixtures", "cqrsx-macros", "cqrsx-mongodb", "cqrsx-postgres", "cqrsx-testing"]
+exclude = ["demo"]
 resolver = "3"
+
+# The versions the crates share; a crate adds its own `features` and `optional` on top.
+[workspace.dependencies]
+async-channel = "2.5.0"
+async-trait = "0.1.92"
+axum = "0.8.9"
+chrono = { version = "0.4.45", features = ["serde"] }
+cqrsx = { path = "cqrsx", version = "0.1.0" }
+cqrsx-fixtures = { path = "cqrsx-fixtures", version = "0.1.0" }
+cqrsx-macros = { path = "cqrsx-macros", version = "0.1.0" }
+cqrsx-mongodb = { path = "cqrsx-mongodb", version = "0.1.0" }
+cqrsx-postgres = { path = "cqrsx-postgres", version = "0.1.0" }
+cqrsx-testing = { path = "cqrsx-testing", version = "0.1.0" }
+futures = "0.3.34"
+log = "0.4.34"
+mongodb = { version = "3.9.1", default-features = false, features = ["compat-3-0-0", "rustls-tls"] }
+proptest = "=1.12.0"
+rand = "0.10.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+sha1 = { version = "0.10.7", default-features = false }
+sqlx = { version = "0.8.6", default-features = false, features = ["json", "chrono", "uuid", "postgres", "runtime-tokio-rustls"] }
+testcontainers = "0.28.0"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["time", "macros", "rt", "sync"] }
+tokio-util = { version = "0.7.19", default-features = false }
+tower-http = { version = "0.7.1", features = ["trace"] }
+tracing = "0.1.44"
+tracing-subscriber = "0.3.23"
+uuid = { version = "1.26.1", features = ["serde", "v4", "v7"] }
+
+# Rules of .claude/rules/rust-style.md: every public type is `Debug` (16), no `unsafe` (32).
+[workspace.lints.rust]
+missing_debug_implementations = "deny"
+unsafe_code = "forbid"
+
+# No panics outside tests (rules 6–8); tests are allowed by clippy.toml. A function that only reads an argument
+# borrows it (3); a builder method's result is used (20).
+[workspace.lints.clippy]
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+unreachable = "deny"
+todo = "deny"
+unimplemented = "deny"
+indexing_slicing = "deny"
+needless_pass_by_value = "deny"
+return_self_not_must_use = "deny"

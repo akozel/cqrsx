@@ -1,0 +1,552 @@
+@import 'tailwindcss';
+@import '@fontsource/inter/400.css';
+@import '@fontsource/inter/600.css';
+@import '@fontsource/inter/800.css';
+@import '@fontsource/jetbrains-mono/400.css';
+@import '@fontsource/jetbrains-mono/600.css';
+
+/* Dark "concert" theme. Zone colours live in lib/venue.ts and here as tokens. */
+@theme {
+  --font-sans: 'Inter', ui-sans-serif, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, monospace;
+  --color-bg: #0b0b1a;
+  --color-panel: #14142b;
+  --color-border: #26264a;
+  --color-neon-pink: #ff3ea5;
+  --color-neon-cyan: #22d3ee;
+  --color-neon-lime: #a3e635;
+  --color-neon-amber: #fbbf24;
+  --color-neon-red: #f43f5e;
+  --color-neon-violet: #a78bfa;
+}
+
+html,
+body {
+  background: var(--color-bg);
+  color: #e5e7eb;
+  font-family: var(--font-sans);
+}
+
+/* --- shared pieces --- */
+/* Scrollbars everywhere (panels, strips, the page): thin, in the panel's colours. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-border) transparent;
+}
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-thumb {
+  border-radius: 3px;
+  background: var(--color-border);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--color-border) 60%, #e5e7eb);
+}
+::-webkit-scrollbar-track,
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+.panel {
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  background: var(--color-panel);
+  padding: 0.75rem;
+  min-width: 0;
+}
+.action-btn {
+  border: 1px solid var(--color-border);
+  border-radius: 0.5rem;
+  padding: 0.25rem 0.75rem;
+  background: color-mix(in srgb, var(--color-panel) 80%, black);
+}
+.action-btn:hover:not(:disabled) {
+  border-color: var(--color-neon-cyan);
+}
+.action-btn:disabled {
+  opacity: 0.5;
+}
+/* --- pipeline strip: the architecture diagram (Vue Flow canvas, see components/pipeline) --- */
+.pipe-strip {
+  --pipe-edge: color-mix(in srgb, #e5e7eb 45%, transparent);
+  --pipe-edge-retry: color-mix(in srgb, var(--color-neon-amber) 65%, transparent);
+}
+.pipe-canvas {
+  min-height: 26rem;
+  padding: 0.5rem;
+}
+.pipe-strip .vue-flow__node {
+  cursor: pointer;
+}
+.pipe-strip .vue-flow__edge {
+  pointer-events: none;
+}
+.pipe-strip .vue-flow__handle {
+  width: 1px;
+  height: 1px;
+  min-width: 0;
+  min-height: 0;
+  opacity: 0;
+}
+.pipe-service {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 14px;
+  background: color-mix(in srgb, var(--color-panel) 35%, transparent);
+  transition:
+    opacity 0.3s,
+    background 0.2s;
+}
+.pipe-service:hover {
+  background: color-mix(in srgb, var(--color-panel) 70%, transparent);
+}
+.pipe-service-cyan {
+  border-color: color-mix(in srgb, var(--color-neon-cyan) 45%, transparent);
+}
+.pipe-service-violet {
+  border-color: color-mix(in srgb, var(--color-neon-violet) 45%, transparent);
+}
+.pipe-service-pink {
+  border-color: color-mix(in srgb, var(--color-neon-pink) 45%, transparent);
+}
+.pipe-service-title {
+  position: absolute;
+  top: -10px;
+  left: 14px;
+  padding: 0 6px;
+  background: var(--color-bg);
+  font-size: 14px;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+}
+.pipe-service-cyan .pipe-service-title {
+  color: var(--color-neon-cyan);
+}
+.pipe-service-violet .pipe-service-title {
+  color: var(--color-neon-violet);
+}
+.pipe-service-pink .pipe-service-title {
+  color: var(--color-neon-pink);
+}
+.pipe-node {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1px;
+  width: 100%;
+  height: 100%;
+  border: 1px solid var(--color-border);
+  border-radius: 8px;
+  padding: 2px 10px;
+  background: var(--color-panel);
+  font-size: 13px;
+  line-height: 1.2;
+  white-space: nowrap;
+  transition:
+    box-shadow 0.2s,
+    border-color 0.2s,
+    opacity 0.3s;
+}
+.pipe-node:hover,
+.vue-flow__node:hover .pipe-actor-shape {
+  border-color: #e5e7eb;
+}
+.pipe-store {
+  border-style: dashed;
+}
+.pipe-note {
+  position: absolute;
+  top: 100%;
+  left: 50%;
+  transform: translateX(-50%);
+  margin-top: 3px;
+  font-size: 11px;
+  opacity: 0.8;
+  white-space: nowrap;
+}
+.pipe-bubble {
+  position: absolute;
+  bottom: 100%;
+  left: 0;
+  margin-bottom: 6px;
+  white-space: nowrap;
+  border-radius: 4px;
+  background: var(--color-neon-red);
+  color: black;
+  padding: 1px 8px;
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+.pipe-actor {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  font-size: 12px;
+}
+.pipe-actor-shape {
+  position: absolute;
+  inset: 12%;
+  border: 1px solid color-mix(in srgb, #e5e7eb 60%, transparent);
+  border-radius: 6px;
+  background: var(--color-panel);
+  transform: rotate(45deg);
+  transition: box-shadow 0.2s;
+}
+.pipe-person-shape {
+  inset: 4%;
+  border-radius: 9999px;
+  transform: none;
+  border-color: color-mix(in srgb, var(--color-neon-cyan) 70%, transparent);
+}
+.pipe-actor-label {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  line-height: 1.1;
+  white-space: nowrap;
+}
+.pipe-actor-icon {
+  font-size: 16px;
+  line-height: 1;
+}
+.pipe-dim {
+  opacity: 0.4;
+}
+.pipe-glow-pulse {
+  box-shadow: 0 0 0 2px var(--color-neon-cyan);
+}
+.pipe-glow-ok {
+  box-shadow: 0 0 0 2px var(--color-neon-lime);
+}
+.pipe-glow-error {
+  box-shadow: 0 0 0 2px var(--color-neon-red);
+}
+.pipe-glow-busy {
+  box-shadow: 0 0 0 2px var(--color-neon-amber);
+  animation: pipe-pulse 1s ease-in-out infinite;
+}
+.pipe-edge {
+  fill: none;
+  stroke: var(--pipe-edge);
+  stroke-width: 1.5;
+  transition: stroke 0.2s;
+}
+.pipe-edge-retry {
+  stroke: var(--pipe-edge-retry);
+  stroke-dasharray: 5 5;
+}
+.pipe-edge-lit {
+  stroke: var(--color-neon-lime);
+  stroke-width: 2.2;
+}
+.pipe-edge-cut {
+  stroke: var(--color-neon-red);
+  stroke-dasharray: 3 4;
+}
+.pipe-edge-flow {
+  stroke: var(--color-neon-pink);
+  stroke-width: 2.2;
+  stroke-dasharray: 6 5;
+  animation: dash 0.6s linear infinite;
+}
+.pipe-edge-label {
+  fill: var(--color-neon-pink);
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+/* The explanation modal: the title in the colour of the block's service, the rules as a table. */
+.pipe-explain-cyan {
+  border-color: var(--color-neon-cyan);
+}
+.pipe-explain-cyan .pipe-explain-title {
+  color: var(--color-neon-cyan);
+}
+.pipe-explain-violet {
+  border-color: var(--color-neon-violet);
+}
+.pipe-explain-violet .pipe-explain-title {
+  color: var(--color-neon-violet);
+}
+.pipe-explain-pink {
+  border-color: var(--color-neon-pink);
+}
+.pipe-explain-pink .pipe-explain-title {
+  color: var(--color-neon-pink);
+}
+.pipe-explain-amber {
+  border-color: var(--color-neon-amber);
+}
+.pipe-explain-amber .pipe-explain-title {
+  color: var(--color-neon-amber);
+}
+.pipe-rules {
+  border-collapse: collapse;
+}
+.pipe-rules th,
+.pipe-rules td {
+  border: 1px solid var(--color-border);
+  padding: 0.3rem 0.5rem;
+  text-align: left;
+  vertical-align: top;
+}
+.pipe-rules th {
+  font-weight: 600;
+  opacity: 0.7;
+  background: color-mix(in srgb, var(--color-border) 40%, transparent);
+}
+/* The signal: rides the edge path from source to target, then rests at the target. */
+.pipe-token {
+  filter: drop-shadow(0 0 4px currentColor);
+  offset-rotate: 0deg;
+  offset-distance: 100%;
+  animation: pipe-travel linear forwards;
+}
+.pipe-token-still {
+  animation: none;
+  offset-distance: 50%;
+}
+@keyframes pipe-travel {
+  from {
+    offset-distance: 0%;
+  }
+  to {
+    offset-distance: 100%;
+  }
+}
+.stage-glow {
+  box-shadow: 0 0 24px color-mix(in srgb, var(--color-neon-pink) 50%, transparent);
+}
+
+/* --- X-ray cards: a rigid grid for the outbox rows, the raw JSON shown on click --- */
+.xray-tip th {
+  padding-right: 0.75rem;
+  text-align: left;
+  font-weight: 500;
+  opacity: 0.6;
+  white-space: nowrap;
+  vertical-align: top;
+}
+.xray-tip td {
+  font-family: var(--font-mono);
+}
+.xray-task {
+  grid-template-columns: minmax(0, 1fr) auto 1.25rem;
+}
+/* One line per event: [tag] aggregate #seq → type → [chips] 📸; only the id and the chips shrink. */
+.xray-chip {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  border-radius: 4px;
+  padding: 0 0.3rem;
+  background: color-mix(in srgb, var(--color-border) 55%, transparent);
+  line-height: 1.35;
+}
+.xray-json {
+  margin-top: 0.25rem;
+  border-top: 1px solid color-mix(in srgb, var(--color-border) 60%, transparent);
+  padding-top: 0.25rem;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  line-height: 1.35;
+  white-space: pre-wrap;
+  word-break: break-all;
+  opacity: 0.85;
+}
+
+/* --- seats --- */
+.seat {
+  border-color: var(--zone);
+  background: color-mix(in srgb, var(--zone) 12%, transparent);
+}
+.seat-free:hover {
+  background: color-mix(in srgb, var(--zone) 35%, transparent);
+}
+.seat-booked {
+  background: color-mix(in srgb, var(--zone) 55%, #000);
+  border-color: color-mix(in srgb, var(--zone) 70%, #fff);
+}
+.seat-mine {
+  background: var(--zone);
+  color: #000;
+  box-shadow: 0 0 12px var(--zone);
+}
+.seat-unknown {
+  border-style: dashed;
+  opacity: 0.5;
+}
+.seat-pending {
+  animation: seat-pulse 0.8s ease-in-out infinite;
+}
+.seat-pop {
+  animation: seat-pop 0.6s ease-out;
+}
+.seat-shake {
+  animation: seat-shake 0.4s ease-in-out;
+  box-shadow: 0 0 10px var(--color-neon-red);
+}
+.history-mode .seat {
+  filter: sepia(0.8) saturate(0.6);
+}
+.history-mode {
+  filter: sepia(0.25);
+}
+.sold-out-sign {
+  text-shadow: 0 0 24px color-mix(in srgb, var(--color-neon-pink) 60%, transparent);
+  animation: seat-pop 0.8s ease-out;
+}
+
+/* --- x-ray rows --- */
+.row-fresh {
+  box-shadow:
+    0 0 0 1px var(--color-neon-lime),
+    0 0 14px color-mix(in srgb, var(--color-neon-lime) 50%, transparent);
+  transition: box-shadow 2s ease-out;
+}
+.row-enter-active {
+  transition: all 0.4s ease-out;
+}
+.row-enter-from {
+  opacity: 0;
+  transform: translateX(-12px);
+}
+.row-leave-active {
+  transition: opacity 0.2s;
+}
+.row-leave-to {
+  opacity: 0;
+}
+.json-hot {
+  background: color-mix(in srgb, var(--color-neon-amber) 25%, transparent);
+  animation: fade-bg 2s ease-out forwards;
+}
+.fade-enter-active,
+.fade-leave-active {
+  transition: opacity 0.15s;
+}
+.fade-enter-from,
+.fade-leave-to {
+  opacity: 0;
+}
+.dice-roll {
+  animation: dice 0.7s ease-in-out;
+  display: inline-block;
+}
+.transaction-flash {
+  animation: flash 1.2s ease-out;
+}
+.arrow-flow {
+  background: linear-gradient(90deg, var(--color-neon-pink), var(--color-neon-cyan), var(--color-neon-pink));
+  background-size: 200% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  opacity: 1;
+  animation: flow 1s linear infinite;
+}
+.animate-shake {
+  animation: seat-shake 0.4s ease-in-out;
+}
+
+@keyframes seat-pulse {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(0.9);
+    opacity: 0.7;
+  }
+}
+@keyframes seat-pop {
+  0% {
+    transform: scale(0.6);
+  }
+  60% {
+    transform: scale(1.15);
+  }
+  100% {
+    transform: scale(1);
+  }
+}
+@keyframes seat-shake {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-4px);
+  }
+  75% {
+    transform: translateX(4px);
+  }
+}
+@keyframes fade-bg {
+  to {
+    background: transparent;
+  }
+}
+@keyframes dice {
+  0% {
+    transform: rotate(0deg) scale(1);
+  }
+  50% {
+    transform: rotate(360deg) scale(1.4);
+  }
+  100% {
+    transform: rotate(720deg) scale(1);
+  }
+}
+@keyframes flash {
+  0% {
+    box-shadow: 0 0 0 0 var(--color-neon-pink);
+  }
+  30% {
+    box-shadow: 0 0 20px 4px var(--color-neon-pink);
+  }
+  100% {
+    box-shadow: 0 0 0 0 transparent;
+  }
+}
+@keyframes flow {
+  to {
+    background-position: 200% 0;
+  }
+}
+@keyframes pipe-pulse {
+  50% {
+    box-shadow: 0 0 0 2px color-mix(in srgb, var(--color-neon-amber) 35%, transparent);
+  }
+}
+@keyframes dash {
+  to {
+    stroke-dashoffset: -11;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .seat-shake,
+  .animate-shake,
+  .dice-roll,
+  .arrow-flow,
+  .pipe-edge-flow,
+  .pipe-glow-busy,
+  .seat-pending,
+  .seat-pop,
+  .sold-out-sign {
+    animation: none;
+  }
+}

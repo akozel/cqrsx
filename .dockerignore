@@ -1,0 +1,7 @@
+# Build context for the demo images is the repository root (the images need the root `Cargo.toml` and the crates of the framework).
+**/target
+**/node_modules
+**/dist
+.git
+.idea
+**/load/results

@@ -1,0 +1,297 @@
+// Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx/licenses/.
+use crate::domain::{command::Decide, event::Events};
+use serde::{Serialize, de::DeserializeOwned};
+use std::{fmt, hash::Hash, str::FromStr};
+
+/// In CQRS (and Domain Driven Design) an `Aggregate` is the fundamental component that
+/// encapsulates the state and application logic (aka business rules) for the application.
+///
+/// An `Aggregate` is always composed of a
+/// [DDD entity](https://docs.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model#the-domain-entity-pattern)
+/// along with all entities and
+/// [value objects](https://docs.microsoft.com/en-us/dotnet/architecture/microservices/microservice-ddd-cqrs-patterns/microservice-domain-model#the-value-object-pattern)
+/// associated with it.
+///
+/// The aggregate holds the state and how every event changes it ([`apply`](Self::apply)). The rules are the
+/// commands': every command decides itself on the committed state ([`Decide`]), one event or a rejection, and the
+/// aggregate's [`Command`](Self::Command), usually an enum with `#[derive(Command, Decide)]`, routes each to its
+/// own decision.
+///
+/// # Example of a 'Customer' aggregate
+/// ```rust
+/// # mod example {
+/// # use serde::Deserialize;
+/// # use serde::Serialize;
+/// # use cqrsx::domain::event::Events;
+/// #
+/// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
+/// # #[error("{0}")]
+/// # pub struct CustomerError(String);
+/// #
+/// # impl From<&str> for CustomerError {
+/// #     fn from(message: &str) -> Self {
+/// #         Self(message.to_string())
+/// #     }
+/// # }
+/// #
+/// # #[derive(Clone, Default)]
+/// # pub struct CustomerService;
+/// #
+/// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// # pub enum CustomerEvent {
+/// #     NameAdded { name: String },
+/// #     EmailUpdated { new_email: String },
+/// #     CustomerDataPopulated,
+/// # }
+/// #
+/// # impl Events for CustomerEvent {
+/// #     fn event_type(&self) -> &'static str {
+/// #         match self {
+/// #             Self::NameAdded { .. } => "NameAdded",
+/// #             Self::EmailUpdated { .. } => "EmailUpdated",
+/// #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated",
+/// #         }
+/// #     }
+/// #
+/// #     fn event_version(&self) -> &'static str {
+/// #         "1.0"
+/// #     }
+/// # }
+/// #
+/// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+/// # pub enum CustomerCommand {
+/// #     AddCustomerName { name: String },
+/// #     UpdateEmail { new_email: String },
+/// # }
+/// # }
+/// # use example::CustomerEvent;
+/// # use example::CustomerError;
+/// # use example::CustomerCommand;
+/// # use example::CustomerService;
+/// use cqrsx::domain::{aggregate::Aggregate, command::Decide};
+/// # use serde::Serialize;
+/// # use serde::Deserialize;
+/// #[derive(Default,Serialize,Deserialize)]
+/// struct Customer {
+///     name: Option<String>,
+///     email: Option<String>,
+///     data_populated: bool,
+/// }
+///
+/// impl Aggregate for Customer {
+///     const TYPE: &'static str = "customer";
+///     type Id = String;
+///     type Command = CustomerCommand;
+///     type Event = CustomerEvent;
+///     type Error = CustomerError;
+///     type Rules = CustomerService;
+///
+///     fn apply(&mut self, event: Self::Event) {
+///         match event {
+///             CustomerEvent::NameAdded{name: changed_name} => self.name = Some(changed_name),
+///             CustomerEvent::EmailUpdated{new_email} => self.email = Some(new_email),
+///             CustomerEvent::CustomerDataPopulated => self.data_populated = true,
+///         }
+///     }
+/// }
+///
+/// // The rules: every command decides one event or a rejection, on the committed state.
+/// impl Decide<Customer> for CustomerCommand {
+///     fn decide(self, customer: &Customer, _rules: &CustomerService) -> Result<CustomerEvent, CustomerError> {
+///         match self {
+///             CustomerCommand::AddCustomerName{name: changed_name} => {
+///                 if customer.name.is_some() {
+///                     return Err("a name has already been added".into());
+///                 }
+///                 Ok(CustomerEvent::NameAdded{name: changed_name})
+///             }
+///             CustomerCommand::UpdateEmail { new_email } => Ok(CustomerEvent::EmailUpdated { new_email }),
+///         }
+///     }
+/// }
+/// ```
+pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
+    /// The stable aggregate type discriminator, distinct from an aggregate instance ID.
+    /// This is used for persisting the events and snapshots to a database.
+    const TYPE: &'static str;
+    /// The id of an instance, e.g. a validated newtype. Its [`Display`](fmt::Display) is the instance's text: the
+    /// key of its lock, of its events, snapshots and tasks in the store, and of the ids of its
+    /// tasks ([`Causation::task_id`](crate::command::causation::Causation::task_id)); the command executor
+    /// formats it once per command. The text is stored, so it never changes for an id; [`FromStr`] parses it back.
+    type Id: fmt::Display + FromStr + Clone + Eq + Hash + Send + Sync + 'static;
+    /// Specifies the inbound command used to make changes in the state of the Aggregate: it decides itself
+    /// ([`Decide`]), and it is `Send`, so that the future that executes it is. Usually an enum of the aggregate's
+    /// command types, one per variant (`#[derive(Command, Decide)]`); the trait
+    /// [`Command`](crate::domain::command::Command) describes one command type.
+    type Command: Decide<Self> + Send;
+    /// Specifies the published events representing some change in state of the Aggregate: the enum of the
+    /// aggregate's events ([`Events`]), one event type per variant; the trait
+    /// [`Event`](crate::domain::event::Event) is the stored name and version of one such type.
+    type Event: Events;
+    /// The error returned when a command fails due to business logic.
+    /// This is used to provide feedback to the user as to the nature of why the command was refused.
+    type Error: std::error::Error;
+    /// What the rules of the commands depend on besides the state, e.g. a limit from the configuration; the
+    /// history does not depend on it (a replay calls only [`apply`](Self::apply)).
+    type Rules: Send + Sync;
+
+    /// Deterministically applies an event to aggregate state.
+    ///
+    /// The store calls it when replaying history or constructing a snapshot, and the framework on a copy of the
+    /// committed state when a task planner needs the state the event leaves.
+    /// A snapshot represents an event prefix; remaining events rebuild current state.
+    /// Validation belongs in the command's decision, so replay never rechecks business rules.
+    ///
+    /// ```rust
+    /// # mod example {
+    /// # use serde::Deserialize;
+    /// # use serde::Serialize;
+    /// # use cqrsx::domain::event::Events;
+    /// #
+    /// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq, thiserror::Error)]
+    /// # #[error("{0}")]
+    /// # pub struct CustomerError(String);
+    /// #
+    /// # impl From<&str> for CustomerError {
+    /// #     fn from(message: &str) -> Self {
+    /// #         Self(message.to_string())
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Clone, Default)]
+    /// # pub struct CustomerService;
+    /// #
+    /// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+    /// # pub enum CustomerEvent {
+    /// #     NameAdded { name: String },
+    /// #     EmailUpdated { new_email: String },
+    /// #     CustomerDataPopulated,
+    /// # }
+    /// #
+    /// # impl Events for CustomerEvent {
+    /// #     fn event_type(&self) -> &'static str {
+    /// #         match self {
+    /// #             Self::NameAdded { .. } => "NameAdded",
+    /// #             Self::EmailUpdated { .. } => "EmailUpdated",
+    /// #             CustomerEvent::CustomerDataPopulated => "CustomerDataPoplated",
+    /// #         }
+    /// #     }
+    /// #
+    /// #     fn event_version(&self) -> &'static str {
+    /// #         "1.0"
+    /// #     }
+    /// # }
+    /// #
+    /// # #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
+    /// # pub enum CustomerCommand {
+    /// #     AddCustomerName { name: String },
+    /// #     UpdateEmail { new_email: String },
+    /// # }
+    /// # }
+    /// # use example::CustomerEvent;
+    /// # use example::CustomerError;
+    /// # use example::CustomerCommand;
+    /// # use example::CustomerService;
+    /// # use serde::Serialize;
+    /// # use serde::Deserialize;
+    /// use cqrsx::domain::aggregate::Aggregate;
+    /// # use cqrsx::domain::command::Decide;
+    /// #[derive(Default,Serialize,Deserialize)]
+    /// # struct Customer {
+    /// #     name: Option<String>,
+    /// #     email: Option<String>,
+    /// #     data_populated: bool,
+    /// # }
+    /// # impl Decide<Customer> for CustomerCommand {
+    /// #     fn decide(self, _: &Customer, _: &CustomerService) -> Result<CustomerEvent, CustomerError> {
+    /// #         Ok(CustomerEvent::NameAdded { name: String::new() })
+    /// #     }
+    /// # }
+    /// # impl Aggregate for Customer {
+    /// #     const TYPE: &'static str = "customer";
+    /// #     type Id = String;
+    /// #     type Command = CustomerCommand;
+    /// #     type Event = CustomerEvent;
+    /// #     type Error = CustomerError;
+    /// #     type Rules = CustomerService;
+    /// fn apply(&mut self, event: Self::Event) {
+    ///     match event {
+    ///         CustomerEvent::NameAdded{name: changed_name} => self.name = Some(changed_name),
+    ///         CustomerEvent::EmailUpdated{new_email} => self.email = Some(new_email),
+    ///         CustomerEvent::CustomerDataPopulated => self.data_populated = true,
+    ///     }
+    /// }
+    /// # }
+    /// ```
+    fn apply(&mut self, event: Self::Event);
+}
+
+/// One aggregate instance, unique across aggregate types: the same ID under two types is two keys.
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct AggregateKey {
+    aggregate_type: &'static str,
+    aggregate_id: String,
+}
+
+impl AggregateKey {
+    pub(crate) fn new(aggregate_type: &'static str, aggregate_id: String) -> Self {
+        Self {
+            aggregate_type,
+            aggregate_id,
+        }
+    }
+
+    /// The key of `id` under [`A::TYPE`](Aggregate::TYPE): its text is the id's `Display`, formatted here.
+    pub(crate) fn of<A: Aggregate>(id: &A::Id) -> Self {
+        Self::new(A::TYPE, id.to_string())
+    }
+
+    pub(crate) fn aggregate_id(&self) -> &str {
+        &self.aggregate_id
+    }
+}
+
+/// A ledger of deltas, the aggregate the unit tests of the stores and the projections write and
+/// read; its one command decides a zero delta and is never executed.
+#[cfg(test)]
+pub(crate) mod tests {
+    use crate::domain::{aggregate::Aggregate, command::Decide, event::Events};
+    use serde::{Deserialize, Serialize};
+
+    #[derive(Debug, Default, Clone, PartialEq, Serialize, Deserialize)]
+    pub(crate) struct Ledger {
+        pub balance: i64,
+        pub history: Vec<i32>,
+    }
+    #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+    pub(crate) struct Delta(pub i32);
+    impl Events for Delta {
+        fn event_type(&self) -> &'static str {
+            "delta"
+        }
+        fn event_version(&self) -> &'static str {
+            "1"
+        }
+    }
+    #[derive(Debug, PartialEq, thiserror::Error)]
+    #[error("insufficient balance")]
+    pub(crate) struct Rejected;
+    impl Aggregate for Ledger {
+        const TYPE: &'static str = "ledger";
+        type Id = String;
+        type Command = ();
+        type Event = Delta;
+        type Error = Rejected;
+        type Rules = ();
+        fn apply(&mut self, event: Delta) {
+            self.balance += i64::from(event.0);
+            self.history.push(event.0);
+        }
+    }
+    impl Decide<Ledger> for () {
+        fn decide(self, _: &Ledger, _: &()) -> Result<Delta, Rejected> {
+            Ok(Delta(0))
+        }
+    }
+}

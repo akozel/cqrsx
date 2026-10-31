@@ -1,8 +1,11 @@
 name: CI
 
+# One developer merges a branch into main right after pushing it, so CI runs on main only. Any branch can be checked by
+# hand: Actions → CI → Run workflow.
 on:
   push:
-  pull_request:
+    branches: [main]
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -20,29 +23,13 @@ defaults:
   run:
     shell: bash
 
+# Two stages: the formatting (seconds, no compilation), then every other job in parallel. Jobs run on separate machines
+# and share no `target/`: each one keeps its own cache.
 jobs:
-  check:
-    needs: build
-    name: Check
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-
-    steps:
-      - name: Check out repository
-        uses: actions/checkout@v6
-
-      - name: Install Rust toolchain
-        run: rustup toolchain install --no-self-update
-
-      - name: Compile
-        run: cargo check --locked --workspace --all-targets --all-features
-
   formatting:
-    needs: build
     name: Fmt
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
+    timeout-minutes: 10
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -50,30 +37,46 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
 
-      - name: Check formatting
+      - name: Check the formatting of the library
+        run: cargo fmt --all --check
+
+      - name: Check the formatting of the demo
+        working-directory: demo
         run: cargo fmt --all --check
 
   clippy:
-    needs: build
+    needs: formatting
     name: Clippy
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
 
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
 
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
-  build:
-    name: Build
+      - name: Run Clippy without features
+        run: cargo clippy --locked -p cqrsx -p cqrsx-engine --no-default-features --all-targets -- -D warnings
+
+      # Alone, a crate gets only the features it asks for: the workspace build no longer hides a missing one.
+      - name: Check each crate on its own
+        run: |
+          for package in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-testing cqrsx-fixtures; do
+            cargo check --locked -p "$package" --lib
+          done
+
+  docs:
+    needs: formatting
+    name: Docs
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -81,15 +84,23 @@ jobs:
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
 
-      - name: Build
-        run: cargo build --locked --workspace --all-features
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
 
-  coverage:
-    needs: [check, formatting, clippy, tests, features, properties-and-stress]
-    name: Coverage
+      - name: Build the documentation
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+        run: cargo doc --locked --workspace --all-features --no-deps
+
+      # cargo llvm-cov runs the doctests on nightly only, so the tests job leaves them here.
+      - name: Run the doctests
+        run: cargo test --locked --workspace --all-features --doc
+
+  tests:
+    needs: formatting
+    name: Tests and coverage
     runs-on: ubuntu-latest
     timeout-minutes: 30
-
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -100,21 +111,12 @@ jobs:
       - name: Install cargo-llvm-cov
         uses: taiki-e/install-action@cargo-llvm-cov
 
-      - name: Workspace coverage (97%)
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Run the tests with coverage (97%)
         run: cargo llvm-cov --locked --workspace --all-features --color never --fail-under-lines 97
 
-      - name: cqrsx coverage (97%)
-        run: cargo llvm-cov --locked -p cqrsx --all-features --color never --fail-under-lines 97
-
-  tests:
-    needs: build
-    name: Workspace tests and doctests
-    runs-on: ubuntu-latest
-    timeout-minutes: 30
-    steps:
-      - uses: actions/checkout@v6
-      - run: rustup toolchain install --no-self-update
-      - run: cargo test --locked --workspace --all-features
       - name: Upload minimized property regressions
         if: failure()
         uses: actions/upload-artifact@v7
@@ -123,42 +125,90 @@ jobs:
           path: target/stage4/proptest-regressions.txt
           if-no-files-found: ignore
 
-  features:
-    needs: build
-    name: Independent runtime features (${{ matrix.features }})
+  coverage:
+    needs: formatting
+    name: 'Coverage: ${{ matrix.package }}'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        features: ["", "--features postgres", "--features worker", "--features host", "--features logging"]
+        include:
+          - { package: cqrsx, flags: "" }
+          - { package: cqrsx-postgres, flags: "" }
+          - { package: cqrsx-mongodb, flags: "" }
+          - { package: cqrsx-engine, flags: "--all-features" }
     steps:
-      - uses: actions/checkout@v6
-      - run: rustup toolchain install --no-self-update
-      - run: cargo check --locked -p cqrsx --no-default-features --lib ${{ matrix.features }}
-      - run: cargo test --locked -p cqrsx --no-default-features ${{ matrix.features }}
-      - name: Upload minimized property regressions
-        if: failure()
-        uses: actions/upload-artifact@v7
-        with:
-          name: runtime-feature-regressions-${{ strategy.job-index }}
-          path: target/stage4/proptest-regressions.txt
-          if-no-files-found: ignore
+      - name: Check out repository
+        uses: actions/checkout@v6
 
-  properties-and-stress:
-    needs: build
-    name: Model properties and controlled database races
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Install cargo-llvm-cov
+        uses: taiki-e/install-action@cargo-llvm-cov
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.package }}
+
+      - name: Run the tests of the crate alone with coverage (97%)
+        run: cargo llvm-cov --locked -p ${{ matrix.package }} ${{ matrix.flags }} --color never --fail-under-lines 97
+
+  engine:
+    needs: formatting
+    name: 'Engine: ${{ matrix.features }}'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { features: none, flags: "" }
+          - { features: postgres, flags: "--features postgres" }
+          - { features: mongodb, flags: "--features mongodb" }
+          - { features: http, flags: "--features http" }
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.features }}
+
+      - name: Check the library without dev-dependencies
+        run: cargo check --locked -p cqrsx-engine --no-default-features --lib ${{ matrix.flags }}
+
+      - name: Run the tests
+        run: cargo test --locked -p cqrsx-engine --no-default-features ${{ matrix.flags }}
+
+  properties:
+    needs: formatting
+    name: Properties
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v6
-      - run: rustup toolchain install --no-self-update
-      - name: Properties with the commit seed (1024 cases each)
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+
+      # The other jobs use the seed 42; here each commit explores cases of its own.
+      - name: Run the properties with the commit seed
         run: |
           export PROPTEST_RNG_SEED=$(printf '%u' "0x${GITHUB_SHA:0:16}")
           printf 'Property test seed: %s\n' "$PROPTEST_RNG_SEED"
-          cargo test --locked -p cqrsx --all-features property_
-      - run: cargo test --locked -p cqrsx --all-features --test postgres stress_
+          cargo test --locked -p cqrsx -p cqrsx-postgres -p cqrsx-mongodb property_
+
       - name: Upload minimized property regressions
         if: failure()
         uses: actions/upload-artifact@v7
@@ -166,3 +216,30 @@ jobs:
           name: commit-property-regressions
           path: target/stage4/proptest-regressions.txt
           if-no-files-found: ignore
+
+  demo:
+    needs: formatting
+    name: Demo
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    defaults:
+      run:
+        working-directory: demo
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Cache the build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: demo -> target
+
+      - name: Run Clippy
+        run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      # With the architecture rule and the golden files: a test fails when its golden file differs.
+      - name: Run the tests
+        run: cargo test --locked --workspace

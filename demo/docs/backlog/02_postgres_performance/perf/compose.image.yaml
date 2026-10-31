@@ -1,0 +1,5 @@
+# perf/run.sh BACKEND_IMAGE=…: run an already built back-end image (e.g. a baseline of older code)
+# instead of the one compose builds from this tree.
+services:
+  backend:
+    image: ${PERF_BACKEND_IMAGE:?BACKEND_IMAGE}

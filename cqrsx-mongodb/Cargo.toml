@@ -1,0 +1,28 @@
+[package]
+name = "cqrsx-mongodb"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "The MongoDB read side of cqrsx: read-model documents and projection checkpoints"
+
+[dependencies]
+chrono.workspace = true
+cqrsx.workspace = true
+mongodb.workspace = true
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+cqrsx-fixtures.workspace = true
+cqrsx-postgres.workspace = true
+log.workspace = true
+sqlx.workspace = true
+tokio = { workspace = true, features = ["io-util", "macros", "net", "rt-multi-thread", "sync", "test-util"] }
+tokio-util.workspace = true
+
+[lints]
+workspace = true

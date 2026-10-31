@@ -1,0 +1,19 @@
+[package]
+name = "cqrsx-macros"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Derive macros of cqrsx (Command, Decide, Event, Events, Task, Rejection) and its #[task_handler] attribute"
+
+[lib]
+proc-macro = true
+
+[dependencies]
+heck = "0.5.0"
+proc-macro2 = "1.0.107"
+quote = "1.0.47"
+syn = { version = "2.0.119", features = ["full"] }
+
+[lints]
+workspace = true

@@ -1,0 +1,23 @@
+# perf/run.sh BALANCE=round_robin|key: nginx in front of the back-end node(s); the generator talks to it.
+# Ticket 17. The upstream (one node, two nodes in turn, or two nodes by aggregate key) is the file
+# nginx/upstream-${PERF_UPSTREAM}.conf; compose.node2.yaml adds the second node. Relative paths resolve
+# against demo/load, the directory of the first compose file; LOAD_HOST_DIR is the host path of demo/load.
+services:
+  balancer:
+    image: docker.io/library/nginx:1.30.6-alpine   # the same image as the stand's mail stub
+    volumes:
+      - ${LOAD_HOST_DIR:-.}/../docs/backlog/02_postgres_performance/perf/nginx/nginx.conf:/etc/nginx/nginx.conf:ro,z
+      - ${LOAD_HOST_DIR:-.}/../docs/backlog/02_postgres_performance/perf/nginx/upstream-${PERF_UPSTREAM:?PERF_UPSTREAM}.conf:/etc/nginx/upstream.conf:ro,z
+    # Its own core, counted apart from the back-end (perf/run.sh forces a CPU quota with a balancer).
+    cpus: "${PERF_CPUS_BALANCER:-1}"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:8080/balancer/health"]
+      interval: 2s
+      timeout: 3s
+      retries: 15
+    depends_on:
+      backend: { condition: service_healthy }
+
+  k6:
+    environment:
+      BASE_URL: http://balancer:8080

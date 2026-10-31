@@ -1,13 +1,7 @@
 //! Versioned wire DTO contract and checked routing key.
-use serde::Serialize;
+use crate::task::Task;
 use std::fmt;
 use thiserror::Error;
-/// Versioned wire DTO. Retain supported versions while queued work exists.
-pub trait TaskPayload: Serialize {
-    const TASK_TYPE: &'static str;
-    const TASK_VERSION: i32;
-}
-
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum TaskFormatError {
     #[error("task type must not be empty")]
@@ -16,14 +10,18 @@ pub enum TaskFormatError {
     InvalidVersion,
 }
 
-/// One durable type/version pair; also the dispatcher's routing key.
+/// One durable type/version pair; also the dispatcher's routing key. The queue stores it with every task, an
+/// adapter names the formats it handles, a worker claims the tasks of one format at a time. Built from a payload type
+/// ([`of`](Self::of)) or read back from storage ([`try_new`](Self::try_new)); displayed as `<type> v<version>`.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct TaskFormat {
     task_type: String,
     task_version: i32,
 }
 impl TaskFormat {
-    pub fn new(task_type: impl Into<String>, task_version: i32) -> Result<Self, TaskFormatError> {
+    /// A format read at run time (from a row of the queue, say): the type must not be empty, the version must be
+    /// positive.
+    pub fn try_new(task_type: impl Into<String>, task_version: i32) -> Result<Self, TaskFormatError> {
         let task_type = task_type.into();
         if task_type.is_empty() {
             return Err(TaskFormatError::EmptyType);
@@ -33,8 +31,20 @@ impl TaskFormat {
         }
         Ok(Self { task_type, task_version })
     }
-    pub fn of<T: TaskPayload>() -> Result<Self, TaskFormatError> {
-        Self::new(T::TASK_TYPE, T::TASK_VERSION)
+
+    /// The format of `T`. Its constants obey the rules of [`try_new`](Self::try_new), checked when the compiler
+    /// instantiates this function for `T`: a payload type with an empty `TASK_TYPE` or a `TASK_VERSION` below 1 fails
+    /// `cargo build` (a check made after monomorphization, which `cargo check` may not report), whether its
+    /// `Task` is derived or written by hand.
+    pub fn of<T: Task>() -> Self {
+        const {
+            assert!(!T::TASK_TYPE.is_empty(), "the task type must not be empty");
+            assert!(T::TASK_VERSION > 0, "the task version must be positive");
+        }
+        Self {
+            task_type: T::TASK_TYPE.to_owned(),
+            task_version: T::TASK_VERSION,
+        }
     }
     pub fn task_type(&self) -> &str {
         &self.task_type
