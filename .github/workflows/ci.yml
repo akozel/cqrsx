@@ -69,6 +69,27 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
+      - name: Run Clippy without features
+        run: cargo clippy --locked -p cqrsx -p cqrsx-engine --no-default-features --all-targets -- -D warnings
+
+  docs:
+    needs: build
+    name: Documentation
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v6
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install --no-self-update
+
+      - name: Build the documentation
+        env:
+          RUSTDOCFLAGS: -Dwarnings
+        run: cargo doc --locked --workspace --all-features --no-deps
+
   build:
     name: Build
     runs-on: ubuntu-latest
@@ -85,7 +106,7 @@ jobs:
         run: cargo build --locked --workspace --all-features
 
   coverage:
-    needs: [check, formatting, clippy, tests, features, properties-and-stress]
+    needs: [check, formatting, clippy, docs, tests, features, properties-and-stress]
     name: Coverage
     runs-on: ubuntu-latest
     timeout-minutes: 30

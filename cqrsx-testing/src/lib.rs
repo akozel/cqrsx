@@ -1,5 +1,5 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
 //! Test tools for the code that uses `cqrsx`, written on its public API: [`framework::TestFramework`] (an aggregate's
 //! given/when/then), [`command_executor::TestCommandExecutor`] (a command executor for use-case tests) and the event
 //! stores [`mem_store::MemStore`] and [`unavailable_store::UnavailableStore`].
@@ -14,7 +14,7 @@
 //! A failed check is a panic (rule 8 of `.claude/rules/rust-style.md`): the tools say so in `# Panics`.
 //!
 //! Derived in part from `cqrs-es` 0.5.0 (Apache-2.0), copyright 2023 Serverless Technology Consulting, LLC; the
-//! text of the license is in `cqrsx-testing/licenses/`, the notice in `cqrsx/doc/components.md#upstream-attribution`.
+//! text of the license is in `cqrsx-testing/licenses/`, the notice in `doc/components.md#upstream-attribution`.
 //! ```rust
 //! # mod example {
 //! # use async_trait::async_trait;

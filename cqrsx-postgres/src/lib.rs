@@ -8,7 +8,7 @@
 //! logs carry its category and SQLSTATE; the message of the driver is never logged.
 //!
 //! Derived in part from `postgres-es` 0.5.0 (Apache-2.0), copyright 2023 Serverless Technology Consulting, LLC; the
-//! text of the license is in `cqrsx-postgres/licenses/`, the notice in `cqrsx/doc/components.md#upstream-attribution`.
+//! text of the license is in `cqrsx-postgres/licenses/`, the notice in `doc/components.md#upstream-attribution`.
 mod diagnostics;
 pub mod outbox;
 pub mod pool;

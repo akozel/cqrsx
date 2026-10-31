@@ -1,10 +1,6 @@
-//! Derive macros of cqrsx and its attribute for task handlers. Use them through cqrsx, which re-exports each next to
-//! the trait it implements (`cqrsx::domain::event::{Event, Events}`, `cqrsx::domain::command::{Command, Decide}`,
-//! `cqrsx::task::Task`, `cqrsx::domain::rejection::Rejection`, `cqrsx::worker::task_handler`): the expansions name
-//! `::cqrsx` paths only.
-//!
-//! Every entry point is one call of its expansion, a function over `proc_macro2` that the unit tests call directly;
-//! what does not compile is shown by the `compile_fail` examples of cqrsx.
+//! The derive macros of cqrsx and its attribute for task handlers; the guide below is the crate's `README.md`.
+#![doc = include_str!("../README.md")]
+
 mod attribute;
 mod command;
 mod event;

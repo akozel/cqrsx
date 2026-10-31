@@ -14,7 +14,7 @@ CQRS and event sourcing for Rust: the application owns its business rules, and t
 
 The application registers these pieces in modules and builds `Cqrs` (crate [`cqrsx-engine`](../cqrsx-engine/README.md))
 in memory or with PostgreSQL and MongoDB.
-The [typical scenario](doc/typical_scenario.md) follows a cancellation through a refund.
+The [typical scenario](../doc/typical_scenario.md) follows a cancellation through a refund.
 
 ## Rules worth knowing
 
@@ -68,7 +68,7 @@ The [typical scenario](doc/typical_scenario.md) follows a cancellation through a
 
 Whole applications are tested with `Cqrs::in_memory()` of [`cqrsx-engine`](../cqrsx-engine/README.md).
 
-The lower-level building blocks and their contracts are in [`doc/components.md`](doc/components.md).
+The lower-level building blocks and their contracts are in [`doc/components.md`](../doc/components.md).
 
 ## Stores
 
@@ -86,7 +86,7 @@ the code of the failure. The engine ([`cqrsx-engine`](../cqrsx-engine/README.md)
 
 ## Further reading
 
-- [`doc/components.md`](doc/components.md): the inventory of components, the naming contract and the
+- [`doc/components.md`](../doc/components.md): the inventory of components, the naming contract and the
   integration rules in full.
 - [`../demo`](../demo/README.md): a complete application on the library, with a UI, an X-ray of both
   databases and load tests.

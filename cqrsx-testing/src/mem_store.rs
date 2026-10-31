@@ -1,5 +1,5 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
 use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{AggregateContext, EventStore, PersistenceError},
@@ -256,7 +256,7 @@ where
 #[cfg(test)]
 mod tests {
     // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-    // Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
+    // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
     use cqrsx::domain::{aggregate::Aggregate, command::Decide, event::Events};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;

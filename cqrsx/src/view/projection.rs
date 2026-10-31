@@ -1,7 +1,7 @@
 //! The persisted projection of a view: [`ViewProjection`] folds committed events into stored documents and rebuilds them.
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx/licenses/.
 use super::{
     PersistenceErrorObserver, View,
     repository::{StoredView, ViewContext, ViewRepository},

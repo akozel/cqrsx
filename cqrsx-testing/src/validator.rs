@@ -1,5 +1,5 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
 //! The checks of [`TestFramework`](crate::framework::TestFramework): a failed check panics (`# Panics` of each method).
 use cqrsx::domain::aggregate::Aggregate;
 use std::fmt;

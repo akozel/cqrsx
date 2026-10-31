@@ -1,6 +1,6 @@
 //! Persisted snapshots and exact-prefix updates committed with events.
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx/licenses/.
 use serde_json::Value;
 
 /// A snapshot of exactly the committed prefix ending at `last_sequence`.

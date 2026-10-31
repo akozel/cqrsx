@@ -1,6 +1,6 @@
 //! Event history and snapshot reads, including checked row decoding.
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-postgres/licenses/.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-postgres/licenses/.
 use super::{LedgerTotals, PostgresEventRepository, decode_count, decode_usize, encode_bigint, row_decode_error};
 use crate::error::PostgresRepositoryError;
 use cqrsx::{

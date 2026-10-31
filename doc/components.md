@@ -1,6 +1,6 @@
 # Components and terminology
 
-This is the current inventory and naming contract for `cqrsx`.
+This is the current inventory and naming contract for the crates of the workspace.
 Names follow CQRS, DDD and Event Sourcing. A command expresses intent; an aggregate
 checks invariants; a domain event records an accepted fact. A query reads a read
 model. An event handler reacts to committed events; a projection builds a read model.
@@ -57,7 +57,7 @@ repeated delivery. Context and dependency types are described in the inventory b
 
 `Event`, `Events`, `Command`, `Decide`, `Task`, `Rejection` and `task_handler` live next to the trait each implements
 (`domain::event`, `domain::command`, `task`, `domain::rejection`, `worker`): one `use` brings the trait and its derive.
-See the [macro guide](../../cqrsx-macros/README.md) for their roles.
+See the [macro guide](../cqrsx-macros/README.md) for their roles.
 
 ## Verification
 
@@ -160,8 +160,21 @@ backend; MongoDB is an optional read side (read models and projection checkpoint
 
 ## Source layout
 
+The workspace (`Cargo.toml`) has seven crates; the demo application `demo/` is a workspace of its own. A crate's
+documentation is its `README.md`, which `lib.rs` includes, or a single `//!` in `lib.rs`; `doc/` holds this file and
+the typical scenario, which describe all of them.
+
 ```text
-src/
+cqrsx-macros ← cqrsx ← { cqrsx-postgres, cqrsx-mongodb } ← cqrsx-engine ← the application
+               cqrsx ← cqrsx-testing ← the tests of the application (a dev-dependency)
+cqrsx-fixtures (publish = false): a dev-dependency of the framework's tests, does not depend on cqrsx
+doc/            components.md (this file), typical_scenario.md
+```
+
+The core:
+
+```text
+cqrsx/src/
 ├── domain.rs, domain/              What the domain writes: aggregate.rs (Aggregate), event.rs, rejection.rs,
 │                                   command.rs (Command, Label, Decide)
 ├── journal.rs, journal/            EventStore, AggregateContext, errors/observer
@@ -206,6 +219,9 @@ src/
 ├── mutex.rs                        lock, get_mut: the one way to take a std::sync::Mutex (public)
 ├── diagnostics.rs                  the log lines (private) and the public contract: safe_type, StorageFailure
 └── env.rs, unwinding.rs
+
+cqrsx/tests/                        derives.rs; in_memory/ (the core on the backend in memory); worker/ (task execution)
+cqrsx/README.md                     the crate's documentation (included by lib.rs); licenses/Apache-2.0.txt
 ```
 
 The stores are crates of their own next to `cqrsx/`, members of the workspace; they depend on `cqrsx` and the core does
@@ -231,9 +247,10 @@ cqrsx-mongodb/
 cqrsx-fixtures/src/                 lib.rs, postgres.rs, mongo.rs, port_lease.rs, logs.rs, process.rs
 
 cqrsx-testing/                      the test tools of applications; depends on cqrsx only
-├── src/lib.rs                      the crate docs and `mod`s; the crate allows `unwrap_used` and `panic` (a failed check panics)
+├── src/lib.rs                      the crate docs (`//!`) and `mod`s; allows `unwrap_used` and `panic` (a failed check panics)
 ├── src/framework.rs                TestFramework
-├── src/validator.rs, mem_store.rs, unavailable_store.rs, command_executor.rs
+├── licenses/Apache-2.0.txt
+├── src/validator.rs, mem_store.rs, unavailable_store.rs, command_executor.rs, test_support.rs (private)
 └── tests/framework.rs              the tools on an example application
 ```
 
@@ -257,13 +274,17 @@ cqrsx-engine/src/
 ├── mongodb.rs                      MongoDb, MongoSettings, MongoPlan (feature mongodb)
 ├── http.rs                         Module::routes, Cqrs::router (feature http)
 ├── serve.rs                        Builder::serve, Cqrs::serve, StartupError, ReadSideStopped (feature http)
-└── serve/                          the parts of the process, private: lifecycle.rs (run, run_with_processors),
-                                    signal.rs, error.rs (HostError), logging.rs (LoggingConfig)
+├── serve/                          the parts of the process, private: lifecycle.rs (run, run_with_processors),
+│                                   signal.rs, error.rs (HostError), logging.rs (LoggingConfig)
+└── test_support.rs                 private unit fixtures
+cqrsx-engine/tests/engine.rs        engine/{modules,scenario}.rs in memory; engine/{database,postgres}.rs on containers
+cqrsx-engine/README.md              the crate's documentation (included by lib.rs): quick start, configuration, features
 ```
 
 The derive macros are a crate of their own next to `cqrsx/`, a member of the workspace:
 
 ```text
+cqrsx-macros/README.md              the crate's documentation (included by lib.rs)
 cqrsx-macros/src/
 ├── lib.rs                          the six #[proc_macro_derive] entry points and #[task_handler], one call each,
 │                                   and `run`, `run_attribute`
@@ -417,5 +438,5 @@ snapshot/serialization contracts, fallible event handlers moved from the framewo
 to projection processors that read the journal (the upstream replay and history
 streams are gone), transactional outbox, durable tasks and runtime integration.
 Source headers retain upstream attribution and modification notices. See the retained
-[upstream license](../licenses/Apache-2.0.txt) (copies lie in `cqrsx-postgres/licenses/` and
+[upstream license](../cqrsx/licenses/Apache-2.0.txt) (copies lie in `cqrsx-postgres/licenses/` and
 `cqrsx-testing/licenses/`); this notice does not relicense unrelated project code.

@@ -1,5 +1,5 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
 //! The given/when/then test of an aggregate: [`TestFramework`].
 
 use crate::validator::AggregateResultValidator;

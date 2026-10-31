@@ -9,8 +9,8 @@
 //! expanded to full paths and every other qualified path is collected, with comments and string literals removed
 //! first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
-//! the ledger's tasks. Of the framework (the crates `cqrsx`, `cqrsx_engine` and those split off the core later, see
-//! `FRAMEWORK`) a domain sees the contracts of the core and their derive macros, a presentation the engine
+//! the ledger's tasks. Of the framework (the crates `cqrsx`, `cqrsx_engine`, `cqrsx_postgres`, `cqrsx_mongodb` and
+//! `cqrsx_testing`, see `FRAMEWORK`) a domain sees the contracts of the core and their derive macros, a presentation the engine
 //! (`cqrsx_engine::Cqrs`: its commands, its views, the dependencies of the modules), the outcomes of a command, the
 //! rejection trait and the documents of the read models. `main.rs` and `lib.rs` compose the modules, `testing.rs` and `composition.rs` with
 //! their directories test them as composed: they are exempt. A few rules apply to production code only: test code may use test
@@ -178,7 +178,7 @@ fn externals(layer: Option<Layer>) -> Externals {
     match layer {
         Some(Layer::Domain) => Externals {
             forbidden: &["sqlx", "mongodb", "axum", "tokio"],
-            test_only: &["serde_json", "cqrsx_testing", "cqrsx::memory"],
+            test_only: &["serde_json", "cqrsx_testing"],
             // The contracts of the domain, each with its derive macro under the same path (backlog 07/05): what is
             // known of a command (`Command`), the decision of a command (`Decide`), an event's name and version and
             // the enum of events (`domain::event`), the code and params of a rejection (`domain::rejection`).
@@ -189,7 +189,6 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::domain::event",
                 "cqrsx::domain::rejection",
                 "cqrsx_testing",
-                "cqrsx::memory",
             ]),
         },
         Some(Layer::Application) => Externals {
@@ -556,8 +555,8 @@ fn paths(code: &str) -> Vec<(usize, String)> {
 }
 
 /// The crates of the framework: the core and every crate built on it. A path into any of them is a path into
-/// "cqrsx" for the allowlists, so that a crate split off the core (`cqrsx_engine`, later the adapters and the testing
-/// tools) does not slip out of the rules.
+/// "cqrsx" for the allowlists, so that a crate split off the core (the engine, the adapters, the testing tools) does not
+/// slip out of the rules.
 const FRAMEWORK: [&str; 5] = ["cqrsx", "cqrsx_engine", "cqrsx_postgres", "cqrsx_mongodb", "cqrsx_testing"];
 
 /// Whether `path` goes into a crate of the framework (a bare crate name is not a path into it).
@@ -691,6 +690,10 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
         ("fan/application/x.rs", "use cqrsx_testing::mem_store::MemStore;\n"),
         ("concert/domain/x.rs", "use cqrsx_testing::framework::TestFramework;\n"),
+        (
+            "concert/domain/x.rs",
+            "use cqrsx::memory::event_repository::MemEventRepository;\n",
+        ),
         (
             "fan/application/x.rs",
             "use cqrsx::memory::view_repository::MemViewRepository;\n",

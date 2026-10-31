@@ -8,12 +8,15 @@ PostgreSQL stores data, and Tokio runs background tasks.
 The workspace has seven crates:
 - [`cqrsx`](cqrsx/README.md), the core;
 - [`cqrsx-engine`](cqrsx-engine/README.md), which assembles an application from the core's components;
-- `cqrsx-postgres` and `cqrsx-mongodb`, the stores;
-- `cqrsx-testing`, the test tools for applications (aggregate given/when/then, a command executor, event stores for tests);
-- `cqrsx-macros`, the derive macros;
+- [`cqrsx-postgres`](cqrsx-postgres/src/lib.rs) and [`cqrsx-mongodb`](cqrsx-mongodb/src/lib.rs), the stores;
+- [`cqrsx-testing`](cqrsx-testing/src/lib.rs), the test tools for applications (aggregate given/when/then, a command executor,
+  event stores for tests);
+- [`cqrsx-macros`](cqrsx-macros/README.md), the derive macros;
 - `cqrsx-fixtures`, the private test fixtures of the framework (database containers, captured logs).
 
-For architecture details, see [components and terminology](cqrsx/doc/components.md).
+A crate with a `README.md` includes it as its documentation; one without has a single `//!` in its `lib.rs`.
+
+For architecture details, see [components and terminology](doc/components.md).
 
 ## Requirements
 

@@ -1,5 +1,5 @@
 //! What the migration to the engine API (backlog epic 05) must not change, against golden files written by hand from
-//! `demo/.env.example`, `cqrsx/doc/components.md` and ticket 05/02 (`tests/golden/`):
+//! `demo/.env.example`, `doc/components.md` and ticket 05/02 (`tests/golden/`):
 //!
 //! - `effective_config.txt`: the configuration without a single environment variable. A setting read from a variable
 //!   under the variable's name, with the value the process uses; what has no variable of its own (derived values, the

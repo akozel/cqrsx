@@ -6,7 +6,7 @@ pub mod processor;
 pub mod runtime;
 
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx/licenses/.
 use crate::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::PersistenceError,

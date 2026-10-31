@@ -38,7 +38,7 @@ The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the libra
 Start at [`back-end/src/main.rs`](back-end/src/main.rs), then follow the module roots
 [`concert.rs`](back-end/src/concert.rs) and [`fan.rs`](back-end/src/fan.rs). Domain commands decide events;
 application reactions plan tasks; handlers in `fan/application/` continue the chain. The
-[typical scenario](../cqrsx/doc/typical_scenario.md) traces cancellation to refund.
+[typical scenario](../doc/typical_scenario.md) traces cancellation to refund.
 
 | Layer | Responsibility |
 |---|---|

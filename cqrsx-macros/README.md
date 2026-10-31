@@ -32,10 +32,11 @@ override its code with `#[rejection(code = "...")]`.
 
 `#[task_handler]` turns an async function into a registered handler. Its arguments identify the task,
 optional context and dependencies supplied by type when the engine is built. The function returns a
-`TaskResult`. See the [handler guide](../cqrsx/doc/typical_scenario.md#task-handlers-policies-and-dependencies).
+`TaskResult`. See the [handler guide](../doc/typical_scenario.md#task-handlers-policies-and-dependencies).
 
 ## Validation
 
 Invalid shapes and attributes produce compile errors. The precise requirements and expansion contracts
-are documented in [components](../cqrsx/doc/components.md) and the macro source; compile-fail doctests
+are documented in [components](../doc/components.md) and the macro source; compile-fail doctests
 and unit tests cover invalid inputs.
+Every entry point is one call of its expansion, a function over `proc_macro2` that the unit tests call directly.

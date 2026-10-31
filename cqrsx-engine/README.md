@@ -6,7 +6,7 @@ served until a signal. The components it assembles, the contracts of an applicat
 the core.
 
 The application registers its pieces in modules and builds `Cqrs` in memory or with PostgreSQL and MongoDB.
-The [typical scenario](../cqrsx/doc/typical_scenario.md) follows a cancellation through a refund.
+The [typical scenario](../doc/typical_scenario.md) follows a cancellation through a refund.
 
 ## Quick start
 
@@ -330,7 +330,7 @@ from two helpers that say so in their names.
 | `HTTP_ADDR` | where `serve` listens | `127.0.0.1:8080` |
 
 Processor configuration and the lower-level building blocks are described in
-[`doc/components.md`](../cqrsx/doc/components.md). The task runtime reads `OUTBOX_WORKER_CONCURRENCY`,
+[`doc/components.md`](../doc/components.md). The task runtime reads `OUTBOX_WORKER_CONCURRENCY`,
 `OUTBOX_QUEUE_CAPACITY`, `OUTBOX_QUEUE_REFILL_PERCENT`, `OUTBOX_POLL_INTERVAL_MS`,
 `OUTBOX_HANDLER_TIMEOUT_SECS`, `OUTBOX_LEASE_SECS` and `OUTBOX_STORAGE_TIMEOUT_MS` without the
 application prefix. Module-specific variables are read through `Setup` with that prefix.
@@ -353,7 +353,7 @@ Without a feature the engine runs on in-memory stores.
 
 ## Further reading
 
-- [`../cqrsx/doc/components.md`](../cqrsx/doc/components.md): the inventory of components, the naming contract and the
+- [`../doc/components.md`](../doc/components.md): the inventory of components, the naming contract and the
   integration rules in full.
 - [`../demo`](../demo/README.md): a complete application on the engine, with a UI, an X-ray of both databases and
   load tests.

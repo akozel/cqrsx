@@ -1,5 +1,5 @@
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-postgres/licenses/.
+// Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-postgres/licenses/.
 #[derive(Debug)]
 pub(crate) struct SqlQueryFactory {
     select_events: String,
