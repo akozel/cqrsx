@@ -17,7 +17,6 @@ use cqrsx::{
         rejection::Rejection,
     },
     task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat},
-    testing::TestFramework,
     worker::{
         TaskHandler, TaskResult,
         adapter::{TaskAdapter, json::JsonTaskAdapter},
@@ -353,18 +352,14 @@ fn derived_commands_route_every_variant_to_its_decision_and_report_it() {
             value,
         })
     };
-    TestFramework::<Tally>::new(5)
-        .given(vec![Counted::Added(3)])
-        .when(add(2))
-        .then_expect_event(&Counted::Added(2));
-    TestFramework::<Tally>::new(5)
-        .given(vec![Counted::Added(3)])
-        .when(add(3))
-        .then_expect_error(&OverTheLimit);
-    TestFramework::<Tally>::new(5)
-        .given(vec![Counted::Added(3)])
-        .when(TallyCommand::Reset(Reset { by: "ops".into() }))
-        .then_expect_event(&Counted::Reset);
+    let decide = |command: TallyCommand| {
+        let mut tally = Tally::default();
+        tally.apply(Counted::Added(3));
+        command.decide(&tally, &5)
+    };
+    assert_eq!(decide(add(2)), Ok(Counted::Added(2)));
+    assert_eq!(decide(add(3)), Err(OverTheLimit));
+    assert_eq!(decide(TallyCommand::Reset(Reset { by: "ops".into() })), Ok(Counted::Reset));
     let reset = TallyCommand::Reset(Reset { by: "ops".into() });
     assert_eq!(
         [

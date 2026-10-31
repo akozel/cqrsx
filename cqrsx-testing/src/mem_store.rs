@@ -1,8 +1,6 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-// A test helper the engine does not use (rule 8 of the code guidelines): a poisoned lock fails the test that poisoned it.
-#![allow(clippy::unwrap_used)]
-use crate::{
+// Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
+use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{AggregateContext, EventStore, PersistenceError},
     task::NewTask,
@@ -98,7 +96,7 @@ use std::{
 /// # use example::MyAggregate;
 /// # use example::MyService;
 /// use cqrsx::command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy};
-/// use cqrsx::testing::mem_store::MemStore;
+/// use cqrsx_testing::mem_store::MemStore;
 ///
 /// let store = MemStore::<MyAggregate>::default();
 /// let executor = StoreCommandExecutor::new(store, MyService, AggregateConflictRetryPolicy::default(), LockLimits::default());
@@ -179,7 +177,9 @@ impl<A: Aggregate> EventStore<A> for MemStore<A> {
         }
         let aggregate_id = context.aggregate_id;
         let current_sequence = context.current_sequence;
-        crate::journal::checked_counter_add(current_sequence, events.len())?;
+        current_sequence
+            .checked_add(events.len())
+            .ok_or_else(|| PersistenceError::UnknownError("event sequence or snapshot version overflow".into()))?;
         let wrapped_events = Self::wrap_events(&aggregate_id, current_sequence, events, &metadata);
         let new_events_qty = wrapped_events.len();
         if new_events_qty == 0 {
@@ -256,8 +256,8 @@ where
 #[cfg(test)]
 mod tests {
     // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-    // Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-    use crate::domain::{aggregate::Aggregate, command::Decide, event::Events};
+    // Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
+    use cqrsx::domain::{aggregate::Aggregate, command::Decide, event::Events};
     use serde::{Deserialize, Serialize};
     use std::collections::HashMap;
 
@@ -356,7 +356,7 @@ mod tests {
 
     #[tokio::test]
     async fn memory_sequence_overflow_is_atomic_and_last_sequence_is_supported() {
-        use crate::domain::aggregate::tests::{Delta, Ledger};
+        use crate::test_support::{Delta, Ledger};
         let store = MemStore::<Ledger>::default();
         for (sequence, count) in [(usize::MAX, 1), (usize::MAX - 1, 2)] {
             let context = MemStoreAggregateContext {
@@ -447,7 +447,7 @@ mod tests {
 #[cfg(test)]
 mod store_tests {
     use super::*;
-    use crate::domain::aggregate::tests::*;
+    use crate::test_support::*;
     #[tokio::test]
     async fn clones_observe_the_same_envelopes() {
         let store = MemStore::<Ledger>::default();
@@ -475,10 +475,10 @@ mod store_tests {
 
     #[tokio::test]
     async fn tasks_commit_only_with_an_event() {
-        use crate::domain::aggregate::tests::{Delta, Ledger};
+        use crate::test_support::{Delta, Ledger};
         let store = MemStore::<Ledger>::default();
         let task = NewTask::from_payload(
-            crate::task::format::TaskFormat::try_new("notify", 1).unwrap(),
+            cqrsx::task::format::TaskFormat::try_new("notify", 1).unwrap(),
             serde_json::json!({}),
         )
         .unwrap();

@@ -1,5 +1,5 @@
 use crate::support::ledger::*;
-use cqrsx::testing::TestFramework;
+use cqrsx_testing::framework::TestFramework;
 
 #[test]
 fn a_framework_prints_its_history_and_a_validator_its_result() {
@@ -35,7 +35,7 @@ fn typed_errors_and_success_can_be_inspected() {
 }
 
 mod given {
-    use cqrsx::testing::TestFramework;
+    use cqrsx_testing::framework::TestFramework;
 
     use crate::support::customer::*;
 
@@ -93,7 +93,7 @@ mod given {
     }
 }
 mod framework {
-    use {crate::support::scenario::*, cqrsx::testing::TestFramework};
+    use {crate::support::scenario::*, cqrsx_testing::framework::TestFramework};
 
     #[test]
     fn the_framework_applies_given_and_additional_events_before_the_command() {
@@ -127,7 +127,7 @@ mod framework {
 }
 mod validators {
     use crate::support::scenario::*;
-    use cqrsx::testing::TestFramework;
+    use cqrsx_testing::framework::TestFramework;
     type ThisTestFramework = TestFramework<TestAggregate>;
 
     #[test]

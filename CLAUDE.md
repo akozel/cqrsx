@@ -14,7 +14,6 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
 - `cqrsx/src/projection` — event handlers, projection checkpoints, the processor that feeds them from the journal.
 - `cqrsx/src/view` — read models: `View`, their projection, repository and verification.
 - `cqrsx/src/memory` — the backend in memory: journal, checkpoints, views, task queue.
-- `cqrsx/src/testing` — downstream test tools: aggregate given/when/then, test executor, in-memory store.
 - `cqrsx/src/task` — a task as data: `NewTask`, format, attempt, policies.
 - `cqrsx/src/worker` — running tasks: handlers, dispatcher, adapters, executor, queue port, runtime.
 - `cqrsx/src/diagnostics.rs` — the one public part of the log module: `safe_type`, `StorageFailure` (category and code
@@ -32,6 +31,9 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
   without a `tracing` subscriber. Derived in part from postgres-es: `licenses/`.
 - `cqrsx-mongodb` — views and projection checkpoints in MongoDB (no features); `tests/mongo.rs` starts MongoDB,
   `journal_in_postgres` also PostgreSQL.
+- `cqrsx-testing` — test tools for the code that uses `cqrsx`, on its public API: `framework.rs` (`TestFramework`, aggregate
+  given/when/then), `command_executor.rs`, `mem_store.rs`, `unavailable_store.rs`, `validator.rs`; depends on `cqrsx` only;
+  `tests/framework.rs` runs the tools on an example application. A failed check is a panic, allowed by the crate's `lib.rs`.
 - `cqrsx-fixtures` — `publish = false`, a dev-dependency that does not depend on `cqrsx`: PostgreSQL and MongoDB
   containers on leased ports, captured logs, isolated test processes.
 - `cqrsx/doc/components.md` — architecture and naming contract. Read it before adding components.
@@ -51,9 +53,9 @@ Every change ships with tests. Cover new code paths, including error branches, w
 next to the code, integration tests in the crate's `tests`, or doctests.
 
 Verification target: CI enforces **97% line coverage** for the workspace and for `cqrsx`, `cqrsx-postgres`,
-`cqrsx-mongodb` and `cqrsx-engine` alone (`cqrsx-fixtures` counts only in the workspace total). Keep every feature of
-the engine compiling and tested on its own and with `--no-default-features`: `postgres`, `mongodb` and `http`; the
-other crates have none.
+`cqrsx-mongodb` and `cqrsx-engine` alone (`cqrsx-testing` and `cqrsx-fixtures` count only in the workspace total). Keep
+every feature of the engine compiling and tested on its own and with `--no-default-features`: `postgres`, `mongodb` and
+`http`; the other crates have none.
 
 Integration tests need the Podman API socket; `DOCKER_HOST` must point to it
 (`unix:///run/podman/podman.sock` in this environment). Fix failures, never relax thresholds or
@@ -66,7 +68,7 @@ cargo build --locked --workspace --all-features
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-features
-cargo test --locked -p cqrsx -p cqrsx-postgres -p cqrsx-mongodb   # the crates without features, one by one
+cargo test --locked -p cqrsx -p cqrsx-postgres -p cqrsx-mongodb -p cqrsx-testing   # the crates without features, one by one
 cargo test --locked -p cqrsx-engine --no-default-features     # engine in memory
 cargo test --locked -p cqrsx-engine --no-default-features --features postgres   # also: mongodb, http
 cargo llvm-cov --locked --workspace --all-features --fail-under-lines 97

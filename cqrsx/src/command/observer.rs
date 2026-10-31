@@ -24,8 +24,12 @@ use std::{any::Any, collections::HashMap, fmt};
 ///
 /// ```
 /// use cqrsx::{
-///     command::{CommandExecutor, observer::{CommandObserver, CommandReport, Outcome}},
-///     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
+///     command::{
+///         CommandExecutor, executor::StoreCommandExecutor, locks::LockLimits,
+///         observer::{CommandObserver, CommandReport, Outcome}, retry::AggregateConflictRetryPolicy,
+///     },
+///     journal::persisted::PersistedEventStore,
+///     memory::event_repository::MemEventRepository,
 ///     domain::{aggregate::Aggregate, command::Decide, event::Events},
 /// };
 /// use serde::{Deserialize, Serialize};
@@ -78,9 +82,9 @@ use std::{any::Any, collections::HashMap, fmt};
 ///
 /// # tokio_test(async {
 /// let log = Arc::new(Log::default());
-/// let counters = TestCommandExecutor::configured(MemStore::<Counter>::default(), 1, |executor| {
-///     executor.with_observer(log.clone())
-/// });
+/// let store = PersistedEventStore::<_, Counter>::new(MemEventRepository::default());
+/// let counters = StoreCommandExecutor::new(store, 1, AggregateConflictRetryPolicy::default(), LockLimits::default())
+///     .with_observer(log.clone());
 /// let metadata = [("source".to_owned(), "ui".to_owned())].into();
 /// counters.execute_with_metadata(&"c-1".into(), (), metadata).await.unwrap();
 /// counters.execute(&"c-1".into(), ()).await.unwrap_err();

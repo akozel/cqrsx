@@ -1,14 +1,14 @@
 //! An event store that is never reachable.
-use crate::{
+use crate::mem_store::MemStoreAggregateContext;
+use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{EventStore, PersistenceError},
     task::NewTask,
-    testing::mem_store::MemStoreAggregateContext,
 };
 use std::collections::HashMap;
 
 /// Every call fails with [`PersistenceError::ConnectionError`], which the command boundary
-/// reports as [`Unavailable`](crate::command::CommandGatewayError::Unavailable). Drives the
+/// reports as [`Unavailable`](cqrsx::command::CommandGatewayError::Unavailable). Drives the
 /// "storage unavailable" branches of a use case and proves that a path never touches storage.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableStore;
@@ -42,7 +42,7 @@ impl<A: Aggregate> EventStore<A> for UnavailableStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::persisted::tests::TestAggregate;
+    use crate::test_support::Ledger as TestAggregate;
 
     #[tokio::test]
     async fn every_call_fails_as_a_connection_error() {

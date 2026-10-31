@@ -63,7 +63,8 @@ mod tests {
         record_ticket::record_ticket,
         test_support::{attempt, fans, ledger, steps, ticket},
     };
-    use cqrsx::{journal::EventStore, testing::mem_store::MemStore};
+    use cqrsx::journal::EventStore;
+    use cqrsx_testing::mem_store::MemStore;
     use uuid::Uuid;
 
     fn cancellation(booking_id: Uuid) -> RecordCancellationV1 {

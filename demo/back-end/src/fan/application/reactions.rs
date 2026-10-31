@@ -118,10 +118,8 @@ mod tests {
                 domain::{ConcertId, FanId, FanLedgerId},
             },
         };
-        use cqrsx::{
-            command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata},
-            testing::{command_executor::TestCommandExecutor, mem_store::MemStore, unavailable_store::UnavailableStore},
-        };
+        use cqrsx::command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata};
+        use cqrsx_testing::{command_executor::TestCommandExecutor, mem_store::MemStore, unavailable_store::UnavailableStore};
         use std::sync::Arc;
         use uuid::Uuid;
 

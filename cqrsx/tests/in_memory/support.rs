@@ -1,6 +1,4 @@
 //! Fixtures owned by the public CQRS integration suite.
-#[path = "support/customer.rs"]
-pub(crate) mod customer;
 #[path = "support/ledger.rs"]
 pub(crate) mod ledger;
 #[path = "support/scenario.rs"]

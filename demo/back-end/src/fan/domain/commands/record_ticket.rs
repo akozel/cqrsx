@@ -50,7 +50,7 @@ mod tests {
         Fan, FanError,
         test_support::{record, recorded},
     };
-    use cqrsx::testing::TestFramework;
+    use cqrsx_testing::framework::TestFramework;
     use uuid::Uuid;
 
     #[test]

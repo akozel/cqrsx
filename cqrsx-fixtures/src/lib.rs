@@ -15,8 +15,6 @@
     clippy::unwrap_used,
     clippy::expect_used,
     clippy::panic,
-    clippy::unreachable,
-    clippy::indexing_slicing,
     reason = "test tooling: a panic is the failed check (rule 8 of .claude/rules/rust-style.md)"
 )]
 

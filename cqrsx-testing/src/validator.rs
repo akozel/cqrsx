@@ -1,9 +1,7 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
-// Modified for cqrsx; see doc/components.md#upstream-attribution and licenses/.
-//! The checks of [`TestFramework`](super::TestFramework): a test helper whose panic is the failed check (rule 8 of the
-//! code guidelines), so the panic lints are allowed here.
-#![allow(clippy::panic)]
-use crate::domain::aggregate::Aggregate;
+// Modified for cqrsx; see cqrsx/doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
+//! The checks of [`TestFramework`](crate::framework::TestFramework): a failed check panics (`# Panics` of each method).
+use cqrsx::domain::aggregate::Aggregate;
 use std::fmt;
 
 /// Validation object for the `TestFramework` package.
@@ -115,7 +113,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use example::MyEvents;
     /// # use example::MyService;
     /// # async fn test() {
-    /// use cqrsx::testing::TestFramework;
+    /// use cqrsx_testing::framework::TestFramework;
     ///
     /// let validator = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events()
@@ -220,7 +218,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use example::MyCommands;
     /// # use example::MyEvents;
     /// # use example::MyService;
-    /// use cqrsx::testing::TestFramework;
+    /// use cqrsx_testing::framework::TestFramework;
     ///
     /// let validator = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events()
@@ -327,7 +325,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use example::MyEvents;
     /// # use example::MyService;
     /// # use example::MyUserError;
-    /// use cqrsx::testing::TestFramework;
+    /// use cqrsx_testing::framework::TestFramework;
     ///
     /// let validator = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events()
@@ -441,7 +439,7 @@ where
     /// # use example::MyEvents;
     /// # use example::MyService;
     /// # use example::MyUserError;
-    /// use cqrsx::testing::TestFramework;
+    /// use cqrsx_testing::framework::TestFramework;
     ///
     /// let validator = TestFramework::<MyAggregate>::new(MyService)
     ///     .given_no_previous_events()
@@ -465,7 +463,8 @@ where
 #[cfg(test)]
 mod contract_tests {
     use super::*;
-    use crate::domain::{aggregate::tests::*, command::Decide};
+    use crate::test_support::*;
+    use cqrsx::domain::command::Decide;
 
     #[test]
     #[should_panic(expected = "expected error, received event")]
@@ -516,7 +515,7 @@ mod contract_tests {
 #[cfg(test)]
 mod inspection_tests {
     use super::*;
-    use crate::domain::aggregate::tests::{Ledger, Rejected};
+    use crate::test_support::{Ledger, Rejected};
     #[test]
     fn a_validator_prints_its_result() {
         let validator = AggregateResultValidator::<Ledger>::new(Err(Rejected));

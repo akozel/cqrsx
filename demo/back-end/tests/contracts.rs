@@ -34,11 +34,6 @@ use cqrsx::{
     },
     reactions::ReactionsPlanner,
     task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat, policy::redelivery_backoff},
-    testing::{
-        command_executor::TestCommandExecutor,
-        mem_store::{MemStore, MemStoreAggregateContext},
-        unavailable_store::UnavailableStore,
-    },
     worker::{
         TaskHandler, TaskResult,
         adapter::boxed::BoxedTaskAdapter,
@@ -60,6 +55,11 @@ use cqrsx_engine::{
     build::{BuildError, Builder},
     settings::{Settings, duration_text},
     setup::Setup,
+};
+use cqrsx_testing::{
+    command_executor::TestCommandExecutor,
+    mem_store::{MemStore, MemStoreAggregateContext},
+    unavailable_store::UnavailableStore,
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,

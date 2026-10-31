@@ -7,13 +7,14 @@ use cqrsx::command::executor::StoreCommandExecutor;
 use cqrsx::command::locks::LockLimits;
 use cqrsx::command::retry::AggregateConflictRetryPolicy;
 use cqrsx::journal::EventStore;
-use cqrsx::testing::mem_store::MemStore;
+use cqrsx::journal::persisted::PersistedEventStore;
+use cqrsx::memory::event_repository::MemEventRepository;
 
 use crate::support::scenario::*;
 
 #[tokio::test]
 async fn framework_test() {
-    let event_store = MemStore::<TestAggregate>::default();
+    let event_store = PersistedEventStore::<_, TestAggregate>::new(MemEventRepository::default());
 
     let cqrs = StoreCommandExecutor::new(
         event_store.clone(),
@@ -89,20 +90,23 @@ mod contracts {
         time::Duration,
     };
     use {
-        crate::support::ledger::*, cqrsx::journal::AggregateContext, cqrsx::journal::EventStore,
-        cqrsx::testing::mem_store::MemStore, cqrsx::testing::mem_store::MemStoreAggregateContext,
+        crate::support::ledger::*,
+        cqrsx::journal::AggregateContext,
+        cqrsx::journal::EventStore,
+        cqrsx::journal::persisted::{EventStoreAggregateContext, PersistedEventStore},
+        cqrsx::memory::event_repository::MemEventRepository,
     };
 
     type Calls = Arc<Mutex<Vec<&'static str>>>;
 
     #[derive(Clone)]
     struct Store {
-        inner: MemStore<Ledger>,
+        inner: PersistedEventStore<MemEventRepository, Ledger>,
         calls: Calls,
         failure: Option<&'static str>,
     }
     impl EventStore<Ledger> for Store {
-        type Context = MemStoreAggregateContext<Ledger>;
+        type Context = EventStoreAggregateContext<Ledger>;
         async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
             self.inner.load_events(id).await
         }
@@ -143,7 +147,7 @@ mod contracts {
     async fn load_decide_commit_preserves_the_rules_and_metadata_and_returns_the_event() {
         let calls = Calls::default();
         let store = Store {
-            inner: MemStore::default(),
+            inner: PersistedEventStore::new(MemEventRepository::default()),
             calls: Arc::clone(&calls),
             failure: None,
         };
@@ -177,7 +181,7 @@ mod contracts {
         ] {
             let calls = Calls::default();
             let wakeup = CommitWakeup::new();
-            let inner = MemStore::default();
+            let inner = PersistedEventStore::new(MemEventRepository::default());
             let store = Store {
                 inner: inner.clone(),
                 calls: calls.clone(),

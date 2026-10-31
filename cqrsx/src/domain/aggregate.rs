@@ -252,7 +252,7 @@ impl AggregateKey {
     }
 }
 
-/// A ledger of deltas, the aggregate the unit tests of the stores, the projections and the testing tools write and
+/// A ledger of deltas, the aggregate the unit tests of the stores and the projections write and
 /// read; its one command decides a zero delta and is never executed.
 #[cfg(test)]
 pub(crate) mod tests {

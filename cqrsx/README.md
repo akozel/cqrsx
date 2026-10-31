@@ -61,7 +61,8 @@ The [typical scenario](doc/typical_scenario.md) follows a cancellation through a
 
 | Tool | For |
 |---|---|
-| `TestFramework` | Aggregate given/when/then tests for a decision and rejection. |
+| `TestFramework` | Aggregate given/when/then tests for a decision and rejection (crate `cqrsx-testing`). |
+| `TestCommandExecutor` | Use-case tests over a test store or a journal in memory (crate `cqrsx-testing`). |
 | `TaskContext::new` | Exercise a handler with an attempt, retry pause, dependencies and executors. |
 | `MemTaskQueue` | Inspect the in-memory outbox queue, delivery and settlement. |
 
@@ -96,4 +97,6 @@ the code of the failure. The engine ([`cqrsx-engine`](../cqrsx-engine/README.md)
 
 The CQRS framework and (in `cqrsx-postgres`) the PostgreSQL event and view repositories include modified code from
 [`cqrs-es` and `postgres-es` 0.5.0](https://github.com/serverlesstechnology/cqrs), Apache-2.0,
-copyright 2023 Serverless Technology Consulting, LLC; see [`licenses/`](licenses/) and, for the repositories, [`../cqrsx-postgres/licenses/`](../cqrsx-postgres/licenses/).
+copyright 2023 Serverless Technology Consulting, LLC; see [`licenses/`](licenses/), for the repositories
+[`../cqrsx-postgres/licenses/`](../cqrsx-postgres/licenses/) and, for the test tools,
+[`../cqrsx-testing/licenses/`](../cqrsx-testing/licenses/).

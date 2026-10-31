@@ -21,10 +21,10 @@ use cqrsx::{
     journal::{EventStore, PersistenceError},
     reactions::ReactionsPlanner,
     task::NewTask,
-    testing::{
-        command_executor::TestCommandExecutor,
-        mem_store::{MemStore, MemStoreAggregateContext},
-    },
+};
+use cqrsx_testing::{
+    command_executor::TestCommandExecutor,
+    mem_store::{MemStore, MemStoreAggregateContext},
 };
 use std::{
     collections::HashMap,

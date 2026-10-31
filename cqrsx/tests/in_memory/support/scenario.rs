@@ -11,8 +11,6 @@ use cqrsx::domain::event::Events;
 
 #[derive(Debug, Serialize, Deserialize, Default, Clone, PartialEq)]
 pub struct TestAggregate {
-    pub(crate) id: String,
-    pub(crate) description: String,
     pub(crate) tests: Vec<String>,
 }
 #[derive(Debug, thiserror::Error)]
@@ -38,14 +36,8 @@ impl Aggregate for TestAggregate {
 
     fn apply(&mut self, event: Self::Event) {
         match event {
-            TestEvent::Created(e) => {
-                self.id = e.id;
-            }
             TestEvent::Tested(e) => {
                 self.tests.push(e.test_name);
-            }
-            TestEvent::SomethingElse(e) => {
-                self.description = e.description;
             }
         }
     }
@@ -54,10 +46,6 @@ impl Aggregate for TestAggregate {
 impl Decide<TestAggregate> for TestCommand {
     fn decide(self, aggregate: &TestAggregate, _service: &TestService) -> Result<TestEvent, TestError> {
         match &self {
-            TestCommand::CreateTest(command) => Ok(TestEvent::Created(Created {
-                id: command.id.to_string(),
-            })),
-
             TestCommand::ConfirmTest(command) => {
                 for test in &aggregate.tests {
                     if test == &command.test_name {
@@ -68,24 +56,13 @@ impl Decide<TestAggregate> for TestCommand {
                     test_name: command.test_name.to_string(),
                 }))
             }
-
-            TestCommand::DoSomethingElse(command) => Ok(TestEvent::SomethingElse(SomethingElse {
-                description: command.description.clone(),
-            })),
         }
     }
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
 pub enum TestEvent {
-    Created(Created),
     Tested(Tested),
-    SomethingElse(SomethingElse),
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct Created {
-    pub id: String,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
@@ -93,17 +70,10 @@ pub struct Tested {
     pub test_name: String,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
-pub struct SomethingElse {
-    pub description: String,
-}
-
 impl Events for TestEvent {
     fn event_type(&self) -> &'static str {
         match self {
-            Self::Created(_) => "Created",
             Self::Tested(_) => "Tested",
-            Self::SomethingElse(_) => "SomethingElse",
         }
     }
 
@@ -114,24 +84,12 @@ impl Events for TestEvent {
 
 #[derive(Clone)]
 pub enum TestCommand {
-    CreateTest(CreateTest),
     ConfirmTest(ConfirmTest),
-    DoSomethingElse(DoSomethingElse),
-}
-
-#[derive(Clone)]
-pub struct CreateTest {
-    pub id: String,
 }
 
 #[derive(Clone)]
 pub struct ConfirmTest {
     pub test_name: String,
-}
-
-#[derive(Clone)]
-pub struct DoSomethingElse {
-    pub description: String,
 }
 
 pub(crate) fn metadata() -> HashMap<String, String> {

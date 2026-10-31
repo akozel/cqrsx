@@ -1,5 +1,6 @@
 //! A command executor over a test event store or an in-memory journal, for use-case tests.
-use crate::{
+use crate::mem_store::MemStore;
+use cqrsx::{
     command::{
         CommandExecutor, CommandGatewayError, CommitReport, executor::StoreCommandExecutor, locks::LockLimits,
         retry::AggregateConflictRetryPolicy,
@@ -9,7 +10,6 @@ use crate::{
     memory::event_repository::MemEventRepository,
     mutex::lock,
     task::NewTask,
-    testing::mem_store::MemStore,
 };
 use std::{
     collections::HashMap,
@@ -29,7 +29,7 @@ use std::{
 /// Over a [`MemStore`] ([`new`](Self::new)) the commands only change the aggregates. Over a
 /// [`MemEventRepository`] ([`over_journal`](Self::over_journal)) they append to a journal that projection
 /// processors read, and the journal's outbox ([`MemEventRepository::outbox`]) holds the published tasks: give
-/// the processors the same journal and the executor their [`CommitWakeup`](crate::journal::wakeup::CommitWakeup).
+/// the processors the same journal and the executor their [`CommitWakeup`](cqrsx::journal::wakeup::CommitWakeup).
 ///
 /// ```
 /// use cqrsx::{
@@ -38,10 +38,10 @@ use std::{
 ///         causation::Causation,
 ///         planner::{Decision, TaskPlanError, TaskPlanner},
 ///     },
-///     testing::{command_executor::TestCommandExecutor, mem_store::MemStore},
 ///     domain::{aggregate::Aggregate, command::Decide, event::Events},
 /// };
 /// use cqrsx::task::{NewTask, Task};
+/// use cqrsx_testing::{command_executor::TestCommandExecutor, mem_store::MemStore};
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Clone, Default, Serialize, Deserialize)]
@@ -195,7 +195,8 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
+    use crate::unavailable_store::UnavailableStore;
+    use cqrsx::{
         command::{
             causation::Causation,
             observer::CommandObserver,
@@ -204,7 +205,6 @@ mod tests {
         domain::{command::Decide, event::Events},
         journal::{repository::PersistedEventRepository, wakeup::CommitWakeup},
         task::Task,
-        testing::unavailable_store::UnavailableStore,
     };
     use serde::{Deserialize, Serialize};
 
@@ -372,8 +372,8 @@ mod tests {
     struct Outcomes(Mutex<Vec<String>>);
 
     impl CommandObserver<Stack> for Outcomes {
-        fn command(&self, report: &crate::command::observer::CommandReport<'_, Stack>) {
-            use crate::command::observer::Outcome;
+        fn command(&self, report: &cqrsx::command::observer::CommandReport<'_, Stack>) {
+            use cqrsx::command::observer::Outcome;
             let outcome = match report.outcome {
                 Outcome::Accepted { tasks } => format!("accepted with {} tasks", tasks.len()),
                 Outcome::Rejected(error) => format!("rejected: {error}"),

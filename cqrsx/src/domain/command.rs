@@ -121,7 +121,6 @@ pub struct Label {
 /// ```
 /// use cqrsx::{
 ///     domain::{aggregate::Aggregate, command::{Command, Decide}, event::Events},
-///     testing::TestFramework,
 /// };
 /// use serde::{Deserialize, Serialize};
 ///
@@ -210,14 +209,17 @@ pub struct Label {
 ///     Take(Take),
 /// }
 ///
-/// TestFramework::<Shelf>::new(Capacity(1))
-///     .given(vec![ShelfEvent::Put("jam".into())])
-///     .when(ShelfCommand::Put(Put { item: "tea".into() }))
-///     .then_expect_error(&ShelfError::Full);
-/// TestFramework::<Shelf>::new(Capacity(1))
-///     .given(vec![ShelfEvent::Put("jam".into())])
-///     .when(ShelfCommand::Take(Take { item: "jam".into() }))
-///     .then_expect_event(&ShelfEvent::Taken("jam".into()));
+/// // The decision reads the state the history folds into: a jam on the shelf of one.
+/// let mut shelf = Shelf::default();
+/// shelf.apply(ShelfEvent::Put("jam".into()));
+/// assert_eq!(
+///     ShelfCommand::Put(Put { item: "tea".into() }).decide(&shelf, &Capacity(1)),
+///     Err(ShelfError::Full)
+/// );
+/// assert_eq!(
+///     ShelfCommand::Take(Take { item: "jam".into() }).decide(&shelf, &Capacity(1)),
+///     Ok(ShelfEvent::Taken("jam".into()))
+/// );
 /// ```
 ///
 /// Every variant carries one command type, and a struct variant does not compile:

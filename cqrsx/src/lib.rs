@@ -7,7 +7,6 @@
 //! - [`projection`]: the event handler, the checkpoint of a projection and the processor that feeds handlers from the journal.
 //! - [`view`]: read models, their projection, repository and verification.
 //! - [`memory`]: the backend in memory: journal, checkpoints, views and a task queue.
-//! - [`testing`]: tools for testing aggregates and commands downstream.
 //! - [`task`]: a task as data: what a command publishes, a delivery attempt and the policies of the task types.
 //! - [`worker`]: running tasks: handlers, dispatcher, adapters, queue port, executor and the worker runtime.
 //! - [`mutex`]: the one helper that takes a `std::sync::Mutex` (shared with `cqrsx-engine`).
@@ -38,7 +37,6 @@ pub mod mutex;
 pub mod projection;
 pub mod reactions;
 pub mod task;
-pub mod testing;
 mod unwinding;
 pub mod view;
 pub mod worker;

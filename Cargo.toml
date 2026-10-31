@@ -1,5 +1,5 @@
 [workspace]
-members = ["cqrsx", "cqrsx-engine", "cqrsx-fixtures", "cqrsx-macros", "cqrsx-mongodb", "cqrsx-postgres"]
+members = ["cqrsx", "cqrsx-engine", "cqrsx-fixtures", "cqrsx-macros", "cqrsx-mongodb", "cqrsx-postgres", "cqrsx-testing"]
 exclude = ["demo"]
 resolver = "3"
 
@@ -14,6 +14,7 @@ cqrsx-fixtures = { path = "cqrsx-fixtures", version = "0.1.0" }
 cqrsx-macros = { path = "cqrsx-macros", version = "0.1.0" }
 cqrsx-mongodb = { path = "cqrsx-mongodb", version = "0.1.0" }
 cqrsx-postgres = { path = "cqrsx-postgres", version = "0.1.0" }
+cqrsx-testing = { path = "cqrsx-testing", version = "0.1.0" }
 futures = "0.3.34"
 log = "0.4.34"
 mongodb = { version = "3.9.1", default-features = false, features = ["compat-3-0-0", "rustls-tls"] }

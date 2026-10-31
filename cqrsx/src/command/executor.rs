@@ -53,9 +53,9 @@ impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
     /// An executor over `store` with the rules the commands decide with ([`Aggregate::Rules`]) and a lock
     /// registry of its own, bounded by `lock_limits`, that wakes nobody, tells nobody and plans nothing.
     ///
-    /// For a simple in-memory `EventStore` suitable for experimentation or testing see
-    /// [MemStore](crate::testing::mem_store::MemStore); for production a
-    /// [persistent event store](crate::journal::persisted::PersistedEventStore) over a database repository.
+    /// For experimentation or testing use the [persistent event store](crate::journal::persisted::PersistedEventStore)
+    /// over the journal in memory ([`MemEventRepository`](crate::memory::event_repository::MemEventRepository)); for
+    /// production, the same store over a database repository.
     ///
     /// ```rust
     /// # mod example {
@@ -141,9 +141,10 @@ impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
     /// use cqrsx::command::executor::StoreCommandExecutor;
     /// use cqrsx::command::locks::LockLimits;
     /// use cqrsx::command::retry::AggregateConflictRetryPolicy;
-    /// use cqrsx::testing::mem_store::MemStore;
+    /// use cqrsx::journal::persisted::PersistedEventStore;
+    /// use cqrsx::memory::event_repository::MemEventRepository;
     ///
-    /// let store = MemStore::<MyAggregate>::default();
+    /// let store = PersistedEventStore::<_, MyAggregate>::new(MemEventRepository::default());
     /// let rules = MyService::default();
     ///
     /// let executor = StoreCommandExecutor::new(store, rules, AggregateConflictRetryPolicy::default(), LockLimits::default());
@@ -185,7 +186,7 @@ impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
     }
 
     /// The store the commands run against.
-    pub(crate) fn store(&self) -> &S {
+    pub fn store(&self) -> &S {
         self.attempt.store()
     }
 }
@@ -282,8 +283,8 @@ where
     /// # use example::MyCommands;
     /// # use example::MyUserError;
     /// # use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor};
-    /// # use cqrsx::testing::mem_store::MemStore;
-    /// type MyExecutor = StoreCommandExecutor<MyAggregate, MemStore<MyAggregate>>;
+    /// # use cqrsx::{journal::persisted::PersistedEventStore, memory::event_repository::MemEventRepository};
+    /// type MyExecutor = StoreCommandExecutor<MyAggregate, PersistedEventStore<MemEventRepository, MyAggregate>>;
     ///
     /// async fn do_something(executor: MyExecutor) -> Result<(), CommandGatewayError<MyUserError>> {
     ///     let committed = executor.execute(&"agg-id-F39A0C".into(), MyCommands::DoSomething).await?;
@@ -384,10 +385,10 @@ where
     /// # use example::MyCommands;
     /// # use example::MyUserError;
     /// # use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor};
-    /// # use cqrsx::testing::mem_store::MemStore;
+    /// # use cqrsx::{journal::persisted::PersistedEventStore, memory::event_repository::MemEventRepository};
     /// # use std::collections::HashMap;
     /// # use chrono;
-    /// type MyExecutor = StoreCommandExecutor<MyAggregate, MemStore<MyAggregate>>;
+    /// type MyExecutor = StoreCommandExecutor<MyAggregate, PersistedEventStore<MemEventRepository, MyAggregate>>;
     ///
     /// async fn do_something(executor: MyExecutor) -> Result<(), CommandGatewayError<MyUserError>> {
     ///     let metadata = HashMap::from([("time".to_string(), chrono::Utc::now().to_rfc3339())]);
@@ -523,6 +524,7 @@ mod tests {
     use crate::domain::aggregate::Aggregate;
     use crate::journal::{EventStore, PersistenceError};
     use crate::task::{NewTask, Task};
+    use crate::{journal::persisted::PersistedEventStore, memory::event_repository::MemEventRepository};
     use std::time::Duration;
     use thiserror::Error;
 
@@ -719,11 +721,12 @@ mod tests {
     #[tokio::test]
     async fn executor_accepts_send_commands_without_requiring_sync() {
         let executor = Arc::new(StoreCommandExecutor::new(
-            crate::testing::mem_store::MemStore::<SendOnlyAggregate>::default(),
+            PersistedEventStore::<_, SendOnlyAggregate>::new(MemEventRepository::default()),
             (),
             no_delay_policy(1),
             LockLimits::default(),
         ));
+        let observed = Arc::clone(&executor);
         let report = tokio::spawn(async move {
             CommandExecutor::execute(executor.as_ref(), &"send-only".into(), std::cell::Cell::new(7)).await
         })
@@ -732,13 +735,15 @@ mod tests {
         .unwrap();
         assert_eq!(report.events.len(), 1);
         assert!(report.tasks.is_empty(), "no planner, no tasks");
+        let stored = observed.store().load_events("send-only").await.unwrap();
+        assert_eq!(stored.len(), 1, "the store the commands ran against holds the event");
     }
 
     #[tokio::test]
     async fn a_planner_reads_a_send_only_command_and_the_future_stays_send() {
         let executor = Arc::new(
             StoreCommandExecutor::new(
-                crate::testing::mem_store::MemStore::<SendOnlyAggregate>::default(),
+                PersistedEventStore::<_, SendOnlyAggregate>::new(MemEventRepository::default()),
                 (),
                 no_delay_policy(1),
                 LockLimits::default(),

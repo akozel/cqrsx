@@ -3,7 +3,7 @@
 use crate::support::ledger::{Command, Delta, Ledger, Rejected, Services};
 use cqrsx::{
     command::{
-        CommandExecutor, CommandGatewayError,
+        CommandGatewayError,
         causation::Causation,
         executor::StoreCommandExecutor,
         locks::LockLimits,
@@ -21,7 +21,6 @@ use cqrsx::{
     },
     memory::event_repository::MemEventRepository,
     task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat},
-    testing::command_executor::TestCommandExecutor,
 };
 use proptest::prelude::*;
 use serde::{Deserialize, Serialize};
@@ -202,7 +201,7 @@ fn claim(task: &NewTask, number: i32) -> TaskAttempt {
 
 /// The wallet step: the task's payload becomes the wallet's command, which continues the task's chain.
 async fn record_in_wallet(
-    wallets: &TestCommandExecutor<Wallet, PersistedEventStore<MemEventRepository, Wallet>>,
+    wallets: &StoreCommandExecutor<Wallet, PersistedEventStore<MemEventRepository, Wallet>>,
     attempt: &TaskAttempt,
 ) -> Result<Vec<NewTask>, CommandGatewayError<AlreadyRecorded>> {
     let step: RecordInWallet = serde_json::from_value(attempt.payload().clone()).unwrap();
@@ -214,12 +213,20 @@ async fn record_in_wallet(
 #[tokio::test]
 async fn a_process_plans_across_two_aggregates_and_the_chain_keeps_its_correlation() {
     let journal = MemEventRepository::default();
-    let shows = TestCommandExecutor::<Show, _>::configured(PersistedEventStore::new(journal.clone()), (), |executor| {
-        executor.with_task_planner(Delivery)
-    });
-    let wallets = TestCommandExecutor::<Wallet, _>::configured(PersistedEventStore::new(journal.clone()), (), |executor| {
-        executor.with_task_planner(Delivery)
-    });
+    let shows = StoreCommandExecutor::<Show, _>::new(
+        PersistedEventStore::new(journal.clone()),
+        (),
+        AggregateConflictRetryPolicy::default(),
+        LockLimits::default(),
+    )
+    .with_task_planner(Delivery);
+    let wallets = StoreCommandExecutor::<Wallet, _>::new(
+        PersistedEventStore::new(journal.clone()),
+        (),
+        AggregateConflictRetryPolicy::default(),
+        LockLimits::default(),
+    )
+    .with_task_planner(Delivery);
 
     let root = Causation::root("ui");
     let booking = shows
@@ -268,10 +275,6 @@ async fn a_process_plans_across_two_aggregates_and_the_chain_keeps_its_correlati
     );
     assert_eq!(journal.outbox::<Show>().len(), 1);
     assert_eq!(journal.outbox::<Wallet>().len(), 1);
-    assert_eq!(
-        (shows.take_published_tasks().len(), wallets.take_published_tasks().len()),
-        (1, 1)
-    );
 }
 
 /// The balance a decision leaves, planned as one task.

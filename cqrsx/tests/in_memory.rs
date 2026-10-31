@@ -1,5 +1,5 @@
 //! Integration tests on the backend in memory: commands, the history of the journal, task planning and reactions,
-//! projections, and the downstream testing tools.
+//! and projections.
 // Test code: a panic is the failed check (rule 8 of .claude/rules/rust-style.md); clippy.toml allows it only inside
 // `#[test]` functions, not in the helpers of this crate.
 #![allow(
@@ -23,5 +23,3 @@ mod projection;
 mod reactions;
 #[path = "in_memory/support.rs"]
 mod support;
-#[path = "in_memory/testing.rs"]
-mod testing;

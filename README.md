@@ -5,8 +5,14 @@ It provides aggregates and command handling, event and snapshot persistence,
 projections, a transactional outbox, and a durable task queue with retries.
 PostgreSQL stores data, and Tokio runs background tasks.
 
-The workspace has three crates: [`cqrsx`](cqrsx/README.md), the core; [`cqrsx-engine`](cqrsx-engine/README.md), which
-assembles an application from the core's components; and `cqrsx-macros`, the derive macros.
+The workspace has seven crates:
+- [`cqrsx`](cqrsx/README.md), the core;
+- [`cqrsx-engine`](cqrsx-engine/README.md), which assembles an application from the core's components;
+- `cqrsx-postgres` and `cqrsx-mongodb`, the stores;
+- `cqrsx-testing`, the test tools for applications (aggregate given/when/then, a command executor, event stores for tests);
+- `cqrsx-macros`, the derive macros;
+- `cqrsx-fixtures`, the private test fixtures of the framework (database containers, captured logs).
+
 For architecture details, see [components and terminology](cqrsx/doc/components.md).
 
 ## Requirements
@@ -90,12 +96,12 @@ from the `cqrsx-fixtures` crate);
 they do not require the Compose database. The first run needs access to the image
 registry.
 
-The core and the stores (`cqrsx-postgres`, `cqrsx-mongodb`) have no features; the engine has three. Run the tests
+The core, the stores (`cqrsx-postgres`, `cqrsx-mongodb`) and `cqrsx-testing` have no features; the engine has three. Run the tests
 of the crates one by one and of the engine with each feature on its own:
 
 ```bash
 cargo test --locked -p cqrsx                                              # core, in memory
-cargo test --locked -p cqrsx-postgres                                     # also: -p cqrsx-mongodb
+cargo test --locked -p cqrsx-postgres                                     # also: -p cqrsx-mongodb, -p cqrsx-testing
 cargo test --locked -p cqrsx-engine --no-default-features                # engine in memory
 cargo test --locked -p cqrsx-engine --no-default-features --features postgres   # also: mongodb, http
 ```

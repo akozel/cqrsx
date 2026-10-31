@@ -159,9 +159,10 @@ mod tests {
         },
         domain::event::Events,
         journal::PersistenceError,
+        journal::persisted::PersistedEventStore,
         journal::persisted::tests::{TestAggregate, TestCommands, TestService},
+        memory::event_repository::MemEventRepository,
         task::{NewTask, Task, format::TaskFormat},
-        testing::mem_store::MemStore,
     };
     use serde::{Deserialize, Serialize};
     use std::sync::{
@@ -169,9 +170,16 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
+    type Mem<A> = PersistedEventStore<MemEventRepository, A>;
+
+    /// A journal in memory under the store, as the engine in memory has it.
+    fn mem_store<A: Aggregate>() -> Mem<A> {
+        PersistedEventStore::new(MemEventRepository::default())
+    }
+
     #[tokio::test]
     async fn execute_commits_and_returns_the_events_in_commit_order() {
-        let store = MemStore::<TestAggregate>::default();
+        let store = mem_store::<TestAggregate>();
         let framework = CommandAttempt::new(store.clone(), TestService);
         let metadata = HashMap::from([("trace".to_owned(), "t-1".to_owned())]);
         let committed = framework
@@ -297,7 +305,7 @@ mod tests {
     #[tokio::test]
     async fn the_planner_sees_the_decision_and_its_tasks_commit_with_the_events() {
         let recorder = Recorder::default();
-        let framework = CommandAttempt::new(MemStore::<Echo>::default(), ()).with_task_planner(recorder.clone());
+        let framework = CommandAttempt::new(mem_store::<Echo>(), ()).with_task_planner(recorder.clone());
         framework.execute(&"e-1".into(), probe(5)).await.unwrap();
         let causation = Causation::root("ui");
         let metadata = causation.event_metadata();
@@ -325,7 +333,7 @@ mod tests {
     #[tokio::test]
     async fn a_rejection_plans_nothing() {
         let recorder = Recorder::default();
-        let framework = CommandAttempt::new(MemStore::<Echo>::default(), ()).with_task_planner(recorder.clone());
+        let framework = CommandAttempt::new(mem_store::<Echo>(), ()).with_task_planner(recorder.clone());
         assert!(matches!(
             framework.execute(&"e-1".into(), probe(13)).await,
             Err(AggregateError::Domain(Unlucky))
@@ -376,7 +384,7 @@ mod tests {
 
     #[tokio::test]
     async fn decide_reads_the_committed_state_and_the_planner_sees_its_event_applied_once() {
-        let (store, decided, planner) = (MemStore::<Tape>::default(), Decided::default(), Before::default());
+        let (store, decided, planner) = (mem_store::<Tape>(), Decided::default(), Before::default());
         let framework = CommandAttempt::new(store.clone(), decided.clone()).with_task_planner(planner.clone());
         framework.execute(&"t-1".into(), 1).await.unwrap();
         framework.execute(&"t-1".into(), 2).await.unwrap();
@@ -403,7 +411,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_planning_error_refuses_the_command_and_commits_nothing() {
-        let store = MemStore::<Echo>::default();
+        let store = mem_store::<Echo>();
         let framework = CommandAttempt::new(store.clone(), ()).with_task_planner(Recorder {
             refuse: true,
             ..Recorder::default()
@@ -420,14 +428,14 @@ mod tests {
     async fn without_a_planner_the_command_is_moved_and_with_one_it_is_cloned_once() {
         let command = probe(5);
         let clones = command.clones.clone();
-        CommandAttempt::new(MemStore::<Echo>::default(), ())
+        CommandAttempt::new(mem_store::<Echo>(), ())
             .execute(&"e-1".into(), command)
             .await
             .unwrap();
         assert_eq!(clones.load(Ordering::SeqCst), 0);
         let command = probe(5);
         let clones = command.clones.clone();
-        CommandAttempt::new(MemStore::<Echo>::default(), ())
+        CommandAttempt::new(mem_store::<Echo>(), ())
             .with_task_planner(Recorder::default())
             .execute(&"e-1".into(), command)
             .await
@@ -454,7 +462,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_planner_replaces_the_first() {
         let recorder = Recorder::default();
-        let framework = CommandAttempt::new(MemStore::<Echo>::default(), ())
+        let framework = CommandAttempt::new(mem_store::<Echo>(), ())
             .with_task_planner(recorder.clone())
             .with_task_planner(Whisperer);
         let report = framework.execute(&"e-1".into(), probe(5)).await.unwrap();
@@ -464,7 +472,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_commit_report_compares_its_parts_and_shows_them() {
-        let report = CommandAttempt::new(MemStore::<Echo>::default(), ())
+        let report = CommandAttempt::new(mem_store::<Echo>(), ())
             .with_task_planner(Recorder::default())
             .execute(&"e-1".into(), probe(5))
             .await
@@ -483,13 +491,13 @@ mod tests {
     /// A store whose calls fail with the journal error `fail()` returns, on load or on commit.
     #[derive(Clone)]
     struct FailingStore {
-        inner: MemStore<Echo>,
+        inner: Mem<Echo>,
         fail: fn() -> PersistenceError,
         on_commit: bool,
     }
 
     impl EventStore<Echo> for FailingStore {
-        type Context = <MemStore<Echo> as EventStore<Echo>>::Context;
+        type Context = <Mem<Echo> as EventStore<Echo>>::Context;
 
         async fn load_events(&self, id: &str) -> Result<Vec<crate::domain::event::EventEnvelope<Echo>>, PersistenceError> {
             self.inner.load_events(id).await
@@ -531,7 +539,7 @@ mod tests {
         for on_commit in [false, true] {
             for (fail, expected) in cases {
                 let store = FailingStore {
-                    inner: MemStore::default(),
+                    inner: mem_store(),
                     fail,
                     on_commit,
                 };

@@ -1,5 +1,6 @@
 use crate::support::ledger::*;
 use cqrsx::command::CommandExecutor;
+use cqrsx::{journal::persisted::PersistedEventStore, memory::event_repository::MemEventRepository};
 use std::{
     collections::HashMap,
     io,
@@ -15,12 +16,12 @@ use {
 };
 #[derive(Clone)]
 struct LostAcknowledgementStore {
-    inner: Arc<cqrsx::testing::mem_store::MemStore<Ledger>>,
+    inner: Arc<PersistedEventStore<MemEventRepository, Ledger>>,
     commits: Arc<AtomicUsize>,
 }
 
 impl EventStore<Ledger> for LostAcknowledgementStore {
-    type Context = <cqrsx::testing::mem_store::MemStore<Ledger> as EventStore<Ledger>>::Context;
+    type Context = <PersistedEventStore<MemEventRepository, Ledger> as EventStore<Ledger>>::Context;
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
         self.inner.load_events(id).await
     }
@@ -45,7 +46,7 @@ impl EventStore<Ledger> for LostAcknowledgementStore {
 #[tokio::test]
 async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command() {
     let store = LostAcknowledgementStore {
-        inner: Default::default(),
+        inner: Arc::new(PersistedEventStore::new(MemEventRepository::default())),
         commits: Arc::default(),
     };
     let observed = store.clone();

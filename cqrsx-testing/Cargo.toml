@@ -1,0 +1,20 @@
+[package]
+name = "cqrsx-testing"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+description = "Test tools for the code that uses cqrsx: aggregate given/when/then, a command executor and event stores for tests"
+
+[dependencies]
+cqrsx.workspace = true
+
+[dev-dependencies]
+async-trait.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+
+[lints]
+workspace = true

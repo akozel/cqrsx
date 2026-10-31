@@ -2,7 +2,10 @@
 //! every task type, the order and the ids of several tasks of one format, a delayed task, labels kept in the
 //! metadata, and a redelivered step that publishes nothing twice.
 use cqrsx::{
-    command::{CommandExecutor, CommandGatewayError, causation::Causation},
+    command::{
+        CommandGatewayError, causation::Causation, executor::StoreCommandExecutor, locks::LockLimits,
+        retry::AggregateConflictRetryPolicy,
+    },
     domain::{aggregate::Aggregate, command::Decide, event::Events},
     journal::persisted::PersistedEventStore,
     memory::event_repository::MemEventRepository,
@@ -13,7 +16,6 @@ use cqrsx::{
         format::TaskFormat,
         policy::{Policies, PolicyName, Retry, TaskPolicy},
     },
-    testing::command_executor::TestCommandExecutor,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -209,7 +211,7 @@ fn claim(task: &NewTask, number: i32) -> TaskAttempt {
 /// The wallet step: the task's payload becomes the wallet's command, which continues the task's chain; its
 /// causation and the tasks the wallet's reactions planned.
 async fn record_in_wallet(
-    wallets: &TestCommandExecutor<Wallet, PersistedEventStore<MemEventRepository, Wallet>>,
+    wallets: &StoreCommandExecutor<Wallet, PersistedEventStore<MemEventRepository, Wallet>>,
     attempt: &TaskAttempt,
 ) -> Result<(Causation, Vec<NewTask>), CommandGatewayError<AlreadyRecorded>> {
     let step: RecordInWallet = serde_json::from_value(attempt.payload().clone()).unwrap();
@@ -223,12 +225,20 @@ async fn record_in_wallet(
 #[tokio::test]
 async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type() {
     let journal = MemEventRepository::default();
-    let shows = TestCommandExecutor::<Show, _>::configured(PersistedEventStore::new(journal.clone()), (), |executor| {
-        executor.with_task_planner(ReactionsPlanner::<Show>::new(policies()))
-    });
-    let wallets = TestCommandExecutor::<Wallet, _>::configured(PersistedEventStore::new(journal.clone()), (), |executor| {
-        executor.with_task_planner(ReactionsPlanner::<Wallet>::new(policies()))
-    });
+    let shows = StoreCommandExecutor::<Show, _>::new(
+        PersistedEventStore::new(journal.clone()),
+        (),
+        AggregateConflictRetryPolicy::default(),
+        LockLimits::default(),
+    )
+    .with_task_planner(ReactionsPlanner::<Show>::new(policies()));
+    let wallets = StoreCommandExecutor::<Wallet, _>::new(
+        PersistedEventStore::new(journal.clone()),
+        (),
+        AggregateConflictRetryPolicy::default(),
+        LockLimits::default(),
+    )
+    .with_task_planner(ReactionsPlanner::<Wallet>::new(policies()));
 
     let root = Causation::root("ui");
     let book = Book {
@@ -299,8 +309,4 @@ async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type(
         Err(CommandGatewayError::Domain(AlreadyRecorded))
     );
     assert_eq!((journal.outbox::<Show>().len(), journal.outbox::<Wallet>().len()), (1, 3));
-    assert_eq!(
-        (shows.take_published_tasks().len(), wallets.take_published_tasks().len()),
-        (1, 3)
-    );
 }

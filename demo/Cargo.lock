@@ -604,6 +604,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "cqrsx-testing"
+version = "0.1.0"
+dependencies = [
+ "cqrsx",
+]
+
+[[package]]
 name = "crc"
 version = "3.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -904,6 +911,7 @@ dependencies = [
  "cqrsx",
  "cqrsx-engine",
  "cqrsx-postgres",
+ "cqrsx-testing",
  "dotenvy",
  "futures",
  "http-body-util",

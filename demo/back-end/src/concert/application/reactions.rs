@@ -143,8 +143,8 @@ mod tests {
             command::{CommandGatewayError, metadata::CommandMetadata},
             journal::EventStore,
             task::format::TaskFormat,
-            testing::{mem_store::MemStore, unavailable_store::UnavailableStore},
         };
+        use cqrsx_testing::{mem_store::MemStore, unavailable_store::UnavailableStore};
         use serde_json::{Value, json};
         use uuid::Uuid;
 

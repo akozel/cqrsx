@@ -9,7 +9,6 @@ use {
     cqrsx::journal::repository::PersistedEventRepository,
     cqrsx::journal::serialized_event::SerializedEvent,
     cqrsx::memory::event_repository::MemEventRepository,
-    cqrsx::testing::mem_store::MemStore,
 };
 
 mod snapshots {
@@ -64,7 +63,7 @@ mod memory {
         ) {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
-                let store = MemStore::<Ledger>::default();
+                let store = PersistedEventStore::<_, Ledger>::new(MemEventRepository::default());
                 let framework = StoreCommandExecutor::new(store.clone(), Services::default(), AggregateConflictRetryPolicy::default(), LockLimits::default());
                 let mut balances = [0i64; 3];
                 let mut accepted: [Vec<i32>; 3] = Default::default();

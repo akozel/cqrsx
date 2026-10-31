@@ -178,7 +178,7 @@ fn externals(layer: Option<Layer>) -> Externals {
     match layer {
         Some(Layer::Domain) => Externals {
             forbidden: &["sqlx", "mongodb", "axum", "tokio"],
-            test_only: &["serde_json", "cqrsx::testing", "cqrsx::memory"],
+            test_only: &["serde_json", "cqrsx_testing", "cqrsx::memory"],
             // The contracts of the domain, each with its derive macro under the same path (backlog 07/05): what is
             // known of a command (`Command`), the decision of a command (`Decide`), an event's name and version and
             // the enum of events (`domain::event`), the code and params of a rejection (`domain::rejection`).
@@ -188,7 +188,7 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::domain::command::Decide",
                 "cqrsx::domain::event",
                 "cqrsx::domain::rejection",
-                "cqrsx::testing",
+                "cqrsx_testing",
                 "cqrsx::memory",
             ]),
         },
@@ -204,7 +204,7 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "mongodb",
                 "axum",
             ],
-            test_only: &["cqrsx::testing", "cqrsx::memory"],
+            test_only: &["cqrsx_testing", "cqrsx::memory"],
             cqrsx_allowed: None,
         },
         Some(Layer::Presentation) => Externals {
@@ -689,7 +689,8 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
         ("concert/domain/x.rs", "use cqrsx_postgres::pool::connect_pool;\n"),
         ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
-        ("fan/application/x.rs", "use cqrsx::testing::mem_store::MemStore;\n"),
+        ("fan/application/x.rs", "use cqrsx_testing::mem_store::MemStore;\n"),
+        ("concert/domain/x.rs", "use cqrsx_testing::framework::TestFramework;\n"),
         (
             "fan/application/x.rs",
             "use cqrsx::memory::view_repository::MemViewRepository;\n",
@@ -701,10 +702,18 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     assert!(
         check(
             "fan/application/x.rs",
-            "#[cfg(test)]\nmod tests { use cqrsx::testing::mem_store::MemStore; use crate::testing; }\n"
+            "#[cfg(test)]\nmod tests { use cqrsx_testing::mem_store::MemStore; use crate::testing; }\n"
         )
         .is_empty(),
         "test tooling in test code"
+    );
+    assert!(
+        check(
+            "concert/domain/x.rs",
+            "#[cfg(test)]\nmod tests { use cqrsx_testing::framework::TestFramework; }\n"
+        )
+        .is_empty(),
+        "test tooling in the test code of a domain"
     );
     assert!(check("concert.rs", "pub mod domain; use crate::shared::domain::ConcertId;\n").is_empty());
     // Every file has its place: the old layout, a missing layer, a layer inside a layer and a name the path already
@@ -830,7 +839,7 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
         "use cqrsx::domain::command::Command;\n",
         "use cqrsx::command::observer::CommandObserver;\n",
         "use cqrsx::command::CommitReport;\n",
-        "use cqrsx::testing::command_executor::TestCommandExecutor;\n",
+        "use cqrsx_testing::command_executor::TestCommandExecutor;\n",
         "use cqrsx::command::executor::StoreCommandExecutor;\n",
         "use cqrsx_engine::build::Builder;\n",
     ] {
@@ -884,11 +893,11 @@ fn every_crate_of_the_framework_is_under_the_rules() {
     // A bare crate name is no path into it; an inline path of any crate of the framework is collected.
     assert!(!is_framework_path("cqrsx_engine") && is_framework_path("cqrsx_engine::Cqrs"));
     assert!(!is_framework_path("cqrsx_other::Cqrs"));
-    let found: Vec<String> = paths("fn f() { cqrsx_testing::TestFramework::default(); }\n")
+    let found: Vec<String> = paths("fn f() { cqrsx_testing::framework::TestFramework::default(); }\n")
         .into_iter()
         .map(|(_, path)| path)
         .collect();
-    assert_eq!(found, ["cqrsx_testing::TestFramework::default"]);
+    assert_eq!(found, ["cqrsx_testing::framework::TestFramework::default"]);
 }
 
 /// Backlog 05/10: a presentation reads a read model through the engine and answers its stored documents; nothing else
