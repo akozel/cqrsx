@@ -312,7 +312,7 @@ const DESCRIPTIONS = {
     business:
       'One fan (a bot) buys tickets to every concert: all downstream work of the burst lands on a single fan.',
     technical:
-      'A hot key on the downstream aggregate Fan. Before decision D-14 that was one stream and one wallet document growing without bound: cost per task O(n), a decaying drain, lost projection updates. Since D-14 the fan has a ledger per concert; this is the regression check and must look like the plain drain.',
+      'A hot key on the downstream aggregate Fan. The fan has a ledger per concert (decision D-14), so no stream and no wallet document grows with the fan\'s history; this is the regression check and must look like the plain drain.',
     read: 'Tasks per second over the drain (flat, not decaying), drain seconds, back-end memory, and no failed projection batch in the back-end log.',
   },
 };

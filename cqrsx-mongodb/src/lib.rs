@@ -2,11 +2,9 @@
 //! of their projections ([`checkpoint_store::MongoCheckpointStore`]), next to each other in the read
 //! database.
 //!
-//! MongoDB is only the read side here: the journal, the outbox and the task queue stay in PostgreSQL. A
-//! checkpoint keeps a position of the PostgreSQL journal, so the two databases are reset together: a journal
-//! recreated under old checkpoints would start below their positions, and its events would never reach the
-//! views. Dropping the read side alone is safe: a processor registers its checkpoint again and rebuilds every
-//! document from the start of the journal.
+//! MongoDB is only the read side here: the journal, the outbox and the task queue stay in PostgreSQL, and a
+//! checkpoint keeps a position of that journal. How the two databases are reset is in the README of `cqrsx-engine`
+//! («Resetting the databases»). Nothing needs to be applied: a collection appears with its first document.
 //!
 //! Every write is one statement on one document; leases compare against the server clock (`$$NOW`, MongoDB
 //! 4.2 or later). Nothing here connects: the application builds the `mongodb::Client` with its own options and

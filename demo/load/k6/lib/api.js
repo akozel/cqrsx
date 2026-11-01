@@ -33,8 +33,8 @@ function parse(res) {
 
 /**
  * POST /api/concerts/{id}/commands. Returns `{ status, outcome, code, params }` where outcome is
- * accepted | rejected | conflict | unavailable | other (§6.6 of the plan). 200 means the event is in
- * the ledger: the read models follow it later (D-17).
+ * accepted | rejected | conflict | unavailable | other (DESIGN.md §2.4). 200 means the event is in
+ * the journal: the read models follow it later (D-17).
  */
 export function command(concertId, body, tags) {
   const ctags = Object.assign({ cmd: body.type }, tags);

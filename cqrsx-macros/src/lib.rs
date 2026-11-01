@@ -1,4 +1,3 @@
-//! The derive macros of cqrsx and its attribute for task handlers; the guide below is the crate's `README.md`.
 #![doc = include_str!("../README.md")]
 
 mod attribute;

@@ -1,16 +1,3 @@
-//! The engine: an application of modules ([`module::Module`]) assembled from the components of cqrsx, which keep
-//! their logic: an executor per aggregate type with its reactions and policies, a projection processor per view woken
-//! by the commits of its type, one dispatcher of the task handlers, the observers of every command and processor.
-//!
-//! A [`build::Builder`] starts from the library's settings ([`Cqrs::in_memory`]), settings of one's own
-//! ([`Cqrs::with_settings`]) or the variables of the environment under the application's prefix ([`Cqrs::from_env`],
-//! [`Cqrs::from_lookup`]); `build` sets up the modules ([`setup::Setup`]), checks what they register and assembles
-//! the engine over its stores: in memory unless the journal is in PostgreSQL (`event_store`) and the views in
-//! PostgreSQL or MongoDB (`projections`). [`Cqrs::source`] is an entry point of the commands ([`source`]),
-//! [`Cqrs::view`] and [`Cqrs::views`] query and operate the views ([`views`]); [`Cqrs::run_tasks`] runs the due tasks
-//! and [`Cqrs::catch_up`] lets the views catch up with the journal. With the feature `http` the modules route HTTP
-//! requests ([`http`]) and `serve` runs the whole application until a signal ([`serve`]).
-//!
 #![doc = include_str!("../README.md")]
 
 pub mod build;

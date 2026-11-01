@@ -133,15 +133,15 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// This is used to provide feedback to the user as to the nature of why the command was refused.
     type Rejection: std::error::Error;
     /// What the rules of the commands depend on besides the state, e.g. a limit from the configuration; the
-    /// history does not depend on it (a replay calls only [`apply`](Self::apply)).
+    /// history does not depend on it (a load from history calls only [`apply`](Self::apply)).
     type Rules: Send + Sync;
 
     /// Deterministically applies an event to aggregate state.
     ///
-    /// The store calls it when replaying history or constructing a snapshot, and the framework on a copy of the
+    /// The store calls it when it loads the history or constructs a snapshot, and the framework on a copy of the
     /// committed state when a task planner needs the state the event leaves.
     /// A snapshot represents an event prefix; remaining events rebuild current state.
-    /// Validation belongs in the command's decision, so replay never rechecks business rules.
+    /// Validation belongs in the command's decision, so a load from history never rechecks business rules.
     ///
     /// ```rust
     /// # mod example {

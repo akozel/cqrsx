@@ -66,7 +66,7 @@ impl View<Fan> for FanWalletView {
         let changed_at = envelope.metadata.get("recorded_at").cloned().unwrap_or_default();
         if self.fan_id.is_empty() {
             // The stream is a ledger (`fan:concert`); the document names the fan. An id of another
-            // shape is kept as it is: a replay must never fail on it.
+            // shape is kept as it is: a rebuild must never fail on it.
             self.fan_id = FanLedgerId::parse(&envelope.aggregate_id)
                 .map(|ledger| ledger.fan().as_str().to_owned())
                 .unwrap_or_else(|_| envelope.aggregate_id.clone());

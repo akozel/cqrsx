@@ -132,7 +132,7 @@ export const useRebuildStore = defineStore('rebuild', () => {
     }
   }
 
-  /** DEMO ONLY: 🧨 the sidecar drops the read models and then their checkpoints; the ledger is intact, and the
+  /** DEMO ONLY: 🧨 the sidecar drops the read models and then their checkpoints; the journal is intact, and the
    * processors read it again from the start, so every hall comes back by itself. */
   async function wipe() {
     busy.value = true

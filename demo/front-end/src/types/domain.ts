@@ -1,4 +1,4 @@
-// Shapes returned by the back-end (/api). Kept close to PLAN.md §2.8 and §6.4.
+// Shapes returned by the back-end (/api), as DESIGN.md §1.7 and §2.1 describe them.
 export type Locale = 'en' | 'ru'
 export type ZoneId = 'vip' | 'standard' | 'balcony'
 
@@ -124,7 +124,7 @@ export interface CommandError {
   message: string
 }
 
-/** The answer to a command. `accepted` means committed to the ledger: the read models follow it a moment
+/** The answer to a command. `accepted` means committed to the journal: the read models follow it a moment
  * later (D-17), the UI waits for their `projection.applied`. */
 export interface CommandResponse {
   status: number
@@ -189,7 +189,7 @@ export interface RebuildStatus {
   last_result: { rebuild_id: string; keys: number; duration_ms: number; finished_at: string } | null
 }
 
-/** `GET /api/projections/verify` (D-20): a document behind the ledger is counted apart, only a wrong one is a
+/** `GET /api/projections/verify` (D-20): a document behind the journal is counted apart, only a wrong one is a
  * difference. */
 export interface VerifyReport {
   ok: boolean

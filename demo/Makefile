@@ -3,7 +3,7 @@ COMPOSE ?= podman compose          # or: make up COMPOSE="docker compose"
 
 up:       ; $(COMPOSE) up -d postgres mongo && ./scripts/wait-db.sh
 down:     ; $(COMPOSE) down
-reset:    ; $(COMPOSE) down -v      # WARNING: erases EVERYTHING, including the event ledger (dev only)
+reset:    ; $(COMPOSE) down -v      # WARNING: erases EVERYTHING, including the event journal (dev only)
 backend:  ; cargo run -p encore-backend
 sidecar:  ; cargo run -p encore-sidecar
 frontend: ; cd front-end && npm run dev

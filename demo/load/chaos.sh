@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The chaos scenes of the demo's read side (backlog 03/04, D-21/D-22), one fresh stand each, at most 5 minutes a
+# The chaos scenes of the demo's read side (D-21/D-22 in DESIGN.md), one fresh stand each, at most 5 minutes a
 # run (`timeout 300`). Each scene injects a fault while k6 hammers the back-end (chaos/<scene>.sh, run.sh
 # LOAD_CHAOS), then chaos/check.mjs holds the result to its criteria: commands accepted = events written
 # (or the bounds when an answer can be lost), the projections caught up, verify ok with nothing behind.

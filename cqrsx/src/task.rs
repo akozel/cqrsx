@@ -1,7 +1,7 @@
 //! A task as data: what a command publishes with its events and what a delivery attempt carries.
 //!
 //! Business sequencing belongs to aggregate transitions. A task represents one
-//! replay-safe operation; delivery may be concurrent, out of order and repeated. Running tasks is the work of the
+//! repeat-safe operation; delivery may be concurrent, out of order and repeated. Running tasks is the work of the
 //! `worker` module.
 pub mod attempt;
 pub mod format;

@@ -22,7 +22,7 @@ use std::sync::Arc;
 /// transactional outbox tasks for any other reaction that must happen.
 ///
 /// A handler never executes a command, not even from a task it spawns: it writes its read model and
-/// nothing else, and a follow-up started there would be recorded nowhere, repeated by every replay of the
+/// nothing else, and a follow-up started there would be recorded nowhere, repeated by every rebuild from the
 /// journal and lost by a crash. Plan the follow-up as an outbox task from the command's decision instead
 /// ([`TaskPlanner`](crate::command::planner::TaskPlanner)); the framework does not detect the mistake
 /// (see the naming and integration rules in `doc/components.md`).

@@ -65,7 +65,7 @@ onUnmounted(() => {
 
 watch(() => session.concertId, () => void Promise.all([concerts.refreshConcert(), timeMachine.refreshTimeline()]))
 watch(() => session.persona, () => void wallet.refresh())
-// The timeline follows the ledger: refresh it whenever the X-ray reports new events.
+// The timeline follows the journal: refresh it whenever the X-ray reports new events.
 watch(() => xray.eventsTotal, () => void timeMachine.refreshTimeline())
 watch(
   () => concerts.soldOutJustHappened,

@@ -35,7 +35,7 @@ pub struct AppState {
     /// DEMO ONLY: the demo lifecycle (seed, wipe, reset).
     pub demo: DemoAdmin,
     /// DEMO ONLY: `false` hides `POST /inspect/reset` (`SIDECAR_RESET_ENABLED=false`); a wipe is
-    /// always allowed, it destroys nothing the ledger cannot rebuild.
+    /// always allowed, it destroys nothing the journal cannot rebuild.
     pub reset_enabled: bool,
 }
 
@@ -163,9 +163,9 @@ async fn demo(AxumState(state): AxumState<AppState>) -> Json<Value> {
     }))
 }
 
-/// `POST /inspect/projections/wipe`: 🧨 DEMO ONLY — drop the read models and their checkpoints; the ledger
+/// `POST /inspect/projections/wipe`: 🧨 DEMO ONLY — drop the read models and their checkpoints; the journal
 /// is intact and the back-end's projection processors rebuild every document by themselves. Shows that the
-/// rules keep working from the ledger alone.
+/// rules keep working from the journal alone.
 async fn wipe(AxumState(state): AxumState<AppState>) -> Response {
     match state.demo.wipe_read_models().await {
         Ok(dropped) => {

@@ -456,7 +456,7 @@ where
                     let revision = snapshot.revision;
                     match snapshot.try_into() {
                         Err(PersistenceError::Deserialization(_)) => {
-                            // If aggregate structure changed, this will trigger replaying all the events
+                            // If aggregate structure changed, this will trigger loading all the events
                             // and rebuilding fresh aggregate state.
                             let mut context = EventStoreAggregateContext::empty(aggregate_id);
                             context.snapshot_revision = Some(revision);
@@ -1308,7 +1308,7 @@ mod contract_tests {
             Err(PersistenceError::Deserialization(_))
         ));
         // A history that breaks in the middle: the events before the bad one are applied, then the load fails, with or
-        // without snapshots; no state of the half-replayed aggregate reaches the caller.
+        // without snapshots; no state of the half-loaded aggregate reaches the caller.
         bad.sequence = 2;
         let history = vec![
             test_serialized_event(1, TestEvents::SomethingWasDone),

@@ -161,7 +161,7 @@ where
     /// the function's dependency parameters here.
     const DEPENDENCIES: &'static [DependencyId] = &[];
 
-    /// Perform one replay-safe operation; the executor settles its result.
+    /// Perform one repeat-safe operation; the executor settles its result.
     fn handle(&self, task: T, ctx: &TaskContext) -> impl Future<Output = TaskResult> + Send;
 }
 

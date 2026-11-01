@@ -1,21 +1,24 @@
-//! What the migration to the engine API (backlog epic 05) must not change, against golden files written by hand from
-//! `demo/.env.example`, `doc/components.md` and ticket 05/02 (`tests/golden/`):
+//! The contracts of the demo the operator and the front-end rely on, against golden files written by hand
+//! (`tests/golden/`):
 //!
 //! - `effective_config.txt`: the configuration without a single environment variable. A setting read from a variable
 //!   under the variable's name, with the value the process uses; what has no variable of its own (derived values, the
-//!   plan of the connections) under a dotted name in lower case;
+//!   plan of the connections) under a dotted name in lower case. Every variable in it is documented in
+//!   `demo/.env.example` with the same default, and every variable the process reads is in it;
 //! - `activity_feed.txt`: every kind of activity entry and the keys of its JSON on the SSE stream; a kind whose entries
 //!   differ by an enumerated field the front-end reads has a line per value (`kind[field=value]`);
 //! - `retry_pauses.txt`: the pause the task runtime waits after attempt `n` of a task failed (`<case>.<n>`): an
 //!   e-mail (`mail`), a step of the chain between the aggregates (`step`), and a task type without a policy
 //!   (`redelivery`, bounds: the library's backoff is random within them). The pauses are the policies of the task
-//!   types (`MAIL`, `STEP`), applied by the runtime (backlog 05/09).
+//!   types (`MAIL`, `STEP`), applied by the runtime.
 //!
-//! Every file is `key = value` lines sorted by key, every key once. The entries and the pauses come from today's
+//! Every file is `key = value` lines sorted by key, every key once. The entries and the pauses come from their
 //! producers: the command observer, the projection observer, the rebuild service, the mail client and the task
-//! runtime. The values of the command entries on every outcome are pinned by a test of their own, written against
-//! the command service the observer replaced (backlog 05/08); the values of the task attempts' entries and the
-//! settlements of the tasks, by two tests written against the handlers that chose their own pauses (backlog 05/09).
+//! runtime. The values of the command entries on every outcome, of the task attempts' entries and the settlements of
+//! the tasks are pinned by tests of their own below.
+//!
+//! A change of a contract changes its golden file by hand in the same commit: a failing test names the lines only
+//! the golden file has and the lines only the code has.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use axum::{Json, Router, http::StatusCode, routing::post};
 use chrono::NaiveDate;
@@ -1375,7 +1378,7 @@ async fn every_mail_attempt_is_logged_with_its_values_and_settled_with_the_pause
 /// Every answer of the ledger to a step of the chain, through the executor of the runtime: R9 and R11 are done, R10
 /// and an unavailable ledger are retried after the step's pause, with the reasons the outbox keeps.
 #[tokio::test]
-async fn every_answer_of_the_ledger_settles_its_step_as_the_plan_table_says() {
+async fn every_answer_of_the_ledger_settles_its_step_as_the_table_of_answers_says() {
     let config = Config::from_lookup(|_| None).unwrap();
     let store = MemoryStore::<Fan>::default();
     let fans = Arc::new(TestCommandExecutor::configured(store.clone(), (), |executor| {

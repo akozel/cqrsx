@@ -30,7 +30,7 @@ mod tests {
 
     type Answer = Result<CommitReport<Fan>, CommandError<FanError>>;
 
-    /// A row of the plan table: the ledger's answer by name, the answer, the task's result.
+    /// A row of the table of answers: the ledger's answer by name, the answer, the task's result.
     type Row = (&'static str, fn() -> Answer, TaskResult);
 
     /// A ledger that answers every command with one answer.
@@ -47,10 +47,10 @@ mod tests {
         }
     }
 
-    /// The plan table (PLAN.md §2.7), for both steps of the ledger: accepted, R9 and R11 are done; R10, a conflict
+    /// The table of answers (DESIGN.md §1.6), for both steps of the ledger: accepted, R9 and R11 are done; R10, a conflict
     /// and an unavailable ledger are retried, with the reasons the outbox keeps.
     #[tokio::test]
-    async fn outcomes_map_to_task_results_as_in_the_plan_table() {
+    async fn outcomes_map_to_task_results_as_in_the_table_of_answers() {
         let id = Uuid::new_v4();
         let rows: [Row; 6] = [
             ("accepted", || Ok(CommitReport::default()), TaskResult::Done),

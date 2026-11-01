@@ -1,4 +1,4 @@
-// The architecture diagram as data (docs/img.png): three service boundaries, the components inside
+// The architecture diagram as data: three service boundaries, the components inside
 // them, the actors outside, and the edges a signal can travel. Everything sits on a grid so the
 // edges are straight or L-shaped: Command above Aggregate, the outbox worker above events + outbox,
 // the mail server in the worker's row to the right of the Fan service, the mailbox below it. Positions are

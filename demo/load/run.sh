@@ -20,8 +20,7 @@
 #   QUEUE=…         claimed tasks waiting for a worker, OUTBOX_BUFFER_CAPACITY (default: WORKERS)
 #   LEASE=…         task lease in seconds (compose gets OUTBOX_LEASE_MS in milliseconds; default 30); with the back-end's H = 5 s and
 #                   S = 3 s it must exceed 16 + ceil(QUEUE/WORKERS)*8, so a QUEUE above WORKERS needs it
-#   REFILL=…        claim once fewer than this percent of QUEUE wait, OUTBOX_BUFFER_REFILL_PERCENT (default 25;
-#                   an image before ticket 04/19 claims for every freed slot and ignores it)
+#   REFILL=…        claim once fewer than this percent of QUEUE wait, OUTBOX_BUFFER_REFILL_PERCENT (default 25)
 #   DRAIN=1         after the burst, sample transactional_outbox every second until no task is open
 #   DRAIN_TIMEOUT=… seconds to wait for the drain (default 900)
 #   SNAPSHOT_EVERY=… ENCORE_SNAPSHOT_EVERY (default 10);  RUST_LOG=… back-end log level (default warn)
@@ -371,8 +370,7 @@ api_call() { compose exec -T "$(live_service)" curl -sS --max-time "${API_MAX_TI
 # One line per second in projections.jsonl: {"t": epoch, "status": GET /api/projections/status}, or without
 # `status` for a second it did not answer. One long-lived `exec` per node (a curl loop inside the container):
 # an exec per second would add CPU to the back-end's cgroup only on the side being measured. When the node dies
-# (a killed owner), the next node takes over. An image from before ticket 04 answers without `projections`;
-# the collector ignores those lines.
+# (a killed owner), the next node takes over. A line without `projections` is ignored by the collector.
 STATUS_LOOP='while true; do curl -s --max-time 2 http://127.0.0.1:8080/api/projections/status || true; echo; sleep 1; done'
 sample_status() {
   local i=0 service
@@ -577,7 +575,7 @@ if [[ "${VERIFY:-0}" != 0 ]]; then
   fi
 fi
 
-# --- ledger ---------------------------------------------------------------------------------------
+# --- journal (ledger.tsv) -------------------------------------------------------------------------
 # Events per aggregate type, for the chaos criteria (accepted commands against events written).
 for _ in 1 2 3 4 5; do
   if compose exec -T postgres psql -U cqrsx -d encore -Atc \

@@ -240,7 +240,7 @@ describe('PipelineStrip', () => {
     expect(tokens(w)).toHaveLength(0)
   })
 
-  it('dims the projection after a wipe and runs the replay dash on both events → read database edges', async () => {
+  it('dims the projection after a wipe and runs the Encore! dash on both events → read database edges', async () => {
     w = mountStrip()
     useConcertsStore().stale = true
     await w.vm.$nextTick()

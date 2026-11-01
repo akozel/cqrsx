@@ -41,7 +41,7 @@ impl RecordCancellationV1 {
     }
 }
 
-/// The ledger records the cancellation (PLAN.md §2.7): R9 (already recorded) and R11 (already cancelled) mean
+/// The ledger records the cancellation (DESIGN.md §1.6): R9 (already recorded) and R11 (already cancelled) mean
 /// "already done", a redelivery; R10 (the cancellation overtook its ticket) means "too early, retry"; a conflict and
 /// an unavailable ledger are retried. The command continues the task's causation chain.
 #[task_handler]

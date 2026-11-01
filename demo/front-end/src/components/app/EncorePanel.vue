@@ -48,7 +48,7 @@ async function resetDemo() {
   )
 }
 
-/** Verify is allowed at any time, during Encore! too (D-20): a document behind the ledger is no error. */
+/** Verify is allowed at any time, during Encore! too (D-20): a document behind the journal is no error. */
 async function verify() {
   verifying.value = true
   verifyText.value = t('verify.running')
@@ -112,7 +112,7 @@ async function verify() {
         {{ rebuild.resetting ? t('encore.resetting') : t('encore.reset') }}
       </button>
     </div>
-    <!-- Where every read model stands against the ledger: state, lag, owner; a stall names its cause -->
+    <!-- Where every read model stands against the journal: state, lag, owner; a stall names its cause -->
     <ul class="mt-2 space-y-0.5 font-mono" data-test="projections">
       <li v-for="p in rebuild.status.projections" :key="p.projection" :data-state="p.state">
         <span>{{ STATE_ICONS[p.state] }}</span>

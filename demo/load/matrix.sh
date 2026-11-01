@@ -47,8 +47,8 @@ run spread-bookings NAME=03a-drain-w2 VUS=50 DRAIN=1 WORKERS=2
 run spread-bookings NAME=03a-drain-w8 VUS=50 DRAIN=1 WORKERS=8
 run spread-bookings NAME=03a-drain-w32 VUS=50 DRAIN=1 WORKERS=32
 
-# 3b. Hot fan: every booking for one fan. Before D-14 that was one Fan stream and one wallet document
-#     growing without bound; since D-14 a ledger per concert, so this is the regression check against 3a.
+# 3b. Hot fan: every booking for one fan. The fan has a ledger per concert (D-14), so nothing grows with the
+#     fan's history: the regression check against 3a.
 run spread-bookings NAME=03b-drain-hot-fan-w8 VUS=50 DRAIN=1 WORKERS=8 FAN_MODE=hot
 
 echo

@@ -31,7 +31,7 @@ pub struct Booking {
     pub price: u32,
 }
 
-/// Configuration the rules depend on; history does not (replay calls `apply`, never `decide`).
+/// Configuration the rules depend on; history does not (loading an aggregate calls `apply`, never `decide`).
 #[derive(Debug, Clone)]
 pub struct ConcertRules {
     pub ticket_limit: usize,
@@ -89,7 +89,7 @@ impl Aggregate for Concert {
     // tasks atomically and rejects multi-event batches, so `decide` returns one event, not a list.
     type Rules = ConcertRules;
 
-    /// The state machine: how every fact changes the concert. Replay calls only this.
+    /// The state machine: how every fact changes the concert. Loading the concert from the journal calls only this.
     fn apply(&mut self, event: ConcertEvent) {
         match event {
             ConcertEvent::ConcertAnnounced(ConcertAnnounced { artist, city, date, .. }) => {

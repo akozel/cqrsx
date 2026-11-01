@@ -17,7 +17,7 @@ export const sidecar = {
   stats: () => getJson<Pick<XrayState, 'stats' | 'db_time' | 'polled_at' | 'errors'>>('/inspect/stats'),
   /** DEMO ONLY: the default concerts, the cast and whether a reset is allowed. */
   demo: () => getJson<DemoInfo>('/inspect/demo'),
-  /** DEMO ONLY: 🧨 drop the read models; the ledger is intact, Encore! rebuilds them. */
+  /** DEMO ONLY: 🧨 drop the read models; the journal is intact, Encore! rebuilds them. */
   wipe: () => postJson<{ outcome?: string; dropped?: string[]; error?: { message: string } }>('/inspect/projections/wipe'),
   /** DEMO ONLY: empty everything and announce the default concerts again. */
   reset: () => postJson<{ outcome?: string; error?: { message: string } }>('/inspect/reset'),
