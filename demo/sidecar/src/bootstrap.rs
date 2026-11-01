@@ -122,7 +122,7 @@ async fn poll(postgres: &PgInspector, mongo: &MongoInspector, limits: &postgres:
         polled_at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
         ..State::default()
     };
-    match postgres.snapshot(limits).await {
+    match postgres.read_consistent(limits).await {
         Ok(pg) => state = state.with_postgres(pg),
         Err(error) => state.errors.push(SourceError {
             source: "postgres",

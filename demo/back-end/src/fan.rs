@@ -23,7 +23,7 @@ use crate::{
         infrastructure::http_mailer::{HttpMailer, MailClientSettings},
     },
 };
-use cqrsx::task::policy::Retry;
+use cqrsx::task::policy::RetryPause;
 use cqrsx_engine::{
     module::Module,
     settings::duration_text,
@@ -44,11 +44,11 @@ pub fn module(setup: &Setup) -> Result<Module, SetupError> {
         let message = format!("must not exceed {}", setup.variable("TASK_RETRY_MAX_MS"));
         return Err(setup.invalid("TASK_RETRY_BASE_MS", message));
     }
-    let mail = Retry::backoff(base, max);
+    let mail = RetryPause::backoff(base, max);
     Ok(Module::new("fan")
         .aggregate::<Fan>(())
         .provide(mailer(setup)?)
-        .policy(STEP, Retry::fixed(CHAIN_RETRY_AFTER), attempts)
+        .policy(STEP, RetryPause::fixed(CHAIN_RETRY_AFTER), attempts)
         .policy(MAIL, mail, attempts)
         .task(record_ticket)
         .policy(STEP)
@@ -67,7 +67,7 @@ pub fn module(setup: &Setup) -> Result<Module, SetupError> {
 /// engine's description).
 pub fn mail_settings(setup: &Setup) -> Result<MailClientSettings, SetupError> {
     let base_url: String = setup.env("MAIL_SERVICE_URL", "http://127.0.0.1:8090".to_owned())?;
-    let timeout = MailClientSettings::request_timeout(setup.engine().handler_timeout());
+    let timeout = MailClientSettings::request_timeout(setup.settings().handler_timeout());
     setup.describe("mail.request_timeout", duration_text(timeout));
     Ok(MailClientSettings {
         base_url: base_url.trim_end_matches('/').to_owned(),
@@ -100,14 +100,14 @@ mod tests {
         if one_second_handler {
             let (demo, second) = (settings.task_runtime(), Duration::from_secs(1));
             let worker = demo.worker_pool();
-            let worker = TaskWorkerPoolConfig::try_new(
-                worker.concurrency(),
-                worker.buffer_capacity(),
-                worker.poll_interval(),
-                second,
-                worker.lease_duration(),
-            )
-            .unwrap();
+            let worker = TaskWorkerPoolConfig::builder()
+                .concurrency(worker.concurrency())
+                .buffer_capacity(worker.buffer_capacity())
+                .poll_interval(worker.poll_interval())
+                .handler_timeout(second)
+                .lease(worker.lease())
+                .build()
+                .unwrap();
             let runtime = TaskRuntimeConfig::try_new(*demo.storage(), worker).expect("a one-second handler timeout validates");
             let waits_less = LockLimits::try_new(Duration::from_millis(500), 128).unwrap();
             settings = Settings::try_new(settings.snapshot_every(), waits_less, settings.processor(), runtime).unwrap();

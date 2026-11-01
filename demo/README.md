@@ -5,21 +5,27 @@ Encore is an online box office for a concert hall. You pick a persona (🦊 Fox,
 
 ```
 click → command → Concert aggregate rules → event + outbox task   (one PostgreSQL transaction)
-      → a projection processor follows the ledger → "seat map" in MongoDB → screen
+      → a projection processor follows the journal → "seat map" in MongoDB → screen
       → worker sends a command to the Fan aggregate → event + outbox task (second transaction)
-      → its processor follows the ledger → "fan wallet" → screen
+      → its processor follows the journal → "fan wallet" → screen
       → worker "sends the e-ticket" through a moody mail server (20 % failures → retry)
 ```
 
 Five "aha" moments, one per topic: the **event store** (⏳ time machine), **commands and invariants**
 (🧪 rule breakers, Δ events = 0), the **transactional outbox** (🎲 retries, exactly one e-mail),
-**projections** (two event streams → two MongoDB documents) and **replay** (🧨 wipe, ⏪ Encore!).
-*Encore* ("once more!") is the pun: replay is playing the whole history again — while the box office
+**read models** (two event streams → two MongoDB documents) and the **rebuild** (🧨 wipe, ⏪ Encore!).
+*Encore* ("once more!") is the pun: a rebuild plays the whole history again — while the box office
 stays open.
 
-The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the library API are in
-[`docs/API_MAPPING.md`](docs/API_MAPPING.md); the autonomous build log with every verification is
-[`docs/PROGRESS.md`](docs/PROGRESS.md).
+## Documents
+
+| Document | What it holds |
+|---|---|
+| this README | what the demo is, how to run it, the demo script, configuration, troubleshooting, tests |
+| [`DESIGN.md`](DESIGN.md) | the design: domain, rules and tasks, read models and Encore!, the HTTP API and the activity feed, the sidecar, the UI, the decisions (D-xx) the code refers to, the words of the UI |
+| [`load/README.md`](load/README.md) | the k6 load stand, its tests and chaos scenes, how to read the numbers |
+| [`.env.example`](.env.example) | every variable with its default |
+| [`../README.md`](../README.md), [`../doc/`](../doc/) | the `cqrsx` library: overview, architecture and naming ([`components.md`](../doc/components.md)), an application step by step ([`typical_scenario.md`](../doc/typical_scenario.md)), guarantees ([`guarantees.md`](../doc/guarantees.md)), the command, read and task paths explained ([`command-path.html`](../doc/command-path.html), [`read-path.html`](../doc/read-path.html), [`task-path.html`](../doc/task-path.html)) |
 
 ## Layout
 
@@ -31,7 +37,7 @@ The plan this demo implements is [`PLAN.md`](PLAN.md); the facts about the libra
 | `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx-postgres/sql`) and MongoDB; profile `app` builds the three images |
 | `infra/` | read-only PostgreSQL role for the sidecar, nginx config for the `app` profile |
 | `scripts/` | `dev.sh` (everything in one terminal), `wait-db.sh`, `compare-projections.sh` |
-| `load/` | k6 load tests on an isolated stand (own compose project, no ports, mail stub instead of the sidecar): hot aggregate, new aggregates, spread bookings, outbox drain — see `load/README.md` |
+| `load/` | k6 load tests on an isolated stand (own compose project, no ports, mail stub instead of the sidecar): hot aggregate, new aggregates, spread bookings, outbox drain; chaos scenes (`chaos.sh`, `chaos/`); PostgreSQL measurements (`perf/`) — see `load/README.md` |
 
 ### How to read the code
 
@@ -70,7 +76,7 @@ podman compose --profile app up -d --build    # build the three images (≈ 5 mi
 podman compose --profile app ps               # all five containers Up, postgres and mongo (healthy)
 ```
 
-`down -v` wipes the event ledger, the snapshots, the outbox, both read models and the mail inbox: the next
+`down -v` wipes the event journal, the snapshots, the outbox, both read models and the mail inbox: the next
 start initialises the schemas from `../cqrsx-postgres/sql` again and the sidecar announces the three default
 concerts anew through the back-end's public API (exactly three `ConcertAnnounced` rows in `events`).
 Without a code change `--build` can be dropped.
@@ -107,7 +113,7 @@ use mail_service; db.inbox.find().pretty()
 Stop and remove:
 
 ```bash
-podman compose --profile app down             # stop and remove the five containers, keep the volumes (the ledger survives)
+podman compose --profile app down             # stop and remove the five containers, keep the volumes (the journal survives)
 podman compose --profile app down -v          # the same plus both volumes: nothing of the demo is left
 podman compose --profile app down -v --rmi local   # ... and also delete the three built images
 ```
@@ -177,20 +183,20 @@ them and nothing is written. The back-end itself carries no demo data and no dem
 
 ```bash
 # stop the apps first (Ctrl+C), then:
-make reset       # ⚠️ podman compose down -v — erases the event ledger and the read models
+make reset       # ⚠️ podman compose down -v — erases the event journal and the read models
 make up          # fresh databases (init scripts run again), then start the apps as in step 3
 ```
 
-From the UI, DEMO ONLY: **⟲ Reset the demo** (Encore panel) asks the sidecar to `TRUNCATE` the ledger, the
+From the UI, DEMO ONLY: **⟲ Reset the demo** (Encore panel) asks the sidecar to `TRUNCATE` the journal, the
 snapshots and the outbox (role `encore_demo_admin`, which may do nothing else), drop the read models and
 the mail inbox, and announce the three default concerts again — the schemas and the containers stay.
 Only the read models can also be dropped on their own: 🧨 wipe (the sidecar, `POST /inspect/projections/wipe`)
-drops them together with their checkpoints, and the processors read the ledger again from the start, so the
+drops them together with their checkpoints, and the processors read the journal again from the start, so the
 halls come back by themselves. ⏪ Encore! (the back-end) rebuilds every document in place without dropping
 anything.
 
-**After updating from an older version run `make reset`**: the ledger gained a transaction position
-(`events.tx`) and the read side gained its checkpoints, and the project keeps no compatibility with old data.
+**A database of another schema needs `make reset`**: the project keeps no compatibility with old data (for
+example, the journal must have its transaction position `events.tx`).
 
 ### 5. Stop
 
@@ -237,47 +243,23 @@ Do not mix the modes: stop the host apps before `make full`, and remove the `app
                          └──────────────────────────┘
 ```
 
-Key points, each visible on screen:
+Key points, each visible on screen; the details are in [`DESIGN.md`](DESIGN.md):
 
-- **Two aggregates.** `Concert` (one stream per concert) owns the seats and all business rules R1–R8,
-  checked synchronously — a rejected click leaves no trace (`Δ events = 0`). `Fan` (one stream per
-  fan **and concert**, decision D-14, so a ledger never outgrows the ticket limit; the wallet on screen is
-  assembled from the fan's ledgers) is downstream: it only receives commands from outbox tasks and has
-  idempotency rules R9–R11.
-- **One command → exactly one event**, committed atomically with its outbox tasks by
-  `PostgresEventRepositoryWithOutbox`. Metadata (`command_id`, `correlation_id`, `causation_id`,
-  `recorded_at`, `source`) travels through `CommandExecutor::execute_with_metadata`.
+- **Two aggregates.** `Concert` owns the seats and the business rules R1–R8; a rejected click leaves no trace
+  (`Δ events = 0`). `Fan`, a fan's ledger per concert (D-14), only receives commands from outbox tasks and guards
+  against repeated and reordered deliveries (R9–R11). See [§1.3](DESIGN.md#13-aggregates) and
+  [§1.5](DESIGN.md#15-rules).
+- **One command → exactly one event**, committed with its snapshot and the tasks its aggregate's reactions plan, in one
+  statement ([§1.4](DESIGN.md#14-commands-events-tasks)).
 - **Outbox chain.** `SeatBooked` → `encore_record_ticket` → `Fan.RecordTicket` → `TicketRecorded` →
-  `encore_send_e_ticket` → 🎫 e-mail. Cancellation mirrors it and ends with a 💸 refund e-mail. The
-  e-mail goes to an external mail service over HTTP (`infrastructure::mail::http_mailer`: `POST /mail`
-  with an `Idempotency-Key`; `503` → retry after 1, 2, 4, 8 s, `4xx` → permanent failure). The demo's
-  provider is the sidecar's moody mail service (DEMO ONLY, `sidecar/src/mail.rs`): it refuses 20 % of
-  the deliveries (`SIDECAR_MAIL_FAILURE_RATE`) and stores the rest in `mail_service.inbox` with an
-  idempotent upsert, so a repeat only bumps `deliveries`. The reactions live in each aggregate module; the four task handlers live in
-  `fan/application/`, one file per step.
-- **Projections** are contiguous documents: each remembers the last event of its aggregate it applied
-  (`last_sequence`) and takes only the next one — a repeat is skipped, a gap is refused and nothing is
-  written, so a document is never created from the middle of a history and never silently misses an
-  event. The ordered fold updates seats and tickets and recomputes derived fields.
-- **Projection processors** (one per read model, built by the engine for every view a module registers) follow the ledger by a
-  checkpoint kept in MongoDB next to the documents (`projection_checkpoints`): a commit wakes the
-  processor, which reads the new events page by page and applies them per document; a failed round is
-  retried after a pause and nothing is lost. A command answers *accepted* as soon as its event is in the
-  ledger — the read models follow a moment later, and the screen waits for the `projection.updated` of its
-  document on the activity stream. Only one node owns a checkpoint at a time (a lease): a killed owner is
-  replaced after its lease expires.
-- **Replay** (⏪ Encore!) asks the owners to rebuild every document in place from its history, with the box
-  office open: bookings made meanwhile appear as soon as the rebuild reaches their hall (slow motion pauses
-  `ENCORE_REPLAY_SLOW_DELAY_MS` between events). The 🔍 verify button compares every document with the
-  history it has applied and counts the documents still behind apart from the wrong ones. The mail inbox
-  belongs to the mail service, in a database the back-end never connects to: rebuilding read models
-  cannot resend e-mails.
-- **The strip at the top of the page** draws all of this as a live diagram (Vue Flow, sketch in
-  `docs/img.png`): the `Concert service` and `Fan service` boundaries with command → aggregate →
-  events + outbox → outbox worker inside each, the `projection` boundary with the read database and
-  the UI, the user and the e-mail as diamonds, the flaky mail server with its retry edge back to the
-  outbox, and the signals as circles running along the edges. Click any block for its explanation;
-  the aggregates show their rules as a table.
+  `encore_send_e_ticket` → 🎫 e-mail through the sidecar's moody mail service; a cancellation mirrors it with a 💸
+  refund ([§1.6](DESIGN.md#16-tasks-and-handlers)).
+- **Read models** follow the journal: a projection processor per read model, a document that takes only the next event
+  of its aggregate, a command answered before its read models catch up ([§1.7](DESIGN.md#17-read-models)).
+- **Rebuild** (⏪ Encore!) replaces every document in place from its history while the box office stays open; 🔍
+  verify compares every document with the history it applied ([§1.8](DESIGN.md#18-rebuild-encore)).
+- **The strip at the top of the page** draws all of this as a live diagram; click any block for its explanation
+  ([§4.4](DESIGN.md#44-pipelinestrip-what-lights-up-when)).
 
 ## Demo script (≈ 7 minutes)
 
@@ -298,7 +280,7 @@ Key points, each visible on screen:
    the wallet); the wallet catches up one chain step later.
 6. **Cancellation (30 s).** Fox cancels a ticket: `BookingCancelled` + 🔁 → `TicketCancelled` + 💸 → "Refund" e-mail.
 7. **Encore! (1.5 min).** 🧨 Wipe → the hall shows "?" for a moment, click a seat that was taken (still
-   rejected: rules read the ledger) → the processors read the ledger from the start and the halls come back
+   rejected: rules read the journal) → the processors read the journal from the start and the halls come back
    by themselves. Then ⏪ Encore! in slow motion: seats light up one by one, you can still book a seat
    (the box office is open), 🔍 Verify says every document matches, the 📬 inbox does not change. The
    ⟲ button beside the zones rebuilds one hall only.
@@ -316,13 +298,14 @@ its default on a commented line: copy it to `demo/.env` and uncomment what you c
 `demo/.env` through `dotenvy`; compose reads the published ports from it. The back-end's variables are
 `ENCORE_*` plus the library's own `OUTBOX_*` keys (worker pool and storage timeouts, with demo defaults);
 everything DEMO ONLY is the sidecar's `SIDECAR_*`. `RUST_LOG` is a single level (`info`), not a directive
-list. The library's redelivery backoff (4–300 s) applies only to abnormal paths (expired lease, handler
-timeout); the mail handler asks for 1–8 s itself.
+list. A failed attempt waits by the policy of its task type: an e-mail 1, 2, 4, 8 s, a step of the chain 1 s;
+the library's redelivery backoff (4–300 s) applies to a task type without a policy and to the abnormal paths
+(an expired lease, a handler timeout); `back-end/tests/golden/retry_pauses.txt` pins the pauses.
 
 ## Troubleshooting
 
 - **`make up` hangs in `wait-db.sh`** — check `podman compose ps`; port 5434/27018 may be taken
-  (`ENCORE_POSTGRES_PORT`, `ENCORE_MONGO_PORT`).
+  (`ENCORE_POSTGRES_PORT`, `ENCORE_MONGODB_PORT`).
 - **Back-end exits at start** — it needs PostgreSQL immediately (`ENCORE_DATABASE_URL`); MongoDB may
   come later (commands are accepted; the read models catch up when it answers).
 - **Mail tasks retry with `last_error = mail_unreachable`** — the sidecar, which hosts the demo's mail
@@ -330,37 +313,73 @@ timeout); the mail handler asks for 1–8 s itself.
 - **`cannot execute INSERT in a read-only transaction`** in the sidecar log — expected: the sidecar
   role is read-only on two levels.
 - **The tabs show "?"** — the read models are empty (after 🧨 or on a fresh MongoDB): the processors are
-  reading the ledger from the start; the Encore panel shows each projection's state and lag. A database from
-  before the processors (no `events.tx`) needs `make reset`.
+  reading the journal from the start; the Encore panel shows each projection's state and lag. A database
+  whose `events` has no `tx` column needs `make reset`.
 - **`Failed to open() /dev/net/tun: No such device` on start** — rootless Podman needs the `tun` kernel
   module for port publishing: `sudo modprobe tun`; after a kernel upgrade on a rolling distribution a
   reboot is needed first.
 - **<http://localhost:5173> is empty** — Vite runs only in `make dev`; the `app` profile serves the UI on
   <http://localhost:8000>.
-- **Everything, including the ledger, must go** — `make reset` (`podman compose down -v`) in development
+- **Everything, including the journal, must go** — `make reset` (`podman compose down -v`) in development
   mode, `podman compose --profile app down -v` for the box.
 
 ## Tests
 
 ```bash
 cd demo
-cargo test --workspace                 # domain rules R1–R11, D-02 invariant, module scenarios with the in-memory engine,
-                                       # ordered projections, read API, the mail client against a stub provider, chain mapping,
-                                       # layer rules; sidecar: X-ray, demo lifecycle, the moody mail service
-cd front-end && npm test               # seatState, outboxStatus, diff, i18n parity (EN/RU)
+DOCKER_HOST=unix:///run/podman/podman.sock cargo test --workspace   # back-end and sidecar
+cargo test -p encore-backend --test contracts                         # one test target
+cd front-end && npm test                                              # vitest
 ```
 
-The root workspace (`cqrsx`) is untouched by the demo except `exclude = ["demo"]` and `.dockerignore`;
-its coverage threshold (97 %) does not count the demo. CI checks the demo in a job of its own: fmt, clippy and the tests.
+`back-end/tests/write_side.rs` starts PostgreSQL in a container (`testcontainers`): `cargo test` needs a container
+engine and `DOCKER_HOST` pointing at its socket (Docker's default socket works as is; with Podman, the socket of
+`podman system service`, as above). Nothing else needs a database: the other tests run the engine in memory or
+against databases nobody listens on.
 
-### Load tests (k6)
+| Back-end target | What it checks |
+|---|---|
+| unit tests next to the code | rules R1–R11 one by one, one event per command, the reactions and the task handlers (the table of answers of `DESIGN.md` §1.6), the folds of the read models, the wallet assembled from the fan's ledgers, the module scenarios on the engine in memory |
+| `tests/architecture.rs` | the module and layer rules, read from the source text: who may name whom inside a module, across modules and of the framework; a file or directory never repeats a name its path already says (`concert/domain/aggregate.rs`, not `concert/domain/concert.rs`) |
+| `tests/contracts.rs` | what the operator and the front-end rely on, against the golden files (below), plus the values of the activity entries and the task settlements on every outcome |
+| `tests/http.rs` | the HTTP API on the engine in memory: validation, the error shape, the read side |
+| `tests/write_side.rs` | against a real PostgreSQL (the read models in memory): an accepted command writes one event and one task with one correlation id, a rejected one writes nothing, metadata is stored, bookings racing for one concert wait for its lock; the concert halls follow the journal, are rebuilt in place, healed and restored after a wipe |
+
+The sidecar's unit tests cover the X-ray (hash, whitelist, queries), the demo lifecycle and the moody mail
+service. The front-end's vitest covers the pure functions (`seatState`, `outboxStatus`, `diff`, fan ledger ids), the
+diagram's choreography, the components, the tour and the i18n parity of EN and RU.
+
+**Golden files** (`back-end/tests/golden/`) are written by hand, not generated:
+- `effective_config.txt` — the configuration without a single variable set: every variable the back-end reads with
+  its default, and the derived values (pools, timeouts, the lease budget); a test also checks that `.env.example`
+  documents every variable with the same default;
+- `activity_feed.txt` — every kind of activity entry and the keys of its JSON;
+- `retry_pauses.txt` — the pause after attempt `n` of an e-mail, of a step of the chain and of a task without a
+  policy.
+
+A change of the configuration, of the activity feed or of a retry policy updates its golden file by hand in the same
+commit: the failing test prints the lines only the golden file has and the lines only the code has. An unexpected
+diff of a golden file is a changed contract, not a file to refresh.
+
+**CI** (`.github/workflows/ci.yml`) checks the demo's formatting in the job `Fmt` (`cargo fmt --all --check` in
+`demo/`) and runs clippy and `cargo test --locked --workspace` in the job `Demo`. The front-end, the images and the
+load stand are not in CI: `make check` runs everything on the host (fmt, clippy, cargo test, `vue-tsc`, eslint,
+vitest).
+
+The root workspace (`cqrsx`) is untouched by the demo except `exclude = ["demo"]` and `.dockerignore`; its coverage
+threshold does not count the demo.
+
+### Load tests and chaos scenes
 
 ```bash
 cd demo
-make load                              # the whole matrix, one fresh isolated stand per run (≈ 15 runs)
+make load                              # the whole matrix, one fresh isolated stand per run (14 runs)
 ./load/run.sh hot-key VUS=20           # one run; results in load/results/<timestamp>-hot-key/
 make load-report                       # one table over every run
+./load/chaos.sh                        # every chaos scene (MongoDB paused, a node killed, PostgreSQL restarted,
+                                       # Encore! and a wipe under load), each at most 5 minutes, with its criteria
 ```
 
-The stand (`load/compose.yaml`, project `encore-load`) never touches the demo's containers or volumes.
-What each test measures, the parameters and how to read the numbers: `load/README.md`.
+The stand (`load/compose.yaml`, project `encore-load`) never touches the demo's containers or volumes. The scenes
+live in `load/chaos/`, one script each, `load/chaos/check.mjs` holds a run to its criteria. What each test measures,
+the parameters and how to read the numbers: [`load/README.md`](load/README.md).

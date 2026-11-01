@@ -1,4 +1,4 @@
-// lib/outboxStatus.ts — a pure function, covered by tests (PLAN.md §8.5).
+// lib/outboxStatus.ts — a pure function, covered by tests (DESIGN.md §4.6).
 // The transactional_outbox.status column is explicit: pending | processing | completed | failed.
 import type { OutboxRow } from '@/types/xray'
 

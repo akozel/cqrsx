@@ -7,7 +7,7 @@
     clippy::unreachable,
     clippy::indexing_slicing
 )]
-use cqrsx::journal::persisted::PersistedEventStore;
+use cqrsx::journal::store::JournalEventStore;
 use cqrsx::task::attempt::TaskAttempt;
 use cqrsx::worker::queue::lease::TaskLease;
 use cqrsx_fixtures::postgres::Postgres;
@@ -28,7 +28,7 @@ use cqrsx::domain::aggregate::Aggregate;
 use cqrsx::domain::command::Decide;
 use cqrsx::domain::event::Events;
 use cqrsx::journal::PersistenceError;
-use cqrsx::journal::repository::PersistedEventRepository;
+use cqrsx::journal::repository::EventRepository;
 use cqrsx::journal::serialized_event::{EventFormat, SerializedEvent};
 use cqrsx::worker::runtime::worker_pool_config::TaskWorkerPoolConfig;
 use cqrsx::{
@@ -58,10 +58,7 @@ use uuid::Uuid;
 
 use cqrsx::{
     domain::event::EventEnvelope,
-    journal::{
-        EventStore,
-        snapshot::{SerializedSnapshot, SnapshotUpdate},
-    },
+    journal::{EventStore, snapshot::SerializedSnapshot},
 };
 use cqrsx_postgres::event_repository::PostgresEventRepository;
 use support::ledger::*;

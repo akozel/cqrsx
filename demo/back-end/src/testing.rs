@@ -64,7 +64,7 @@ pub fn put<V: View<A> + 'static, A: Aggregate + 'static>(cqrs: &Cqrs, documents:
     let repository = cqrs.documents::<V, A>().expect("a view of the engine in memory");
     for document in documents {
         repository
-            .put(&document.id, document.version, document.last_sequence, &document.view)
+            .put(&document.id, document.revision, document.last_sequence, &document.view)
             .unwrap();
     }
 }

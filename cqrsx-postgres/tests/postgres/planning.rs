@@ -2,7 +2,7 @@
 //! with, whatever races the commands ran into, and every refused plan writes nothing.
 use super::*;
 use cqrsx::command::{
-    CommandExecutor, CommandGatewayError,
+    CommandError, CommandExecutor,
     causation::Causation,
     executor::StoreCommandExecutor,
     locks::LockLimits,
@@ -46,7 +46,7 @@ impl Aggregate for Shelf {
     type Id = String;
     type Command = ShelfCommand;
     type Event = Put;
-    type Error = Full;
+    type Rejection = Full;
     type Rules = usize;
 
     fn apply(&mut self, Put { item }: Put) {
@@ -82,14 +82,13 @@ impl ShelfPlanner {
 
 impl TaskPlanner<Shelf> for ShelfPlanner {
     fn plan(&self, decision: &Decision<'_, Shelf>) -> Result<Vec<NewTask>, TaskPlanError> {
+        let Put { item } = decision.event;
+        if self.refuse == Some(item.as_str()) {
+            return Err(TaskPlanError::application("refused item"));
+        }
         let mut tasks = Vec::new();
-        for Put { item } in decision.events {
-            if self.refuse == Some(item.as_str()) {
-                return Err(TaskPlanError::application("refused item"));
-            }
-            for _ in 0..self.per_item {
-                tasks.push(NewTask::try_new(DummyTaskV1 { value: item.clone() })?);
-            }
+        for _ in 0..self.per_item {
+            tasks.push(NewTask::try_new(DummyTaskV1 { value: item.clone() })?);
         }
         Ok(tasks)
     }
@@ -196,7 +195,7 @@ async fn stress_two_nodes_publish_only_the_tasks_of_their_committed_decisions() 
                 assert_eq!(report.tasks.len(), 1);
                 accepted += 1;
             }
-            Err(CommandGatewayError::Conflict) => conflicts += 1,
+            Err(CommandError::Conflict) => conflicts += 1,
             Err(other) => panic!("unexpected result {other:?}"),
         }
     }
@@ -280,7 +279,7 @@ async fn refused_plans_write_nothing_and_a_plan_without_tasks_needs_no_causation
         executor
             .execute_with_metadata(&"s".into(), put("bad"), metadata.clone())
             .await,
-        Err(CommandGatewayError::Unavailable),
+        Err(CommandError::Unavailable),
         "a planner error refuses the command"
     );
     let malformed = HashMap::from([("command_id".to_owned(), "cmd-1".to_owned())]);
@@ -288,7 +287,7 @@ async fn refused_plans_write_nothing_and_a_plan_without_tasks_needs_no_causation
         executor
             .execute_with_metadata(&"s".into(), put("good"), malformed.clone())
             .await,
-        Err(CommandGatewayError::Unavailable),
+        Err(CommandError::Unavailable),
         "a causation that does not parse refuses a decision with tasks"
     );
     assert_eq!(database_state(&db.pool).await, before);
@@ -338,7 +337,7 @@ async fn the_same_command_id_twice_on_one_aggregate_publishes_once_and_writes_th
     // the whole statement, the event included.
     assert_eq!(
         executor.execute_with_metadata(&"s".into(), put("b"), metadata.clone()).await,
-        Err(CommandGatewayError::Unavailable)
+        Err(CommandError::Unavailable)
     );
     assert_eq!(database_state(&db.pool).await, before);
     // The same command id on another aggregate is another task.
@@ -393,7 +392,7 @@ async fn a_plan_at_the_bind_limit_commits_and_one_more_task_is_refused_before_an
                     Causation::root("ui").event_metadata()
                 )
                 .await,
-            Err(CommandGatewayError::Unavailable)
+            Err(CommandError::Unavailable)
         );
         assert_eq!(database_state(&db.pool).await, before);
     }
@@ -403,7 +402,7 @@ async fn a_plan_at_the_bind_limit_commits_and_one_more_task_is_refused_before_an
 #[tokio::test]
 async fn a_store_without_an_outbox_refuses_planned_tasks_and_writes_nothing() {
     let db = Database::new().await;
-    let store = || PersistedEventStore::<_, Shelf>::new(PostgresEventRepository::new(db.pool.clone()));
+    let store = || JournalEventStore::<_, Shelf>::new(PostgresEventRepository::new(db.pool.clone()));
     let planned = StoreCommandExecutor::new(store(), 10, AggregateConflictRetryPolicy::default(), LockLimits::default())
         .with_task_planner(ShelfPlanner::one_per_item());
     let before = database_state(&db.pool).await;
@@ -411,7 +410,7 @@ async fn a_store_without_an_outbox_refuses_planned_tasks_and_writes_nothing() {
         planned
             .execute_with_metadata(&"s".into(), put("a"), Causation::root("ui").event_metadata())
             .await,
-        Err(CommandGatewayError::Unavailable)
+        Err(CommandError::Unavailable)
     );
     assert_eq!(database_state(&db.pool).await, before);
     let unplanned = StoreCommandExecutor::new(store(), 10, AggregateConflictRetryPolicy::default(), LockLimits::default());

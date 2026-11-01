@@ -62,8 +62,8 @@ enum NoEvent {}
 
 #[test]
 fn derived_events_store_the_name_and_the_version_of_each_payload() {
-    assert_eq!((SeatBooked::NAME, SeatBooked::VERSION), ("SeatBooked", "1.0"));
-    assert_eq!((Noted::<u8>::NAME, Noted::<u8>::VERSION), ("Noted", "3"));
+    assert_eq!((SeatBooked::TYPE, SeatBooked::VERSION), ("SeatBooked", "1.0"));
+    assert_eq!((Noted::<u8>::TYPE, Noted::<u8>::VERSION), ("Noted", "3"));
     let booked = ConcertEvent::<String>::SeatBooked(SeatBooked { seat: "B4".into() });
     let noted = ConcertEvent::Noted(Noted { note: "late".to_owned() });
     assert_eq!((booked.event_type(), booked.event_version()), ("SeatBooked", "1.0"));
@@ -85,7 +85,7 @@ struct SendETicket<'a> {
 
 #[test]
 fn a_derived_task_has_its_format_and_publishes() {
-    assert_eq!((SendETicket::TASK_TYPE, SendETicket::TASK_VERSION), ("send_e_ticket", 2));
+    assert_eq!((SendETicket::TYPE, SendETicket::VERSION), ("send_e_ticket", 2));
     assert_eq!(TaskFormat::of::<SendETicket>().to_string(), "send_e_ticket v2");
     let task = NewTask::try_new(SendETicket { seat: "B4" }).unwrap();
     assert_eq!(
@@ -184,7 +184,7 @@ fn derived_rejections_report_their_codes_and_fields() {
         BookingError::Nothing {},
     ]
     .iter()
-    .map(|error| (error.code(), error.params()))
+    .map(|error| (error.code(), error.parameters()))
     .collect::<Vec<_>>();
     assert_eq!(
         reported,
@@ -199,7 +199,7 @@ fn derived_rejections_report_their_codes_and_fields() {
         ]
     );
     // An enum without rejections reports nothing; it only has to compile.
-    let _: fn(&NoRejection) -> (&'static str, serde_json::Value) = |never| (never.code(), never.params());
+    let _: fn(&NoRejection) -> (&'static str, serde_json::Value) = |never| (never.code(), never.parameters());
 }
 
 #[derive(Command)]
@@ -290,7 +290,7 @@ impl Aggregate for Tally {
     type Id = String;
     type Command = TallyCommand;
     type Event = Counted;
-    type Error = OverTheLimit;
+    type Rejection = OverTheLimit;
     type Rules = u32;
 
     fn apply(&mut self, event: Counted) {

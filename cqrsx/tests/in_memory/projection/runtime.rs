@@ -1,7 +1,7 @@
 //! The projection runtime: several processors started together and stopped by one token.
 use crate::projection::support::{Balance, Harness, Journal, config};
 use crate::support::ledger::Ledger;
-use cqrsx::memory::{checkpoint_store::MemCheckpointStore, view_repository::MemViewRepository};
+use cqrsx::memory::{checkpoint_store::MemoryCheckpointStore, view_repository::MemoryViewRepository};
 use cqrsx::{
     projection::{
         checkpoint::CheckpointStore,
@@ -17,19 +17,19 @@ use std::{sync::Arc, time::Duration};
 use tokio::time::{sleep, timeout};
 use tokio_util::sync::CancellationToken;
 
-type Views = MemViewRepository<Balance, Ledger>;
+type Views = MemoryViewRepository<Balance, Ledger>;
 
 /// A processor of projection `name` over the journal of `h` with views and checkpoints of its own.
 fn processor(
     h: &Harness,
     name: &str,
 ) -> (
-    ProjectionProcessor<Ledger, Journal, MemCheckpointStore>,
+    ProjectionProcessor<Ledger, Journal, MemoryCheckpointStore>,
     Arc<Views>,
-    Arc<MemCheckpointStore>,
+    Arc<MemoryCheckpointStore>,
 ) {
     let views = Arc::new(Views::default());
-    let checkpoints = Arc::new(MemCheckpointStore::default());
+    let checkpoints = Arc::new(MemoryCheckpointStore::default());
     let processor = ProjectionProcessor::new(
         name,
         h.journal.clone(),

@@ -31,7 +31,7 @@ export const useConcertsStore = defineStore('concerts', () => {
         revenue: 0,
         sold_out: false,
         last_sequence: 0,
-        version: 0,
+        revision: 0,
         known: false,
       }))
     return [...fromView, ...fallback]
@@ -67,7 +67,7 @@ export const useConcertsStore = defineStore('concerts', () => {
     await Promise.all([refreshList(), refreshConcert()])
   }
 
-  /** A read model moved (`projection.updated`): one refresh `ms` later covers every update until then, so a
+  /** A read model moved (`projection.applied`): one refresh `ms` later covers every update until then, so a
    * stream of updates never postpones it. */
   function refreshDebounced(ms = 150) {
     if (soon) return
@@ -77,7 +77,7 @@ export const useConcertsStore = defineStore('concerts', () => {
     }, ms)
   }
 
-  /** After an accepted command: the hall follows the ledger a moment later (D-17) and the feed says when;
+  /** After an accepted command: the hall follows the journal a moment later (D-17) and the feed says when;
    * this one refresh is for a silent feed. */
   function refreshFallback(ms = 1000) {
     if (fallback) return
@@ -87,7 +87,7 @@ export const useConcertsStore = defineStore('concerts', () => {
     }, ms)
   }
 
-  /** 🧨 The read models and their checkpoints were dropped: the processors read the ledger again from the
+  /** 🧨 The read models and their checkpoints were dropped: the processors read the journal again from the
    * start, and every hall comes back by itself (`stale` until the first document returns). */
   function markWiped() {
     docs.value = {}

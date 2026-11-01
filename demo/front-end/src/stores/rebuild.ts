@@ -13,7 +13,7 @@ export const STATUS_INTERVAL_MS = 1000
 /** A status read that takes longer is abandoned: the next one starts on time instead of piling up. */
 export const STATUS_TIMEOUT_MS = 2500
 /** While Encore! runs, the open hall is read this often, so its seats light up one by one. */
-export const REPLAY_REFRESH_MS = 250
+export const REBUILD_REFRESH_MS = 250
 
 /** A refused or failed read-side operation: a known `code` is translated, anything else shown as `message`. */
 export interface ReadSideError {
@@ -29,7 +29,7 @@ export interface RebuildProgress {
   eventsTotal: number
 }
 
-const NO_STATUS: RebuildStatus = { state: 'starting', stale: false, projections: [], rebuild: null, last_result: null }
+const NO_STATUS: RebuildStatus = { state: 'starting', from_cache: false, projections: [], running: null, last_result: null }
 const NO_PROGRESS: RebuildProgress = { documents: 0, events: 0, documentsTotal: 0, eventsTotal: 0 }
 
 function refusal(code: number, body: RebuildAnswer | null): ReadSideError {
@@ -57,14 +57,14 @@ export const useRebuildStore = defineStore('rebuild', () => {
   let poller: ReturnType<typeof setInterval> | null = null
   let hallPoller: ReturnType<typeof setInterval> | null = null
 
-  const running = computed(() => status.value.rebuild !== null)
+  const running = computed(() => status.value.running !== null)
 
   function adopt(next: RebuildStatus) {
-    const rebuild = next.rebuild && ended.has(next.rebuild.rebuild_id) ? null : next.rebuild
-    status.value = { ...next, rebuild }
+    const active = next.running && ended.has(next.running.rebuild_id) ? null : next.running
+    status.value = { ...next, running: active }
     // A page opened during Encore! learns the total from the status.
-    if (rebuild && progress.value.documentsTotal === 0)
-      progress.value = { ...progress.value, documentsTotal: rebuild.keys_total }
+    if (active && progress.value.documentsTotal === 0)
+      progress.value = { ...progress.value, documentsTotal: active.keys_total }
   }
 
   /** One status read at a time; a read that hangs is abandoned after `STATUS_TIMEOUT_MS`. */
@@ -101,7 +101,7 @@ export const useRebuildStore = defineStore('rebuild', () => {
 
   // The hall is replaced in place during Encore!: read it often enough to watch its seats come back.
   watch(running, (now) => {
-    if (now && !hallPoller) hallPoller = setInterval(() => void concerts.refreshConcert(), REPLAY_REFRESH_MS)
+    if (now && !hallPoller) hallPoller = setInterval(() => void concerts.refreshConcert(), REBUILD_REFRESH_MS)
     if (!now && hallPoller) {
       clearInterval(hallPoller)
       hallPoller = null
@@ -132,7 +132,7 @@ export const useRebuildStore = defineStore('rebuild', () => {
     }
   }
 
-  /** DEMO ONLY: 🧨 the sidecar drops the read models and then their checkpoints; the ledger is intact, and the
+  /** DEMO ONLY: 🧨 the sidecar drops the read models and then their checkpoints; the journal is intact, and the
    * processors read it again from the start, so every hall comes back by itself. */
   async function wipe() {
     busy.value = true
@@ -155,7 +155,7 @@ export const useRebuildStore = defineStore('rebuild', () => {
     busy.value = true
     lastError.value = null
     try {
-      const { status: code, body } = await backend.rebuild(slow.value ? session.config.replay_slow_delay_ms : 0)
+      const { status: code, body } = await backend.rebuild(slow.value ? session.config.rebuild_slow_pace_ms : 0)
       if (code === 202) progress.value = { ...NO_PROGRESS, documentsTotal: progress.value.documentsTotal }
       else lastError.value = refusal(code, body)
       await refreshStatus()
@@ -186,7 +186,7 @@ export const useRebuildStore = defineStore('rebuild', () => {
         if (!ended.has(rebuildId))
           status.value = {
             ...status.value,
-            rebuild: { rebuild_id: rebuildId, pace_ms: Number(entry.pace_ms ?? 0), started_at: String(entry.at ?? ''), keys_total: keysTotal },
+            running: { rebuild_id: rebuildId, pace_ms: Number(entry.pace_ms ?? 0), started_at: String(entry.at ?? ''), keys_total: keysTotal },
           }
         break
       }
@@ -199,7 +199,7 @@ export const useRebuildStore = defineStore('rebuild', () => {
         ended.add(rebuildId)
         status.value = {
           ...status.value,
-          rebuild: null,
+          running: null,
           last_result: {
             rebuild_id: rebuildId,
             keys: Number(entry.keys ?? 0),

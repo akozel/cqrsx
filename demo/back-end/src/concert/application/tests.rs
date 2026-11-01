@@ -13,7 +13,7 @@ use crate::{
     testing::test_app,
 };
 use cqrsx::{
-    journal::{EventStore, persisted::PersistedEventStore},
+    journal::{EventStore, store::JournalEventStore},
     memory::task_queue::TaskStatus,
     task::format::TaskFormat,
     worker::queue::{TaskQueue, settlement::SettlementRequest},
@@ -39,7 +39,7 @@ fn done(task_type: &str, attempts: i32) -> (String, TaskStatus, i32) {
 #[tokio::test]
 async fn a_cancellation_refunds_the_fan() {
     let (cqrs, mail) = test_app().await;
-    let ui = cqrs.from("ui");
+    let ui = cqrs.source("ui");
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", Uuid::now_v7()))
         .await
@@ -67,7 +67,7 @@ async fn a_cancellation_refunds_the_fan() {
 #[tokio::test(start_paused = true)]
 async fn a_delivery_repeated_after_a_lost_acknowledgement_records_one_ticket_and_one_letter() {
     let (cqrs, mail) = test_app().await;
-    let ui = cqrs.from("ui");
+    let ui = cqrs.source("ui");
     let booking_id = Uuid::now_v7();
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", booking_id))
@@ -104,7 +104,7 @@ async fn a_delivery_repeated_after_a_lost_acknowledgement_records_one_ticket_and
 #[tokio::test(start_paused = true)]
 async fn a_cancellation_that_overtook_its_ticket_is_retried_and_refunds_after_the_ticket() {
     let (cqrs, mail) = test_app().await;
-    let ui = cqrs.from("ui");
+    let ui = cqrs.source("ui");
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", Uuid::now_v7()))
         .await
@@ -152,7 +152,7 @@ async fn a_cancellation_that_overtook_its_ticket_is_retried_and_refunds_after_th
 #[tokio::test]
 async fn the_concert_halls_catch_up_with_the_journal() {
     let (cqrs, _) = test_app().await;
-    let ui = cqrs.from("ui");
+    let ui = cqrs.source("ui");
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", Uuid::now_v7()))
         .await
@@ -182,7 +182,7 @@ async fn the_concert_halls_catch_up_with_the_journal() {
 #[tokio::test]
 async fn a_cancellation_queued_behind_a_rebooking_refunds_the_booking_it_cancels() {
     let (cqrs, _) = test_app().await;
-    let ui = cqrs.from("ui");
+    let ui = cqrs.source("ui");
     ui.execute::<Concert>(&concert_id(), announce()).await.unwrap();
     let first = Uuid::now_v7();
     ui.execute::<Concert>(&concert_id(), book("A1", "fox", first)).await.unwrap();
@@ -226,12 +226,12 @@ async fn a_cancellation_queued_behind_a_rebooking_refunds_the_booking_it_cancels
 async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_events() {
     let (cqrs, _) = test_app().await;
     let cqrs = Arc::new(cqrs);
-    cqrs.from("ui").execute::<Concert>(&concert_id(), announce()).await.unwrap();
+    cqrs.source("ui").execute::<Concert>(&concert_id(), announce()).await.unwrap();
     let mut commands = tokio::task::JoinSet::new();
     for round in 0..24 {
         let cqrs = cqrs.clone();
         commands.spawn(async move {
-            let (ui, id) = (cqrs.from("ui"), Uuid::now_v7());
+            let (ui, id) = (cqrs.source("ui"), Uuid::now_v7());
             if round % 2 == 0 {
                 ui.execute::<Concert>(&concert_id(), book("A1", "fox", id)).await
             } else {
@@ -243,7 +243,7 @@ async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_even
         // Accepted or refused: the events below say which.
         let _ = result.unwrap();
     }
-    let store = PersistedEventStore::<_, Concert>::new(cqrs.journal().unwrap().clone());
+    let store = JournalEventStore::<_, Concert>::new(cqrs.journal().unwrap().clone());
     let cancelled: HashMap<String, Uuid> = store
         .load_events(concert_id().as_str())
         .await

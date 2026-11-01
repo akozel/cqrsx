@@ -10,7 +10,7 @@ use thiserror::Error;
 #[derive(Clone, Debug)]
 pub struct TaskRuntimeConfig {
     storage: TaskStorageConfig,
-    worker: TaskWorkerPoolConfig,
+    worker_pool: TaskWorkerPoolConfig,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -18,7 +18,7 @@ pub enum TaskRuntimeConfigError {
     #[error("{0}")]
     Storage(#[from] TaskStorageConfigError),
     #[error("{0}")]
-    Worker(#[from] TaskWorkerPoolConfigError),
+    WorkerPool(#[from] TaskWorkerPoolConfigError),
 }
 
 impl TaskRuntimeConfig {
@@ -26,7 +26,10 @@ impl TaskRuntimeConfig {
     /// settlement ([`validate_for_storage_timeout`](TaskWorkerPoolConfig::validate_for_storage_timeout)).
     pub fn try_new(storage: TaskStorageConfig, worker: TaskWorkerPoolConfig) -> Result<Self, TaskRuntimeConfigError> {
         worker.validate_for_storage_timeout(storage.storage_timeout())?;
-        Ok(Self { storage, worker })
+        Ok(Self {
+            storage,
+            worker_pool: worker,
+        })
     }
 
     pub fn storage(&self) -> &TaskStorageConfig {
@@ -34,11 +37,11 @@ impl TaskRuntimeConfig {
     }
 
     pub fn worker_pool(&self) -> &TaskWorkerPoolConfig {
-        &self.worker
+        &self.worker_pool
     }
 
     pub(super) fn into_parts(self) -> (TaskStorageConfig, TaskWorkerPoolConfig) {
-        (self.storage, self.worker)
+        (self.storage, self.worker_pool)
     }
 
     /// [`from_lookup`](Self::from_lookup) over the process environment.
@@ -62,7 +65,7 @@ impl Default for TaskRuntimeConfig {
     fn default() -> Self {
         Self {
             storage: TaskStorageConfig::default(),
-            worker: TaskWorkerPoolConfig::default(),
+            worker_pool: TaskWorkerPoolConfig::default(),
         }
     }
 }
@@ -80,7 +83,7 @@ mod tests {
                 "defaults" => {
                     let config = TaskRuntimeConfig::from_env().unwrap();
                     assert_eq!(config.storage().storage_timeout(), Duration::from_secs(6));
-                    assert_eq!(config.worker_pool().lease_duration(), Duration::from_secs(60));
+                    assert_eq!(config.worker_pool().lease(), Duration::from_secs(60));
                 }
                 "override" => {
                     let config = TaskRuntimeConfig::from_env().unwrap();
@@ -89,15 +92,15 @@ mod tests {
                     assert_eq!(config.worker_pool().buffer_capacity(), 3);
                     assert_eq!(config.worker_pool().poll_interval(), Duration::from_millis(25));
                     assert_eq!(config.worker_pool().handler_timeout(), Duration::from_secs(2));
-                    assert_eq!(config.worker_pool().lease_duration(), Duration::from_secs(30));
+                    assert_eq!(config.worker_pool().lease(), Duration::from_secs(30));
                 }
                 "invalid" => assert_eq!(
                     TaskRuntimeConfig::from_env().unwrap_err(),
-                    TaskRuntimeConfigError::Storage(TaskStorageConfigError::InvalidEnvironmentValue)
+                    TaskRuntimeConfigError::Storage(TaskStorageConfigError::NotAnInteger)
                 ),
                 "lease_too_short" => assert_eq!(
                     TaskRuntimeConfig::from_env().unwrap_err(),
-                    TaskRuntimeConfigError::Worker(TaskWorkerPoolConfigError::LeaseTooShort)
+                    TaskRuntimeConfigError::WorkerPool(TaskWorkerPoolConfigError::LeaseTooShort)
                 ),
                 _ => panic!("unknown test scenario"),
             }
@@ -115,16 +118,16 @@ mod tests {
                         child
                             .env("OUTBOX_STORAGE_TIMEOUT_MS", "500")
                             .env("OUTBOX_WORKER_CONCURRENCY", "2")
-                            .env("OUTBOX_QUEUE_CAPACITY", "3")
-                            .env("OUTBOX_POLL_INTERVAL_MS", "25")
-                            .env("OUTBOX_HANDLER_TIMEOUT_SECS", "2")
-                            .env("OUTBOX_LEASE_SECS", "30");
+                            .env("OUTBOX_BUFFER_CAPACITY", "3")
+                            .env("OUTBOX_POLL_MS", "25")
+                            .env("OUTBOX_HANDLER_TIMEOUT_MS", "2000")
+                            .env("OUTBOX_LEASE_MS", "30000");
                     }
                     "invalid" => {
                         child.env("OUTBOX_STORAGE_TIMEOUT_MS", "invalid");
                     }
                     "lease_too_short" => {
-                        child.env("OUTBOX_LEASE_SECS", "53");
+                        child.env("OUTBOX_LEASE_MS", "53000");
                     }
                     _ => {}
                 },
@@ -152,7 +155,7 @@ mod tests {
         assert_eq!(default.worker_pool().buffer_capacity(), 128);
         assert_eq!(default.worker_pool().poll_interval(), Duration::from_secs(1));
         assert_eq!(default.worker_pool().handler_timeout(), Duration::from_secs(15));
-        assert_eq!(default.worker_pool().lease_duration(), Duration::from_secs(60));
+        assert_eq!(default.worker_pool().lease(), Duration::from_secs(60));
         assert_eq!(default.storage().storage_timeout(), Duration::from_secs(6));
         let mut reads = Vec::new();
         TaskRuntimeConfig::from_lookup(|name| {
@@ -167,7 +170,7 @@ mod tests {
         let c = lookup(&[("OUTBOX_WORKER_CONCURRENCY", "256")]).unwrap();
         assert_eq!(c.worker_pool().buffer_capacity(), 128);
         assert_eq!(c.worker_pool().concurrency(), 256);
-        let q = lookup(&[("OUTBOX_QUEUE_CAPACITY", "256"), ("OUTBOX_LEASE_SECS", "75")]).unwrap();
+        let q = lookup(&[("OUTBOX_BUFFER_CAPACITY", "256"), ("OUTBOX_LEASE_MS", "75000")]).unwrap();
         assert_eq!(q.worker_pool().concurrency(), 128);
         assert_eq!(q.worker_pool().buffer_capacity(), 256);
         let storage = lookup(&[("OUTBOX_STORAGE_TIMEOUT_MS", "5000")]).unwrap();
@@ -177,41 +180,36 @@ mod tests {
     #[test]
     fn parsing_errors_preserve_the_configuration_boundary_and_source() {
         let error = lookup(&[("OUTBOX_STORAGE_TIMEOUT_MS", "invalid")]).unwrap_err();
-        assert_eq!(
-            error,
-            TaskRuntimeConfigError::Storage(TaskStorageConfigError::InvalidEnvironmentValue)
-        );
+        assert_eq!(error, TaskRuntimeConfigError::Storage(TaskStorageConfigError::NotAnInteger));
         assert!(std::error::Error::source(&error).is_some());
         let error = lookup(&[("OUTBOX_WORKER_CONCURRENCY", "invalid")]).unwrap_err();
         assert_eq!(
             error,
-            TaskRuntimeConfigError::Worker(TaskWorkerPoolConfigError::InvalidEnvironmentValue(
-                "OUTBOX_WORKER_CONCURRENCY"
-            ))
+            TaskRuntimeConfigError::WorkerPool(TaskWorkerPoolConfigError::NotAnInteger("OUTBOX_WORKER_CONCURRENCY"))
         );
         assert!(std::error::Error::source(&error).is_some());
         assert_eq!(
             lookup(&[("OUTBOX_STORAGE_TIMEOUT_MS", "0")]).unwrap_err(),
-            TaskRuntimeConfigError::Storage(TaskStorageConfigError::InvalidStorageTimeout)
+            TaskRuntimeConfigError::Storage(TaskStorageConfigError::ZeroStorageTimeout)
         );
     }
 
     #[test]
     fn full_budget_is_checked_at_load_time_with_strict_wave_boundaries() {
-        for settings in [vec![("OUTBOX_LEASE_SECS", "53")], vec![("OUTBOX_QUEUE_CAPACITY", "129")]] {
+        for settings in [vec![("OUTBOX_LEASE_MS", "53000")], vec![("OUTBOX_BUFFER_CAPACITY", "129")]] {
             assert_eq!(
                 lookup(&settings).unwrap_err(),
-                TaskRuntimeConfigError::Worker(TaskWorkerPoolConfigError::LeaseTooShort)
+                TaskRuntimeConfigError::WorkerPool(TaskWorkerPoolConfigError::LeaseTooShort)
             );
         }
-        lookup(&[("OUTBOX_LEASE_SECS", "54")]).unwrap();
-        lookup(&[("OUTBOX_QUEUE_CAPACITY", "129"), ("OUTBOX_LEASE_SECS", "75")]).unwrap();
+        lookup(&[("OUTBOX_LEASE_MS", "54000")]).unwrap();
+        lookup(&[("OUTBOX_BUFFER_CAPACITY", "129"), ("OUTBOX_LEASE_MS", "75000")]).unwrap();
         #[cfg(target_pointer_width = "64")]
         {
             let capacity = (usize::MAX >> 3).to_string();
             assert_eq!(
-                lookup(&[("OUTBOX_WORKER_CONCURRENCY", "1"), ("OUTBOX_QUEUE_CAPACITY", &capacity)]).unwrap_err(),
-                TaskRuntimeConfigError::Worker(TaskWorkerPoolConfigError::LeaseBudgetOverflow)
+                lookup(&[("OUTBOX_WORKER_CONCURRENCY", "1"), ("OUTBOX_BUFFER_CAPACITY", &capacity)]).unwrap_err(),
+                TaskRuntimeConfigError::WorkerPool(TaskWorkerPoolConfigError::LeaseBudgetOverflow)
             );
         }
     }

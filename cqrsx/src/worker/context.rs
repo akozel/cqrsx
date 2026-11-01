@@ -1,7 +1,7 @@
 //! What a task handler gets besides its task: the attempt, the pause of its retry, its dependencies and the command
 //! executors of the application.
 use crate::{
-    command::{CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
+    command::{CommandError, CommandExecutor, CommitReport, metadata::CommandMetadata},
     domain::aggregate::Aggregate,
     task::attempt::TaskAttempt,
     worker::dependencies::{Dependencies, MissingDependency},
@@ -38,8 +38,8 @@ use uuid::Uuid;
 /// #[derive(Serialize)]
 /// struct Ping {}
 /// impl Task for Ping {
-///     const TASK_TYPE: &'static str = "ping";
-///     const TASK_VERSION: i32 = 1;
+///     const TYPE: &'static str = "ping";
+///     const VERSION: i32 = 1;
 /// }
 ///
 /// let attempt = TaskAttempt::try_first(&Ping {}, serde_json::json!({}))?;
@@ -69,7 +69,7 @@ impl TaskContext {
     }
 
     /// The context the dispatcher builds for one attempt, with what it holds for every handler.
-    pub(crate) fn shared(
+    pub(crate) fn from_parts(
         attempt: Arc<TaskAttempt>,
         retry_pause: Duration,
         dependencies: Dependencies,
@@ -126,10 +126,10 @@ impl TaskContext {
         &self,
         id: &A::Id,
         command: A::Command,
-    ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+    ) -> Result<CommitReport<A>, CommandError<A::Rejection>> {
         let Some(executor) = self.executors.get::<A>() else {
             crate::diagnostics::log_missing_executor(A::TYPE);
-            return Err(CommandGatewayError::Unavailable);
+            return Err(CommandError::Unavailable);
         };
         let metadata = CommandMetadata::from_task(&self.attempt).to_map();
         executor.run(id, command, metadata).await
@@ -146,7 +146,7 @@ impl fmt::Debug for TaskContext {
     }
 }
 
-type Answer<A> = Result<CommitReport<A>, CommandGatewayError<<A as Aggregate>::Error>>;
+type Answer<A> = Result<CommitReport<A>, CommandError<<A as Aggregate>::Rejection>>;
 type AnswerFuture<'a, A> = Pin<Box<dyn Future<Output = Answer<A>> + Send + 'a>>;
 
 /// A command executor of `A` behind one type: one allocation per command.
@@ -168,7 +168,7 @@ pub struct Executors(Arc<HashMap<TypeId, Arc<dyn Any + Send + Sync>>>);
 impl Executors {
     /// `executor` for the commands of `A`; a second executor of one aggregate type is refused, as a second executor
     /// would order nothing with the first.
-    pub fn with<A: Aggregate + 'static, E: CommandExecutor<A> + 'static>(
+    pub fn register<A: Aggregate + 'static, E: CommandExecutor<A> + 'static>(
         mut self,
         executor: Arc<E>,
     ) -> Result<Self, ExecutorTwice> {
@@ -248,7 +248,7 @@ mod tests {
         type Id = String;
         type Command = Record;
         type Event = Recorded;
-        type Error = Refused;
+        type Rejection = Refused;
         type Rules = ();
 
         fn apply(&mut self, _: Recorded) {}
@@ -320,7 +320,7 @@ mod tests {
         let task_id = attempt.task_id();
         let executor = Scripted::new(|| Ok(CommitReport::default()));
         let ctx = TaskContext::new(attempt, Duration::ZERO)
-            .with_executors(Executors::default().with::<Ledger, _>(executor.clone()).unwrap());
+            .with_executors(Executors::default().register::<Ledger, _>(executor.clone()).unwrap());
         assert!(ctx.execute::<Ledger>(&"fox".to_owned(), command()).await.is_ok());
         let calls = executor.calls.lock().unwrap();
         let [(id, sent, metadata)] = &calls[..] else {
@@ -340,10 +340,10 @@ mod tests {
     #[tokio::test]
     async fn the_executor_of_each_aggregate_type_runs_its_commands_and_a_second_one_is_refused() {
         let accepted = Scripted::new(|| Ok(CommitReport::default()));
-        let rejected = Scripted::new(|| Err(CommandGatewayError::Conflict));
-        let executors = Executors::default().with::<Ledger, _>(accepted.clone()).unwrap();
+        let rejected = Scripted::new(|| Err(CommandError::Conflict));
+        let executors = Executors::default().register::<Ledger, _>(accepted.clone()).unwrap();
         assert_eq!(
-            executors.clone().with::<Ledger, _>(rejected.clone()).unwrap_err(),
+            executors.clone().register::<Ledger, _>(rejected.clone()).unwrap_err(),
             ExecutorTwice("Ledger")
         );
         assert_eq!(
@@ -363,7 +363,7 @@ mod tests {
         let ctx = TaskContext::new(attempt(json!({})), Duration::ZERO);
         let (answer, log) =
             crate::diagnostics::test_support::capture(ctx.execute::<Ledger>(&"private_id".to_owned(), command())).await;
-        assert!(matches!(answer, Err(CommandGatewayError::Unavailable)));
+        assert!(matches!(answer, Err(CommandError::Unavailable)));
         assert_eq!(log.matches("no command executor for the task's command").count(), 1, "{log}");
         assert!(log.contains("aggregate_type=\"Ledger\""), "{log}");
         assert!(!log.contains("private_id"), "{log}");

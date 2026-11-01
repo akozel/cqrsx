@@ -2,8 +2,8 @@
 //! commands that committed the events, so that no committed event is lost on the way to the read model.
 //!
 //! A processor owns one checkpoint row per projection and aggregate type ([`CheckpointStore`]) under a
-//! lease, reads the journal in pages from the checkpoint ([`PersistedEventRepository::feed_after`]), hands
-//! the events of every key to the projection through the key's worker (the ordered delivery, one worker per
+//! lease, reads the journal in pages from the checkpoint ([`EventRepository::feed_after`]), hands
+//! the events of every key to the projection through the key's lane (the ordered delivery, one lane per
 //! busy key, batches per handler call) and moves the checkpoint behind the pages whose receipts are in. A
 //! page may be read while the receipts of earlier pages are still in flight (a window as deep as the key
 //! buffer's capacity less one); the checkpoint follows the completed prefix of the window, and inside a
@@ -11,7 +11,7 @@
 //! followed by a pause that doubles up to a maximum. The processor registers its row before every claim, so a
 //! row dropped together with the read side comes back at the start of the journal and the views are rebuilt.
 //!
-//! Rebuilds run through the same key workers: the owner rebuilds every key of the journal page by page when
+//! Rebuilds run through the same key lanes: the owner rebuilds every key of the journal page by page when
 //! a rebuild of the projection is requested ([`CheckpointStore::request_rebuild`], the cursor is kept on
 //! the row), the keys requested one by one ([`CheckpointStore::request_rebuild_key`]), and a key whose
 //! document refused a live event as a gap (healed in place, the page waits for the rebuild). A rebuild reads
@@ -40,7 +40,7 @@
 //! #     type Id = String;
 //! #     type Command = ();
 //! #     type Event = Counted;
-//! #     type Error = Never;
+//! #     type Rejection = Never;
 //! #     type Rules = ();
 //! #     fn apply(&mut self, _: Counted) {}
 //! # }
@@ -51,15 +51,15 @@
 //! # pub struct Total { pub count: usize }
 //! # impl View<Counter> for Total {
 //! #     const NAME: &'static str = "totals";
-//! #     fn update(&mut self, _: &EventEnvelope<Counter>) { self.count += 1; }
+//! #     fn apply(&mut self, _: &EventEnvelope<Counter>) { self.count += 1; }
 //! # }
 //! # }
 //! # use example::{Counted, Counter, Total};
 //! # use cqrsx::domain::event::EventEnvelope;
 //! use cqrsx::{
-//!     journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+//!     journal::{repository::EventRepository, serialized_event::SerializedEvent},
 //!     memory::{
-//!         checkpoint_store::MemCheckpointStore, event_repository::MemEventRepository, view_repository::MemViewRepository,
+//!         checkpoint_store::MemoryCheckpointStore, event_repository::MemoryEventRepository, view_repository::MemoryViewRepository,
 //!     },
 //!     projection::{
 //!         checkpoint::CheckpointStore,
@@ -73,9 +73,9 @@
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! # let event = |sequence| SerializedEvent::try_from(&EventEnvelope::<Counter> {
 //! #     aggregate_id: "c-1".into(), sequence, payload: Counted, metadata: Default::default() }).unwrap();
-//! let journal = Arc::new(MemEventRepository::default());
-//! let checkpoints = Arc::new(MemCheckpointStore::default());
-//! let totals = Arc::new(MemViewRepository::<Total, Counter>::default());
+//! let journal = Arc::new(MemoryEventRepository::default());
+//! let checkpoints = Arc::new(MemoryCheckpointStore::default());
+//! let totals = Arc::new(MemoryViewRepository::<Total, Counter>::default());
 //! journal.persist::<Counter>(&[event(1), event(2), event(3)], None).await?;
 //!
 //! let processor = ProjectionProcessor::new(
@@ -114,16 +114,16 @@ mod rebuild;
 use crate::{
     diagnostics,
     domain::aggregate::Aggregate,
-    journal::{repository::PersistedEventRepository, upcaster::EventUpcaster, wakeup::CommitWakeup},
+    journal::{repository::EventRepository, upcaster::EventUpcaster, wakeup::CommitWakeup},
     projection::{
         EventHandler, RebuildableProjection,
         checkpoint::{CheckpointError, CheckpointKey, CheckpointStore, Claimed},
         processor::{
             config::ProcessorConfig,
             delivery::OrderedDelivery,
-            observer::{LeaseEvent, ProjectionObserver},
+            observer::{LeaseChange, ProjectionObserver},
             owner::{Exit, Owner},
-            rebuild::{Bounded, HistoryRebuilder},
+            rebuild::{BoundedWrites, HistoryRebuilder},
         },
     },
 };
@@ -199,7 +199,7 @@ impl ProjectionObserver for NoObserver {}
 impl<A, R, C> ProjectionProcessor<A, R, C>
 where
     A: Aggregate + 'static,
-    R: PersistedEventRepository + 'static,
+    R: EventRepository + 'static,
     C: CheckpointStore + 'static,
 {
     /// `name` names the projection on its checkpoint row (one row per name and aggregate type, so two
@@ -237,7 +237,7 @@ where
     }
 
     /// The wake-up the aggregate type's command executor fires after a commit.
-    pub fn with_wakeup(mut self, wakeup: CommitWakeup) -> Self {
+    pub fn with_commit_wakeup(mut self, wakeup: CommitWakeup) -> Self {
         self.wakeup = wakeup;
         self
     }
@@ -263,7 +263,7 @@ where
     /// doubling while owning it); nothing is fatal. On shutdown the owner finishes what is in flight (up to
     /// one lease), moves the checkpoint and releases the row at once.
     pub async fn run(self, shutdown: CancellationToken) {
-        let permits = Arc::new(Semaphore::new(self.config.concurrency().min(Semaphore::MAX_PERMITS)));
+        let permits = Arc::new(Semaphore::new(self.config.write_concurrency().min(Semaphore::MAX_PERMITS)));
         let upcasters = Arc::new(self.upcasters);
         let rebuilder = Arc::new(HistoryRebuilder::new(
             self.repository.clone(),
@@ -271,12 +271,12 @@ where
             self.projection.clone(),
             permits.clone(),
         ));
-        let handler: Arc<dyn EventHandler<A>> = Arc::new(Bounded::new(self.projection.clone(), permits));
+        let handler: Arc<dyn EventHandler<A>> = Arc::new(BoundedWrites::new(self.projection.clone(), permits));
         let delivery = OrderedDelivery::new(&self.name, handler, rebuilder, self.config.delivery_limits());
-        let context = Context {
+        let context = ProcessorContext {
             key: CheckpointKey::new(self.name, A::TYPE),
             owner: self.owner,
-            handler: self.projection.name(),
+            handler_name: self.projection.name(),
             repository: self.repository,
             checkpoints: self.checkpoints,
             config: self.config,
@@ -291,11 +291,11 @@ where
 }
 
 /// What every ownership of the row shares.
-pub(super) struct Context<A: Aggregate, R, C> {
+pub(super) struct ProcessorContext<A: Aggregate, R, C> {
     pub(super) key: CheckpointKey,
     pub(super) owner: String,
     /// The projection's name, for failure reports.
-    pub(super) handler: String,
+    pub(super) handler_name: String,
     pub(super) repository: Arc<R>,
     pub(super) checkpoints: Arc<C>,
     pub(super) config: ProcessorConfig,
@@ -306,10 +306,10 @@ pub(super) struct Context<A: Aggregate, R, C> {
     pub(super) shutdown: CancellationToken,
 }
 
-impl<A, R, C> Context<A, R, C>
+impl<A, R, C> ProcessorContext<A, R, C>
 where
     A: Aggregate + 'static,
-    R: PersistedEventRepository + 'static,
+    R: EventRepository + 'static,
     C: CheckpointStore + 'static,
 {
     async fn run(&self) {
@@ -320,17 +320,17 @@ where
             }
             match self.claim().await {
                 Ok(Some((claimed, anchor))) => {
-                    diagnostics::log_projection_event(projection, aggregate_type, "lease acquired");
-                    self.observer.lease(LeaseEvent::Acquired);
+                    diagnostics::log_projection_change(projection, aggregate_type, "lease acquired");
+                    self.observer.lease(LeaseChange::Acquired);
                     match Owner::new(self, claimed, anchor).run().await {
                         Exit::Stopped => {
-                            diagnostics::log_projection_event(projection, aggregate_type, "lease released");
-                            self.observer.lease(LeaseEvent::Released);
+                            diagnostics::log_projection_change(projection, aggregate_type, "lease released");
+                            self.observer.lease(LeaseChange::Released);
                             return;
                         }
                         Exit::Lost => {
-                            diagnostics::log_projection_event(projection, aggregate_type, "lease lost");
-                            self.observer.lease(LeaseEvent::Lost);
+                            diagnostics::log_projection_change(projection, aggregate_type, "lease lost");
+                            self.observer.lease(LeaseChange::Lost);
                             continue; // the row may be free again at once
                         }
                     }

@@ -4,7 +4,7 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx/licenses/.
 use super::{
     PersistenceErrorObserver, View,
-    repository::{StoredView, ViewContext, ViewRepository},
+    repository::{StoredView, ViewMeta, ViewRepository},
 };
 use crate::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
@@ -20,10 +20,10 @@ use std::{
     sync::Arc,
 };
 
-/// Builds and persists a materialized read model from committed events.
-/// How many times a projection tries to write a document, the first attempt included, unless configured otherwise.
-const DEFAULT_MAX_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+/// Attempts to write a document on a revision conflict.
+const DEFAULT_WRITE_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
 
+/// Builds and persists a materialized read model from committed events.
 /// Also provides read access to the stored view.
 ///
 /// A document takes only the next event of its aggregate: events it has applied are skipped, a gap fails the
@@ -79,11 +79,11 @@ where
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// # use cqrsx::view::repository::StoredView;
     /// #
@@ -119,7 +119,7 @@ where
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -152,7 +152,7 @@ where
     /// #
     /// # impl View<MyAggregate> for MyView {
     /// #     const NAME: &'static str = "my_views";
-    /// #     fn update(&mut self, _event: &EventEnvelope<MyAggregate>) {
+    /// #     fn apply(&mut self, _event: &EventEnvelope<MyAggregate>) {
     /// #         todo!()
     /// #     }
     /// # }
@@ -172,7 +172,7 @@ where
     /// #         todo!()
     /// #     }
     /// #
-    /// #     async fn load_with_context(
+    /// #     async fn load_stored(
     /// #         &self,
     /// #         _view_id: &str,
     /// #     ) -> Result<Option<StoredView<MyView>>, PersistenceError> {
@@ -182,7 +182,7 @@ where
     /// #     async fn update_view(
     /// #         &self,
     /// #         _view: MyView,
-    /// #         _context: ViewContext,
+    /// #         _context: ViewMeta,
     /// #     ) -> Result<(), PersistenceError> {
     /// #         todo!()
     /// #     }
@@ -211,12 +211,12 @@ where
         Self {
             view_repository,
             error_observer: None,
-            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            max_attempts: DEFAULT_WRITE_ATTEMPTS,
             phantom: PhantomData,
         }
     }
     /// Sets an observer of the projection's failures: it sees every error of [`load`](Self::load), of
-    /// [`handle`](EventHandler::handle) (a read or a write of the view, a gap in the events, a version conflict once the
+    /// [`handle`](EventHandler::handle) (a read or a write of the view, a gap in the events, a revision conflict once the
     /// retries are spent) and of [`rebuild`](RebuildableProjection::rebuild), before the error is returned. The
     /// observer only looks: the error is still the caller's `Err`, nothing is retried, suppressed or replaced. Without an
     /// observer the errors are returned all the same. A second call replaces the observer.
@@ -234,11 +234,11 @@ where
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// # use cqrsx::view::repository::StoredView;
     /// #
@@ -274,7 +274,7 @@ where
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -307,7 +307,7 @@ where
     /// #
     /// # impl View<MyAggregate> for MyView {
     /// #     const NAME: &'static str = "my_views";
-    /// #     fn update(&mut self, _event: &EventEnvelope<MyAggregate>) {
+    /// #     fn apply(&mut self, _event: &EventEnvelope<MyAggregate>) {
     /// #         todo!()
     /// #     }
     /// # }
@@ -327,7 +327,7 @@ where
     /// #         todo!()
     /// #     }
     /// #
-    /// #     async fn load_with_context(
+    /// #     async fn load_stored(
     /// #         &self,
     /// #         _view_id: &str,
     /// #     ) -> Result<Option<StoredView<MyView>>, PersistenceError> {
@@ -337,7 +337,7 @@ where
     /// #     async fn update_view(
     /// #         &self,
     /// #         _view: MyView,
-    /// #         _context: ViewContext,
+    /// #         _context: ViewMeta,
     /// #     ) -> Result<(), PersistenceError> {
     /// #         todo!()
     /// #     }
@@ -355,12 +355,13 @@ where
     /// # use example::MyViewRepository;
     /// # use example::MyView;
     /// # use cqrsx::view::projection::ViewProjection;
-    /// # fn config(mut projection: ViewProjection<MyViewRepository,MyView,MyAggregate>) {
-    /// projection.set_error_observer(Box::new(|error| tracing::error!(%error, "view projection failed")));
+    /// # fn config(projection: ViewProjection<MyViewRepository,MyView,MyAggregate>) {
+    /// let projection = projection.with_error_observer(Box::new(|error| tracing::error!(%error, "view projection failed")));
     /// # }
     /// ```
-    pub fn set_error_observer(&mut self, error_observer: Box<PersistenceErrorObserver>) {
+    pub fn with_error_observer(mut self, error_observer: Box<PersistenceErrorObserver>) -> Self {
         self.error_observer = Some(error_observer);
+        self
     }
 
     /// Loads and deserializes a view based on the provided view id.
@@ -378,11 +379,11 @@ where
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// # use cqrsx::view::repository::StoredView;
     /// #
@@ -418,7 +419,7 @@ where
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -451,7 +452,7 @@ where
     /// #
     /// # impl View<MyAggregate> for MyView {
     /// #     const NAME: &'static str = "my_views";
-    /// #     fn update(&mut self, _event: &EventEnvelope<MyAggregate>) {
+    /// #     fn apply(&mut self, _event: &EventEnvelope<MyAggregate>) {
     /// #         todo!()
     /// #     }
     /// # }
@@ -471,7 +472,7 @@ where
     /// #         todo!()
     /// #     }
     /// #
-    /// #     async fn load_with_context(
+    /// #     async fn load_stored(
     /// #         &self,
     /// #         _view_id: &str,
     /// #     ) -> Result<Option<StoredView<MyView>>, PersistenceError> {
@@ -481,7 +482,7 @@ where
     /// #     async fn update_view(
     /// #         &self,
     /// #         _view: MyView,
-    /// #         _context: ViewContext,
+    /// #         _context: ViewMeta,
     /// #     ) -> Result<(), PersistenceError> {
     /// #         todo!()
     /// #     }
@@ -505,10 +506,10 @@ where
     /// ```
     pub async fn load(&self, view_id: &str) -> Result<Option<V>, PersistenceError> {
         self.view_repository
-            .load_with_context(view_id)
+            .load_stored(view_id)
             .await
             .map(|option| option.map(|stored| stored.view))
-            .inspect_err(|error| self.handle_error(error))
+            .inspect_err(|error| self.notify_observer(error))
     }
 
     /// Limit optimistic view retries, including the first attempt (default: 16).
@@ -518,20 +519,20 @@ where
     }
 
     /// The stored document of `view_id` with its context, or a new one; the id is copied only for a new document.
-    async fn load_or_default(&self, view_id: &str) -> Result<(V, ViewContext), PersistenceError> {
-        Ok(match self.view_repository.load_with_context(view_id).await? {
+    async fn load_or_default(&self, view_id: &str) -> Result<(V, ViewMeta), PersistenceError> {
+        Ok(match self.view_repository.load_stored(view_id).await? {
             Some(StoredView {
                 id,
-                version,
+                revision: version,
                 last_sequence,
                 view,
-            }) => (view, ViewContext::new(id, version, last_sequence)),
-            None => (V::default(), ViewContext::new(view_id.to_owned(), 0, 0)),
+            }) => (view, ViewMeta::new(id, version, last_sequence)),
+            None => (V::default(), ViewMeta::new(view_id.to_owned(), 0, 0)),
         })
     }
 
     /// Applies the batch to the stored document under the contiguity rule and writes the document when
-    /// something was applied. A version conflict reloads the document and runs the rule again against what
+    /// something was applied. A revision conflict reloads the document and runs the rule again against what
     /// the other writer left, up to `max_attempts` times.
     pub(crate) async fn apply_events(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
         let mut attempt = 1;
@@ -541,7 +542,7 @@ where
                 return Ok(());
             }
             match self.view_repository.update_view(view, context).await {
-                Err(PersistenceError::OptimisticLockError) if attempt < self.max_attempts.get() => tokio::task::yield_now().await,
+                Err(PersistenceError::Conflict) if attempt < self.max_attempts.get() => tokio::task::yield_now().await,
                 result => return result,
             }
             attempt += 1;
@@ -561,7 +562,7 @@ where
             return Ok(());
         };
         let Some(events) = history.get(..prefix).filter(|events| !events.is_empty()) else {
-            return Err(PersistenceError::UnknownError(
+            return Err(PersistenceError::Unexpected(
                 "rebuild prefix must lie within the history".into(),
             ));
         };
@@ -570,19 +571,19 @@ where
             attempt += 1;
             let (_, stored) = self.load_or_default(view_id).await?;
             if stored.last_sequence > last.sequence {
-                return Err(PersistenceError::OptimisticLockError);
+                return Err(PersistenceError::Conflict);
             }
             let mut view = V::default();
-            let mut context = ViewContext::new(view_id.to_string(), stored.version, 0);
+            let mut context = ViewMeta::new(view_id.to_string(), stored.revision, 0);
             apply_contiguous(&mut view, &mut context, events)?;
             match self.view_repository.update_view(view, context).await {
-                Err(PersistenceError::OptimisticLockError) if attempt < self.max_attempts.get() => tokio::task::yield_now().await,
+                Err(PersistenceError::Conflict) if attempt < self.max_attempts.get() => tokio::task::yield_now().await,
                 result => return result,
             }
         }
     }
 
-    fn handle_error(&self, error: &PersistenceError) {
+    fn notify_observer(&self, error: &PersistenceError) {
         if let Some(handler) = &self.error_observer {
             (handler)(error);
         }
@@ -594,7 +595,7 @@ where
 /// An event at or below `context.last_sequence` was applied before and is skipped; the event
 /// `last_sequence + 1` is applied and advances `last_sequence`; an event above it is a gap, and nothing of
 /// the batch may be written. Returns whether any event was applied.
-fn apply_contiguous<V, A>(view: &mut V, context: &mut ViewContext, events: &[EventEnvelope<A>]) -> Result<bool, PersistenceError>
+fn apply_contiguous<V, A>(view: &mut V, context: &mut ViewMeta, events: &[EventEnvelope<A>]) -> Result<bool, PersistenceError>
 where
     V: View<A>,
     A: Aggregate,
@@ -605,7 +606,7 @@ where
         match event.sequence.cmp(&expected) {
             Ordering::Less => {}
             Ordering::Equal => {
-                view.update(event);
+                view.apply(event);
                 context.last_sequence = event.sequence;
                 applied = true;
             }
@@ -635,7 +636,7 @@ where
     async fn handle(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
         self.apply_events(view_id, events)
             .await
-            .inspect_err(|error| self.handle_error(error))
+            .inspect_err(|error| self.notify_observer(error))
     }
 }
 
@@ -649,7 +650,7 @@ where
     async fn rebuild(&self, view_id: &str, history: &[EventEnvelope<A>], prefix: usize) -> Result<(), PersistenceError> {
         self.replace(view_id, history, prefix)
             .await
-            .inspect_err(|error| self.handle_error(error))
+            .inspect_err(|error| self.notify_observer(error))
     }
 }
 
@@ -657,7 +658,7 @@ where
 mod tests {
     use super::*;
     use crate::{
-        journal::persisted::tests::{TestAggregate, TestEvents},
+        journal::store::tests::{TestAggregate, TestEvents},
         view::repository::StoredView,
     };
     use serde::{Deserialize, Serialize};
@@ -668,7 +669,7 @@ mod tests {
     struct Projection(Vec<usize>);
     impl View<TestAggregate> for Projection {
         const NAME: &'static str = "halls";
-        fn update(&mut self, event: &EventEnvelope<TestAggregate>) {
+        fn apply(&mut self, event: &EventEnvelope<TestAggregate>) {
             self.0.push(event.sequence);
         }
     }
@@ -688,21 +689,21 @@ mod tests {
     /// A repository with the version rules of the real ones, a call log and one scripted failure.
     #[derive(Default)]
     struct Repository {
-        saved: Mutex<Option<(Projection, ViewContext)>>,
+        saved: Mutex<Option<(Projection, ViewMeta)>>,
         calls: Mutex<Vec<String>>,
         failure: Mutex<Option<Failure>>,
     }
     impl Repository {
         fn seeded(id: &str, view: Projection, version: i64, last_sequence: usize) -> Arc<Self> {
             let repository = Self::default();
-            *repository.saved.lock().unwrap() = Some((view, ViewContext::new(id.into(), version, last_sequence)));
+            *repository.saved.lock().unwrap() = Some((view, ViewMeta::new(id.into(), version, last_sequence)));
             Arc::new(repository)
         }
         fn fail(self: &Arc<Self>, failure: Failure) -> Arc<Self> {
             *self.failure.lock().unwrap() = Some(failure);
             self.clone()
         }
-        fn saved(&self) -> (Projection, ViewContext) {
+        fn saved(&self) -> (Projection, ViewMeta) {
             self.saved.lock().unwrap().clone().expect("a saved document")
         }
         fn calls(&self) -> Vec<String> {
@@ -711,24 +712,24 @@ mod tests {
     }
     impl ViewRepository<Projection, TestAggregate> for Repository {
         async fn load(&self, _: &str) -> Result<Option<Projection>, PersistenceError> {
-            panic!("ViewProjection must retain the version with load_with_context")
+            panic!("ViewProjection must retain the version with load_stored")
         }
-        async fn load_with_context(&self, id: &str) -> Result<Option<StoredView<Projection>>, PersistenceError> {
+        async fn load_stored(&self, id: &str) -> Result<Option<StoredView<Projection>>, PersistenceError> {
             self.calls.lock().unwrap().push(format!("load:{id}"));
             if *self.failure.lock().unwrap() == Some(Failure::Load) {
-                return Err(PersistenceError::ConnectionError("load failed".into()));
+                return Err(PersistenceError::Connection("load failed".into()));
             }
             Ok(self.saved.lock().unwrap().clone().map(|(view, context)| StoredView {
-                id: context.view_instance_id,
-                version: context.version,
+                id: context.id,
+                revision: context.revision,
                 last_sequence: context.last_sequence,
                 view,
             }))
         }
-        async fn update_view(&self, view: Projection, context: ViewContext) -> Result<(), PersistenceError> {
+        async fn update_view(&self, view: Projection, context: ViewMeta) -> Result<(), PersistenceError> {
             self.calls.lock().unwrap().push(format!(
                 "update:{}:{}:{}",
-                context.view_instance_id, context.version, context.last_sequence
+                context.id, context.revision, context.last_sequence
             ));
             let failure = *self.failure.lock().unwrap();
             match failure {
@@ -736,18 +737,16 @@ mod tests {
                     *self.failure.lock().unwrap() = None;
                     *self.saved.lock().unwrap() = Some((
                         Projection((1..=winner).collect()),
-                        ViewContext::new(context.view_instance_id, context.version + 1, winner),
+                        ViewMeta::new(context.id, context.revision + 1, winner),
                     ));
-                    Err(PersistenceError::OptimisticLockError)
+                    Err(PersistenceError::Conflict)
                 }
-                Some(Failure::Update) => Err(PersistenceError::OptimisticLockError),
+                Some(Failure::Update) => Err(PersistenceError::Conflict),
                 _ => {
-                    *self.saved.lock().unwrap() = Some((
-                        view,
-                        ViewContext::new(context.view_instance_id, context.version + 1, context.last_sequence),
-                    ));
+                    *self.saved.lock().unwrap() =
+                        Some((view, ViewMeta::new(context.id, context.revision + 1, context.last_sequence)));
                     match failure {
-                        Some(Failure::ReplyLost) => Err(PersistenceError::ConnectionError("reply lost after view write".into())),
+                        Some(Failure::ReplyLost) => Err(PersistenceError::Connection("reply lost after view write".into())),
                         _ => Ok(()),
                     }
                 }
@@ -774,8 +773,8 @@ mod tests {
     fn prefix(range: RangeInclusive<usize>) -> Projection {
         Projection(range.collect())
     }
-    fn context(version: i64, last_sequence: usize) -> ViewContext {
-        ViewContext::new("view".into(), version, last_sequence)
+    fn context(version: i64, last_sequence: usize) -> ViewMeta {
+        ViewMeta::new("view".into(), version, last_sequence)
     }
 
     #[test]
@@ -845,9 +844,8 @@ mod tests {
     #[tokio::test]
     async fn a_gap_fails_without_writing() {
         let repo = Repository::seeded("view", prefix(1..=5), 3, 5);
-        let mut projection = ViewProjection::new(repo.clone());
         let errors = Arc::new(Mutex::new(Vec::new()));
-        projection.set_error_observer(Box::new({
+        let projection = ViewProjection::new(repo.clone()).with_error_observer(Box::new({
             let errors = errors.clone();
             move |e| errors.lock().unwrap().push(e.to_string())
         }));
@@ -898,7 +896,7 @@ mod tests {
         let repo = Repository::seeded("view", Projection(vec![]), 1, usize::MAX);
         assert!(matches!(
             ViewProjection::new(repo.clone()).handle("view", &events(1..=1)).await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
         assert_eq!(repo.calls(), ["load:view"]);
     }
@@ -912,10 +910,10 @@ mod tests {
                 let errors = Arc::new(Mutex::new(Vec::new()));
                 if handler {
                     let errors = errors.clone();
-                    projection.set_error_observer(Box::new(move |e| errors.lock().unwrap().push(e.to_string())));
+                    projection = projection.with_error_observer(Box::new(move |e| errors.lock().unwrap().push(e.to_string())));
                 }
                 assert!(projection.handle("requested-view", &events(8..=9)).await.is_err());
-                assert_eq!(repo.saved(), (prefix(1..=7), ViewContext::new("stored-context".into(), 9, 7)));
+                assert_eq!(repo.saved(), (prefix(1..=7), ViewMeta::new("stored-context".into(), 9, 7)));
                 assert_eq!(errors.lock().unwrap().len(), usize::from(handler));
                 assert_eq!(
                     repo.calls(),
@@ -937,11 +935,11 @@ mod tests {
             let errors = Arc::new(Mutex::new(Vec::new()));
             if handler {
                 let errors = errors.clone();
-                projection.set_error_observer(Box::new(move |e| errors.lock().unwrap().push(e.to_string())));
+                projection = projection.with_error_observer(Box::new(move |e| errors.lock().unwrap().push(e.to_string())));
             }
             assert!(matches!(
                 projection.load("missing").await,
-                Err(PersistenceError::ConnectionError(_))
+                Err(PersistenceError::Connection(_))
             ));
             assert_eq!(*errors.lock().unwrap(), if handler { vec!["load failed"] } else { vec![] });
         }
@@ -952,7 +950,7 @@ mod tests {
         let repo = Arc::new(Repository::default()).fail(Failure::Update);
         assert!(matches!(
             ViewProjection::new(repo.clone()).handle("view", &events(1..=1)).await,
-            Err(PersistenceError::OptimisticLockError)
+            Err(PersistenceError::Conflict)
         ));
         assert_eq!(repo.calls(), ["load:view", "update:view:0:1"].repeat(16));
         assert!(repo.saved.lock().unwrap().is_none());
@@ -963,7 +961,7 @@ mod tests {
         let repo = Arc::new(Repository::default()).fail(Failure::ReplyLost);
         assert!(matches!(
             ViewProjection::new(repo.clone()).handle("view", &events(1..=2)).await,
-            Err(PersistenceError::ConnectionError(_))
+            Err(PersistenceError::Connection(_))
         ));
         assert_eq!(repo.saved(), (prefix(1..=2), context(1, 2)));
         assert_eq!(repo.calls(), ["load:view", "update:view:0:2"]);
@@ -1008,7 +1006,7 @@ mod tests {
             for bound in [0, 6] {
                 assert!(matches!(
                     projection.rebuild("view", &events(1..=5), bound).await,
-                    Err(PersistenceError::UnknownError(_))
+                    Err(PersistenceError::Unexpected(_))
                 ));
             }
             assert!(repo.calls().is_empty());
@@ -1020,7 +1018,7 @@ mod tests {
             let repo = Repository::seeded("view", prefix(1..=7), 2, 7);
             assert!(matches!(
                 ViewProjection::new(repo.clone()).rebuild("view", &events(1..=5), 5).await,
-                Err(PersistenceError::OptimisticLockError)
+                Err(PersistenceError::Conflict)
             ));
             assert_eq!(repo.calls(), ["load:view"]);
             assert_eq!(repo.saved(), (prefix(1..=7), context(2, 7)));
@@ -1028,7 +1026,7 @@ mod tests {
             let repo = Repository::seeded("view", prefix(1..=3), 1, 3).fail(Failure::ConflictOnce { winner: 6 });
             assert!(matches!(
                 ViewProjection::new(repo.clone()).rebuild("view", &events(1..=5), 5).await,
-                Err(PersistenceError::OptimisticLockError)
+                Err(PersistenceError::Conflict)
             ));
             assert_eq!(repo.calls(), ["load:view", "update:view:1:5", "load:view"]);
             assert_eq!(repo.saved(), (prefix(1..=6), context(2, 6)), "the winner's document stays");
@@ -1045,15 +1043,16 @@ mod tests {
             assert_eq!(repo.saved(), (prefix(1..=5), context(3, 5)));
             assert_eq!(repo.calls(), ["load:view", "update:view:1:5", "load:view", "update:view:2:5"]);
             let repo = Repository::seeded("view", prefix(1..=3), 1, 3).fail(Failure::Update);
-            let mut projection = ViewProjection::new(repo.clone()).with_max_attempts(NonZeroUsize::new(2).unwrap());
             let errors = Arc::new(Mutex::new(Vec::new()));
-            projection.set_error_observer(Box::new({
-                let errors = errors.clone();
-                move |e| errors.lock().unwrap().push(e.to_string())
-            }));
+            let projection = ViewProjection::new(repo.clone())
+                .with_max_attempts(NonZeroUsize::new(2).unwrap())
+                .with_error_observer(Box::new({
+                    let errors = errors.clone();
+                    move |e| errors.lock().unwrap().push(e.to_string())
+                }));
             assert!(matches!(
                 projection.rebuild("view", &events(1..=5), 5).await,
-                Err(PersistenceError::OptimisticLockError)
+                Err(PersistenceError::Conflict)
             ));
             assert_eq!(repo.calls(), ["load:view", "update:view:1:5"].repeat(2));
             assert!(matches!(
@@ -1062,7 +1061,7 @@ mod tests {
             ));
             assert_eq!(
                 *errors.lock().unwrap(),
-                ["optimistic lock error", "sequence gap: expected event 3, found 4"]
+                ["conflict with a concurrent write", "sequence gap: expected event 3, found 4"]
             );
             assert_eq!(repo.saved(), (prefix(1..=3), context(1, 3)));
         }
@@ -1081,7 +1080,7 @@ mod tests {
     mod model {
         use super::*;
         use crate::journal::serialized_event::tests::property_config;
-        use crate::memory::view_repository::MemViewRepository;
+        use crate::memory::view_repository::MemoryViewRepository;
         use proptest::prelude::*;
 
         /// One delivery: `len` consecutive sequences starting `offset` away from the next expected event,
@@ -1104,7 +1103,7 @@ mod tests {
         /// Replays the batches against the model "the applied sequences are `1..=applied`" and checks the
         /// stored document after every delivery: same prefix, same `last_sequence`, one version per write.
         async fn check(batches: Vec<Batch>) -> Result<(), TestCaseError> {
-            let repository = MemViewRepository::<Projection, TestAggregate>::default();
+            let repository = MemoryViewRepository::<Projection, TestAggregate>::default();
             let projection = ViewProjection::new(Arc::new(repository.clone()));
             let (mut applied, mut version) = (0usize, 0i64);
             for batch in batches {
@@ -1143,11 +1142,11 @@ mod tests {
                         }
                     }
                 }
-                match repository.load_with_context("view").await.unwrap() {
+                match repository.load_stored("view").await.unwrap() {
                     None => prop_assert_eq!((applied, version), (0, 0)),
                     Some(stored) => {
                         prop_assert_eq!(stored.view.0, (1..=applied).collect::<Vec<_>>());
-                        prop_assert_eq!((stored.version, stored.last_sequence), (version, applied));
+                        prop_assert_eq!((stored.revision, stored.last_sequence), (version, applied));
                     }
                 }
             }

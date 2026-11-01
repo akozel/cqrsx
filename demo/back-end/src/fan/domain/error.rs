@@ -42,7 +42,7 @@ mod tests {
         let booking_id = Uuid::nil();
         let error = FanError::UnknownTicket { booking_id };
         assert_eq!(Rejection::code(&error), "unknown_ticket");
-        assert_eq!(error.params(), json!({ "booking_id": booking_id }));
+        assert_eq!(error.parameters(), json!({ "booking_id": booking_id }));
     }
 
     /// Every rule R9–R11 as the activity feed reports it, variant by variant: the code and the booking.
@@ -55,7 +55,7 @@ mod tests {
             FanError::AlreadyCancelled { booking_id },
         ]
         .iter()
-        .map(|error| (Rejection::code(error), Rejection::params(error)))
+        .map(|error| (Rejection::code(error), Rejection::parameters(error)))
         .collect();
         let booking = json!({ "booking_id": "00000000-0000-0000-0000-000000000001" });
         assert_eq!(

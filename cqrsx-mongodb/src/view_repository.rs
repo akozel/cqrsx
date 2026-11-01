@@ -1,5 +1,5 @@
 //! Read-model documents in a MongoDB collection.
-use crate::{is_duplicate_key, persistence};
+use crate::{is_duplicate_key, persistence_error};
 use ::mongodb::{
     Collection, Database,
     bson::{self, Bson, Document, doc},
@@ -9,7 +9,7 @@ use cqrsx::{
     journal::PersistenceError,
     view::{
         View,
-        repository::{StoredView, ViewContext, ViewRepository},
+        repository::{StoredView, ViewMeta, ViewRepository},
     },
 };
 use serde::Deserialize;
@@ -18,12 +18,12 @@ use std::{fmt, marker::PhantomData};
 /// Stores serialized read-model views in a MongoDB collection, one document per view:
 ///
 /// ```text
-/// { _id: <view id>, version: <Int64>, last_sequence: <Int64>, view: <the view as BSON> }
+/// { _id: <view id>, revision: <Int64>, last_sequence: <Int64>, payload: <the view as BSON> }
 /// ```
 ///
-/// The collection is the view's name ([`View::NAME`]). `version` is the optimistic version (1 after the first
-/// write) and `last_sequence` the last applied event of the view's aggregate (see `ViewContext`). A new document is
-/// inserted, and a duplicate `_id` is a conflict; an existing one is replaced only at the version it was read with.
+/// The collection is the view's name ([`View::NAME`]). `revision` is the optimistic revision (1 after the first
+/// write) and `last_sequence` the last applied event of the view's aggregate (see `ViewMeta`). A new document is
+/// inserted, and a duplicate `_id` is a conflict; an existing one is replaced only at the revision it was read with.
 /// The queries read by `_id`: one document (`find_one`), every document and a range of ids (`find` sorted by `_id`,
 /// the order of the ids' bytes), so the collection needs no index beyond `_id`. The application drops the
 /// collection to wipe the read model.
@@ -48,7 +48,7 @@ use std::{fmt, marker::PhantomData};
 /// #     type Id = String;
 /// #     type Command = ();
 /// #     type Event = Counted;
-/// #     type Error = Never;
+/// #     type Rejection = Never;
 /// #     type Rules = ();
 /// #     fn apply(&mut self, _: Counted) {}
 /// # }
@@ -59,7 +59,7 @@ use std::{fmt, marker::PhantomData};
 /// # pub struct Total { pub count: usize }
 /// # impl View<Counter> for Total {
 /// #     const NAME: &'static str = "totals";
-/// #     fn update(&mut self, _: &EventEnvelope<Counter>) { self.count += 1; }
+/// #     fn apply(&mut self, _: &EventEnvelope<Counter>) { self.count += 1; }
 /// # }
 /// # }
 /// # use example::{Counter, Total};
@@ -102,21 +102,21 @@ impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
 struct Stored {
     #[serde(rename = "_id")]
     id: String,
-    version: i64,
+    revision: i64,
     last_sequence: i64,
-    view: Bson,
+    payload: Bson,
 }
 
 fn stored_sequence(last_sequence: usize) -> Result<i64, PersistenceError> {
-    i64::try_from(last_sequence).map_err(|error| PersistenceError::UnknownError(Box::new(error)))
+    i64::try_from(last_sequence).map_err(|error| PersistenceError::Unexpected(Box::new(error)))
 }
 
 fn applied_sequence(stored: i64) -> Result<usize, PersistenceError> {
-    usize::try_from(stored).map_err(|error| PersistenceError::DeserializationError(Box::new(error)))
+    usize::try_from(stored).map_err(|error| PersistenceError::Deserialization(Box::new(error)))
 }
 
 fn unreadable(error: bson::de::Error) -> PersistenceError {
-    PersistenceError::DeserializationError(Box::new(error))
+    PersistenceError::Deserialization(Box::new(error))
 }
 
 /// A stored document, decoded.
@@ -125,16 +125,21 @@ fn decode<V: View<A>, A: Aggregate>(document: Document) -> Result<StoredView<V>,
     let last_sequence = applied_sequence(stored.last_sequence)?;
     Ok(StoredView {
         id: stored.id,
-        version: stored.version,
+        revision: stored.revision,
         last_sequence,
-        view: bson::from_bson(stored.view).map_err(unreadable)?,
+        view: bson::from_bson(stored.payload).map_err(unreadable)?,
     })
 }
 
 impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
-    /// The view with its version and last applied event.
+    /// The view with its revision and last applied event.
     async fn stored(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
-        let Some(document) = self.collection.find_one(doc! { "_id": view_id }).await.map_err(persistence)? else {
+        let Some(document) = self
+            .collection
+            .find_one(doc! { "_id": view_id })
+            .await
+            .map_err(persistence_error)?
+        else {
             return Ok(None);
         };
         decode::<V, A>(document).map(Some)
@@ -147,12 +152,12 @@ impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
             .find(filter)
             .sort(doc! { "_id": 1 })
             .await
-            .map_err(persistence)?;
+            .map_err(persistence_error)?;
         let mut documents = Vec::new();
-        while cursor.advance().await.map_err(persistence)? {
+        while cursor.advance().await.map_err(persistence_error)? {
             let document = cursor
                 .deserialize_current()
-                .map_err(|error| PersistenceError::DeserializationError(Box::new(error)))?;
+                .map_err(|error| PersistenceError::Deserialization(Box::new(error)))?;
             documents.push(decode::<V, A>(document)?);
         }
         Ok(documents)
@@ -168,36 +173,35 @@ where
         Ok(self.stored(view_id).await?.map(|stored| stored.view))
     }
 
-    async fn load_with_context(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
+    async fn load_stored(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
         self.stored(view_id).await
     }
 
-    async fn update_view(&self, view: V, context: ViewContext) -> Result<(), PersistenceError> {
-        let view = bson::to_bson(&view).map_err(|error| PersistenceError::UnknownError(Box::new(error)))?;
-        let version = context
-            .version
+    async fn update_view(&self, view: V, context: ViewMeta) -> Result<(), PersistenceError> {
+        let view = bson::to_bson(&view).map_err(|error| PersistenceError::Unexpected(Box::new(error)))?;
+        let revision = context
+            .revision
             .checked_add(1)
-            .ok_or_else(|| PersistenceError::UnknownError("view version overflow".into()))?;
+            .ok_or_else(|| PersistenceError::Unexpected("view revision overflow".into()))?;
         let last_sequence = stored_sequence(context.last_sequence)?;
-        if context.version == 0 {
-            let document =
-                doc! { "_id": &context.view_instance_id, "version": version, "last_sequence": last_sequence, "view": view };
+        if context.revision == 0 {
+            let document = doc! { "_id": &context.id, "revision": revision, "last_sequence": last_sequence, "payload": view };
             return match self.collection.insert_one(document).await {
                 Ok(_) => Ok(()),
-                Err(error) if is_duplicate_key(&error) => Err(PersistenceError::OptimisticLockError),
-                Err(error) => Err(persistence(error)),
+                Err(error) if is_duplicate_key(&error) => Err(PersistenceError::Conflict),
+                Err(error) => Err(persistence_error(error)),
             };
         }
         let updated = self
             .collection
             .update_one(
-                doc! { "_id": &context.view_instance_id, "version": context.version },
-                doc! { "$set": { "view": view, "version": version, "last_sequence": last_sequence } },
+                doc! { "_id": &context.id, "revision": context.revision },
+                doc! { "$set": { "payload": view, "revision": revision, "last_sequence": last_sequence } },
             )
             .await
-            .map_err(persistence)?;
+            .map_err(persistence_error)?;
         if updated.matched_count == 0 {
-            return Err(PersistenceError::OptimisticLockError);
+            return Err(PersistenceError::Conflict);
         }
         Ok(())
     }
@@ -227,61 +231,59 @@ mod tests {
 
     impl View<Ledger> for Huge {
         const NAME: &'static str = "huge";
-        fn update(&mut self, _: &EventEnvelope<Ledger>) {}
+        fn apply(&mut self, _: &EventEnvelope<Ledger>) {}
     }
 
     #[tokio::test]
     async fn an_unreachable_server_is_a_connection_error_and_a_view_bson_cannot_hold_is_unexpected() {
         let views = MongoViewRepository::<Huge, Ledger>::new(&crate::test_support::unreachable().await);
         assert_eq!(format!("{views:?}"), r#"MongoViewRepository { collection: "huge", .. }"#);
-        assert!(matches!(views.load("a").await, Err(PersistenceError::ConnectionError(_))));
-        assert!(matches!(
-            views.load_with_context("a").await,
-            Err(PersistenceError::ConnectionError(_))
-        ));
+        assert!(matches!(views.load("a").await, Err(PersistenceError::Connection(_))));
+        assert!(matches!(views.load_stored("a").await, Err(PersistenceError::Connection(_))));
         for version in [0, 1] {
             assert!(matches!(
                 views
-                    .update_view(Huge::default(), ViewContext::new("a".into(), version, 1))
+                    .update_view(Huge::default(), ViewMeta::new("a".into(), version, 1))
                     .await,
-                Err(PersistenceError::ConnectionError(_))
+                Err(PersistenceError::Connection(_))
             ));
         }
         // Refused before any statement.
         assert!(matches!(
             views
-                .update_view(Huge { value: u64::MAX }, ViewContext::new("a".into(), 1, 2))
+                .update_view(Huge { value: u64::MAX }, ViewMeta::new("a".into(), 1, 2))
                 .await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
         assert!(matches!(
             views
-                .update_view(Huge::default(), ViewContext::new("a".into(), i64::MAX, 2))
+                .update_view(Huge::default(), ViewMeta::new("a".into(), i64::MAX, 2))
                 .await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
     }
 
     #[tokio::test]
     async fn an_unreachable_server_fails_a_listing_and_a_range_as_a_connection_error() {
         let views = MongoViewRepository::<Huge, Ledger>::new(&crate::test_support::unreachable().await);
-        assert!(matches!(views.list().await, Err(PersistenceError::ConnectionError(_))));
+        assert!(matches!(views.list().await, Err(PersistenceError::Connection(_))));
         assert!(matches!(
             views.range("fox:", "fox;").await,
-            Err(PersistenceError::ConnectionError(_))
+            Err(PersistenceError::Connection(_))
         ));
     }
 
     #[test]
-    fn the_envelope_needs_the_version_the_last_applied_event_and_the_view() {
+    fn the_envelope_needs_the_revision_the_last_applied_event_and_the_payload() {
         let stored: Stored =
-            bson::from_document(doc! { "_id": "c-1", "version": 3_i64, "last_sequence": 7_i64, "view": { "count": 7 } }).unwrap();
-        assert_eq!((stored.version, stored.last_sequence), (3, 7));
-        assert_eq!(stored.view, Bson::Document(doc! { "count": 7 }));
+            bson::from_document(doc! { "_id": "c-1", "revision": 3_i64, "last_sequence": 7_i64, "payload": { "count": 7 } })
+                .unwrap();
+        assert_eq!((stored.revision, stored.last_sequence), (3, 7));
+        assert_eq!(stored.payload, Bson::Document(doc! { "count": 7 }));
         for incomplete in [
-            doc! { "version": 1_i64, "view": {} },
-            doc! { "last_sequence": 1_i64, "view": {} },
-            doc! { "version": 1_i64, "last_sequence": 1_i64 },
+            doc! { "revision": 1_i64, "payload": {} },
+            doc! { "last_sequence": 1_i64, "payload": {} },
+            doc! { "revision": 1_i64, "last_sequence": 1_i64 },
         ] {
             assert!(bson::from_document::<Stored>(incomplete).is_err());
         }
@@ -291,10 +293,10 @@ mod tests {
     fn sequences_round_trip_and_values_out_of_range_are_explicit() {
         assert_eq!(stored_sequence(7).unwrap(), 7);
         assert_eq!(applied_sequence(7).unwrap(), 7);
-        assert!(matches!(applied_sequence(-1), Err(PersistenceError::DeserializationError(_))));
+        assert!(matches!(applied_sequence(-1), Err(PersistenceError::Deserialization(_))));
         #[cfg(target_pointer_width = "64")]
-        assert!(matches!(stored_sequence(usize::MAX), Err(PersistenceError::UnknownError(_))));
+        assert!(matches!(stored_sequence(usize::MAX), Err(PersistenceError::Unexpected(_))));
         let error = bson::from_document::<Stored>(doc! {}).unwrap_err();
-        assert!(matches!(unreadable(error), PersistenceError::DeserializationError(_)));
+        assert!(matches!(unreadable(error), PersistenceError::Deserialization(_)));
     }
 }

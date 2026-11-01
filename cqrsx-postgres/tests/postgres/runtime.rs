@@ -34,14 +34,14 @@ async fn two_live_workers_complete_every_supported_task_and_quarantine_bad_paylo
     let dispatcher = || TaskDispatcher::try_new(vec![DummyHandler(handled.clone())]).unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
-    let config = TaskWorkerPoolConfig::try_new(
-        2,
-        2,
-        Duration::from_millis(10),
-        TaskWorkerPoolConfig::default().handler_timeout(),
-        TaskWorkerPoolConfig::default().lease_duration(),
-    )
-    .unwrap();
+    let config = TaskWorkerPoolConfig::builder()
+        .concurrency(2)
+        .buffer_capacity(2)
+        .poll_interval(Duration::from_millis(10))
+        .handler_timeout(TaskWorkerPoolConfig::default().handler_timeout())
+        .lease(TaskWorkerPoolConfig::default().lease())
+        .build()
+        .unwrap();
     let config = TaskRuntimeConfig::try_new(TaskStorageConfig::default(), config).unwrap();
     // A startup failure must leave existing durable work unclaimed: a dispatcher that cannot be built never runs.
     let failed = TaskDispatcher::<DummyHandler>::try_new(vec![]);
@@ -135,14 +135,14 @@ async fn one_worker_pool_routes_two_registered_task_types() {
         Arc::new(dispatcher),
         TaskRuntimeConfig::try_new(
             TaskStorageConfig::default(),
-            TaskWorkerPoolConfig::try_new(
-                2,
-                2,
-                Duration::from_millis(10),
-                TaskWorkerPoolConfig::default().handler_timeout(),
-                TaskWorkerPoolConfig::default().lease_duration(),
-            )
-            .unwrap(),
+            TaskWorkerPoolConfig::builder()
+                .concurrency(2)
+                .buffer_capacity(2)
+                .poll_interval(Duration::from_millis(10))
+                .handler_timeout(TaskWorkerPoolConfig::default().handler_timeout())
+                .lease(TaskWorkerPoolConfig::default().lease())
+                .build()
+                .unwrap(),
         )
         .unwrap(),
         Policies::default(),
@@ -197,7 +197,7 @@ async fn old_terminal_tasks_are_retained_while_old_pending_and_processing_tasks_
     for (id, status) in [(completed.id(), "completed"), (failed.id(), "failed")] {
         sqlx::query("UPDATE transactional_outbox SET status=$2,attempts=1,finished_at=now()-interval '1 year',last_error=CASE WHEN $2='failed' THEN 'historic failure' ELSE NULL END WHERE id=$1").bind(id).bind(status).execute(&db.pool).await.unwrap();
     }
-    sqlx::query("UPDATE transactional_outbox SET status='processing',attempts=1,locked_by='old worker',lock_token=$2,locked_until=now()-interval '1 year' WHERE id=$1").bind(processing.id()).bind(Uuid::new_v4()).execute(&db.pool).await.unwrap();
+    sqlx::query("UPDATE transactional_outbox SET status='processing',attempts=1,owner='old worker',lease_token=$2,lease_until=now()-interval '1 year' WHERE id=$1").bind(processing.id()).bind(Uuid::new_v4()).execute(&db.pool).await.unwrap();
     let terminal = [completed.id(), failed.id()];
     let before = terminal_history(&db.pool, &terminal).await;
     let queue = PostgresTaskQueue::new(db.pool.clone());
@@ -228,14 +228,14 @@ async fn old_terminal_tasks_are_retained_while_old_pending_and_processing_tasks_
     assert_eq!(terminal_history(&db.pool, &terminal).await, before);
     let handled = Arc::new(AtomicUsize::new(0));
     let dispatcher = TaskDispatcher::try_new(vec![CountingAdapter(handled.clone())]).unwrap();
-    let workers = TaskWorkerPoolConfig::try_new(
-        1,
-        1,
-        Duration::from_millis(10),
-        Duration::from_secs(15),
-        Duration::from_secs(60),
-    )
-    .unwrap();
+    let workers = TaskWorkerPoolConfig::builder()
+        .concurrency(1)
+        .buffer_capacity(1)
+        .poll_interval(Duration::from_millis(10))
+        .handler_timeout(Duration::from_secs(15))
+        .lease(Duration::from_secs(60))
+        .build()
+        .unwrap();
     let config = TaskRuntimeConfig::try_new(TaskStorageConfig::default(), workers).unwrap();
     let prepared = task_runtime(&db.pool, Arc::new(dispatcher), config, Policies::default());
     let shutdown = CancellationToken::new();

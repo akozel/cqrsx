@@ -3,5 +3,5 @@
 UPDATE transactional_outbox
 SET status = 'pending', attempts = 0, available_at = statement_timestamp(),
     finished_at = NULL, last_error = NULL,
-    locked_by = NULL, lock_token = NULL, locked_until = NULL
+    owner = NULL, lease_token = NULL, lease_until = NULL
 WHERE id = $1 AND status = 'failed';

@@ -1,21 +1,24 @@
-//! What the migration to the engine API (backlog epic 05) must not change, against golden files written by hand from
-//! `demo/.env.example`, `doc/components.md` and ticket 05/02 (`tests/golden/`):
+//! The contracts of the demo the operator and the front-end rely on, against golden files written by hand
+//! (`tests/golden/`):
 //!
 //! - `effective_config.txt`: the configuration without a single environment variable. A setting read from a variable
 //!   under the variable's name, with the value the process uses; what has no variable of its own (derived values, the
-//!   plan of the connections) under a dotted name in lower case;
+//!   plan of the connections) under a dotted name in lower case. Every variable in it is documented in
+//!   `demo/.env.example` with the same default, and every variable the process reads is in it;
 //! - `activity_feed.txt`: every kind of activity entry and the keys of its JSON on the SSE stream; a kind whose entries
 //!   differ by an enumerated field the front-end reads has a line per value (`kind[field=value]`);
 //! - `retry_pauses.txt`: the pause the task runtime waits after attempt `n` of a task failed (`<case>.<n>`): an
 //!   e-mail (`mail`), a step of the chain between the aggregates (`step`), and a task type without a policy
 //!   (`redelivery`, bounds: the library's backoff is random within them). The pauses are the policies of the task
-//!   types (`MAIL`, `STEP`), applied by the runtime (backlog 05/09).
+//!   types (`MAIL`, `STEP`), applied by the runtime.
 //!
-//! Every file is `key = value` lines sorted by key, every key once. The entries and the pauses come from today's
+//! Every file is `key = value` lines sorted by key, every key once. The entries and the pauses come from their
 //! producers: the command observer, the projection observer, the rebuild service, the mail client and the task
-//! runtime. The values of the command entries on every outcome are pinned by a test of their own, written against
-//! the command service the observer replaced (backlog 05/08); the values of the task attempts' entries and the
-//! settlements of the tasks, by two tests written against the handlers that chose their own pauses (backlog 05/09).
+//! runtime. The values of the command entries on every outcome, of the task attempts' entries and the settlements of
+//! the tasks are pinned by tests of their own below.
+//!
+//! A change of a contract changes its golden file by hand in the same commit: a failing test names the lines only
+//! the golden file has and the lines only the code has.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use axum::{Json, Router, http::StatusCode, routing::post};
 use chrono::NaiveDate;
@@ -27,10 +30,10 @@ use cqrsx::{
     },
     domain::event::{EventEnvelope, Events},
     journal::{EventStore, PersistenceError, feed::Position},
-    memory::checkpoint_store::MemCheckpointStore,
+    memory::checkpoint_store::MemoryCheckpointStore,
     projection::{
         checkpoint::CheckpointStore,
-        processor::observer::{Applied, Failed, FailureCategory, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
+        processor::observer::{Applied, Failed, FailureCategory, LeaseChange, ProjectionObserver, RebuildReason, Rebuilt},
     },
     reactions::ReactionsPlanner,
     task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat, policy::redelivery_backoff},
@@ -55,10 +58,11 @@ use cqrsx_engine::{
     build::{BuildError, Builder},
     settings::{Settings, duration_text},
     setup::Setup,
+    views::JournalTotals,
 };
 use cqrsx_testing::{
     command_executor::TestCommandExecutor,
-    mem_store::{MemStore, MemStoreAggregateContext},
+    memory_store::{MemoryStore, MemoryStoreAggregateContext},
     unavailable_store::UnavailableStore,
 };
 use encore_backend::{
@@ -85,8 +89,8 @@ use encore_backend::{
     operations,
     operations::application::{
         activity_observer::{ActivityObserver, CommandActivityObserver},
-        ledger::{EventLedgerStats, LedgerTotals},
-        rebuild::{ReadSideLimits, RebuildService},
+        journal::JournalStats,
+        rebuild::{ReadSideLimits, ReadSideService},
     },
     shared::{
         application::{
@@ -253,7 +257,7 @@ fn checkpoint_keys() -> Vec<CheckpointKey> {
 async fn effective_configuration() -> String {
     let config = Config::from_lookup(|_| None).unwrap();
     let cqrs = config.engine().build().await.unwrap();
-    render(cqrs.describe())
+    render(cqrs.description())
 }
 
 /// The keys of the settings read from a variable: the names of the variables.
@@ -310,8 +314,6 @@ fn the_golden_configuration_is_what_env_example_documents() {
         // The golden file writes durations as `duration_text` does; `.env.example` in the variable's unit.
         let in_unit = if name.ends_with("_MS") {
             duration(value).as_millis().to_string()
-        } else if name.ends_with("_SECS") {
-            duration(value).as_secs().to_string()
         } else if name.ends_with("_PERCENT") {
             value.strip_suffix(" %").unwrap().to_owned()
         } else {
@@ -328,12 +330,12 @@ fn the_golden_configuration_is_what_env_example_documents() {
 // --- activity feed -------------------------------------------------------------------------------------------
 
 /// Totals and a lag for the rebuild service.
-struct Ledger;
+struct Journal;
 
 #[async_trait::async_trait]
-impl EventLedgerStats for Ledger {
-    async fn totals(&self) -> Result<LedgerTotals, StorageError> {
-        Ok(LedgerTotals {
+impl JournalStats for Journal {
+    async fn totals(&self) -> Result<JournalTotals, StorageError> {
+        Ok(JournalTotals {
             events: 9,
             aggregates: 3,
         })
@@ -383,7 +385,7 @@ fn mail_context(attempt: TaskAttempt, config: &Config, activity: &Arc<ActivityHu
 fn attempt<P: Task + Serialize>(payload: &P, number: i32) -> TaskAttempt {
     TaskAttempt::try_new(
         Uuid::now_v7(),
-        TaskFormat::try_new(P::TASK_TYPE, P::TASK_VERSION).unwrap(),
+        TaskFormat::try_new(P::TYPE, P::VERSION).unwrap(),
         serde_json::to_value(payload).unwrap(),
         json!({ "correlation_id": Uuid::now_v7() }),
         number,
@@ -430,7 +432,7 @@ fn variant_field(kind: &str) -> Option<&'static str> {
     match kind {
         "command.failed" => Some("outcome"),
         "projection.rebuilt" => Some("reason"),
-        "projection.lease" => Some("lease"),
+        "projection.lease_changed" => Some("lease"),
         "task.attempt.failed" => Some("retry"),
         _ => None,
     }
@@ -461,7 +463,7 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
         (&book, Outcome::Conflict),
         (&announce, Outcome::Unavailable),
     ] {
-        commands.command(&CommandReport::<Concert> {
+        commands.observe(&CommandReport::<Concert> {
             aggregate_id: &concert_id,
             command,
             metadata: &metadata,
@@ -493,19 +495,19 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
             reason,
         });
     }
-    for event in [LeaseEvent::Acquired, LeaseEvent::Lost, LeaseEvent::Released] {
+    for event in [LeaseChange::Acquired, LeaseChange::Lost, LeaseChange::Released] {
         observer.lease(event);
     }
 
     // Encore! (`rebuild.*`): asked, played by the owners of both rows, watched to its end.
-    let store = MemCheckpointStore::default();
+    let store = MemoryCheckpointStore::default();
     for key in checkpoint_keys() {
         store.register(&key).await.unwrap();
     }
-    let rebuilds = RebuildService::new(
+    let rebuilds = ReadSideService::new(
         Arc::new(store.clone()),
         checkpoint_keys(),
-        Arc::new(Ledger),
+        Arc::new(Journal),
         activity.clone(),
         ReadSideLimits {
             lag_cap: 100,
@@ -519,11 +521,11 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
         let owner = store.claim(&key, "node-a", Duration::from_secs(10)).await.unwrap().unwrap();
         assert!(
             store
-                .take_requests(&key, owner.token, 10)
+                .take_rebuild_requests(&key, owner.token, 10)
                 .await
                 .unwrap()
                 .unwrap()
-                .rebuild
+                .rebuild_pace
                 .is_some()
         );
         assert!(store.begin_rebuild(&key, owner.token).await.unwrap());
@@ -578,7 +580,7 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
 /// closed gate (holding the concert's lock).
 #[derive(Clone, Default)]
 struct Switched {
-    inner: MemStore<Concert>,
+    inner: MemoryStore<Concert>,
     conflict: Arc<AtomicBool>,
     unavailable: Arc<AtomicBool>,
     gate: Arc<Mutex<Option<Arc<Semaphore>>>>,
@@ -594,7 +596,7 @@ impl Switched {
 }
 
 impl EventStore<Concert> for Switched {
-    type Context = MemStoreAggregateContext<Concert>;
+    type Context = MemoryStoreAggregateContext<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await
@@ -602,7 +604,7 @@ impl EventStore<Concert> for Switched {
 
     async fn load_aggregate(&self, id: &str) -> Result<Self::Context, PersistenceError> {
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(PersistenceError::ConnectionError("unreachable".into()));
+            return Err(PersistenceError::Connection("unreachable".into()));
         }
         let gate = self.gate.lock().unwrap().clone();
         if let Some(gate) = gate {
@@ -619,7 +621,7 @@ impl EventStore<Concert> for Switched {
         tasks: &[NewTask],
     ) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         if self.conflict.load(Ordering::SeqCst) {
-            return Err(PersistenceError::OptimisticLockError);
+            return Err(PersistenceError::Conflict);
         }
         self.inner.commit(events, context, metadata, tasks).await
     }
@@ -645,7 +647,7 @@ impl Feed {
                 .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
                 .with_observer(observer.clone())
         });
-        let fans = TestCommandExecutor::configured(MemStore::default(), (), |executor| {
+        let fans = TestCommandExecutor::configured(MemoryStore::default(), (), |executor| {
             executor
                 .with_task_planner(ReactionsPlanner::<Fan>::new(policies))
                 .with_observer(observer)
@@ -1093,7 +1095,7 @@ impl TaskQueue for MemQueue {
             if claimed.len() < limit && task.attempt().format() == format {
                 claimed.push(LeasedTask::new(
                     task.attempt().clone(),
-                    TaskLease::new(task.lease().lock_token(), deadline),
+                    TaskLease::new(task.lease().token(), deadline),
                 ));
             } else {
                 rest.push_back(task);
@@ -1111,7 +1113,7 @@ impl TaskQueue for MemQueue {
                 task_id: task.attempt().task_id(),
                 format: task.attempt().format().clone(),
                 attempt_number: task.attempt().number(),
-                cause: TaskFailureCause::PermanentRejection,
+                cause: TaskFailureCause::HandlerFailure,
             }),
         };
         self.settled.lock().unwrap().push((task.attempt().task_id(), request));
@@ -1376,9 +1378,9 @@ async fn every_mail_attempt_is_logged_with_its_values_and_settled_with_the_pause
 /// Every answer of the ledger to a step of the chain, through the executor of the runtime: R9 and R11 are done, R10
 /// and an unavailable ledger are retried after the step's pause, with the reasons the outbox keeps.
 #[tokio::test]
-async fn every_answer_of_the_ledger_settles_its_step_as_the_plan_table_says() {
+async fn every_answer_of_the_ledger_settles_its_step_as_the_table_of_answers_says() {
     let config = Config::from_lookup(|_| None).unwrap();
-    let store = MemStore::<Fan>::default();
+    let store = MemoryStore::<Fan>::default();
     let fans = Arc::new(TestCommandExecutor::configured(store.clone(), (), |executor| {
         executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies(&config).unwrap()))
     }));

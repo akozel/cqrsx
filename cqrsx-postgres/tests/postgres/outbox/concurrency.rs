@@ -11,11 +11,11 @@ async fn stress_outbox_winners_publish_only_their_own_event_snapshot_and_task() 
                 let sequence = if mode == 2 {
                     repo.persist::<Ledger>(
                         &[event_for(&id, 1, 10)],
-                        Some(SnapshotUpdate {
+                        Some(SerializedSnapshot {
                             aggregate_id: id.clone(),
                             payload: json!([10]),
                             last_sequence: 1,
-                            next_version: 1,
+                            revision: 1,
                         }),
                     )
                     .await
@@ -40,21 +40,20 @@ async fn stress_outbox_winners_publish_only_their_own_event_snapshot_and_task() 
                             value: value.to_string(),
                         })
                         .unwrap()
-                        .with_metadata(json!({"writer":value}))
-                        .unwrap();
+                        .with_metadata(serde_json::from_value(json!({"writer":value})).unwrap());
                         let snapshot = match mode {
                             0 => None,
-                            1 => Some(SnapshotUpdate {
+                            1 => Some(SerializedSnapshot {
                                 aggregate_id: id.clone(),
                                 payload: json!([value]),
                                 last_sequence: 1,
-                                next_version: 1,
+                                revision: 1,
                             }),
-                            _ => Some(SnapshotUpdate {
+                            _ => Some(SerializedSnapshot {
                                 aggregate_id: id.clone(),
                                 payload: json!([10, value]),
                                 last_sequence: 2,
-                                next_version: 2,
+                                revision: 2,
                             }),
                         };
                         let result = PostgresEventRepositoryWithOutbox::new(pool)
@@ -70,7 +69,7 @@ async fn stress_outbox_winners_publish_only_their_own_event_snapshot_and_task() 
                 assert_eq!(winners.len(), 1, "{id}: {outcomes:?}");
                 for (_, _, result) in &outcomes {
                     if let Err(error) = result {
-                        assert!(matches!(error, PersistenceError::OptimisticLockError));
+                        assert!(matches!(error, PersistenceError::Conflict));
                     }
                 }
                 let (event, task, _) = winners[0];
@@ -98,9 +97,9 @@ async fn stress_outbox_winners_publish_only_their_own_event_snapshot_and_task() 
                         snapshot,
                         Some(SerializedSnapshot {
                             aggregate_id: id,
-                            aggregate: json!(expected.iter().map(|e| e.payload.as_i64().unwrap()).collect::<Vec<_>>()),
+                            payload: json!(expected.iter().map(|e| e.payload.as_i64().unwrap()).collect::<Vec<_>>()),
                             last_sequence: sequence,
-                            snapshot_version: mode as usize
+                            revision: mode as usize
                         })
                     );
                 }
@@ -123,11 +122,11 @@ async fn competing_writes_keep_the_winning_event_snapshot_and_tasks_consistent()
             reader
                 .persist::<TestAggregate>(
                     &[event(id, 1)],
-                    Some(SnapshotUpdate {
+                    Some(SerializedSnapshot {
                         aggregate_id: id.into(),
                         payload: json!({"winner": "initial"}),
                         last_sequence: 1,
-                        next_version: 1,
+                        revision: 1,
                     }),
                 )
                 .await
@@ -144,11 +143,11 @@ async fn competing_writes_keep_the_winning_event_snapshot_and_tasks_consistent()
             let task = NewTask::try_new(DummyTaskV1 { value: name.into() }).unwrap();
             let mut candidate = event(id, sequence);
             candidate.payload = json!({"Recorded": {"value": name}});
-            let snapshot = snapshot_version.map(|version| SnapshotUpdate {
+            let snapshot = snapshot_version.map(|version| SerializedSnapshot {
                 aggregate_id: id.into(),
                 payload: json!({"winner": name}),
                 last_sequence: sequence,
-                next_version: version,
+                revision: version,
             });
             let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
             let repository_tasks = vec![task.clone()];
@@ -170,7 +169,7 @@ async fn competing_writes_keep_the_winning_event_snapshot_and_tasks_consistent()
             let (name, result) = result.unwrap();
             match result {
                 Ok(()) => assert!(winner.replace(name).is_none()),
-                Err(PersistenceError::OptimisticLockError) => conflicts += 1,
+                Err(PersistenceError::Conflict) => conflicts += 1,
                 other => panic!("unexpected competing write result: {other:?}"),
             }
         }
@@ -194,8 +193,8 @@ async fn competing_writes_keep_the_winning_event_snapshot_and_tasks_consistent()
         if let Some(version) = snapshot_version {
             let snapshot = snapshot.unwrap();
             assert_eq!(snapshot.last_sequence, sequence);
-            assert_eq!(snapshot.snapshot_version, version);
-            assert_eq!(snapshot.aggregate, json!({"winner": winner}));
+            assert_eq!(snapshot.revision, version);
+            assert_eq!(snapshot.payload, json!({"winner": winner}));
         } else {
             assert!(snapshot.is_none());
         }
@@ -242,7 +241,7 @@ async fn a_conflict_without_a_snapshot_is_a_result_and_with_a_new_snapshot_still
         loser
             .persist_with_tasks::<TestAggregate>(&[event(id, 1)], None, &loser_tasks)
             .await,
-        Err(PersistenceError::OptimisticLockError)
+        Err(PersistenceError::Conflict)
     ));
     assert_eq!(
         rollbacks(&session, &db.pool).await,
@@ -259,17 +258,17 @@ async fn a_conflict_without_a_snapshot_is_a_result_and_with_a_new_snapshot_still
     // With a first snapshot the conflict stays an error: the snapshot rolls back with the event.
     let loser = PostgresEventRepositoryWithOutbox::new(session.clone());
     let loser_tasks = vec![task.clone()];
-    let snapshot = SnapshotUpdate {
+    let snapshot = SerializedSnapshot {
         aggregate_id: id.into(),
         payload: json!({"winner": "loser"}),
         last_sequence: 1,
-        next_version: 1,
+        revision: 1,
     };
     assert!(matches!(
         loser
             .persist_with_tasks::<TestAggregate>(&[event(id, 1)], Some(snapshot), &loser_tasks)
             .await,
-        Err(PersistenceError::OptimisticLockError)
+        Err(PersistenceError::Conflict)
     ));
     assert_eq!(rollbacks(&session, &db.pool).await, start + 2);
     let reader = PostgresEventRepositoryWithOutbox::new(db.pool.clone());

@@ -11,7 +11,7 @@ rebuild_over() { # 0 when no rebuild runs on any projection
     let s = ""; process.stdin.on("data", (d) => (s += d)).on("end", () => {
       try {
         const status = JSON.parse(s);
-        const busy = status.rebuild != null || (status.projections ?? []).some((p) => p.rebuild?.requested || p.rebuild?.cursor);
+        const busy = status.running != null || (status.projections ?? []).some((p) => p.rebuild?.requested || p.rebuild?.cursor);
         process.exit(busy ? 1 : 0);
       } catch { process.exit(1); }
     });'

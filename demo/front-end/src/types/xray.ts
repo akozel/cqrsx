@@ -13,7 +13,7 @@ export interface SnapshotRow {
   aggregate_type: string
   aggregate_id: string
   last_sequence: number
-  current_snapshot: number
+  revision: number
   payload: unknown
 }
 
@@ -35,9 +35,9 @@ export interface OutboxRow {
   attempts: number
   max_attempts: number
   last_error: string | null
-  locked_by: string | null
-  lock_token: string | null
-  locked_until: string | null
+  owner: string | null
+  lease_token: string | null
+  lease_until: string | null
 }
 
 export interface PgTable<Row> {

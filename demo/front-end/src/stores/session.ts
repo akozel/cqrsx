@@ -32,7 +32,7 @@ export const useSessionStore = defineStore('session', () => {
     venue: DEFAULT_VENUE,
     ticket_limit: 4,
     snapshot_every: 10,
-    replay_slow_delay_ms: 80,
+    rebuild_slow_pace_ms: 80,
   })
   const configLoaded = ref(false)
   /** From the sidecar: the concerts the demo starts from (fallback tabs), the cast and the reset switch. */

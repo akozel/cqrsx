@@ -111,7 +111,7 @@ pub struct Label {
 ///
 /// It decides one event or a rejection (decision D-02: the event, its snapshot and its tasks commit in one
 /// statement). A rejection is an outcome, not a failure: nothing is written, and the executor answers with the
-/// aggregate's error. The event is applied with [`Aggregate::apply`] when the history is replayed, so the
+/// aggregate's error. The event is applied with [`Aggregate::apply`] when the history is loaded, so the
 /// decision reads the state and never changes it.
 ///
 /// Each command type decides in its own file; the aggregate's enum of commands, one command type per variant,
@@ -163,7 +163,7 @@ pub struct Label {
 ///     type Id = String;
 ///     type Command = ShelfCommand;
 ///     type Event = ShelfEvent;
-///     type Error = ShelfError;
+///     type Rejection = ShelfError;
 ///     type Rules = Capacity;
 ///
 ///     fn apply(&mut self, event: ShelfEvent) {
@@ -260,7 +260,7 @@ pub struct Label {
 ///     type Id = String;
 ///     type Command = ShelfCommand;
 ///     type Event = Put;
-///     type Error = Full;
+///     type Rejection = Full;
 ///     type Rules = ();
 ///     fn apply(&mut self, _: Put) {}
 /// }
@@ -284,7 +284,7 @@ pub struct Label {
 )]
 pub trait Decide<A: Aggregate>: Sized {
     /// The event this command decides on `state`, the committed state of its aggregate, or the rejection.
-    fn decide(self, state: &A, rules: &A::Rules) -> Result<A::Event, A::Error>;
+    fn decide(self, state: &A, rules: &A::Rules) -> Result<A::Event, A::Rejection>;
 }
 
 #[cfg(test)]

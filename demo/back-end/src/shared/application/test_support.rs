@@ -58,21 +58,21 @@ impl MailService for RecordingMailer {
     }
 }
 
-/// What `planner` plans for `events` decided on `aggregate_id`, the decision built by hand (the reactions
+/// What `planner` plans for `event` decided on `aggregate_id`, the decision built by hand (the reactions
 /// read neither the state nor the command).
 pub fn plan<A: Aggregate, P: TaskPlanner<A>>(
     planner: &P,
     aggregate_id: &A::Id,
     command: &A::Command,
-    events: &[A::Event],
+    event: &A::Event,
 ) -> Result<Vec<NewTask>, TaskPlanError> {
     let state = A::default();
     planner.plan(&Decision {
         aggregate_id,
         before: &state,
-        after: &state,
+        state: &state,
         command,
-        events,
+        event,
         metadata: &HashMap::new(),
         causation: None,
     })

@@ -1,5 +1,5 @@
 //! `GET /api/fans/{fan_id}/wallet` — the fan's wallet assembled from their ledgers (D-14):
-//! `{ fan_id, ledgers: [{ concert_id, version, last_sequence }], view }`, where `view` has the
+//! `{ fan_id, ledgers: [{ concert_id, revision, last_sequence }], view }`, where `view` has the
 //! shape of one `fan_wallets` document (`tickets` keyed by `booking_id`, counters summed).
 use crate::{
     fan::application::{views::fan_wallet::FanWalletView, wallet::wallet_of},

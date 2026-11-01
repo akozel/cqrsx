@@ -28,7 +28,7 @@
 //! #     type Id = String;
 //! #     type Command = ();
 //! #     type Event = Counted;
-//! #     type Error = Never;
+//! #     type Rejection = Never;
 //! #     type Rules = ();
 //! #     fn apply(&mut self, _: Counted) {}
 //! # }
@@ -39,23 +39,23 @@
 //! # pub struct Total { pub count: usize }
 //! # impl View<Counter> for Total {
 //! #     const NAME: &'static str = "totals";
-//! #     fn update(&mut self, _: &EventEnvelope<Counter>) { self.count += 1; }
+//! #     fn apply(&mut self, _: &EventEnvelope<Counter>) { self.count += 1; }
 //! # }
 //! # }
 //! # use example::{Counted, Counter, Total};
 //! # use cqrsx::domain::event::EventEnvelope;
 //! use cqrsx::{
-//!     journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
-//!     memory::{event_repository::MemEventRepository, view_repository::MemViewRepository},
+//!     journal::{repository::EventRepository, serialized_event::SerializedEvent},
+//!     memory::{event_repository::MemoryEventRepository, view_repository::MemoryViewRepository},
 //!     view::verify::verify,
 //! };
 //!
 //! # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 //! # let event = |sequence| SerializedEvent::try_from(&EventEnvelope::<Counter> {
 //! #     aggregate_id: "c-1".into(), sequence, payload: Counted, metadata: Default::default() }).unwrap();
-//! let journal = MemEventRepository::default();
+//! let journal = MemoryEventRepository::default();
 //! journal.persist::<Counter>(&[event(1), event(2)], None).await?;
-//! let totals = MemViewRepository::<Total, Counter>::default();
+//! let totals = MemoryViewRepository::<Total, Counter>::default();
 //! totals.put("c-1", 1, 1, &Total { count: 1 })?; // one event applied, one to go
 //!
 //! let verification = verify::<Total, Counter>(&journal, &totals).await?;
@@ -66,7 +66,7 @@
 //! ```
 use crate::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{PersistenceError, repository::PersistedEventRepository},
+    journal::{PersistenceError, repository::EventRepository},
     view::{
         View,
         repository::{StoredView, ViewRepository},
@@ -82,19 +82,19 @@ const KEY_PAGE: usize = 100;
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Difference {
     /// The view's name, [`View::NAME`].
-    pub collection: &'static str,
+    pub view: &'static str,
     pub id: String,
     pub kind: DifferenceKind,
 }
 
-/// How a document is wrong; serialized in snake case (`differs`, `unexpected`).
+/// How a document is wrong; serialized in snake case (`differs`, `without_history`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DifferenceKind {
     /// Not the fold of a prefix of its history, or ahead of its history.
     Differs,
     /// A document without a history.
-    Unexpected,
+    WithoutHistory,
 }
 
 /// What verify found in the documents of one view.
@@ -120,7 +120,7 @@ fn compare<V: View<A> + PartialEq, A: Aggregate>(document: &StoredView<V>, histo
     };
     let mut fold = V::default();
     for event in applied {
-        fold.update(event);
+        fold.apply(event);
     }
     if fold != document.view {
         Comparison::Differs
@@ -133,7 +133,7 @@ fn compare<V: View<A> + PartialEq, A: Aggregate>(document: &StoredView<V>, histo
 
 fn difference<V: View<A>, A: Aggregate>(id: &str, kind: DifferenceKind) -> Difference {
     Difference {
-        collection: V::NAME,
+        view: V::NAME,
         id: id.to_owned(),
         kind,
     }
@@ -143,7 +143,7 @@ fn difference<V: View<A>, A: Aggregate>(id: &str, kind: DifferenceKind) -> Diffe
 /// documents are listed once, the journal is read key by key, a page of keys at a time; a failed read of either is
 /// the error.
 pub async fn verify<V, A>(
-    journal: &impl PersistedEventRepository,
+    journal: &impl EventRepository,
     documents: &impl ViewRepository<V, A>,
 ) -> Result<Verification, PersistenceError>
 where
@@ -190,7 +190,9 @@ where
         after = last;
     }
     for id in documents.keys().filter(|id| !keys.contains(*id)) {
-        result.differences.push(difference::<V, A>(id, DifferenceKind::Unexpected));
+        result
+            .differences
+            .push(difference::<V, A>(id, DifferenceKind::WithoutHistory));
     }
     Ok(result)
 }
@@ -201,8 +203,8 @@ mod tests {
     use crate::{
         domain::{command::Decide, event::Events},
         journal::serialized_event::SerializedEvent,
-        memory::{event_repository::MemEventRepository, view_repository::MemViewRepository},
-        view::repository::ViewContext,
+        memory::{event_repository::MemoryEventRepository, view_repository::MemoryViewRepository},
+        view::repository::ViewMeta,
     };
     use serde::Deserialize;
     use std::sync::Arc;
@@ -231,7 +233,7 @@ mod tests {
         type Id = String;
         type Command = ();
         type Event = Added;
-        type Error = Never;
+        type Rejection = Never;
         type Rules = ();
         fn apply(&mut self, _: Added) {}
     }
@@ -249,7 +251,7 @@ mod tests {
 
     impl View<Counter> for Total {
         const NAME: &'static str = "totals";
-        fn update(&mut self, event: &EventEnvelope<Counter>) {
+        fn apply(&mut self, event: &EventEnvelope<Counter>) {
             self.sum += event.payload.0;
         }
     }
@@ -271,8 +273,8 @@ mod tests {
         }
     }
 
-    async fn journal(histories: &[(&str, usize)]) -> Arc<MemEventRepository> {
-        let journal = MemEventRepository::default();
+    async fn journal(histories: &[(&str, usize)]) -> Arc<MemoryEventRepository> {
+        let journal = MemoryEventRepository::default();
         for (id, events) in histories {
             for sequence in 1..=*events {
                 journal.persist::<Counter>(&[event(id, sequence)], None).await.unwrap();
@@ -281,8 +283,8 @@ mod tests {
         Arc::new(journal)
     }
 
-    fn documents(documents: &[(&str, usize, Total)]) -> Arc<MemViewRepository<Total, Counter>> {
-        let repository = MemViewRepository::default();
+    fn documents(documents: &[(&str, usize, Total)]) -> Arc<MemoryViewRepository<Total, Counter>> {
+        let repository = MemoryViewRepository::default();
         for (id, last_sequence, view) in documents {
             repository.put(id, 1, *last_sequence, view).unwrap();
         }
@@ -290,7 +292,7 @@ mod tests {
     }
 
     async fn verify<R: ViewRepository<Total, Counter> + 'static>(
-        journal: Arc<MemEventRepository>,
+        journal: Arc<MemoryEventRepository>,
         documents: Arc<R>,
     ) -> Verification {
         super::verify::<Total, Counter>(&*journal, &*documents).await.unwrap()
@@ -332,24 +334,19 @@ mod tests {
             [
                 ("ahead", DifferenceKind::Differs),
                 ("wrong", DifferenceKind::Differs),
-                ("orphan", DifferenceKind::Unexpected)
+                ("orphan", DifferenceKind::WithoutHistory)
             ]
         );
         assert_eq!(
             serde_json::to_value(&verification.differences).unwrap(),
             serde_json::json!([
-                { "collection": "totals", "id": "ahead", "kind": "differs" },
-                { "collection": "totals", "id": "wrong", "kind": "differs" },
-                { "collection": "totals", "id": "orphan", "kind": "unexpected" }
+                { "view": "totals", "id": "ahead", "kind": "differs" },
+                { "view": "totals", "id": "wrong", "kind": "differs" },
+                { "view": "totals", "id": "orphan", "kind": "without_history" }
             ])
         );
         assert_eq!((verification.checked, verification.behind_documents), (2, 0));
-        assert!(
-            verification
-                .differences
-                .iter()
-                .all(|difference| difference.collection == "totals")
-        );
+        assert!(verification.differences.iter().all(|difference| difference.view == "totals"));
     }
 
     #[tokio::test]
@@ -372,8 +369,8 @@ mod tests {
     /// A collection whose listing is followed by one more commit of `id`, as a command landing between the
     /// read of the documents and the read of the histories.
     struct CommitAfterListing {
-        documents: Arc<MemViewRepository<Total, Counter>>,
-        journal: Arc<MemEventRepository>,
+        documents: Arc<MemoryViewRepository<Total, Counter>>,
+        journal: Arc<MemoryEventRepository>,
         id: &'static str,
         next: usize,
     }
@@ -382,10 +379,10 @@ mod tests {
         async fn load(&self, id: &str) -> Result<Option<Total>, PersistenceError> {
             self.documents.load(id).await
         }
-        async fn load_with_context(&self, id: &str) -> Result<Option<StoredView<Total>>, PersistenceError> {
-            self.documents.load_with_context(id).await
+        async fn load_stored(&self, id: &str) -> Result<Option<StoredView<Total>>, PersistenceError> {
+            self.documents.load_stored(id).await
         }
-        async fn update_view(&self, view: Total, context: ViewContext) -> Result<(), PersistenceError> {
+        async fn update_view(&self, view: Total, context: ViewMeta) -> Result<(), PersistenceError> {
             self.documents.update_view(view, context).await
         }
         async fn list(&self) -> Result<Vec<StoredView<Total>>, PersistenceError> {
@@ -438,6 +435,6 @@ mod tests {
             .await
             .unwrap_err();
         assert!(!error.to_string().is_empty());
-        assert!(matches!(error, PersistenceError::DeserializationError(_)));
+        assert!(matches!(error, PersistenceError::Deserialization(_)));
     }
 }

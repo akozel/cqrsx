@@ -32,7 +32,7 @@ use cqrsx_engine::settings::Defaults;
 /// `appName`) and log lines.
 ///
 /// - The databases of `demo/compose.yaml`; the owner name the checkpoints of this process carry.
-/// - `PROJECTION_SETTLE_MS`: the pause between a commit's wake-up and the processor's read; the library reads at once.
+/// - `PROJECTION_WAKE_DELAY_MS`: the pause between a commit's wake-up and the processor's read; the library reads at once.
 ///   Measured in epic 03/04: on a hot key at 700 commands a second it brings the read side's cost per command back to
 ///   about the cost of the handler inside the command (PostgreSQL +11 % instead of +42 %, MongoDB and the back-end below
 ///   it), and the read models trail the journal by about ten events. 50 ms saves no more PostgreSQL.
@@ -46,15 +46,15 @@ pub const DEMO_DEFAULTS: Defaults = Defaults::new(
     &[
         ("DATABASE_URL", "postgresql://cqrsx:cqrsx@localhost:5434/encore"),
         ("MONGODB_URI", "mongodb://localhost:27018"),
-        ("READ_DB", "encore_read"),
+        ("MONGODB_DATABASE", "encore_read"),
         ("NODE_NAME", "encore-backend"),
-        ("PROJECTION_SETTLE_MS", "10"),
+        ("PROJECTION_WAKE_DELAY_MS", "10"),
         ("MONGODB_POOL_SIZE", "10"),
         ("OUTBOX_WORKER_CONCURRENCY", "2"),
-        ("OUTBOX_QUEUE_CAPACITY", "2"),
-        ("OUTBOX_POLL_INTERVAL_MS", "300"),
-        ("OUTBOX_HANDLER_TIMEOUT_SECS", "5"),
-        ("OUTBOX_LEASE_SECS", "30"),
+        ("OUTBOX_BUFFER_CAPACITY", "2"),
+        ("OUTBOX_POLL_MS", "300"),
+        ("OUTBOX_HANDLER_TIMEOUT_MS", "5000"),
+        ("OUTBOX_LEASE_MS", "30000"),
         ("OUTBOX_STORAGE_TIMEOUT_MS", "3000"),
     ],
 );

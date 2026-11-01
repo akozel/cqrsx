@@ -46,7 +46,7 @@ export function summarize(data, info) {
       rejected: {},
     },
     accepted_total_all_phases: count(m, 'cmd_accepted'),
-    // Every phase, for the chaos criteria: a command whose answer was lost may still be in the ledger.
+    // Every phase, for the chaos criteria: a command whose answer was lost may still be in the journal.
     unavailable_total_all_phases: count(m, 'cmd_unavailable'),
     other_total_all_phases: count(m, 'cmd_other'),
   };

@@ -1,7 +1,7 @@
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-postgres/licenses/.
 #[derive(Debug)]
-pub(crate) struct SqlQueryFactory {
+pub(crate) struct SqlTexts {
     select_events: String,
     select_events_after: String,
     insert_event: String,
@@ -16,7 +16,7 @@ pub(crate) struct SqlQueryFactory {
     select_snapshot: String,
 }
 
-impl SqlQueryFactory {
+impl SqlTexts {
     pub fn new(event_table: &str, snapshot_table: &str) -> Self {
         Self {
             select_events: format!(
@@ -91,18 +91,18 @@ SELECT DISTINCT aggregate_id
             ),
             insert_snapshot: format!(
                 "
-INSERT INTO {snapshot_table} (aggregate_type, aggregate_id, last_sequence, current_snapshot, payload)
+INSERT INTO {snapshot_table} (aggregate_type, aggregate_id, last_sequence, revision, payload)
 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (aggregate_type, aggregate_id, last_sequence) DO NOTHING"
             ),
             update_snapshot: format!(
                 "
 UPDATE {snapshot_table}
-  SET last_sequence= $3 , payload= $6, current_snapshot= $4
-  WHERE aggregate_type= $1 AND aggregate_id= $2 AND current_snapshot= $5"
+  SET last_sequence= $3 , payload= $6, revision= $4
+  WHERE aggregate_type= $1 AND aggregate_id= $2 AND revision= $5"
             ),
             select_snapshot: format!(
                 "
-SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
+SELECT aggregate_type, aggregate_id, last_sequence, revision, payload
   FROM {snapshot_table}
   WHERE aggregate_type = $1 AND aggregate_id = $2"
             ),
@@ -151,7 +151,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_queries() {
-        let query_factory = SqlQueryFactory::new("my_events", "my_snapshots");
+        let query_factory = SqlTexts::new("my_events", "my_snapshots");
         assert_eq!(
             query_factory.select_events(),
             "
@@ -169,20 +169,20 @@ VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (aggregate_type, aggregate_id, s
         assert_eq!(
             query_factory.insert_snapshot(),
             "
-INSERT INTO my_snapshots (aggregate_type, aggregate_id, last_sequence, current_snapshot, payload)
+INSERT INTO my_snapshots (aggregate_type, aggregate_id, last_sequence, revision, payload)
 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (aggregate_type, aggregate_id, last_sequence) DO NOTHING"
         );
         assert_eq!(
             query_factory.update_snapshot(),
             "
 UPDATE my_snapshots
-  SET last_sequence= $3 , payload= $6, current_snapshot= $4
-  WHERE aggregate_type= $1 AND aggregate_id= $2 AND current_snapshot= $5"
+  SET last_sequence= $3 , payload= $6, revision= $4
+  WHERE aggregate_type= $1 AND aggregate_id= $2 AND revision= $5"
         );
         assert_eq!(
             query_factory.select_snapshot(),
             "
-SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
+SELECT aggregate_type, aggregate_id, last_sequence, revision, payload
   FROM my_snapshots
   WHERE aggregate_type = $1 AND aggregate_id = $2"
         );

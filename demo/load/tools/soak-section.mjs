@@ -1,6 +1,6 @@
 // The "over time" section of a soak run (run.sh SOAK=…, result.json `soak`) for the HTML reports: one line
-// chart per figure over the run's slices. Both reports (tools/report-html.mjs and the epic's copy in
-// docs/backlog/02_postgres_performance/perf/tools/) pass in their own chart helpers, so the section looks
+// chart per figure over the run's slices. Both reports (tools/report-html.mjs and the one in
+// perf/tools/) pass in their own chart helpers, so the section looks
 // like the rest of the page it is on.
 //
 // soakSection(run, title, { lineChart, esc }) → HTML, or '' for a run that is not a soak run.

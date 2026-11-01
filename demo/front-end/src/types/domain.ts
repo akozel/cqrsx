@@ -1,4 +1,4 @@
-// Shapes returned by the back-end (/api). Kept close to PLAN.md §2.8 and §6.4.
+// Shapes returned by the back-end (/api), as DESIGN.md §1.7 and §2.1 describe them.
 export type Locale = 'en' | 'ru'
 export type ZoneId = 'vip' | 'standard' | 'balcony'
 
@@ -21,7 +21,7 @@ export interface AppConfig {
   ticket_limit: number
   snapshot_every: number
   /** The pause a slow Encore! asks for between the events of one key (`pace_ms`, D-18). */
-  replay_slow_delay_ms: number
+  rebuild_slow_pace_ms: number
 }
 
 export interface ConcertSummary {
@@ -34,7 +34,7 @@ export interface ConcertSummary {
   revenue: number
   sold_out: boolean
   last_sequence: number
-  version: number
+  revision: number
 }
 
 export interface SeatEntry {
@@ -60,7 +60,7 @@ export interface ConcertHallView {
 
 export interface ConcertHallDoc {
   concert_id: string
-  version: number
+  revision: number
   view: ConcertHallView
 }
 
@@ -86,7 +86,7 @@ export interface FanWalletView {
 /** One ledger behind the wallet: the `fan_wallets` document of a fan and a concert (D-14). */
 export interface LedgerRef {
   concert_id: string
-  version: number
+  revision: number
   last_sequence: number
 }
 
@@ -124,8 +124,8 @@ export interface CommandError {
   message: string
 }
 
-/** The answer to a command. `accepted` means committed to the ledger: the read models follow it a moment
- * later (D-17), the UI waits for their `projection.updated`. */
+/** The answer to a command. `accepted` means committed to the journal: the read models follow it a moment
+ * later (D-17), the UI waits for their `projection.applied`. */
 export interface CommandResponse {
   status: number
   outcome: 'accepted' | 'rejected' | 'conflict' | 'unavailable' | 'invalid' | 'error'
@@ -168,34 +168,34 @@ export interface ProjectionStatus {
   aggregate_type: string
   state: ProjectionState
   position?: string
-  applied?: number
+  delivered?: number
   /** Events of its aggregate type above its checkpoint, counted up to a cap (`lag_capped`). */
   lag?: number
   lag_capped?: boolean
   owner?: string | null
-  locked_until?: string | null
+  lease_until?: string | null
   failures?: number
   last_error?: string | null
   rebuild?: { requested: boolean; cursor: string | null; rebuilt: number; pace_ms: number }
 }
 
 /** `GET /api/projections/status`: every projection, the Encore! this node started and the last one it saw end.
- * `stale` — the checkpoint store did not answer in time, the rows are the ones seen last. */
+ * `from_cache` — the checkpoint store did not answer in time, the rows are the ones seen last. */
 export interface RebuildStatus {
   state: ProjectionState
-  stale: boolean
+  from_cache: boolean
   projections: ProjectionStatus[]
-  rebuild: { rebuild_id: string; pace_ms: number; started_at: string; keys_total: number } | null
+  running: { rebuild_id: string; pace_ms: number; started_at: string; keys_total: number } | null
   last_result: { rebuild_id: string; keys: number; duration_ms: number; finished_at: string } | null
 }
 
-/** `GET /api/projections/verify` (D-20): a document behind the ledger is counted apart, only a wrong one is a
+/** `GET /api/projections/verify` (D-20): a document behind the journal is counted apart, only a wrong one is a
  * difference. */
 export interface VerifyReport {
   ok: boolean
   checked: Record<string, number>
   behind: { documents: number; events: number }
-  differences: { collection: string; id: string; kind: 'differs' | 'unexpected' }[]
+  differences: { view: string; id: string; kind: 'differs' | 'without_history' }[]
 }
 
 /** The props of the demo (sidecar `GET /inspect/demo`): what it starts from, who plays in it, and

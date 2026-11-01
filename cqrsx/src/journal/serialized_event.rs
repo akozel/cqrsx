@@ -47,15 +47,15 @@ impl SerializedEvent {
         }
     }
 
-    fn validate_aggregate<A: Aggregate>(&self) -> Result<(), PersistenceError> {
+    fn validate_aggregate_type<A: Aggregate>(&self) -> Result<(), PersistenceError> {
         if self.aggregate_type != A::TYPE {
-            return Err(PersistenceError::DeserializationError(EnvelopeMismatch::AggregateType.into()));
+            return Err(PersistenceError::Deserialization(EnvelopeMismatch::AggregateType.into()));
         }
         Ok(())
     }
 
     pub(crate) fn decode<A: Aggregate>(self, upcasters: &[Box<dyn EventUpcaster>]) -> Result<EventEnvelope<A>, PersistenceError> {
-        self.validate_aggregate::<A>()?;
+        self.validate_aggregate_type::<A>()?;
         self.upcast(upcasters).try_into()
     }
 
@@ -112,13 +112,13 @@ impl<A: Aggregate> TryFrom<SerializedEvent> for EventEnvelope<A> {
     type Error = PersistenceError;
 
     fn try_from(event: SerializedEvent) -> Result<Self, Self::Error> {
-        event.validate_aggregate::<A>()?;
+        event.validate_aggregate_type::<A>()?;
         let payload: A::Event = serde_json::from_value(event.payload)?;
         if event.event_type != payload.event_type() {
-            return Err(PersistenceError::DeserializationError(EnvelopeMismatch::EventType.into()));
+            return Err(PersistenceError::Deserialization(EnvelopeMismatch::EventType.into()));
         }
         if event.event_version != payload.event_version() {
-            return Err(PersistenceError::DeserializationError(EnvelopeMismatch::EventVersion.into()));
+            return Err(PersistenceError::Deserialization(EnvelopeMismatch::EventVersion.into()));
         }
         let metadata = serde_json::from_value(event.metadata)?;
         Ok(Self {
@@ -146,7 +146,7 @@ pub(crate) mod tests {
         proptest::test_runner::Config {
             cases: 1024,
             failure_persistence: Some(Box::new(proptest::test_runner::FileFailurePersistence::Direct(
-                "../target/stage4/proptest-regressions.txt",
+                "../target/proptest-regressions.txt",
             ))),
             ..Default::default()
         }
@@ -209,7 +209,7 @@ pub(crate) mod tests {
             }
             assert!(matches!(
                 EventEnvelope::<Ledger>::try_from(event),
-                Err(PersistenceError::DeserializationError(_))
+                Err(PersistenceError::Deserialization(_))
             ));
         }
     }
@@ -281,11 +281,11 @@ pub(crate) mod tests {
         event.aggregate_type = "foreign".into();
         assert!(matches!(
             EventEnvelope::<Ledger>::try_from(event.clone()),
-            Err(PersistenceError::DeserializationError(_))
+            Err(PersistenceError::Deserialization(_))
         ));
         assert!(matches!(
             deserialize_events::<Ledger>(vec![event], &[Box::new(MustNotRun)]),
-            Err(PersistenceError::DeserializationError(_))
+            Err(PersistenceError::Deserialization(_))
         ));
     }
     #[test]
@@ -294,7 +294,7 @@ pub(crate) mod tests {
         event.event_type = "foreign".into();
         assert!(matches!(
             EventEnvelope::<Ledger>::try_from(event),
-            Err(PersistenceError::DeserializationError(_))
+            Err(PersistenceError::Deserialization(_))
         ));
     }
     #[test]
@@ -303,11 +303,11 @@ pub(crate) mod tests {
         event.event_version = "999".into();
         assert!(matches!(
             EventEnvelope::<Ledger>::try_from(event.clone()),
-            Err(PersistenceError::DeserializationError(_))
+            Err(PersistenceError::Deserialization(_))
         ));
         assert!(matches!(
             deserialize_events::<Ledger>(vec![event], &[Box::new(Upgrade("0", "1"))]),
-            Err(PersistenceError::DeserializationError(_))
+            Err(PersistenceError::Deserialization(_))
         ));
     }
     struct Upgrade(&'static str, &'static str);
@@ -346,7 +346,7 @@ pub(crate) mod tests {
             if mask&1!=0 { event.aggregate_type=invalid.clone(); }
             if mask&2!=0 { event.event_type=invalid.clone(); }
             if mask&4!=0 { event.event_version=invalid; }
-            prop_assert!(matches!(EventEnvelope::<Ledger>::try_from(event),Err(PersistenceError::DeserializationError(_))));
+            prop_assert!(matches!(EventEnvelope::<Ledger>::try_from(event),Err(PersistenceError::Deserialization(_))));
         }
     }
 }

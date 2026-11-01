@@ -29,20 +29,23 @@ The [typical scenario](../doc/typical_scenario.md) follows a cancellation throug
   run twice on one aggregate cannot publish twice (the second commit is refused whole). Without them the
   tasks keep random ids.
 - **An event handler never executes a command**, not even from a task it spawns: a projection writes its
-  read model and nothing else, and a follow-up started there would be recorded nowhere and repeated by every
-  rebuild. Plan the follow-up as a task from the command's decision instead and let a task handler run it.
+  read model and nothing else, and a follow-up started there would be recorded nowhere, lost by a crash before it
+  commits and repeated by every rebuild. Plan the follow-up as a task from the command's decision instead (it commits
+  with the command's event and only with it) and let a task handler run it, deciding from the current state whether
+  it still applies. The framework does not detect a command executed from an event handler; this rule is the only
+  guard.
 - **A failed projection does not undo the commit.** The command has answered already; the worker logs the
   cause once per batch and the processor retries (next rule). Rebuild a read model from history with
   `request_rebuild` or, for one key, `request_rebuild_key`.
 - **A projection processor never skips an event.** A failed key stops the checkpoint before it, visibly
   (`failures`, `last_error`, the observer), and the round is retried after a growing pause; only a document
   that refused an event as a gap is rebuilt from its history on the spot.
-- **A checkpoint belongs to its journal.** It holds a position of the PostgreSQL journal: recreate the journal
-  and the checkpoints together, or the new events stay below the old checkpoint. The read side alone may be
-  dropped, documents first and checkpoints second: the processors register their rows again and rebuild every
-  document from the start of the journal.
-- **A view document takes only the next event of its aggregate.** It remembers `last_sequence`; a repeated
-  event is skipped, a batch that jumps ahead fails with `SequenceGap` and writes nothing, so a document that
+- **A checkpoint belongs to its journal.** It holds a position of the journal, so the two are reset together
+  ([resetting the databases](../cqrsx-engine/README.md#resetting-the-databases)).
+- **A view document takes only the next event of its aggregate.** It is the fold of `View::apply` over the
+  contiguous prefix `1..=last_sequence` of its aggregate's events, and the document, not the sender, decides what is
+  new: delivery may repeat events and come from several processes (a rebuild next to live delivery, two nodes). A
+  repeated event is skipped, a batch that jumps ahead fails with `SequenceGap` and writes nothing, so a document that
   fell behind stays a correct prefix of its history until the processor rebuilds it from that history.
 - **A projection gets a key's events in journal order**, possibly several commands per call;
   `max_batch = 1` turns the batches off.
@@ -53,41 +56,53 @@ The [typical scenario](../doc/typical_scenario.md) follows a cancellation throug
   causation, and its conflict or unavailability retries the task.
 - **One executor per aggregate type and process.** Two executors of one type order nothing between them;
   the store's optimistic check still decides, like between two processes.
-- **Do not cancel a command's future while its commit is in flight.** The events may land while the caller
-  learns nothing, and the processors find them at their next poll instead of at once. An HTTP server that
+- **Do not cancel a command's future while its commit is in flight.** The events and their tasks may land while
+  the caller learns nothing, and the processors find them at their next poll instead of at once. An HTTP server that
   drops handler futures on client disconnect should run the command in a task of its own.
+
+## Outcomes and errors
+
+A command answers `Result<CommitReport<A>, CommandError<A::Rejection>>`; its observer (`CommandObserver`) gets the
+same answer as an `Outcome`. A task handler answers a `TaskResult`.
+
+| Answer | What happened | What to do |
+|---|---|---|
+| `Ok(CommitReport)`, `Outcome::Accepted` | the event committed, with the tasks planned from it | nothing |
+| `CommandError::Rejected`, `Outcome::Rejected` | a business rule refused the command (`Rejection::code` and its parameters); nothing was written | do not repeat the same command; a task handler fails the task |
+| `CommandError::Conflict`, `Outcome::Conflict` | every attempt of the conflict retry (`AggregateConflictRetryPolicy`) met a concurrent change; nothing was written | repeat later; a task handler retries |
+| `CommandError::Unavailable`, `Outcome::Unavailable` | not run, or its outcome is unknown: the lock was not acquired within its limits (`LockLimits`), the store failed or timed out, the tasks could not be planned; the reason is logged | repeat later: with a command id (`#[command_id]`) a repeat cannot publish its tasks twice |
+| `TaskResult::done()` | the effect happened, now or by an earlier attempt | the task is completed |
+| `TaskResult::retry(reason)` | not now | another attempt after the pause of the task type's policy; the last attempt of its budget fails the task |
+| `TaskResult::fail(reason)` | no attempt will help | the task stays failed until an operator requeues it ([retrying a failed task](../cqrsx-engine/README.md#retrying-a-failed-task)) |
+
+The answer of `ctx.execute::<A>(..)` converts into a `TaskResult` with `.into()`: accepted is done, a rejection fails
+the task with its code, a conflict or unavailability retries it. A handler that panics or outlives the handler timeout
+is retried like `retry`, with the reason `handler panicked` or `handler timed out`. The errors of building and running
+an engine are in [its README](../cqrsx-engine/README.md#errors-of-building-and-serving).
 
 ## Testing
 
-| Tool | For |
-|---|---|
-| `TestFramework` | Aggregate given/when/then tests for a decision and rejection (crate `cqrsx-testing`). |
-| `TestCommandExecutor` | Use-case tests over a test store or a journal in memory (crate `cqrsx-testing`). |
-| `TaskContext::new` | Exercise a handler with an attempt, retry pause, dependencies and executors. |
-| `MemTaskQueue` | Inspect the in-memory outbox queue, delivery and settlement. |
+| Tool | Crate | For |
+|---|---|---|
+| `TestFramework` | `cqrsx-testing` | Aggregate given/when/then tests of a decision and a rejection, without a runtime. |
+| `TestCommandExecutor` | `cqrsx-testing` | Use-case tests over a test store or a journal in memory. |
+| `MemoryStore`, `UnavailableStore` | `cqrsx-testing` | An event store in memory; one that is never reachable, for the unavailable branches. |
+| `TaskContext::new` | `cqrsx` | Exercise a handler with an attempt, a retry pause, dependencies and executors. |
+| `MemoryTaskQueue` | `cqrsx` | Inspect the in-memory outbox queue, delivery and settlement. |
+| `Cqrs::in_memory()` | `cqrsx-engine` | A whole application: `run_tasks()` runs the due tasks, `catch_up()` waits for the views, a test's `.provide` replaces a dependency by type. |
 
-Whole applications are tested with `Cqrs::in_memory()` of [`cqrsx-engine`](../cqrsx-engine/README.md).
+## Crates
 
-The lower-level building blocks and their contracts are in [`doc/components.md`](../doc/components.md).
-
-## Stores
-
-The core has no features and does not know a database: aggregates, command execution, the in-memory stores,
-projections, the projection processor with its checkpoints and the task contracts. The stores are crates of their own,
-which implement its ports:
-
-| Crate | Holds |
-|---|---|
-| [`cqrsx-postgres`](../cqrsx-postgres/src/lib.rs) | the PostgreSQL event store, outbox publication, task queue, checkpoints, view repository and pools |
-| [`cqrsx-mongodb`](../cqrsx-mongodb/src/lib.rs) | the MongoDB read side: a view repository and the checkpoint store of projection processors |
-
-A store that wraps the error of its driver in `cqrsx::diagnostics::StorageFailure` gives the core's logs the category and
-the code of the failure. The engine ([`cqrsx-engine`](../cqrsx-engine/README.md)) assembles the stores by its features.
+The core has no features and does not know a database. The stores (`cqrsx-postgres`, `cqrsx-mongodb`), the engine,
+the test tools and the derive macros are crates of their own: [Crates and their boundaries](../doc/crates.md).
 
 ## Further reading
 
 - [`doc/components.md`](../doc/components.md): the inventory of components, the naming contract and the
   integration rules in full.
+- [`doc/guarantees.md`](../doc/guarantees.md): every guarantee of the engine, with the code that holds it and its tests.
+- [Command path](../doc/command-path.html), [read path](../doc/read-path.html), [task path](../doc/task-path.html): how
+  a command, an event and a task travel through the engine, step by step, with their guarantees and weak spots.
 - [`../demo`](../demo/README.md): a complete application on the library, with a UI, an X-ray of both
   databases and load tests.
 - [`../README.md`](../README.md): building, the local database, the test suite and coverage.
@@ -95,8 +110,5 @@ the code of the failure. The engine ([`cqrsx-engine`](../cqrsx-engine/README.md)
 
 ## Attribution
 
-The CQRS framework and (in `cqrsx-postgres`) the PostgreSQL event and view repositories include modified code from
-[`cqrs-es` and `postgres-es` 0.5.0](https://github.com/serverlesstechnology/cqrs), Apache-2.0,
-copyright 2023 Serverless Technology Consulting, LLC; see [`licenses/`](licenses/), for the repositories
-[`../cqrsx-postgres/licenses/`](../cqrsx-postgres/licenses/) and, for the test tools,
-[`../cqrsx-testing/licenses/`](../cqrsx-testing/licenses/).
+Parts of this crate are modified code of [`cqrs-es` 0.5.0](https://github.com/serverlesstechnology/cqrs) (Apache-2.0,
+[`licenses/`](licenses/)); the notice is in [Upstream attribution](../doc/components.md#upstream-attribution).

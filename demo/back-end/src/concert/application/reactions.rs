@@ -24,8 +24,10 @@ impl Reactions for Concert {
     fn react(decided: &Decided<'_, Self>, then: &mut Then) {
         match decided.event {
             ConcertEvent::ConcertAnnounced(_) => {}
-            ConcertEvent::SeatBooked(booked) => then.task(fan_ledger::record_ticket(decided.id, booked)),
-            ConcertEvent::BookingCancelled(cancelled) => then.task(fan_ledger::record_cancellation(decided.id, cancelled)),
+            ConcertEvent::SeatBooked(booked) => then.task(fan_ledger::record_ticket(decided.aggregate_id, booked)),
+            ConcertEvent::BookingCancelled(cancelled) => {
+                then.task(fan_ledger::record_cancellation(decided.aggregate_id, cancelled))
+            }
         }
     }
 }
@@ -53,7 +55,7 @@ mod tests {
     #[test]
     fn a_booked_seat_plans_the_ticket_for_the_fans_ledger_from_the_fact() {
         let booking_id = Uuid::from_u128(1);
-        let tasks = plan::<Concert, _>(&reactions(), &concert_id(), &concert_command(), &[booked(booking_id)]).unwrap();
+        let tasks = plan::<Concert, _>(&reactions(), &concert_id(), &concert_command(), &booked(booking_id)).unwrap();
         let [task] = &tasks[..] else {
             panic!("one task per booking: {tasks:?}");
         };
@@ -74,7 +76,7 @@ mod tests {
             &reactions(),
             &concert_id(),
             &concert_command(),
-            &[cancelled_booking(booking_id, cancellation_id)],
+            &cancelled_booking(booking_id, cancellation_id),
         )
         .unwrap();
         let [task] = &tasks[..] else {
@@ -94,12 +96,12 @@ mod tests {
         let concert = reactions();
         let id = concert_id();
         assert_eq!(
-            formats(&plan::<Concert, _>(&concert, &id, &concert_command(), &[booked(Uuid::nil())]).unwrap()),
+            formats(&plan::<Concert, _>(&concert, &id, &concert_command(), &booked(Uuid::nil())).unwrap()),
             ["encore_record_ticket v1"]
         );
         let cancelled = cancelled_booking(Uuid::nil(), Uuid::nil());
         assert_eq!(
-            formats(&plan::<Concert, _>(&concert, &id, &concert_command(), &[cancelled]).unwrap()),
+            formats(&plan::<Concert, _>(&concert, &id, &concert_command(), &cancelled).unwrap()),
             ["encore_record_cancellation v1"]
         );
         let announced = ConcertEvent::ConcertAnnounced(ConcertAnnounced {
@@ -109,7 +111,7 @@ mod tests {
             capacity: 40,
         });
         assert!(
-            plan::<Concert, _>(&concert, &id, &concert_command(), &[announced])
+            plan::<Concert, _>(&concert, &id, &concert_command(), &announced)
                 .unwrap()
                 .is_empty(),
             "nothing downstream reacts to an announcement"
@@ -122,11 +124,11 @@ mod tests {
     fn each_fact_plans_only_its_own_task() {
         let cancelled = cancelled_booking(Uuid::from_u128(1), Uuid::from_u128(2));
         assert_eq!(
-            formats(&plan::<Concert, _>(&reactions(), &concert_id(), &concert_command(), &[cancelled]).unwrap()),
+            formats(&plan::<Concert, _>(&reactions(), &concert_id(), &concert_command(), &cancelled).unwrap()),
             ["encore_record_cancellation v1"]
         );
         assert_eq!(
-            formats(&plan::<Concert, _>(&reactions(), &concert_id(), &concert_command(), &[booked(Uuid::nil())]).unwrap()),
+            formats(&plan::<Concert, _>(&reactions(), &concert_id(), &concert_command(), &booked(Uuid::nil())).unwrap()),
             ["encore_record_ticket v1"]
         );
     }
@@ -140,11 +142,11 @@ mod tests {
             domain::ConcertError,
         };
         use cqrsx::{
-            command::{CommandGatewayError, metadata::CommandMetadata},
+            command::{CommandError, metadata::CommandMetadata},
             journal::EventStore,
             task::format::TaskFormat,
         };
-        use cqrsx_testing::{mem_store::MemStore, unavailable_store::UnavailableStore};
+        use cqrsx_testing::{memory_store::MemoryStore, unavailable_store::UnavailableStore};
         use serde_json::{Value, json};
         use uuid::Uuid;
 
@@ -152,7 +154,7 @@ mod tests {
         /// or rejected; an announcement is nobody's.
         #[tokio::test]
         async fn every_command_is_logged_with_its_type_and_its_fan() {
-            let h = harness(MemStore::default());
+            let h = harness(MemoryStore::default());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
@@ -198,7 +200,7 @@ mod tests {
 
         #[tokio::test]
         async fn an_announcement_publishes_no_task_and_is_logged() {
-            let h = harness(MemStore::default());
+            let h = harness(MemoryStore::default());
             let executed = h.execute(&concert_id(), announce(), CommandMetadata::root("ui")).await;
             assert!(executed.is_ok());
             assert!(committed(&executed).is_empty());
@@ -213,12 +215,12 @@ mod tests {
 
         #[tokio::test]
         async fn a_second_announcement_is_rejected_and_logged_with_its_code() {
-            let h = harness(MemStore::default());
+            let h = harness(MemoryStore::default());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
             let executed = h.execute(&concert_id(), announce(), CommandMetadata::root("ui")).await;
-            assert_eq!(executed, Err(CommandGatewayError::Domain(ConcertError::AlreadyAnnounced)));
+            assert_eq!(executed, Err(CommandError::Rejected(ConcertError::AlreadyAnnounced)));
             let log = h.activity();
             assert_eq!(log[1].kind, "command.rejected");
             assert_eq!(log[1].fields["code"], "already_announced");
@@ -226,7 +228,7 @@ mod tests {
 
         #[tokio::test]
         async fn a_booking_publishes_record_ticket_with_the_price_of_the_fact_and_its_causation() {
-            let store = MemStore::default();
+            let store = MemoryStore::default();
             let h = harness(store.clone());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
@@ -269,7 +271,7 @@ mod tests {
 
         #[tokio::test]
         async fn an_unknown_seat_is_rejected_and_publishes_no_task() {
-            let h = harness(MemStore::default());
+            let h = harness(MemoryStore::default());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
@@ -278,7 +280,7 @@ mod tests {
                 .await;
             assert_eq!(
                 executed,
-                Err(CommandGatewayError::Domain(ConcertError::UnknownSeat { seat: "Z9".into() }))
+                Err(CommandError::Rejected(ConcertError::UnknownSeat { seat: "Z9".into() }))
             );
             assert!(committed(&executed).is_empty());
             assert!(h.executor.take_published_tasks().is_empty());
@@ -286,7 +288,7 @@ mod tests {
 
         #[tokio::test]
         async fn a_taken_seat_is_rejected_and_writes_nothing() {
-            let store = MemStore::default();
+            let store = MemoryStore::default();
             let h = harness(store.clone());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
@@ -304,7 +306,7 @@ mod tests {
                 .await;
             assert!(matches!(
                 executed,
-                Err(CommandGatewayError::Domain(ConcertError::SeatTaken { .. }))
+                Err(CommandError::Rejected(ConcertError::SeatTaken { .. }))
             ));
             assert_eq!(store.load_events(concert_id().as_str()).await.unwrap().len(), 2);
             assert!(h.executor.take_published_tasks().is_empty());
@@ -338,7 +340,7 @@ mod tests {
 
         #[tokio::test]
         async fn cancelling_somebody_elses_ticket_publishes_no_task() {
-            let h = harness(MemStore::default());
+            let h = harness(MemoryStore::default());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
@@ -353,7 +355,7 @@ mod tests {
                     CommandMetadata::root("ui"),
                 )
                 .await;
-            assert_eq!(executed, Err(CommandGatewayError::Domain(ConcertError::NotYourTicket)));
+            assert_eq!(executed, Err(CommandError::Rejected(ConcertError::NotYourTicket)));
             assert!(committed(&executed).is_empty());
             assert!(h.executor.take_published_tasks().is_empty());
         }
@@ -368,7 +370,7 @@ mod tests {
                     CommandMetadata::root("ui"),
                 )
                 .await;
-            assert_eq!(executed, Err(CommandGatewayError::Unavailable));
+            assert_eq!(executed, Err(CommandError::Unavailable));
             assert!(committed(&executed).is_empty());
             let log = h.activity();
             assert_eq!(

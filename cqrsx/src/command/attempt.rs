@@ -4,7 +4,7 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx/licenses/.
 use crate::{
     command::{
-        AggregateError, CommitReport,
+        AttemptError, CommitReport,
         planner::{Planning, TaskPlanner},
     },
     domain::{aggregate::Aggregate, command::Decide},
@@ -24,7 +24,7 @@ use std::{collections::HashMap, fmt};
 /// ([`StoreCommandExecutor`](crate::command::executor::StoreCommandExecutor)) owns one attempt for its life,
 /// the projection processors read the events from the journal and the task runtime claims the tasks from the
 /// outbox. This is where an error of the journal ([`PersistenceError`](crate::journal::PersistenceError))
-/// becomes the error of a command ([`AggregateError`]).
+/// becomes the error of a command ([`AttemptError`]).
 #[must_use]
 pub(crate) struct CommandAttempt<A, ES>
 where
@@ -81,7 +81,7 @@ where
 
     /// Executes without event metadata, formatting the id's text once; a test shortcut of [`run`](Self::run).
     #[cfg(test)]
-    pub(crate) async fn execute(&self, id: &A::Id, command: A::Command) -> Result<CommitReport<A>, AggregateError<A::Error>>
+    pub(crate) async fn execute(&self, id: &A::Id, command: A::Command) -> Result<CommitReport<A>, AttemptError<A::Rejection>>
     where
         A: Clone,
     {
@@ -95,7 +95,7 @@ where
         id: &A::Id,
         command: A::Command,
         metadata: HashMap<String, String>,
-    ) -> Result<CommitReport<A>, AggregateError<A::Error>>
+    ) -> Result<CommitReport<A>, AttemptError<A::Rejection>>
     where
         A: Clone,
     {
@@ -106,10 +106,10 @@ where
     /// command, for the lock and every attempt.
     ///
     /// The command decides on the committed state ([`Decide::decide`]), synchronously: one event or a rejection
-    /// ([`AggregateError::Domain`]), with nothing written. With a planner, the decision is planned before the
+    /// ([`AttemptError::Rejected`]), with nothing written. With a planner, the decision is planned before the
     /// commit: the planner sees the committed state, a copy of it with the event applied (made for the planner only),
     /// the command, the event and the metadata; the executor stamps the causation of `metadata` on every task and
-    /// derives its id. A planner error refuses the command ([`AggregateError::TaskPlan`]) with nothing written.
+    /// derives its id. A planner error refuses the command ([`AttemptError::TaskPlan`]) with nothing written.
     /// `Clone` of the aggregate must provide independent state.
     pub(crate) async fn run(
         &self,
@@ -117,7 +117,7 @@ where
         key: &str,
         command: A::Command,
         metadata: HashMap<String, String>,
-    ) -> Result<CommitReport<A>, AggregateError<A::Error>>
+    ) -> Result<CommitReport<A>, AttemptError<A::Rejection>>
     where
         A: Clone,
     {
@@ -131,7 +131,7 @@ where
         };
         let event = command
             .decide(aggregate_context.aggregate(), &self.rules)
-            .map_err(AggregateError::Domain)?;
+            .map_err(AttemptError::Rejected)?;
         let tasks = match (&self.planning, &kept) {
             (Some(planning), Some(command)) => {
                 // The state the commit leaves, for the planner only: one copy of the state and of the event.
@@ -139,8 +139,8 @@ where
                 let mut after = before.clone();
                 after.apply(event.clone());
                 planning
-                    .plan(id, key, before, &after, command, std::slice::from_ref(&event), &metadata)
-                    .map_err(AggregateError::TaskPlan)?
+                    .plan(id, key, before, &after, command, &event, &metadata)
+                    .map_err(AttemptError::TaskPlan)?
             }
             _ => Vec::new(),
         };
@@ -159,9 +159,9 @@ mod tests {
         },
         domain::event::Events,
         journal::PersistenceError,
-        journal::persisted::PersistedEventStore,
-        journal::persisted::tests::{TestAggregate, TestCommands, TestService},
-        memory::event_repository::MemEventRepository,
+        journal::store::JournalEventStore,
+        journal::store::tests::{TestAggregate, TestCommands, TestService},
+        memory::event_repository::MemoryEventRepository,
         task::{NewTask, Task, format::TaskFormat},
     };
     use serde::{Deserialize, Serialize};
@@ -170,11 +170,11 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    type Mem<A> = PersistedEventStore<MemEventRepository, A>;
+    type Mem<A> = JournalEventStore<MemoryEventRepository, A>;
 
     /// A journal in memory under the store, as the engine in memory has it.
     fn mem_store<A: Aggregate>() -> Mem<A> {
-        PersistedEventStore::new(MemEventRepository::default())
+        JournalEventStore::new(MemoryEventRepository::default())
     }
 
     #[tokio::test]
@@ -249,7 +249,7 @@ mod tests {
         type Id = String;
         type Command = Probe;
         type Event = Echoed;
-        type Error = Unlucky;
+        type Rejection = Unlucky;
         type Rules = ();
 
         fn apply(&mut self, event: Echoed) {
@@ -272,11 +272,11 @@ mod tests {
     }
 
     impl Task for Shout {
-        const TASK_TYPE: &'static str = "shout";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "shout";
+        const VERSION: i32 = 1;
     }
 
-    type Seen = (u32, u32, u32, Vec<Echoed>, HashMap<String, String>, Option<Causation>);
+    type Seen = (u32, u32, u32, Echoed, HashMap<String, String>, Option<Causation>);
 
     /// Records what it saw and plans one shout of the new total; refuses when told to.
     #[derive(Clone, Default)]
@@ -289,16 +289,16 @@ mod tests {
         fn plan(&self, d: &Decision<'_, Echo>) -> Result<Vec<NewTask>, TaskPlanError> {
             self.seen.lock().unwrap().push((
                 d.before.0,
-                d.after.0,
+                d.state.0,
                 d.command.value,
-                d.events.to_vec(),
+                d.event.clone(),
                 d.metadata.clone(),
                 d.causation.cloned(),
             ));
             if self.refuse {
                 return Err(TaskPlanError::application("refused"));
             }
-            Ok(vec![NewTask::try_new(Shout { total: d.after.0 })?])
+            Ok(vec![NewTask::try_new(Shout { total: d.state.0 })?])
         }
     }
 
@@ -317,10 +317,10 @@ mod tests {
         assert_eq!(
             seen,
             [
-                (0, 5, 5, vec![Echoed(5)], HashMap::new(), None),
-                (5, 12, 7, vec![Echoed(7)], metadata, Some(causation.clone())),
+                (0, 5, 5, Echoed(5), HashMap::new(), None),
+                (5, 12, 7, Echoed(7), metadata, Some(causation.clone())),
             ],
-            "before is the committed state, after has the events applied"
+            "before is the committed state, state has the event applied"
         );
         assert_eq!(report.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), [2]);
         assert_eq!(report.tasks.len(), 1);
@@ -336,7 +336,7 @@ mod tests {
         let framework = CommandAttempt::new(mem_store::<Echo>(), ()).with_task_planner(recorder.clone());
         assert!(matches!(
             framework.execute(&"e-1".into(), probe(13)).await,
-            Err(AggregateError::Domain(Unlucky))
+            Err(AttemptError::Rejected(Unlucky))
         ));
         assert!(recorder.seen.lock().unwrap().is_empty(), "the planner was never called");
     }
@@ -353,7 +353,7 @@ mod tests {
         type Id = String;
         type Command = u32;
         type Event = Echoed;
-        type Error = Unlucky;
+        type Rejection = Unlucky;
         type Rules = Decided;
 
         fn apply(&mut self, event: Echoed) {
@@ -377,7 +377,7 @@ mod tests {
 
     impl TaskPlanner<Tape> for Before {
         fn plan(&self, d: &Decision<'_, Tape>) -> Result<Vec<NewTask>, TaskPlanError> {
-            self.0.lock().unwrap().push((d.before.0.clone(), d.after.0.clone()));
+            self.0.lock().unwrap().push((d.before.0.clone(), d.state.0.clone()));
             Ok(Vec::new())
         }
     }
@@ -390,7 +390,7 @@ mod tests {
         framework.execute(&"t-1".into(), 2).await.unwrap();
         assert!(matches!(
             framework.execute(&"t-1".into(), 13).await,
-            Err(AggregateError::Domain(Unlucky))
+            Err(AttemptError::Rejected(Unlucky))
         ));
         assert_eq!(
             *decided.lock().unwrap(),
@@ -416,11 +416,11 @@ mod tests {
             refuse: true,
             ..Recorder::default()
         });
-        let Err(AggregateError::TaskPlan(error)) = framework.execute(&"e-1".into(), probe(5)).await else {
+        let Err(AttemptError::TaskPlan(error)) = framework.execute(&"e-1".into(), probe(5)).await else {
             panic!("a planning error refuses the command");
         };
         assert_eq!(error.to_string(), "refused");
-        assert_eq!(AggregateError::<Unlucky>::TaskPlan(error).to_string(), "refused");
+        assert_eq!(AttemptError::<Unlucky>::TaskPlan(error).to_string(), "refused");
         assert!(store.load_events("e-1").await.unwrap().is_empty(), "nothing was committed");
     }
 
@@ -447,8 +447,8 @@ mod tests {
     struct Whisper {}
 
     impl Task for Whisper {
-        const TASK_TYPE: &'static str = "whisper";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "whisper";
+        const VERSION: i32 = 1;
     }
 
     struct Whisperer;
@@ -525,15 +525,15 @@ mod tests {
     }
 
     /// The attempt is where the journal's error becomes the command's: each category of the port, from the load and
-    /// from the commit, arrives as the `AggregateError` its `From` names, with the cause kept.
+    /// from the commit, arrives as the `AttemptError` its `From` names, with the cause kept.
     #[tokio::test]
     async fn a_journal_failure_of_a_load_or_a_commit_becomes_the_matching_command_error() {
         type Case = (fn() -> PersistenceError, &'static str);
         let cases: [Case; 5] = [
-            (|| PersistenceError::OptimisticLockError, "conflict"),
-            (|| PersistenceError::ConnectionError("down".into()), "connection"),
-            (|| PersistenceError::DeserializationError("json".into()), "deserialization"),
-            (|| PersistenceError::UnknownError("odd".into()), "unexpected"),
+            (|| PersistenceError::Conflict, "conflict"),
+            (|| PersistenceError::Connection("down".into()), "connection"),
+            (|| PersistenceError::Deserialization("json".into()), "deserialization"),
+            (|| PersistenceError::Unexpected("odd".into()), "unexpected"),
             (|| PersistenceError::SequenceGap { expected: 2, found: 5 }, "unexpected"),
         ];
         for on_commit in [false, true] {
@@ -546,11 +546,11 @@ mod tests {
                 let attempt = CommandAttempt::new(store, ());
                 let error = attempt.execute(&"e-1".into(), probe(5)).await.unwrap_err();
                 let category = match &error {
-                    AggregateError::AggregateConflict => "conflict",
-                    AggregateError::DatabaseConnectionError(_) => "connection",
-                    AggregateError::DeserializationError(_) => "deserialization",
-                    AggregateError::UnexpectedError(_) => "unexpected",
-                    AggregateError::Domain(_) | AggregateError::TaskPlan(_) => "other",
+                    AttemptError::Conflict => "conflict",
+                    AttemptError::Connection(_) => "connection",
+                    AttemptError::Deserialization(_) => "deserialization",
+                    AttemptError::Unexpected(_) => "unexpected",
+                    AttemptError::Rejected(_) | AttemptError::TaskPlan(_) => "other",
                 };
                 assert_eq!(category, expected, "on_commit: {on_commit}");
                 if expected != "conflict" {

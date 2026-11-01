@@ -11,9 +11,8 @@
 //
 // FAN_MODE=spread (default): a fan per 4 seats (`fan-<vu>-<slot>`), reused across the VU's
 //   concerts; the ticket limit (R6, 4 per fan per concert) is never hit.
-// FAN_MODE=hot: every booking is for `fan-hot`. Before decision D-14 every chain task then wrote to
-//   ONE Fan stream and ONE wallet document that grew without bound (the 2026-10-18 finding: drain
-//   120 → 12 tasks/s); since D-14 the fan has a ledger per concert, so this is the regression check.
+// FAN_MODE=hot: every booking is for `fan-hot`. The fan has a ledger per concert (decision D-14), so
+//   no Fan stream and no wallet document grows with the fan's history: the regression check.
 //   A concert can hold only 4 of that fan's tickets, so a new concert is announced every 4 bookings
 //   (1 announce per 4 bookings instead of 1 per 40).
 import exec from 'k6/execution';

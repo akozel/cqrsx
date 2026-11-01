@@ -3,7 +3,7 @@ use cqrsx::diagnostics::StorageFailure;
 use std::borrow::Cow;
 
 /// A fixed word for a driver error.
-fn sqlx_kind(error: &sqlx::Error) -> &'static str {
+fn sqlx_category(error: &sqlx::Error) -> &'static str {
     match error {
         sqlx::Error::Io(_) => "io",
         sqlx::Error::Tls(_) => "tls",
@@ -24,13 +24,13 @@ fn sqlstate(error: &sqlx::Error) -> Option<Cow<'_, str>> {
 
 /// Logs a failed storage operation of the adapter itself, before its error is erased.
 pub(crate) fn log_sqlx_failure(operation: &'static str, error: &sqlx::Error) {
-    tracing::error!(component = "postgres", operation, category = sqlx_kind(error), sqlstate = ?sqlstate(error), "storage operation failed");
+    tracing::error!(component = "postgres", operation, storage_category = sqlx_category(error), sqlstate = ?sqlstate(error), "storage operation failed");
 }
 
 /// The error of the driver with its category and SQLSTATE, for the logs of the core (`cqrsx::diagnostics`). Every place
 /// where a driver error becomes an error of the core goes through it.
 pub(crate) fn storage_failure(error: sqlx::Error) -> StorageFailure {
-    StorageFailure::new(sqlx_kind(&error), sqlstate(&error).map(Cow::into_owned), error)
+    StorageFailure::new(sqlx_category(&error), sqlstate(&error).map(Cow::into_owned), error)
 }
 
 #[cfg(test)]
@@ -153,7 +153,7 @@ mod tests {
         ];
         let (_, log) = test_support::capture(async {
             for (error, category) in &errors {
-                assert_eq!(sqlx_kind(error), *category);
+                assert_eq!(sqlx_category(error), *category);
                 log_sqlx_failure("claim", error);
             }
             for code in [None, Some("private_code"), Some("42p01"), Some("1234"), Some("123456")] {

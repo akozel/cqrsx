@@ -13,12 +13,12 @@ use cqrsx::task::{attempt::TaskAttempt, format::TaskFormat};
 use cqrsx::worker::TaskResult;
 use cqrsx::{
     command::{
-        CommandGatewayError, CommitReport, executor::StoreCommandExecutor, locks::LockLimits, metadata::CommandMetadata,
+        CommandError, CommitReport, executor::StoreCommandExecutor, locks::LockLimits, metadata::CommandMetadata,
         retry::AggregateConflictRetryPolicy,
     },
     domain::aggregate::Aggregate,
-    journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
-    memory::{checkpoint_store::MemCheckpointStore, view_repository::MemViewRepository},
+    journal::{EventStore, repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
+    memory::{checkpoint_store::MemoryCheckpointStore, view_repository::MemoryViewRepository},
     projection::{
         checkpoint::{CheckpointKey, CheckpointStore},
         processor::{
@@ -31,7 +31,7 @@ use cqrsx::{
 };
 use cqrsx_engine::{
     Cqrs,
-    mongodb::MongoDb,
+    mongodb::Mongo,
     postgres::{Postgres, PostgresPools},
     settings::{DEFAULT_SNAPSHOT_EVERY, Settings},
 };
@@ -86,7 +86,7 @@ fn lease_port() -> u16 {
 }
 
 /// The formats of the tasks an accepted command committed, none for a refused one: what the HTTP answer lists.
-fn committed(answer: &Result<CommitReport<Concert>, CommandGatewayError<ConcertError>>) -> Vec<String> {
+fn committed(answer: &Result<CommitReport<Concert>, CommandError<ConcertError>>) -> Vec<String> {
     match answer {
         Ok(report) => report.tasks.iter().map(|task| task.format().to_string()).collect(),
         Err(_) => Vec::new(),
@@ -118,9 +118,9 @@ fn concert_executor(
     pool: &PgPool,
     retry: AggregateConflictRetryPolicy,
     ticket_limit: usize,
-) -> StoreCommandExecutor<Concert, PersistedEventStore<PostgresEventRepositoryWithOutbox, Concert>> {
+) -> StoreCommandExecutor<Concert, JournalEventStore<PostgresEventRepositoryWithOutbox, Concert>> {
     let store =
-        PersistedEventStore::new(PostgresEventRepositoryWithOutbox::new(pool.clone())).with_snapshots(DEFAULT_SNAPSHOT_EVERY);
+        JournalEventStore::new(PostgresEventRepositoryWithOutbox::new(pool.clone())).with_snapshots(DEFAULT_SNAPSHOT_EVERY);
     StoreCommandExecutor::new(store, ConcertRules { ticket_limit }, retry, LockLimits::default())
 }
 
@@ -217,7 +217,7 @@ async fn accepted_command_writes_event_and_task_atomically_and_rejected_writes_n
         .await;
     assert!(matches!(
         rejected,
-        Err(CommandGatewayError::Domain(ConcertError::SeatTaken { .. }))
+        Err(CommandError::Rejected(ConcertError::SeatTaken { .. }))
     ));
 
     let events =
@@ -306,7 +306,7 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
     let cqrs = Cqrs::with_settings(settings)
         .event_store(Postgres)
         .postgres_pools(pools)
-        .projections(MongoDb)
+        .projections(Mongo)
         .mongodb_client(mongodb::Client::with_options(mongo).expect("client"))
         .module(concert::module)
         .module(fan::module)
@@ -509,8 +509,8 @@ async fn bookings_and_cancellations_racing_on_two_nodes_publish_one_matching_tas
     }
     while let Some(outcome) = commands.join_next().await {
         match outcome.expect("command task") {
-            Ok(_) | Err(CommandGatewayError::Domain(_) | CommandGatewayError::Conflict) => {}
-            Err(CommandGatewayError::Unavailable) => panic!("the store stayed reachable"),
+            Ok(_) | Err(CommandError::Rejected(_) | CommandError::Conflict) => {}
+            Err(CommandError::Unavailable) => panic!("the store stayed reachable"),
         }
     }
     let unmatched: i64 = sqlx::query_scalar(
@@ -595,7 +595,7 @@ async fn parallel_bookings_of_one_concert_wait_for_its_lock_and_need_no_retry() 
 
 const HALLS: &str = "concert_halls";
 
-type Halls = MemViewRepository<ConcertHallView, Concert>;
+type Halls = MemoryViewRepository<ConcertHallView, Concert>;
 
 /// The poll is long, so a quick catch-up proves that the commit woke the processor.
 const POLL: Duration = Duration::from_secs(2);
@@ -604,7 +604,7 @@ const POLL: Duration = Duration::from_secs(2);
 /// journal in PostgreSQL.
 struct ReadSide {
     pool: PgPool,
-    checkpoints: Arc<MemCheckpointStore>,
+    checkpoints: Arc<MemoryCheckpointStore>,
     halls: Arc<Halls>,
     wakeup: CommitWakeup,
 }
@@ -613,7 +613,7 @@ impl ReadSide {
     fn new(pool: &PgPool) -> Self {
         Self {
             pool: pool.clone(),
-            checkpoints: Arc::new(MemCheckpointStore::default()),
+            checkpoints: Arc::new(MemoryCheckpointStore::default()),
             halls: Arc::new(Halls::default()),
             wakeup: CommitWakeup::new(),
         }
@@ -625,8 +625,13 @@ impl ReadSide {
 
     /// Starts the processor; cancel the token to stop it.
     fn start(&self) -> (CancellationToken, tokio::task::JoinHandle<()>) {
-        let config =
-            ProcessorConfig::try_new(POLL, 100, Duration::from_secs(1), DeliveryLimits::default()).expect("processor config");
+        let config = ProcessorConfig::builder()
+            .poll_interval(POLL)
+            .page_size(100)
+            .lease(Duration::from_secs(1))
+            .delivery_limits(DeliveryLimits::default())
+            .build()
+            .expect("processor config");
         let processor = ProjectionProcessor::new(
             HALLS,
             Arc::new(PostgresEventRepository::new(self.pool.clone())),
@@ -634,14 +639,14 @@ impl ReadSide {
             Arc::new(ViewProjection::new(self.halls.clone())),
             config,
         )
-        .with_wakeup(self.wakeup.clone());
+        .with_commit_wakeup(self.wakeup.clone());
         let shutdown = CancellationToken::new();
         (shutdown.clone(), tokio::spawn(processor.run(shutdown)))
     }
 
     /// The fold of the concert's whole history, `None` without one.
     async fn fold(&self, id: &str) -> Option<ConcertHallView> {
-        let events = PersistedEventStore::<_, Concert>::new(PostgresEventRepository::new(self.pool.clone()))
+        let events = JournalEventStore::<_, Concert>::new(PostgresEventRepository::new(self.pool.clone()))
             .load_events(id)
             .await
             .expect("journal");
@@ -650,7 +655,7 @@ impl ReadSide {
         }
         let mut hall = ConcertHallView::default();
         for event in &events {
-            hall.update(event);
+            hall.apply(event);
         }
         Some(hall)
     }
@@ -703,17 +708,17 @@ impl ReadSide {
         self.halls.clear();
         for stored in kept {
             self.halls
-                .put(&stored.id, stored.version, stored.last_sequence, &stored.view)
+                .put(&stored.id, stored.revision, stored.last_sequence, &stored.view)
                 .expect("put");
         }
     }
 
     async fn version(&self, id: &str) -> i64 {
         self.halls
-            .load_with_context(id)
+            .load_stored(id)
             .await
             .expect("hall")
-            .map(|stored| stored.version)
+            .map(|stored| stored.revision)
             .unwrap_or_default()
     }
 }
@@ -790,12 +795,7 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
     announce("hot-2026").await;
     book_all("hot-2026", 0..20).await;
     read.caught_up(&["early-2026", "hot-2026"], POLL / 2).await;
-    let stored = read
-        .halls
-        .load_with_context("hot-2026")
-        .await
-        .expect("hall")
-        .expect("a document");
+    let stored = read.halls.load_stored("hot-2026").await.expect("hall").expect("a document");
     assert_eq!(
         (stored.view.sold, stored.view.last_sequence, stored.last_sequence),
         (20, 21, 21)
@@ -807,7 +807,7 @@ async fn the_concert_halls_follow_the_journal_through_their_processor() {
             .request_rebuild(&ReadSide::key(), Duration::ZERO)
             .await
             .expect("request"),
-        cqrsx::projection::checkpoint::RebuildRequest::Accepted
+        cqrsx::projection::checkpoint::RebuildReply::Accepted
     );
     book_all("hot-2026", 20..25).await;
     tokio::time::timeout(Duration::from_secs(10), async {

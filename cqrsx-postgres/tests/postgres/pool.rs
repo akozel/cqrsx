@@ -263,7 +263,7 @@ impl Drop for SupervisedPoolChild {
 }
 #[tokio::test]
 async fn held_connection_shutdown_child() {
-    let Ok(url) = std::env::var("CQRS_POOL_SHUTDOWN_DATABASE") else {
+    let Ok(url) = std::env::var("CQRSX_POOL_SHUTDOWN_DATABASE") else {
         return;
     };
     let options = url
@@ -292,13 +292,13 @@ async fn external_supervisor_forces_and_reaps_pool_close_with_a_held_connection(
     let db = Database::new().await;
     let options = db.pool.connect_options();
     let url = format!(
-        "postgresql://outbox_test:outbox_test@{}:{}/outbox_test",
+        "postgresql://cqrsx_test:cqrsx_test@{}:{}/cqrsx_test",
         options.get_host(),
         options.get_port()
     );
     let mut child = std::process::Command::new(std::env::current_exe().unwrap())
         .args(["--exact", "pool::held_connection_shutdown_child", "--nocapture"])
-        .env("CQRS_POOL_SHUTDOWN_DATABASE", url)
+        .env("CQRSX_POOL_SHUTDOWN_DATABASE", url)
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
         .stderr(std::process::Stdio::inherit())

@@ -54,9 +54,9 @@ export default {
     lead: 'The read side: MongoDB documents built from the events and shaped for the screen.',
     points: [
       'concert_halls — the seat map with sold and revenue counters; fan_wallets — the tickets of each fan.',
-      'A processor per read model follows the ledger by its checkpoint: woken by every commit, it reads the new events page by page and applies them. A failure is retried, nothing is lost.',
+      'A processor per read model follows the journal by its checkpoint: woken by every commit, it reads the new events page by page and applies them. A failure is retried, nothing is lost.',
       '🧨 Wipe drops the collections and their checkpoints: the processors start over from the first event. ⏪ Encore! rebuilds every document in place while the box office stays open.',
-      'The mail inbox is not a projection: a replay never resends an e-mail.',
+      'The mail inbox is not a projection: an Encore! never resends an e-mail.',
     ],
   },
   ui_in: {
@@ -81,13 +81,13 @@ export default {
     lead: 'A request, not a fact: AnnounceConcert, BookSeat or CancelBooking.',
     points: [
       'Carries metadata: command_id, correlation_id (follows the whole chain), causation_id and source = ui.',
-      'Accepted → 200 with the outbox tasks it produced, as soon as the event is in the ledger (the read models follow a moment later); rejected → 422 with the rule code.',
+      'Accepted → 200 with the outbox tasks it produced, as soon as the event is in the journal (the read models follow a moment later); rejected → 422 with the rule code.',
       'Try the 🧪 rule breakers: a deliberately wrong command and the exact rule that stops it.',
     ],
   },
   aggregate: {
     title: 'Aggregate Concert — the rules',
-    lead: 'One event stream per concert. The aggregate rebuilds its state from the ledger (snapshot + the tail of events) and checks the rules in this order:',
+    lead: 'One event stream per concert. The aggregate rebuilds its state from the journal (snapshot + the tail of events) and checks the rules in this order:',
     rules: concertRules,
     points: [
       'Exactly one event per accepted command: ConcertAnnounced, SeatBooked or BookingCancelled.',
@@ -98,7 +98,7 @@ export default {
     title: 'events + outbox (Concert)',
     lead: 'PostgreSQL: the events table is the source of truth, and the outbox task is written in the same transaction.',
     points: [
-      'Tables: events, snapshots (every 10 events, a bookmark for a faster load) and transactional_outbox.',
+      'Tables: events, snapshots (every 10 events, a snapshot for a faster load) and transactional_outbox.',
       'Tasks written here: encore_record_ticket after SeatBooked, encore_record_cancellation after BookingCancelled.',
       'A rejected command writes nothing at all: compare the events counter before and after.',
       'Watch the X-ray: the new events row and the new outbox row appear together.',
@@ -171,7 +171,7 @@ export default {
     points: [
       'Each document remembers the last event it applied (last_sequence) and takes only the next one: a repeat is skipped, a gap is refused, so delivery may repeat and come from several nodes.',
       'Written by the projection processors, whose checkpoints live here too (projection_checkpoints): a paused MongoDB only delays the read side, commands are still accepted.',
-      '🧨 Wipe → the seat map shows “?” for a moment while the rules still work from the ledger; the processors rebuild it from the first event by themselves.',
+      '🧨 Wipe → the seat map shows “?” for a moment while the rules still work from the journal; the processors rebuild it from the first event by themselves.',
       'The time machine computes a past state from events 1…n without storing it anywhere.',
     ],
   },
@@ -179,7 +179,7 @@ export default {
     title: 'UI',
     lead: 'The screen: seat map, wallet and concerts, all read from the read database via GET /api/….',
     points: [
-      'After an accepted command it waits for its document’s projection.updated on the SSE activity stream, with a 5 s safety poll; during Encore! it reads the open hall every 250 ms.',
+      'After an accepted command it waits for its document’s projection.applied on the SSE activity stream, with a 5 s safety poll; during Encore! it reads the open hall every 250 ms.',
       'The X-ray on the right reads the databases directly through the read-only sidecar.',
     ],
   },

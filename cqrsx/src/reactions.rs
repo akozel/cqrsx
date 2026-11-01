@@ -15,8 +15,8 @@
 //! use cqrsx::{
 //!     command::{CommandExecutor, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
 //!     domain::{aggregate::Aggregate, command::Decide, event::Events},
-//!     journal::persisted::PersistedEventStore,
-//!     memory::event_repository::MemEventRepository,
+//!     journal::store::JournalEventStore,
+//!     memory::event_repository::MemoryEventRepository,
 //!     reactions::{Decided, Reactions, ReactionsPlanner, Then},
 //!     task::{Task, policy::Policies},
 //! };
@@ -49,7 +49,7 @@
 //!     type Id = String;
 //!     type Command = Option<u32>; // `None` reserves, `Some(total)` pays
 //!     type Event = OrderEvent;
-//!     type Error = NotReserved;
+//!     type Rejection = NotReserved;
 //!     type Rules = ();
 //!     fn apply(&mut self, event: OrderEvent) { self.reserved = matches!(event, OrderEvent::Reserved); }
 //! }
@@ -75,9 +75,9 @@
 //!     fn react(decided: &Decided<'_, Self>, then: &mut Then) {
 //!         match decided.event {
 //!             OrderEvent::Reserved => {
-//!                 then.task_after(Duration::from_secs(15 * 60), ReleaseUnpaid { order_id: decided.id.clone() })
+//!                 then.task_after(Duration::from_secs(15 * 60), ReleaseUnpaid { order_id: decided.aggregate_id.clone() })
 //!             }
-//!             OrderEvent::Paid { total } => then.task(Ship { order_id: decided.id.clone(), total: *total }),
+//!             OrderEvent::Paid { total } => then.task(Ship { order_id: decided.aggregate_id.clone(), total: *total }),
 //!         }
 //!     }
 //! }
@@ -90,7 +90,7 @@
 //! assert_eq!((tasks[0].format().to_string(), &tasks[0].payload()["total"]), ("ship v1".to_owned(), &30.into()));
 //!
 //! // The executor runs them after every decision and commits the tasks with the event.
-//! let store = PersistedEventStore::<_, Order>::new(MemEventRepository::default());
+//! let store = JournalEventStore::<_, Order>::new(MemoryEventRepository::default());
 //! let orders = StoreCommandExecutor::new(store, (), AggregateConflictRetryPolicy::default(), LockLimits::default())
 //!     .with_task_planner(ReactionsPlanner::<Order>::new(Policies::default()));
 //! let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -123,7 +123,7 @@
 //!     type Id = String;
 //!     type Command = bool;
 //!     type Event = OrderEvent;
-//!     type Error = std::convert::Infallible;
+//!     type Rejection = std::convert::Infallible;
 //!     type Rules = ();
 //!     fn apply(&mut self, _: OrderEvent) {}
 //! }
@@ -155,7 +155,7 @@ pub trait Reactions: Aggregate {
 /// What one attempt of a command decided, as its reactions see it.
 pub struct Decided<'a, A: Aggregate> {
     /// The aggregate the command ran on.
-    pub id: &'a A::Id,
+    pub aggregate_id: &'a A::Id,
     /// The state after the event: the copy the executor holds under the aggregate's lock. What the event removed is
     /// in the event, not here.
     pub state: &'a A,
@@ -171,7 +171,7 @@ impl<A: Aggregate> fmt::Debug for Decided<'_, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Decided")
             .field("aggregate_type", &A::TYPE)
-            .field("id", &format_args!("{}", self.id))
+            .field("aggregate_id", &format_args!("{}", self.aggregate_id))
             .field("event", &self.event)
             .finish_non_exhaustive()
     }
@@ -180,14 +180,14 @@ impl<A: Aggregate> fmt::Debug for Decided<'_, A> {
 impl<'a, A: Aggregate> Decided<'a, A> {
     /// A decision built by hand: the executor builds it from every attempt, a test of a reaction builds its own.
     pub fn new(
-        id: &'a A::Id,
+        aggregate_id: &'a A::Id,
         state: &'a A,
         command: &'a A::Command,
         event: &'a A::Event,
         metadata: &'a HashMap<String, String>,
     ) -> Self {
         Self {
-            id,
+            aggregate_id,
             state,
             command,
             event,
@@ -221,7 +221,7 @@ impl Then {
     /// A task of `payload`, eligible `delay` after the commit; the delay is relative, a reaction has no clock.
     pub fn task_after(&mut self, delay: Duration, payload: impl Task) {
         if self.refused.is_none() {
-            self.keep(NewTask::try_new(payload).and_then(|task| task.with_schedule(TaskSchedule::After(delay))));
+            self.keep(NewTask::try_new(payload).and_then(|task| Ok(task.with_schedule(TaskSchedule::after(delay)?))));
         }
     }
 
@@ -268,19 +268,12 @@ impl<A: Reactions> ReactionsPlanner<A> {
 }
 
 impl<A: Reactions> TaskPlanner<A> for ReactionsPlanner<A> {
-    /// A decision holds one event (D-02); one built by hand with another number is refused.
     fn plan(&self, decision: &Decision<'_, A>) -> Result<Vec<NewTask>, TaskPlanError> {
-        let [event] = decision.events else {
-            return Err(TaskPlanError::application(format!(
-                "a reaction sees one event, the decision has {}",
-                decision.events.len()
-            )));
-        };
         let decided = Decided::new(
             decision.aggregate_id,
-            decision.after,
+            decision.state,
             decision.command,
-            event,
+            decision.event,
             decision.metadata,
         );
         let mut then = Then::default();
@@ -288,7 +281,7 @@ impl<A: Reactions> TaskPlanner<A> for ReactionsPlanner<A> {
         let tasks = then
             .into_tasks()?
             .into_iter()
-            .map(|task| match self.policies.of(task.format()) {
+            .map(|task| match self.policies.policy_for(task.format()) {
                 Some(policy) => task.with_max_attempts(policy.max_attempts()),
                 None => task,
             });
@@ -301,16 +294,16 @@ mod tests {
     use super::*;
     use crate::{
         command::{
-            CommandGatewayError, causation::Causation, executor::StoreCommandExecutor, locks::LockLimits, planner::Planning,
+            CommandError, causation::Causation, executor::StoreCommandExecutor, locks::LockLimits, planner::Planning,
             retry::AggregateConflictRetryPolicy,
         },
         domain::{command::Decide, event::Events},
-        journal::repository::PersistedEventRepository,
-        memory::event_repository::MemEventRepository,
+        journal::repository::EventRepository,
+        memory::event_repository::MemoryEventRepository,
         task::{
             DEFAULT_MAX_ATTEMPTS,
             format::TaskFormat,
-            policy::{PolicyName, Retry, TaskPolicy},
+            policy::{PolicyName, RetryPause, TaskPolicy},
         },
     };
     use serde::{Deserialize, Serialize, Serializer};
@@ -355,7 +348,7 @@ mod tests {
         type Id = String;
         type Command = Sale;
         type Event = Sale;
-        type Error = std::convert::Infallible;
+        type Rejection = std::convert::Infallible;
         type Rules = ();
 
         fn apply(&mut self, event: Sale) {
@@ -380,8 +373,8 @@ mod tests {
     }
 
     impl Task for Receipt {
-        const TASK_TYPE: &'static str = "receipt";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "receipt";
+        const VERSION: i32 = 1;
     }
 
     #[derive(Serialize)]
@@ -390,16 +383,16 @@ mod tests {
     }
 
     impl Task for Ping {
-        const TASK_TYPE: &'static str = "ping";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "ping";
+        const VERSION: i32 = 1;
     }
 
     #[derive(Serialize)]
     struct Pong {}
 
     impl Task for Pong {
-        const TASK_TYPE: &'static str = "pong";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "pong";
+        const VERSION: i32 = 1;
     }
 
     /// Never serializes; what it would say is private.
@@ -412,8 +405,8 @@ mod tests {
     }
 
     impl Task for Unserializable {
-        const TASK_TYPE: &'static str = "unserializable";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "unserializable";
+        const VERSION: i32 = 1;
     }
 
     /// How many times a [`Counted`] was serialized; only one test plans it.
@@ -429,15 +422,15 @@ mod tests {
     }
 
     impl Task for Counted {
-        const TASK_TYPE: &'static str = "counted";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "counted";
+        const VERSION: i32 = 1;
     }
 
     impl Reactions for Till {
         fn react(decided: &Decided<'_, Self>, then: &mut Then) {
             match decided.event {
                 Sale::Rung(_) => then.task(Receipt {
-                    till: decided.id.clone(),
+                    till: decided.aggregate_id.clone(),
                     total: decided.state.total,
                     command: format!("{:?}", decided.command),
                     source: decided.metadata().get("source").cloned(),
@@ -466,13 +459,13 @@ mod tests {
 
     /// Pings are steps of six attempts; pongs and receipts have no policy.
     fn policies() -> Policies {
-        Policies::default()
-            .with_policy(
+        Policies::builder()
+            .policy(
                 STEP,
-                TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap()),
+                TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap()),
             )
-            .unwrap()
-            .with_task::<Ping>(STEP)
+            .bind::<Ping>(STEP)
+            .build()
             .unwrap()
     }
 
@@ -480,19 +473,17 @@ mod tests {
         ReactionsPlanner::new(policies())
     }
 
-    /// What the planner plans for `events` decided by `sale` on till `t-1`, which had rung up 5 before.
-    fn plan(sale: &Sale, events: &[Sale], metadata: &HashMap<String, String>) -> Result<Vec<NewTask>, TaskPlanError> {
+    /// What the planner plans for `event` decided by `sale` on till `t-1`, which had rung up 5 before.
+    fn plan(sale: &Sale, event: &Sale, metadata: &HashMap<String, String>) -> Result<Vec<NewTask>, TaskPlanError> {
         let before = Till { total: 5 };
-        let mut after = before.clone();
-        for event in events {
-            after.apply(event.clone());
-        }
+        let mut state = before.clone();
+        state.apply(event.clone());
         planner().plan(&Decision {
             aggregate_id: &"t-1".into(),
             before: &before,
-            after: &after,
+            state: &state,
             command: sale,
-            events,
+            event,
             metadata,
             causation: None,
         })
@@ -505,7 +496,7 @@ mod tests {
     #[test]
     fn a_reaction_sees_the_id_the_state_after_the_event_the_command_the_event_and_the_metadata() {
         let metadata = HashMap::from([("source".to_owned(), "ui".to_owned())]);
-        let tasks = plan(&Sale::Rung(3), &[Sale::Rung(3)], &metadata).unwrap();
+        let tasks = plan(&Sale::Rung(3), &Sale::Rung(3), &metadata).unwrap();
         let [receipt] = &tasks[..] else {
             panic!("one receipt: {tasks:?}");
         };
@@ -518,7 +509,7 @@ mod tests {
         let decided = Decided::<Till>::new(&id, &state, &Sale::Burst, &Sale::Rung(1), &metadata);
         assert_eq!(
             (
-                decided.id,
+                decided.aggregate_id,
                 decided.state.total,
                 decided.command,
                 decided.event,
@@ -526,15 +517,6 @@ mod tests {
             ),
             (&id, 1, &Sale::Burst, &Sale::Rung(1), &metadata)
         );
-    }
-
-    #[test]
-    fn a_decision_without_exactly_one_event_is_refused() {
-        let none = plan(&Sale::Burst, &[], &HashMap::new()).unwrap_err();
-        assert!(matches!(&none, TaskPlanError::Application(_)));
-        assert_eq!(none.to_string(), "a reaction sees one event, the decision has 0");
-        let two = plan(&Sale::Burst, &[Sale::Burst, Sale::Burst], &HashMap::new()).unwrap_err();
-        assert_eq!(two.to_string(), "a reaction sees one event, the decision has 2");
     }
 
     #[test]
@@ -548,7 +530,7 @@ mod tests {
                 &Till::default(),
                 &Till::default(),
                 &Sale::Burst,
-                &[Sale::Burst],
+                &Sale::Burst,
                 &causation.event_metadata(),
             )
         };
@@ -577,18 +559,18 @@ mod tests {
 
     #[test]
     fn task_after_schedules_after_its_delay_and_task_plans_now() {
-        let tasks = plan(&Sale::Later(90), &[Sale::Later(90)], &HashMap::new()).unwrap();
+        let tasks = plan(&Sale::Later(90), &Sale::Later(90), &HashMap::new()).unwrap();
         assert_eq!(formats(&tasks), ["pong v1", "ping v1"]);
         assert_eq!(
             (tasks[0].schedule(), tasks[1].schedule()),
-            (&TaskSchedule::Now, &TaskSchedule::After(Duration::from_secs(90)))
+            (&TaskSchedule::now(), &TaskSchedule::after(Duration::from_secs(90)).unwrap())
         );
         assert_eq!(tasks[1].payload(), &json!({ "value": 3 }));
     }
 
     #[test]
     fn the_policy_of_a_task_type_sets_its_budget_and_a_type_without_one_keeps_the_default() {
-        let tasks = plan(&Sale::Burst, &[Sale::Burst], &HashMap::new()).unwrap();
+        let tasks = plan(&Sale::Burst, &Sale::Burst, &HashMap::new()).unwrap();
         assert_eq!(
             tasks.iter().map(|task| task.max_attempts().get()).collect::<Vec<_>>(),
             [6, DEFAULT_MAX_ATTEMPTS.get(), 6]
@@ -598,9 +580,9 @@ mod tests {
             .plan(&Decision {
                 aggregate_id: &"t-1".into(),
                 before: &Till::default(),
-                after: &Till::default(),
+                state: &Till::default(),
                 command: &Sale::Burst,
-                events: &[Sale::Burst],
+                event: &Sale::Burst,
                 metadata: &HashMap::new(),
                 causation: None,
             })
@@ -618,7 +600,10 @@ mod tests {
         let decided = Decided::<Till>::new(&id, &till, &Sale::Burst, &Sale::Burst, &metadata);
         assert_eq!(
             format!("{decided:?}"),
-            format!(r#"Decided {{ aggregate_type: "{}", id: t-1, event: Burst, .. }}"#, Till::TYPE)
+            format!(
+                r#"Decided {{ aggregate_type: "{}", aggregate_id: t-1, event: Burst, .. }}"#,
+                Till::TYPE
+            )
         );
         assert_eq!(
             format!("{:?}", ReactionsPlanner::<Till>::new(Policies::default())),
@@ -631,11 +616,11 @@ mod tests {
         let mut counting = Then::default();
         counting.task(Counted);
         assert_eq!(COUNTED.load(Ordering::SeqCst), 1, "building a task serializes it");
-        let broken = plan(&Sale::Broken, &[Sale::Broken], &HashMap::new()).unwrap_err();
+        let broken = plan(&Sale::Broken, &Sale::Broken, &HashMap::new()).unwrap_err();
         assert!(matches!(broken, TaskPlanError::Task(TaskValidationError::Serialization)));
         assert_eq!(COUNTED.load(Ordering::SeqCst), 1, "nothing after the refused task is built");
-        let overdue = plan(&Sale::Overdue, &[Sale::Overdue], &HashMap::new()).unwrap_err();
-        assert!(matches!(overdue, TaskPlanError::Task(TaskValidationError::InvalidSchedule)));
+        let overdue = plan(&Sale::Overdue, &Sale::Overdue, &HashMap::new()).unwrap_err();
+        assert!(matches!(overdue, TaskPlanError::Task(TaskValidationError::DelayTooLong)));
         let mut then = Then::default();
         then.task(Unserializable);
         then.task_after(Duration::ZERO, Ping { value: 1 });
@@ -644,9 +629,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_task_that_does_not_serialize_makes_the_command_unavailable_writes_nothing_and_is_logged_once() {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         let tills = StoreCommandExecutor::new(
-            crate::journal::persisted::PersistedEventStore::new(journal.clone()),
+            crate::journal::store::JournalEventStore::new(journal.clone()),
             (),
             AggregateConflictRetryPolicy::default(),
             LockLimits::default(),
@@ -655,7 +640,7 @@ mod tests {
         let (_, log) = crate::diagnostics::test_support::capture(async {
             assert_eq!(
                 tills.execute(&"private_till".into(), Sale::Broken).await,
-                Err(CommandGatewayError::Unavailable)
+                Err(CommandError::Unavailable)
             );
         })
         .await;

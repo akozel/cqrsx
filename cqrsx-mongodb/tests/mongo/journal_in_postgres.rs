@@ -3,7 +3,7 @@
 use crate::support::{Ledger, NAME, Node, Recording, caught_up, commit_all, until};
 use cqrsx::{
     command::{executor::StoreCommandExecutor, locks::LockLimits},
-    journal::{feed::Position, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
+    journal::{feed::Position, repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
 };
 use cqrsx_fixtures::{mongo::Mongo, postgres::Postgres};
 use cqrsx_mongodb::checkpoint_store::PROJECTION_CHECKPOINTS_COLLECTION;
@@ -22,7 +22,7 @@ async fn commit(pool: &PgPool, wakeup: &CommitWakeup, keys: &[&str], per_key: i3
     let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
     let executor = Arc::new(
         StoreCommandExecutor::new(
-            PersistedEventStore::<_, Ledger>::new(repository),
+            JournalEventStore::<_, Ledger>::new(repository),
             (),
             Default::default(),
             LockLimits::default(),
@@ -52,7 +52,7 @@ async fn commands_in_postgres_reach_views_and_checkpoints_in_mongo() {
             &[EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA, PROJECTION_CHECKPOINTS_SCHEMA],
         )
         .await,
-        Mongo::new().await,
+        Mongo::start().await,
     );
     let (observer, wakeup) = (Arc::new(Recording::default()), CommitWakeup::new());
     let journal = Arc::new(PostgresEventRepository::new(postgres.pool.clone()));
@@ -60,7 +60,7 @@ async fn commands_in_postgres_reach_views_and_checkpoints_in_mongo() {
     let keys = ["l1", "l2", "l3", "l4", "l5"];
     commit(&postgres.pool, &wakeup, &keys, 8).await;
     let status = caught_up(journal.as_ref(), &mongo.database, &keys).await;
-    assert_eq!((status.applied, status.failures), (40, 0));
+    assert_eq!((status.delivered, status.failures), (40, 0));
     assert!(status.position > Position::START);
     assert_eq!(
         status.position,
@@ -79,7 +79,7 @@ async fn commands_in_postgres_reach_views_and_checkpoints_in_mongo() {
     commit(&postgres.pool, &wakeup, &keys, 2).await;
     let status = caught_up(journal.as_ref(), &mongo.database, &keys).await;
     assert_eq!(
-        (status.applied, status.failures),
+        (status.delivered, status.failures),
         (50, 0),
         "every document came back from the journal"
     );

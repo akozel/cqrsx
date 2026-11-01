@@ -1,5 +1,5 @@
-//! Executing a command: the executor port and its outcomes ([`CommandExecutor`], [`CommandGatewayError`],
-//! [`CommitReport`], [`AggregateError`]), the executor ([`executor`]) and its private attempt, the aggregate
+//! Executing a command: the executor port and its outcomes ([`CommandExecutor`], [`CommandError`],
+//! [`CommitReport`], [`AttemptError`]), the executor ([`executor`]) and its private attempt, the aggregate
 //! [`locks`] that order the commands of one aggregate, bounded optimistic-conflict [`retry`], the [`causation`]
 //! convention and a command's [`metadata`], the [`planner`] of a command's follow-up tasks from its decision and the
 //! [`observer`] an executor tells about every command. How a command decides and what is known of it live in
@@ -36,7 +36,7 @@ pub mod retry;
 /// A future holding non-Send state across await violates the contract:
 /// ```compile_fail
 /// use cqrsx::domain::aggregate::Aggregate;
-/// use cqrsx::command::{CommitReport, CommandExecutor, CommandGatewayError};
+/// use cqrsx::command::{CommitReport, CommandExecutor, CommandError};
 /// use std::collections::HashMap;
 /// struct NonSendExecutor;
 /// impl<A: Aggregate> CommandExecutor<A> for NonSendExecutor where A::Command: Send {
@@ -45,7 +45,7 @@ pub mod retry;
 ///         _: &A::Id,
 ///         _: A::Command,
 ///         _: HashMap<String, String>,
-///     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+///     ) -> Result<CommitReport<A>, CommandError<A::Rejection>> {
 ///         let state = std::rc::Rc::new(());
 ///         std::future::pending::<()>().await;
 ///         drop(state);
@@ -60,7 +60,7 @@ pub trait CommandExecutor<A: Aggregate>: Send + Sync {
         &self,
         id: &A::Id,
         command: A::Command,
-    ) -> impl Future<Output = Result<CommitReport<A>, CommandGatewayError<A::Error>>> + Send {
+    ) -> impl Future<Output = Result<CommitReport<A>, CommandError<A::Rejection>>> + Send {
         self.execute_with_metadata(id, command, HashMap::new())
     }
 
@@ -71,14 +71,14 @@ pub trait CommandExecutor<A: Aggregate>: Send + Sync {
         id: &A::Id,
         command: A::Command,
         metadata: HashMap<String, String>,
-    ) -> impl Future<Output = Result<CommitReport<A>, CommandGatewayError<A::Error>>> + Send;
+    ) -> impl Future<Output = Result<CommitReport<A>, CommandError<A::Rejection>>> + Send;
 }
 
 /// Domain rejection, exhausted conflict retry, or a command that was not run or whose outcome is unknown.
 #[derive(Clone, Debug, Error, Eq, PartialEq)]
-pub enum CommandGatewayError<D> {
+pub enum CommandError<D> {
     #[error("domain command failed a domain rule: {0}")]
-    Domain(D),
+    Rejected(D),
     #[error("domain command conflicted with a concurrent change")]
     Conflict,
     /// Not run, or outcome unknown: the storage failed or timed out, the aggregate's lock was not acquired
@@ -123,49 +123,49 @@ impl<A: Aggregate> PartialEq for CommitReport<A> {
     }
 }
 
-/// The base error for the framework.
+/// The error of one attempt of a command.
 #[derive(Debug, thiserror::Error)]
-pub enum AggregateError<T: error::Error> {
+pub enum AttemptError<T: error::Error> {
     /// A domain rule rejected the command; the payload is the aggregate domain error.
     #[error("{0}")]
-    Domain(T),
+    Rejected(T),
     /// A command has been rejected due to a conflict with another command on the same aggregate
     /// instance. This is handled by optimistic locking in systems backed by an RDBMS.
     #[error("aggregate conflict")]
-    AggregateConflict,
+    Conflict,
     /// A error occurred while attempting to read or write from a database.
     #[error("{0}")]
-    DatabaseConnectionError(#[source] Box<dyn error::Error + Send + Sync + 'static>),
+    Connection(#[source] Box<dyn error::Error + Send + Sync + 'static>),
     /// A deserialization error occurred due to invalid JSON.
     #[error("{0}")]
-    DeserializationError(#[source] Box<dyn error::Error + Send + Sync + 'static>),
+    Deserialization(#[source] Box<dyn error::Error + Send + Sync + 'static>),
     /// A technical error was encountered that prevented the command from being applied to the
     /// aggregate. In general the accompanying message should be logged for investigation rather
     /// than returned to the user.
     #[error("{0}")]
-    UnexpectedError(#[source] Box<dyn error::Error + Send + Sync + 'static>),
+    Unexpected(#[source] Box<dyn error::Error + Send + Sync + 'static>),
     /// The aggregate decided, but the decision's tasks could not be planned; nothing was written.
     #[error("{0}")]
     TaskPlan(#[source] TaskPlanError),
 }
 
-impl<T: std::error::Error> From<PersistenceError> for AggregateError<T> {
+impl<T: std::error::Error> From<PersistenceError> for AttemptError<T> {
     fn from(err: PersistenceError) -> Self {
         match err {
-            PersistenceError::OptimisticLockError => Self::AggregateConflict,
-            PersistenceError::ConnectionError(error) => Self::DatabaseConnectionError(error),
-            PersistenceError::DeserializationError(error) => Self::DeserializationError(error),
-            PersistenceError::UnknownError(error) => Self::UnexpectedError(error),
-            gap @ PersistenceError::SequenceGap { .. } => Self::UnexpectedError(Box::new(gap)),
+            PersistenceError::Conflict => Self::Conflict,
+            PersistenceError::Connection(error) => Self::Connection(error),
+            PersistenceError::Deserialization(error) => Self::Deserialization(error),
+            PersistenceError::Unexpected(error) => Self::Unexpected(error),
+            gap @ PersistenceError::SequenceGap { .. } => Self::Unexpected(Box::new(gap)),
         }
     }
 }
 
-impl<T: error::Error> From<serde_json::error::Error> for AggregateError<T> {
+impl<T: error::Error> From<serde_json::error::Error> for AttemptError<T> {
     fn from(err: serde_json::error::Error) -> Self {
         match err.classify() {
-            serde_json::error::Category::Data | serde_json::error::Category::Syntax => Self::DeserializationError(Box::new(err)),
-            serde_json::error::Category::Io | serde_json::error::Category::Eof => Self::UnexpectedError(Box::new(err)),
+            serde_json::error::Category::Data | serde_json::error::Category::Syntax => Self::Deserialization(Box::new(err)),
+            serde_json::error::Category::Io | serde_json::error::Category::Eof => Self::Unexpected(Box::new(err)),
         }
     }
 }
@@ -179,26 +179,24 @@ mod tests {
     fn persistence_categories_preserve_boxed_cause() {
         let cause = || Box::new(io::Error::other("original cause")) as Box<dyn std::error::Error + Send + Sync>;
         assert!(matches!(
-            AggregateError::<Infallible>::from(PersistenceError::OptimisticLockError),
-            AggregateError::AggregateConflict
+            AttemptError::<Infallible>::from(PersistenceError::Conflict),
+            AttemptError::Conflict
         ));
         let cases = [
-            PersistenceError::ConnectionError(cause()),
-            PersistenceError::DeserializationError(cause()),
-            PersistenceError::UnknownError(cause()),
+            PersistenceError::Connection(cause()),
+            PersistenceError::Deserialization(cause()),
+            PersistenceError::Unexpected(cause()),
         ];
         for (index, error) in cases.into_iter().enumerate() {
-            let error = AggregateError::<Infallible>::from(error);
+            let error = AttemptError::<Infallible>::from(error);
             let boxed = match (index, error) {
-                (0, AggregateError::DatabaseConnectionError(e))
-                | (1, AggregateError::DeserializationError(e))
-                | (2, AggregateError::UnexpectedError(e)) => e,
+                (0, AttemptError::Connection(e)) | (1, AttemptError::Deserialization(e)) | (2, AttemptError::Unexpected(e)) => e,
                 _ => panic!("technical categories must not become conflicts"),
             };
             assert_eq!(boxed.downcast_ref::<io::Error>().unwrap().to_string(), "original cause");
         }
-        let AggregateError::UnexpectedError(boxed) =
-            AggregateError::<Infallible>::from(PersistenceError::SequenceGap { expected: 2, found: 5 })
+        let AttemptError::Unexpected(boxed) =
+            AttemptError::<Infallible>::from(PersistenceError::SequenceGap { expected: 2, found: 5 })
         else {
             panic!("a sequence gap is a technical category")
         };
@@ -232,11 +230,11 @@ mod tests {
                 serde_json::error::Category::Data | serde_json::error::Category::Syntax
             );
             let original = error.to_string();
-            let mapped = AggregateError::<Infallible>::from(error);
+            let mapped = AttemptError::<Infallible>::from(error);
             assert_eq!(mapped.to_string(), original);
             assert!(
-                matches!(mapped, AggregateError::DeserializationError(_) if deserialization)
-                    || matches!(mapped, AggregateError::UnexpectedError(_) if !deserialization)
+                matches!(mapped, AttemptError::Deserialization(_) if deserialization)
+                    || matches!(mapped, AttemptError::Unexpected(_) if !deserialization)
             );
         }
     }

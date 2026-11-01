@@ -1,7 +1,7 @@
 //! A task as data: what a command publishes with its events and what a delivery attempt carries.
 //!
 //! Business sequencing belongs to aggregate transitions. A task represents one
-//! replay-safe operation; delivery may be concurrent, out of order and repeated. Running tasks is the work of the
+//! repeat-safe operation; delivery may be concurrent, out of order and repeated. Running tasks is the work of the
 //! `worker` module.
 pub mod attempt;
 pub mod format;
@@ -34,7 +34,7 @@ use uuid::Uuid;
 ///     seat: String,
 /// }
 ///
-/// assert_eq!((SendETicket::TASK_TYPE, SendETicket::TASK_VERSION), ("send_e_ticket", 2));
+/// assert_eq!((SendETicket::TYPE, SendETicket::VERSION), ("send_e_ticket", 2));
 /// assert_eq!(TaskFormat::of::<SendETicket>().to_string(), "send_e_ticket v2");
 /// let task = NewTask::try_new(SendETicket { seat: "B4".into() }).unwrap();
 /// assert_eq!(task.payload()["seat"], "B4");
@@ -102,8 +102,8 @@ use uuid::Uuid;
 /// struct SendETicket {}
 ///
 /// impl Task for SendETicket {
-///     const TASK_TYPE: &'static str = "send_e_ticket";
-///     const TASK_VERSION: i32 = 0;
+///     const TYPE: &'static str = "send_e_ticket";
+///     const VERSION: i32 = 0;
 /// }
 ///
 /// fn main() {
@@ -111,8 +111,8 @@ use uuid::Uuid;
 /// }
 /// ```
 pub trait Task: Serialize {
-    const TASK_TYPE: &'static str;
-    const TASK_VERSION: i32;
+    const TYPE: &'static str;
+    const VERSION: i32;
     /// The fields kept in the task's metadata instead of its body, by name (`#[label]`); none by default.
     const LABELS: &'static [&'static str] = &[];
 }
@@ -121,18 +121,62 @@ pub trait Task: Serialize {
 /// no policy of its type (`task::policy::Policies`).
 pub const DEFAULT_MAX_ATTEMPTS: NonZeroU16 = NonZeroU16::new(10).unwrap();
 
-#[derive(Clone, Debug, Default, PartialEq)]
-pub enum TaskSchedule {
-    #[default]
+/// When a task becomes eligible: at once, after a delay from the commit or at a time. Built by [`now`](Self::now),
+/// [`after`](Self::after) (the one that can refuse) or [`at`](Self::at).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct TaskSchedule {
+    kind: ScheduleKind,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ScheduleKind {
     Now,
     After(Duration),
     At(DateTime<Utc>),
 }
+
+impl Default for TaskSchedule {
+    fn default() -> Self {
+        Self::now()
+    }
+}
+
 impl TaskSchedule {
-    fn validate(&self) -> Result<(), TaskValidationError> {
-        match self {
-            Self::After(delay) if delay.as_millis() > i64::MAX as u128 => Err(TaskValidationError::InvalidSchedule),
-            Self::After(_) | Self::Now | Self::At(_) => Ok(()),
+    /// Eligible at once.
+    pub fn now() -> Self {
+        Self { kind: ScheduleKind::Now }
+    }
+
+    /// Eligible `delay` after the commit. Refused when the delay in milliseconds does not fit a 64-bit integer.
+    pub fn after(delay: Duration) -> Result<Self, TaskValidationError> {
+        if delay.as_millis() > i64::MAX as u128 {
+            return Err(TaskValidationError::DelayTooLong);
+        }
+        Ok(Self {
+            kind: ScheduleKind::After(delay),
+        })
+    }
+
+    /// Eligible at the time `at`.
+    pub fn at(at: DateTime<Utc>) -> Self {
+        Self {
+            kind: ScheduleKind::At(at),
+        }
+    }
+
+    /// The delay after the commit, for a schedule built by [`after`](Self::after).
+    pub fn delay(&self) -> Option<Duration> {
+        match self.kind {
+            ScheduleKind::After(delay) => Some(delay),
+            ScheduleKind::Now | ScheduleKind::At(_) => None,
+        }
+    }
+
+    /// The time, for a schedule built by [`at`](Self::at).
+    pub fn time(&self) -> Option<DateTime<Utc>> {
+        match self.kind {
+            ScheduleKind::At(at) => Some(at),
+            ScheduleKind::Now | ScheduleKind::After(_) => None,
         }
     }
 }
@@ -176,29 +220,27 @@ impl NewTask {
             payload,
             metadata: json!({}),
             labels: &[],
-            schedule: TaskSchedule::Now,
+            schedule: TaskSchedule::now(),
             max_attempts: DEFAULT_MAX_ATTEMPTS,
         })
     }
-    pub fn with_schedule(mut self, schedule: TaskSchedule) -> Result<Self, TaskValidationError> {
-        schedule.validate()?;
+    #[must_use]
+    pub fn with_schedule(mut self, schedule: TaskSchedule) -> Self {
         self.schedule = schedule;
-        Ok(self)
+        self
     }
-    /// Replaces the metadata with `metadata`, an object, but keeps the labels [`try_new`](Self::try_new) moved here from the
+    /// Replaces the metadata with the object `metadata`, but keeps the labels [`try_new`](Self::try_new) moved here from the
     /// payload: the handler decodes the payload with them, so a label is never lost, and a key of `metadata` that names
     /// a label keeps the label's value. A task without labels gets `metadata` as it is.
-    pub fn with_metadata(mut self, metadata: Value) -> Result<Self, TaskValidationError> {
-        let Value::Object(mut metadata) = metadata else {
-            return Err(TaskValidationError::MetadataNotObject);
-        };
+    #[must_use]
+    pub fn with_metadata(mut self, mut metadata: Map<String, Value>) -> Self {
         for label in self.labels {
             if let Some(value) = self.metadata.get_mut(*label).map(Value::take) {
                 metadata.insert((*label).to_owned(), value);
             }
         }
         self.metadata = Value::Object(metadata);
-        Ok(self)
+        self
     }
     /// Insert `entries` into the metadata object, replacing equal keys. Metadata is always an
     /// object, so nothing can fail.
@@ -250,8 +292,8 @@ pub enum TaskValidationError {
     MetadataNotObject,
     #[error("delivery attempt must be positive")]
     InvalidAttempt,
-    #[error("task schedule delay is not representable")]
-    InvalidSchedule,
+    #[error("task schedule delay is too long")]
+    DelayTooLong,
 }
 /// Moves the keys `labels` of the `payload` object to the `metadata` object; a key the payload lacks moves nothing.
 /// Both are objects: every constructor validates them. Were one not (a bug, logged), nothing moves.
@@ -315,20 +357,25 @@ mod tests {
         assert_eq!(task.format().to_string(), "dummy_task v1");
         assert_eq!(task.max_attempts().get(), 10);
         assert_eq!(task.metadata(), &json!({}));
-        assert_eq!(task.schedule(), &TaskSchedule::Now);
+        assert_eq!(task.schedule(), &TaskSchedule::now());
         let id = task.id();
         let task = task
-            .with_metadata(json!({"trace": "test"}))
-            .unwrap()
+            .with_metadata(serde_json::from_value(json!({"trace": "test"})).unwrap())
             .with_max_attempts(NonZeroU16::new(2).unwrap())
-            .with_schedule(TaskSchedule::After(Duration::ZERO))
-            .unwrap();
+            .with_schedule(TaskSchedule::after(Duration::ZERO).unwrap());
         assert_eq!(task.id(), id);
         assert_eq!(task.max_attempts().get(), 2);
-        assert!(task.clone().with_metadata(json!([])).is_err());
-        assert!(task.clone().with_schedule(TaskSchedule::After(Duration::MAX)).is_err());
-        assert!(task.clone().with_schedule(TaskSchedule::Now).is_ok());
-        assert!(task.with_schedule(TaskSchedule::At(Utc::now())).is_ok());
+        assert_eq!(task.metadata(), &json!({"trace": "test"}));
+        assert_eq!(task.schedule().delay(), Some(Duration::ZERO));
+        assert_eq!(TaskSchedule::after(Duration::MAX), Err(TaskValidationError::DelayTooLong));
+        assert_eq!(TaskSchedule::now().delay(), None);
+        assert_eq!(TaskSchedule::now().time(), None);
+        let moment = Utc::now();
+        assert_eq!(
+            (TaskSchedule::at(moment).time(), TaskSchedule::at(moment).delay()),
+            (Some(moment), None)
+        );
+        assert_eq!(TaskSchedule::default(), TaskSchedule::now());
         assert_eq!(TaskFormat::try_new("", 1), Err(TaskFormatError::EmptyType));
         assert_eq!(TaskFormat::try_new("valid", 0), Err(TaskFormatError::InvalidVersion));
         assert!(NewTask::from_payload(TaskFormat::try_new("valid", 1).unwrap(), json!([])).is_err());
@@ -339,8 +386,8 @@ mod tests {
             }
         }
         impl Task for Broken {
-            const TASK_TYPE: &'static str = "broken";
-            const TASK_VERSION: i32 = 1;
+            const TYPE: &'static str = "broken";
+            const VERSION: i32 = 1;
         }
         assert_eq!(NewTask::try_new(Broken), Err(TaskValidationError::Serialization));
     }
@@ -367,8 +414,8 @@ mod tests {
     }
 
     impl Task for Labelled {
-        const TASK_TYPE: &'static str = "labelled";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "labelled";
+        const VERSION: i32 = 1;
         const LABELS: &'static [&'static str] = &["tenant", "absent"];
     }
 
@@ -416,14 +463,15 @@ mod tests {
         })
         .unwrap();
         assert_eq!(
-            labelled.clone().with_metadata(json!({ "trace": "t-1" })).unwrap().metadata(),
+            labelled
+                .clone()
+                .with_metadata(serde_json::from_value(json!({ "trace": "t-1" })).unwrap())
+                .metadata(),
             &json!({ "trace": "t-1", "tenant": "acme" })
         );
         let renamed = labelled
-            .with_metadata(json!({ "tenant": "other", "trace": "t-1" }))
-            .unwrap()
-            .with_metadata(json!({ "trace": "t-2" }))
-            .unwrap();
+            .with_metadata(serde_json::from_value(json!({ "tenant": "other", "trace": "t-1" })).unwrap())
+            .with_metadata(serde_json::from_value(json!({ "trace": "t-2" })).unwrap());
         assert_eq!(
             renamed.metadata(),
             &json!({ "trace": "t-2", "tenant": "acme" }),
@@ -436,7 +484,9 @@ mod tests {
         );
         let unlabelled = NewTask::try_new(DummyTask { value: "runtime" }).unwrap();
         assert_eq!(
-            unlabelled.with_metadata(json!({ "tenant": "t-1" })).unwrap().metadata(),
+            unlabelled
+                .with_metadata(serde_json::from_value(json!({ "tenant": "t-1" })).unwrap())
+                .metadata(),
             &json!({ "tenant": "t-1" }),
             "without labels the metadata is the caller's"
         );
@@ -490,11 +540,9 @@ mod tests {
     fn with_id_changes_only_the_id() {
         let task = NewTask::try_new(DummyTask { value: "runtime" })
             .unwrap()
-            .with_metadata(json!({"trace": "test"}))
-            .unwrap()
+            .with_metadata(serde_json::from_value(json!({"trace": "test"})).unwrap())
             .with_max_attempts(NonZeroU16::new(3).unwrap())
-            .with_schedule(TaskSchedule::After(Duration::from_secs(2)))
-            .unwrap();
+            .with_schedule(TaskSchedule::after(Duration::from_secs(2)).unwrap());
         let id = Uuid::now_v7();
         let renamed = task.clone().with_id(id);
         assert_eq!(renamed.id(), id);

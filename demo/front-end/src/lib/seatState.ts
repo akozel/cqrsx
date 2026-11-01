@@ -1,4 +1,4 @@
-// lib/seatState.ts — a pure function, covered by tests (PLAN.md §8.6).
+// lib/seatState.ts — a pure function, covered by tests (DESIGN.md §4.7).
 import type { ConcertHallView, HistoryState } from '@/types/domain'
 
 export type SeatUiState = 'free' | 'booked' | 'mine' | 'unknown'

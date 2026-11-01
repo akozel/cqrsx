@@ -1,0 +1,449 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Read path</title>
+<meta name="description" content="How a committed event reaches a view in cqrsx: the projection processor, its checkpoint and lease, the journal horizon, failures and rebuilds.">
+<style>
+/* Layout: one reading column (~72ch) for prose; figures and tables break out to 1120px and scroll sideways on phones. */
+:root {
+  --bg: #f3f5f7; --surface: #ffffff; --frame: #eef2f6; --ink: #131920; --ink-2: #465263; --muted: #6c7787;
+  --rule: #d4dbe3; --axis: #b9c2cd; --accent: #0a6e8a; --accent-soft: #e0eff4; --warn: #8f5400; --warn-soft: #fbf0de;
+  --crit: #b42f2f; --crit-soft: #fbe7e7; --band-a: #f1f4f8; --band-b: #ecf5f7; --code-bg: #edf1f5;
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  --text-col: 72ch; --wide: 1120px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+    --rule: #2c343e; --axis: #3a4552; --accent: #4cb6d4; --accent-soft: #15303a; --warn: #e3a23b; --warn-soft: #2e2413;
+    --crit: #ef6b6b; --crit-soft: #331b1d; --band-a: #141a21; --band-b: #12212a; --code-bg: #1d242d; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+  --rule: #2c343e; --axis: #3a4552; --accent: #4cb6d4; --accent-soft: #15303a; --warn: #e3a23b; --warn-soft: #2e2413;
+  --crit: #ef6b6b; --crit-soft: #331b1d; --band-a: #141a21; --band-b: #12212a; --code-bg: #1d242d; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+.page { max-width: var(--wide); margin: 0 auto; display: grid; gap: 56px; }
+.prose { max-width: var(--text-col); }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; color: var(--ink); }
+h1 { font-size: clamp(2rem, 5vw, 2.9rem); line-height: 1.08; font-weight: 650; letter-spacing: -0.015em; }
+h2 { font-size: 1.65rem; line-height: 1.2; font-weight: 650; }
+h3 { font-size: 1.15rem; line-height: 1.3; font-weight: 600; margin-top: 8px; }
+p { margin: 0; }
+section { display: grid; gap: 18px; min-width: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 0.05em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+/* Navigation between the pages */
+.topnav { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding: 14px 0 12px; border-bottom: 1px solid var(--rule);
+  font-size: 0.9rem; }
+.topnav .home { font-family: var(--font-mono); font-weight: 600; color: var(--ink); text-decoration: none; margin-right: 6px; }
+.topnav a { color: var(--ink-2); text-decoration: none; }
+.topnav a:hover { color: var(--accent); }
+.topnav a[aria-current="page"] { color: var(--accent); font-weight: 600; }
+.topnav .sep { color: var(--rule); }
+
+/* Header */
+.hero { display: grid; gap: 18px; padding-top: 32px; }
+.lede { font-size: 1.1rem; color: var(--ink-2); max-width: var(--text-col); }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0; margin: 8px 0 0; border-top: 2px solid var(--ink); }
+.facts > div { padding: 14px 18px 4px 0; display: grid; gap: 6px; align-content: start; }
+.facts > div + div { padding-left: 18px; border-left: 1px solid var(--rule); }
+.facts dt { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.facts dd { margin: 0; font-size: 0.97rem; }
+@media (max-width: 760px) { .facts > div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--rule); } }
+.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.92rem; }
+.toc a { text-decoration: none; border-bottom: 1px solid var(--rule); color: var(--ink-2); }
+.toc a:hover { color: var(--accent); border-color: var(--accent); }
+
+/* Figures */
+figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.diagram { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px; }
+.diagram svg { display: block; width: 100%; height: auto; }
+figcaption { font-size: 0.9rem; color: var(--ink-2); max-width: var(--text-col); }
+svg text { font-family: var(--font-body); fill: var(--ink); }
+.t-title { font-size: 13.5px; font-weight: 600; }
+.t-sub { font-size: 12px; fill: var(--ink-2); }
+.t-mono { font-family: var(--font-mono); font-size: 12px; }
+.t-label { font-size: 11.5px; fill: var(--ink-2); }
+.t-cap { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; fill: var(--muted); }
+.t-acc { fill: var(--accent); }
+.t-crit { fill: var(--crit); }
+.t-warn { fill: var(--warn); }
+.frame { fill: var(--frame); stroke: var(--rule); }
+.box { fill: var(--surface); stroke: var(--axis); stroke-width: 1; }
+.box-acc { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.box-warn { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; }
+.box-crit { fill: var(--crit-soft); stroke: var(--crit); stroke-width: 1.5; }
+.note { fill: var(--surface); stroke: var(--axis); stroke-dasharray: 3 3; }
+.ln { stroke: var(--ink-2); stroke-width: 1.5; fill: none; }
+.ln-acc { stroke: var(--accent); stroke-width: 2; fill: none; }
+.ln-mut { stroke: var(--muted); stroke-width: 1.25; fill: none; }
+.ln-crit { stroke: var(--crit); stroke-width: 1.5; fill: none; }
+.dash { stroke-dasharray: 5 4; }
+.life { stroke: var(--axis); stroke-width: 1; }
+.band-a { fill: var(--band-a); }
+.band-b { fill: var(--band-b); }
+.m-ink { fill: var(--ink-2); }
+.m-acc { fill: var(--accent); }
+.m-mut { fill: var(--muted); }
+.m-crit { fill: var(--crit); }
+.tx-done { fill: var(--frame); stroke: var(--ink-2); stroke-width: 1.25; }
+.tx-open { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.tx-lost { fill: var(--crit-soft); stroke: var(--crit); stroke-width: 1.5; }
+.tx-head { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.wait-zone { fill: var(--band-a); stroke: var(--rule); stroke-dasharray: 3 3; }
+
+/* Lists of parts and guarantees */
+.parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px 28px; margin: 0; }
+.parts > div { display: grid; gap: 4px; align-content: start; border-top: 1px solid var(--rule); padding-top: 10px; }
+.parts dt { font-weight: 600; }
+.parts dd { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 28px; }
+.two > div { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.verdict { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+.verdict::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--accent); }
+.verdict.no::before { background: var(--warn); }
+.claims { display: grid; gap: 12px; margin: 0; }
+.claims > div { display: grid; gap: 2px; }
+.claims dt { font-weight: 600; }
+.claims dd { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+.g { font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+
+/* Tables */
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; border-bottom: 1.5px solid var(--ink-2); }
+td:first-child { font-weight: 600; }
+.steps td:first-child { min-width: 9em; }
+.steps td:nth-child(3) { font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-2); min-width: 15em; }
+.steps, .weak { min-width: 860px; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+.tablewrap table tr:last-child td { border-bottom: 0; }
+
+/* Callouts and lists */
+.math { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.math > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
+.math .k { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.math .v { font-size: 1.25rem; font-weight: 650; font-family: var(--font-display); }
+.math .d { font-size: 0.9rem; color: var(--ink-2); }
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: var(--text-col); }
+.foot { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; max-width: var(--text-col); }
+</style>
+</head>
+<body>
+<div class="page">
+<nav class="topnav" aria-label="Documentation"><a class="home" href="../README.md">cqrsx</a> <a href="command-path.html">Command path</a> <a href="read-path.html" aria-current="page">Read path</a> <a href="task-path.html">Task path</a> <span class="sep" aria-hidden="true">|</span> <a href="../README.md">README</a> <a href="components.md">Components</a> <a href="crates.md">Crates</a> <a href="typical_scenario.md">Typical scenario</a> <a href="guarantees.md">Guarantees</a></nav>
+<header class="hero">
+  <p class="eyebrow">cqrsx · how it works · 2 of 3</p>
+  <h1>Read path: from the commit to the view</h1>
+  <p class="lede">What happens to an event after its command committed and before the document of a view shows it: the projection processor that reads the journal from its checkpoint, the lanes that apply the events key by key, the checkpoint that follows the applied pages, and the lease that keeps one owner per view. What is guaranteed, where the weak spots are and how the path behaves under load.</p>
+  <dl class="facts">
+    <div><dt>Guarantee</dt><dd>An accepted command is already in the journal. A view catches up by itself: no event is lost and none is applied twice, even when a node or the view store goes down.</dd></div>
+    <div><dt>Latency</dt><dd>A commit wakes the processors of its own node at once (after the wake delay, if one is set); on another node the owner finds it at its next poll, every 250&nbsp;ms by default.</dd></div>
+    <div><dt>One owner per view</dt><dd>One process applies a view at a time, under a lease. It works in parallel across keys and strictly in order within a key.</dd></div>
+  </dl>
+  <nav class="toc" aria-label="Sections">
+    <a href="#flow">Overall diagram</a><a href="#steps">One event step by step</a><a href="#horizon">The journal's horizon</a><a href="#failures">Failures and pauses</a><a href="#rebuilds">Rebuilds</a><a href="#guarantees">Guarantees</a><a href="#weak">Weak spots</a><a href="#scale">Load and scaling</a><a href="#further">Further reading</a>
+  </nav>
+</header>
+
+<section id="flow">
+  <h2>Overall diagram</h2>
+  <p class="prose">Writing and reading are apart. The command executor answers as soon as the event is committed. A background task, the projection processor of the view, reads the journal of the view's aggregate type from its checkpoint and writes the documents. The engine runs one <code>ProjectionProcessor</code> per view and aggregate type in every process; only the holder of the checkpoint's lease works, the others wait. In the demo the views <code>concert_halls</code> and <code>fan_wallets</code> each have such a processor, in MongoDB.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 1000 600" role="img" aria-label="On node A the command executor commits an event to the PostgreSQL journal and wakes the projection processor of its node. The processor reads a page of the journal below the horizon, hands the events of each key to that key's lane, the lanes apply them through the view projection to the documents in the view store, and the processor moves its checkpoint in the same store. The processor on node B has no lease and tries to claim the checkpoint at every poll." style="min-width:820px">
+        <defs>
+          <marker id="r1-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-ink" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="r1-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-acc" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="r1-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-mut" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <rect class="frame" x="16" y="16" width="470" height="568" rx="12"/>
+        <text class="t-cap" x="32" y="40">NODE A · OWNER OF THE CHECKPOINT</text>
+        <rect class="frame" x="556" y="16" width="250" height="290" rx="12"/>
+        <text class="t-cap" x="572" y="40">POSTGRESQL · JOURNAL</text>
+        <rect class="frame" x="556" y="330" width="250" height="254" rx="12"/>
+        <text class="t-cap" x="572" y="354">VIEW STORE</text>
+        <text class="t-label" x="572" y="372">MongoDB, PostgreSQL or memory</text>
+        <rect class="frame" x="830" y="16" width="154" height="568" rx="12"/>
+        <text class="t-cap" x="846" y="40">NODE B</text>
+        <!-- node A -->
+        <rect class="box" x="36" y="56" width="220" height="56" rx="8"/>
+        <text class="t-title" x="146" y="79" text-anchor="middle">Command executor</text>
+        <text class="t-sub" x="146" y="98" text-anchor="middle">commits, then wakes</text>
+        <rect class="box-acc" x="36" y="176" width="430" height="96" rx="8"/>
+        <text class="t-title" x="52" y="200">ProjectionProcessor (owner)</text>
+        <text class="t-sub" x="52" y="221">reads a page from its checkpoint: up to 1000 events</text>
+        <text class="t-sub" x="52" y="240">keeps up to 63 pages in flight; moves the checkpoint</text>
+        <text class="t-sub" x="52" y="259">extends its lease every third of it (LeaseKeeper)</text>
+        <rect class="box-acc" x="36" y="318" width="430" height="64" rx="8"/>
+        <text class="t-title" x="251" y="342" text-anchor="middle">Ordered delivery: one lane per busy key</text>
+        <text class="t-sub" x="251" y="362" text-anchor="middle">≤ 32 jobs of a key per call · ≤ 16 documents written at once</text>
+        <rect class="box-acc" x="36" y="426" width="430" height="64" rx="8"/>
+        <text class="t-title" x="251" y="450" text-anchor="middle">ViewProjection</text>
+        <text class="t-sub" x="251" y="470" text-anchor="middle">skips applied events · refuses a gap · writes at the read revision</text>
+        <rect class="box" x="36" y="516" width="430" height="52" rx="8"/>
+        <text class="t-title" x="251" y="538" text-anchor="middle">ProjectionObserver</text>
+        <text class="t-sub" x="251" y="556" text-anchor="middle">applied · advanced · failed · rebuilt · lease · waiting</text>
+        <line class="ln-acc dash" x1="146" y1="112" x2="146" y2="174" marker-end="url(#r1-acc)"/>
+        <text class="t-label t-acc" x="156" y="140">wake: this node only</text>
+        <text class="t-label t-acc" x="156" y="156">(CommitWakeup)</text>
+        <line class="ln-acc" x1="251" y1="272" x2="251" y2="316" marker-end="url(#r1-acc)"/>
+        <text class="t-label" x="261" y="298">the events of each key</text>
+        <line class="ln-acc" x1="251" y1="382" x2="251" y2="424" marker-end="url(#r1-acc)"/>
+        <text class="t-label" x="261" y="408">a batch of one key</text>
+        <path class="ln-mut" d="M36,226 H26 V542 H34" marker-end="url(#r1-mut)"/>
+        <!-- journal -->
+        <rect class="box-acc" x="576" y="58" width="210" height="72" rx="6"/>
+        <text class="t-mono" x="681" y="80" text-anchor="middle" style="font-weight:600">events</text>
+        <text class="t-sub" x="681" y="99" text-anchor="middle">tx = writing transaction's id</text>
+        <text class="t-sub" x="681" y="117" text-anchor="middle">index (aggregate_type, tx, …)</text>
+        <rect class="note" x="576" y="150" width="210" height="136" rx="6"/>
+        <text class="t-mono" x="588" y="172">SELECT … FROM events</text>
+        <text class="t-mono" x="588" y="192">WHERE aggregate_type = $1</text>
+        <text class="t-mono" x="588" y="212">AND tx &gt; checkpoint</text>
+        <text class="t-mono" x="588" y="232">AND tx &lt; horizon</text>
+        <text class="t-mono" x="588" y="252">ORDER BY tx, aggregate_id,</text>
+        <text class="t-mono" x="588" y="272">  sequence LIMIT 1000</text>
+        <line class="ln" x1="256" y1="76" x2="574" y2="76" marker-end="url(#r1-ink)"/>
+        <text class="t-label" x="415" y="68" text-anchor="middle">commit</text>
+        <line class="ln-acc" x1="576" y1="214" x2="468" y2="214" marker-end="url(#r1-acc)"/>
+        <text class="t-label t-acc" x="521" y="206" text-anchor="middle">page</text>
+        <!-- view store -->
+        <rect class="box-acc" x="576" y="384" width="210" height="76" rx="6"/>
+        <text class="t-mono" x="681" y="406" text-anchor="middle">projection_checkpoints</text>
+        <text class="t-sub" x="681" y="426" text-anchor="middle">position · delivered · failures</text>
+        <text class="t-label" x="681" y="444" text-anchor="middle">owner · lease_token · lease_until</text>
+        <rect class="box-acc" x="576" y="488" width="210" height="76" rx="6"/>
+        <text class="t-title" x="681" y="510" text-anchor="middle">Documents of the view</text>
+        <text class="t-sub" x="681" y="530" text-anchor="middle">one per aggregate</text>
+        <text class="t-sub" x="681" y="548" text-anchor="middle">revision · last_sequence</text>
+        <path class="ln-acc" d="M466,458 H530 V524 H574" marker-end="url(#r1-acc)"/>
+        <path class="ln-acc dash" d="M466,250 H516 V420 H574" marker-end="url(#r1-acc)"/>
+        <!-- node B -->
+        <rect class="box" x="844" y="58" width="126" height="56" rx="8"/>
+        <text class="t-title" x="907" y="81" text-anchor="middle">Executor</text>
+        <text class="t-sub" x="907" y="100" text-anchor="middle">its own commits</text>
+        <line class="ln-mut" x1="844" y1="100" x2="788" y2="100" marker-end="url(#r1-mut)"/>
+        <text class="t-label" x="846" y="148">A commit on B</text>
+        <text class="t-label" x="846" y="164">wakes nobody on A:</text>
+        <text class="t-label" x="846" y="180">the owner finds it</text>
+        <text class="t-label" x="846" y="196">at its next poll.</text>
+        <rect class="note" x="844" y="384" width="126" height="76" rx="8"/>
+        <text class="t-title" x="907" y="406" text-anchor="middle">Processor</text>
+        <text class="t-sub" x="907" y="425" text-anchor="middle">no lease: tries</text>
+        <text class="t-sub" x="907" y="443" text-anchor="middle">every poll</text>
+        <line class="ln-mut dash" x1="844" y1="422" x2="788" y2="422" marker-end="url(#r1-mut)"/>
+      </svg>
+    </div>
+    <figcaption>Coloured arrows: the way of the view. The owner reads the journal in PostgreSQL and writes both the documents and its checkpoint to the view store, the checkpoint with its lease token. Node B runs the same processor; without the lease it only registers the row and tries to claim it.</figcaption>
+  </figure>
+  <dl class="parts">
+    <div><dt>Journal and position</dt><dd>Every event stores in <code>tx</code> the id of the transaction that wrote it (<code>xid8</code>, default <code>pg_current_xact_id()</code>): its <code>Position</code> in the journal of its aggregate type. Inside one aggregate the positions follow the sequence.</dd></div>
+    <div><dt>Wake-up</dt><dd><code>CommitWakeup</code>, one per aggregate type, shared by its executor and its processors. A signal in memory without data; it never crosses processes.</dd></div>
+    <div><dt>Processor</dt><dd><code>ProjectionProcessor</code>, configured by <code>ProcessorConfig</code>. The engine gives it the view's <code>ViewProjection</code>, reads the journal through a pool of its own (the projection pool, 4 connections by default) and runs it under <code>ProjectionRuntime</code>.</dd></div>
+    <div><dt>Lanes</dt><dd>The ordered delivery: a bounded buffer per busy key (<code>DeliveryLimits</code>: 64 jobs, batches of 32). A key has at most one lane, so the handler never runs twice at once for one key.</dd></div>
+    <div><dt>View projection</dt><dd><code>ViewProjection</code> over a <code>ViewRepository</code>: <code>MongoViewRepository</code>, <code>PostgresViewRepository</code> or the one in memory. A document is the fold of <code>View::apply</code> over the events <code>1..=last_sequence</code> of its aggregate.</dd></div>
+    <div><dt>Checkpoint</dt><dd>One row per view and aggregate type behind <code>CheckpointStore</code> (<code>MongoCheckpointStore</code>, <code>PostgresCheckpointStore</code>): <code>position</code>, <code>delivered</code>, the lease (<code>owner</code>, <code>lease_token</code>, <code>lease_until</code>), <code>failures</code>, <code>last_error</code> and the state of a rebuild.</dd></div>
+  </dl>
+</section>
+
+<section id="steps">
+  <h2>One event step by step</h2>
+  <p class="prose">The same booking as on the <a href="command-path.html#steps">command path</a>: the concert has committed <code>SeatBooked</code>. Here is how it reaches the document of <code>concert_halls</code>.</p>
+  <div class="tablewrap">
+    <table class="steps">
+      <thead><tr><th>Step</th><th>What happens</th><th>Storage</th><th>If it fails here</th></tr></thead>
+      <tbody>
+        <tr><td>1. Wake</td><td>The executor wakes the processors of <code>Concert</code> on its node before it answers. An owner waiting for work goes on at once; an owner on another node sees nothing until its poll.</td><td>none</td><td>A node that dies right after the commit: the event is in the journal, and the owner finds it from its checkpoint.</td></tr>
+        <tr><td>2. Wake delay</td><td>The owner waits <code>wake_delay</code> so that the commits of a burst share one page. The library's default is zero; the engine reads <code>PROJECTION_WAKE_DELAY_MS</code>, and the demo sets 10&nbsp;ms. It is at most the poll interval.</td><td>none</td><td>A stop or a lost lease ends the wait.</td></tr>
+        <tr><td>3. Read a page</td><td><code>EventRepository::feed_after(checkpoint, 1000)</code>: the events above the read position and below the <a href="#horizon">horizon</a>, in the order of <code>tx</code>. A full page is extended to the end of its last transaction, so a page never cuts a commit in two. A page shorter than its size means the journal is read out: the next read waits for a wake-up or the poll.</td><td>SELECT … FROM events WHERE aggregate_type = $1 AND tx &gt; $2 AND tx &lt; pg_snapshot_xmin(pg_current_snapshot()) ORDER BY tx, aggregate_id, sequence LIMIT $3</td><td>A read error is a failed round: a <a href="#failures">pause</a>, then a read from the checkpoint. An event that does not decode cuts the page before its transaction and stops the reading there.</td></tr>
+        <tr><td>4. Hand out</td><td>The page is grouped by key. The owner reserves a place in each key's buffer and then delivers every key's events without waiting. It may read the next page while earlier ones are in flight, up to 63 pages (the buffer of 64 less one place for a rebuild).</td><td>none</td><td>The lease is lost or the process stops: a page is never half handed out.</td></tr>
+        <tr><td>5. Apply</td><td>The key's lane takes up to 32 queued jobs into one call of <code>ViewProjection::handle</code>. It loads the document, skips the events it already has, applies the event <code>last_sequence + 1</code> and the ones after it in turn, and writes the document only if it is still at the revision it read. Up to 16 documents are written at once.</td><td>MongoDB: find_one {_id}; insert_one for a new document, else update_one {_id, revision} with the next revision and last_sequence</td><td>A revision conflict: reload and apply again, up to 16 attempts. A gap (an event above <code>last_sequence + 1</code>): nothing written, the key is rebuilt from its history in place. Another error: the round fails.</td></tr>
+        <tr><td>6. Advance</td><td>When a page and every page before it have all their receipts, the checkpoint moves to the page's last position and <code>delivered</code> grows by its events.</td><td>CheckpointStore::advance: one update of the row, filtered by the lease token</td><td>Another token on the row: the lease is lost and the owner stops. A crash before the advance: the next owner reads the page again; the documents skip what they have.</td></tr>
+        <tr><td>7. Report</td><td>The observer hears <code>applied</code> for each key of the page (the aggregate id, its last sequence, the events and the page's position) and <code>advanced</code> for the checkpoint. The demo's activity feed sends <code>applied</code> as <code>projection.applied</code>, and the screen re-reads the hall.</td><td>none</td><td>An observer must return quickly and never panic: a panic stops the processor.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="prose">In the background the owner extends its lease every third of it (every 3.3&nbsp;s with the default 10&nbsp;s lease) and, once per poll interval, takes the rebuild requests from its row. Processors without the lease try to claim the row once per poll interval; they get it only when the owner releases it or its lease runs out. When the journal has nothing new, on the first idle poll and every eighth after it the owner looks at the journal's head: a head above the read position means a slower transaction holds the horizon (<code>Waiting::Horizon</code>).</p>
+</section>
+
+<section id="horizon">
+  <h2>The journal's horizon</h2>
+  <p class="prose">A transaction gets its id when it first writes, and transactions commit in any order. A reader that took everything visible could move its checkpoint past the event of a transaction that has not finished yet; when that transaction commits, its event lies behind the checkpoint and is never read. So a page stops at the horizon: the oldest transaction still running, <code>pg_snapshot_xmin(pg_current_snapshot())</code> of the reading statement. Everything below it has finished, so there are no holes. The page's <code>LIMIT</code> solves another problem: it bounds the size of a page.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 900 320" role="img" aria-label="Transactions 101 to 106; 103 and 106 still run. With the horizon the processor reads only ids below 103 and waits. Without it the processor would read 104 and 105, move the checkpoint to 105, and the event of transaction 103, committed later, would be lost." style="min-width:760px">
+        <text class="t-title" x="16" y="78">As it is</text>
+        <text class="t-label" x="16" y="96">read below the horizon</text>
+        <rect class="wait-zone" x="384" y="50" width="192" height="62" rx="6"/>
+        <text class="t-label" x="480" y="44" text-anchor="middle">wait until 103 finishes</text>
+        <rect class="tx-done" x="178" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="200" y="78" text-anchor="middle">101</text><text class="t-label" x="200" y="95" text-anchor="middle">done</text>
+        <rect class="tx-done" x="248" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="270" y="78" text-anchor="middle">102</text><text class="t-label" x="270" y="95" text-anchor="middle">done</text>
+        <rect class="tx-head" x="318" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="340" y="78" text-anchor="middle">103</text><text class="t-label" x="340" y="95" text-anchor="middle">runs</text>
+        <rect class="tx-done" x="388" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="410" y="78" text-anchor="middle">104</text><text class="t-label" x="410" y="95" text-anchor="middle">done</text>
+        <rect class="tx-done" x="458" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="480" y="78" text-anchor="middle">105</text><text class="t-label" x="480" y="95" text-anchor="middle">done</text>
+        <rect class="tx-open" x="528" y="58" width="44" height="44" rx="5"/><text class="t-mono" x="550" y="78" text-anchor="middle">106</text><text class="t-label" x="550" y="95" text-anchor="middle">runs</text>
+        <line class="ln" x1="305" y1="40" x2="305" y2="114" style="stroke-width:2"/>
+        <text class="t-label" x="305" y="128" text-anchor="middle">checkpoint</text>
+        <text class="t-label t-acc" x="340" y="144" text-anchor="middle">horizon = 103</text>
+        <text class="t-label" x="620" y="70">Page: tx &gt; 102 and tx &lt; 103,</text>
+        <text class="t-label" x="620" y="87">empty for now. 104 and 105 wait;</text>
+        <text class="t-label" x="620" y="104">the checkpoint stays at 102.</text>
+        <line class="life" x1="16" y1="170" x2="884" y2="170"/>
+        <text class="t-title" x="16" y="238">Without a horizon</text>
+        <text class="t-label" x="16" y="256">read all that is visible</text>
+        <rect class="tx-done" x="178" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="200" y="238" text-anchor="middle">101</text><text class="t-label" x="200" y="255" text-anchor="middle">done</text>
+        <rect class="tx-done" x="248" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="270" y="238" text-anchor="middle">102</text><text class="t-label" x="270" y="255" text-anchor="middle">done</text>
+        <rect class="tx-lost" x="318" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="340" y="238" text-anchor="middle">103</text><text class="t-label" x="340" y="255" text-anchor="middle">later</text>
+        <rect class="tx-done" x="388" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="410" y="238" text-anchor="middle">104</text><text class="t-label" x="410" y="255" text-anchor="middle">done</text>
+        <rect class="tx-done" x="458" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="480" y="238" text-anchor="middle">105</text><text class="t-label" x="480" y="255" text-anchor="middle">done</text>
+        <rect class="tx-open" x="528" y="218" width="44" height="44" rx="5"/><text class="t-mono" x="550" y="238" text-anchor="middle">106</text><text class="t-label" x="550" y="255" text-anchor="middle">runs</text>
+        <line class="ln" x1="515" y1="200" x2="515" y2="274" style="stroke-width:2"/>
+        <text class="t-label" x="515" y="194" text-anchor="middle">checkpoint</text>
+        <text class="t-label t-crit" x="340" y="288" text-anchor="middle">committed later,</text>
+        <text class="t-label t-crit" x="340" y="304" text-anchor="middle">left behind the checkpoint</text>
+        <text class="t-label" x="620" y="230">Read 104 and 105,</text>
+        <text class="t-label" x="620" y="247">the checkpoint moved to 105.</text>
+        <text class="t-label t-crit" x="620" y="264">The event of 103 is never</text>
+        <text class="t-label t-crit" x="620" y="281">read by the processor.</text>
+      </svg>
+    </div>
+    <figcaption>A dashed frame: the transaction still runs. With the horizon the processor waits for the oldest unfinished transaction; without it, the event of a slow transaction is lost.</figcaption>
+  </figure>
+  <p class="prose">The price of the horizon: fresh events wait for the slowest writing transaction in the database, even one of another application. A session left <em>idle in transaction</em> stops every view until PostgreSQL ends it; the demo's compose file ends it after 30&nbsp;seconds (<code>idle_in_transaction_session_timeout=30s</code>).</p>
+</section>
+
+<section id="failures">
+  <h2>Failures and pauses</h2>
+  <p class="prose">The checkpoint moves only behind the unbroken prefix of applied pages, so a failure stops it where it is. When a key fails, the owner stops reading, waits for every receipt still in flight, moves the checkpoint to the last transaction before the first one that touches the failed key, records the failure on the row (<code>failures</code>, <code>last_error</code>: a category and the handler's name, never a payload) and pauses. Then it clears its window and reads again from the checkpoint; the documents that already took the repeated events skip them. The pause is 0.5&nbsp;s after the first failure in a row and doubles up to 10&nbsp;s; an advance resets the count.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 1000 250" role="img" aria-label="Pages 7, 8 and 9 are in flight. Page 7 is applied and the checkpoint moves to its end, 804. In page 8 the key of transaction 812 failed: the checkpoint moves to 808, the last transaction before it. Page 9's receipts are awaited and the page is dropped. After the pause the owner reads again from 808." style="min-width:820px">
+        <text class="t-cap" x="16" y="30">THE WINDOW OF PAGES WHEN A KEY FAILS</text>
+        <rect class="tx-done" x="130" y="56" width="170" height="52" rx="6"/>
+        <text class="t-title" x="215" y="78" text-anchor="middle">page 7</text>
+        <text class="t-label" x="215" y="96" text-anchor="middle">tx 799–804, applied</text>
+        <rect class="frame" x="320" y="48" width="340" height="68" rx="8"/>
+        <text class="t-label" x="330" y="42">page 8</text>
+        <rect class="tx-done" x="332" y="58" width="72" height="48" rx="5"/><text class="t-mono" x="368" y="80" text-anchor="middle">805</text><text class="t-label" x="368" y="97" text-anchor="middle">applied</text>
+        <rect class="tx-done" x="414" y="58" width="72" height="48" rx="5"/><text class="t-mono" x="450" y="80" text-anchor="middle">808</text><text class="t-label" x="450" y="97" text-anchor="middle">applied</text>
+        <rect class="tx-lost" x="496" y="58" width="72" height="48" rx="5"/><text class="t-mono" x="532" y="80" text-anchor="middle">812</text><text class="t-label t-crit" x="532" y="97" text-anchor="middle">key failed</text>
+        <rect class="tx-done" x="578" y="58" width="72" height="48" rx="5"/><text class="t-mono" x="614" y="80" text-anchor="middle">815</text><text class="t-label" x="614" y="97" text-anchor="middle">applied</text>
+        <rect class="tx-open" x="680" y="56" width="170" height="52" rx="6"/>
+        <text class="t-title" x="765" y="78" text-anchor="middle">page 9</text>
+        <text class="t-label" x="765" y="96" text-anchor="middle">in flight, then dropped</text>
+        <line class="ln" x1="122" y1="44" x2="122" y2="122" style="stroke-width:2"/>
+        <text class="t-label" x="122" y="138" text-anchor="middle">before: 798</text>
+        <line class="ln-acc" x1="491" y1="44" x2="491" y2="122" style="stroke-width:2.5"/>
+        <text class="t-label t-acc" x="491" y="138" text-anchor="middle">after: 808</text>
+        <text class="t-label" x="16" y="176">1. Page 7 has all its receipts: the checkpoint moves to 804.</text>
+        <text class="t-label" x="16" y="196">2. The key of tx 812 failed: reading stops; the receipts of pages 8 and 9 are awaited; the checkpoint moves to 808, the failure is recorded.</text>
+        <text class="t-label" x="16" y="216">3. Pause 0.5 s (doubling up to 10 s), the window is cleared, the owner reads again from 808.</text>
+        <text class="t-label" x="16" y="236">4. 815 and page 9 come again; the documents that applied them skip them by their last_sequence.</text>
+      </svg>
+    </div>
+    <figcaption>A failure costs a repeat of the pages after it, not a loss: the documents keep track of what they have applied, and the checkpoint never passes a failed key.</figcaption>
+  </figure>
+  <ul class="plain">
+    <li><strong>A gap heals in place.</strong> A document that is behind the delivered events (<code>PersistenceError::SequenceGap</code>) writes nothing; the owner queues a rebuild of that key behind the failed job, and the page waits for the rebuild as for the job. The round does not fail.</li>
+    <li><strong>An event that does not decode</strong> cuts its page before its transaction and stops the reading there. The view stands at that place and repeats with the pause until the event can be read (an upcaster, a fix of the code).</li>
+    <li><strong>A lost lease</strong> (another token on the row, or no successful extension before the local deadline) ends the ownership at once; the processor goes back to claiming.</li>
+  </ul>
+</section>
+
+<section id="rebuilds">
+  <h2>Rebuilds</h2>
+  <p class="prose">A rebuild replaces a document with the fold of its aggregate's whole history (<code>RebuildableProjection::rebuild</code>). It runs through the same lanes as the live events, so a rebuild and the live events of one key never run at once, and the writes of both share the limit of 16. There are three kinds: the whole view (<code>CheckpointStore::request_rebuild</code> with a pace between the events of one key; the owner walks the keys of the journal 100 at a time and keeps its cursor on the row, so another owner continues it), one key (<code>request_rebuild_key</code>), and a key healed after a gap. Writes go on during a rebuild. A document that is ahead of the history the rebuild read is not rolled back: the history is read again, up to three times. The processor registers its row before every claim, so a row dropped together with the view store comes back at the start of the journal, and its next owner rebuilds every document from there.</p>
+  <p class="prose"><code>view::verify</code> checks a view: every document against the fold of the part of its history it has applied; a document behind its journal is not an error.</p>
+</section>
+
+<section id="guarantees">
+  <h2>Guarantees</h2>
+  <p class="prose">The numbers refer to <a href="guarantees.md">guarantees.md</a>.</p>
+  <div class="two">
+    <div>
+      <p class="verdict">Guaranteed</p>
+      <dl class="claims">
+        <div><dt>No loss <span class="g">G-24</span></dt><dd>The checkpoint moves only behind the unbroken prefix of applied pages and stops before the transaction of a failed key; the horizon never skips an unfinished transaction; after any failure reading starts again from the checkpoint.</dd></div>
+        <div><dt>No double application <span class="g">G-25</span></dt><dd>A document is the fold of the unbroken prefix <code>1..=last_sequence</code>: older events are skipped, a gap is refused before anything is written.</dd></div>
+        <div><dt>Order within a key <span class="g">G-24</span></dt><dd>One lane per key; its events are applied in journal order.</dd></div>
+        <div><dt>One writer of the checkpoint <span class="g">G-23</span></dt><dd>A lease with a token: a former owner cannot move the checkpoint. Documents are written at the revision they were read with, so of two writes of one revision only one passes.</dd></div>
+        <div><dt>Rebuilds without stopping writes <span class="g">G-26</span></dt><dd>A rebuild of the view, of a key or of a document with a gap ends in the fold of the history.</dd></div>
+        <div><dt>Commands do not wait for views <span class="g">G-09</span></dt><dd>The answer comes after the commit and the wake-up, not after the view. With the views in MongoDB, commands are accepted while MongoDB is down.</dd></div>
+        <div><dt>Verification <span class="g">G-28</span></dt><dd>A document equals the fold of the prefix it has applied.</dd></div>
+      </dl>
+    </div>
+    <div>
+      <p class="verdict no">Not guaranteed</p>
+      <dl class="claims">
+        <div><dt>Reading your own write</dt><dd>Right after the answer the document may still be old. A screen that must show the result waits for <code>applied</code> of its document (the demo: <code>projection.applied</code>).</dd></div>
+        <div><dt>Consistency between views</dt><dd>Each view has its own processor and checkpoint; two views of one event are updated independently, and a view fed by events born from tasks lags further.</dd></div>
+        <div><dt>A bound on the lag</dt><dd>If the owner cannot keep up, the lag grows; commands are not slowed down. <code>Cqrs::views().lag(name)</code> counts it up to the lag cap (100&nbsp;000 by default, <code>PROJECTION_LAG_CAP</code>).</dd></div>
+        <div><dt>Order across keys</dt><dd>Documents of different aggregates are written in parallel and independently.</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section id="weak">
+  <h2>Weak spots</h2>
+  <div class="tablewrap">
+    <table class="weak">
+      <thead><tr><th>Place</th><th>What happens</th><th>How the system reacts</th><th>What you see</th></tr></thead>
+      <tbody>
+        <tr><td>A long writing transaction</td><td>The horizon does not move.</td><td>Every view of the database stands; commands go on. PostgreSQL ends an idle transaction only if a timeout is set (the demo: 30&nbsp;s).</td><td>The lag grows; the observer hears <code>Waiting::Horizon</code>.</td></tr>
+        <tr><td>An event that cannot be applied</td><td>An event that does not decode, or a document whose write always fails.</td><td>The view stands at that place and repeats with a pause of up to 10&nbsp;s. There is no queue for bad events.</td><td><code>failures</code> and <code>last_error</code> on the row; the error log of the processor.</td></tr>
+        <tr><td>The view store is down</td><td>Neither documents nor the checkpoint can be written.</td><td>The owner cannot extend its lease and stops at its local deadline; every node keeps trying to claim. Commands are accepted. When the store is back, the next owner reads from the checkpoint.</td><td>The lag grows; the lease changes are logged.</td></tr>
+        <tr><td>The owner node dies</td><td>Its lease runs out at most one lease (10&nbsp;s by default) after its last extension.</td><td>Another node claims the row and reads from the checkpoint; repeats are skipped.</td><td>A new <code>owner</code> on the row; <code>lease</code> reports.</td></tr>
+        <tr><td>A command on another node</td><td>The wake-up does not cross processes.</td><td>The owner sees the event at its next poll, up to 250&nbsp;ms.</td><td>A small, steady lag.</td></tr>
+        <tr><td>More load on one view</td><td>A view has one owner.</td><td>More nodes do not make a view faster; the owner scales only inside its process.</td><td>CPU of the owner node; the lag.</td></tr>
+        <tr><td>The journal reset without the views</td><td>The checkpoint keeps the position of the old database, above the transaction ids of the new one.</td><td>The new events lie below the checkpoint and are never read. The journal and the view store are reset together (see the operations of <a href="../cqrsx-engine/README.md">cqrsx-engine</a>).</td><td>Views that stay empty while commands succeed.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="scale">
+  <h2>Load and scaling</h2>
+  <ul class="plain">
+    <li><strong>A hot aggregate</strong> is bounded on the <a href="command-path.html#weak">command path</a>, by its lock, not by its view: the view of one key takes the events of many commands in one batch.</li>
+    <li><strong>Inside the owner</strong> the work is parallel across keys (16 documents written at once, a window of 63 pages) and sequential within a key. A slow key slows itself: its buffer fills and its next page waits for space, while memory stays bounded.</li>
+    <li><strong>The wake delay</strong> trades a little latency for fewer writes: the commits of a burst land in one page, so a document is read and written once per batch instead of once per commit.</li>
+    <li><strong>More nodes</strong> add command capacity as long as the database has room, but not view capacity: a view has one owner. Splitting a view into ranges of keys with checkpoints of their own is not implemented.</li>
+    <li><strong>Measurements</strong> of the demo under load are made with the stand in <a href="../demo/load/README.md">demo/load</a>; this page states no numbers, since they belong to a stand and a version.</li>
+  </ul>
+</section>
+
+<section id="further">
+  <h2>Further reading</h2>
+  <ul class="plain">
+    <li><a href="components.md#inventory">Components, inventory</a>: the processor, the checkpoint store, the view projection and their settings.</li>
+    <li><a href="typical_scenario.md">A typical application</a>: views and queries in an application on the engine.</li>
+    <li><a href="guarantees.md">Guarantees</a> G-23 to G-28.</li>
+    <li><a href="../cqrsx-engine/README.md">cqrsx-engine</a>: the <code>PROJECTION_*</code> settings and the operations (rebuild, verify, status, resetting the databases together); <a href="crates.md">crates and their boundaries</a>.</li>
+    <li>Before: <a href="command-path.html">command path</a>. Beside: <a href="task-path.html">task path</a>.</li>
+  </ul>
+  <p class="foot">Verified against the code of <code>cqrsx::projection</code> (processor, owner, lease, delivery, rebuild, checkpoint), <code>cqrsx::view</code>, <code>cqrsx::journal</code> (feed, wake-up), <code>cqrsx_postgres</code> (feed SQL, checkpoint store), <code>cqrsx_mongodb</code> and <code>cqrsx_engine</code>. Defaults are the library's; the engine reads them from <code>PROJECTION_*</code> variables under the application's prefix.</p>
+</section>
+</div>
+</body>
+</html>

@@ -77,7 +77,7 @@ pub struct RebuildState {
 
 /// The answer to a rebuild request: one rebuild at a time per row.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RebuildRequest {
+pub enum RebuildReply {
     Accepted,
     AlreadyRunning,
 }
@@ -85,8 +85,8 @@ pub enum RebuildRequest {
 /// What the owner takes from the row on one poll: a requested rebuild of the whole journal with its pace,
 /// and the keys requested one by one (removed from the row by the take).
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub struct RebuildRequests {
-    pub rebuild: Option<Duration>,
+pub struct PendingRebuilds {
+    pub rebuild_pace: Option<Duration>,
     pub keys: Vec<String>,
 }
 
@@ -97,7 +97,7 @@ pub struct CheckpointStatus {
     pub aggregate_type: String,
     pub position: Position,
     /// Events delivered live since the row was created.
-    pub applied: u64,
+    pub delivered: u64,
     pub rebuild_requested: bool,
     pub rebuild_pace: Duration,
     /// `None`: no rebuild runs; `Some("")`: one has begun; otherwise the last key whose rebuild is recorded.
@@ -105,7 +105,7 @@ pub struct CheckpointStatus {
     /// Keys rebuilt by the running or the last rebuild.
     pub rebuilt: u64,
     pub owner: Option<String>,
-    pub locked_until: Option<DateTime<Utc>>,
+    pub lease_until: Option<DateTime<Utc>>,
     pub failures: u32,
     pub last_error: Option<String>,
     pub updated_at: DateTime<Utc>,
@@ -160,7 +160,7 @@ pub trait CheckpointStore: Send + Sync {
         lease: Duration,
     ) -> impl Future<Output = Result<bool, CheckpointError>> + Send;
 
-    /// Records that everything up to `to` is applied and `applied` more events were delivered; clears the
+    /// Records that everything up to `to` is applied and `delivered` more events were delivered; clears the
     /// failure count. Only forward: a position already reached is accepted without a change, one behind the
     /// row's is refused like a lost lease.
     fn advance(
@@ -168,7 +168,7 @@ pub trait CheckpointStore: Send + Sync {
         key: &CheckpointKey,
         token: LeaseToken,
         to: Position,
-        applied: u64,
+        delivered: u64,
     ) -> impl Future<Output = Result<bool, CheckpointError>> + Send;
 
     /// Counts one more failed round and keeps `error` (a category and a handler name, never a payload).
@@ -185,7 +185,7 @@ pub trait CheckpointStore: Send + Sync {
         &self,
         key: &CheckpointKey,
         pace: Duration,
-    ) -> impl Future<Output = Result<RebuildRequest, CheckpointError>> + Send;
+    ) -> impl Future<Output = Result<RebuildReply, CheckpointError>> + Send;
 
     /// Asks the owner to rebuild the document of one aggregate; a repeated request for the same key is one.
     fn request_rebuild_key(
@@ -196,12 +196,12 @@ pub trait CheckpointStore: Send + Sync {
 
     /// What was requested: the rebuild flag with its pace and up to `limit` requested keys in request
     /// order, which the take removes. `None` when the token no longer owns the row; then nothing is removed.
-    fn take_requests(
+    fn take_rebuild_requests(
         &self,
         key: &CheckpointKey,
         token: LeaseToken,
         limit: usize,
-    ) -> impl Future<Output = Result<Option<RebuildRequests>, CheckpointError>> + Send;
+    ) -> impl Future<Output = Result<Option<PendingRebuilds>, CheckpointError>> + Send;
 
     /// Starts the requested rebuild: the flag is cleared, the cursor is `""`, the count is zero.
     fn begin_rebuild(&self, key: &CheckpointKey, token: LeaseToken)
@@ -247,13 +247,13 @@ mod tests {
         assert_eq!(token.value(), Uuid::from_u128(7));
         assert_eq!(token, token);
         assert_eq!(
-            RebuildRequests::default(),
-            RebuildRequests {
-                rebuild: None,
+            PendingRebuilds::default(),
+            PendingRebuilds {
+                rebuild_pace: None,
                 keys: vec![]
             }
         );
-        assert_ne!(RebuildRequest::Accepted, RebuildRequest::AlreadyRunning);
+        assert_ne!(RebuildReply::Accepted, RebuildReply::AlreadyRunning);
         assert!(
             format!(
                 "{:?}",

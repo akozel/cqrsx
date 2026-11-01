@@ -1,4 +1,4 @@
-use cqrsx::journal::snapshot::SnapshotUpdate;
+use cqrsx::journal::snapshot::SerializedSnapshot;
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-postgres/licenses/.
 use super::support::Database;
@@ -31,7 +31,7 @@ impl cqrsx::domain::aggregate::Aggregate for History {
     type Id = String;
     type Command = i32;
     type Event = Appended;
-    type Error = std::convert::Infallible;
+    type Rejection = std::convert::Infallible;
     type Rules = ();
 
     fn apply(&mut self, event: Appended) {
@@ -50,16 +50,16 @@ async fn snapshot_command_applies_one_event_once() {
     let db = Database::new().await;
     let executor = crate::support::executor::<History>(&db.pool, 1, ());
     executor.execute(&"history".into(), 7).await.unwrap();
-    let store = PersistedEventStore::<_, History>::new(PostgresEventRepository::new(db.pool.clone()))
+    let store = JournalEventStore::<_, History>::new(PostgresEventRepository::new(db.pool.clone()))
         .with_snapshots(std::num::NonZeroUsize::MIN);
     assert_eq!(store.load_events("history").await.unwrap().len(), 1);
     let context = store.load_aggregate("history").await.unwrap();
-    assert_eq!(context.current_sequence, 1);
-    assert_eq!(context.snapshot_version, Some(1));
+    assert_eq!(context.last_sequence, 1);
+    assert_eq!(context.snapshot_revision, Some(1));
     assert_eq!(context.aggregate.entries, vec![7]);
     db.close().await;
 }
-use cqrsx::journal::repository::PersistedEventRepository;
+use cqrsx::journal::repository::EventRepository;
 use cqrsx_postgres::event_repository::PostgresEventRepository;
 
 #[tokio::test]
@@ -78,11 +78,11 @@ async fn custom_tables_keep_the_event_and_snapshot_contracts() {
     repository
         .persist::<TestAggregate>(
             std::slice::from_ref(&event),
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "custom".into(),
                 payload: aggregate.clone(),
                 last_sequence: 1,
-                next_version: 1,
+                revision: 1,
             }),
         )
         .await
@@ -160,7 +160,7 @@ async fn event_repositories() {
         .await
         .unwrap_err();
     assert!(
-        matches!(result, PersistenceError::OptimisticLockError),
+        matches!(result, PersistenceError::Conflict),
         "invalid error result found during insert: {result}"
     );
 
@@ -227,7 +227,7 @@ async fn snapshot_repositories() {
     event_repo
         .persist::<TestAggregate>(
             &[],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: id.clone(),
                 payload: serde_json::to_value(TestAggregate {
                     id: id.clone(),
@@ -236,7 +236,7 @@ async fn snapshot_repositories() {
                 })
                 .unwrap(),
                 last_sequence: 0,
-                next_version: 1,
+                revision: 1,
             }),
         )
         .await
@@ -262,7 +262,7 @@ async fn snapshot_repositories() {
     event_repo
         .persist::<TestAggregate>(
             &[],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: id.clone(),
                 payload: serde_json::to_value(TestAggregate {
                     id: id.clone(),
@@ -271,7 +271,7 @@ async fn snapshot_repositories() {
                 })
                 .unwrap(),
                 last_sequence: 0,
-                next_version: 2,
+                revision: 2,
             }),
         )
         .await
@@ -297,7 +297,7 @@ async fn snapshot_repositories() {
     let result = event_repo
         .persist::<TestAggregate>(
             &[],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: id.clone(),
                 payload: serde_json::to_value(TestAggregate {
                     id: id.clone(),
@@ -306,13 +306,13 @@ async fn snapshot_repositories() {
                 })
                 .unwrap(),
                 last_sequence: 0,
-                next_version: 2,
+                revision: 2,
             }),
         )
         .await
         .unwrap_err();
     assert!(
-        matches!(result, PersistenceError::OptimisticLockError),
+        matches!(result, PersistenceError::Conflict),
         "invalid error result found during insert: {result}"
     );
 
@@ -337,11 +337,11 @@ async fn snapshot_repositories() {
 use super::support::repository::customer::Customer;
 use super::support::repository::customer::CustomerEvent;
 use cqrsx::journal::EventStore;
-use cqrsx::journal::persisted::PersistedEventStore;
+use cqrsx::journal::store::JournalEventStore;
 use cqrsx::journal::upcaster::NumericVersionUpcaster;
 use serde_json::Value;
 use std::collections::HashMap;
-async fn simple_es_commit_and_load_test(event_store: PersistedEventStore<PostgresEventRepository, Customer>) {
+async fn simple_es_commit_and_load_test(event_store: JournalEventStore<PostgresEventRepository, Customer>) {
     let id = uuid::Uuid::new_v4().to_string();
     assert_eq!(0, event_store.load_events(id.as_str()).await.unwrap().len());
     let context = event_store.load_aggregate(id.as_str()).await.unwrap();
@@ -379,9 +379,9 @@ async fn simple_es_commit_and_load_test(event_store: PersistedEventStore<Postgre
         .unwrap();
     assert_eq!(3, event_store.load_events(id.as_str()).await.unwrap().len());
 }
-fn new_test_event_store(pool: sqlx::PgPool) -> PersistedEventStore<PostgresEventRepository, Customer> {
+fn new_test_event_store(pool: sqlx::PgPool) -> JournalEventStore<PostgresEventRepository, Customer> {
     let repo = PostgresEventRepository::new(pool);
-    PersistedEventStore::<PostgresEventRepository, Customer>::new(repo)
+    JournalEventStore::<PostgresEventRepository, Customer>::new(repo)
 }
 
 #[tokio::test]
@@ -389,7 +389,7 @@ async fn commit_and_load_events() {
     let db = Database::new().await;
     let pool = db.pool.clone();
     let repo = PostgresEventRepository::new(pool);
-    let event_store = PersistedEventStore::<PostgresEventRepository, Customer>::new(repo);
+    let event_store = JournalEventStore::<PostgresEventRepository, Customer>::new(repo);
 
     simple_es_commit_and_load_test(event_store).await;
 
@@ -423,8 +423,8 @@ async fn upcasted_event() {
 
     let id = "previous_event_in_need_of_upcast".to_string();
     let result = event_store.load_aggregate(id.as_str()).await.unwrap();
-    assert_eq!(1, result.current_sequence);
-    assert_eq!(None, result.snapshot_version);
+    assert_eq!(1, result.last_sequence);
+    assert_eq!(None, result.snapshot_revision);
     assert_eq!(result.aggregate.name, "UNKNOWN");
 
     db.close().await;

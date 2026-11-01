@@ -6,7 +6,7 @@
 //! its components; the task runtime enforces its own drain budget, and the process imposes no inbound or cleanup
 //! timeout. Dropping a polled process cancels its token and detaches the task runtime task for independent drain,
 //! without guaranteeing inbound or resource cleanup. The parts are private: [`Builder::serve`] and [`Cqrs::serve`] are
-//! the way in, [`StartupError`] is what comes out.
+//! the way in, [`ServeError`] is what comes out.
 mod error;
 mod lifecycle;
 mod logging;
@@ -39,10 +39,10 @@ use tokio_util::sync::CancellationToken;
 /// Why a process did not start or stopped with a failure, as the process writes it: its logger, its settings or
 /// modules (`invalid configuration: …`), a store it could not open, its address, or its read side.
 #[derive(Debug, Error)]
-pub enum StartupError {
+pub enum ServeError {
     #[error("logging setup failed: {0}")]
     Logging(String),
-    #[error("{}", built(.0))]
+    #[error("{}", build_error_text(.0))]
     Build(#[from] BuildError),
     #[error("cannot bind {addr}: {source}")]
     Bind { addr: SocketAddr, source: io::Error },
@@ -53,7 +53,7 @@ pub enum StartupError {
 /// A setting, a module's variable, a URL or URI of a store and views without a durable journal are an invalid
 /// configuration; the rest as it is. A key described twice with two values is not: the code of the modules (or of the
 /// engine) reads one key in two ways, which no value of a variable mends for good.
-fn built(error: &BuildError) -> String {
+fn build_error_text(error: &BuildError) -> String {
     let invalid = match error {
         BuildError::Settings(_) | BuildError::Setup(SetupError::Invalid { .. }) | BuildError::ViewsWithoutJournal(_) => true,
         #[cfg(feature = "postgres")]
@@ -68,7 +68,7 @@ fn built(error: &BuildError) -> String {
         | BuildError::Policy(_)
         | BuildError::Tasks(_) => false,
         #[cfg(feature = "postgres")]
-        BuildError::Pool(_) | BuildError::HistoryPool(_) | BuildError::ProjectionPool(_) => false,
+        BuildError::MainPool(_) | BuildError::HistoryPool(_) | BuildError::ProjectionPool(_) => false,
         #[cfg(feature = "mongodb")]
         BuildError::MongoClient(_) => false,
     };
@@ -89,16 +89,16 @@ type TaskRuntimeRun = Pin<Box<dyn Future<Output = Result<(), TaskRuntimeError>> 
 impl Builder {
     /// The process: installs the logger (`RUST_LOG`, one level, once per process), builds the
     /// engine, binds the address of its settings and [serves](Cqrs::serve) it until SIGINT or SIGTERM.
-    pub async fn serve(self) -> Result<(), StartupError> {
+    pub async fn serve(self) -> Result<(), ServeError> {
         logging::LoggingConfig::from_env()
-            .map_err(|error| StartupError::Logging(error.to_string()))?
+            .map_err(|error| ServeError::Logging(error.to_string()))?
             .try_init()
-            .map_err(|error| StartupError::Logging(error.to_string()))?;
+            .map_err(|error| ServeError::Logging(error.to_string()))?;
         let cqrs = self.build().await?;
         let addr = cqrs.settings().http_addr();
         let listener = TcpListener::bind(addr)
             .await
-            .map_err(|source| StartupError::Bind { addr, source })?;
+            .map_err(|source| ServeError::Bind { addr, source })?;
         cqrs.serve(listener, shutdown_signal()).await
     }
 }
@@ -109,7 +109,7 @@ impl Cqrs {
     /// stops taking requests, the task runtime drains, the processors finish what is in flight and give their
     /// checkpoints back, and the pools close. A failure of the server or the task runtime is logged; a panicking
     /// processor fails the process.
-    pub async fn serve(self, listener: TcpListener, signal: impl Future<Output = io::Result<()>>) -> Result<(), StartupError> {
+    pub async fn serve(self, listener: TcpListener, signal: impl Future<Output = io::Result<()>>) -> Result<(), ServeError> {
         let name = self.settings.application_name().to_owned();
         if let Ok(addr) = listener.local_addr() {
             tracing::info!("{name} listening on http://{addr}");
@@ -226,7 +226,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        cqrs.from("ui")
+        cqrs.source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
@@ -272,25 +272,25 @@ mod tests {
             message: "must be positive".to_owned(),
         };
         let errors = [
-            StartupError::Logging("unable to initialize process logger".into()),
-            StartupError::Build(BuildError::Settings(invalid("ENCORE_SNAPSHOT_EVERY"))),
-            StartupError::Build(BuildError::Setup(SetupError::Invalid {
+            ServeError::Logging("unable to initialize process logger".into()),
+            ServeError::Build(BuildError::Settings(invalid("ENCORE_SNAPSHOT_EVERY"))),
+            ServeError::Build(BuildError::Setup(SetupError::Invalid {
                 variable: "ENCORE_TICKET_LIMIT".into(),
                 message: "must be positive".into(),
             })),
-            StartupError::Build(BuildError::Setup(SetupError::failed(io::Error::other("no client")))),
-            StartupError::Build(BuildError::AggregateTwice("show")),
-            StartupError::Build(BuildError::DescribedTwice {
+            ServeError::Build(BuildError::Setup(SetupError::failed(io::Error::other("no client")))),
+            ServeError::Build(BuildError::AggregateTwice("show")),
+            ServeError::Build(BuildError::DescribedTwice {
                 key: "ENCORE_TICKET_LIMIT".into(),
                 first: "4".into(),
                 second: "5".into(),
             }),
-            StartupError::Build(BuildError::ViewsWithoutJournal("MongoDB")),
-            StartupError::Bind {
+            ServeError::Build(BuildError::ViewsWithoutJournal("MongoDB")),
+            ServeError::Bind {
                 addr: "127.0.0.1:8080".parse().unwrap(),
                 source: io::Error::other("in use"),
             },
-            StartupError::ReadSide(ReadSideStopped("projection processor halls panicked".into())),
+            ServeError::ReadSide(ReadSideStopped("projection processor halls panicked".into())),
         ];
         assert_eq!(
             errors.map(|error| error.to_string()),
@@ -313,7 +313,7 @@ mod tests {
     fn an_unparsable_store_address_is_an_invalid_configuration() {
         #[cfg(feature = "postgres")]
         assert_eq!(
-            StartupError::from(BuildError::DatabaseUrl {
+            ServeError::from(BuildError::DatabaseUrl {
                 variable: "SHOP_DATABASE_URL".into(),
                 source: sqlx::Error::Configuration("invalid port number".into()),
             })
@@ -322,7 +322,7 @@ mod tests {
         );
         #[cfg(feature = "mongodb")]
         assert!(
-            StartupError::from(BuildError::MongoUri {
+            ServeError::from(BuildError::MongoUri {
                 variable: "SHOP_MONGODB_URI".into(),
                 source: ::mongodb::error::Error::custom("no scheme"),
             })
@@ -331,7 +331,7 @@ mod tests {
         );
         #[cfg(feature = "postgres")]
         assert_eq!(
-            StartupError::from(BuildError::Pool(sqlx::Error::PoolTimedOut)).to_string(),
+            ServeError::from(BuildError::MainPool(sqlx::Error::PoolTimedOut)).to_string(),
             "cannot connect to PostgreSQL: pool timed out while waiting for an open connection"
         );
     }
@@ -353,12 +353,9 @@ mod tests {
                         .serve()
                 };
                 let refused = serve().await.unwrap_err();
-                assert!(matches!(refused, StartupError::Bind { .. }), "{refused:?}");
+                assert!(matches!(refused, ServeError::Bind { .. }), "{refused:?}");
                 assert!(refused.to_string().starts_with(&format!("cannot bind {addr}: ")), "{refused}");
-                assert!(
-                    matches!(serve().await, Err(StartupError::Logging(_))),
-                    "one logger per process"
-                );
+                assert!(matches!(serve().await, Err(ServeError::Logging(_))), "one logger per process");
             });
             return;
         }

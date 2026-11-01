@@ -1,5 +1,5 @@
 //! A task queue in memory: the statements of the PostgreSQL queue (`postgres::task_queue`) over the outbox of a
-//! [`MemEventRepository`], whose rows keep the columns of their delivery. The outbox and the queue are one table, as in
+//! [`MemoryEventRepository`], whose rows keep the columns of their delivery. The outbox and the queue are one table, as in
 //! PostgreSQL: a task the journal publishes with its event is pending at once.
 //!
 //! The rules, by meaning:
@@ -15,16 +15,16 @@
 //!
 //! Where it differs from PostgreSQL:
 //! - the clock is Tokio's (`tokio::time::Instant`), not the server's, so a paused test clock moves the pauses and the
-//!   leases; a task due at a time (`TaskSchedule::At`) gets its delay from `Utc::now()` when it is written;
+//!   leases; a task due at a time (`TaskSchedule::at`) gets its delay from `Utc::now()` when it is written;
 //! - every statement holds the journal's lock: there are no concurrent transactions to skip (`SKIP LOCKED`), and two
 //!   claims never overlap, as in PostgreSQL;
 //! - a row is always a valid delivery (`NewTask` checked it), so none is left to recovery for that;
 //! - nothing keeps when a task was created or finished;
-//! - [`lose_settlements`](MemTaskQueue::lose_settlements) lets a test lose the acknowledgements, as a process that
+//! - [`lose_settlements`](MemoryTaskQueue::lose_settlements) lets a test lose the acknowledgements, as a process that
 //!   stops after the effect and before its settlement.
 use crate::{
-    memory::event_repository::{MemEventRepository, OutboxEntry, OutboxRow},
-    task::{NewTask, TaskSchedule, attempt::TaskAttempt, format::TaskFormat, policy::redelivery_backoff},
+    memory::event_repository::{MemoryEventRepository, OutboxEntry, OutboxRow},
+    task::{NewTask, attempt::TaskAttempt, format::TaskFormat, policy::redelivery_backoff},
     worker::queue::{
         QueueRequestError, TaskProcessingError, TaskQueue,
         lease::{LeasedTask, TaskLease},
@@ -70,7 +70,7 @@ pub struct QueuedTask {
     pub last_error: Option<String>,
 }
 
-/// The lease of a task in processing: `locked_by`, `lock_token`, `locked_until`.
+/// The lease of a task in processing: `owner`, `lease_token`, `lease_until`.
 #[derive(Debug)]
 struct Lease {
     owner: String,
@@ -91,10 +91,10 @@ pub(crate) struct Delivery {
 impl Delivery {
     /// A task written `now`: pending, available at once, after its delay or at its time.
     pub(crate) fn pending(task: &NewTask, now: Instant) -> Self {
-        let delay = match task.schedule() {
-            TaskSchedule::Now => Duration::ZERO,
-            TaskSchedule::After(delay) => *delay,
-            TaskSchedule::At(at) => (*at - Utc::now()).to_std().unwrap_or(Duration::ZERO),
+        let delay = match (task.schedule().delay(), task.schedule().time()) {
+            (Some(delay), _) => delay,
+            (None, Some(at)) => (at - Utc::now()).to_std().unwrap_or(Duration::ZERO),
+            (None, None) => Duration::ZERO,
         };
         Self {
             status: TaskStatus::Pending,
@@ -109,14 +109,14 @@ impl Delivery {
 /// The task queue over the outbox of `journal`: see the [module](self). Clones share the journal and the switch of
 /// [`lose_settlements`](Self::lose_settlements).
 #[derive(Clone, Debug)]
-pub struct MemTaskQueue {
-    journal: MemEventRepository,
+pub struct MemoryTaskQueue {
+    journal: MemoryEventRepository,
     lose: Arc<AtomicBool>,
 }
 
-impl MemTaskQueue {
+impl MemoryTaskQueue {
     /// The queue of the tasks `journal` publishes.
-    pub fn new(journal: MemEventRepository) -> Self {
+    pub fn new(journal: MemoryEventRepository) -> Self {
         Self {
             journal,
             lose: Arc::default(),
@@ -125,7 +125,7 @@ impl MemTaskQueue {
 
     /// Every task of the outbox, in the order of the writes, with its delivery.
     pub fn tasks(&self) -> Vec<QueuedTask> {
-        self.journal.with_outbox(|rows| {
+        self.journal.outbox_rows(|rows| {
             rows.iter()
                 .map(|row| QueuedTask {
                     aggregate_type: row.aggregate_type.clone(),
@@ -179,7 +179,7 @@ fn failure(attempt: &TaskAttempt, cause: TaskFailureCause) -> SettlementResult {
     })
 }
 
-impl TaskQueue for MemTaskQueue {
+impl TaskQueue for MemoryTaskQueue {
     async fn claim(
         &self,
         format: &TaskFormat,
@@ -195,7 +195,7 @@ impl TaskQueue for MemTaskQueue {
             .checked_add(lease_duration)
             .ok_or(QueueRequestError::InvalidLeaseDuration)?;
         let limit = checked_limit(limit)?;
-        self.journal.with_outbox(|rows| {
+        self.journal.outbox_rows(|rows| {
             let ready = |row: &OutboxRow| {
                 row.delivery.status == TaskStatus::Pending
                     && row.entry.task.format() == format
@@ -237,14 +237,14 @@ impl TaskQueue for MemTaskQueue {
         }
         let now = Instant::now();
         let attempt = task.attempt();
-        Ok(self.journal.with_outbox(|rows| {
+        Ok(self.journal.outbox_rows(|rows| {
             let owned = rows.iter_mut().find(|row| {
                 row.entry.task.id() == attempt.task_id()
                     && row
                         .delivery
                         .lease
                         .as_ref()
-                        .is_some_and(|lease| lease.token == task.lease().lock_token() && lease.until > now)
+                        .is_some_and(|lease| lease.token == task.lease().token() && lease.until > now)
             });
             let Some(row) = owned else {
                 return SettlementResult::OwnershipLost;
@@ -260,7 +260,7 @@ impl TaskQueue for MemTaskQueue {
                 SettlementRequest::Failed { reason: text } => {
                     delivery.status = TaskStatus::Failed;
                     delivery.last_error = reason(&text);
-                    failure(attempt, TaskFailureCause::PermanentRejection)
+                    failure(attempt, TaskFailureCause::HandlerFailure)
                 }
                 SettlementRequest::Retry { delay, reason: text } => {
                     delivery.last_error = reason(&text);
@@ -280,7 +280,7 @@ impl TaskQueue for MemTaskQueue {
     async fn recover_expired(&self, limit: usize) -> Result<LeaseRecoveryReport, TaskProcessingError> {
         let limit = checked_limit(limit)?;
         let now = Instant::now();
-        Ok(self.journal.with_outbox(|rows| {
+        Ok(self.journal.outbox_rows(|rows| {
             let expired = |row: &OutboxRow| row.delivery.lease.as_ref().is_some_and(|lease| lease.until <= now);
             let order = |row: &OutboxRow| (row.delivery.lease.as_ref().map(|lease| lease.until), row.entry.task.id());
             let (mut retried, mut failures) = (0, Vec::new());
@@ -316,7 +316,8 @@ mod tests {
             aggregate::tests::{Delta, Ledger},
             event::EventEnvelope,
         },
-        journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+        journal::{repository::EventRepository, serialized_event::SerializedEvent},
+        task::TaskSchedule,
     };
     use serde_json::json;
     use std::{collections::HashMap, num::NonZeroU16};
@@ -330,12 +331,11 @@ mod tests {
     fn task(name: &str, n: u8) -> NewTask {
         NewTask::from_payload(format(name), json!({ "n": n }))
             .unwrap()
-            .with_metadata(json!({ "correlation_id": "c-1" }))
-            .unwrap()
+            .with_metadata(serde_json::from_value(json!({ "correlation_id": "c-1" })).unwrap())
     }
 
     /// The journal and its queue, with the tasks published by a write of `aggregate` at `sequence`.
-    async fn publish(journal: &MemEventRepository, aggregate: &str, sequence: usize, tasks: &[NewTask]) {
+    async fn publish(journal: &MemoryEventRepository, aggregate: &str, sequence: usize, tasks: &[NewTask]) {
         let event = SerializedEvent::try_from(&EventEnvelope::<Ledger> {
             aggregate_id: aggregate.into(),
             sequence,
@@ -350,24 +350,18 @@ mod tests {
         claimed.iter().map(|task| task.attempt().task_id()).collect()
     }
 
-    fn statuses(queue: &MemTaskQueue) -> Vec<(TaskStatus, i32)> {
+    fn statuses(queue: &MemoryTaskQueue) -> Vec<(TaskStatus, i32)> {
         queue.tasks().iter().map(|task| (task.status, task.attempts)).collect()
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_task_is_pending_from_its_write_and_a_delayed_one_once_its_time_has_come() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         let now = task("notify", 1);
-        let after = task("notify", 2)
-            .with_schedule(TaskSchedule::After(Duration::from_secs(10)))
-            .unwrap();
-        let at = task("notify", 3)
-            .with_schedule(TaskSchedule::At(Utc::now() + chrono::TimeDelta::seconds(20)))
-            .unwrap();
-        let past = task("notify", 4)
-            .with_schedule(TaskSchedule::At(Utc::now() - chrono::TimeDelta::hours(1)))
-            .unwrap();
+        let after = task("notify", 2).with_schedule(TaskSchedule::after(Duration::from_secs(10)).unwrap());
+        let at = task("notify", 3).with_schedule(TaskSchedule::at(Utc::now() + chrono::TimeDelta::seconds(20)));
+        let past = task("notify", 4).with_schedule(TaskSchedule::at(Utc::now() - chrono::TimeDelta::hours(1)));
         publish(&journal, "a", 1, &[now.clone(), after.clone(), at.clone(), past.clone()]).await;
         assert_eq!(statuses(&queue), [(TaskStatus::Pending, 0); 4]);
         let mut due = vec![now.id(), past.id()];
@@ -395,8 +389,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_claim_takes_the_ready_tasks_of_its_format_by_availability_then_id_up_to_its_limit() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         let first = task("notify", 1);
         publish(&journal, "a", 1, std::slice::from_ref(&first)).await;
         tokio::time::advance(Duration::from_secs(1)).await;
@@ -424,8 +418,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_claim_leases_its_tasks_counts_the_attempt_and_issues_a_fresh_token() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         let published = task("notify", 1);
         publish(&journal, "a", 1, std::slice::from_ref(&published)).await;
         let before = Instant::now();
@@ -443,15 +437,15 @@ mod tests {
         assert_eq!(queue.settle(first, retry).await.unwrap(), SettlementResult::RetryScheduled);
         let second = &queue.claim(&format("notify"), "w-2", 1, LEASE).await.unwrap().remove(0);
         assert_eq!(second.attempt().number(), 2);
-        assert_ne!(second.lease().lock_token(), first.lease().lock_token());
+        assert_ne!(second.lease().token(), first.lease().token());
         assert_eq!(queue.tasks()[0].owner.as_deref(), Some("w-2"));
         assert_eq!(queue.tasks()[0].last_error.as_deref(), Some("busy"));
     }
 
     #[tokio::test]
     async fn unrepresentable_leases_limits_and_pauses_are_refused() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         publish(&journal, "a", 1, &[task("notify", 1)]).await;
         let notify = format("notify");
         for lease in [Duration::ZERO, Duration::MAX] {
@@ -483,8 +477,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_settlement_needs_the_token_of_a_live_lease() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         publish(&journal, "a", 1, &[task("notify", 1)]).await;
         tokio::time::advance(Duration::from_secs(1)).await;
         publish(&journal, "b", 1, &[task("notify", 2)]).await;
@@ -517,8 +511,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_completion_and_a_permanent_failure_close_the_task() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         publish(&journal, "a", 1, &[task("notify", 1)]).await;
         tokio::time::advance(Duration::from_secs(1)).await;
         publish(&journal, "b", 1, &[task("notify", 2)]).await;
@@ -546,7 +540,7 @@ mod tests {
             failed
                 .failure()
                 .map(|failure| (failure.task_id, failure.attempt_number, failure.cause)),
-            Some((claimed[1].attempt().task_id(), 1, TaskFailureCause::PermanentRejection))
+            Some((claimed[1].attempt().task_id(), 1, TaskFailureCause::HandlerFailure))
         );
         let tasks = queue.tasks();
         let closed: Vec<_> = tasks
@@ -563,8 +557,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_retry_waits_its_pause_and_the_last_attempt_fails_the_task() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         publish(
             &journal,
             "a",
@@ -593,8 +587,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn expired_leases_come_back_after_the_redelivery_backoff_or_fail_on_the_last_attempt() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         let (last, again) = (
             task("notify", 1).with_max_attempts(NonZeroU16::new(1).unwrap()),
             task("notify", 2),
@@ -643,8 +637,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_recovery_takes_the_leases_that_ran_out_first_up_to_its_limit_and_reports_the_failures() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         let (first, second) = (
             task("notify", 1).with_max_attempts(NonZeroU16::new(1).unwrap()),
             task("notify", 2),
@@ -672,8 +666,8 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn lost_settlements_leave_the_task_leased_until_its_lease_runs_out() {
-        let journal = MemEventRepository::default();
-        let queue = MemTaskQueue::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let queue = MemoryTaskQueue::new(journal.clone());
         publish(&journal, "a", 1, &[task("notify", 1)]).await;
         let claimed = queue.claim(&format("notify"), "w", 1, LEASE).await.unwrap().remove(0);
         queue.clone().lose_settlements(true);

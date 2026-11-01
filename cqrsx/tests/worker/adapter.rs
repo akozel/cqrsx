@@ -39,8 +39,8 @@ struct Payload {
     mutable: Cell<u8>,
 }
 impl Task for Payload {
-    const TASK_TYPE: &'static str = "native_adapter";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "native_adapter";
+    const VERSION: i32 = 1;
 }
 // The payload's Cell rules out Sync/Clone requirements on payloads; the handler borrows shared state.
 struct BorrowedHandler<'a> {

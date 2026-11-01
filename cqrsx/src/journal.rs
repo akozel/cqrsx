@@ -1,9 +1,9 @@
 //! Event-store contracts, persistence errors and repository-backed implementations.
 pub mod feed;
-pub mod persisted;
 pub mod repository;
 pub mod serialized_event;
 pub mod snapshot;
+pub mod store;
 pub mod upcaster;
 pub mod wakeup;
 
@@ -57,7 +57,7 @@ where
 pub(crate) fn checked_counter_add(current: usize, count: usize) -> Result<usize, crate::journal::PersistenceError> {
     current
         .checked_add(count)
-        .ok_or_else(|| crate::journal::PersistenceError::UnknownError("event sequence or snapshot version overflow".into()))
+        .ok_or_else(|| crate::journal::PersistenceError::Unexpected("event sequence or snapshot version overflow".into()))
 }
 
 /// Errors for implementations of a persistent event store.
@@ -68,17 +68,17 @@ pub(crate) fn checked_counter_add(current: usize, count: usize) -> Result<usize,
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
     /// Optimistic locking conflict occurred while committing and aggregate.
-    #[error("optimistic lock error")]
-    OptimisticLockError,
+    #[error("conflict with a concurrent write")]
+    Conflict,
     /// An error occurred connecting to the database.
     #[error("{0}")]
-    ConnectionError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Connection(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     /// Error occurred while attempting to deserialize data.
     #[error("{0}")]
-    DeserializationError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Deserialization(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     /// An unexpected error occurred while accessing the database.
     #[error("{0}")]
-    UnknownError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Unexpected(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     /// A view document is behind the delivered events: it has applied `expected - 1` of its
     /// aggregate and the batch continues at `found`. Nothing of the batch is written; the document
     /// stays a correct prefix of its aggregate's history until a rebuild of the key fills the gap.
@@ -94,8 +94,8 @@ pub enum PersistenceError {
 impl From<serde_json::Error> for PersistenceError {
     fn from(err: serde_json::Error) -> Self {
         match err.classify() {
-            serde_json::error::Category::Data | serde_json::error::Category::Syntax => Self::DeserializationError(Box::new(err)),
-            serde_json::error::Category::Io | serde_json::error::Category::Eof => Self::UnknownError(Box::new(err)),
+            serde_json::error::Category::Data | serde_json::error::Category::Syntax => Self::Deserialization(Box::new(err)),
+            serde_json::error::Category::Io | serde_json::error::Category::Eof => Self::Unexpected(Box::new(err)),
         }
     }
 }
@@ -129,8 +129,8 @@ mod tests {
             let mapped = PersistenceError::from(error);
             assert_eq!(mapped.to_string(), original);
             match mapped {
-                PersistenceError::DeserializationError(e) if deserialization => assert!(e.is::<serde_json::Error>()),
-                PersistenceError::UnknownError(e) if !deserialization => assert!(e.is::<serde_json::Error>()),
+                PersistenceError::Deserialization(e) if deserialization => assert!(e.is::<serde_json::Error>()),
+                PersistenceError::Unexpected(e) if !deserialization => assert!(e.is::<serde_json::Error>()),
                 _ => panic!("incorrect serde category"),
             }
         }

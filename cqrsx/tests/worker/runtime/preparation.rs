@@ -16,14 +16,14 @@ async fn invalid_full_lease_budget_is_rejected_before_polling() {
             queue.clone(),
             executor,
             dispatcher,
-            TaskWorkerPoolConfig::try_new(
-                TaskWorkerPoolConfig::default().concurrency(),
-                TaskWorkerPoolConfig::default().concurrency(),
-                TaskWorkerPoolConfig::default().poll_interval(),
-                TaskWorkerPoolConfig::default().handler_timeout(),
-                Duration::from_secs(50)
-            )
-            .unwrap(),
+            TaskWorkerPoolConfig::builder()
+                .concurrency(TaskWorkerPoolConfig::default().concurrency())
+                .buffer_capacity(TaskWorkerPoolConfig::default().concurrency())
+                .poll_interval(TaskWorkerPoolConfig::default().poll_interval())
+                .handler_timeout(TaskWorkerPoolConfig::default().handler_timeout())
+                .lease(Duration::from_secs(50))
+                .build()
+                .unwrap(),
             shutdown
         )
         .await
@@ -40,8 +40,8 @@ struct Greeting {
 }
 
 impl Task for Greeting {
-    const TASK_TYPE: &'static str = "dummy_task";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "dummy_task";
+    const VERSION: i32 = 1;
 }
 
 /// Greets with the salutation the assembly provides.

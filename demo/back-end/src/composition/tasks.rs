@@ -44,7 +44,7 @@ use cqrsx::{
     task::{
         TaskSchedule,
         format::TaskFormat,
-        policy::{Policies, Retry, TaskPolicy},
+        policy::{Policies, RetryPause, TaskPolicy},
     },
     worker::{adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, handlers::TaskHandlers},
 };
@@ -54,7 +54,7 @@ use cqrsx_engine::{
     settings::Settings,
     setup::{Setup, SetupError},
 };
-use cqrsx_testing::{command_executor::TestCommandExecutor, mem_store::MemStore};
+use cqrsx_testing::{command_executor::TestCommandExecutor, memory_store::MemoryStore};
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::{num::NonZeroU16, sync::Arc, time::Duration};
@@ -165,11 +165,11 @@ fn every_task_type_has_its_policy_from_the_configuration() {
         (defaults.policy(STEP), defaults.policy(MAIL)),
         (
             Some(&TaskPolicy::new(
-                Retry::fixed(Duration::from_secs(1)),
+                RetryPause::fixed(Duration::from_secs(1)),
                 NonZeroU16::new(6).unwrap()
             )),
             Some(&TaskPolicy::new(
-                Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+                RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
                 NonZeroU16::new(6).unwrap()
             ))
         )
@@ -184,11 +184,11 @@ fn every_task_type_has_its_policy_from_the_configuration() {
         (changed.policy(STEP), changed.policy(MAIL)),
         (
             Some(&TaskPolicy::new(
-                Retry::fixed(Duration::from_secs(1)),
+                RetryPause::fixed(Duration::from_secs(1)),
                 NonZeroU16::new(3).unwrap()
             )),
             Some(&TaskPolicy::new(
-                Retry::backoff(Duration::from_millis(300), Duration::from_secs(5)),
+                RetryPause::backoff(Duration::from_millis(300), Duration::from_secs(5)),
                 NonZeroU16::new(3).unwrap()
             ))
         )
@@ -223,7 +223,7 @@ fn the_mail_policy_pauses_as_the_mail_client_did() {
         let declared = policies(&[("ENCORE_TASK_RETRY_BASE_MS", &base_ms), ("ENCORE_TASK_RETRY_MAX_MS", &max_ms)]);
         let mail = match declared {
             Ok(policies) => policies.policy(MAIL).unwrap().retry(),
-            Err(_) if base > max => Retry::backoff(base, max),
+            Err(_) if base > max => RetryPause::backoff(base, max),
             Err(error) => panic!("{error}"),
         };
         for &attempt in &attempts {
@@ -246,10 +246,10 @@ fn the_mail_policy_pauses_as_the_mail_client_did() {
 #[tokio::test]
 async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
     let policies = policies(&[]).unwrap();
-    let concerts = TestCommandExecutor::configured(MemStore::<Concert>::default(), ConcertRules::default(), |executor| {
+    let concerts = TestCommandExecutor::configured(MemoryStore::<Concert>::default(), ConcertRules::default(), |executor| {
         executor.with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
     });
-    let fans = TestCommandExecutor::configured(MemStore::<Fan>::default(), (), |executor| {
+    let fans = TestCommandExecutor::configured(MemoryStore::<Fan>::default(), (), |executor| {
         executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies))
     });
     let concert_id = ConcertId::parse("radiohead-2026-11-21").unwrap();
@@ -287,7 +287,7 @@ async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
         (
             booking.task_id("Concert", "radiohead-2026-11-21", &format, 0),
             &format,
-            &TaskSchedule::Now,
+            &TaskSchedule::now(),
             6
         )
     );
@@ -326,7 +326,7 @@ async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
         (
             cancelling.task_id("Concert", "radiohead-2026-11-21", &format, 0),
             &format,
-            &TaskSchedule::Now,
+            &TaskSchedule::now(),
             6
         )
     );
@@ -364,7 +364,7 @@ async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
         (
             recording.task_id("Fan", "fox:radiohead-2026-11-21", &format, 0),
             &format,
-            &TaskSchedule::Now,
+            &TaskSchedule::now(),
             6
         )
     );
@@ -399,7 +399,7 @@ async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
         (
             refunding.task_id("Fan", "fox:radiohead-2026-11-21", &format, 0),
             &format,
-            &TaskSchedule::Now,
+            &TaskSchedule::now(),
             6
         )
     );
@@ -430,7 +430,7 @@ fn the_mail_settings_come_from_the_configuration() {
 /// the mail service, which the assembly refuses to leave out.
 #[tokio::test]
 async fn the_four_task_types_have_one_handler_each_with_the_mailer_and_the_ledgers_executor() {
-    let fans = Arc::new(TestCommandExecutor::new(MemStore::<Fan>::default(), ()));
+    let fans = Arc::new(TestCommandExecutor::new(MemoryStore::<Fan>::default(), ()));
     let mail: Arc<Mailer> = Arc::new(RecordingMailer::delivering());
     let activity = Arc::new(ActivityHub::new(1, 1));
     let dispatcher = handlers(fans.clone(), mail.clone(), activity.clone()).unwrap();
@@ -449,7 +449,7 @@ async fn the_four_task_types_have_one_handler_each_with_the_mailer_and_the_ledge
     let mailer = mailer().unwrap();
     assert!(
         handlers(
-            Arc::new(TestCommandExecutor::new(MemStore::<Fan>::default(), ())),
+            Arc::new(TestCommandExecutor::new(MemoryStore::<Fan>::default(), ())),
             mailer,
             activity
         )

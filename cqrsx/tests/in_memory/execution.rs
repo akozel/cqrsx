@@ -2,19 +2,19 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx/licenses/.
 use std::collections::HashMap;
 
-use cqrsx::command::CommandGatewayError;
+use cqrsx::command::CommandError;
 use cqrsx::command::executor::StoreCommandExecutor;
 use cqrsx::command::locks::LockLimits;
 use cqrsx::command::retry::AggregateConflictRetryPolicy;
 use cqrsx::journal::EventStore;
-use cqrsx::journal::persisted::PersistedEventStore;
-use cqrsx::memory::event_repository::MemEventRepository;
+use cqrsx::journal::store::JournalEventStore;
+use cqrsx::memory::event_repository::MemoryEventRepository;
 
 use crate::support::scenario::*;
 
 #[tokio::test]
 async fn framework_test() {
-    let event_store = PersistedEventStore::<_, TestAggregate>::new(MemEventRepository::default());
+    let event_store = JournalEventStore::<_, TestAggregate>::new(MemoryEventRepository::default());
 
     let cqrs = StoreCommandExecutor::new(
         event_store.clone(),
@@ -64,7 +64,7 @@ async fn framework_test() {
         .await
         .unwrap_err();
     match err {
-        CommandGatewayError::Domain(payload) => {
+        CommandError::Rejected(payload) => {
             assert_eq!("test already performed", payload.0.as_str());
         }
         _ => panic!("not the expected error"),
@@ -77,7 +77,7 @@ async fn framework_test() {
 mod contracts {
     use super::*;
     use cqrsx::{
-        command::{CommandGatewayError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
+        command::{CommandError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
         domain::event::EventEnvelope,
         journal::wakeup::CommitWakeup,
         task::NewTask,
@@ -93,15 +93,15 @@ mod contracts {
         crate::support::ledger::*,
         cqrsx::journal::AggregateContext,
         cqrsx::journal::EventStore,
-        cqrsx::journal::persisted::{EventStoreAggregateContext, PersistedEventStore},
-        cqrsx::memory::event_repository::MemEventRepository,
+        cqrsx::journal::store::{EventStoreAggregateContext, JournalEventStore},
+        cqrsx::memory::event_repository::MemoryEventRepository,
     };
 
     type Calls = Arc<Mutex<Vec<&'static str>>>;
 
     #[derive(Clone)]
     struct Store {
-        inner: PersistedEventStore<MemEventRepository, Ledger>,
+        inner: JournalEventStore<MemoryEventRepository, Ledger>,
         calls: Calls,
         failure: Option<&'static str>,
     }
@@ -113,7 +113,7 @@ mod contracts {
         async fn load_aggregate(&self, id: &str) -> Result<Self::Context, cqrsx::journal::PersistenceError> {
             self.calls.lock().unwrap().push("load");
             if self.failure == Some("load") {
-                return Err(cqrsx::journal::PersistenceError::ConnectionError("load failed".into()));
+                return Err(cqrsx::journal::PersistenceError::Connection("load failed".into()));
             }
             self.inner.load_aggregate(id).await
         }
@@ -128,7 +128,7 @@ mod contracts {
             // Commit receives the unchanged committed state.
             assert!(context.aggregate().history.is_empty());
             if self.failure == Some("commit") {
-                return Err(cqrsx::journal::PersistenceError::OptimisticLockError);
+                return Err(cqrsx::journal::PersistenceError::Conflict);
             }
             self.inner.commit(events, context, metadata, tasks).await
         }
@@ -147,7 +147,7 @@ mod contracts {
     async fn load_decide_commit_preserves_the_rules_and_metadata_and_returns_the_event() {
         let calls = Calls::default();
         let store = Store {
-            inner: PersistedEventStore::new(MemEventRepository::default()),
+            inner: JournalEventStore::new(MemoryEventRepository::default()),
             calls: Arc::clone(&calls),
             failure: None,
         };
@@ -181,7 +181,7 @@ mod contracts {
         ] {
             let calls = Calls::default();
             let wakeup = CommitWakeup::new();
-            let inner = PersistedEventStore::new(MemEventRepository::default());
+            let inner = JournalEventStore::new(MemoryEventRepository::default());
             let store = Store {
                 inner: inner.clone(),
                 calls: calls.clone(),
@@ -193,9 +193,9 @@ mod contracts {
             assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
             let result = executor.execute(&"account".into(), command).await;
             match failure {
-                Some("load") => assert_eq!(result, Err(CommandGatewayError::Unavailable)),
-                Some("commit") => assert_eq!(result, Err(CommandGatewayError::Conflict)),
-                _ => assert_eq!(result, Err(CommandGatewayError::Domain(Rejected))),
+                Some("load") => assert_eq!(result, Err(CommandError::Unavailable)),
+                Some("commit") => assert_eq!(result, Err(CommandError::Conflict)),
+                _ => assert_eq!(result, Err(CommandError::Rejected(Rejected))),
             }
             assert_eq!(*calls.lock().unwrap(), expected);
             assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());

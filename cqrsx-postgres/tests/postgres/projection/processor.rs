@@ -6,13 +6,13 @@ use crate::{
 use cqrsx::{
     command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
+    journal::{EventStore, repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
     projection::{
-        checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
+        checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildReply},
         processor::{
             ProjectionProcessor,
             config::{DeliveryLimits, ProcessorConfig},
-            observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
+            observer::{Advanced, Applied, Failed, LeaseChange, ProjectionObserver, RebuildPhase, Rebuilt, Waiting},
         },
     },
     view::{View, projection::ViewProjection, repository::ViewRepository},
@@ -38,7 +38,7 @@ struct Balance {
 
 impl View<Ledger> for Balance {
     const NAME: &'static str = NAME;
-    fn update(&mut self, event: &EventEnvelope<Ledger>) {
+    fn apply(&mut self, event: &EventEnvelope<Ledger>) {
         self.total += i64::from(event.payload.0);
         self.history.push((event.sequence, event.payload.0));
     }
@@ -81,10 +81,10 @@ impl ProjectionObserver for Recording {
     fn rebuilt(&self, report: &Rebuilt<'_>) {
         self.push(format!("rebuilt:{}:{:?}", report.aggregate_id, report.reason));
     }
-    fn rebuild(&self, event: RebuildEvent) {
+    fn rebuild_phase(&self, event: RebuildPhase) {
         self.push(format!("rebuild:{event:?}"));
     }
-    fn lease(&self, event: LeaseEvent) {
+    fn lease(&self, event: LeaseChange) {
         self.push(format!("lease:{event:?}"));
     }
     fn waiting(&self, reason: Waiting) {
@@ -92,13 +92,13 @@ impl ProjectionObserver for Recording {
     }
 }
 
-type Store = PersistedEventStore<PostgresEventRepositoryWithOutbox, Ledger>;
+type Store = JournalEventStore<PostgresEventRepositoryWithOutbox, Ledger>;
 
 fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<StoreCommandExecutor<Ledger, Store>> {
     let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
     Arc::new(
         StoreCommandExecutor::new(
-            PersistedEventStore::new(repository),
+            JournalEventStore::new(repository),
             (),
             Default::default(),
             LockLimits::default(),
@@ -108,15 +108,14 @@ fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<StoreCommandExecutor<Led
 }
 
 fn config() -> ProcessorConfig {
-    ProcessorConfig::try_new(
-        Duration::from_millis(50),
-        100,
-        Duration::from_secs(1),
-        DeliveryLimits::default(),
-    )
-    .unwrap()
-    .with_retry(Duration::from_millis(50), Duration::from_millis(200))
-    .unwrap()
+    ProcessorConfig::builder()
+        .poll_interval(Duration::from_millis(50))
+        .page_size(100)
+        .lease(Duration::from_secs(1))
+        .delivery_limits(DeliveryLimits::default())
+        .retry(Duration::from_millis(50), Duration::from_millis(200))
+        .build()
+        .unwrap()
 }
 
 fn processor(
@@ -135,25 +134,25 @@ fn processor(
     )
     .with_owner(owner)
     .with_observer(observer.clone())
-    .with_wakeup(wakeup.clone())
+    .with_commit_wakeup(wakeup.clone())
 }
 
 async fn create_views(pool: &PgPool) {
-    sqlx::raw_sql("CREATE TABLE balances (view_id text PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
+    sqlx::raw_sql("CREATE TABLE balances (view_id text PRIMARY KEY, revision bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
         .execute(pool)
         .await
         .unwrap();
 }
 
 async fn fold(pool: &PgPool, id: &str) -> Option<Balance> {
-    let store = PersistedEventStore::<_, Ledger>::new(PostgresEventRepository::new(pool.clone()));
+    let store = JournalEventStore::<_, Ledger>::new(PostgresEventRepository::new(pool.clone()));
     let events = store.load_events(id).await.unwrap();
     if events.is_empty() {
         return None;
     }
     let mut balance = Balance::default();
     for event in &events {
-        balance.update(event);
+        balance.apply(event);
     }
     Some(balance)
 }
@@ -211,7 +210,7 @@ async fn forty_commands_over_five_ledgers_reach_the_checkpointed_view_in_order()
     commit_all(&db.pool, &wakeup, &keys, 8).await;
     let status = caught_up(&db.pool, &keys).await;
     assert_eq!(
-        (status.applied, status.owner.as_deref(), status.failures),
+        (status.delivered, status.owner.as_deref(), status.failures),
         (40, Some("node-a"), 0)
     );
     let views = PostgresViewRepository::<Balance, Ledger>::new(db.pool.clone());
@@ -252,7 +251,7 @@ async fn forty_parallel_commands_to_one_key_reach_the_view_in_commit_order() {
         assert!(result.unwrap().is_ok(), "the lock orders the commands: nothing conflicts");
     }
     let status = caught_up(&db.pool, &["hot"]).await;
-    assert_eq!((status.applied, status.failures), (40, 0));
+    assert_eq!((status.delivered, status.failures), (40, 0));
     let balance = PostgresViewRepository::<Balance, Ledger>::new(db.pool.clone())
         .load("hot")
         .await
@@ -293,7 +292,7 @@ async fn a_lost_database_connection_is_retried_and_the_claim_is_renewed() {
     assert!(!killed.is_empty(), "the processor held sessions");
     commit_all(&db.pool, &wakeup, &keys, 5).await;
     let status = caught_up(&db.pool, &keys).await;
-    assert_eq!((status.applied, status.owner.as_deref()), (20, Some("node-a")));
+    assert_eq!((status.delivered, status.owner.as_deref()), (20, Some("node-a")));
     assert!(observer.count("lease:Acquired") >= 1);
     shutdown.cancel();
     running.await.unwrap();
@@ -323,7 +322,7 @@ async fn a_killed_owner_is_replaced_after_the_lease_expires() {
     commit_all(&db.pool, &wakeup, &keys, 3).await;
     let after = caught_up(&db.pool, &keys).await;
     assert_ne!(after.owner.as_deref(), Some(owner.as_str()), "the survivor took the row");
-    assert_eq!(after.applied, 18, "nothing was lost or applied twice at the checkpoint");
+    assert_eq!(after.delivered, 18, "nothing was lost or applied twice at the checkpoint");
     stop.cancel();
     survivor.await.unwrap();
     assert_eq!(observer.count("lease:Acquired"), 2);
@@ -383,7 +382,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     let store = PostgresCheckpointStore::new(db.pool.clone());
     assert_eq!(
         store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     commit_all(&db.pool, &wakeup, &keys, 4).await;
     let status = tokio::time::timeout(Duration::from_secs(30), async {
@@ -397,7 +396,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     })
     .await
     .expect("the rebuild finishes");
-    assert_eq!(status.applied, 40);
+    assert_eq!(status.delivered, 40);
     assert_eq!(
         (observer.count("rebuild:Started"), observer.count("rebuild:Finished")),
         (1, 1)

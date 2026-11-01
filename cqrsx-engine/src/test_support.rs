@@ -6,7 +6,7 @@ use crate::{
     setup::{Setup, SetupError},
 };
 use cqrsx::{
-    command::CommandGatewayError,
+    command::CommandError,
     domain::{
         aggregate::Aggregate,
         command::{Command, Decide, Label},
@@ -16,7 +16,7 @@ use cqrsx::{
     reactions::{Decided, Reactions, Then},
     task::{
         Task,
-        policy::{PolicyName, Retry},
+        policy::{PolicyName, RetryPause},
     },
     view::View,
     worker::{TaskHandler, TaskResult, context::TaskContext, dependencies::DependencyId},
@@ -89,7 +89,7 @@ impl Rejection for SeatTaken {
         "seat_taken"
     }
 
-    fn params(&self) -> Value {
+    fn parameters(&self) -> Value {
         json!({})
     }
 }
@@ -99,7 +99,7 @@ impl Aggregate for Show {
     type Id = String;
     type Command = Book;
     type Event = ShowEvent;
-    type Error = SeatTaken;
+    type Rejection = SeatTaken;
     type Rules = ();
 
     fn apply(&mut self, ShowEvent::Booked { seat, fan }: ShowEvent) {
@@ -171,7 +171,7 @@ impl Rejection for AlreadyRecorded {
         "already_recorded"
     }
 
-    fn params(&self) -> Value {
+    fn parameters(&self) -> Value {
         json!({})
     }
 }
@@ -181,7 +181,7 @@ impl Aggregate for Wallet {
     type Id = String;
     type Command = Record;
     type Event = WalletEvent;
-    type Error = AlreadyRecorded;
+    type Rejection = AlreadyRecorded;
     type Rules = ();
 
     fn apply(&mut self, WalletEvent::Recorded { seat }: WalletEvent) {
@@ -207,7 +207,7 @@ impl Aggregate for Stranger {
     type Id = String;
     type Command = Record;
     type Event = WalletEvent;
-    type Error = AlreadyRecorded;
+    type Rejection = AlreadyRecorded;
     type Rules = ();
 
     fn apply(&mut self, _: WalletEvent) {}
@@ -224,7 +224,7 @@ impl Reactions for Wallet {
     fn react(decided: &Decided<'_, Self>, then: &mut Then) {
         let WalletEvent::Recorded { seat } = decided.event;
         then.task(MailTicket {
-            to: decided.id.clone(),
+            to: decided.aggregate_id.clone(),
             seat: seat.clone(),
         });
     }
@@ -238,8 +238,8 @@ pub(crate) struct RecordTicket {
 }
 
 impl Task for RecordTicket {
-    const TASK_TYPE: &'static str = "record_ticket";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "record_ticket";
+    const VERSION: i32 = 1;
 }
 
 /// Records the ticket; one already recorded is done.
@@ -248,7 +248,7 @@ pub(crate) struct RecordInWallet;
 impl TaskHandler<RecordTicket> for RecordInWallet {
     async fn handle(&self, task: RecordTicket, ctx: &TaskContext) -> TaskResult {
         match ctx.execute::<Wallet>(&task.fan, Record { seat: task.seat }).await {
-            Err(CommandGatewayError::Domain(AlreadyRecorded)) => TaskResult::Done,
+            Err(CommandError::Rejected(AlreadyRecorded)) => TaskResult::Done,
             other => other.into(),
         }
     }
@@ -262,8 +262,8 @@ pub(crate) struct MailTicket {
 }
 
 impl Task for MailTicket {
-    const TASK_TYPE: &'static str = "mail_ticket";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "mail_ticket";
+    const VERSION: i32 = 1;
 }
 
 /// A mail service that records the letters, refuses the first `refusals` of them and crashes on the first `crashes`
@@ -314,7 +314,7 @@ pub(crate) struct Hall {
 impl View<Show> for Hall {
     const NAME: &'static str = "halls";
 
-    fn update(&mut self, event: &EventEnvelope<Show>) {
+    fn apply(&mut self, event: &EventEnvelope<Show>) {
         let ShowEvent::Booked { seat, fan } = &event.payload;
         self.seats.insert(seat.clone(), fan.clone());
     }
@@ -329,7 +329,7 @@ pub(crate) struct Tickets {
 impl View<Wallet> for Tickets {
     const NAME: &'static str = "tickets";
 
-    fn update(&mut self, event: &EventEnvelope<Wallet>) {
+    fn apply(&mut self, event: &EventEnvelope<Wallet>) {
         let WalletEvent::Recorded { seat } = &event.payload;
         self.seats.push(seat.clone());
     }
@@ -352,10 +352,10 @@ pub(crate) fn wallets(_: &Setup) -> Result<Module, SetupError> {
         .aggregate::<Wallet>(())
         .view::<Tickets, Wallet>()
         .provide(Arc::new(Mailbox::default()))
-        .policy(STEP, Retry::fixed(Duration::from_secs(1)), NonZeroU16::new(3).unwrap())
+        .policy(STEP, RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(3).unwrap())
         .policy(
             MAIL,
-            Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+            RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
             NonZeroU16::new(6).unwrap(),
         )
         .task(RecordInWallet)
@@ -408,11 +408,11 @@ pub(crate) use cqrsx_fixtures::process::scenario;
 const VARIABLES: [&str; 7] = [
     "OUTBOX_STORAGE_TIMEOUT_MS",
     "OUTBOX_WORKER_CONCURRENCY",
-    "OUTBOX_QUEUE_CAPACITY",
-    "OUTBOX_QUEUE_REFILL_PERCENT",
-    "OUTBOX_POLL_INTERVAL_MS",
-    "OUTBOX_HANDLER_TIMEOUT_SECS",
-    "OUTBOX_LEASE_SECS",
+    "OUTBOX_BUFFER_CAPACITY",
+    "OUTBOX_BUFFER_REFILL_PERCENT",
+    "OUTBOX_POLL_MS",
+    "OUTBOX_HANDLER_TIMEOUT_MS",
+    "OUTBOX_LEASE_MS",
 ];
 
 /// Runs the unit test `test` (its `module_path!()` and name) again in a child process with the `scenario`, after

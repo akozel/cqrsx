@@ -14,13 +14,13 @@ use thiserror::Error;
 pub(crate) type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
 /// What a module root gets: its variables under the application's prefix ([`env`](Self::env)) and the engine's
-/// settings ([`engine`](Self::engine)). No shared resources: a module makes what it needs and provides it.
+/// settings ([`settings`](Self::settings)). No shared resources: a module makes what it needs and provides it.
 pub struct Setup {
     prefix: String,
     lookup: Lookup,
     settings: Settings,
     /// What the modules read and described, in the order described: the engine's build merges it with its settings
-    /// by key, and `Cqrs::describe` lists the result.
+    /// by key, and `Cqrs::description` lists the result.
     described: Mutex<Vec<(String, String)>>,
 }
 
@@ -57,10 +57,10 @@ impl Setup {
         lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
         settings: Settings,
     ) -> Self {
-        Self::over(prefix.into(), Arc::new(lookup), settings)
+        Self::from_parts(prefix.into(), Arc::new(lookup), settings)
     }
 
-    pub(crate) fn over(prefix: String, lookup: Lookup, settings: Settings) -> Self {
+    pub(crate) fn from_parts(prefix: String, lookup: Lookup, settings: Settings) -> Self {
         Self {
             prefix,
             lookup,
@@ -71,7 +71,7 @@ impl Setup {
 
     /// The variable `name` under the prefix (`ENCORE_TICKET_LIMIT` for `TICKET_LIMIT`), trimmed and parsed; `default`
     /// when it is not set or blank. A value that does not parse names the variable. The value the module gets is
-    /// described under the variable's name (`Cqrs::describe`).
+    /// described under the variable's name (`Cqrs::description`).
     pub fn env<T: FromStr + Display>(&self, name: &str, default: T) -> Result<T, SetupError>
     where
         T::Err: Display,
@@ -131,7 +131,7 @@ impl Setup {
     }
 
     /// The settings of the engine the module is built into.
-    pub fn engine(&self) -> &Settings {
+    pub fn settings(&self) -> &Settings {
         &self.settings
     }
 }
@@ -163,7 +163,7 @@ mod tests {
         assert_eq!(bare.env("TICKET_LIMIT", 4).unwrap(), 9, "no prefix: the name as it is");
         assert_eq!(bare.millis("RETRY_MS", 1000).unwrap(), Duration::from_millis(250));
         assert_eq!(bare.millis("ABSENT_MS", 1000).unwrap(), Duration::from_secs(1));
-        assert_eq!(bare.engine().snapshot_every(), DEFAULT_SNAPSHOT_EVERY);
+        assert_eq!(bare.settings().snapshot_every(), DEFAULT_SNAPSHOT_EVERY);
     }
 
     #[test]

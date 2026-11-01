@@ -1,7 +1,7 @@
 //! Event history and snapshot reads, including checked row decoding.
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-postgres/licenses/.
-use super::{LedgerTotals, PostgresEventRepository, decode_count, decode_usize, encode_bigint, row_decode_error};
+use super::{JournalTotals, PostgresEventRepository, decode_count, decode_usize, encode_bigint, row_decode_error};
 use crate::error::PostgresRepositoryError;
 use cqrsx::{
     domain::aggregate::Aggregate,
@@ -26,19 +26,19 @@ impl PostgresEventRepository {
     ///
     /// ```
     /// use cqrsx::{domain::aggregate::Aggregate, journal::PersistenceError};
-    /// use cqrsx_postgres::event_repository::{LedgerTotals, PostgresEventRepository};
+    /// use cqrsx_postgres::event_repository::{JournalTotals, PostgresEventRepository};
     ///
-    /// async fn history_size<A: Aggregate>(repository: &PostgresEventRepository) -> Result<LedgerTotals, PersistenceError> {
+    /// async fn history_size<A: Aggregate>(repository: &PostgresEventRepository) -> Result<JournalTotals, PersistenceError> {
     ///     repository.totals::<A>().await
     /// }
     /// ```
-    pub async fn totals<A: Aggregate>(&self) -> Result<LedgerTotals, PersistenceError> {
+    pub async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
         let row = sqlx::query(self.query_factory.count_events())
             .bind(A::TYPE)
             .fetch_one(&self.pool)
             .await
             .map_err(PostgresRepositoryError::from)?;
-        Ok(LedgerTotals {
+        Ok(JournalTotals {
             events: decode_count(row.try_get("events").map_err(row_decode_error)?)?,
             aggregates: decode_count(row.try_get("aggregates").map_err(row_decode_error)?)?,
         })
@@ -59,9 +59,9 @@ impl PostgresEventRepository {
     /// ```
     pub async fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> Result<u64, PersistenceError> {
         if cap == 0 {
-            return Err(PostgresRepositoryError::UnknownError("count cap must be positive".into()).into());
+            return Err(PostgresRepositoryError::Unexpected("count cap must be positive".into()).into());
         }
-        let cap = i64::try_from(cap).map_err(|error| PostgresRepositoryError::UnknownError(Box::new(error)))?;
+        let cap = i64::try_from(cap).map_err(|error| PostgresRepositoryError::Unexpected(Box::new(error)))?;
         let row = sqlx::query(self.query_factory.count_after())
             .bind(A::TYPE)
             .bind(after.to_string())
@@ -177,9 +177,7 @@ impl PostgresEventRepository {
 /// A journal page needs a positive limit that fits `bigint`, checked before any statement.
 fn page_limit(limit: usize) -> Result<i64, PostgresRepositoryError> {
     if limit == 0 {
-        return Err(PostgresRepositoryError::UnknownError(
-            "feed page limit must be positive".into(),
-        ));
+        return Err(PostgresRepositoryError::Unexpected("feed page limit must be positive".into()));
     }
     encode_bigint(limit)
 }
@@ -194,7 +192,7 @@ pub(super) fn decode_feed_row(row: &PgRow) -> Result<FeedEntry, PostgresReposito
 /// An `xid8` travels as decimal text; anything else is a damaged row.
 pub(super) fn parse_position(text: &str) -> Result<Position, PostgresRepositoryError> {
     text.parse()
-        .map_err(|error: ParseIntError| PostgresRepositoryError::DeserializationError(Box::new(error)))
+        .map_err(|error: ParseIntError| PostgresRepositoryError::Deserialization(Box::new(error)))
 }
 
 pub(super) fn decode_event_row(row: &PgRow) -> Result<SerializedEvent, PostgresRepositoryError> {
@@ -212,9 +210,9 @@ pub(super) fn decode_event_row(row: &PgRow) -> Result<SerializedEvent, PostgresR
 pub(super) fn decode_snapshot_row(row: &PgRow) -> Result<SerializedSnapshot, PostgresRepositoryError> {
     Ok(SerializedSnapshot {
         aggregate_id: row.try_get("aggregate_id").map_err(row_decode_error)?,
-        aggregate: row.try_get("payload").map_err(row_decode_error)?,
+        payload: row.try_get("payload").map_err(row_decode_error)?,
         last_sequence: decode_usize(row.try_get("last_sequence").map_err(row_decode_error)?)?,
-        snapshot_version: decode_usize(row.try_get("current_snapshot").map_err(row_decode_error)?)?,
+        revision: decode_usize(row.try_get("revision").map_err(row_decode_error)?)?,
     })
 }
 
@@ -227,17 +225,14 @@ mod tests {
         assert_eq!(parse_position("42").unwrap(), Position::new(42));
         assert!(matches!(
             parse_position("x"),
-            Err(PostgresRepositoryError::DeserializationError(_))
+            Err(PostgresRepositoryError::Deserialization(_))
         ));
         assert_eq!(page_limit(1).unwrap(), 1);
         assert!(matches!(
             page_limit(0),
-            Err(PostgresRepositoryError::UnknownError(error)) if error.to_string() == "feed page limit must be positive"
+            Err(PostgresRepositoryError::Unexpected(error)) if error.to_string() == "feed page limit must be positive"
         ));
         #[cfg(target_pointer_width = "64")]
-        assert!(matches!(
-            page_limit(usize::MAX),
-            Err(PostgresRepositoryError::UnknownError(_))
-        ));
+        assert!(matches!(page_limit(usize::MAX), Err(PostgresRepositoryError::Unexpected(_))));
     }
 }

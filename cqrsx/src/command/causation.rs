@@ -160,8 +160,8 @@ mod tests {
     struct Ship {}
 
     impl Task for Ship {
-        const TASK_TYPE: &'static str = "ship_order";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "ship_order";
+        const VERSION: i32 = 1;
     }
 
     fn attempt(metadata: Value) -> TaskAttempt {
@@ -226,8 +226,7 @@ mod tests {
         let causation = Causation::from_task(&attempt(json!({})));
         let task = NewTask::try_new(Ship {})
             .unwrap()
-            .with_metadata(json!({ "order_id": "o-7", "command_id": "stale", "source": "app" }))
-            .unwrap();
+            .with_metadata(serde_json::from_value(json!({ "order_id": "o-7", "command_id": "stale", "source": "app" })).unwrap());
         let id = task.id();
         let stamped = causation.stamp_task(task);
         assert_eq!(stamped.id(), id);

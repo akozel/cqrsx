@@ -12,15 +12,15 @@ pub const LEASE_SAFETY_MARGIN: Duration = Duration::from_secs(5);
 /// Database token/expiry checks remain authoritative.
 #[derive(Clone, Debug)]
 pub struct TaskLease {
-    lock_token: Uuid,
+    token: Uuid,
     deadline: Instant,
 }
 impl TaskLease {
-    pub fn new(lock_token: Uuid, deadline: Instant) -> Self {
-        Self { lock_token, deadline }
+    pub fn new(token: Uuid, deadline: Instant) -> Self {
+        Self { token, deadline }
     }
-    pub fn lock_token(&self) -> Uuid {
-        self.lock_token
+    pub fn token(&self) -> Uuid {
+        self.token
     }
     pub fn deadline(&self) -> Instant {
         self.deadline
@@ -60,6 +60,6 @@ mod tests {
     fn cloning_preserves_ownership() {
         let task = claimed();
         assert_eq!(task.clone().lease().deadline(), task.lease().deadline());
-        assert_eq!(task.clone().lease().lock_token(), task.lease().lock_token());
+        assert_eq!(task.clone().lease().token(), task.lease().token());
     }
 }

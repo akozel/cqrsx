@@ -19,11 +19,11 @@ pub(crate) mod test_support {
     const VARIABLES: [&str; 7] = [
         "OUTBOX_STORAGE_TIMEOUT_MS",
         "OUTBOX_WORKER_CONCURRENCY",
-        "OUTBOX_QUEUE_CAPACITY",
-        "OUTBOX_QUEUE_REFILL_PERCENT",
-        "OUTBOX_POLL_INTERVAL_MS",
-        "OUTBOX_HANDLER_TIMEOUT_SECS",
-        "OUTBOX_LEASE_SECS",
+        "OUTBOX_BUFFER_CAPACITY",
+        "OUTBOX_BUFFER_REFILL_PERCENT",
+        "OUTBOX_POLL_MS",
+        "OUTBOX_HANDLER_TIMEOUT_MS",
+        "OUTBOX_LEASE_MS",
     ];
 
     pub(crate) fn scenario() -> Option<String> {

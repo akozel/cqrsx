@@ -8,7 +8,7 @@ pub(crate) struct Panicked;
 
 /// Polls `future` and turns a panic in any poll into `Err(Panicked)`; a future that panicked is not
 /// polled again.
-pub(crate) async fn unwinding<F: Future>(future: F) -> Result<F::Output, Panicked> {
+pub(crate) async fn catch_unwind<F: Future>(future: F) -> Result<F::Output, Panicked> {
     let mut future = std::pin::pin!(future);
     std::future::poll_fn(
         move |cx| match std::panic::catch_unwind(AssertUnwindSafe(|| future.as_mut().poll(cx))) {
@@ -25,11 +25,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_panic_in_any_poll_is_an_error_and_an_answer_passes_through() {
-        assert!(matches!(unwinding(async { 7 }).await, Ok(7)));
+        assert!(matches!(catch_unwind(async { 7 }).await, Ok(7)));
         let late = async {
             tokio::task::yield_now().await;
             panic!("injected panic after a pending poll");
         };
-        assert!(matches!(unwinding(late).await, Err(Panicked)));
+        assert!(matches!(catch_unwind(late).await, Err(Panicked)));
     }
 }

@@ -13,7 +13,7 @@ use crate::{
 use chrono::NaiveDate;
 use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+    journal::{repository::EventRepository, serialized_event::SerializedEvent},
     view::{
         View,
         verify::{Difference, DifferenceKind, Verification, verify},
@@ -120,7 +120,7 @@ async fn a_read_model_is_verified_by_the_engine_under_the_name_of_its_view() {
         .unwrap();
     let halls = cqrs.documents::<ConcertHallView, Concert>().unwrap();
     let mut hall = ConcertHallView::default();
-    hall.update(&announced);
+    hall.apply(&announced);
     halls.put("c-1", 1, 1, &hall).unwrap();
     let verification = EngineView::new(cqrs.clone(), ConcertHallView::NAME);
     assert_eq!(verification.name(), "concert_halls");
@@ -137,7 +137,7 @@ async fn a_read_model_is_verified_by_the_engine_under_the_name_of_its_view() {
     assert_eq!(
         verification.verify().await.unwrap().differences,
         [Difference {
-            collection: "concert_halls",
+            view: "concert_halls",
             id: "c-1".into(),
             kind: DifferenceKind::Differs
         }]

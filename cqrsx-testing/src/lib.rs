@@ -2,13 +2,13 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
 //! Test tools for the code that uses `cqrsx`, written on its public API: [`framework::TestFramework`] (an aggregate's
 //! given/when/then), [`command_executor::TestCommandExecutor`] (a command executor for use-case tests) and the event
-//! stores [`mem_store::MemStore`] and [`unavailable_store::UnavailableStore`].
+//! stores [`memory_store::MemoryStore`] and [`unavailable_store::UnavailableStore`].
 //!
 //! A `TestFramework` should be used to build a comprehensive set of aggregate tests to verify
 //! your application logic: given the events of the history, when a command decides, then one event or
 //! the rejection. It is synchronous: no runtime is needed. The stores in memory stand in for the databases; the
-//! journal in memory, [`MemEventRepository`](cqrsx::memory::event_repository::MemEventRepository), has the task queue
-//! [`MemTaskQueue`](cqrsx::memory::task_queue::MemTaskQueue) over its outbox, and the engine in memory
+//! journal in memory, [`MemoryEventRepository`](cqrsx::memory::event_repository::MemoryEventRepository), has the task queue
+//! [`MemoryTaskQueue`](cqrsx::memory::task_queue::MemoryTaskQueue) over its outbox, and the engine in memory
 //! (`cqrsx_engine::Cqrs::in_memory`) assembles all of them.
 //!
 //! A failed check is a panic (rule 8 of `.claude/rules/rust-style.md`): the tools say so in `# Panics`.
@@ -27,11 +27,11 @@
 //! # use cqrsx::projection::EventHandler;
 //! # use cqrsx::view::View;
 //! # use cqrsx::domain::command::Decide;
-//! # use cqrsx::journal::repository::PersistedEventRepository;
+//! # use cqrsx::journal::repository::EventRepository;
 //! # use cqrsx::journal::PersistenceError;
 //! # use cqrsx::journal::serialized_event::SerializedEvent;
 //! # use cqrsx::journal::snapshot::SerializedSnapshot;
-//! # use cqrsx::view::repository::ViewContext;
+//! # use cqrsx::view::repository::ViewMeta;
 //! # use cqrsx::view::repository::ViewRepository;
 //! #
 //! # #[derive(Serialize, Deserialize, Default)]
@@ -47,7 +47,7 @@
 //! #     type Id = String;
 //! #     type Command = CustomerCommand;
 //! #     type Event = CustomerEvent;
-//! #     type Error = CustomerError;
+//! #     type Rejection = CustomerError;
 //! #     type Rules = CustomerService;
 //! #
 //! #     fn apply(&mut self, event: Self::Event) {
@@ -142,7 +142,7 @@
 
 pub mod command_executor;
 pub mod framework;
-pub mod mem_store;
+pub mod memory_store;
 pub mod unavailable_store;
 pub mod validator;
 

@@ -1,12 +1,12 @@
 use super::{
-    CommandExecutor, CommandGatewayError,
+    CommandError, CommandExecutor,
     locks::{AggregateLockRegistry, LockLimits, LockRefused},
     observer::{CommandObserver, CommandReport, Outcome},
     planner::TaskPlanner,
     retry::retry_on_aggregate_conflict,
 };
 use crate::{
-    command::{AggregateError, CommitReport, attempt::CommandAttempt, retry::AggregateConflictRetryPolicy},
+    command::{AttemptError, CommitReport, attempt::CommandAttempt, retry::AggregateConflictRetryPolicy},
     domain::aggregate::{Aggregate, AggregateKey},
     journal::{EventStore, wakeup::CommitWakeup},
 };
@@ -20,7 +20,7 @@ use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 ///
 /// A command first waits for its aggregate's lock, at most the lock's `max_wait`, so the executor's commands
 /// to one aggregate run one at a time, in arrival order; past the wait the command is
-/// [`CommandGatewayError::Unavailable`] and nothing is loaded, planned or written. Two executors of one
+/// [`CommandError::Unavailable`] and nothing is loaded, planned or written. Two executors of one
 /// aggregate type are like two processes, which meet only in the store's optimistic check. Holding the lock
 /// the command runs through an attempt with bounded conflict retry: every attempt reloads the aggregate,
 /// repeats clones of the command and of its metadata and plans its tasks again from its own decision
@@ -53,8 +53,8 @@ impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
     /// An executor over `store` with the rules the commands decide with ([`Aggregate::Rules`]) and a lock
     /// registry of its own, bounded by `lock_limits`, that wakes nobody, tells nobody and plans nothing.
     ///
-    /// For experimentation or testing use the [persistent event store](crate::journal::persisted::PersistedEventStore)
-    /// over the journal in memory ([`MemEventRepository`](crate::memory::event_repository::MemEventRepository)); for
+    /// For experimentation or testing use the [persistent event store](crate::journal::store::JournalEventStore)
+    /// over the journal in memory ([`MemoryEventRepository`](crate::memory::event_repository::MemoryEventRepository)); for
     /// production, the same store over a database repository.
     ///
     /// ```rust
@@ -69,11 +69,11 @@ impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -108,7 +108,7 @@ impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -141,10 +141,10 @@ impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
     /// use cqrsx::command::executor::StoreCommandExecutor;
     /// use cqrsx::command::locks::LockLimits;
     /// use cqrsx::command::retry::AggregateConflictRetryPolicy;
-    /// use cqrsx::journal::persisted::PersistedEventStore;
-    /// use cqrsx::memory::event_repository::MemEventRepository;
+    /// use cqrsx::journal::store::JournalEventStore;
+    /// use cqrsx::memory::event_repository::MemoryEventRepository;
     ///
-    /// let store = PersistedEventStore::<_, MyAggregate>::new(MemEventRepository::default());
+    /// let store = JournalEventStore::<_, MyAggregate>::new(MemoryEventRepository::default());
     /// let rules = MyService::default();
     ///
     /// let executor = StoreCommandExecutor::new(store, rules, AggregateConflictRetryPolicy::default(), LockLimits::default());
@@ -212,11 +212,11 @@ where
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -251,7 +251,7 @@ where
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -282,17 +282,17 @@ where
     /// # use example::MyAggregate;
     /// # use example::MyCommands;
     /// # use example::MyUserError;
-    /// # use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor};
-    /// # use cqrsx::{journal::persisted::PersistedEventStore, memory::event_repository::MemEventRepository};
-    /// type MyExecutor = StoreCommandExecutor<MyAggregate, PersistedEventStore<MemEventRepository, MyAggregate>>;
+    /// # use cqrsx::command::{CommandError, executor::StoreCommandExecutor};
+    /// # use cqrsx::{journal::store::JournalEventStore, memory::event_repository::MemoryEventRepository};
+    /// type MyExecutor = StoreCommandExecutor<MyAggregate, JournalEventStore<MemoryEventRepository, MyAggregate>>;
     ///
-    /// async fn do_something(executor: MyExecutor) -> Result<(), CommandGatewayError<MyUserError>> {
+    /// async fn do_something(executor: MyExecutor) -> Result<(), CommandError<MyUserError>> {
     ///     let committed = executor.execute(&"agg-id-F39A0C".into(), MyCommands::DoSomething).await?;
     ///     assert_eq!(committed.events.len(), 1);
     ///     Ok(())
     /// }
     /// ```
-    pub async fn execute(&self, id: &A::Id, command: A::Command) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+    pub async fn execute(&self, id: &A::Id, command: A::Command) -> Result<CommitReport<A>, CommandError<A::Rejection>> {
         self.execute_with_metadata(id, command, HashMap::new()).await
     }
 
@@ -314,11 +314,11 @@ where
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -353,7 +353,7 @@ where
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -384,13 +384,13 @@ where
     /// # use example::MyAggregate;
     /// # use example::MyCommands;
     /// # use example::MyUserError;
-    /// # use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor};
-    /// # use cqrsx::{journal::persisted::PersistedEventStore, memory::event_repository::MemEventRepository};
+    /// # use cqrsx::command::{CommandError, executor::StoreCommandExecutor};
+    /// # use cqrsx::{journal::store::JournalEventStore, memory::event_repository::MemoryEventRepository};
     /// # use std::collections::HashMap;
     /// # use chrono;
-    /// type MyExecutor = StoreCommandExecutor<MyAggregate, PersistedEventStore<MemEventRepository, MyAggregate>>;
+    /// type MyExecutor = StoreCommandExecutor<MyAggregate, JournalEventStore<MemoryEventRepository, MyAggregate>>;
     ///
-    /// async fn do_something(executor: MyExecutor) -> Result<(), CommandGatewayError<MyUserError>> {
+    /// async fn do_something(executor: MyExecutor) -> Result<(), CommandError<MyUserError>> {
     ///     let metadata = HashMap::from([("time".to_string(), chrono::Utc::now().to_rfc3339())]);
     ///     let committed = executor
     ///         .execute_with_metadata(&"agg-id-F39A0C".into(), MyCommands::DoSomething, metadata)
@@ -404,10 +404,10 @@ where
         id: &A::Id,
         mut command: A::Command,
         metadata: HashMap<String, String>,
-    ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+    ) -> Result<CommitReport<A>, CommandError<A::Rejection>> {
         let answer = self.run(id, &mut command, &metadata).await;
         if let Some(observer) = &self.observer {
-            observer.command(&CommandReport {
+            observer.observe(&CommandReport {
                 aggregate_id: id,
                 command: &command,
                 metadata: &metadata,
@@ -425,13 +425,13 @@ where
         id: &A::Id,
         command: &mut A::Command,
         metadata: &HashMap<String, String>,
-    ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+    ) -> Result<CommitReport<A>, CommandError<A::Rejection>> {
         // Held through every attempt and the wake-up.
         let lock = self
             .locks
             .acquire(AggregateKey::of::<A>(id))
             .await
-            .map_err(lock_refused::<A::Error>(A::TYPE))?;
+            .map_err(lock_refused::<A::Rejection>(A::TYPE))?;
         let key = lock.key().aggregate_id(); // the id's text, formatted once: every attempt borrows it
         let attempt = &self.attempt;
         let report = retry_on_aggregate_conflict(self.retry_policy, move || {
@@ -449,21 +449,21 @@ where
     }
 }
 
-fn lock_refused<D>(aggregate_type: &'static str) -> impl FnOnce(LockRefused) -> CommandGatewayError<D> {
+fn lock_refused<D>(aggregate_type: &'static str) -> impl FnOnce(LockRefused) -> CommandError<D> {
     move |refused| {
         crate::diagnostics::log_lock_refused(aggregate_type, refused);
-        CommandGatewayError::Unavailable
+        CommandError::Unavailable
     }
 }
 
 /// Logs the technical failures of a load, a plan or a commit; domain rejections and conflicts are outcomes.
-fn log_aggregate_error<D: Error>(aggregate_type: &str, error: &AggregateError<D>) {
+fn log_aggregate_error<D: Error>(aggregate_type: &str, error: &AttemptError<D>) {
     let (category, source): (&'static str, &(dyn Error + 'static)) = match error {
-        AggregateError::DatabaseConnectionError(source) => ("connection", source.as_ref()),
-        AggregateError::DeserializationError(source) => ("deserialization", source.as_ref()),
-        AggregateError::UnexpectedError(source) => ("unexpected", source.as_ref()),
-        AggregateError::TaskPlan(source) => ("task_plan", source),
-        AggregateError::Domain(_) | AggregateError::AggregateConflict => return,
+        AttemptError::Connection(source) => ("connection", source.as_ref()),
+        AttemptError::Deserialization(source) => ("deserialization", source.as_ref()),
+        AttemptError::Unexpected(source) => ("unexpected", source.as_ref()),
+        AttemptError::TaskPlan(source) => ("task_plan", source),
+        AttemptError::Rejected(_) | AttemptError::Conflict => return,
     };
     crate::diagnostics::log_command_failure(aggregate_type, category, source);
 }
@@ -472,7 +472,7 @@ impl<A, S> CommandExecutor<A> for StoreCommandExecutor<A, S>
 where
     A: Aggregate + Clone + 'static,
     A::Command: Clone + 'static,
-    A::Error: Send + 'static,
+    A::Rejection: Send + 'static,
     S: EventStore<A> + 'static,
     S::Context: Send,
 {
@@ -481,19 +481,19 @@ where
         id: &A::Id,
         command: A::Command,
         metadata: HashMap<String, String>,
-    ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
+    ) -> Result<CommitReport<A>, CommandError<A::Rejection>> {
         StoreCommandExecutor::execute_with_metadata(self, id, command, metadata).await
     }
 }
 
-pub(super) fn map_aggregate_error<D: Error>(error: AggregateError<D>) -> CommandGatewayError<D> {
+pub(super) fn map_aggregate_error<D: Error>(error: AttemptError<D>) -> CommandError<D> {
     match error {
-        AggregateError::Domain(error) => CommandGatewayError::Domain(error),
-        AggregateError::AggregateConflict => CommandGatewayError::Conflict,
-        AggregateError::DatabaseConnectionError(_)
-        | AggregateError::DeserializationError(_)
-        | AggregateError::UnexpectedError(_)
-        | AggregateError::TaskPlan(_) => CommandGatewayError::Unavailable,
+        AttemptError::Rejected(error) => CommandError::Rejected(error),
+        AttemptError::Conflict => CommandError::Conflict,
+        AttemptError::Connection(_)
+        | AttemptError::Deserialization(_)
+        | AttemptError::Unexpected(_)
+        | AttemptError::TaskPlan(_) => CommandError::Unavailable,
     }
 }
 
@@ -515,7 +515,7 @@ mod tests {
     use serde::{Deserialize, Serialize};
 
     use super::*;
-    use crate::command::AggregateError;
+    use crate::command::AttemptError;
     use crate::command::{
         causation::Causation,
         locks::LockLimits,
@@ -524,7 +524,7 @@ mod tests {
     use crate::domain::aggregate::Aggregate;
     use crate::journal::{EventStore, PersistenceError};
     use crate::task::{NewTask, Task};
-    use crate::{journal::persisted::PersistedEventStore, memory::event_repository::MemEventRepository};
+    use crate::{journal::store::JournalEventStore, memory::event_repository::MemoryEventRepository};
     use std::time::Duration;
     use thiserror::Error;
 
@@ -561,7 +561,7 @@ mod tests {
         type Id = String;
         type Command = DummyCommand;
         type Event = DummyEvent;
-        type Error = DummyError;
+        type Rejection = DummyError;
         type Rules = Arc<Mutex<Vec<DummyCommand>>>;
 
         fn apply(&mut self, _: Self::Event) {}
@@ -635,7 +635,7 @@ mod tests {
         ) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
             self.tasks.lock().unwrap().push(tasks.to_vec());
             if self.commits.fetch_add(1, Ordering::SeqCst) < self.conflicts {
-                Err(PersistenceError::OptimisticLockError)
+                Err(PersistenceError::Conflict)
             } else {
                 Ok(Vec::new())
             }
@@ -648,8 +648,8 @@ mod tests {
     }
 
     impl Task for DummyTask {
-        const TASK_TYPE: &'static str = "dummy";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "dummy";
+        const VERSION: i32 = 1;
     }
 
     /// One task per recorded value; refuses `refuse` and panics on `panic`; counts its calls and writes
@@ -663,19 +663,16 @@ mod tests {
     impl TaskPlanner<DummyAggregate> for ValuePlanner {
         fn plan(&self, decision: &Decision<'_, DummyAggregate>) -> Result<Vec<NewTask>, TaskPlanError> {
             self.calls.fetch_add(1, Ordering::SeqCst);
-            let mut tasks = Vec::new();
-            for DummyEvent::Recorded(value) in decision.events {
-                match value.as_str() {
-                    "refuse" => return Err(TaskPlanError::application("private_refusal")),
-                    "panic" => panic!("the planner panics"),
-                    _ => {}
-                }
-                if let Some(log) = &self.log {
-                    log.lock().unwrap().push(format!("plan {value}"));
-                }
-                tasks.push(NewTask::try_new(DummyTask { value: value.clone() })?);
+            let DummyEvent::Recorded(value) = decision.event;
+            match value.as_str() {
+                "refuse" => return Err(TaskPlanError::application("private_refusal")),
+                "panic" => panic!("the planner panics"),
+                _ => {}
             }
-            Ok(tasks)
+            if let Some(log) = &self.log {
+                log.lock().unwrap().push(format!("plan {value}"));
+            }
+            Ok(vec![NewTask::try_new(DummyTask { value: value.clone() })?])
         }
     }
 
@@ -695,7 +692,7 @@ mod tests {
         type Id = String;
         type Command = std::cell::Cell<u32>;
         type Event = DummyEvent;
-        type Error = DummyError;
+        type Rejection = DummyError;
         type Rules = ();
 
         fn apply(&mut self, _: DummyEvent) {}
@@ -721,7 +718,7 @@ mod tests {
     #[tokio::test]
     async fn executor_accepts_send_commands_without_requiring_sync() {
         let executor = Arc::new(StoreCommandExecutor::new(
-            PersistedEventStore::<_, SendOnlyAggregate>::new(MemEventRepository::default()),
+            JournalEventStore::<_, SendOnlyAggregate>::new(MemoryEventRepository::default()),
             (),
             no_delay_policy(1),
             LockLimits::default(),
@@ -743,7 +740,7 @@ mod tests {
     async fn a_planner_reads_a_send_only_command_and_the_future_stays_send() {
         let executor = Arc::new(
             StoreCommandExecutor::new(
-                PersistedEventStore::<_, SendOnlyAggregate>::new(MemEventRepository::default()),
+                JournalEventStore::<_, SendOnlyAggregate>::new(MemoryEventRepository::default()),
                 (),
                 no_delay_policy(1),
                 LockLimits::default(),
@@ -768,7 +765,7 @@ mod tests {
             aggregate_id: &String,
             command: std::cell::Cell<u32>,
             metadata: HashMap<String, String>,
-        ) -> Result<CommitReport<SendOnlyAggregate>, CommandGatewayError<DummyError>> {
+        ) -> Result<CommitReport<SendOnlyAggregate>, CommandError<DummyError>> {
             let address = aggregate_id.as_ptr() as usize;
             command.set(command.get() + 1);
             tokio::task::yield_now().await;
@@ -819,7 +816,7 @@ mod tests {
             let mut commits = self.commits.lock().unwrap();
             commits.push(metadata);
             if commits.len() <= self.conflicts {
-                Err(PersistenceError::OptimisticLockError)
+                Err(PersistenceError::Conflict)
             } else {
                 Ok(Vec::new())
             }
@@ -927,7 +924,7 @@ mod tests {
         let domain_executor = dummy_executor(DummyStore::new(0), 3);
         assert_eq!(
             CommandExecutor::execute(&domain_executor, &"aggregate".into(), DummyCommand::Reject).await,
-            Err(CommandGatewayError::Domain(DummyError))
+            Err(CommandError::Rejected(DummyError))
         );
 
         let store = DummyStore::new(usize::MAX);
@@ -939,19 +936,19 @@ mod tests {
                 DummyCommand::Record("value".to_owned())
             )
             .await,
-            Err(CommandGatewayError::Conflict)
+            Err(CommandError::Conflict)
         );
         assert_eq!(store.commits.load(Ordering::SeqCst), 3);
 
         for error in [
-            || PersistenceError::ConnectionError(Box::new(io::Error::other("connection"))),
-            || PersistenceError::DeserializationError(Box::new(io::Error::other("json"))),
-            || PersistenceError::UnknownError(Box::new(io::Error::other("unexpected"))),
+            || PersistenceError::Connection(Box::new(io::Error::other("connection"))),
+            || PersistenceError::Deserialization(Box::new(io::Error::other("json"))),
+            || PersistenceError::Unexpected(Box::new(io::Error::other("unexpected"))),
         ] {
             let executor = dummy_executor(DummyStore::failing(error), 3);
             assert_eq!(
                 CommandExecutor::execute(&executor, &"aggregate".into(), DummyCommand::Record("value".to_owned())).await,
-                Err(CommandGatewayError::Unavailable)
+                Err(CommandError::Unavailable)
             );
         }
     }
@@ -965,7 +962,7 @@ mod tests {
             executor
                 .execute(&"aggregate".into(), DummyCommand::Record("value".to_owned()))
                 .await,
-            Err(CommandGatewayError::Conflict)
+            Err(CommandError::Conflict)
         );
         assert_eq!(planner.calls.load(Ordering::SeqCst), 3);
         assert_eq!(
@@ -985,7 +982,7 @@ mod tests {
                 executor
                     .execute(&"private_id".into(), DummyCommand::Record("refuse".to_owned()))
                     .await,
-                Err(CommandGatewayError::Unavailable)
+                Err(CommandError::Unavailable)
             );
             assert_eq!(planner.calls.load(Ordering::SeqCst), 1, "a planning failure is never retried");
             assert_eq!(store.commits.load(Ordering::SeqCst), 0, "nothing reached the store");
@@ -1001,10 +998,7 @@ mod tests {
         let store = TallyStore::new(1);
         let executor = StoreCommandExecutor::new(store.clone(), (), no_delay_policy(3), LockLimits::default())
             .with_task_planner(TallyPlanner { refuse_above: Some(0) });
-        assert_eq!(
-            executor.execute(&"tally".into(), 5).await,
-            Err(CommandGatewayError::Unavailable)
-        );
+        assert_eq!(executor.execute(&"tally".into(), 5).await, Err(CommandError::Unavailable));
         assert_eq!(
             store.attempts.lock().unwrap().len(),
             1,
@@ -1016,9 +1010,9 @@ mod tests {
     async fn executor_logs_technical_failure_once_and_suppresses_domain_and_conflict_failures() {
         let (_, log) = crate::diagnostics::test_support::capture(async {
             for error in [
-                || PersistenceError::ConnectionError(Box::new(io::Error::other("private_connection"))),
-                || PersistenceError::DeserializationError(Box::new(io::Error::other("private_json"))),
-                || PersistenceError::UnknownError(Box::new(io::Error::other("private_unexpected"))),
+                || PersistenceError::Connection(Box::new(io::Error::other("private_connection"))),
+                || PersistenceError::Deserialization(Box::new(io::Error::other("private_json"))),
+                || PersistenceError::Unexpected(Box::new(io::Error::other("private_unexpected"))),
             ] {
                 let executor = dummy_executor(DummyStore::failing(error), 3);
                 assert_eq!(
@@ -1028,20 +1022,20 @@ mod tests {
                             DummyCommand::Record("private_command".into())
                         )
                         .await,
-                    Err(CommandGatewayError::Unavailable)
+                    Err(CommandError::Unavailable)
                 );
             }
             let store = DummyStore::new(usize::MAX);
             let executor = dummy_executor(store.clone(), 3);
             assert_eq!(
                 executor.execute(&"private_id".into(), DummyCommand::Reject).await,
-                Err(CommandGatewayError::Domain(DummyError))
+                Err(CommandError::Rejected(DummyError))
             );
             assert_eq!(
                 executor
                     .execute(&"private_id".into(), DummyCommand::Record("private_command".into()))
                     .await,
-                Err(CommandGatewayError::Conflict)
+                Err(CommandError::Conflict)
             );
             assert_eq!(store.commits.load(Ordering::SeqCst), 3);
         })
@@ -1112,7 +1106,7 @@ mod tests {
                 .is_ok();
             if external || journal.len() != context.1 {
                 self.calls.lock().unwrap().push(format!("conflict {value}"));
-                return Err(PersistenceError::OptimisticLockError);
+                return Err(PersistenceError::Conflict);
             }
             journal.push(value.clone());
             self.calls.lock().unwrap().push(format!("commit {value}"));
@@ -1165,7 +1159,7 @@ mod tests {
             while let Some(result) = commands.join_next().await {
                 match result.unwrap() {
                     Ok(_) => {}
-                    Err(CommandGatewayError::Conflict) => conflicts += 1,
+                    Err(CommandError::Conflict) => conflicts += 1,
                     other => panic!("unexpected result {other:?}"),
                 }
             }
@@ -1267,7 +1261,7 @@ mod tests {
         while let Some(result) = commands.join_next().await {
             match result.unwrap() {
                 (index, Ok(report)) => reports.push((index, report)),
-                (_, Err(CommandGatewayError::Conflict)) => {}
+                (_, Err(CommandError::Conflict)) => {}
                 (_, other) => panic!("unexpected result {other:?}"),
             }
         }
@@ -1338,13 +1332,13 @@ mod tests {
             assert!(std::future::poll_fn(|cx| std::task::Poll::Ready(waiting.as_mut().poll(cx).is_pending())).await);
             assert_eq!(
                 executor.execute(&"private_id".into(), record("private_refused")).await,
-                Err(CommandGatewayError::Unavailable),
+                Err(CommandError::Unavailable),
                 "the line is full"
             );
             // The clock is paused: the idle runtime advances it to the waiter's deadline.
             assert_eq!(
                 waiting.await,
-                Err(CommandGatewayError::Unavailable),
+                Err(CommandError::Unavailable),
                 "the lock was not acquired in time"
             );
         })
@@ -1402,7 +1396,7 @@ mod tests {
         assert!(silent.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
         assert_eq!(
             quiet.execute(&"aggregate".into(), DummyCommand::Reject).await,
-            Err(CommandGatewayError::Domain(DummyError))
+            Err(CommandError::Rejected(DummyError))
         );
         assert_eq!(
             quiet.execute(&"aggregate".into(), record("a")).await,
@@ -1414,20 +1408,20 @@ mod tests {
     #[test]
     fn maps_every_framework_error_category() {
         assert_eq!(
-            map_aggregate_error(AggregateError::Domain(DummyError)),
-            CommandGatewayError::Domain(DummyError)
+            map_aggregate_error(AttemptError::Rejected(DummyError)),
+            CommandError::Rejected(DummyError)
         );
         assert_eq!(
-            map_aggregate_error::<DummyError>(AggregateError::AggregateConflict),
-            CommandGatewayError::Conflict
+            map_aggregate_error::<DummyError>(AttemptError::Conflict),
+            CommandError::Conflict
         );
         for error in [
-            AggregateError::DatabaseConnectionError(Box::new(io::Error::other("db"))),
-            AggregateError::DeserializationError(Box::new(io::Error::other("json"))),
-            AggregateError::UnexpectedError(Box::new(io::Error::other("unexpected"))),
-            AggregateError::TaskPlan(TaskPlanError::application("refused")),
+            AttemptError::Connection(Box::new(io::Error::other("db"))),
+            AttemptError::Deserialization(Box::new(io::Error::other("json"))),
+            AttemptError::Unexpected(Box::new(io::Error::other("unexpected"))),
+            AttemptError::TaskPlan(TaskPlanError::application("refused")),
         ] {
-            assert_eq!(map_aggregate_error::<DummyError>(error), CommandGatewayError::Unavailable);
+            assert_eq!(map_aggregate_error::<DummyError>(error), CommandError::Unavailable);
         }
     }
 
@@ -1453,7 +1447,7 @@ mod tests {
         type Id = String;
         type Command = u32;
         type Event = Added;
-        type Error = DummyError;
+        type Rejection = DummyError;
         type Rules = ();
 
         fn apply(&mut self, event: Added) {
@@ -1516,7 +1510,7 @@ mod tests {
             let mut attempts = self.attempts.lock().unwrap();
             attempts.push(tasks.to_vec());
             if attempts.len() <= self.conflicts {
-                return Err(PersistenceError::OptimisticLockError);
+                return Err(PersistenceError::Conflict);
             }
             Ok(events
                 .into_iter()
@@ -1537,8 +1531,8 @@ mod tests {
     }
 
     impl Task for Total {
-        const TASK_TYPE: &'static str = "total";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "total";
+        const VERSION: i32 = 1;
     }
 
     /// Plans the state before and after the decision; refuses a decision on a state above `refuse_above`.
@@ -1553,7 +1547,7 @@ mod tests {
             }
             Ok(vec![NewTask::try_new(Total {
                 before: decision.before.0,
-                after: decision.after.0,
+                after: decision.state.0,
             })?])
         }
     }
@@ -1628,7 +1622,7 @@ mod tests {
         type Id = RoomId;
         type Command = ();
         type Event = DummyEvent;
-        type Error = DummyError;
+        type Rejection = DummyError;
         type Rules = ();
 
         fn apply(&mut self, _: DummyEvent) {}
@@ -1678,7 +1672,7 @@ mod tests {
             _: &[NewTask],
         ) -> Result<Vec<EventEnvelope<Room>>, PersistenceError> {
             if self.commits.fetch_add(1, Ordering::SeqCst) == 0 {
-                return Err(PersistenceError::OptimisticLockError);
+                return Err(PersistenceError::Conflict);
             }
             Ok(events
                 .into_iter()
@@ -1794,7 +1788,7 @@ mod tests {
     }
 
     impl CommandObserver<DummyAggregate> for Heard {
-        fn command(&self, report: &CommandReport<'_, DummyAggregate>) {
+        fn observe(&self, report: &CommandReport<'_, DummyAggregate>) {
             let outcome = match report.outcome {
                 Outcome::Accepted { tasks } => format!(
                     "accepted {:?}",
@@ -1834,21 +1828,21 @@ mod tests {
         assert_eq!(report.tasks.len(), 1);
         assert_eq!(
             accepting.execute(&"a-2".into(), DummyCommand::Reject).await,
-            Err(CommandGatewayError::Domain(DummyError))
+            Err(CommandError::Rejected(DummyError))
         );
         let conflicting = dummy_executor(DummyStore::new(5), 2).with_observer(observer.clone());
         assert_eq!(
             conflicting.execute(&"a-3".into(), record("y")).await,
-            Err(CommandGatewayError::Conflict)
+            Err(CommandError::Conflict)
         );
         let failing = dummy_executor(
-            DummyStore::failing(|| PersistenceError::ConnectionError(Box::new(io::Error::other("down")))),
+            DummyStore::failing(|| PersistenceError::Connection(Box::new(io::Error::other("down")))),
             1,
         )
         .with_observer(observer.clone());
         assert_eq!(
             failing.execute_with_metadata(&"a-4".into(), record("z"), source).await,
-            Err(CommandGatewayError::Unavailable)
+            Err(CommandError::Unavailable)
         );
         assert_eq!(
             observer.taken(),
@@ -1867,7 +1861,7 @@ mod tests {
     struct Totals(Mutex<Vec<Vec<serde_json::Value>>>);
 
     impl CommandObserver<Tally> for Totals {
-        fn command(&self, report: &CommandReport<'_, Tally>) {
+        fn observe(&self, report: &CommandReport<'_, Tally>) {
             let Outcome::Accepted { tasks } = report.outcome else {
                 panic!("the tally accepts every command");
             };
@@ -1917,7 +1911,7 @@ mod tests {
         // The clock is paused: the idle runtime advances it to the waiter's deadline.
         assert_eq!(
             executor.execute(&"aggregate".into(), record("refused")).await,
-            Err(CommandGatewayError::Unavailable)
+            Err(CommandError::Unavailable)
         );
         assert_eq!(
             observer.taken(),
@@ -1941,7 +1935,7 @@ mod tests {
     }
 
     impl CommandObserver<DummyAggregate> for Holding {
-        fn command(&self, report: &CommandReport<'_, DummyAggregate>) {
+        fn observe(&self, report: &CommandReport<'_, DummyAggregate>) {
             if *report.command != record("first") {
                 self.log.lock().unwrap().push("second".to_owned());
                 self.second.lock().unwrap().send(()).unwrap();
@@ -2045,7 +2039,7 @@ mod tests {
     struct Panicking;
 
     impl CommandObserver<DummyAggregate> for Panicking {
-        fn command(&self, report: &CommandReport<'_, DummyAggregate>) {
+        fn observe(&self, report: &CommandReport<'_, DummyAggregate>) {
             if *report.command == record("boom") {
                 panic!("the observer panics");
             }

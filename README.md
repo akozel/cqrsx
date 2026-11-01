@@ -5,18 +5,17 @@ It provides aggregates and command handling, event and snapshot persistence,
 projections, a transactional outbox, and a durable task queue with retries.
 PostgreSQL stores data, and Tokio runs background tasks.
 
-The workspace has seven crates:
-- [`cqrsx`](cqrsx/README.md), the core;
-- [`cqrsx-engine`](cqrsx-engine/README.md), which assembles an application from the core's components;
-- [`cqrsx-postgres`](cqrsx-postgres/src/lib.rs) and [`cqrsx-mongodb`](cqrsx-mongodb/src/lib.rs), the stores;
-- [`cqrsx-testing`](cqrsx-testing/src/lib.rs), the test tools for applications (aggregate given/when/then, a command executor,
-  event stores for tests);
-- [`cqrsx-macros`](cqrsx-macros/README.md), the derive macros;
-- `cqrsx-fixtures`, the private test fixtures of the framework (database containers, captured logs).
+The workspace has seven crates: the core [`cqrsx`](cqrsx/README.md), the engine
+[`cqrsx-engine`](cqrsx-engine/README.md), which assembles an application from the core's components, the stores, the
+test tools and the derive macros. What each holds and the rules of their boundaries are in
+[Crates and their boundaries](doc/crates.md). The crates are not published: the library is unreleased and its API
+changes freely.
 
-A crate with a `README.md` includes it as its documentation; one without has a single `//!` in its `lib.rs`.
-
-For architecture details, see [components and terminology](doc/components.md).
+Where to start: the [quick start](cqrsx-engine/README.md#quick-start) of the engine, the rules of an application in
+the [core's README](cqrsx/README.md), an application step by step in the [typical scenario](doc/typical_scenario.md),
+the components and their names in [Components and terminology](doc/components.md), how a command, an event and a task
+travel through the engine in the pages [command path](doc/command-path.html), [read path](doc/read-path.html) and
+[task path](doc/task-path.html), and a complete application in [`demo/`](demo/README.md).
 
 ## Requirements
 
@@ -51,8 +50,8 @@ podman compose up -d postgres
 delegates to an external Compose provider; install `podman-compose` and make sure
 it is available on your `PATH`.
 
-Compose creates the `cqrsx` database and applies the event-store and outbox SQL
-schemas when starting with a fresh volume. Use this connection URL:
+Compose creates the `cqrsx` database and applies the event-store, outbox and
+projection-checkpoint schemas of `cqrsx-postgres/sql` when starting with a fresh volume. Use this connection URL:
 
 ```text
 postgresql://cqrsx:cqrsx@localhost:5433/cqrsx
@@ -86,28 +85,13 @@ to Podman. See the [Podman API service documentation](https://docs.podman.io/en/
 If your environment already provides `DOCKER_HOST` for a mounted Podman socket,
 keep that value and skip the socket setup above.
 
-Run the full suite of unit tests, integration tests, and doctests:
+Integration tests create their own PostgreSQL `18.6-alpine` containers and apply the schemas, and their own
+MongoDB `8.2` containers for the `cqrsx-mongodb` tests and the engine's `mongodb` feature (the containers come from the
+`cqrsx-fixtures` crate); they do not require the Compose database. The first run needs access to the image registry.
 
-```bash
-RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-features
-```
-
-The test parallelism and seed match the CI settings. Integration tests automatically
-create their own PostgreSQL `18.6-alpine` containers and apply the schemas, and their
-own MongoDB `8.2` containers for the `cqrsx-mongodb` tests and the engine's `mongodb` feature (the containers come
-from the `cqrsx-fixtures` crate);
-they do not require the Compose database. The first run needs access to the image
-registry.
-
-The core, the stores (`cqrsx-postgres`, `cqrsx-mongodb`) and `cqrsx-testing` have no features; the engine has three. Run the tests
-of the crates one by one and of the engine with each feature on its own:
-
-```bash
-cargo test --locked -p cqrsx                                              # core, in memory
-cargo test --locked -p cqrsx-postgres                                     # also: -p cqrsx-mongodb, -p cqrsx-testing
-cargo test --locked -p cqrsx-engine --no-default-features                # engine in memory
-cargo test --locked -p cqrsx-engine --no-default-features --features postgres   # also: mongodb, http
-```
+The commands CI runs (formatting, clippy with and without features, the documentation and its links, the full suite
+with the CI's parallelism and seed, every crate and every feature of the engine on its own, coverage) are listed
+once, in [`CLAUDE.md`](CLAUDE.md#commands); run them from the root of the repository.
 
 ## Code coverage
 
@@ -118,13 +102,6 @@ rustup component add llvm-tools-preview
 cargo install cargo-llvm-cov --locked
 ```
 
-Run coverage with the same **97%** minimum line coverage required by CI.
-The full coverage run requires the Podman API socket configured in the Tests section:
-
-```bash
-cargo llvm-cov --workspace --all-features --html --open --ignore-filename-regex '(^|/)main\.rs$' --fail-under-lines 97
-```
-
-Open `target/llvm-cov/html/index.html` in your browser. CI also requires 97% for the core, the stores and the engine on their
-own: `cargo llvm-cov --locked -p cqrsx --fail-under-lines 97` and the same with `-p cqrsx-postgres`, `-p cqrsx-mongodb`
-and, with `--all-features`, `-p cqrsx-engine`.
+CI requires **97%** line coverage for the workspace and for the core, the stores and the engine on their own; the
+coverage commands are in the same list. They need the Podman API socket configured in the Tests section. Add
+`--html --open` to one of them to browse the report (`target/llvm-cov/html/index.html`).

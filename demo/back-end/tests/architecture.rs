@@ -216,7 +216,7 @@ fn externals(layer: Option<Layer>) -> Externals {
             // and its derive alike (backlog 07/05, decision 2), so a presentation may name both.
             cqrsx_allowed: Some(&[
                 "cqrsx_engine::Cqrs",
-                "cqrsx::command::CommandGatewayError",
+                "cqrsx::command::CommandError",
                 "cqrsx::domain::rejection",
                 "cqrsx::view::repository::StoredView",
             ]),
@@ -682,21 +682,21 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ("shared/application/x.rs", "use crate::concert;\n"),
         (
             "shared/infrastructure/x.rs",
-            "use crate::operations::application::ledger::EventLedgerStats;\n",
+            "use crate::operations::application::journal::JournalStats;\n",
         ),
         ("concert/domain/x.rs", "use crate::concert::application::app::ConcertApp;\n"),
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
         ("concert/domain/x.rs", "use cqrsx_postgres::pool::connect_pool;\n"),
         ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
-        ("fan/application/x.rs", "use cqrsx_testing::mem_store::MemStore;\n"),
+        ("fan/application/x.rs", "use cqrsx_testing::memory_store::MemoryStore;\n"),
         ("concert/domain/x.rs", "use cqrsx_testing::framework::TestFramework;\n"),
         (
             "concert/domain/x.rs",
-            "use cqrsx::memory::event_repository::MemEventRepository;\n",
+            "use cqrsx::memory::event_repository::MemoryEventRepository;\n",
         ),
         (
             "fan/application/x.rs",
-            "use cqrsx::memory::view_repository::MemViewRepository;\n",
+            "use cqrsx::memory::view_repository::MemoryViewRepository;\n",
         ),
         ("concert.rs", "use crate::fan::domain::Fan;\n"),
     ] {
@@ -705,7 +705,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     assert!(
         check(
             "fan/application/x.rs",
-            "#[cfg(test)]\nmod tests { use cqrsx_testing::mem_store::MemStore; use crate::testing; }\n"
+            "#[cfg(test)]\nmod tests { use cqrsx_testing::memory_store::MemoryStore; use crate::testing; }\n"
         )
         .is_empty(),
         "test tooling in test code"
@@ -830,8 +830,8 @@ fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
 fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::command::CommandGatewayError;\nuse cqrsx_engine::Cqrs;\n",
-        "fn f(e: cqrsx::command::CommandGatewayError<()>) {}\n",
+        "use cqrsx::command::CommandError;\nuse cqrsx_engine::Cqrs;\n",
+        "fn f(e: cqrsx::command::CommandError<()>) {}\n",
         "fn f(cqrs: &cqrsx_engine::Cqrs) {}\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
@@ -882,7 +882,7 @@ fn every_crate_of_the_framework_is_under_the_rules() {
     // An application assembles nothing of the process and opens no store, but may use the engine's settings.
     assert!(check("operations/application/x.rs", "use cqrsx_engine::settings::Settings;\n").is_empty());
     for (code, prefix) in [
-        ("use cqrsx_engine::serve::StartupError;\n", "cqrsx_engine::serve"),
+        ("use cqrsx_engine::serve::ServeError;\n", "cqrsx_engine::serve"),
         ("use cqrsx_postgres::pool::connect_pool;\n", "cqrsx_postgres"),
         (
             "fn f() { cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(); }\n",
@@ -918,10 +918,10 @@ fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_th
         "use cqrsx::view::repository::ViewRepository;\n",
         "use cqrsx_engine::views::Views;\n",
         "use cqrsx::view::projection::ViewProjection;\n",
-        "use cqrsx::view::repository::ViewContext;\n",
+        "use cqrsx::view::repository::ViewMeta;\n",
         "use cqrsx::view::verify::verify;\n",
         "use cqrsx_mongodb::view_repository::MongoViewRepository;\n",
-        "use cqrsx::memory::view_repository::MemViewRepository;\n",
+        "use cqrsx::memory::view_repository::MemoryViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}");

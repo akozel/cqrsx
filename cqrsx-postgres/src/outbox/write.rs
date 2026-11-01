@@ -14,10 +14,10 @@ fn append_snapshot<A: Aggregate>(snapshot: &SnapshotWrite, query: &mut QueryBuil
         SnapshotWrite::Insert {
             aggregate_id,
             payload,
-            version,
+            revision,
             last_sequence,
         } => {
-            query.push("written_snapshot AS (INSERT INTO snapshots (aggregate_type, aggregate_id, last_sequence, current_snapshot, payload) VALUES (");
+            query.push("written_snapshot AS (INSERT INTO snapshots (aggregate_type, aggregate_id, last_sequence, revision, payload) VALUES (");
             query
                 .push_bind(A::TYPE)
                 .push(", ")
@@ -25,7 +25,7 @@ fn append_snapshot<A: Aggregate>(snapshot: &SnapshotWrite, query: &mut QueryBuil
                 .push(", ")
                 .push_bind(*last_sequence)
                 .push(", ")
-                .push_bind(*version)
+                .push_bind(*revision)
                 .push(", ")
                 .push_bind(payload.clone())
                 .push(") RETURNING 1), ");
@@ -33,33 +33,32 @@ fn append_snapshot<A: Aggregate>(snapshot: &SnapshotWrite, query: &mut QueryBuil
         SnapshotWrite::Update {
             aggregate_id,
             payload,
-            version,
+            revision,
             last_sequence,
         } => {
             query.push("written_snapshot AS (UPDATE snapshots SET last_sequence = ");
             query
                 .push_bind(*last_sequence)
-                .push(", current_snapshot = ")
-                .push_bind(*version)
+                .push(", revision = ")
+                .push_bind(*revision)
                 .push(", payload = ")
                 .push_bind(payload.clone())
                 .push(" WHERE aggregate_type = ")
                 .push_bind(A::TYPE)
                 .push(" AND aggregate_id = ")
                 .push_bind(aggregate_id.clone())
-                .push(" AND current_snapshot = ")
-                .push_bind(*version - 1)
+                .push(" AND revision = ")
+                .push_bind(*revision - 1)
                 .push(" RETURNING 1), ");
         }
     }
 }
 fn schedule_parts(schedule: &TaskSchedule) -> (Option<DateTime<Utc>>, f64) {
-    match schedule {
-        TaskSchedule::Now => (None, 0.0),
-        TaskSchedule::At(at) => (Some(*at), 0.0),
-        // The DTO constructor already checked this conversion.
-        TaskSchedule::After(delay) => (None, delay.as_millis() as f64),
-    }
+    // The schedule constructor already checked the conversion of the delay.
+    (
+        schedule.time(),
+        schedule.delay().map_or(0.0, |delay| delay.as_millis() as f64),
+    )
 }
 pub(super) async fn persist_one<A: Aggregate>(
     pool: &PgPool,
@@ -126,7 +125,7 @@ pub(super) async fn persist_one<A: Aggregate>(
     let row = query.build().fetch_one(pool).await.map_err(map_sqlx_error)?;
     match row.try_get::<i64, _>("written").map_err(map_sqlx_error)? {
         1 => Ok(()),
-        _ => Err(PersistenceError::OptimisticLockError),
+        _ => Err(PersistenceError::Conflict),
     }
 }
 fn map_sqlx_error(error: sqlx::Error) -> PersistenceError {
@@ -137,12 +136,12 @@ fn map_sqlx_error(error: sqlx::Error) -> PersistenceError {
                 && matches!(database_error.constraint(), Some("events_pkey" | "snapshots_pkey"))
     );
     if is_optimistic_conflict {
-        return PersistenceError::OptimisticLockError;
+        return PersistenceError::Conflict;
     }
     if matches!(&error, sqlx::Error::Io(_) | sqlx::Error::Tls(_)) {
-        return PersistenceError::ConnectionError(Box::new(storage_failure(error)));
+        return PersistenceError::Connection(Box::new(storage_failure(error)));
     }
-    PersistenceError::UnknownError(Box::new(storage_failure(error)))
+    PersistenceError::Unexpected(Box::new(storage_failure(error)))
 }
 
 #[cfg(test)]
@@ -153,7 +152,7 @@ mod tests {
     fn maps_non_connection_database_errors_to_unexpected_errors() {
         let result = map_sqlx_error(sqlx::Error::RowNotFound);
 
-        assert!(matches!(result, PersistenceError::UnknownError(_)));
+        assert!(matches!(result, PersistenceError::Unexpected(_)));
     }
 
     #[test]
@@ -163,13 +162,13 @@ mod tests {
             "test connection refused",
         )));
 
-        assert!(matches!(result, PersistenceError::ConnectionError(_)));
+        assert!(matches!(result, PersistenceError::Connection(_)));
     }
 
     #[test]
     fn tls_failures_preserve_the_source_as_connection_errors() {
         let result = map_sqlx_error(sqlx::Error::Tls(Box::new(std::io::Error::other("TLS handshake failed"))));
-        let PersistenceError::ConnectionError(source) = result else {
+        let PersistenceError::Connection(source) = result else {
             panic!("TLS failures must not become optimistic conflicts");
         };
         let failure = source.downcast_ref::<cqrsx::diagnostics::StorageFailure>().unwrap();
@@ -183,7 +182,7 @@ mod tests {
     #[test]
     fn technical_failures_reach_the_logs_of_the_core_with_their_category() {
         let failure = |result: &PersistenceError| match result {
-            PersistenceError::ConnectionError(source) | PersistenceError::UnknownError(source) => source
+            PersistenceError::Connection(source) | PersistenceError::Unexpected(source) => source
                 .downcast_ref::<cqrsx::diagnostics::StorageFailure>()
                 .map(|f| f.category()),
             _ => None,

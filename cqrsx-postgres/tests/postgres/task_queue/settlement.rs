@@ -3,7 +3,7 @@ use super::*;
 async fn competing_settlements_apply_exactly_one_transition_for_the_same_token() {
     let db = Database::new().await;
     let queue = Arc::new(PostgresTaskQueue::new(db.pool.clone()));
-    let task = new_task().with_metadata(json!({"operation": "same-effect"})).unwrap();
+    let task = new_task().with_metadata(serde_json::from_value(json!({"operation": "same-effect"})).unwrap());
     enqueue(&db.pool, vec![task.clone()]).await;
     let claimed = claim(&queue).await.pop().unwrap();
     let mut gate = db.pool.begin().await.unwrap();
@@ -50,7 +50,7 @@ async fn competing_settlements_apply_exactly_one_transition_for_the_same_token()
         }
         (SettlementRequest::Failed { .. }, SettlementResult::Failed(failure)) => {
             assert_eq!(failure.task_id, task.id());
-            assert_eq!(failure.cause, TaskFailureCause::PermanentRejection);
+            assert_eq!(failure.cause, TaskFailureCause::HandlerFailure);
             assert_worker_state(&db.pool, task.id(), "failed", 1, Some("failure winner")).await;
         }
         other => panic!("request and confirmed outcome disagree: {other:?}"),
@@ -122,7 +122,7 @@ async fn settlement_finds_its_row_by_the_primary_key_while_closed_tasks_fill_the
     assert_eq!(types.len(), 5, "settle binds id, token, status, delay and error");
     let values = [
         format!("'{}'", task.attempt().task_id()),
-        format!("'{}'", task.lease().lock_token()),
+        format!("'{}'", task.lease().token()),
         "'completed'".to_owned(),
         "'0'".to_owned(),
         "NULL".to_owned(),
@@ -165,7 +165,7 @@ async fn settlement_rechecks_lease_expiry_after_waiting_for_a_row_lock() {
     let claimed = claim(&queue).await.pop().unwrap();
     let mut gate = db.pool.begin().await.unwrap();
     // The settling statement initially sees the old, valid lease, then waits.
-    sqlx::query("UPDATE transactional_outbox SET locked_until = now() - interval '1 second' WHERE id = $1")
+    sqlx::query("UPDATE transactional_outbox SET lease_until = now() - interval '1 second' WHERE id = $1")
         .bind(task.id())
         .execute(&mut *gate)
         .await
@@ -192,7 +192,7 @@ async fn a_lease_expiring_while_settlement_waits_on_an_unchanged_row_cannot_be_c
     let claimed = claim(&queue).await.pop().unwrap();
     // A short real lease expires while an unchanged row is held by another
     // transaction. PostgreSQL's own clock determines when to release the lock.
-    sqlx::query("UPDATE transactional_outbox SET locked_until = clock_timestamp() + interval '1 second' WHERE id = $1")
+    sqlx::query("UPDATE transactional_outbox SET lease_until = clock_timestamp() + interval '1 second' WHERE id = $1")
         .bind(task.id())
         .execute(&db.pool)
         .await
@@ -211,7 +211,7 @@ async fn a_lease_expiring_while_settlement_waits_on_an_unchanged_row_cannot_be_c
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let expired: bool =
-                sqlx::query_scalar("SELECT locked_until <= clock_timestamp() FROM transactional_outbox WHERE id = $1")
+                sqlx::query_scalar("SELECT lease_until <= clock_timestamp() FROM transactional_outbox WHERE id = $1")
                     .bind(task.id())
                     .fetch_one(&db.pool)
                     .await

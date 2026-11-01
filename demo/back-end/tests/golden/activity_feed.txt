@@ -2,13 +2,13 @@ command.accepted = aggregate_id, aggregate_type, at, command_id, command_type, c
 command.failed[outcome=conflict] = aggregate_id, aggregate_type, at, command_id, command_type, correlation_id, fan_id, id, message, outcome, source, type
 command.failed[outcome=unavailable] = aggregate_id, aggregate_type, at, command_id, command_type, correlation_id, fan_id, id, message, outcome, source, type
 command.rejected = aggregate_id, aggregate_type, at, code, command_id, command_type, correlation_id, fan_id, id, params, source, type
+projection.applied = at, events, id, projection, sequence, type, view_id
 projection.failed = at, category, failures, handler, id, message, projection, type, view_id
-projection.lease[lease=acquired] = at, id, lease, owner, projection, type
-projection.lease[lease=lost] = at, id, lease, owner, projection, type
-projection.lease[lease=released] = at, id, lease, owner, projection, type
+projection.lease_changed[lease=acquired] = at, id, lease, owner, projection, type
+projection.lease_changed[lease=lost] = at, id, lease, owner, projection, type
+projection.lease_changed[lease=released] = at, id, lease, owner, projection, type
 projection.rebuilt[reason=healed] = at, events, id, projection, reason, type, view_id
 projection.rebuilt[reason=requested] = at, events, id, projection, reason, type, view_id
-projection.updated = at, events, id, projection, sequence, type, view_id
 rebuild.finished = at, duration_ms, id, keys, rebuild_id, type
 rebuild.progress = at, id, keys, rebuild_id, type
 rebuild.started = at, events_total, id, keys_total, pace_ms, rebuild_id, type

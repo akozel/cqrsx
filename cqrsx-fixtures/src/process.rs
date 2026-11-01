@@ -4,7 +4,7 @@ use std::process::Command;
 
 /// The scenario this process was started for, `None` in the process that started it.
 pub fn scenario() -> Option<String> {
-    std::env::var("CQRS_RUNTIME_TEST_ENV_SCENARIO").ok()
+    std::env::var("CQRSX_TEST_SCENARIO").ok()
 }
 
 /// Runs the unit test `test` (its `module_path!()` and name) again in a child process with the `scenario`, after
@@ -16,7 +16,7 @@ pub fn isolated(unset: &[&str], test: &str, scenario: &str, configure: impl FnOn
     for name in unset {
         child.env_remove(name);
     }
-    child.env("CQRS_RUNTIME_TEST_ENV_SCENARIO", scenario);
+    child.env("CQRSX_TEST_SCENARIO", scenario);
     configure(&mut child);
     let result = child.output().unwrap();
     assert!(

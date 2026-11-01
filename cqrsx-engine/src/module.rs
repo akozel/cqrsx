@@ -7,7 +7,7 @@ use cqrsx::{
     reactions::Reactions,
     task::{
         Task,
-        policy::{Policies, PolicyError, PolicyName, Retry},
+        policy::{PoliciesBuilder, PolicyName, RetryPause},
     },
     view::View,
     worker::{TaskHandler, adapter::boxed::BoxedTaskAdapter, dependencies::Dependencies},
@@ -30,19 +30,19 @@ pub struct ObservedProcessor<'a> {
 }
 
 /// The observer of the processor of a view, made from the view's name and the node's (the owner of its checkpoint).
-pub(crate) type ProjectionObservers = Arc<dyn Fn(ObservedProcessor<'_>) -> Arc<dyn ProjectionObserver> + Send + Sync>;
+pub(crate) type ProjectionObserverFactory = Arc<dyn Fn(ObservedProcessor<'_>) -> Arc<dyn ProjectionObserver> + Send + Sync>;
 
-type Bind = fn(Policies, PolicyName) -> Result<Policies, PolicyError>;
+type Bind = fn(PoliciesBuilder, PolicyName) -> PoliciesBuilder;
 
 /// A policy of [`Module::policy`].
 pub(crate) struct PolicyEntry {
     pub(crate) name: PolicyName,
-    pub(crate) retry: Retry,
+    pub(crate) retry: RetryPause,
     pub(crate) max_attempts: NonZeroU16,
 }
 
 /// A task type: its handler and the policy it is bound to.
-pub(crate) struct TaskRegistration {
+pub(crate) struct TaskEntry {
     pub(crate) adapter: BoxedTaskAdapter,
     pub(crate) binding: Option<PolicyBinding>,
 }
@@ -67,10 +67,10 @@ pub struct Module {
     pub(crate) aggregates: Vec<AggregateEntry>,
     pub(crate) views: Vec<ViewEntry>,
     pub(crate) policies: Vec<PolicyEntry>,
-    pub(crate) tasks: Vec<TaskRegistration>,
+    pub(crate) tasks: Vec<TaskEntry>,
     pub(crate) dependencies: Dependencies,
     pub(crate) command_observers: Vec<Arc<dyn AnyCommandObserver>>,
-    pub(crate) projection_observers: Vec<ProjectionObservers>,
+    pub(crate) projection_observers: Vec<ProjectionObserverFactory>,
     #[cfg(feature = "http")]
     pub(crate) routes: Option<axum::Router<Arc<Cqrs>>>,
 }
@@ -114,7 +114,7 @@ impl Module {
     where
         A: Reactions + Clone + 'static,
         A::Command: Command + Clone,
-        A::Error: Rejection + Send + 'static,
+        A::Rejection: Rejection + Send + 'static,
     {
         self.aggregates.push(AggregateEntry {
             id: TypeId::of::<A>(),
@@ -134,21 +134,21 @@ impl Module {
         self
     }
 
-    /// The task type of `handler`; [`TaskEntry::policy`] binds it to a policy.
-    pub fn task<T, H>(self, handler: H) -> TaskEntry
+    /// The task type of `handler`; [`TaskStep::policy`] binds it to a policy.
+    pub fn task<T, H>(self, handler: H) -> TaskStep
     where
         T: Task + DeserializeOwned + Send + 'static,
         H: TaskHandler<T> + 'static,
     {
-        TaskEntry {
+        TaskStep {
             module: self,
             adapter: BoxedTaskAdapter::json::<T, H>(handler),
-            bind: Policies::with_task::<T>,
+            bind: PoliciesBuilder::bind::<T>,
         }
     }
 
     /// The policy `name`: the pause before a retry and the attempt budget of its task types.
-    pub fn policy(mut self, name: PolicyName, retry: Retry, max_attempts: NonZeroU16) -> Self {
+    pub fn policy(mut self, name: PolicyName, retry: RetryPause, max_attempts: NonZeroU16) -> Self {
         self.policies.push(PolicyEntry {
             name,
             retry,
@@ -183,16 +183,16 @@ impl Module {
 /// A task type of [`Module::task`], bound to a policy or to none.
 #[derive(Debug)]
 #[must_use = "a task type is registered by `policy` or `without_policy`"]
-pub struct TaskEntry {
+pub struct TaskStep {
     module: Module,
     adapter: BoxedTaskAdapter,
     bind: Bind,
 }
 
-impl TaskEntry {
+impl TaskStep {
     /// The task type waits the pauses and gets the attempts of the policy `name`.
     pub fn policy(mut self, name: PolicyName) -> Module {
-        self.module.tasks.push(TaskRegistration {
+        self.module.tasks.push(TaskEntry {
             adapter: self.adapter,
             binding: Some(PolicyBinding { name, bind: self.bind }),
         });
@@ -201,7 +201,7 @@ impl TaskEntry {
 
     /// The task type keeps the engine's defaults: the default budget, the queue's redelivery backoff.
     pub fn without_policy(mut self) -> Module {
-        self.module.tasks.push(TaskRegistration {
+        self.module.tasks.push(TaskEntry {
             adapter: self.adapter,
             binding: None,
         });

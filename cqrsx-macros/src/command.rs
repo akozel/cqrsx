@@ -173,7 +173,7 @@ pub(crate) fn expand_decide(input: &DeriveInput) -> syn::Result<TokenStream> {
                 rules: &<#aggregate as ::cqrsx::domain::aggregate::Aggregate>::Rules,
             ) -> ::core::result::Result<
                 <#aggregate as ::cqrsx::domain::aggregate::Aggregate>::Event,
-                <#aggregate as ::cqrsx::domain::aggregate::Aggregate>::Error,
+                <#aggregate as ::cqrsx::domain::aggregate::Aggregate>::Rejection,
             > {
                 #decide
             }
@@ -298,7 +298,7 @@ mod tests {
                     rules: &<__A as ::cqrsx::domain::aggregate::Aggregate>::Rules,
                 ) -> ::core::result::Result<
                     <__A as ::cqrsx::domain::aggregate::Aggregate>::Event,
-                    <__A as ::cqrsx::domain::aggregate::Aggregate>::Error,
+                    <__A as ::cqrsx::domain::aggregate::Aggregate>::Rejection,
                 > {
                     match self {
                         Self::BookSeat(command) => ::cqrsx::domain::command::Decide::<__A>::decide(command, state, rules),

@@ -1,7 +1,7 @@
 //! The time budget of one call to the task queue's storage.
 use std::time::Duration;
 use thiserror::Error;
-const DEFAULT_STORAGE_TIMEOUT_MS: u64 = 6_000;
+const DEFAULT_STORAGE_TIMEOUT: Duration = Duration::from_millis(6_000);
 /// Validated end-to-end storage budget: the runtime gives up on a claim, settlement or recovery after it
 /// ([`TimedOut`](crate::worker::queue::TaskProcessingError::TimedOut)). Defaults do not read the environment.
 #[derive(Clone, Copy, Debug)]
@@ -11,22 +11,27 @@ pub struct TaskStorageConfig {
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum TaskStorageConfigError {
     #[error("OUTBOX_STORAGE_TIMEOUT_MS must be an unsigned integer")]
-    InvalidEnvironmentValue,
-    #[error("storage timeout must be positive and representable")]
-    InvalidStorageTimeout,
+    NotAnInteger,
+    #[error("storage timeout must be positive")]
+    ZeroStorageTimeout,
+    #[error("storage timeout is too long to represent")]
+    StorageTimeoutTooLong,
 }
 impl Default for TaskStorageConfig {
     /// A storage timeout of six seconds.
     fn default() -> Self {
         Self {
-            storage_timeout: Duration::from_millis(DEFAULT_STORAGE_TIMEOUT_MS),
+            storage_timeout: DEFAULT_STORAGE_TIMEOUT,
         }
     }
 }
 impl TaskStorageConfig {
     pub fn try_new(storage_timeout: Duration) -> Result<Self, TaskStorageConfigError> {
-        if storage_timeout.is_zero() || storage_timeout.as_millis() > i64::MAX as u128 {
-            return Err(TaskStorageConfigError::InvalidStorageTimeout);
+        if storage_timeout.is_zero() {
+            return Err(TaskStorageConfigError::ZeroStorageTimeout);
+        }
+        if storage_timeout.as_millis() > i64::MAX as u128 {
+            return Err(TaskStorageConfigError::StorageTimeoutTooLong);
         }
         Ok(Self { storage_timeout })
     }
@@ -39,10 +44,14 @@ impl TaskStorageConfig {
     }
     /// The budget from `OUTBOX_STORAGE_TIMEOUT_MS` (milliseconds, default 6 000): a variable that is missing (or not
     /// Unicode, for [`from_env`](Self::from_env)) takes the default, one that is not an unsigned integer is
-    /// `InvalidEnvironmentValue`, zero is `InvalidStorageTimeout`.
+    /// `NotAnInteger`, zero is `ZeroStorageTimeout`.
     pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Result<Self, TaskStorageConfigError> {
-        let millis = crate::env::read_u64(&mut lookup, "OUTBOX_STORAGE_TIMEOUT_MS", DEFAULT_STORAGE_TIMEOUT_MS)
-            .map_err(|_| TaskStorageConfigError::InvalidEnvironmentValue)?;
+        let millis = crate::env::read_u64(
+            &mut lookup,
+            "OUTBOX_STORAGE_TIMEOUT_MS",
+            DEFAULT_STORAGE_TIMEOUT.as_millis() as u64,
+        )
+        .map_err(|_| TaskStorageConfigError::NotAnInteger)?;
         Self::try_new(Duration::from_millis(millis))
     }
 }
@@ -66,11 +75,11 @@ mod tests {
                 ),
                 "invalid" => assert_eq!(
                     TaskStorageConfig::from_env().unwrap_err(),
-                    TaskStorageConfigError::InvalidEnvironmentValue
+                    TaskStorageConfigError::NotAnInteger
                 ),
                 "zero" => assert_eq!(
                     TaskStorageConfig::from_env().unwrap_err(),
-                    TaskStorageConfigError::InvalidStorageTimeout
+                    TaskStorageConfigError::ZeroStorageTimeout
                 ),
                 _ => panic!("unknown test scenario"),
             }
@@ -119,8 +128,21 @@ mod tests {
         for value in ["0", "invalid", "-1", "9223372036854775808", "18446744073709551616"] {
             assert!(TaskStorageConfig::from_lookup(|_| Some(value.into())).is_err());
         }
-        for storage_timeout in [Duration::ZERO, Duration::MAX] {
-            assert!(TaskStorageConfig::try_new(storage_timeout).is_err());
-        }
+        assert_eq!(
+            TaskStorageConfig::try_new(Duration::ZERO).unwrap_err(),
+            TaskStorageConfigError::ZeroStorageTimeout
+        );
+        assert_eq!(
+            TaskStorageConfig::try_new(Duration::MAX).unwrap_err(),
+            TaskStorageConfigError::StorageTimeoutTooLong
+        );
+        assert_eq!(
+            TaskStorageConfigError::ZeroStorageTimeout.to_string(),
+            "storage timeout must be positive"
+        );
+        assert_eq!(
+            TaskStorageConfigError::StorageTimeoutTooLong.to_string(),
+            "storage timeout is too long to represent"
+        );
     }
 }

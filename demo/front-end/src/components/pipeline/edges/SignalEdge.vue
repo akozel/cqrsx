@@ -19,7 +19,7 @@ const COLOR: Record<Color, string> = {
   lime: 'var(--color-neon-lime)',
   red: 'var(--color-neon-red)',
 }
-const REPLAY_EDGES: PipeEdgeId[] = ['store-read_db', 'fan_store-read_db']
+const REBUILD_EDGES: PipeEdgeId[] = ['store-read_db', 'fan_store-read_db']
 
 const path = computed(() =>
   getSmoothStepPath({
@@ -38,7 +38,7 @@ const id = computed(() => props.id as PipeEdgeId)
 
 const state = computed<'idle' | 'lit' | 'cut' | 'flow'>(() => {
   if (ctx.choreo.cut.value === id.value) return 'cut'
-  if (ctx.replaying.value && REPLAY_EDGES.includes(id.value)) return 'flow'
+  if (ctx.replaying.value && REBUILD_EDGES.includes(id.value)) return 'flow'
   if (ctx.choreo.litEdges.has(id.value)) return 'lit'
   return 'idle'
 })

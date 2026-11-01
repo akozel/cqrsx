@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use cqrsx::{
     journal::feed::Position,
     projection::checkpoint::{
-        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest, RebuildRequests,
+        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, PendingRebuilds, RebuildReply,
         RebuildState,
     },
 };
@@ -28,11 +28,11 @@ pub const PROJECTION_CHECKPOINTS_COLLECTION: &str = "projection_checkpoints";
 ///
 /// ```text
 /// { _id: { projection, aggregate_type },
-///   position, applied, rebuild_requested, rebuild_pace_ms, rebuild_cursor, rebuilt,
-///   owner, lock_token, locked_until, failures, last_error, updated_at, rebuild_keys: [aggregate ids] }
+///   position, delivered, rebuild_requested, rebuild_pace_ms, rebuild_cursor, rebuilt,
+///   owner, lease_token, lease_until, failures, last_error, updated_at, rebuild_keys: [aggregate ids] }
 /// ```
 ///
-/// Numbers are `Int64`, `lock_token` a UUID string, `locked_until` and `updated_at` dates by the server's
+/// Numbers are `Int64`, `lease_token` a UUID string, `lease_until` and `updated_at` dates by the server's
 /// clock. The rules are those of `PostgresCheckpointStore` with one difference: a rebuild cursor is accepted
 /// again only when it is the same cursor (the journal orders the keys, the document cannot), so a page
 /// repeated after a lost reply is counted once and never refused. Needs MongoDB 4.2 or later.
@@ -59,18 +59,18 @@ impl MongoCheckpointStore {
 
 /// A stored checkpoint as the owner and the status read it.
 #[derive(Debug, Deserialize)]
-struct Row {
+struct CheckpointRecord {
     #[serde(rename = "_id")]
     id: RowId,
     position: i64,
-    applied: i64,
+    delivered: i64,
     rebuild_requested: bool,
     rebuild_pace_ms: i64,
     rebuild_cursor: Option<String>,
     rebuilt: i64,
     owner: Option<String>,
-    lock_token: Option<String>,
-    locked_until: Option<bson::DateTime>,
+    lease_token: Option<String>,
+    lease_until: Option<bson::DateTime>,
     failures: i64,
     last_error: Option<String>,
     updated_at: bson::DateTime,
@@ -97,7 +97,7 @@ struct Requested {
     rebuild_cursor: Option<String>,
 }
 
-fn storage(operation: &'static str) -> impl FnOnce(::mongodb::error::Error) -> CheckpointError {
+fn storage_error(operation: &'static str) -> impl FnOnce(::mongodb::error::Error) -> CheckpointError {
     move |error| {
         crate::diagnostics::log_mongodb_failure(operation, &error);
         CheckpointError::Storage(Box::new(error))
@@ -113,12 +113,12 @@ fn id(key: &CheckpointKey) -> Document {
     doc! { "projection": key.projection(), "aggregate_type": key.aggregate_type() }
 }
 
-fn row(key: &CheckpointKey) -> Document {
+fn by_id(key: &CheckpointKey) -> Document {
     doc! { "_id": id(key) }
 }
 
 fn owned(key: &CheckpointKey, token: LeaseToken) -> Document {
-    doc! { "_id": id(key), "lock_token": token.value().to_string() }
+    doc! { "_id": id(key), "lease_token": token.value().to_string() }
 }
 
 /// A value an update pipeline must not read as an expression (an id may start with `$`).
@@ -172,7 +172,7 @@ fn decode<T: serde::de::DeserializeOwned>(document: Document) -> Result<T, Check
 }
 
 fn decode_claim(document: Document) -> Result<Claimed, CheckpointError> {
-    let row: Row = decode(document)?;
+    let row: CheckpointRecord = decode(document)?;
     let rebuild = match row.rebuild_cursor {
         Some(cursor) => Some(RebuildState {
             cursor,
@@ -182,7 +182,7 @@ fn decode_claim(document: Document) -> Result<Claimed, CheckpointError> {
         None => None,
     };
     Ok(Claimed {
-        token: token_out(row.lock_token)?,
+        token: token_out(row.lease_token)?,
         position: Position::new(count_out(row.position)?),
         failures: failures_out(row.failures)?,
         rebuild,
@@ -190,18 +190,18 @@ fn decode_claim(document: Document) -> Result<Claimed, CheckpointError> {
 }
 
 fn decode_status(document: Document) -> Result<CheckpointStatus, CheckpointError> {
-    let row: Row = decode(document)?;
+    let row: CheckpointRecord = decode(document)?;
     Ok(CheckpointStatus {
         projection: row.id.projection,
         aggregate_type: row.id.aggregate_type,
         position: Position::new(count_out(row.position)?),
-        applied: count_out(row.applied)?,
+        delivered: count_out(row.delivered)?,
         rebuild_requested: row.rebuild_requested,
         rebuild_pace: pace_out(row.rebuild_pace_ms)?,
         rebuild_cursor: row.rebuild_cursor,
         rebuilt: count_out(row.rebuilt)?,
         owner: row.owner,
-        locked_until: row.locked_until.map(date_out).transpose()?,
+        lease_until: row.lease_until.map(date_out).transpose()?,
         failures: failures_out(row.failures)?,
         last_error: row.last_error,
         updated_at: date_out(row.updated_at)?,
@@ -213,14 +213,14 @@ fn defaults() -> Document {
     let mut fields = Document::new();
     for (field, default) in [
         ("position", Bson::Int64(0)),
-        ("applied", Bson::Int64(0)),
+        ("delivered", Bson::Int64(0)),
         ("rebuild_requested", Bson::Boolean(false)),
         ("rebuild_pace_ms", Bson::Int64(0)),
         ("rebuild_cursor", Bson::Null),
         ("rebuilt", Bson::Int64(0)),
         ("owner", Bson::Null),
-        ("lock_token", Bson::Null),
-        ("locked_until", Bson::Null),
+        ("lease_token", Bson::Null),
+        ("lease_until", Bson::Null),
         ("failures", Bson::Int64(0)),
         ("last_error", Bson::Null),
         ("rebuild_keys", Bson::Array(Vec::new())),
@@ -238,7 +238,7 @@ impl MongoCheckpointStore {
             .collection
             .update_one(filter, vec![doc! { "$set": update }])
             .await
-            .map_err(storage(operation))?;
+            .map_err(storage_error(operation))?;
         Ok(result.matched_count == 1)
     }
 }
@@ -247,12 +247,12 @@ impl CheckpointStore for MongoCheckpointStore {
     async fn register(&self, key: &CheckpointKey) -> Result<(), CheckpointError> {
         match self
             .collection
-            .update_one(row(key), vec![doc! { "$set": defaults() }])
+            .update_one(by_id(key), vec![doc! { "$set": defaults() }])
             .upsert(true)
             .await
         {
             // Two nodes may race to create the document: either way it exists.
-            Err(error) if !is_duplicate_key(&error) => Err(storage("register")(error)),
+            Err(error) if !is_duplicate_key(&error) => Err(storage_error("register")(error)),
             _ => Ok(()),
         }
     }
@@ -261,12 +261,12 @@ impl CheckpointStore for MongoCheckpointStore {
         let lease = lease_millis(lease)?;
         let free = doc! {
             "_id": id(key),
-            "$or": [{ "locked_until": null }, { "$expr": { "$lt": ["$locked_until", "$$NOW"] } }],
+            "$or": [{ "lease_until": null }, { "$expr": { "$lt": ["$lease_until", "$$NOW"] } }],
         };
         let claim = doc! {
             "owner": literal(owner),
-            "lock_token": literal(&Uuid::new_v4().to_string()),
-            "locked_until": { "$add": ["$$NOW", lease] },
+            "lease_token": literal(&Uuid::new_v4().to_string()),
+            "lease_until": { "$add": ["$$NOW", lease] },
             "updated_at": "$$NOW",
         };
         let claimed = self
@@ -275,7 +275,7 @@ impl CheckpointStore for MongoCheckpointStore {
             .projection(doc! { "rebuild_keys": 0 })
             .return_document(ReturnDocument::After)
             .await
-            .map_err(storage("claim"))?;
+            .map_err(storage_error("claim"))?;
         claimed.map(decode_claim).transpose()
     }
 
@@ -284,18 +284,24 @@ impl CheckpointStore for MongoCheckpointStore {
         self.fenced(
             "extend",
             owned(key, token),
-            doc! { "locked_until": { "$add": ["$$NOW", lease] } },
+            doc! { "lease_until": { "$add": ["$$NOW", lease] } },
         )
         .await
     }
 
-    async fn advance(&self, key: &CheckpointKey, token: LeaseToken, to: Position, applied: u64) -> Result<bool, CheckpointError> {
+    async fn advance(
+        &self,
+        key: &CheckpointKey,
+        token: LeaseToken,
+        to: Position,
+        delivered: u64,
+    ) -> Result<bool, CheckpointError> {
         let to = count_in(to.value(), "position does not fit the row")?;
-        let applied = count_in(applied, "applied count does not fit the row")?;
+        let delivered = count_in(delivered, "delivered count does not fit the row")?;
         let mut filter = owned(key, token);
         filter.insert("position", doc! { "$lte": to });
         let update = doc! {
-            "applied": { "$add": ["$applied", { "$cond": [{ "$lt": ["$position", to] }, applied, 0_i64] }] },
+            "delivered": { "$add": ["$delivered", { "$cond": [{ "$lt": ["$position", to] }, delivered, 0_i64] }] },
             "position": to,
             "failures": 0_i64,
             "last_error": null,
@@ -313,7 +319,7 @@ impl CheckpointStore for MongoCheckpointStore {
         self.fenced("record_failure", owned(key, token), update).await
     }
 
-    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
+    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
         let pace = pace_millis(pace)?;
         let request = doc! {
             "rebuild_requested": { "$or": ["$rebuild_requested", { "$eq": ["$rebuild_cursor", null] }] },
@@ -324,40 +330,40 @@ impl CheckpointStore for MongoCheckpointStore {
         };
         let before = self
             .collection
-            .find_one_and_update(row(key), vec![doc! { "$set": request }])
+            .find_one_and_update(by_id(key), vec![doc! { "$set": request }])
             .projection(doc! { "rebuild_requested": 1, "rebuild_cursor": 1 })
             .return_document(ReturnDocument::Before)
             .await
-            .map_err(storage("request_rebuild"))?;
+            .map_err(storage_error("request_rebuild"))?;
         let Some(before) = before else {
             return Err(CheckpointError::Invalid("projection is not registered"));
         };
         let before: Requested = decode(before)?;
         Ok(if !before.rebuild_requested && before.rebuild_cursor.is_none() {
-            RebuildRequest::Accepted
+            RebuildReply::Accepted
         } else {
-            RebuildRequest::AlreadyRunning
+            RebuildReply::AlreadyRunning
         })
     }
 
     async fn request_rebuild_key(&self, key: &CheckpointKey, aggregate_id: &str) -> Result<(), CheckpointError> {
         let result = self
             .collection
-            .update_one(row(key), doc! { "$addToSet": { "rebuild_keys": aggregate_id } })
+            .update_one(by_id(key), doc! { "$addToSet": { "rebuild_keys": aggregate_id } })
             .await
-            .map_err(storage("request_rebuild_key"))?;
+            .map_err(storage_error("request_rebuild_key"))?;
         if result.matched_count == 0 {
             return Err(CheckpointError::Invalid("projection is not registered"));
         }
         Ok(())
     }
 
-    async fn take_requests(
+    async fn take_rebuild_requests(
         &self,
         key: &CheckpointKey,
         token: LeaseToken,
         limit: usize,
-    ) -> Result<Option<RebuildRequests>, CheckpointError> {
+    ) -> Result<Option<PendingRebuilds>, CheckpointError> {
         let slice = limit_in(limit)?;
         let rest = doc! {
             "$cond": [
@@ -372,14 +378,14 @@ impl CheckpointStore for MongoCheckpointStore {
             .projection(doc! { "rebuild_requested": 1, "rebuild_pace_ms": 1, "rebuild_keys": 1 })
             .return_document(ReturnDocument::Before)
             .await
-            .map_err(storage("take_requests"))?;
+            .map_err(storage_error("take_rebuild_requests"))?;
         let Some(before) = before else {
             return Ok(None);
         };
         let before: Requests = decode(before)?;
         let pace = pace_out(before.rebuild_pace_ms)?;
-        Ok(Some(RebuildRequests {
-            rebuild: before.rebuild_requested.then_some(pace),
+        Ok(Some(PendingRebuilds {
+            rebuild_pace: before.rebuild_requested.then_some(pace),
             keys: before.rebuild_keys.into_iter().take(limit).collect(),
         }))
     }
@@ -417,7 +423,7 @@ impl CheckpointStore for MongoCheckpointStore {
     }
 
     async fn release(&self, key: &CheckpointKey, token: LeaseToken) -> Result<(), CheckpointError> {
-        let update = doc! { "owner": null, "lock_token": null, "locked_until": null, "updated_at": "$$NOW" };
+        let update = doc! { "owner": null, "lease_token": null, "lease_until": null, "updated_at": "$$NOW" };
         self.fenced("release", owned(key, token), update).await?;
         Ok(())
     }
@@ -430,9 +436,9 @@ impl CheckpointStore for MongoCheckpointStore {
             .sort(doc! { "_id": 1 })
             .projection(doc! { "rebuild_keys": 0 })
             .await
-            .map_err(storage("status"))?;
+            .map_err(storage_error("status"))?;
         let mut rows = Vec::new();
-        while cursor.advance().await.map_err(storage("status"))? {
+        while cursor.advance().await.map_err(storage_error("status"))? {
             rows.push(decode_status(cursor.deserialize_current().map_err(corrupt)?)?);
         }
         Ok(rows)
@@ -446,10 +452,10 @@ mod tests {
     fn stored() -> Document {
         doc! {
             "_id": { "projection": "halls", "aggregate_type": "Concert" },
-            "position": 9_i64, "applied": 7_i64,
+            "position": 9_i64, "delivered": 7_i64,
             "rebuild_requested": false, "rebuild_pace_ms": 80_i64, "rebuild_cursor": "c3", "rebuilt": 3_i64,
-            "owner": "node-a", "lock_token": "00000000-0000-0000-0000-000000000007",
-            "locked_until": bson::DateTime::from_millis(2_000), "failures": 2_i64, "last_error": "halls: connection",
+            "owner": "node-a", "lease_token": "00000000-0000-0000-0000-000000000007",
+            "lease_until": bson::DateTime::from_millis(2_000), "failures": 2_i64, "last_error": "halls: connection",
             "updated_at": bson::DateTime::from_millis(1_000), "rebuild_keys": ["c9"],
         }
     }
@@ -522,7 +528,7 @@ mod tests {
                 status.projection.as_str(),
                 status.aggregate_type.as_str(),
                 status.position,
-                status.applied
+                status.delivered
             ),
             ("halls", "Concert", Position::new(9), 7)
         );
@@ -539,10 +545,10 @@ mod tests {
             (status.owner.as_deref(), status.failures, status.last_error.as_deref()),
             (Some("node-a"), 2, Some("halls: connection"))
         );
-        assert_eq!(status.locked_until.map(|date| date.timestamp_millis()), Some(2_000));
+        assert_eq!(status.lease_until.map(|date| date.timestamp_millis()), Some(2_000));
         assert_eq!(status.updated_at.timestamp_millis(), 1_000);
-        let free = decode_status(with("locked_until", Bson::Null)).unwrap();
-        assert_eq!(free.locked_until, None);
+        let free = decode_status(with("lease_until", Bson::Null)).unwrap();
+        assert_eq!(free.lease_until, None);
     }
 
     #[test]
@@ -555,10 +561,10 @@ mod tests {
             with("failures", -1_i64),
         ];
         let status_only = [
-            with("applied", -1_i64),
+            with("delivered", -1_i64),
             with("updated_at", "yesterday"),
             with("updated_at", bson::DateTime::MAX),
-            with("locked_until", bson::DateTime::MAX),
+            with("lease_until", bson::DateTime::MAX),
         ];
         for broken in unreadable.iter().chain(&status_only) {
             assert!(
@@ -566,7 +572,7 @@ mod tests {
                 "{broken}"
             );
         }
-        let claim_only = [with("lock_token", "not a uuid"), with("lock_token", Bson::Null)];
+        let claim_only = [with("lease_token", "not a uuid"), with("lease_token", Bson::Null)];
         for broken in unreadable.iter().chain(&claim_only) {
             assert!(
                 matches!(decode_claim(broken.clone()), Err(CheckpointError::Corrupt(_))),
@@ -597,7 +603,7 @@ mod tests {
                 store.record_failure(&key, token, "halls: connection").await.err(),
                 store.request_rebuild(&key, Duration::ZERO).await.err(),
                 store.request_rebuild_key(&key, "k").await.err(),
-                store.take_requests(&key, token, 1).await.err(),
+                store.take_rebuild_requests(&key, token, 1).await.err(),
                 store.begin_rebuild(&key, token).await.err(),
                 store.advance_rebuild(&key, token, "k", 1).await.err(),
                 store.finish_rebuild(&key, token).await.err(),
@@ -615,7 +621,7 @@ mod tests {
                 store.advance(&key, token, Position::new(u64::MAX), 1).await.err(),
                 store.advance(&key, token, Position::new(1), u64::MAX).await.err(),
                 store.request_rebuild(&key, Duration::MAX).await.err(),
-                store.take_requests(&key, token, usize::MAX).await.err(),
+                store.take_rebuild_requests(&key, token, usize::MAX).await.err(),
                 store.advance_rebuild(&key, token, "k", u64::MAX).await.err(),
             ] {
                 assert!(matches!(invalid, Some(CheckpointError::Invalid(_))), "{invalid:?}");
@@ -631,7 +637,7 @@ mod tests {
             "record_failure",
             "request_rebuild",
             "request_rebuild_key",
-            "take_requests",
+            "take_rebuild_requests",
             "begin_rebuild",
             "advance_rebuild",
             "finish_rebuild",
@@ -640,6 +646,6 @@ mod tests {
         ] {
             assert!(log.contains(&format!("operation=\"{operation}\"")), "{operation}: {log}");
         }
-        assert_eq!(log.matches("category=\"server_selection\"").count(), 13, "{log}");
+        assert_eq!(log.matches("storage_category=\"server_selection\"").count(), 13, "{log}");
     }
 }

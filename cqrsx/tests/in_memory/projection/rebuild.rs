@@ -1,10 +1,10 @@
 //! Rebuilds: the whole journal by cursor, one key on request, a document healed after a gap, next to live delivery.
-use crate::projection::support::{Harness, Heal, NAME, POLL, RETRY_BASE, config, delta, key, old_delta};
+use crate::projection::support::{Harness, Heal, NAME, POLL, RETRY_BASE, config, config_builder, delta, key, old_delta};
 use crate::support::ledger::Ledger;
 use cqrsx::{
-    journal::repository::PersistedEventRepository,
+    journal::repository::EventRepository,
     projection::{
-        checkpoint::{CheckpointStore, RebuildRequest},
+        checkpoint::{CheckpointStore, RebuildReply},
         processor::config::{DeliveryLimits, ProcessorConfig},
     },
 };
@@ -14,7 +14,7 @@ use tokio::time::Instant;
 async fn versions(h: &Harness, keys: &[&str]) -> Vec<i64> {
     let mut versions = Vec::new();
     for key in keys {
-        versions.push(h.view(key).await.map_or(0, |stored| stored.version));
+        versions.push(h.view(key).await.map_or(0, |stored| stored.revision));
     }
     versions
 }
@@ -67,7 +67,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     h.caught_up(&keys).await;
     assert_eq!(
         h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     let commits = tokio::spawn({
         let h = h.clone();
@@ -120,7 +120,7 @@ async fn a_rebuild_request_reaches_an_owner_in_backoff() {
     let requested = Instant::now();
     assert_eq!(
         h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     h.until(async || h.observer.count("rebuild:Started") == 1).await;
     let started = h.observer.timed("rebuild:Started")[0];
@@ -136,7 +136,7 @@ async fn a_rebuild_request_reaches_an_owner_in_backoff() {
 
 #[tokio::test(start_paused = true)]
 async fn a_crash_during_a_rebuild_continues_from_the_cursor() {
-    let h = Harness::with_config(config().with_rebuild_page(2).unwrap());
+    let h = Harness::with_config(config_builder().rebuild_keys(2).build().unwrap());
     let keys = ["a", "b", "c", "d", "e"];
     for key in keys {
         h.commit(key, 1).await;
@@ -148,7 +148,7 @@ async fn a_crash_during_a_rebuild_continues_from_the_cursor() {
     let gate = h.checkpoints.gate_before("advance_rebuild");
     assert_eq!(
         h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     gate.reached().await; // the first page of keys is rebuilt and about to be recorded
     let during = versions(&h, &keys).await;
@@ -211,12 +211,12 @@ async fn a_second_rebuild_request_is_refused_while_one_runs() {
     let gate = h.checkpoints.gate_before("advance_rebuild");
     assert_eq!(
         h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     gate.reached().await;
     assert_eq!(
         h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::AlreadyRunning
+        RebuildReply::AlreadyRunning
     );
     h.checkpoints.request_rebuild_key(&key(), "a").await.unwrap();
     gate.release();
@@ -229,7 +229,7 @@ async fn a_second_rebuild_request_is_refused_while_one_runs() {
     h.until(async || h.observer.count("rebuilt:a:") == 2).await;
     assert_eq!(
         h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     h.until(async || h.observer.count("rebuild:Finished") == 2).await;
     node.stop().await;
@@ -299,7 +299,7 @@ async fn an_empty_journal_finishes_a_rebuild_at_once() {
     node.stop().await;
     assert_eq!(
         h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted,
+        RebuildReply::Accepted,
         "waits for the next owner"
     );
     let node = h.node("n2");
@@ -319,13 +319,13 @@ async fn an_empty_journal_finishes_a_rebuild_at_once() {
 #[tokio::test(start_paused = true)]
 async fn a_paced_rebuild_of_one_key_does_not_hold_the_other_keys_back() {
     let h = Harness::with_config(
-        ProcessorConfig::try_new(
-            POLL,
-            1000,
-            crate::projection::support::LEASE,
-            DeliveryLimits::try_new(3, 32).unwrap(),
-        )
-        .unwrap(),
+        ProcessorConfig::builder()
+            .poll_interval(POLL)
+            .page_size(1000)
+            .lease(crate::projection::support::LEASE)
+            .delivery_limits(DeliveryLimits::try_new(3, 32).unwrap())
+            .build()
+            .unwrap(),
     );
     let history: Vec<_> = (1..=200).map(|sequence| delta("slow", sequence, 1)).collect();
     h.journal.inner.persist::<Ledger>(&history, None).await.unwrap();
@@ -335,7 +335,7 @@ async fn a_paced_rebuild_of_one_key_does_not_hold_the_other_keys_back() {
     let pace = Duration::from_millis(80);
     assert_eq!(
         h.checkpoints.request_rebuild(&key(), pace).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     h.until(async || h.observer.count("rebuild:Started") == 1).await;
     for value in 2..=5 {
@@ -399,7 +399,7 @@ async fn a_rebuild_reads_old_events_through_the_upcasters() {
         [(1, 0), (2, 5)],
         "the old event folds as the upcaster reads it"
     );
-    assert_eq!((after.version, h.observer.count("failed:")), (before.version + 1, 0));
+    assert_eq!((after.revision, h.observer.count("failed:")), (before.revision + 1, 0));
     node.stop().await;
 }
 
@@ -442,7 +442,7 @@ async fn a_rebuild_step_after_the_lease_is_lost_ends_the_ownership_and_the_new_o
         let gate = a_store.gate_before(step);
         assert_eq!(
             h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-            RebuildRequest::Accepted
+            RebuildReply::Accepted
         );
         gate.reached().await; // A is about to take this step of the rebuild
         let b = h.node("B");
@@ -530,7 +530,7 @@ async fn a_key_requested_again_while_its_rebuild_runs_ends_in_the_fold_of_the_jo
 
 #[tokio::test(start_paused = true)]
 async fn a_failing_checkpoint_statement_of_a_rebuild_is_retried_and_the_rebuild_finishes() {
-    for statement in ["take_requests", "begin_rebuild", "advance_rebuild", "finish_rebuild"] {
+    for statement in ["take_rebuild_requests", "begin_rebuild", "advance_rebuild", "finish_rebuild"] {
         let h = Harness::new();
         h.commit("a", 1).await;
         let node = h.node("n1");

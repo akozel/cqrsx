@@ -17,7 +17,7 @@ use axum::{
     response::{IntoResponse, Response},
 };
 use chrono::NaiveDate;
-use cqrsx::{command::CommandGatewayError, domain::rejection::Rejection};
+use cqrsx::{command::CommandError, domain::rejection::Rejection};
 use cqrsx_engine::Cqrs;
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -79,7 +79,7 @@ pub async fn handle(
     let command_id = Uuid::now_v7();
     let command = to_command(dto, command_id)?;
     let result = cqrs
-        .from("ui")
+        .source("ui")
         .execute_with_id::<Concert>(command_id, &concert_id, command)
         .await
         .map(|report| report.tasks.iter().map(|task| task.format().to_string()).collect());
@@ -89,7 +89,7 @@ pub async fn handle(
 /// The answer to a command: `200` with the formats of the tasks its commit published, `422` with the code and the
 /// params of its rejection, `409` after a conflict, `503` when it did not run; every answer names the command and the
 /// concert.
-fn answer(result: Result<Vec<String>, CommandGatewayError<ConcertError>>, command_id: Uuid, concert_id: &ConcertId) -> Response {
+fn answer(result: Result<Vec<String>, CommandError<ConcertError>>, command_id: Uuid, concert_id: &ConcertId) -> Response {
     let base = json!({ "command_id": command_id, "concert_id": concert_id });
     match result {
         // Committed: the read models follow from the journal (D-17); the feed and the status tell when.
@@ -98,13 +98,13 @@ fn answer(result: Result<Vec<String>, CommandGatewayError<ConcertError>>, comman
             Json(json!({ "outcome": "accepted", "command_id": command_id, "concert_id": concert_id, "tasks": tasks })),
         )
             .into_response(),
-        Err(CommandGatewayError::Domain(error)) => {
+        Err(CommandError::Rejected(error)) => {
             ApiError::new(StatusCode::UNPROCESSABLE_ENTITY, "rejected", error.code(), error.to_string())
-                .with_params(error.params())
+                .with_params(error.parameters())
                 .with_extra(base)
                 .into_response()
         }
-        Err(CommandGatewayError::Conflict) => ApiError::new(
+        Err(CommandError::Conflict) => ApiError::new(
             StatusCode::CONFLICT,
             "conflict",
             "conflict",
@@ -112,7 +112,7 @@ fn answer(result: Result<Vec<String>, CommandGatewayError<ConcertError>>, comman
         )
         .with_extra(base)
         .into_response(),
-        Err(CommandGatewayError::Unavailable) => {
+        Err(CommandError::Unavailable) => {
             ApiError::unavailable("the command did not run: the event store is unavailable or the concert is busy; retry")
                 .with_extra(base)
                 .into_response()
@@ -199,7 +199,7 @@ mod tests {
             )
         );
         assert_eq!(
-            body(respond(Err(CommandGatewayError::Domain(taken)))).await,
+            body(respond(Err(CommandError::Rejected(taken)))).await,
             (
                 StatusCode::UNPROCESSABLE_ENTITY,
                 json!({ "outcome": "rejected",
@@ -209,7 +209,7 @@ mod tests {
             )
         );
         assert_eq!(
-            body(respond(Err(CommandGatewayError::Conflict))).await,
+            body(respond(Err(CommandError::Conflict))).await,
             (
                 StatusCode::CONFLICT,
                 json!({ "outcome": "conflict",
@@ -219,7 +219,7 @@ mod tests {
             )
         );
         assert_eq!(
-            body(respond(Err(CommandGatewayError::Unavailable))).await,
+            body(respond(Err(CommandError::Unavailable))).await,
             (
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({ "outcome": "unavailable",

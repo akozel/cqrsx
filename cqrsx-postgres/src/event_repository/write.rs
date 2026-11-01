@@ -5,7 +5,7 @@ use super::{PostgresEventRepository, encode_bigint};
 use crate::error::PostgresRepositoryError;
 use cqrsx::{
     domain::aggregate::Aggregate,
-    journal::{PersistenceError, serialized_event::SerializedEvent, snapshot::SnapshotUpdate},
+    journal::{PersistenceError, serialized_event::SerializedEvent, snapshot::SerializedSnapshot},
 };
 use sqlx::{Postgres, Transaction};
 
@@ -13,7 +13,7 @@ impl PostgresEventRepository {
     pub(super) async fn persist_batch<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<cqrsx::journal::snapshot::SnapshotUpdate>,
+        snapshot_update: Option<cqrsx::journal::snapshot::SerializedSnapshot>,
     ) -> Result<(), PersistenceError> {
         // Validate the entire request before beginning a transaction or writing rows.
         for event in events {
@@ -21,14 +21,14 @@ impl PostgresEventRepository {
         }
         if let Some(snapshot) = &snapshot_update {
             encode_bigint(snapshot.last_sequence)?;
-            encode_bigint(snapshot.next_version)?;
-            if snapshot.next_version == 0 {
-                return Err(PostgresRepositoryError::UnknownError("snapshot version must be positive".into()).into());
+            encode_bigint(snapshot.revision)?;
+            if snapshot.revision == 0 {
+                return Err(PostgresRepositoryError::Unexpected("snapshot version must be positive".into()).into());
             }
         }
         match snapshot_update {
             None => self.persist_events_only::<A>(events).await?,
-            Some(snapshot) if snapshot.next_version == 1 => self.persist_with_new_snapshot::<A>(snapshot, events).await?,
+            Some(snapshot) if snapshot.revision == 1 => self.persist_with_new_snapshot::<A>(snapshot, events).await?,
             Some(snapshot) => self.persist_with_snapshot_update::<A>(snapshot, events).await?,
         }
         Ok(())
@@ -46,7 +46,7 @@ impl PostgresEventRepository {
 
     pub(super) async fn persist_with_new_snapshot<A: Aggregate>(
         &self,
-        snapshot: SnapshotUpdate,
+        snapshot: SerializedSnapshot,
         events: &[SerializedEvent],
     ) -> Result<(), PostgresRepositoryError> {
         let mut tx: Transaction<'_, Postgres> = sqlx::Acquire::begin(&self.pool).await?;
@@ -55,12 +55,12 @@ impl PostgresEventRepository {
             .bind(A::TYPE)
             .bind(&snapshot.aggregate_id)
             .bind(encode_bigint(snapshot.last_sequence)?)
-            .bind(encode_bigint(snapshot.next_version)?)
+            .bind(encode_bigint(snapshot.revision)?)
             .bind(&snapshot.payload)
             .execute(&mut *tx)
             .await?;
         if result.rows_affected() != 1 {
-            return Err(PostgresRepositoryError::OptimisticLock);
+            return Err(PostgresRepositoryError::Conflict);
         }
         tx.commit().await?;
         Ok(())
@@ -68,7 +68,7 @@ impl PostgresEventRepository {
 
     pub(super) async fn persist_with_snapshot_update<A: Aggregate>(
         &self,
-        snapshot: SnapshotUpdate,
+        snapshot: SerializedSnapshot,
         events: &[SerializedEvent],
     ) -> Result<(), PostgresRepositoryError> {
         let mut tx: Transaction<'_, Postgres> = sqlx::Acquire::begin(&self.pool).await?;
@@ -77,13 +77,13 @@ impl PostgresEventRepository {
             .bind(A::TYPE)
             .bind(&snapshot.aggregate_id)
             .bind(encode_bigint(snapshot.last_sequence)?)
-            .bind(encode_bigint(snapshot.next_version)?)
-            .bind(encode_bigint(snapshot.next_version - 1)?)
+            .bind(encode_bigint(snapshot.revision)?)
+            .bind(encode_bigint(snapshot.revision - 1)?)
             .bind(&snapshot.payload)
             .execute(&mut *tx)
             .await?;
         if result.rows_affected() != 1 {
-            return Err(PostgresRepositoryError::OptimisticLock);
+            return Err(PostgresRepositoryError::Conflict);
         }
         tx.commit().await?;
         Ok(())
@@ -111,7 +111,7 @@ async fn insert_events<A: Aggregate>(
             .execute(&mut **tx)
             .await?;
         if result.rows_affected() != 1 {
-            return Err(PostgresRepositoryError::OptimisticLock);
+            return Err(PostgresRepositoryError::Conflict);
         }
     }
     Ok(())

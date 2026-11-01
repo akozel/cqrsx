@@ -1,19 +1,19 @@
 //! The processor's delivery: the pages of one projection reach its handler through a bounded buffer per
-//! aggregate key, handled in delivery order by a worker of that key, in batches. Rebuild jobs of a key go
+//! aggregate key, handled in delivery order by a lane of that key, in batches. Rebuild jobs of a key go
 //! through the same buffer, so a rebuild and the live events of one key never run at once.
 //!
 //! The owner [reserves](OrderedDelivery::reserve) space in a key's buffer and then
 //! [delivers](DeliverySlot::deliver) the key's events of a page, or [queues a rebuild](DeliverySlot::rebuild),
-//! without waiting. A worker per busy key takes up to [`max_batch`](DeliveryLimits::max_batch) queued live
+//! without waiting. A lane per busy key takes up to [`max_batch`](DeliveryLimits::max_batch) queued live
 //! jobs, hands their events to the handler in one call and answers every [`DeliveryReceipt`] of the batch
 //! with the call's outcome. The buffer keeps the order of the deliveries per key; the owner delivers in
 //! journal order.
 //!
 //! Invariants:
-//! - a key has at most one worker, so the handler never runs twice at once for one key;
+//! - a key has at most one lane, so the handler never runs twice at once for one key;
 //! - the jobs of a key are handled in delivery order, each once; a batch is a run of consecutive live jobs,
 //!   at most `max_batch` long, or one rebuild job: a batch never mixes the two;
-//! - a key has an entry exactly while space is reserved, a job is queued or its worker runs, so an idle
+//! - a key has an entry exactly while space is reserved, a job is queued or its lane runs, so an idle
 //!   delivery holds no entry;
 //! - reserved, queued and handled jobs of a key never exceed `capacity`;
 //! - the std mutex guarding the entries is never held across an `.await`.
@@ -24,7 +24,7 @@ use crate::{
     journal::PersistenceError,
     mutex::lock,
     projection::EventHandler,
-    unwinding::{Panicked, unwinding},
+    unwinding::{Panicked, catch_unwind},
 };
 use async_trait::async_trait;
 use std::{
@@ -46,7 +46,7 @@ pub(crate) enum DeliveryError {
     /// The handler panicked while handling the batch; the key's buffer keeps working.
     #[error("event handler panicked")]
     Panicked,
-    /// The key's worker was dropped before it answered, e.g. because the runtime shut down; or the delivery broke an
+    /// The key's lane was dropped before it answered, e.g. because the runtime shut down; or the delivery broke an
     /// invariant of its own (logged) and dropped the job unhandled.
     #[error("event delivery stopped before the handler finished")]
     Stopped,
@@ -61,7 +61,7 @@ pub(crate) trait Rebuilder: Send + Sync {
     async fn rebuild(&self, aggregate_id: &str, pace: Duration, stop: CancellationToken) -> Result<usize, PersistenceError>;
 }
 
-/// What a job asks the key's worker to do.
+/// What a job asks the key's lane to do.
 enum Work<A: Aggregate> {
     /// Hand these events to the handler, joined with the neighbouring `Apply` jobs of the batch: the batch moves
     /// them into one vector, never copies them.
@@ -91,7 +91,7 @@ pub(crate) enum Done {
     },
 }
 
-/// One job in a key's buffer, holding the space it reserved until it is dropped: answered by the worker,
+/// One job in a key's buffer, holding the space it reserved until it is dropped: answered by the lane,
 /// or abandoned with it.
 struct Job<A: Aggregate> {
     work: Work<A>,
@@ -102,9 +102,9 @@ struct Job<A: Aggregate> {
 /// The buffer of one aggregate key.
 struct KeyBuffer<A: Aggregate> {
     jobs: VecDeque<Job<A>>,
-    /// A worker runs for this key: it is set by the delivery that starts it and cleared by the worker
-    /// when it finds no job, both under the entries mutex, so a queued job always has a worker.
-    worker: bool,
+    /// A lane runs for this key: it is set by the delivery that starts it and cleared by the lane
+    /// when it finds no job, both under the entries mutex, so a queued job always has a lane.
+    lane_running: bool,
     /// Live [`BufferRef`]s: reservations waiting for space or holding it, not delivered yet.
     users: usize,
     /// FIFO permits, one per reserved, queued or handled job of the key.
@@ -129,7 +129,7 @@ struct Inner<A: Aggregate> {
     buffers: Buffers<A>,
 }
 
-/// Per-key buffers and their workers in front of one projection's handler and rebuilder. A cheap handle:
+/// Per-key buffers and their lanes in front of one projection's handler and rebuilder. A cheap handle:
 /// clones share the buffers.
 pub(crate) struct OrderedDelivery<A: Aggregate> {
     inner: Arc<Inner<A>>,
@@ -145,7 +145,7 @@ impl<A: Aggregate> Clone for OrderedDelivery<A> {
 
 impl<A: Aggregate + 'static> OrderedDelivery<A> {
     /// The delivery of the processor `projection`: live jobs go to `handler`, rebuild jobs to `rebuilder`,
-    /// through the one buffer and worker of each key, so the two never run at once for one key.
+    /// through the one buffer and lane of each key, so the two never run at once for one key.
     pub(crate) fn new(
         projection: &str,
         handler: Arc<dyn EventHandler<A>>,
@@ -184,7 +184,7 @@ impl<A: Aggregate + 'static> OrderedDelivery<A> {
         let mut buffers = guarded(&self.inner.buffers);
         let buffer = buffers.entry(aggregate_id.to_owned()).or_insert_with(|| KeyBuffer {
             jobs: VecDeque::new(),
-            worker: false,
+            lane_running: false,
             users: 0,
             space: Arc::new(Semaphore::new(self.inner.limits.capacity())),
         });
@@ -229,11 +229,11 @@ struct BufferRef<A: Aggregate> {
 impl<A: Aggregate> Drop for BufferRef<A> {
     fn drop(&mut self) {
         let mut buffers = guarded(&self.inner.buffers);
-        // Users are counted only under this mutex, and a buffer without users, jobs or a worker is closed
+        // Users are counted only under this mutex, and a buffer without users, jobs or a lane is closed
         // right there, so no idle buffer stays behind and no busy one is closed.
         if let Some(buffer) = buffers.get_mut(&self.aggregate_id) {
             buffer.users -= 1;
-            if buffer.users == 0 && !buffer.worker && buffer.jobs.is_empty() {
+            if buffer.users == 0 && !buffer.lane_running && buffer.jobs.is_empty() {
                 buffers.remove(&self.aggregate_id);
             }
         }
@@ -250,7 +250,7 @@ pub(crate) struct DeliverySlot<A: Aggregate> {
 }
 
 impl<A: Aggregate + 'static> DeliverySlot<A> {
-    /// Queues `events` behind every job delivered before for the key and starts the key's worker when none
+    /// Queues `events` behind every job delivered before for the key and starts the key's lane when none
     /// runs; never waits. Must be called inside a Tokio runtime. The handler gets the events whether or not
     /// anybody awaits the receipt.
     pub(crate) fn deliver(self, events: Vec<EventEnvelope<A>>) -> DeliveryReceipt {
@@ -284,16 +284,16 @@ impl<A: Aggregate + 'static> DeliverySlot<A> {
                 return DeliveryReceipt(outcome);
             };
             entry.jobs.push_back(job);
-            !std::mem::replace(&mut entry.worker, true)
+            !std::mem::replace(&mut entry.lane_running, true)
         };
         if start {
-            let worker = Worker {
+            let lane = KeyLane {
                 inner: buffer.inner.clone(),
                 aggregate_id: buffer.aggregate_id.clone(),
                 finished: false,
             };
-            // Logs of the worker go where the deliverer's would.
-            tokio::spawn(worker.run().with_current_subscriber());
+            // Logs of the lane go where the deliverer's would.
+            tokio::spawn(lane.run().with_current_subscriber());
         }
         // `buffer` drops here: the queued job keeps the buffer registered.
         DeliveryReceipt(outcome)
@@ -311,15 +311,15 @@ impl DeliveryReceipt {
     }
 }
 
-/// The worker of one key: handles batches until the key's buffer is empty.
-struct Worker<A: Aggregate> {
+/// The lane of one key: handles batches until the key's buffer is empty.
+struct KeyLane<A: Aggregate> {
     inner: Arc<Inner<A>>,
     aggregate_id: String,
-    /// Set when the worker left an empty buffer; otherwise dropping it abandons the queued jobs.
+    /// Set when the lane left an empty buffer; otherwise dropping it abandons the queued jobs.
     finished: bool,
 }
 
-impl<A: Aggregate> Worker<A> {
+impl<A: Aggregate> KeyLane<A> {
     async fn run(mut self) {
         while let Some(mut batch) = self.next_batch() {
             let outcome = self.handle(&mut batch).await;
@@ -330,15 +330,15 @@ impl<A: Aggregate> Worker<A> {
         }
     }
 
-    /// The next run of queued jobs, or `None` after the worker has left the empty buffer (and closed it
+    /// The next run of queued jobs, or `None` after the lane has left the empty buffer (and closed it
     /// when nobody reserves space in it). Deciding to leave and queueing a job happen under one mutex, so a
-    /// job is never queued behind a worker that has decided to leave. A rebuild job is a batch of its own: a
+    /// job is never queued behind a lane that has decided to leave. A rebuild job is a batch of its own: a
     /// run of live jobs ends at `max_batch` or before the next rebuild.
     fn next_batch(&mut self) -> Option<Vec<Job<A>>> {
         let mut buffers = guarded(&self.inner.buffers);
         let buffer = buffers.get_mut(&self.aggregate_id)?;
         let Some(first) = buffer.jobs.front() else {
-            buffer.worker = false;
+            buffer.lane_running = false;
             if buffer.users == 0 {
                 buffers.remove(&self.aggregate_id);
             }
@@ -368,7 +368,7 @@ impl<A: Aggregate> Worker<A> {
             },
         ] = batch
         {
-            return match unwinding(self.inner.rebuilder.rebuild(&self.aggregate_id, *pace, stop.clone())).await {
+            return match catch_unwind(self.inner.rebuilder.rebuild(&self.aggregate_id, *pace, stop.clone())).await {
                 Ok(Ok(events)) => Ok(Done::Rebuilt { events }),
                 Ok(Err(error)) => {
                     crate::diagnostics::log_projection_batch_failure(projection, A::TYPE, "rebuild", 1, &error);
@@ -390,7 +390,7 @@ impl<A: Aggregate> Worker<A> {
                 }
             }
         }
-        match unwinding(self.inner.handler.handle(&self.aggregate_id, &joined)).await {
+        match catch_unwind(self.inner.handler.handle(&self.aggregate_id, &joined)).await {
             Ok(Ok(())) => Ok(Done::Applied),
             Ok(Err(error)) => {
                 crate::diagnostics::log_projection_batch_failure(projection, A::TYPE, "deliver", batch.len(), &error);
@@ -404,19 +404,19 @@ impl<A: Aggregate> Worker<A> {
     }
 }
 
-impl<A: Aggregate> Drop for Worker<A> {
+impl<A: Aggregate> Drop for KeyLane<A> {
     fn drop(&mut self) {
         if self.finished {
             return;
         }
         // Dropped mid-work (the runtime shut down): the queued jobs will never be handled. Drop them, so
-        // their receipts answer `Stopped` and their space returns, and let a later delivery start a worker.
+        // their receipts answer `Stopped` and their space returns, and let a later delivery start a lane.
         let abandoned = {
             let mut buffers = guarded(&self.inner.buffers);
             let Some(buffer) = buffers.get_mut(&self.aggregate_id) else {
                 return;
             };
-            buffer.worker = false;
+            buffer.lane_running = false;
             let abandoned = std::mem::take(&mut buffer.jobs);
             if buffer.users == 0 {
                 buffers.remove(&self.aggregate_id);
@@ -430,7 +430,7 @@ impl<A: Aggregate> Drop for Worker<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::persisted::tests::{TestAggregate, TestEvents};
+    use crate::journal::store::tests::{TestAggregate, TestEvents};
     use async_trait::async_trait;
     use std::{
         collections::HashSet,
@@ -534,7 +534,7 @@ mod tests {
             self.calls.lock().unwrap().push((aggregate_id.to_owned(), sequences));
             match self.call(aggregate_id).await {
                 Finish::Ok => Ok(()),
-                Finish::Fail => Err(PersistenceError::OptimisticLockError),
+                Finish::Fail => Err(PersistenceError::Conflict),
                 Finish::Panic => panic!("the probe panicked as asked"),
             }
         }
@@ -546,7 +546,7 @@ mod tests {
             self.rebuilds.lock().unwrap().push((aggregate_id.to_owned(), pace, stop));
             match self.call(aggregate_id).await {
                 Finish::Ok => Ok(3),
-                Finish::Fail => Err(PersistenceError::OptimisticLockError),
+                Finish::Fail => Err(PersistenceError::Conflict),
                 Finish::Panic => panic!("the probe panicked as asked"),
             }
         }
@@ -562,7 +562,7 @@ mod tests {
         )
     }
 
-    /// Lets the spawned workers of a current-thread runtime run until they wait again.
+    /// Lets the spawned lanes of a current-thread runtime run until they wait again.
     async fn settle() {
         for _ in 0..32 {
             tokio::task::yield_now().await;
@@ -680,7 +680,7 @@ mod tests {
                 _ => assert_eq!(
                     calls,
                     [vec![1, 2], vec![3, 4], vec![5]],
-                    "all five queued before the worker ran"
+                    "all five queued before the lane ran"
                 ),
             }
         }
@@ -815,7 +815,7 @@ mod tests {
             (outcomes, next.outcome().await.map_err(|e| e.to_string()))
         })
         .await;
-        let failed = Err("event handler failed: optimistic lock error".to_owned());
+        let failed = Err("event handler failed: conflict with a concurrent write".to_owned());
         assert_eq!(outcomes, [Ok(Done::Applied), failed.clone(), failed.clone(), failed]);
         assert_eq!(next, Ok(Done::Applied), "the buffer keeps working after a failure");
         assert_eq!(log.matches("projection batch failed").count(), 1, "{log}");
@@ -858,7 +858,7 @@ mod tests {
         for key in 0..4 {
             let delivery = delivery.clone();
             // One deliverer per key, as under the key's lock; some wait for their receipt, some do not,
-            // so deliveries meet a worker that is busy, one that is leaving and none at all.
+            // so deliveries meet a lane that is busy, one that is leaving and none at all.
             keys.spawn(async move {
                 let id = key.to_string();
                 for sequence in 1..=500 {
@@ -876,7 +876,7 @@ mod tests {
         while let Some(result) = keys.join_next().await {
             result.unwrap();
         }
-        // Every deliverer is done: a key without a buffer has no job left and no worker.
+        // Every deliverer is done: a key without a buffer has no job left and no lane.
         for _ in 0..1000 {
             if delivery.busy_keys() == 0 {
                 break;
@@ -887,10 +887,7 @@ mod tests {
         for key in 0..4 {
             assert_eq!(probe.calls_of(&key.to_string()).concat(), (1..=500).collect::<Vec<_>>());
         }
-        assert!(
-            !probe.overlapped.load(Ordering::SeqCst),
-            "two workers handled one key at once"
-        );
+        assert!(!probe.overlapped.load(Ordering::SeqCst), "two lanes handled one key at once");
     }
 
     #[test]
@@ -904,14 +901,14 @@ mod tests {
             receipts
         });
         assert_eq!((probe.calls_of("k"), delivery.held("k")), (vec![vec![1]], 3));
-        drop(first); // drops the worker in the middle of its first call
+        drop(first); // drops the lane in the middle of its first call
         let second = tokio::runtime::Builder::new_current_thread().build().unwrap();
         second.block_on(async {
             for receipt in receipts {
                 assert!(matches!(receipt.outcome().await, Err(DeliveryError::Stopped)));
             }
             assert_eq!((delivery.held("k"), delivery.busy_keys()), (0, 0));
-            // A new delivery starts a new worker.
+            // A new delivery starts a new lane.
             let receipt = deliver(&delivery, "k", [4]).await;
             settle().await;
             assert!(probe.finish("k", Finish::Ok));
@@ -1008,7 +1005,10 @@ mod tests {
             (failed, panicked, next.outcome().await)
         })
         .await;
-        assert_eq!(failed, Err("event handler failed: optimistic lock error".to_owned()));
+        assert_eq!(
+            failed,
+            Err("event handler failed: conflict with a concurrent write".to_owned())
+        );
         assert_eq!(panicked, Err("event handler panicked".to_owned()));
         assert_eq!(next.unwrap(), Done::Applied);
         assert_eq!(log.matches("projection batch failed").count(), 1, "{log}");
@@ -1097,7 +1097,7 @@ mod tests {
                 self.queued.len() + self.in_call.len()
             }
 
-            /// What the key's worker does when it is free: a run of live jobs up to `MAX_BATCH`, or one rebuild.
+            /// What the key's lane does when it is free: a run of live jobs up to `MAX_BATCH`, or one rebuild.
             fn start_call(&mut self) {
                 if self.in_call.is_empty() && !self.queued.is_empty() {
                     let take = match self.queued.front() {
@@ -1159,7 +1159,7 @@ mod tests {
                         }
                     }
                 }
-                // Twice: a reservation granted after a finished call delivers, and its worker starts.
+                // Twice: a reservation granted after a finished call delivers, and its lane starts.
                 for _ in 0..2 {
                     settle().await;
                     for k in 0..KEYS {

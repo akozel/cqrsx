@@ -3,7 +3,7 @@
 # so it works without psql/mongosh on the host.
 set -euo pipefail
 PG_PORT="${ENCORE_POSTGRES_PORT:-5434}"
-MONGO_PORT="${ENCORE_MONGO_PORT:-27018}"
+MONGO_PORT="${ENCORE_MONGODB_PORT:-27018}"
 TIMEOUT="${WAIT_DB_TIMEOUT:-90}"
 
 wait_tcp() {

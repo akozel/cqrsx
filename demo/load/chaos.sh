@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# The chaos scenes of the demo's read side (backlog 03/04, D-21/D-22), one fresh stand each, at most 5 minutes a
+# The chaos scenes of the demo's read side (D-21/D-22 in DESIGN.md), one fresh stand each, at most 5 minutes a
 # run (`timeout 300`). Each scene injects a fault while k6 hammers the back-end (chaos/<scene>.sh, run.sh
 # LOAD_CHAOS), then chaos/check.mjs holds the result to its criteria: commands accepted = events written
 # (or the bounds when an answer can be lost), the projections caught up, verify ok with nothing behind.
@@ -8,11 +8,11 @@
 #                                                 encore-0 encore-80 wipe   (default: all)
 #   REPEAT=n      runs per scene (default 1)
 #   VUS=…         virtual users (default 40);  DURATION=… measured window (default 40s)
-# Other KEY=VALUE pairs go to run.sh. kill-9 and kill-term run two nodes behind nginx through the epic's
+# Other KEY=VALUE pairs go to run.sh. kill-9 and kill-term run two nodes behind nginx through
 # perf/run.sh (BALANCE=round_robin); the others run on the one-node stand. Exit 0 = every run passed.
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-PERF="$HERE/../docs/backlog/02_postgres_performance/perf/run.sh"
+PERF="$HERE/perf/run.sh"
 REPEAT=1 VUS=40 DURATION=40s
 SCENES=() EXTRA=()
 for arg in "$@"; do

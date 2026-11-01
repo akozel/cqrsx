@@ -14,9 +14,7 @@ async fn bounded_admission_is_independent_of_concurrency_and_shutdown_leaves_que
                 io_dispatcher(probe.clone()),
                 // A claim for every freed slot, so that the buffer fills: this test is about the bound and
                 // shutdown, not the refill level.
-                worker_config(c, q, Duration::from_millis(2))
-                    .with_buffer_refill_percent(100)
-                    .unwrap(),
+                eager_worker_config(c, q, Duration::from_millis(2)),
             )
             .run(shutdown),
         );
@@ -56,16 +54,15 @@ async fn claim_limits_while_one_worker_drains_a_buffer_of_four(percent: u8, step
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     // Four queued waves need a lease above 2 * 6 + 30 + 5 + 4 * 36 = 191 s.
-    let config = TaskWorkerPoolConfig::try_new(
-        1,
-        4,
-        Duration::from_millis(2),
-        Duration::from_secs(30),
-        Duration::from_secs(200),
-    )
-    .unwrap()
-    .with_buffer_refill_percent(percent)
-    .unwrap();
+    let config = TaskWorkerPoolConfig::builder()
+        .concurrency(1)
+        .buffer_capacity(4)
+        .poll_interval(Duration::from_millis(2))
+        .handler_timeout(Duration::from_secs(30))
+        .lease(Duration::from_secs(200))
+        .buffer_refill_percent(percent)
+        .build()
+        .unwrap();
     let supervisor_task = tokio::spawn(prepared_runtime(queue.clone(), io_dispatcher(probe.clone()), config).run(shutdown));
     for (step, expected) in steps.iter().enumerate() {
         if step > 0 {
@@ -144,9 +141,7 @@ async fn consumers_free_capacity_during_claim_without_parallel_claims_or_overflo
         Arc::new(DefaultTaskExecutor::new(paused_queue.clone(), TaskStorageConfig::default())),
         io_dispatcher(probe.clone()),
         // A claim for every freed slot: this test is about a dequeue racing a claim, not the refill level.
-        worker_config(1, 2, Duration::from_secs(3600))
-            .with_buffer_refill_percent(100)
-            .unwrap(),
+        eager_worker_config(1, 2, Duration::from_secs(3600)),
         shutdown,
     ));
     // One active delivery and two waiting; the next claim starts on dequeue.

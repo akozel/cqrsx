@@ -19,8 +19,8 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
 - `cqrsx/src/diagnostics.rs` — the one public part of the log module: `safe_type`, `StorageFailure` (category and code
   of a failed storage operation, which a store's crate gives the core's logs); the log lines are private.
 - `cqrsx/src/mutex.rs` — `lock`, `get_mut`: the one public helper that takes a `std::sync::Mutex` (rule 10).
-- `cqrsx-engine/src` — the engine, a crate of its own on top of `cqrsx` (the core does not know it): `lib.rs` (`Cqrs`),
-  `build.rs` (`Builder`, the assembly over the stores), `executor.rs`, `settings.rs`, `module.rs`, `setup.rs`, `outcome.rs`,
+- `cqrsx-engine/src` — the engine, a crate of its own on top of `cqrsx`: `lib.rs` (`Cqrs`),
+  `build.rs` (`Builder`, the assembly over the stores), `executor.rs`, `settings.rs`, `module.rs`, `setup.rs`, `source.rs`,
   `views.rs`, `memory.rs`, `diagnostics.rs` (the engine's own log line);
   `postgres.rs` (feature `postgres`), `mongodb.rs` (feature `mongodb`), `http.rs` and `serve.rs` with
   `serve/{lifecycle,signal,error,logging}.rs` (feature `http`).
@@ -32,21 +32,46 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
   without a `tracing` subscriber. Derived in part from postgres-es: `licenses/`.
 - `cqrsx-mongodb` — views and projection checkpoints in MongoDB (no features); `tests/mongo.rs` starts MongoDB,
   `journal_in_postgres` also PostgreSQL.
-- `cqrsx-testing` — test tools for the code that uses `cqrsx`, on its public API: `framework.rs` (`TestFramework`, aggregate
-  given/when/then), `command_executor.rs`, `mem_store.rs`, `unavailable_store.rs`, `validator.rs`; depends on `cqrsx` only;
-  `tests/framework.rs` runs the tools on an example application. A failed check is a panic, allowed by the crate's `lib.rs`.
-- `cqrsx-macros` — the derive macros (`Event`, `Events`, `Command`, `Decide`, `Task`, `Rejection`) and `#[task_handler]`;
-  the expansions name `::cqrsx` only; its `README.md` is its documentation.
-- `cqrsx-fixtures` — `publish = false`, a dev-dependency that does not depend on `cqrsx`: PostgreSQL and MongoDB
-  containers on leased ports, captured logs, isolated test processes.
-- `doc/components.md` — architecture and naming contract. Read it before adding components. `doc/typical_scenario.md` —
-  an application on the engine, step by step.
-- `demo/` — Encore, the demo application on the library: a workspace of its own (`exclude` in the root `Cargo.toml`),
-  `demo/PLAN.md` is its plan.
+- `cqrsx-testing` — test tools for the code that uses `cqrsx`: `framework.rs` (`TestFramework`, aggregate
+  given/when/then), `command_executor.rs`, `memory_store.rs`, `unavailable_store.rs`, `validator.rs`;
+  `tests/framework.rs` runs the tools on an example application.
+- `cqrsx-macros` — the derive macros (`Event`, `Events`, `Command`, `Decide`, `Task`, `Rejection`) and `#[task_handler]`.
+- `cqrsx-fixtures` — a dev-dependency of the crates' tests: PostgreSQL and MongoDB containers on leased ports, captured
+  logs, isolated test processes.
+- `doc/crates.md` — the crates, what each may and must not know, the rules of their boundaries (no crate is published).
+  `doc/components.md` — the components and the naming contract: read both before adding a component or a crate.
+- `demo/` — Encore, the demo application on the library: a workspace of its own (`exclude` in the root `Cargo.toml`);
+  `demo/README.md` is its entry and the map of its documents, `demo/DESIGN.md` its design.
 
-Crate documentation is one text per crate: `cqrsx`, `cqrsx-engine` and `cqrsx-macros` keep a `README.md` and include it
-(`#![doc = include_str!("../README.md")]`); the other crates have one `//!` in `lib.rs` and no README. A text is
-never written twice.
+## Documentation
+
+| What | Where |
+|---|---|
+| The library: overview, environment for the tests; the commands | `README.md`; `CLAUDE.md` (Commands) |
+| Architecture and naming, crates and their boundaries, an application step by step, guarantees | `doc/components.md`, `doc/crates.md`, `doc/typical_scenario.md`, `doc/guarantees.md` |
+| How the mechanisms work, explained with diagrams: command path, read path, task path | `doc/*.html` |
+| A crate | its `README.md` (`cqrsx`, `cqrsx-engine`, `cqrsx-macros`) or one `//!` in its `lib.rs` (the others) |
+| The demo: entry and map of its documents, design, load tests | `demo/README.md`, `demo/DESIGN.md`, `demo/load/README.md` |
+| Unfinished work, findings without an epic, what was decided not to do; the journal of finished work | `doc/backlog/`, `doc/backlog/journal.md` (ignored by git) |
+
+The documentation stays true only if it changes with the code:
+- **A change updates the documents of what it changes, in the same commit:** a renamed type, function, column, log
+  field or variable, a new variable or default, a new guarantee, a changed behaviour. Before finishing, search the old
+  names in `*.md`, `*.html`, `.env.example` and doc comments.
+- **One topic, one place.** Every other document links to it and does not retell it: the list of crates, the rules, the
+  commands, the variables. A copy is the first text to go stale.
+- **A document describes the present.** No history ("since task 10", "formerly", "was renamed"), no plans: the history
+  is git and the journal, plans are the backlog.
+- **What mirrors the code is checked by a test** where it can be: the doctests of the crate READMEs (compiled, not
+  `ignore`), the golden files of the demo. A new table of names or defaults gets such a test or is not written.
+- **Links resolve:** `python3 .github/scripts/check-links.py` (also run by CI) checks every relative link and anchor in
+  the tracked `.md` and `.html`; run it before every commit that touches a document or moves a file. A tracked file
+  never links into `doc/backlog/`: a clone has no such directory; naming a task in plain text ("task 05 of epic 09")
+  is fine.
+- **Finished work leaves the backlog:** the task file is deleted and the journal gets one line (epic and task, date,
+  result, commit).
+- **English.** The documentation is in English, the demo's included. HTML pages are standalone files (`<!doctype html>`,
+  `<meta charset="utf-8">`, no external resources) committed to the project.
 
 ## Code guidelines
 
@@ -79,6 +104,7 @@ cargo clippy --locked -p cqrsx -p cqrsx-engine --no-default-features --all-targe
 for p in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-testing cqrsx-fixtures; do cargo check --locked -p $p --lib; done
 cargo check --locked -p cqrsx-engine --no-default-features --lib   # also with --features postgres, mongodb, http
 RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --all-features --no-deps
+python3 .github/scripts/check-links.py                       # relative links and anchors of the documentation
 RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-features
 cargo test --locked -p cqrsx                                  # the crates without features, one by one
 cargo test --locked -p cqrsx-testing                          # also: -p cqrsx-postgres, -p cqrsx-mongodb
@@ -98,5 +124,5 @@ cargo test --locked --workspace   # with the architecture rule and the golden fi
 git diff --stat -- back-end/tests/golden   # empty
 ```
 
-Before finishing: fmt, clippy (also without features and the docs), full tests, all coverage runs and, for a change that
-touches the demo, its checks must pass.
+Before finishing: fmt, clippy (also without features and the docs), the link check, full tests, all coverage runs and,
+for a change that touches the demo, its checks must pass.

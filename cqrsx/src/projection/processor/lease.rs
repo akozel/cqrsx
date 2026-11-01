@@ -83,7 +83,7 @@ impl LeaseKeeper {
     }
 
     /// Resolves once the lease is lost.
-    pub(super) async fn lost(&self) {
+    pub(super) async fn until_lost(&self) {
         loop {
             let mut changed = pin!(self.shared.changed.notified());
             changed.as_mut().enable();
@@ -133,15 +133,15 @@ async fn keep<C: CheckpointStore>(store: Arc<C>, key: CheckpointKey, token: Leas
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::checkpoint_store::MemCheckpointStore;
+    use crate::memory::checkpoint_store::MemoryCheckpointStore;
 
     const LEASE: Duration = Duration::from_secs(3);
 
-    async fn held(store: &MemCheckpointStore) -> chrono::DateTime<chrono::Utc> {
-        store.status(None).await.unwrap()[0].locked_until.expect("a held row")
+    async fn held(store: &MemoryCheckpointStore) -> chrono::DateTime<chrono::Utc> {
+        store.status(None).await.unwrap()[0].lease_until.expect("a held row")
     }
 
-    async fn claimed(store: &MemCheckpointStore, key: &CheckpointKey, owner: &str) -> (LeaseToken, Instant) {
+    async fn claimed(store: &MemoryCheckpointStore, key: &CheckpointKey, owner: &str) -> (LeaseToken, Instant) {
         let anchor = Instant::now();
         let claimed = store.claim(key, owner, LEASE).await.unwrap().expect("a free row");
         (claimed.token, anchor)
@@ -149,7 +149,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_keeper_extends_every_third_of_the_lease_and_stops_with_its_owner() {
-        let store = Arc::new(MemCheckpointStore::default());
+        let store = Arc::new(MemoryCheckpointStore::default());
         let key = CheckpointKey::new("halls", "Concert");
         store.register(&key).await.unwrap();
         let (token, anchor) = claimed(&store, &key, "a").await;
@@ -174,20 +174,20 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_refused_extension_loses_the_lease_at_once() {
-        let store = Arc::new(MemCheckpointStore::default());
+        let store = Arc::new(MemoryCheckpointStore::default());
         let key = CheckpointKey::new("halls", "Concert");
         store.register(&key).await.unwrap();
         let (token, anchor) = claimed(&store, &key, "a").await;
         let keeper = LeaseKeeper::spawn(store.clone(), key.clone(), token, LEASE, anchor);
         store.expire_lease(&key);
         claimed(&store, &key, "b").await; // another node took the row
-        let lost = tokio::time::timeout(Duration::from_secs(2), keeper.lost()).await;
+        let lost = tokio::time::timeout(Duration::from_secs(2), keeper.until_lost()).await;
         assert!(lost.is_ok() && keeper.is_lost(), "the next extension is refused");
     }
 
     #[tokio::test(start_paused = true)]
     async fn an_unreachable_store_loses_the_lease_only_when_the_local_deadline_passes() {
-        let store = Arc::new(MemCheckpointStore::default());
+        let store = Arc::new(MemoryCheckpointStore::default());
         let key = CheckpointKey::new("halls", "Concert");
         store.register(&key).await.unwrap();
         let (token, anchor) = claimed(&store, &key, "a").await;
@@ -196,10 +196,10 @@ mod tests {
         tokio::time::advance(Duration::from_millis(2500)).await;
         tokio::task::yield_now().await;
         assert!(!keeper.is_lost(), "two failed extensions, deadline not reached");
-        let mut waiting = std::pin::pin!(keeper.lost());
+        let mut waiting = std::pin::pin!(keeper.until_lost());
         assert!(
             std::future::poll_fn(|cx| std::task::Poll::Ready(waiting.as_mut().poll(cx).is_pending())).await,
-            "lost() waits for the deadline"
+            "until_lost() waits for the deadline"
         );
         tokio::time::advance(Duration::from_millis(600)).await;
         tokio::task::yield_now().await;

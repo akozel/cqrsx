@@ -6,8 +6,8 @@ use crate::projection::support::{Harness, Node, key};
 use crate::support::ledger::Ledger;
 use crate::support::property_config;
 use cqrsx::{
-    journal::{feed::Position, repository::PersistedEventRepository},
-    projection::checkpoint::{CheckpointStore, RebuildRequest},
+    journal::{feed::Position, repository::EventRepository},
+    projection::checkpoint::{CheckpointStore, RebuildReply},
     view::repository::StoredView,
 };
 use proptest::prelude::*;
@@ -178,8 +178,8 @@ async fn check(ops: Vec<Op>) -> Result<(), TestCaseError> {
     let finished = h.observer.count("rebuild:Finished");
     loop {
         match h.checkpoints.request_rebuild(&key(), Duration::ZERO).await.unwrap() {
-            RebuildRequest::Accepted => break,
-            RebuildRequest::AlreadyRunning => h.run_for(Duration::from_millis(100)).await,
+            RebuildReply::Accepted => break,
+            RebuildReply::AlreadyRunning => h.run_for(Duration::from_millis(100)).await,
         }
     }
     h.until(async || h.observer.count("rebuild:Finished") > finished).await;

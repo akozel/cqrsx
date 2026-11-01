@@ -1,26 +1,18 @@
-//! Persisted snapshots and exact-prefix updates committed with events.
+//! Persisted snapshots, written with events and read back.
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx/licenses/.
 use serde_json::Value;
 
-/// A snapshot of exactly the committed prefix ending at `last_sequence`.
+/// A snapshot of exactly the committed prefix ending at `last_sequence`, in both directions: the repository gets it
+/// with the events that complete the prefix and returns it when it loads the aggregate.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SnapshotUpdate {
-    pub aggregate_id: String,
-    pub payload: Value,
-    pub last_sequence: usize,
-    pub next_version: usize,
-}
-
-/// Used by repositories to store and load snapshots from a database.
-#[derive(Debug, PartialEq, Eq)]
 pub struct SerializedSnapshot {
     /// The aggregate ID of the aggregate instance that has been loaded.
     pub aggregate_id: String,
-    /// The current state of the aggregate instance.
-    pub aggregate: Value,
+    /// The state of the aggregate instance.
+    pub payload: Value,
     /// The last committed event sequence number for this aggregate instance.
     pub last_sequence: usize,
-    /// The last committed snapshot version for this aggregate instance.
-    pub snapshot_version: usize,
+    /// The revision of the snapshot: the one to write (on a write) or the one stored (on a read).
+    pub revision: usize,
 }

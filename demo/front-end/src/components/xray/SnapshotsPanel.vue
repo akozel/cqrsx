@@ -28,7 +28,7 @@ const { t } = useI18n()
           <span class="opacity-70">{{ row.aggregate_type }}</span>
           <span>{{ row.aggregate_id }}</span>
           <span class="text-neon-pink">last_sequence {{ row.last_sequence }}</span>
-          <span class="opacity-60">{{ t('xray.version') }} {{ row.current_snapshot }}</span>
+          <span class="opacity-60">{{ t('xray.version') }} {{ row.revision }}</span>
         </div>
         <JsonView :value="row.payload" />
       </li>

@@ -1,0 +1,411 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Task path</title>
+<meta name="description" content="How cqrsx delivers an outbox task to its handler: claim and lease, workers and the buffer, the outcome of an attempt, retries by policy and lease recovery.">
+<style>
+/* Layout: one reading column (~72ch) for prose; figures and tables break out to 1120px and scroll sideways on phones. */
+:root {
+  --bg: #f3f5f7; --surface: #ffffff; --frame: #eef2f6; --ink: #131920; --ink-2: #465263; --muted: #6c7787;
+  --rule: #d4dbe3; --axis: #b9c2cd; --accent: #0a6e8a; --accent-soft: #e0eff4; --warn: #8f5400; --warn-soft: #fbf0de;
+  --crit: #b42f2f; --crit-soft: #fbe7e7; --band-a: #f1f4f8; --band-b: #ecf5f7; --code-bg: #edf1f5;
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  --text-col: 72ch; --wide: 1120px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+    --rule: #2c343e; --axis: #3a4552; --accent: #4cb6d4; --accent-soft: #15303a; --warn: #e3a23b; --warn-soft: #2e2413;
+    --crit: #ef6b6b; --crit-soft: #331b1d; --band-a: #141a21; --band-b: #12212a; --code-bg: #1d242d; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+  --rule: #2c343e; --axis: #3a4552; --accent: #4cb6d4; --accent-soft: #15303a; --warn: #e3a23b; --warn-soft: #2e2413;
+  --crit: #ef6b6b; --crit-soft: #331b1d; --band-a: #141a21; --band-b: #12212a; --code-bg: #1d242d; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+.page { max-width: var(--wide); margin: 0 auto; display: grid; gap: 56px; }
+.prose { max-width: var(--text-col); }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; color: var(--ink); }
+h1 { font-size: clamp(2rem, 5vw, 2.9rem); line-height: 1.08; font-weight: 650; letter-spacing: -0.015em; }
+h2 { font-size: 1.65rem; line-height: 1.2; font-weight: 650; }
+h3 { font-size: 1.15rem; line-height: 1.3; font-weight: 600; margin-top: 8px; }
+p { margin: 0; }
+section { display: grid; gap: 18px; min-width: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 0.05em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+/* Navigation between the pages */
+.topnav { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding: 14px 0 12px; border-bottom: 1px solid var(--rule);
+  font-size: 0.9rem; }
+.topnav .home { font-family: var(--font-mono); font-weight: 600; color: var(--ink); text-decoration: none; margin-right: 6px; }
+.topnav a { color: var(--ink-2); text-decoration: none; }
+.topnav a:hover { color: var(--accent); }
+.topnav a[aria-current="page"] { color: var(--accent); font-weight: 600; }
+.topnav .sep { color: var(--rule); }
+
+/* Header */
+.hero { display: grid; gap: 18px; padding-top: 32px; }
+.lede { font-size: 1.1rem; color: var(--ink-2); max-width: var(--text-col); }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0; margin: 8px 0 0; border-top: 2px solid var(--ink); }
+.facts > div { padding: 14px 18px 4px 0; display: grid; gap: 6px; align-content: start; }
+.facts > div + div { padding-left: 18px; border-left: 1px solid var(--rule); }
+.facts dt { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.facts dd { margin: 0; font-size: 0.97rem; }
+@media (max-width: 760px) { .facts > div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--rule); } }
+.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.92rem; }
+.toc a { text-decoration: none; border-bottom: 1px solid var(--rule); color: var(--ink-2); }
+.toc a:hover { color: var(--accent); border-color: var(--accent); }
+
+/* Figures */
+figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.diagram { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px; }
+.diagram svg { display: block; width: 100%; height: auto; }
+figcaption { font-size: 0.9rem; color: var(--ink-2); max-width: var(--text-col); }
+svg text { font-family: var(--font-body); fill: var(--ink); }
+.t-title { font-size: 13.5px; font-weight: 600; }
+.t-sub { font-size: 12px; fill: var(--ink-2); }
+.t-mono { font-family: var(--font-mono); font-size: 12px; }
+.t-label { font-size: 11.5px; fill: var(--ink-2); }
+.t-cap { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; fill: var(--muted); }
+.t-acc { fill: var(--accent); }
+.t-crit { fill: var(--crit); }
+.t-warn { fill: var(--warn); }
+.frame { fill: var(--frame); stroke: var(--rule); }
+.box { fill: var(--surface); stroke: var(--axis); stroke-width: 1; }
+.box-acc { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.box-warn { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; }
+.box-crit { fill: var(--crit-soft); stroke: var(--crit); stroke-width: 1.5; }
+.note { fill: var(--surface); stroke: var(--axis); stroke-dasharray: 3 3; }
+.ln { stroke: var(--ink-2); stroke-width: 1.5; fill: none; }
+.ln-acc { stroke: var(--accent); stroke-width: 2; fill: none; }
+.ln-mut { stroke: var(--muted); stroke-width: 1.25; fill: none; }
+.ln-crit { stroke: var(--crit); stroke-width: 1.5; fill: none; }
+.dash { stroke-dasharray: 5 4; }
+.life { stroke: var(--axis); stroke-width: 1; }
+.band-a { fill: var(--band-a); }
+.band-b { fill: var(--band-b); }
+.m-ink { fill: var(--ink-2); }
+.m-acc { fill: var(--accent); }
+.m-mut { fill: var(--muted); }
+.m-crit { fill: var(--crit); }
+.tx-done { fill: var(--frame); stroke: var(--ink-2); stroke-width: 1.25; }
+.tx-open { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.tx-lost { fill: var(--crit-soft); stroke: var(--crit); stroke-width: 1.5; }
+.tx-head { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.wait-zone { fill: var(--band-a); stroke: var(--rule); stroke-dasharray: 3 3; }
+
+/* Lists of parts and guarantees */
+.parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px 28px; margin: 0; }
+.parts > div { display: grid; gap: 4px; align-content: start; border-top: 1px solid var(--rule); padding-top: 10px; }
+.parts dt { font-weight: 600; }
+.parts dd { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 28px; }
+.two > div { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.verdict { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+.verdict::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--accent); }
+.verdict.no::before { background: var(--warn); }
+.claims { display: grid; gap: 12px; margin: 0; }
+.claims > div { display: grid; gap: 2px; }
+.claims dt { font-weight: 600; }
+.claims dd { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+.g { font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+
+/* Tables */
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; border-bottom: 1.5px solid var(--ink-2); }
+td:first-child { font-weight: 600; }
+.steps td:first-child { min-width: 9em; }
+.steps td:nth-child(3) { font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-2); min-width: 15em; }
+.steps, .weak { min-width: 860px; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+.tablewrap table tr:last-child td { border-bottom: 0; }
+
+/* Callouts and lists */
+.math { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.math > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
+.math .k { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.math .v { font-size: 1.25rem; font-weight: 650; font-family: var(--font-display); }
+.math .d { font-size: 0.9rem; color: var(--ink-2); }
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: var(--text-col); }
+.foot { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; max-width: var(--text-col); }
+</style>
+</head>
+<body>
+<div class="page">
+<nav class="topnav" aria-label="Documentation"><a class="home" href="../README.md">cqrsx</a> <a href="command-path.html">Command path</a> <a href="read-path.html">Read path</a> <a href="task-path.html" aria-current="page">Task path</a> <span class="sep" aria-hidden="true">|</span> <a href="../README.md">README</a> <a href="components.md">Components</a> <a href="crates.md">Crates</a> <a href="typical_scenario.md">Typical scenario</a> <a href="guarantees.md">Guarantees</a></nav>
+<header class="hero">
+  <p class="eyebrow">cqrsx · how it works · 3 of 3</p>
+  <h1>Task path: from the outbox to the handler</h1>
+  <p class="lede">What happens to a task after its command committed it to the outbox with its event, until its handler has done the work: the claim that leases it, the buffer and the workers, the budget check before the handler, the outcome of the attempt and its settlement, the pause the task type's policy chooses, and the recovery of leases that ran out.</p>
+  <dl class="facts">
+    <div><dt>Guarantee</dt><dd>At least once: a committed task is delivered until it is done, fails, or runs out of attempts. A handler must be safe to repeat.</dd></div>
+    <div><dt>Lease</dt><dd>A claim leases the task to one process, with a fresh token and an expiry by the database's clock. Every settlement is checked against both.</dd></div>
+    <div><dt>Retry by policy</dt><dd>The handler answers done, retry or fail; the pause before the next attempt and the number of attempts belong to the policy of the task's type.</dd></div>
+  </dl>
+  <nav class="toc" aria-label="Sections">
+    <a href="#flow">Overall diagram</a><a href="#life">Life of a task</a><a href="#steps">One task step by step</a><a href="#policy">Pause by policy</a><a href="#budget">The lease budget</a><a href="#failed">Failed tasks</a><a href="#guarantees">Guarantees</a><a href="#weak">Weak spots</a><a href="#further">Further reading</a>
+  </nav>
+</header>
+
+<section id="flow">
+  <h2>Overall diagram</h2>
+  <p class="prose">Every process of the engine runs one <code>TaskRuntime</code> over the outbox table, <code>transactional_outbox</code>, through <code>PostgresTaskQueue</code> (or the queue in memory). The runtime has one producer that claims tasks into a bounded buffer and a fixed pool of workers that take them from it. Claim, settlement and recovery are one autocommitted statement each.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 1000 560" role="img" aria-label="The supervisor of the task runtime claims ready tasks from the outbox table into a bounded buffer, and on every tick returns expired leases. Workers take tasks from the buffer; the executor checks the lease budget, runs the handler through the dispatcher and the adapter, and settles the outcome in the outbox. A handler may execute the next command, whose commit publishes the next tasks to the outbox." style="min-width:820px">
+        <defs>
+          <marker id="t1-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-ink" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="t1-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-acc" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="t1-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-mut" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <rect class="frame" x="16" y="16" width="260" height="528" rx="12"/>
+        <text class="t-cap" x="32" y="40">POSTGRESQL</text>
+        <rect class="frame" x="316" y="16" width="460" height="528" rx="12"/>
+        <text class="t-cap" x="332" y="40">PROCESS · TASK RUNTIME</text>
+        <rect class="frame" x="800" y="16" width="184" height="528" rx="12"/>
+        <text class="t-cap" x="816" y="40">THE HANDLER'S WORLD</text>
+        <!-- postgres -->
+        <rect class="box-acc" x="36" y="56" width="220" height="70" rx="6"/>
+        <text class="t-mono" x="146" y="78" text-anchor="middle" style="font-weight:600">transactional_outbox</text>
+        <text class="t-sub" x="146" y="98" text-anchor="middle">status · attempts · available_at</text>
+        <text class="t-sub" x="146" y="116" text-anchor="middle">owner · lease_token · lease_until</text>
+        <rect class="note" x="36" y="146" width="220" height="96" rx="6"/>
+        <text class="t-title" x="48" y="166">claim</text>
+        <text class="t-mono" x="48" y="186">FOR UPDATE SKIP LOCKED</text>
+        <text class="t-mono" x="48" y="204">→ processing</text>
+        <text class="t-mono" x="48" y="222">attempts + 1, new token</text>
+        <rect class="note" x="36" y="266" width="220" height="96" rx="6"/>
+        <text class="t-title" x="48" y="286">recover_expired</text>
+        <text class="t-mono" x="48" y="306">lease_until ≤ now</text>
+        <text class="t-mono" x="48" y="324">→ pending after backoff</text>
+        <text class="t-mono" x="48" y="342">→ failed on the last</text>
+        <rect class="note" x="36" y="386" width="220" height="96" rx="6"/>
+        <text class="t-title" x="48" y="406">settle</text>
+        <text class="t-mono" x="48" y="426">by id and lease_token,</text>
+        <text class="t-mono" x="48" y="444">if lease_until &gt; now</text>
+        <text class="t-mono" x="48" y="462">→ completed | pending</text>
+        <text class="t-mono" x="48" y="478">  | failed</text>
+        <!-- runtime -->
+        <rect class="box" x="336" y="56" width="420" height="92" rx="8"/>
+        <text class="t-title" x="352" y="78">Supervisor: the one producer of the process</text>
+        <text class="t-sub" x="352" y="98">on a poll tick, or when a worker took a task, claims</text>
+        <text class="t-sub" x="352" y="116">once fewer than 25 % of the buffer wait, and fills it;</text>
+        <text class="t-sub" x="352" y="134">on every tick returns up to min(C, 32) expired leases</text>
+        <rect class="box" x="336" y="176" width="420" height="52" rx="8"/>
+        <text class="t-title" x="546" y="198" text-anchor="middle">Buffer: a bounded channel of Q claimed tasks</text>
+        <text class="t-sub" x="546" y="216" text-anchor="middle">their leases are already running</text>
+        <rect class="box" x="336" y="258" width="128" height="44" rx="6"/><text class="t-sub" x="400" y="285" text-anchor="middle">worker</text>
+        <rect class="box" x="482" y="258" width="128" height="44" rx="6"/><text class="t-sub" x="546" y="285" text-anchor="middle">worker</text>
+        <rect class="box" x="628" y="258" width="128" height="44" rx="6"/><text class="t-sub" x="692" y="285" text-anchor="middle">… C workers</text>
+        <rect class="box-acc" x="336" y="330" width="420" height="92" rx="8"/>
+        <text class="t-title" x="352" y="352">DefaultTaskExecutor</text>
+        <text class="t-sub" x="352" y="372">1. enough lease left for the handler and a settlement?</text>
+        <text class="t-sub" x="352" y="390">2. the retry pause, by the policy of the task's type</text>
+        <text class="t-sub" x="352" y="408">3. the handler under its timeout, then the settlement</text>
+        <rect class="box" x="336" y="448" width="420" height="76" rx="8"/>
+        <text class="t-title" x="546" y="470" text-anchor="middle">TaskDispatcher → TaskAdapter → TaskHandler</text>
+        <text class="t-sub" x="546" y="490" text-anchor="middle">routes by format; JsonTaskAdapter decodes the payload</text>
+        <text class="t-sub" x="546" y="508" text-anchor="middle">handle(task, &amp;TaskContext) → TaskResult</text>
+        <line class="ln" x1="546" y1="148" x2="546" y2="174" marker-end="url(#t1-ink)"/>
+        <line class="ln" x1="546" y1="228" x2="546" y2="256" marker-end="url(#t1-ink)"/>
+        <line class="ln" x1="546" y1="302" x2="546" y2="328" marker-end="url(#t1-ink)"/>
+        <line class="ln" x1="546" y1="424" x2="546" y2="446" marker-start="url(#t1-ink)" marker-end="url(#t1-ink)"/>
+        <!-- storage arrows -->
+        <path class="ln-acc" d="M258,194 H286 V90 H334" marker-end="url(#t1-acc)"/>
+        <path class="ln-mut dash" d="M334,128 H300 V314 H258" marker-end="url(#t1-mut)"/>
+        <path class="ln-acc" d="M336,380 H296 V434 H258" marker-end="url(#t1-acc)"/>
+        <!-- handler world -->
+        <rect class="box" x="816" y="56" width="152" height="64" rx="8"/>
+        <text class="t-title" x="892" y="80" text-anchor="middle">Dependencies</text>
+        <text class="t-sub" x="892" y="100" text-anchor="middle">a mailer, a client</text>
+        <rect class="box" x="816" y="330" width="152" height="82" rx="8"/>
+        <text class="t-title" x="892" y="354" text-anchor="middle">Command path</text>
+        <text class="t-sub" x="892" y="374" text-anchor="middle">the next event and</text>
+        <text class="t-sub" x="892" y="392" text-anchor="middle">its tasks, one write</text>
+        <rect class="box-acc" x="816" y="448" width="152" height="76" rx="8"/>
+        <text class="t-mono" x="892" y="472" text-anchor="middle">ctx.execute</text>
+        <text class="t-sub" x="892" y="492" text-anchor="middle">a command caused</text>
+        <text class="t-sub" x="892" y="510" text-anchor="middle">by the task</text>
+        <line class="ln-acc" x1="756" y1="486" x2="814" y2="486" marker-end="url(#t1-acc)"/>
+        <line class="ln-acc" x1="892" y1="448" x2="892" y2="414" marker-end="url(#t1-acc)"/>
+        <path class="ln-mut dash" d="M968,350 H976 V24 H146 V54" marker-end="url(#t1-mut)"/>
+        <line class="ln-mut dash" x1="756" y1="470" x2="790" y2="470"/>
+        <path class="ln-mut dash" d="M790,470 V88 H814" marker-end="url(#t1-mut)"/>
+      </svg>
+    </div>
+    <figcaption>Coloured arrows: the statements of one task (claim, settle) and a handler that continues the chain with a command. Dashed: recovery of expired leases, the handler's use of its dependencies, and the next tasks, which the next command commits to the outbox.</figcaption>
+  </figure>
+  <dl class="parts">
+    <div><dt>Queue</dt><dd><code>TaskQueue</code>: <code>claim</code>, <code>settle</code>, <code>recover_expired</code>. <code>PostgresTaskQueue</code> runs each as one statement under the pool's statement timeout; <code>MemoryTaskQueue</code> mirrors it in memory.</dd></div>
+    <div><dt>Runtime</dt><dd><code>TaskRuntime</code>, built by <code>prepare(queue, dispatcher, config, policies)</code> and run until its token is cancelled. Its limits are <code>TaskRuntimeConfig</code>: the workers C, the buffer Q, the poll, the lease, the handler and storage timeouts.</dd></div>
+    <div><dt>Executor</dt><dd><code>DefaultTaskExecutor</code>: one leased attempt within the lease's deadlines, its settlement in a separate statement. It catches a handler's panic.</dd></div>
+    <div><dt>Dispatcher</dt><dd><code>TaskDispatcher</code>, one for every worker: routes a task's format to its adapter and gives the handler its <code>TaskContext</code> (the attempt, the retry pause, the dependencies, the command executors).</dd></div>
+    <div><dt>Handler</dt><dd>A <code>TaskHandler&lt;T&gt;</code>, usually a function with <code>#[task_handler]</code>: the decoded task, the context and dependencies by type; it answers <code>TaskResult::Done</code>, <code>Retry { reason }</code> or <code>Fail { reason }</code>.</dd></div>
+    <div><dt>Policies</dt><dd><code>Policies</code> binds each task type to a named <code>TaskPolicy</code>: a <code>RetryPause</code> and an attempt budget. The planner of the reactions reads the budget, the executor the pause.</dd></div>
+  </dl>
+</section>
+
+<section id="life">
+  <h2>Life of a task</h2>
+  <p class="prose">The status column carries a task through four states. Only <code>processing</code> rows have an owner, a token and a lease (a check constraint of the table says so), and only <code>completed</code> and <code>failed</code> rows have <code>finished_at</code>.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 1000 300" role="img" aria-label="A task is published as pending with its event. A claim makes it processing and counts an attempt. Done makes it completed. Fail, or a retry or expired lease on the last attempt, makes it failed. A retry or an expired lease before the last attempt returns it to pending after a pause. An operator can return a failed task to pending with its attempts reset." style="min-width:820px">
+        <defs>
+          <marker id="t2-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-ink" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="t2-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-acc" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="t2-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-mut" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="t2-crit" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-crit" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <text class="t-label" x="16" y="96">with its event</text>
+        <line class="ln" x1="16" y1="110" x2="134" y2="110" marker-end="url(#t2-ink)"/>
+        <rect class="box" x="136" y="84" width="150" height="52" rx="26"/>
+        <text class="t-mono" x="211" y="115" text-anchor="middle" style="font-weight:600">pending</text>
+        <rect class="box-acc" x="456" y="84" width="150" height="52" rx="26"/>
+        <text class="t-mono" x="531" y="115" text-anchor="middle" style="font-weight:600">processing</text>
+        <rect class="box" x="796" y="24" width="170" height="52" rx="26"/>
+        <text class="t-mono" x="881" y="55" text-anchor="middle" style="font-weight:600">completed</text>
+        <rect class="box-crit" x="796" y="154" width="170" height="52" rx="26"/>
+        <text class="t-mono" x="881" y="185" text-anchor="middle" style="font-weight:600">failed</text>
+        <line class="ln-acc" x1="286" y1="104" x2="454" y2="104" marker-end="url(#t2-acc)"/>
+        <text class="t-label t-acc" x="370" y="92" text-anchor="middle">claim: attempts + 1, a lease</text>
+        <path class="ln" d="M606,98 C680,70 720,50 794,50" marker-end="url(#t2-ink)"/>
+        <text class="t-label" x="700" y="48" text-anchor="middle">Done</text>
+        <path class="ln-crit" d="M606,124 C680,150 720,180 794,180" marker-end="url(#t2-crit)"/>
+        <text class="t-label t-crit" x="700" y="212" text-anchor="middle">Fail, or retry / expiry</text>
+        <text class="t-label t-crit" x="700" y="228" text-anchor="middle">on the last attempt</text>
+        <path class="ln-mut" d="M531,136 C531,190 211,190 211,138" marker-end="url(#t2-mut)"/>
+        <text class="t-label" x="371" y="208" text-anchor="middle">Retry: after the policy's pause</text>
+        <text class="t-label" x="371" y="224" text-anchor="middle">timeout, expired lease: after the redelivery backoff</text>
+        <path class="ln-mut dash" d="M881,206 V270 H180 V138" marker-end="url(#t2-mut)"/>
+        <text class="t-label" x="530" y="262" text-anchor="middle">operator: REQUEUE_FAILED_OUTBOX_TASK, attempts back to 0, same id and payload</text>
+      </svg>
+    </div>
+    <figcaption>The attempt is counted at the claim. A retry is the same row with a later <code>available_at</code>; a claim takes only rows whose time has come.</figcaption>
+  </figure>
+</section>
+
+<section id="steps">
+  <h2>One task step by step</h2>
+  <p class="prose">The booking from the <a href="command-path.html#steps">command path</a> committed the task <code>encore_record_ticket</code>. Its handler, <code>record_ticket</code>, records the ticket in the fan's ledger with a command, whose event in turn plans <code>encore_send_e_ticket</code>. The demo runs 2 workers with a buffer of 2, polls every 300&nbsp;ms and leases for 30&nbsp;s; the library's defaults are larger (128, 128, 1&nbsp;s, 60&nbsp;s).</p>
+  <div class="tablewrap">
+    <table class="steps">
+      <thead><tr><th>Step</th><th>What happens</th><th>Storage</th><th>If it fails here</th></tr></thead>
+      <tbody>
+        <tr><td>1. Published</td><td>The command's statement inserted the row with its event: <code>pending</code>, available now (or after the schedule's delay), no attempts yet, <code>max_attempts</code> from the policy of the type (6 in the demo), its id derived from the command.</td><td>INSERT INTO transactional_outbox … inside the command's statement</td><td>Nothing separate: the task exists exactly when its event does.</td></tr>
+        <tr><td>2. Admit</td><td>On a poll tick, or when a worker has just taken a task from the buffer, the producer checks the buffer: when fewer tasks wait than the refill level (25&nbsp;% of the buffer, at least one), it claims as many as fit. It asks for every format the dispatcher knows, one format after another, starting one further on each claim.</td><td>none</td><td>A full buffer waits for a free place. Nothing wakes the producer when a task is committed: it finds new tasks at its next tick.</td></tr>
+        <tr><td>3. Claim</td><td>One statement per format takes ready rows, oldest first, skips rows another process has locked, and leases them: <code>processing</code>, one more attempt, this process as <code>owner</code>, a new <code>lease_token</code>, <code>lease_until</code> by the database's clock. The local deadline is taken before the request, so it never outlasts the database's.</td><td>WITH ready AS (SELECT id … WHERE status = 'pending' AND task_type = $1 AND task_version = $2 AND available_at &lt;= statement_timestamp() ORDER BY available_at, id LIMIT $3 FOR UPDATE SKIP LOCKED) UPDATE … RETURNING …</td><td>A storage error or timeout: logged (<code>task claim failed</code>), tried again at the next tick. A row that is not a valid task is not delivered; it stays leased until recovery returns it, and finally fails.</td></tr>
+        <tr><td>4. Buffer</td><td>The task waits in the channel for a free worker. Its lease is already running.</td><td>none</td><td>A stop now: the buffered tasks are not started; recovery returns them after their leases.</td></tr>
+        <tr><td>5. Budget</td><td>The executor computes the settlement deadline: the lease's deadline less a 5&nbsp;s margin (<code>LEASE_SAFETY_MARGIN</code>). The handler runs only if the handler timeout and the storage timeout still fit before it.</td><td>none</td><td>Not enough left: the attempt is settled at once as a retry after the redelivery backoff, without the handler. The deadline already passed: the task is left to recovery.</td></tr>
+        <tr><td>6. Run</td><td>The retry pause is chosen first, by the policy, so the handler can read it (<code>TaskContext::retry_pause</code>). The dispatcher routes the format to its adapter, which decodes the payload and calls <code>record_ticket</code>. The handler runs <code>ctx.execute::&lt;Fan&gt;(…)</code>: a command on the <a href="command-path.html">command path</a>, with the task's correlation id, the task as its cause and the source <code>task:encore_record_ticket</code>. A rejection that means "already recorded" is <code>Done</code>; "too early" is <code>Retry</code>.</td><td>the next command's own statements</td><td>The handler outlives its timeout (5&nbsp;s in the demo): its future is dropped and the attempt is a retry after the redelivery backoff. A panic is caught: a retry with the reason <code>handler panicked</code> after the policy's pause; the worker lives on.</td></tr>
+        <tr><td>7. Settle</td><td><code>Done</code> completes the task; <code>Retry</code> makes it pending again after the pause, or failed when its attempts are spent; <code>Fail</code> fails it. The reason goes to <code>last_error</code>.</td><td>WITH owned AS MATERIALIZED (SELECT … WHERE id = $1 AND lease_token = $2 FOR UPDATE) UPDATE … WHERE owned.lease_until &gt; clock_timestamp() RETURNING status</td><td>No row: the lease is gone (<code>OwnershipLost</code>, logged as <code>task ownership lost</code>); the effect may be repeated by the next delivery. A storage timeout: the outcome is unknown; an unsettled lease expires and recovery returns the task.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="prose">In the background, on every poll tick, the producer runs <code>recover_expired</code>: up to <code>min(C, 32)</code> rows whose lease ran out go back to <code>pending</code> after the redelivery backoff, or to <code>failed</code> with <code>worker lease expired</code> when that was their last attempt. The step is the same in every process; <code>SKIP LOCKED</code> keeps two processes off one row.</p>
+</section>
+
+<section id="policy">
+  <h2>Pause by policy</h2>
+  <p class="prose">A handler never names a pause. It answers <code>Retry</code>, and the executor waits the pause of the policy its task type is bound to. A policy has a name the application chooses (<code>PolicyName</code>, a constant), and a value from its configuration: <code>RetryPause::fixed(pause)</code>, or <code>RetryPause::backoff(base, max)</code>, which waits <code>min(base · 2<sup>n−1</sup>, max)</code> after attempt <code>n</code>, without jitter; and an attempt budget. In the engine a module defines it with <code>Module::policy(name, pause, attempts)</code> and binds a handler's type with <code>.task(handler).policy(name)</code>; the reactions that plan the task never name it.</p>
+  <ul class="plain">
+    <li><strong>A type without a policy</strong> gets <code>DEFAULT_MAX_ATTEMPTS</code> (10) and the queue's own <code>redelivery_backoff</code>: 5&nbsp;s · 2<sup>n−1</sup>, at most 300&nbsp;s, each pause drawn ±20&nbsp;%.</li>
+    <li><strong>Timeouts and expired leases</strong> always wait the redelivery backoff, whatever the policy: the handler did not answer.</li>
+    <li><strong>The budget counts claims.</strong> An attempt is counted when the task is claimed, so a lease that ran out or a timeout spends an attempt like an answered retry. A handler that always panics spends the budget and the task fails.</li>
+    <li><strong>In the demo</strong> the steps of a chain (recording a ticket or a cancellation) wait a fixed 1&nbsp;s, the e-mails back off from 1 to 8&nbsp;s, and both have 6 attempts (<code>ENCORE_TASK_MAX_ATTEMPTS</code>, <code>ENCORE_TASK_RETRY_BASE_MS</code>, <code>ENCORE_TASK_RETRY_MAX_MS</code>).</li>
+  </ul>
+</section>
+
+<section id="budget">
+  <h2>The lease budget</h2>
+  <p class="prose">A task's lease starts at the claim, not when a worker takes it: time in the buffer is spent from the lease. So the runtime refuses to start unless the lease covers the worst healthy case, checked by <code>TaskRuntimeConfig::try_new</code>: a claim and a settlement (two storage timeouts S), the handler (H), the margin, and every wave of the buffer ahead of the task, ⌈Q / C⌉ times a handler and a settlement.</p>
+  <div class="math">
+    <div><span class="k">Rule</span><span class="v">lease &gt; 2·S + H + 5 s + ⌈Q/C⌉·(H + S)</span><span class="d"><code>validate_for_storage_timeout</code></span></div>
+    <div><span class="k">Library defaults</span><span class="v">60 s &gt; 53 s</span><span class="d">S 6 s, H 15 s, Q = C = 128: 12 + 15 + 5 + 21</span></div>
+    <div><span class="k">Demo</span><span class="v">30 s &gt; 24 s</span><span class="d">S 3 s, H 5 s, Q = C = 2: 6 + 5 + 5 + 8</span></div>
+  </div>
+  <p class="prose">A command from a handler waits for its aggregate's lock; the engine therefore refuses a lock wait (<code>COMMAND_LOCK_MAX_WAIT_MS</code>) that is not shorter than the handler timeout (<code>OUTBOX_HANDLER_TIMEOUT_MS</code>).</p>
+</section>
+
+<section id="failed">
+  <h2>Failed tasks</h2>
+  <p class="prose">A task fails when its handler answers <code>Fail</code>, when a retry or an expired lease comes on its last attempt, or when its row cannot be delivered at all. A failure is logged once, with the task's id, format, attempt and cause (<code>permanent failure</code>, <code>retry limit reached</code>, <code>worker lease expired</code>), never the payload; the row keeps <code>last_error</code>. Nothing retries it automatically. An operator who has fixed the cause runs <code>REQUEUE_FAILED_OUTBOX_TASK</code> (<code>cqrsx-postgres/sql/requeue-failed-outbox.sql</code>) with the task's id: the row returns to <code>pending</code> with its attempts at zero and keeps its id and payload, so a receiver that deduplicates by the task id still recognises it. The operations section of <a href="../cqrsx-engine/README.md">cqrsx-engine</a> describes it.</p>
+</section>
+
+<section id="guarantees">
+  <h2>Guarantees</h2>
+  <p class="prose">The numbers refer to <a href="guarantees.md">guarantees.md</a>.</p>
+  <div class="two">
+    <div>
+      <p class="verdict">Guaranteed</p>
+      <dl class="claims">
+        <div><dt>Published with the event <span class="g">G-06, G-15</span></dt><dd>A task exists exactly when the event that planned it was committed.</dd></div>
+        <div><dt>At least once <span class="g">G-16</span></dt><dd>A task is delivered again after a lost acknowledgement, an expired lease or a crash, until it is done, fails or runs out of attempts.</dd></div>
+        <div><dt>One owner per lease <span class="g">G-17, G-20</span></dt><dd>A claim locks the rows it takes and skips the locked ones; a settlement applies only with the lease's token and before its expiry, one task per statement.</dd></div>
+        <div><dt>Bounded attempts and pauses <span class="g">G-18, G-19</span></dt><dd>Lease, poll, handler and storage timeouts are checked together at start; retries follow the policy of the type within its budget.</dd></div>
+        <div><dt>A dead worker is replaced <span class="g">G-21</span></dt><dd>A worker that dies outside a handler is restarted with the same dispatcher; on stop, started attempts finish and settle.</dd></div>
+        <div><dt>Causation continues <span class="g">G-13, G-14</span></dt><dd>A task carries the ids of the command that planned it; a command from its handler keeps the correlation id and names the task as its cause.</dd></div>
+      </dl>
+    </div>
+    <div>
+      <p class="verdict no">Not guaranteed</p>
+      <dl class="claims">
+        <div><dt>Exactly-once effects <span class="g">G-16, G-22</span></dt><dd>A handler may run again after it did its work. It decides from the current state whether its step still applies; a command it issues may answer "already done".</dd></div>
+        <div><dt>Order</dt><dd>No order is promised between tasks, not even of one aggregate: a claim takes the oldest ready rows of a format, and pauses reorder them.</dd></div>
+        <div><dt>Immediate start</dt><dd>A commit does not wake the task runtime; a new task waits for the next tick of some process (1&nbsp;s by default, 300&nbsp;ms in the demo).</dd></div>
+        <div><dt>A failure that heals itself</dt><dd>A failed task stays failed until an operator requeues it.</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section id="weak">
+  <h2>Weak spots</h2>
+  <div class="tablewrap">
+    <table class="weak">
+      <thead><tr><th>Place</th><th>What happens</th><th>How the system reacts</th><th>What you see</th></tr></thead>
+      <tbody>
+        <tr><td>A process dies</td><td>Its claimed tasks stay <code>processing</code>, in the buffer and in the workers.</td><td>Any process's recovery returns them after their leases (30&nbsp;s in the demo) and the redelivery backoff; each counts an attempt.</td><td>Delay; <code>last_error</code> = <code>worker lease expired</code>.</td></tr>
+        <tr><td>A graceful stop</td><td>Started attempts finish and settle, within a handler timeout and a storage timeout. The tasks still in the buffer are not started.</td><td>They wait for their leases to run out, as after a crash.</td><td>Delay for those tasks only.</td></tr>
+        <tr><td>A slow handler</td><td>It outlives its timeout.</td><td>Its future is dropped and the task is retried after the redelivery backoff; an effect it already caused may happen again.</td><td><code>last_error</code> = <code>handler timed out</code>.</td></tr>
+        <tr><td>A lost settlement</td><td>The settlement times out or finds another token.</td><td>The outcome is unknown or overtaken; the task is delivered again after its lease.</td><td><code>task ownership lost</code> or <code>task processing failed</code> in the log.</td></tr>
+        <tr><td>A format nobody handles</td><td>A process claims only the formats its dispatcher knows.</td><td>A task whose type no running process handles stays <code>pending</code>.</td><td>Pending rows of that type that never move.</td></tr>
+        <tr><td>A busy aggregate behind a task</td><td>The handler's command waits for its aggregate's lock, or conflicts.</td><td><code>Unavailable</code> and <code>Conflict</code> become retries (<code>unavailable</code>, <code>conflict</code>) after the policy's pause.</td><td>Retries with those reasons.</td></tr>
+        <tr><td>Many processes</td><td>Every process has one producer and C workers on the same table.</td><td><code>SKIP LOCKED</code> spreads the tasks; throughput grows with workers until the handlers or the database are the limit.</td><td>The <code>pending</code> backlog.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="further">
+  <h2>Further reading</h2>
+  <ul class="plain">
+    <li><a href="components.md#inventory">Components, inventory</a>: the queue, the runtime, the executor, the dispatcher, the policies and their settings.</li>
+    <li><a href="typical_scenario.md">A typical application</a>: reactions, task handlers, policies and dependencies.</li>
+    <li><a href="guarantees.md">Guarantees</a> G-13 to G-22.</li>
+    <li><a href="../cqrsx-engine/README.md">cqrsx-engine</a>: the <code>OUTBOX_*</code> settings and the operations, including the requeue of a failed task; <a href="crates.md">crates and their boundaries</a>.</li>
+    <li>Before: <a href="command-path.html">command path</a>. Beside: <a href="read-path.html">read path</a>.</li>
+  </ul>
+  <p class="foot">Verified against the code of <code>cqrsx::worker</code> (runtime, supervisor, poller, worker pool, executor, lease budget, dispatcher, queue port), <code>cqrsx::task</code> (policies), <code>cqrsx::reactions</code>, <code>cqrsx_postgres::task_queue</code> and <code>sql/</code>, and <code>cqrsx_engine</code> (module policies, settings). Defaults are the library's; the engine reads them from the <code>OUTBOX_*</code> variables.</p>
+</section>
+</div>
+</body>
+</html>

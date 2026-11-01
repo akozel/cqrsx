@@ -6,11 +6,11 @@
 //!   `AnnounceConcert` commands, exactly what the announce dialog of the UI sends. A repeated
 //!   announce is rejected by rule R2 (`already_announced`) and that is the idempotency.
 //! * `wipe_read_models` (🧨) drops the two read-model collections, then the checkpoints of their
-//!   projections, and nothing else: the ledger is intact, the mail inbox stays, and the back-end's
+//!   projections, and nothing else: the journal is intact, the mail inbox stays, and the back-end's
 //!   projection processors register their checkpoints again and rebuild every document from the start
 //!   of the journal by themselves. The documents go first: a rebuild that ran between the two drops
 //!   would otherwise lose its documents.
-//! * `reset` empties the ledger, the snapshots and the outbox (role `encore_demo_admin`, which may
+//! * `reset` empties the journal, the snapshots and the outbox (role `encore_demo_admin`, which may
 //!   do nothing but TRUNCATE those three tables), drops the read models, their checkpoints and the
 //!   mail inbox, drops the read models once more (a write of a projection still in flight during the
 //!   first drop would recreate an old document), then seeds again. The back-end keeps running
@@ -232,7 +232,7 @@ impl DemoAdmin {
         Ok(dropped)
     }
 
-    /// 🧨 Drops the read models and their checkpoints, nothing else: the ledger and the inbox stay.
+    /// 🧨 Drops the read models and their checkpoints, nothing else: the journal and the inbox stay.
     pub async fn wipe_read_models(&self) -> Result<Vec<String>, DemoError> {
         self.drop_collections(&WIPED).await
     }

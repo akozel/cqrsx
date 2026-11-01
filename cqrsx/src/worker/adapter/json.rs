@@ -113,8 +113,8 @@ mod tests {
     }
 
     impl<const VERSION: i32> Task for Payload<VERSION> {
-        const TASK_TYPE: &'static str = "test_operation";
-        const TASK_VERSION: i32 = VERSION;
+        const TYPE: &'static str = "test_operation";
+        const VERSION: i32 = VERSION;
     }
 
     #[derive(Debug)]
@@ -172,7 +172,7 @@ mod tests {
 
     /// The context of `attempt`, as the dispatcher builds it.
     fn context(attempt: &Arc<TaskAttempt>) -> TaskContext {
-        TaskContext::shared(
+        TaskContext::from_parts(
             attempt.clone(),
             Duration::from_secs(1),
             Dependencies::default(),
@@ -272,8 +272,8 @@ mod tests {
         }
     }
     impl Task for PrivatePayload {
-        const TASK_TYPE: &'static str = "private_expected_type\nsecret@example.com";
-        const TASK_VERSION: i32 = 4;
+        const TYPE: &'static str = "private_expected_type\nsecret@example.com";
+        const VERSION: i32 = 4;
     }
     struct NeverCalled;
     impl TaskHandler<PrivatePayload> for NeverCalled {
@@ -308,8 +308,8 @@ mod tests {
     }
 
     impl Task for Labelled {
-        const TASK_TYPE: &'static str = "labelled";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "labelled";
+        const VERSION: i32 = 1;
         const LABELS: &'static [&'static str] = &["tenant"];
     }
 

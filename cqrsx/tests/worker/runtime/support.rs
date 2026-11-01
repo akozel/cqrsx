@@ -31,8 +31,8 @@ pub(crate) struct DummyTask {
 }
 
 impl Task for DummyTask {
-    const TASK_TYPE: &'static str = "dummy_task";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "dummy_task";
+    const VERSION: i32 = 1;
 }
 
 pub(crate) fn format() -> TaskFormat {
@@ -111,7 +111,7 @@ impl TaskQueue for Queue {
                 task_id: task.attempt().task_id(),
                 format: task.attempt().format().clone(),
                 attempt_number: task.attempt().number(),
-                cause: TaskFailureCause::PermanentRejection,
+                cause: TaskFailureCause::HandlerFailure,
             }),
         };
         self.outcomes.lock().unwrap().push((task.attempt().task_id(), outcome));
@@ -179,11 +179,11 @@ impl TaskAdapter for CountingAdapter {
 }
 
 pub(crate) fn with_deadline(task: &LeasedTask, deadline: tokio::time::Instant) -> LeasedTask {
-    let token = task.lease().lock_token();
+    let token = task.lease().token();
     LeasedTask::new(task.attempt().clone(), TaskLease::new(token, deadline))
 }
 use cqrsx::task::policy::Policies;
-use cqrsx::worker::runtime::worker_pool_config::TaskWorkerPoolConfig;
+use cqrsx::worker::runtime::worker_pool_config::{TaskWorkerPoolConfig, TaskWorkerPoolConfigBuilder};
 use tokio::task::Id;
 pub(super) async fn wait_until(condition: impl Fn() -> bool) {
     tokio::time::timeout(Duration::from_secs(5), async {
@@ -253,7 +253,21 @@ pub(super) fn io_dispatcher(probe: Arc<IoProbe>) -> TaskDispatcher<IoAdapter> {
     .unwrap()
 }
 pub(super) fn worker_config(c: usize, q: usize, poll: Duration) -> TaskWorkerPoolConfig {
-    TaskWorkerPoolConfig::try_new(c, q, poll, Duration::from_secs(30), Duration::from_secs(120)).unwrap()
+    worker_config_builder(c, q, poll).build().unwrap()
+}
+
+/// As [`worker_config`], with a claim for every freed slot (a refill percent of 100).
+pub(super) fn eager_worker_config(c: usize, q: usize, poll: Duration) -> TaskWorkerPoolConfig {
+    worker_config_builder(c, q, poll).buffer_refill_percent(100).build().unwrap()
+}
+
+fn worker_config_builder(c: usize, q: usize, poll: Duration) -> TaskWorkerPoolConfigBuilder {
+    TaskWorkerPoolConfig::builder()
+        .concurrency(c)
+        .buffer_capacity(q)
+        .poll_interval(poll)
+        .handler_timeout(Duration::from_secs(30))
+        .lease(Duration::from_secs(120))
 }
 
 pub(super) fn prepared_runtime<Q: TaskQueue + 'static, A: TaskAdapter + 'static>(

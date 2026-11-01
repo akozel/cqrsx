@@ -1,14 +1,12 @@
 use std::collections::HashMap;
 use {
-    cqrsx::command::{
-        CommandGatewayError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy,
-    },
+    cqrsx::command::{CommandError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
     cqrsx::domain::event::EventEnvelope,
     cqrsx::journal::EventStore,
-    cqrsx::journal::persisted::PersistedEventStore,
-    cqrsx::journal::repository::PersistedEventRepository,
+    cqrsx::journal::repository::EventRepository,
     cqrsx::journal::serialized_event::SerializedEvent,
-    cqrsx::memory::event_repository::MemEventRepository,
+    cqrsx::journal::store::JournalEventStore,
+    cqrsx::memory::event_repository::MemoryEventRepository,
 };
 
 mod snapshots {
@@ -20,7 +18,7 @@ mod snapshots {
         #[test]
         fn property_snapshot_histories_match_prefix_model(interval in 1usize..26, initial in 0usize..8, framework in any::<bool>(), batches in prop::collection::vec(prop::collection::vec(0i32..30,0..12),1..20)) {
             tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-                let repo=MemEventRepository::default();
+                let repo=MemoryEventRepository::default();
                 let mut model=vec![1;initial];
                 let seed:Vec<_>=model.iter().enumerate().map(|(i,v)|SerializedEvent::try_from(&EventEnvelope::<Ledger>{aggregate_id:"history".into(),sequence:i+1,payload:Delta(*v),metadata:HashMap::new()}).unwrap()).collect();
                 repo.persist::<Ledger>(&seed,None).await.unwrap();
@@ -31,19 +29,19 @@ mod snapshots {
                     let commits:Vec<Vec<i32>>=if framework { batch.iter().map(|v|vec![*v]).collect() } else { vec![batch] };
                     for batch in commits {
                         let before=model.len();
-                        let store=PersistedEventStore::<_,Ledger>::new(repo.clone()).with_snapshots(std::num::NonZeroUsize::new(interval).unwrap());
+                        let store=JournalEventStore::<_,Ledger>::new(repo.clone()).with_snapshots(std::num::NonZeroUsize::new(interval).unwrap());
                         if framework { StoreCommandExecutor::new(store,Services::default(),AggregateConflictRetryPolicy::default(),LockLimits::default()).execute(&"history".into(),Command::Adjust(batch[0])).await.unwrap(); }
                         else { let context=store.load_aggregate("history").await.unwrap(); store.commit(batch.iter().map(|v|Delta(*v)).collect(), context, HashMap::new(), &[]).await.unwrap(); }
                         model.extend(batch);
                         let boundaries:Vec<_>=(before+1..=model.len()).filter(|n|n%interval==0).collect();
                         if let Some(last)=boundaries.last() { watermark = *last;version+=1; }
                         let snapshot=repo.snapshot::<Ledger>("history").await.unwrap();
-                        if watermark==0 { assert!(snapshot.is_none()); } else { let snapshot=snapshot.unwrap(); assert_eq!(snapshot.aggregate,serde_json::json!({"history":&model[..watermark], "balance":model[..watermark].iter().map(|v|i64::from(*v)).sum::<i64>()})); assert_eq!(snapshot.last_sequence,watermark);assert_eq!(snapshot.snapshot_version,version); }
-                        let restored=PersistedEventStore::<_,Ledger>::new(repo.clone()).with_snapshots(std::num::NonZeroUsize::new(interval).unwrap()).load_aggregate("history").await.unwrap();
-                        let replay=PersistedEventStore::<_,Ledger>::new(repo.clone()).load_aggregate("history").await.unwrap();
+                        if watermark==0 { assert!(snapshot.is_none()); } else { let snapshot=snapshot.unwrap(); assert_eq!(snapshot.payload,serde_json::json!({"history":&model[..watermark], "balance":model[..watermark].iter().map(|v|i64::from(*v)).sum::<i64>()})); assert_eq!(snapshot.last_sequence,watermark);assert_eq!(snapshot.revision,version); }
+                        let restored=JournalEventStore::<_,Ledger>::new(repo.clone()).with_snapshots(std::num::NonZeroUsize::new(interval).unwrap()).load_aggregate("history").await.unwrap();
+                        let replay=JournalEventStore::<_,Ledger>::new(repo.clone()).load_aggregate("history").await.unwrap();
                         assert_eq!(restored.aggregate.history,model);assert_eq!(replay.aggregate.history,model);
                         assert_eq!(restored.aggregate.balance,model.iter().map(|v|i64::from(*v)).sum::<i64>());
-                        assert_eq!(restored.current_sequence,model.len());
+                        assert_eq!(restored.last_sequence,model.len());
                     }
                 }
             });
@@ -63,7 +61,7 @@ mod memory {
         ) {
             let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
             runtime.block_on(async {
-                let store = PersistedEventStore::<_, Ledger>::new(MemEventRepository::default());
+                let store = JournalEventStore::<_, Ledger>::new(MemoryEventRepository::default());
                 let framework = StoreCommandExecutor::new(store.clone(), Services::default(), AggregateConflictRetryPolicy::default(), LockLimits::default());
                 let mut balances = [0i64; 3];
                 let mut accepted: [Vec<i32>; 3] = Default::default();
@@ -78,13 +76,13 @@ mod memory {
                         result.unwrap(); balances[id] = candidate;
                         metadata_history[id].push(metadata);
                         accepted[id].push(delta);
-                    } else { assert!(matches!(result, Err(CommandGatewayError::Domain(Rejected)))); }
+                    } else { assert!(matches!(result, Err(CommandError::Rejected(Rejected)))); }
                     for other in 0..3 {
                         let other_key = format!("account-{other}");
                         let context = store.load_aggregate(&other_key).await.unwrap();
                         assert_eq!(context.aggregate.balance, balances[other]);
                         assert_eq!(context.aggregate.history, accepted[other]);
-                        assert_eq!(context.current_sequence, accepted[other].len());
+                        assert_eq!(context.last_sequence, accepted[other].len());
                         let envelopes = store.load_events(&other_key).await.unwrap();
                         for (i, envelope) in envelopes.iter().enumerate() {
                             assert_eq!(envelope.aggregate_id, other_key); assert_eq!(envelope.sequence, i+1);
@@ -104,8 +102,8 @@ mod upcasting {
     use crate::support::ledger::{Delta, Ledger};
     use std::num::NonZeroUsize;
 
-    async fn journal() -> MemEventRepository {
-        let repo = MemEventRepository::default();
+    async fn journal() -> MemoryEventRepository {
+        let repo = MemoryEventRepository::default();
         repo.persist::<Ledger>(&[old_delta("k", 1), delta("k", 2, 5)], None)
             .await
             .unwrap();
@@ -115,10 +113,10 @@ mod upcasting {
     #[tokio::test]
     async fn the_upcasters_of_a_store_reshape_old_events_on_load_in_the_aggregate_and_the_event_list() {
         let repo = journal().await;
-        let plain = PersistedEventStore::<_, Ledger>::new(repo.clone());
+        let plain = JournalEventStore::<_, Ledger>::new(repo.clone());
         assert!(plain.load_events("k").await.is_err(), "nobody reads the version-0 event");
 
-        let store = PersistedEventStore::<_, Ledger>::new(repo).with_upcasters(vec![Box::new(Heal)]);
+        let store = JournalEventStore::<_, Ledger>::new(repo).with_upcasters(vec![Box::new(Heal)]);
         let events = store.load_events("k").await.unwrap();
         assert_eq!(
             events
@@ -136,7 +134,7 @@ mod upcasting {
 
     #[tokio::test]
     async fn a_cloned_store_reads_the_same_journal_through_the_same_upcasters_and_keeps_its_policy() {
-        let store = PersistedEventStore::<_, Ledger>::new(journal().await)
+        let store = JournalEventStore::<_, Ledger>::new(journal().await)
             .with_snapshots(NonZeroUsize::new(3).unwrap())
             .with_upcasters(vec![Box::new(Heal)]);
         let clone = store.clone();

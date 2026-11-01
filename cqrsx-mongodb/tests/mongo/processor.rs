@@ -3,8 +3,8 @@
 use crate::support::{Balance, NAME, Node, Recording, caught_up, commit_all, key, mem_ledgers, until, views};
 use cqrsx::{
     journal::wakeup::CommitWakeup,
-    memory::event_repository::MemEventRepository,
-    projection::checkpoint::{CheckpointStore, RebuildRequest},
+    memory::event_repository::MemoryEventRepository,
+    projection::checkpoint::{CheckpointStore, RebuildReply},
     view::repository::ViewRepository,
 };
 use cqrsx_fixtures::mongo::Mongo;
@@ -13,7 +13,7 @@ use mongodb::bson::Document;
 use std::{sync::Arc, time::Duration};
 
 /// Commits `per_key` commands on every key through the in-memory journal.
-async fn commit(journal: &MemEventRepository, wakeup: &CommitWakeup, keys: &[&str], per_key: i32) {
+async fn commit(journal: &MemoryEventRepository, wakeup: &CommitWakeup, keys: &[&str], per_key: i32) {
     let executor = mem_ledgers(journal, wakeup);
     commit_all(keys, per_key, move |id, value| {
         let executor = executor.clone();
@@ -26,9 +26,9 @@ async fn commit(journal: &MemEventRepository, wakeup: &CommitWakeup, keys: &[&st
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forty_commands_over_five_ledgers_reach_the_mongo_views_in_order() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let (journal, observer, wakeup) = (
-        MemEventRepository::default(),
+        MemoryEventRepository::default(),
         Arc::new(Recording::default()),
         CommitWakeup::new(),
     );
@@ -37,7 +37,7 @@ async fn forty_commands_over_five_ledgers_reach_the_mongo_views_in_order() {
     commit(&journal, &wakeup, &keys, 8).await;
     let status = caught_up(&journal, &mongo.database, &keys).await;
     assert_eq!(
-        (status.applied, status.owner.as_deref(), status.failures),
+        (status.delivered, status.owner.as_deref(), status.failures),
         (40, Some("node-a"), 0)
     );
     for id in keys {
@@ -57,9 +57,9 @@ async fn forty_commands_over_five_ledgers_reach_the_mongo_views_in_order() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let (journal, observer, wakeup) = (
-        MemEventRepository::default(),
+        MemoryEventRepository::default(),
         Arc::new(Recording::default()),
         CommitWakeup::new(),
     );
@@ -70,7 +70,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     let store = MongoCheckpointStore::new(&mongo.database);
     assert_eq!(
         store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     commit(&journal, &wakeup, &keys, 4).await;
     let status = tokio::time::timeout(Duration::from_secs(30), async {
@@ -84,7 +84,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     })
     .await
     .expect("the rebuild finishes");
-    assert_eq!(status.applied, 40);
+    assert_eq!(status.delivered, 40);
     assert_eq!(
         (observer.count("rebuild:Started"), observer.count("rebuild:Finished")),
         (1, 1)
@@ -99,9 +99,9 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
 /// after them. The processor loses its row, registers it again and reads the journal from the start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wipe_of_both_collections_is_healed_by_a_full_self_rebuild() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let (journal, observer, wakeup) = (
-        MemEventRepository::default(),
+        MemoryEventRepository::default(),
         Arc::new(Recording::default()),
         CommitWakeup::new(),
     );
@@ -121,7 +121,7 @@ async fn a_wipe_of_both_collections_is_healed_by_a_full_self_rebuild() {
     commit(&journal, &wakeup, &keys, 1).await;
     let status = caught_up(&journal, &mongo.database, &keys).await;
     assert_eq!(
-        (status.applied, status.failures),
+        (status.delivered, status.failures),
         (12, 0),
         "the journal was read again from the start"
     );

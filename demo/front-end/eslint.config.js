@@ -8,6 +8,6 @@ export default defineConfigWithVueTs(
   pluginVue.configs['flat/essential'],
   vueTsConfigs.recommended,
   skipFormatting,
-  // PLAN.md §4 names the small UI primitives Toasts/Dice/Countdown/Tooltip; keep those names.
+  // The small UI primitives (Toasts, Dice, Countdown, Tooltip…) keep their one-word names (DESIGN.md §4.2).
   { name: 'app/ui-primitives', files: ['src/components/ui/*.vue'], rules: { 'vue/multi-word-component-names': 'off' } },
 )

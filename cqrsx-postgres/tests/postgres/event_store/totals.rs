@@ -1,12 +1,16 @@
 use super::*;
 use cqrsx::journal::feed::Position;
-use cqrsx_postgres::event_repository::LedgerTotals;
+use cqrsx_postgres::event_repository::JournalTotals;
 
 #[tokio::test]
 async fn totals_count_the_events_and_aggregates_of_one_type_only() {
     let db = Database::new().await;
     let repo = PostgresEventRepository::new(db.pool.clone());
-    assert_eq!(repo.totals::<Ledger>().await.unwrap(), LedgerTotals::default(), "empty table");
+    assert_eq!(
+        repo.totals::<Ledger>().await.unwrap(),
+        JournalTotals::default(),
+        "empty table"
+    );
 
     repo.persist::<Ledger>(&[event_for("a", 1, 1), event_for("a", 2, 2)], None)
         .await
@@ -25,7 +29,7 @@ async fn totals_count_the_events_and_aggregates_of_one_type_only() {
 
     assert_eq!(
         repo.totals::<Ledger>().await.unwrap(),
-        LedgerTotals {
+        JournalTotals {
             events: 3,
             aggregates: 2
         },
@@ -33,7 +37,7 @@ async fn totals_count_the_events_and_aggregates_of_one_type_only() {
     );
     assert_eq!(
         repo.totals::<OtherLedger>().await.unwrap(),
-        LedgerTotals {
+        JournalTotals {
             events: 1,
             aggregates: 1
         },
@@ -44,7 +48,7 @@ async fn totals_count_the_events_and_aggregates_of_one_type_only() {
     let missing = PostgresEventRepository::new(db.pool.clone()).with_tables("missing_events", "snapshots");
     assert!(matches!(
         missing.totals::<Ledger>().await,
-        Err(PersistenceError::UnknownError(_))
+        Err(PersistenceError::Unexpected(_))
     ));
     db.close().await;
 }
@@ -100,7 +104,7 @@ async fn count_after_counts_the_events_of_one_type_above_a_position_up_to_the_ca
         assert!(
             matches!(
                 repo.count_after::<Ledger>(Position::START, cap).await,
-                Err(PersistenceError::UnknownError(_))
+                Err(PersistenceError::Unexpected(_))
             ),
             "cap {cap}"
         );
@@ -108,7 +112,7 @@ async fn count_after_counts_the_events_of_one_type_above_a_position_up_to_the_ca
     let missing = PostgresEventRepository::new(db.pool.clone()).with_tables("missing_events", "snapshots");
     assert!(matches!(
         missing.count_after::<Ledger>(Position::START, 10).await,
-        Err(PersistenceError::UnknownError(_))
+        Err(PersistenceError::Unexpected(_))
     ));
     db.close().await;
 }

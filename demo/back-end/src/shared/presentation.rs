@@ -22,9 +22,9 @@ pub fn parse_fan_id(raw: &str) -> Result<FanId, ApiError> {
     FanId::parse(raw).map_err(|e| ApiError::invalid(e.to_string()))
 }
 
-/// A stored read model as the API returns it: `{ <id_field>, version, view }`.
+/// A stored read model as the API returns it: `{ <id_field>, revision, view }`.
 pub fn stored_document<V: Serialize>(stored: StoredView<V>, id_field: &str) -> Value {
-    json!({ id_field: stored.id, "version": stored.version, "view": stored.view })
+    json!({ id_field: stored.id, "revision": stored.revision, "view": stored.view })
 }
 
 /// The dependency of type `T` a module provided, or `503 unavailable` when the engine has none.

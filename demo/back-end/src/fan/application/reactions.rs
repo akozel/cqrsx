@@ -12,8 +12,8 @@ use cqrsx::reactions::{Decided, Reactions, Then};
 impl Reactions for Fan {
     fn react(decided: &Decided<'_, Self>, then: &mut Then) {
         match decided.event {
-            FanEvent::TicketRecorded(recorded) => then.task(SendETicketV1::of(decided.id, recorded)),
-            FanEvent::TicketCancelled(cancelled) => then.task(IssueRefundV1::of(decided.id, cancelled)),
+            FanEvent::TicketRecorded(recorded) => then.task(SendETicketV1::of(decided.aggregate_id, recorded)),
+            FanEvent::TicketCancelled(cancelled) => then.task(IssueRefundV1::of(decided.aggregate_id, cancelled)),
         }
     }
 }
@@ -43,7 +43,7 @@ mod tests {
     #[test]
     fn a_ticket_in_the_ledger_plans_its_e_ticket_for_the_ledgers_fan() {
         let booking_id = Uuid::from_u128(1);
-        let tasks = plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &[recorded(booking_id)]).unwrap();
+        let tasks = plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &recorded(booking_id)).unwrap();
         let [task] = &tasks[..] else {
             panic!("one e-ticket per recorded ticket: {tasks:?}");
         };
@@ -65,7 +65,7 @@ mod tests {
             seat: SeatId::parse("B4").unwrap(),
             refund: 80,
         });
-        let tasks = plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &[cancelled]).unwrap();
+        let tasks = plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &cancelled).unwrap();
         assert_eq!(
             tasks.iter().map(|task| task.payload().clone()).collect::<Vec<_>>(),
             [
@@ -79,7 +79,7 @@ mod tests {
     fn every_reacting_fact_plans_one_task_through_the_aggregates_planner() {
         let fan = reactions();
         assert_eq!(
-            formats(&plan::<Fan, _>(&fan, &ledger(), &fan_command(), &[recorded(Uuid::nil())]).unwrap()),
+            formats(&plan::<Fan, _>(&fan, &ledger(), &fan_command(), &recorded(Uuid::nil())).unwrap()),
             ["encore_send_e_ticket v1"]
         );
     }
@@ -97,11 +97,11 @@ mod tests {
             refund: 80,
         });
         assert_eq!(
-            formats(&plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &[ticket_cancelled]).unwrap()),
+            formats(&plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &ticket_cancelled).unwrap()),
             ["encore_issue_refund v1"]
         );
         assert_eq!(
-            formats(&plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &[recorded(Uuid::nil())]).unwrap()),
+            formats(&plan::<Fan, _>(&reactions(), &ledger(), &fan_command(), &recorded(Uuid::nil())).unwrap()),
             ["encore_send_e_ticket v1"]
         );
     }
@@ -118,8 +118,10 @@ mod tests {
                 domain::{ConcertId, FanId, FanLedgerId},
             },
         };
-        use cqrsx::command::{CommandExecutor, CommandGatewayError, metadata::CommandMetadata};
-        use cqrsx_testing::{command_executor::TestCommandExecutor, mem_store::MemStore, unavailable_store::UnavailableStore};
+        use cqrsx::command::{CommandError, CommandExecutor, metadata::CommandMetadata};
+        use cqrsx_testing::{
+            command_executor::TestCommandExecutor, memory_store::MemoryStore, unavailable_store::UnavailableStore,
+        };
         use std::sync::Arc;
         use uuid::Uuid;
 
@@ -141,7 +143,7 @@ mod tests {
             let executed = fans
                 .execute_with_metadata(&ledger, command, CommandMetadata::root("ui").to_map())
                 .await;
-            assert_eq!(executed, Err(CommandGatewayError::Unavailable));
+            assert_eq!(executed, Err(CommandError::Unavailable));
             let (entries, _) = activity.subscribe();
             assert_eq!(entries.len(), 1);
             assert_eq!(
@@ -154,7 +156,7 @@ mod tests {
         #[tokio::test]
         async fn every_ledger_command_is_logged_with_its_type_and_the_ledgers_fan() {
             let activity = Arc::new(ActivityHub::new(8, 8));
-            let fans = TestCommandExecutor::<Fan>::configured(MemStore::default(), (), |executor| {
+            let fans = TestCommandExecutor::<Fan>::configured(MemoryStore::default(), (), |executor| {
                 executor.with_observer(crate::testing::command_feed(&activity))
             });
             fans.execute_with_metadata(&ledger(), fan_command(), CommandMetadata::root("ui").to_map())

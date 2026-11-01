@@ -1,13 +1,13 @@
 use super::*;
 use cqrsx::command::{
-    CommandExecutor, CommandGatewayError,
+    CommandError, CommandExecutor,
     causation::Causation,
     observer::{CommandObserver, CommandReport, Outcome},
     planner::{Decision, TaskPlanError, TaskPlanner},
     retry::AggregateConflictRetryPolicy,
 };
 use cqrsx::journal::EventStore;
-use cqrsx::journal::persisted::PersistedEventStore;
+use cqrsx::journal::store::JournalEventStore;
 use thiserror::Error;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -45,7 +45,7 @@ impl Aggregate for CommandAggregate {
     type Id = String;
     type Command = Command;
     type Event = CommandEvent;
-    type Error = Rejected;
+    type Rejection = Rejected;
     type Rules = ();
 
     fn apply(&mut self, event: CommandEvent) {
@@ -79,7 +79,7 @@ struct LastValue;
 
 impl TaskPlanner<CommandAggregate> for LastValue {
     fn plan(&self, decision: &Decision<'_, CommandAggregate>) -> Result<Vec<NewTask>, TaskPlanError> {
-        let Some(value) = decision.after.values.last() else {
+        let Some(value) = decision.state.values.last() else {
             return Ok(Vec::new());
         };
         Ok(vec![NewTask::try_new(DummyTaskV1 { value: value.clone() })?])
@@ -129,7 +129,7 @@ async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_
                 assert_eq!(report.tasks.len(), 1);
                 assert!(winner.replace(value).is_none());
             }
-            Err(CommandGatewayError::Domain(Rejected)) => rejected += 1,
+            Err(CommandError::Rejected(Rejected)) => rejected += 1,
             other => panic!("unexpected command result: {other:?}"),
         }
     }
@@ -141,7 +141,7 @@ async fn a_conflicting_command_reloads_the_winner_before_deciding_and_publishes_
     assert_eq!(events[0].payload, json!({"Recorded": {"values": [winner]}}));
     let snapshot = repository.snapshot::<CommandAggregate>("contended").await.unwrap().unwrap();
     assert_eq!(snapshot.last_sequence, 1);
-    assert_eq!(snapshot.aggregate, json!({"values": [winner]}));
+    assert_eq!(snapshot.payload, json!({"values": [winner]}));
     let published: Vec<Uuid> = sqlx::query_scalar("SELECT id FROM transactional_outbox")
         .fetch_all(&db.pool)
         .await
@@ -195,7 +195,7 @@ async fn planned_work_publishes_atomically_and_rejections_write_nothing() {
 
     assert_eq!(
         executor.execute(&"rejected".into(), Command::Reject).await,
-        Err(CommandGatewayError::Domain(Rejected))
+        Err(CommandError::Rejected(Rejected))
     );
     assert!(repository.events::<CommandAggregate>("rejected").await.unwrap().is_empty());
     assert!(repository.snapshot::<CommandAggregate>("rejected").await.unwrap().is_none());
@@ -224,7 +224,7 @@ type Heard = (String, HashMap<String, String>, Result<Vec<(Uuid, Value)>, String
 struct Reports(std::sync::Mutex<Vec<Heard>>);
 
 impl CommandObserver<CommandAggregate> for Reports {
-    fn command(&self, report: &CommandReport<'_, CommandAggregate>) {
+    fn observe(&self, report: &CommandReport<'_, CommandAggregate>) {
         let outcome = match report.outcome {
             Outcome::Accepted { tasks } => Ok(tasks.iter().map(|task| (task.id(), task.payload().clone())).collect()),
             Outcome::Rejected(error) => Err(format!("rejected: {error}")),
@@ -250,7 +250,7 @@ async fn the_observer_reports_the_metadata_and_the_tasks_the_commit_stored() {
         .unwrap();
     assert_eq!(
         executor.execute(&"observed".into(), Command::Reject).await,
-        Err(CommandGatewayError::Domain(Rejected))
+        Err(CommandError::Rejected(Rejected))
     );
     let events = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
         .events::<CommandAggregate>("observed")
@@ -290,7 +290,7 @@ async fn command_metadata_is_stored_with_the_event_and_defaults_to_an_empty_obje
         executor
             .execute_with_metadata(&"metadata".into(), Command::Reject, metadata.clone())
             .await,
-        Err(CommandGatewayError::Domain(Rejected))
+        Err(CommandError::Rejected(Rejected))
     );
     let repository = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     let events = repository.events::<CommandAggregate>("metadata").await.unwrap();
@@ -348,13 +348,12 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     executor.execute(&"snapshot".into(), record("second", 1)).await.unwrap();
     let snapshot = repository.snapshot::<CommandAggregate>("snapshot").await.unwrap().unwrap();
     assert_eq!(snapshot.last_sequence, 2);
-    assert_eq!(snapshot.aggregate, json!({"values": ["first", "second"]}));
+    assert_eq!(snapshot.payload, json!({"values": ["first", "second"]}));
     // The third and fourth calls require state from the snapshot, then its tail.
     executor.execute(&"snapshot".into(), record("third", 2)).await.unwrap();
-    let store =
-        PersistedEventStore::<_, CommandAggregate>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
+    let store = JournalEventStore::<_, CommandAggregate>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
     let context = store.load_aggregate("snapshot").await.unwrap();
-    assert_eq!(context.current_sequence, 3);
+    assert_eq!(context.last_sequence, 3);
     assert_eq!(context.aggregate.values, vec!["first", "second", "third"]);
     executor.execute(&"snapshot".into(), record("fourth", 3)).await.unwrap();
     let snapshot = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
@@ -363,7 +362,7 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
         .unwrap()
         .unwrap();
     assert_eq!(snapshot.last_sequence, 4);
-    assert_eq!(snapshot.aggregate, json!({"values": ["first", "second", "third", "fourth"]}));
+    assert_eq!(snapshot.payload, json!({"values": ["first", "second", "third", "fourth"]}));
     db.close().await;
 }
 
@@ -377,7 +376,7 @@ async fn the_constructor_needs_no_connection_and_closed_pool_errors_remain_unava
     pool.close().await;
     assert_eq!(
         executor.execute(&"unused".into(), record("value", 0)).await,
-        Err(CommandGatewayError::Unavailable)
+        Err(CommandError::Unavailable)
     );
 }
 
@@ -395,7 +394,7 @@ impl Aggregate for CappedAggregate {
     type Id = String;
     type Command = String;
     type Event = CommandEvent;
-    type Error = Rejected;
+    type Rejection = Rejected;
     type Rules = Cap;
 
     fn apply(&mut self, event: CommandEvent) {
@@ -428,7 +427,7 @@ async fn rules_decide_and_the_metadata_is_stored_with_every_event() {
     }
     assert_eq!(
         CommandExecutor::execute(&executor, &"capped".into(), "third".into()).await,
-        Err(CommandGatewayError::Domain(Rejected)),
+        Err(CommandError::Rejected(Rejected)),
         "the cap from the rules rejects the third value"
     );
     CommandExecutor::execute(&executor, &"other".into(), "first".into())
@@ -488,7 +487,7 @@ async fn two_executors_with_their_own_locks_meet_only_in_the_database() {
     while let Some(result) = commands.join_next().await {
         match result.unwrap() {
             Ok(_) => accepted += 1,
-            Err(CommandGatewayError::Conflict) => {}
+            Err(CommandError::Conflict) => {}
             other => panic!("unexpected result {other:?}"),
         }
     }
@@ -539,7 +538,7 @@ impl Aggregate for Counted {
     type Id = String;
     type Command = String;
     type Event = Counted1;
-    type Error = std::convert::Infallible;
+    type Rejection = std::convert::Infallible;
     type Rules = Counter;
 
     fn apply(&mut self, event: Counted1) {
@@ -559,11 +558,8 @@ struct CountedTasks;
 
 impl TaskPlanner<Counted> for CountedTasks {
     fn plan(&self, decision: &Decision<'_, Counted>) -> Result<Vec<NewTask>, TaskPlanError> {
-        let mut tasks = Vec::new();
-        for Counted1(value) in decision.events {
-            tasks.push(NewTask::try_new(DummyTaskV1 { value: value.clone() })?);
-        }
-        Ok(tasks)
+        let Counted1(value) = decision.event;
+        Ok(vec![NewTask::try_new(DummyTaskV1 { value: value.clone() })?])
     }
 }
 
@@ -582,7 +578,7 @@ async fn rules_that_are_not_clone_serve_the_executor_which_commits_event_snapsho
     let events = repository.events::<Counted>("core").await.unwrap();
     assert_eq!(events.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1]);
     let snapshot = repository.snapshot::<Counted>("core").await.unwrap().unwrap();
-    assert_eq!((snapshot.aggregate, snapshot.last_sequence), (json!(["accepted"]), 1));
+    assert_eq!((snapshot.payload, snapshot.last_sequence), (json!(["accepted"]), 1));
     let id = causation.task_id(Counted::TYPE, "core", &format(), 0);
     assert_eq!(report.tasks[0].id(), id);
     let saved = row(&db.pool, id).await;
@@ -594,7 +590,7 @@ async fn rules_that_are_not_clone_serve_the_executor_which_commits_event_snapsho
 mod contracts {
     use crate::support::ledger::{Delta, Ledger, Rejected, event_for};
     struct CommitBoundary {
-        inner: PersistedEventStore<PostgresEventRepository, Ledger>,
+        inner: JournalEventStore<PostgresEventRepository, Ledger>,
         pool: PgPool,
         mode: u8,
         loads: Arc<AtomicUsize>,
@@ -602,7 +598,7 @@ mod contracts {
         durable: Arc<tokio::sync::Notify>,
     }
     impl EventStore<Ledger> for CommitBoundary {
-        type Context = cqrsx::journal::persisted::EventStoreAggregateContext<Ledger>;
+        type Context = cqrsx::journal::store::EventStoreAggregateContext<Ledger>;
         async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
             self.inner.load_events(id).await
         }
@@ -620,13 +616,13 @@ mod contracts {
             let attempt = self.commits.fetch_add(1, Ordering::SeqCst);
             if self.mode == 0 && attempt == 0 {
                 PostgresEventRepository::new(self.pool.clone())
-                    .persist::<Ledger>(&[event_for(&context.aggregate_id, context.current_sequence + 1, -7)], None)
+                    .persist::<Ledger>(&[event_for(&context.aggregate_id, context.last_sequence + 1, -7)], None)
                     .await
                     .unwrap();
             }
             let result = self.inner.commit(events, context, metadata, tasks).await?;
             if self.mode == 1 {
-                return Err(cqrsx::journal::PersistenceError::ConnectionError(
+                return Err(cqrsx::journal::PersistenceError::Connection(
                     "response lost after real commit".into(),
                 ));
             }
@@ -651,15 +647,15 @@ mod contracts {
         let before = database_state(&db.pool).await;
         assert!(matches!(
             repo.persist::<Ledger>(&[event_for("b", 1, 2)], None).await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
         assert_eq!(database_state(&db.pool).await, before);
-        use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor};
+        use cqrsx::command::{CommandError, executor::StoreCommandExecutor};
         let loads = Arc::new(AtomicUsize::new(0));
         let commits = Arc::new(AtomicUsize::new(0));
         let executor = StoreCommandExecutor::new(
             CommitBoundary {
-                inner: PersistedEventStore::new(PostgresEventRepository::new(db.pool.clone())),
+                inner: JournalEventStore::new(PostgresEventRepository::new(db.pool.clone())),
                 pool: db.pool.clone(),
                 mode: 3,
                 loads: loads.clone(),
@@ -672,7 +668,7 @@ mod contracts {
         );
         assert!(matches!(
             executor.execute(&"command".into(), 2).await,
-            Err(CommandGatewayError::Unavailable)
+            Err(CommandError::Unavailable)
         ));
         assert_eq!(loads.load(Ordering::SeqCst), 1);
         assert_eq!(commits.load(Ordering::SeqCst), 1);
@@ -682,7 +678,7 @@ mod contracts {
 
     #[tokio::test]
     async fn command_retry_rechecks_balance_and_unknown_or_cancelled_response_keeps_durable_commit() {
-        use cqrsx::command::{CommandGatewayError, executor::StoreCommandExecutor, retry::AggregateConflictRetryPolicy};
+        use cqrsx::command::{CommandError, executor::StoreCommandExecutor, retry::AggregateConflictRetryPolicy};
         let db = Database::new().await;
         for mode in 0..3 {
             let id = format!("boundary-{mode}");
@@ -696,7 +692,7 @@ mod contracts {
             let durable = Arc::new(tokio::sync::Notify::new());
             let executor = StoreCommandExecutor::new(
                 CommitBoundary {
-                    inner: PersistedEventStore::new(PostgresEventRepository::new(pool.clone())),
+                    inner: JournalEventStore::new(PostgresEventRepository::new(pool.clone())),
                     pool: pool.clone(),
                     mode,
                     loads: loads.clone(),
@@ -724,16 +720,16 @@ mod contracts {
             } else {
                 let result = executor.execute(&id, if mode == 0 { -7 } else { 10 }).await;
                 if mode == 0 {
-                    assert!(matches!(result, Err(CommandGatewayError::Domain(Rejected))));
+                    assert!(matches!(result, Err(CommandError::Rejected(Rejected))));
                 } else {
-                    assert!(matches!(result, Err(CommandGatewayError::Unavailable)));
+                    assert!(matches!(result, Err(CommandError::Unavailable)));
                 }
             }
             assert_eq!(loads.load(Ordering::SeqCst), if mode == 0 { 2 } else { 1 });
             assert_eq!(commits.load(Ordering::SeqCst), 1);
-            let context = PersistedEventStore::<_, Ledger>::new(repo).load_aggregate(&id).await.unwrap();
+            let context = JournalEventStore::<_, Ledger>::new(repo).load_aggregate(&id).await.unwrap();
             assert_eq!(context.aggregate.0, if mode == 0 { vec![10, -7] } else { vec![10] });
-            assert_eq!(context.current_sequence, if mode == 0 { 2 } else { 1 });
+            assert_eq!(context.last_sequence, if mode == 0 { 2 } else { 1 });
         }
         db.close().await;
     }

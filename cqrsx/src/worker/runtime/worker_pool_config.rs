@@ -7,9 +7,9 @@ use thiserror::Error;
 const MAX_BUFFER_CAPACITY: usize = usize::MAX >> 3;
 const DEFAULT_CONCURRENCY: u64 = 128;
 const DEFAULT_BUFFER_CAPACITY: u64 = 128;
-const DEFAULT_POLL_INTERVAL_MS: u64 = 1_000;
-const DEFAULT_HANDLER_TIMEOUT_SECS: u64 = 15;
-const DEFAULT_LEASE_SECS: u64 = 60;
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1_000);
+const DEFAULT_HANDLER_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_LEASE: Duration = Duration::from_secs(60);
 // A claim once fewer than a quarter of the buffer waits: chosen by measurement (ticket 04/19).
 const DEFAULT_BUFFER_REFILL_PERCENT: u64 = 25;
 
@@ -22,89 +22,154 @@ pub struct TaskWorkerPoolConfig {
     buffer_capacity: usize,
     poll_interval: Duration,
     handler_timeout: Duration,
-    lease_duration: Duration,
+    lease: Duration,
     buffer_refill_percent: u8,
 }
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
 pub enum TaskWorkerPoolConfigError {
     #[error("invalid integer setting: {0}")]
-    InvalidEnvironmentValue(&'static str),
+    NotAnInteger(&'static str),
     #[error("worker count must be positive")]
-    InvalidConcurrency,
-    #[error("buffer capacity must be positive and supported by the bounded channel")]
-    InvalidBufferCapacity,
-    #[error("buffer refill percent must be between 1 and 100")]
-    InvalidBufferRefillPercent,
-    #[error("poll interval must be positive and representable")]
-    InvalidPollInterval,
-    #[error("handler timeout must be positive and shorter than the lease")]
-    InvalidHandlerTimeout,
-    #[error("lease duration must be positive and representable")]
-    InvalidLeaseDuration,
+    ZeroConcurrency,
+    #[error("buffer capacity must be positive")]
+    ZeroBufferCapacity,
+    #[error("buffer capacity must not exceed {max}, the bound of the channel")]
+    BufferCapacityTooLarge { max: usize },
+    #[error("buffer refill percent must be at least 1")]
+    ZeroBufferRefillPercent,
+    #[error("buffer refill percent must be at most 100")]
+    BufferRefillPercentTooLarge,
+    #[error("poll interval must be positive")]
+    ZeroPollInterval,
+    #[error("poll interval is too long to represent")]
+    PollIntervalTooLong,
+    #[error("handler timeout must be positive")]
+    ZeroHandlerTimeout,
+    #[error("handler timeout must be shorter than the lease")]
+    HandlerTimeoutTooLong,
+    #[error("lease duration must be positive")]
+    ZeroLease,
+    #[error("lease duration is too long to represent")]
+    LeaseTooLong,
     #[error("storage timeout must be positive")]
-    InvalidStorageTimeout,
+    ZeroStorageTimeout,
     #[error("lease budget overflows")]
     LeaseBudgetOverflow,
     #[error("lease must exceed claim + queued waves + handler + settlement + 5-second safety margin")]
     LeaseTooShort,
 }
 impl Default for TaskWorkerPoolConfig {
-    /// The defaults above, valid as [`try_new`](Self::try_new) checks them (a test does).
+    /// The defaults above, valid as [`build`](TaskWorkerPoolConfigBuilder::build) checks them (a test does).
     fn default() -> Self {
         Self {
             concurrency: DEFAULT_CONCURRENCY as usize,
             buffer_capacity: DEFAULT_BUFFER_CAPACITY as usize,
-            poll_interval: Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
-            handler_timeout: Duration::from_secs(DEFAULT_HANDLER_TIMEOUT_SECS),
-            lease_duration: Duration::from_secs(DEFAULT_LEASE_SECS),
+            poll_interval: DEFAULT_POLL_INTERVAL,
+            handler_timeout: DEFAULT_HANDLER_TIMEOUT,
+            lease: DEFAULT_LEASE,
             buffer_refill_percent: DEFAULT_BUFFER_REFILL_PERCENT as u8,
         }
     }
 }
-impl TaskWorkerPoolConfig {
-    /// Construct explicit limits with the default refill percent. Both concurrency and buffer
-    /// capacity must be positive. Validate the full lease separately with
-    /// [`Self::validate_for_storage_timeout`].
-    pub fn try_new(
-        concurrency: usize,
-        buffer_capacity: usize,
-        poll_interval: Duration,
-        handler_timeout: Duration,
-        lease_duration: Duration,
-    ) -> Result<Self, TaskWorkerPoolConfigError> {
-        if concurrency == 0 {
-            return Err(TaskWorkerPoolConfigError::InvalidConcurrency);
-        }
-        if buffer_capacity == 0 || buffer_capacity > MAX_BUFFER_CAPACITY {
-            return Err(TaskWorkerPoolConfigError::InvalidBufferCapacity);
-        }
-        if poll_interval.is_zero() || poll_interval.as_millis() > i64::MAX as u128 {
-            return Err(TaskWorkerPoolConfigError::InvalidPollInterval);
-        }
-        if lease_duration.is_zero() || lease_duration.as_millis() > i64::MAX as u128 {
-            return Err(TaskWorkerPoolConfigError::InvalidLeaseDuration);
-        }
-        if handler_timeout.is_zero() || handler_timeout >= lease_duration {
-            return Err(TaskWorkerPoolConfigError::InvalidHandlerTimeout);
-        }
-        Ok(Self {
-            concurrency,
-            buffer_capacity,
-            poll_interval,
-            handler_timeout,
-            lease_duration,
-            buffer_refill_percent: DEFAULT_BUFFER_REFILL_PERCENT as u8,
-        })
+
+/// The builder of [`TaskWorkerPoolConfig`]: every limit starts at its default, [`build`](Self::build) checks them
+/// together. The full lease is validated separately with [`TaskWorkerPoolConfig::validate_for_storage_timeout`].
+#[derive(Clone, Debug, Default)]
+pub struct TaskWorkerPoolConfigBuilder {
+    config: TaskWorkerPoolConfig,
+}
+
+impl TaskWorkerPoolConfigBuilder {
+    /// Permanent Tokio workers; positive.
+    #[must_use]
+    pub fn concurrency(mut self, concurrency: usize) -> Self {
+        self.config.concurrency = concurrency;
+        self
     }
+
+    /// Claimed deliveries waiting locally; positive, at most what the bounded channel supports.
+    #[must_use]
+    pub fn buffer_capacity(mut self, buffer_capacity: usize) -> Self {
+        self.config.buffer_capacity = buffer_capacity;
+        self
+    }
+
+    /// The pause between claims of an idle producer; positive and representable in milliseconds.
+    #[must_use]
+    pub fn poll_interval(mut self, poll_interval: Duration) -> Self {
+        self.config.poll_interval = poll_interval;
+        self
+    }
+
+    /// The time a handler gets; positive and shorter than the lease.
+    #[must_use]
+    pub fn handler_timeout(mut self, handler_timeout: Duration) -> Self {
+        self.config.handler_timeout = handler_timeout;
+        self
+    }
+
+    /// How long a claim lasts; positive and representable in milliseconds.
+    #[must_use]
+    pub fn lease(mut self, lease: Duration) -> Self {
+        self.config.lease = lease;
+        self
+    }
+
     /// The producer claims only once fewer deliveries than this share of the buffer wait, and then
     /// fills the buffer: one claim per refill instead of one per freed slot. 100 claims for every
     /// freed slot. Between 1 and 100.
-    pub fn with_buffer_refill_percent(mut self, percent: u8) -> Result<Self, TaskWorkerPoolConfigError> {
-        if percent == 0 || percent > 100 {
-            return Err(TaskWorkerPoolConfigError::InvalidBufferRefillPercent);
+    #[must_use]
+    pub fn buffer_refill_percent(mut self, percent: u8) -> Self {
+        self.config.buffer_refill_percent = percent;
+        self
+    }
+
+    /// The limits, or the first one that is refused.
+    pub fn build(self) -> Result<TaskWorkerPoolConfig, TaskWorkerPoolConfigError> {
+        let config = self.config;
+        if config.concurrency == 0 {
+            return Err(TaskWorkerPoolConfigError::ZeroConcurrency);
         }
-        self.buffer_refill_percent = percent;
-        Ok(self)
+        if config.buffer_capacity == 0 {
+            return Err(TaskWorkerPoolConfigError::ZeroBufferCapacity);
+        }
+        if config.buffer_capacity > MAX_BUFFER_CAPACITY {
+            return Err(TaskWorkerPoolConfigError::BufferCapacityTooLarge {
+                max: MAX_BUFFER_CAPACITY,
+            });
+        }
+        if config.poll_interval.is_zero() {
+            return Err(TaskWorkerPoolConfigError::ZeroPollInterval);
+        }
+        if config.poll_interval.as_millis() > i64::MAX as u128 {
+            return Err(TaskWorkerPoolConfigError::PollIntervalTooLong);
+        }
+        if config.lease.is_zero() {
+            return Err(TaskWorkerPoolConfigError::ZeroLease);
+        }
+        if config.lease.as_millis() > i64::MAX as u128 {
+            return Err(TaskWorkerPoolConfigError::LeaseTooLong);
+        }
+        if config.handler_timeout.is_zero() {
+            return Err(TaskWorkerPoolConfigError::ZeroHandlerTimeout);
+        }
+        if config.handler_timeout >= config.lease {
+            return Err(TaskWorkerPoolConfigError::HandlerTimeoutTooLong);
+        }
+        if config.buffer_refill_percent == 0 {
+            return Err(TaskWorkerPoolConfigError::ZeroBufferRefillPercent);
+        }
+        if config.buffer_refill_percent > 100 {
+            return Err(TaskWorkerPoolConfigError::BufferRefillPercentTooLarge);
+        }
+        Ok(config)
+    }
+}
+
+impl TaskWorkerPoolConfig {
+    /// A builder of explicit limits; every limit it does not set keeps its default.
+    pub fn builder() -> TaskWorkerPoolConfigBuilder {
+        TaskWorkerPoolConfigBuilder::default()
     }
     /// Permanent Tokio workers; each executes one delivery including settlement.
     pub fn concurrency(&self) -> usize {
@@ -120,8 +185,8 @@ impl TaskWorkerPoolConfig {
     pub fn handler_timeout(&self) -> Duration {
         self.handler_timeout
     }
-    pub fn lease_duration(&self) -> Duration {
-        self.lease_duration
+    pub fn lease(&self) -> Duration {
+        self.lease
     }
     pub fn buffer_refill_percent(&self) -> u8 {
         self.buffer_refill_percent
@@ -137,33 +202,44 @@ impl TaskWorkerPoolConfig {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
     /// The limits from the variables, each an unsigned integer with its default: `OUTBOX_WORKER_CONCURRENCY` (128),
-    /// `OUTBOX_QUEUE_CAPACITY` (128), `OUTBOX_POLL_INTERVAL_MS` (1 000), `OUTBOX_HANDLER_TIMEOUT_SECS` (15),
-    /// `OUTBOX_LEASE_SECS` (60), `OUTBOX_QUEUE_REFILL_PERCENT` (25). A missing variable takes its default, one that is
-    /// not an unsigned integer is `InvalidEnvironmentValue` with its name; the values are then checked as
-    /// [`try_new`](Self::try_new) and [`with_buffer_refill_percent`](Self::with_buffer_refill_percent) check them.
+    /// `OUTBOX_BUFFER_CAPACITY` (128), `OUTBOX_POLL_MS` (1 000), `OUTBOX_HANDLER_TIMEOUT_MS` (15 000),
+    /// `OUTBOX_LEASE_MS` (60 000), `OUTBOX_BUFFER_REFILL_PERCENT` (25). A missing variable takes its default, one that is
+    /// not an unsigned integer is `NotAnInteger` with its name; the values are then checked as
+    /// [`build`](TaskWorkerPoolConfigBuilder::build) checks them.
     /// The lease against the storage timeout is checked by [`TaskRuntimeConfig`](super::config::TaskRuntimeConfig).
     pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Result<Self, TaskWorkerPoolConfigError> {
         let mut read_u64 = |name, default| {
-            crate::env::read_u64(&mut lookup, name, default).map_err(|_| TaskWorkerPoolConfigError::InvalidEnvironmentValue(name))
+            crate::env::read_u64(&mut lookup, name, default).map_err(|_| TaskWorkerPoolConfigError::NotAnInteger(name))
         };
-        let config = Self::try_new(
-            usize::try_from(read_u64("OUTBOX_WORKER_CONCURRENCY", DEFAULT_CONCURRENCY)?)
-                .map_err(|_| TaskWorkerPoolConfigError::InvalidConcurrency)?,
-            usize::try_from(read_u64("OUTBOX_QUEUE_CAPACITY", DEFAULT_BUFFER_CAPACITY)?)
-                .map_err(|_| TaskWorkerPoolConfigError::InvalidBufferCapacity)?,
-            Duration::from_millis(read_u64("OUTBOX_POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL_MS)?),
-            Duration::from_secs(read_u64("OUTBOX_HANDLER_TIMEOUT_SECS", DEFAULT_HANDLER_TIMEOUT_SECS)?),
-            Duration::from_secs(read_u64("OUTBOX_LEASE_SECS", DEFAULT_LEASE_SECS)?),
-        )?;
-        let refill = read_u64("OUTBOX_QUEUE_REFILL_PERCENT", DEFAULT_BUFFER_REFILL_PERCENT)?;
-        config
-            .with_buffer_refill_percent(u8::try_from(refill).map_err(|_| TaskWorkerPoolConfigError::InvalidBufferRefillPercent)?)
+        let concurrency = usize::try_from(read_u64("OUTBOX_WORKER_CONCURRENCY", DEFAULT_CONCURRENCY)?)
+            .map_err(|_| TaskWorkerPoolConfigError::NotAnInteger("OUTBOX_WORKER_CONCURRENCY"))?;
+        let buffer_capacity = usize::try_from(read_u64("OUTBOX_BUFFER_CAPACITY", DEFAULT_BUFFER_CAPACITY)?).map_err(|_| {
+            TaskWorkerPoolConfigError::BufferCapacityTooLarge {
+                max: MAX_BUFFER_CAPACITY,
+            }
+        })?;
+        let poll_interval = Duration::from_millis(read_u64("OUTBOX_POLL_MS", DEFAULT_POLL_INTERVAL.as_millis() as u64)?);
+        let handler_timeout = Duration::from_millis(read_u64(
+            "OUTBOX_HANDLER_TIMEOUT_MS",
+            DEFAULT_HANDLER_TIMEOUT.as_millis() as u64,
+        )?);
+        let lease = Duration::from_millis(read_u64("OUTBOX_LEASE_MS", DEFAULT_LEASE.as_millis() as u64)?);
+        let refill = u8::try_from(read_u64("OUTBOX_BUFFER_REFILL_PERCENT", DEFAULT_BUFFER_REFILL_PERCENT)?)
+            .map_err(|_| TaskWorkerPoolConfigError::BufferRefillPercentTooLarge)?;
+        Self::builder()
+            .concurrency(concurrency)
+            .buffer_capacity(buffer_capacity)
+            .poll_interval(poll_interval)
+            .handler_timeout(handler_timeout)
+            .lease(lease)
+            .buffer_refill_percent(refill)
+            .build()
     }
     /// Conservative healthy-pool budget: lease > 2*S + H + margin + ceil(Q/C)*(H+S).
     /// Queue time consumes the original lease; per-delivery deadline checks remain mandatory.
     pub fn validate_for_storage_timeout(&self, storage_timeout: Duration) -> Result<(), TaskWorkerPoolConfigError> {
         if storage_timeout.is_zero() {
-            return Err(TaskWorkerPoolConfigError::InvalidStorageTimeout);
+            return Err(TaskWorkerPoolConfigError::ZeroStorageTimeout);
         }
         let waves = self.buffer_capacity.div_ceil(self.concurrency);
         let invocation = self
@@ -183,7 +259,7 @@ impl TaskWorkerPoolConfig {
             .and_then(|budget| budget.checked_add(LEASE_SAFETY_MARGIN))
             .and_then(|budget| budget.checked_add(queued))
             .ok_or(TaskWorkerPoolConfigError::LeaseBudgetOverflow)?;
-        if self.lease_duration <= required {
+        if self.lease <= required {
             return Err(TaskWorkerPoolConfigError::LeaseTooShort);
         }
         Ok(())
@@ -193,6 +269,23 @@ impl TaskWorkerPoolConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The limits of the five settings the old constructor took, the refill percent at its default.
+    fn pool(
+        concurrency: usize,
+        buffer_capacity: usize,
+        poll_interval: Duration,
+        handler_timeout: Duration,
+        lease: Duration,
+    ) -> Result<TaskWorkerPoolConfig, TaskWorkerPoolConfigError> {
+        TaskWorkerPoolConfig::builder()
+            .concurrency(concurrency)
+            .buffer_capacity(buffer_capacity)
+            .poll_interval(poll_interval)
+            .handler_timeout(handler_timeout)
+            .lease(lease)
+            .build()
+    }
 
     #[test]
     fn from_env_validates_independent_worker_limits_in_an_isolated_process() {
@@ -211,11 +304,11 @@ mod tests {
                 }
                 "invalid" => assert_eq!(
                     TaskWorkerPoolConfig::from_env().unwrap_err(),
-                    TaskWorkerPoolConfigError::InvalidEnvironmentValue("OUTBOX_WORKER_CONCURRENCY")
+                    TaskWorkerPoolConfigError::NotAnInteger("OUTBOX_WORKER_CONCURRENCY")
                 ),
                 "zero" => assert_eq!(
                     TaskWorkerPoolConfig::from_env().unwrap_err(),
-                    TaskWorkerPoolConfigError::InvalidConcurrency
+                    TaskWorkerPoolConfigError::ZeroConcurrency
                 ),
                 _ => panic!("unknown test scenario"),
             }
@@ -253,7 +346,7 @@ mod tests {
         );
         assert_eq!(default.concurrency(), 128);
         assert_eq!(default.buffer_capacity(), 128);
-        assert_eq!(default.lease_duration(), Duration::from_secs(60));
+        assert_eq!(default.lease(), Duration::from_secs(60));
         assert_eq!(default.handler_timeout(), Duration::from_secs(15));
         assert_eq!(default.buffer_refill_percent(), 25);
         default.validate_for_storage_timeout(Duration::from_secs(6)).unwrap();
@@ -261,11 +354,11 @@ mod tests {
             Some(
                 match name {
                     "OUTBOX_WORKER_CONCURRENCY" => "2",
-                    "OUTBOX_QUEUE_CAPACITY" => "3",
-                    "OUTBOX_POLL_INTERVAL_MS" => "50",
-                    "OUTBOX_HANDLER_TIMEOUT_SECS" => "10",
-                    "OUTBOX_LEASE_SECS" => "120",
-                    "OUTBOX_QUEUE_REFILL_PERCENT" => "100",
+                    "OUTBOX_BUFFER_CAPACITY" => "3",
+                    "OUTBOX_POLL_MS" => "50",
+                    "OUTBOX_HANDLER_TIMEOUT_MS" => "10000",
+                    "OUTBOX_LEASE_MS" => "120000",
+                    "OUTBOX_BUFFER_REFILL_PERCENT" => "100",
                     _ => panic!("unexpected variable {name}"),
                 }
                 .into(),
@@ -280,10 +373,10 @@ mod tests {
         let only_c =
             TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_WORKER_CONCURRENCY").then(|| "1000".into())).unwrap();
         assert_eq!(only_c.buffer_capacity(), 128);
-        let only_q = TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_QUEUE_CAPACITY").then(|| "256".into())).unwrap();
+        let only_q = TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_BUFFER_CAPACITY").then(|| "256".into())).unwrap();
         assert_eq!(only_q.concurrency(), 128);
         let only_refill =
-            TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_QUEUE_REFILL_PERCENT").then(|| "1".into())).unwrap();
+            TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_BUFFER_REFILL_PERCENT").then(|| "1".into())).unwrap();
         assert_eq!(only_refill.buffer_refill_percent(), 1);
         assert_eq!(only_refill.buffer_capacity(), 128);
     }
@@ -293,18 +386,18 @@ mod tests {
         for (key, value) in [
             ("OUTBOX_WORKER_CONCURRENCY", "garbage"),
             ("OUTBOX_WORKER_CONCURRENCY", "0"),
-            ("OUTBOX_QUEUE_CAPACITY", "0"),
-            ("OUTBOX_QUEUE_CAPACITY", "18446744073709551615"),
-            ("OUTBOX_POLL_INTERVAL_MS", "0"),
-            ("OUTBOX_HANDLER_TIMEOUT_SECS", "0"),
-            ("OUTBOX_HANDLER_TIMEOUT_SECS", "120"),
-            ("OUTBOX_LEASE_SECS", "0"),
-            ("OUTBOX_LEASE_SECS", "18446744073709551615"),
-            ("OUTBOX_POLL_INTERVAL_MS", "18446744073709551615"),
-            ("OUTBOX_QUEUE_REFILL_PERCENT", "garbage"),
-            ("OUTBOX_QUEUE_REFILL_PERCENT", "0"),
-            ("OUTBOX_QUEUE_REFILL_PERCENT", "101"),
-            ("OUTBOX_QUEUE_REFILL_PERCENT", "256"),
+            ("OUTBOX_BUFFER_CAPACITY", "0"),
+            ("OUTBOX_BUFFER_CAPACITY", "18446744073709551615"),
+            ("OUTBOX_POLL_MS", "0"),
+            ("OUTBOX_HANDLER_TIMEOUT_MS", "0"),
+            ("OUTBOX_HANDLER_TIMEOUT_MS", "120000"),
+            ("OUTBOX_LEASE_MS", "0"),
+            ("OUTBOX_LEASE_MS", "18446744073709551615"),
+            ("OUTBOX_POLL_MS", "18446744073709551615"),
+            ("OUTBOX_BUFFER_REFILL_PERCENT", "garbage"),
+            ("OUTBOX_BUFFER_REFILL_PERCENT", "0"),
+            ("OUTBOX_BUFFER_REFILL_PERCENT", "101"),
+            ("OUTBOX_BUFFER_REFILL_PERCENT", "256"),
         ] {
             assert!(
                 TaskWorkerPoolConfig::from_lookup(|name| (name == key).then(|| value.into())).is_err(),
@@ -312,57 +405,126 @@ mod tests {
             );
         }
         let refill = |value: &'static str| {
-            TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_QUEUE_REFILL_PERCENT").then(|| value.into())).unwrap_err()
+            TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_BUFFER_REFILL_PERCENT").then(|| value.into())).unwrap_err()
         };
         assert_eq!(
             refill("garbage"),
-            TaskWorkerPoolConfigError::InvalidEnvironmentValue("OUTBOX_QUEUE_REFILL_PERCENT")
+            TaskWorkerPoolConfigError::NotAnInteger("OUTBOX_BUFFER_REFILL_PERCENT")
         );
-        for value in ["0", "101", "256"] {
+        assert_eq!(refill("0"), TaskWorkerPoolConfigError::ZeroBufferRefillPercent);
+        for value in ["101", "256"] {
             assert_eq!(
                 refill(value),
-                TaskWorkerPoolConfigError::InvalidBufferRefillPercent,
+                TaskWorkerPoolConfigError::BufferRefillPercentTooLarge,
                 "{value}"
             );
         }
-        for percent in [0, 101] {
+        for (percent, error) in [
+            (0, TaskWorkerPoolConfigError::ZeroBufferRefillPercent),
+            (101, TaskWorkerPoolConfigError::BufferRefillPercentTooLarge),
+        ] {
             assert_eq!(
-                TaskWorkerPoolConfig::default()
-                    .with_buffer_refill_percent(percent)
+                TaskWorkerPoolConfig::builder()
+                    .buffer_refill_percent(percent)
+                    .build()
                     .unwrap_err(),
-                TaskWorkerPoolConfigError::InvalidBufferRefillPercent
+                error
             );
         }
-        let config = |c, q, poll, handler, lease| TaskWorkerPoolConfig::try_new(c, q, poll, handler, lease);
+        let (second, minute, two_minutes) = (Duration::from_secs(1), Duration::from_secs(30), Duration::from_secs(120));
+        let refused = |c, q, poll, handler, lease| pool(c, q, poll, handler, lease).unwrap_err();
         assert_eq!(
-            config(
-                1,
-                0,
-                Duration::from_secs(1),
-                Duration::from_secs(30),
-                Duration::from_secs(120)
-            )
-            .unwrap_err(),
-            TaskWorkerPoolConfigError::InvalidBufferCapacity
+            refused(0, 1, second, minute, two_minutes),
+            TaskWorkerPoolConfigError::ZeroConcurrency
         );
-        assert!(config(1, 1, Duration::from_secs(1), Duration::from_secs(30), Duration::MAX).is_err());
-        assert!(config(1, 1, Duration::MAX, Duration::from_secs(30), Duration::from_secs(120)).is_err());
+        assert_eq!(
+            refused(1, 0, second, minute, two_minutes),
+            TaskWorkerPoolConfigError::ZeroBufferCapacity
+        );
+        assert_eq!(
+            refused(1, MAX_BUFFER_CAPACITY + 1, second, minute, two_minutes),
+            TaskWorkerPoolConfigError::BufferCapacityTooLarge {
+                max: MAX_BUFFER_CAPACITY
+            }
+        );
+        assert_eq!(
+            refused(1, 1, Duration::ZERO, minute, two_minutes),
+            TaskWorkerPoolConfigError::ZeroPollInterval
+        );
+        assert_eq!(
+            refused(1, 1, Duration::MAX, minute, two_minutes),
+            TaskWorkerPoolConfigError::PollIntervalTooLong
+        );
+        assert_eq!(
+            refused(1, 1, second, minute, Duration::ZERO),
+            TaskWorkerPoolConfigError::ZeroLease
+        );
+        assert_eq!(
+            refused(1, 1, second, minute, Duration::MAX),
+            TaskWorkerPoolConfigError::LeaseTooLong
+        );
+        assert_eq!(
+            refused(1, 1, second, Duration::ZERO, two_minutes),
+            TaskWorkerPoolConfigError::ZeroHandlerTimeout
+        );
+        assert_eq!(
+            refused(1, 1, second, two_minutes, two_minutes),
+            TaskWorkerPoolConfigError::HandlerTimeoutTooLong
+        );
+    }
+
+    #[test]
+    fn each_refusal_names_its_defect() {
+        for (error, text) in [
+            (
+                TaskWorkerPoolConfigError::ZeroBufferCapacity,
+                "buffer capacity must be positive",
+            ),
+            (
+                TaskWorkerPoolConfigError::BufferCapacityTooLarge { max: 7 },
+                "buffer capacity must not exceed 7, the bound of the channel",
+            ),
+            (
+                TaskWorkerPoolConfigError::ZeroBufferRefillPercent,
+                "buffer refill percent must be at least 1",
+            ),
+            (
+                TaskWorkerPoolConfigError::BufferRefillPercentTooLarge,
+                "buffer refill percent must be at most 100",
+            ),
+            (TaskWorkerPoolConfigError::ZeroPollInterval, "poll interval must be positive"),
+            (
+                TaskWorkerPoolConfigError::PollIntervalTooLong,
+                "poll interval is too long to represent",
+            ),
+            (
+                TaskWorkerPoolConfigError::ZeroHandlerTimeout,
+                "handler timeout must be positive",
+            ),
+            (
+                TaskWorkerPoolConfigError::HandlerTimeoutTooLong,
+                "handler timeout must be shorter than the lease",
+            ),
+            (TaskWorkerPoolConfigError::ZeroLease, "lease duration must be positive"),
+            (
+                TaskWorkerPoolConfigError::LeaseTooLong,
+                "lease duration is too long to represent",
+            ),
+        ] {
+            assert_eq!(error.to_string(), text);
+        }
     }
 
     #[test]
     fn buffer_refill_level_rounds_up_and_stays_within_capacity() {
         let level = |q, percent| {
-            TaskWorkerPoolConfig::try_new(
-                1,
-                q,
-                Duration::from_secs(1),
-                Duration::from_secs(30),
-                Duration::from_secs(120),
-            )
-            .unwrap()
-            .with_buffer_refill_percent(percent)
-            .unwrap()
-            .buffer_refill_level()
+            TaskWorkerPoolConfig::builder()
+                .concurrency(1)
+                .buffer_capacity(q)
+                .buffer_refill_percent(percent)
+                .build()
+                .unwrap()
+                .buffer_refill_level()
         };
         for (q, percent, expected) in [
             (1, 50, 1),
@@ -383,7 +545,7 @@ mod tests {
     #[test]
     fn buffer_waves_budget_boundaries_and_storage_overflow() {
         let build = |c, q, lease| {
-            TaskWorkerPoolConfig::try_new(
+            pool(
                 c,
                 q,
                 Duration::from_secs(1),
@@ -416,7 +578,7 @@ mod tests {
         );
         assert_eq!(
             build(1, 1, 120).validate_for_storage_timeout(Duration::ZERO),
-            Err(TaskWorkerPoolConfigError::InvalidStorageTimeout)
+            Err(TaskWorkerPoolConfigError::ZeroStorageTimeout)
         );
         assert_eq!(
             build(1, 1, 120).validate_for_storage_timeout(Duration::MAX),
@@ -440,7 +602,7 @@ mod tests {
     #[test]
     fn default_lease_budget_has_the_expected_boundary_and_rejects_an_extra_buffer_wave() {
         let build = |queue, lease| {
-            TaskWorkerPoolConfig::try_new(
+            pool(
                 128,
                 queue,
                 Duration::from_secs(1),

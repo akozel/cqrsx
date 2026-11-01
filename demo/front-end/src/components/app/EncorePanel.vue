@@ -48,7 +48,7 @@ async function resetDemo() {
   )
 }
 
-/** Verify is allowed at any time, during Encore! too (D-20): a document behind the ledger is no error. */
+/** Verify is allowed at any time, during Encore! too (D-20): a document behind the journal is no error. */
 async function verify() {
   verifying.value = true
   verifyText.value = t('verify.running')
@@ -96,7 +96,7 @@ async function verify() {
       </button>
       <label class="flex items-center gap-1 text-xs"
         ><input v-model="rebuild.slow" type="checkbox" />
-        {{ t('encore.slow', { ms: session.config.replay_slow_delay_ms }) }}</label
+        {{ t('encore.slow', { ms: session.config.rebuild_slow_pace_ms }) }}</label
       >
       <button type="button" class="action-btn text-xs" :disabled="verifying" @click="verify">
         {{ t('encore.verify') }}
@@ -112,7 +112,7 @@ async function verify() {
         {{ rebuild.resetting ? t('encore.resetting') : t('encore.reset') }}
       </button>
     </div>
-    <!-- Where every read model stands against the ledger: state, lag, owner; a stall names its cause -->
+    <!-- Where every read model stands against the journal: state, lag, owner; a stall names its cause -->
     <ul class="mt-2 space-y-0.5 font-mono" data-test="projections">
       <li v-for="p in rebuild.status.projections" :key="p.projection" :data-state="p.state">
         <span>{{ STATE_ICONS[p.state] }}</span>
@@ -125,7 +125,7 @@ async function verify() {
       </li>
     </ul>
     <div v-if="rebuild.statusDown" class="mt-1 opacity-70">{{ t('encore.status_down') }}</div>
-    <div v-else-if="rebuild.status.stale" class="mt-1 opacity-70">{{ t('encore.stale') }}</div>
+    <div v-else-if="rebuild.status.from_cache" class="mt-1 opacity-70">{{ t('encore.stale') }}</div>
     <div v-if="verifyText" class="mt-1 text-xs" data-test="verify">{{ verifyText }}</div>
     <div v-if="rebuild.running" class="mt-2">
       <ProgressBar

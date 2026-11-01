@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Snapshot or compare the read models through the back-end API, ignoring the optimistic `version`.
+# Snapshot or compare the read models through the back-end API, ignoring the optimistic `revision`.
 #   scripts/compare-projections.sh snapshot out.json      # dump concert_halls + fan_wallets (via /api)
 #   scripts/compare-projections.sh compare a.json b.json  # exit 0 when equal
 set -euo pipefail
@@ -14,7 +14,7 @@ api, inspect, out = sys.argv[1:4]
 def get(url):
     with urllib.request.urlopen(url, timeout=10) as r: return json.load(r)
 def strip(doc):
-    doc = dict(doc); doc.pop("version", None); return doc
+    doc = dict(doc); doc.pop("revision", None); return doc
 halls = {c["concert_id"]: strip(get(f"{api}/api/concerts/{c['concert_id']}")) for c in get(f"{api}/api/concerts")}
 try:
     wallets = {d["_id"]: strip(d) for d in get(f"{inspect}/inspect/mongo/encore_read/fan_wallets?limit=1000")["docs"]}
@@ -29,7 +29,7 @@ PY
 import json, sys
 a, b = (json.load(open(p)) for p in sys.argv[1:3])
 if a == b:
-    print("projections are identical (ignoring version)"); sys.exit(0)
+    print("projections are identical (ignoring revision)"); sys.exit(0)
 for coll in ("concert_halls", "fan_wallets"):
     for key in sorted(set(a[coll]) | set(b[coll])):
         if a[coll].get(key) != b[coll].get(key): print(f"DIFF {coll}/{key}")

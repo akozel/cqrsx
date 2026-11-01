@@ -41,9 +41,9 @@ impl Postgres {
                 .with_exposed_port(5432.tcp())
                 .with_wait_for(WaitFor::Nothing)
                 .with_mapped_port(port_lease.port(), 5432.tcp())
-                .with_env_var("POSTGRES_DB", "outbox_test")
-                .with_env_var("POSTGRES_USER", "outbox_test")
-                .with_env_var("POSTGRES_PASSWORD", "outbox_test")
+                .with_env_var("POSTGRES_DB", "cqrsx_test")
+                .with_env_var("POSTGRES_USER", "cqrsx_test")
+                .with_env_var("POSTGRES_PASSWORD", "cqrsx_test")
                 .start(),
         )
         .await
@@ -51,7 +51,7 @@ impl Postgres {
         .unwrap();
         let host = container.get_host().await.unwrap();
         let port = container.get_host_port_ipv4(5432.tcp()).await.unwrap();
-        let options = format!("postgresql://outbox_test:outbox_test@{host}:{port}/outbox_test")
+        let options = format!("postgresql://cqrsx_test:cqrsx_test@{host}:{port}/cqrsx_test")
             .parse::<PgConnectOptions>()
             .unwrap()
             // This local fixture has no TLS. Keep early connection closes on the

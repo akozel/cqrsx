@@ -59,8 +59,8 @@ async fn unrepresentable_requests_cannot_change_queue_state_or_consume_ownership
     );
     assert_worker_state(&db.pool, task.id(), "processing", 1, None).await;
     assert_eq!(
-        row(&db.pool, task.id()).await.get::<Option<Uuid>, _>("lock_token"),
-        Some(claimed.lease().lock_token())
+        row(&db.pool, task.id()).await.get::<Option<Uuid>, _>("lease_token"),
+        Some(claimed.lease().token())
     );
     assert_eq!(
         queue.settle(&claimed, SettlementRequest::Completed).await.unwrap(),

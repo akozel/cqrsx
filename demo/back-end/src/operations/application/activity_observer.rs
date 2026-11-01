@@ -10,7 +10,7 @@ use cqrsx::{
         observer::{self, AnyCommandReport, AnyOutcome, CommandObserver, CommandReport},
     },
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
-    projection::processor::observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
+    projection::processor::observer::{Applied, Failed, LeaseChange, ProjectionObserver, RebuildReason, Rebuilt},
 };
 use serde_json::{Value, json};
 use std::sync::Arc;
@@ -31,14 +31,14 @@ impl observer::AnyCommandObserver for CommandActivityObserver {
     /// the params of the rejection, `command.failed` with a conflict or an unavailable store. Every entry names the
     /// aggregate, the ids and the source of the command's metadata, the command's type and its fan: the command's
     /// `fan_id` label, else the fan of the aggregate's id when it is a fan's ledger, else nobody.
-    fn command(&self, report: &AnyCommandReport<'_>) {
+    fn observe(&self, report: &AnyCommandReport<'_>) {
         let fan_id = report
             .command
             .labels()
             .into_iter()
             .find_map(|label| (label.name == "fan_id").then_some(label.value))
             .or_else(|| {
-                let ledger = report.id.downcast_ref::<FanLedgerId>();
+                let ledger = report.typed_id.downcast_ref::<FanLedgerId>();
                 ledger.map(|ledger| ledger.fan().as_str().to_owned())
             });
         let base = json!({
@@ -65,7 +65,7 @@ impl observer::AnyCommandObserver for CommandActivityObserver {
             AnyOutcome::Rejected(error) => {
                 self.activity.publish(
                     "command.rejected",
-                    merge(json!({ "code": error.code(), "params": error.params() })),
+                    merge(json!({ "code": error.code(), "params": error.parameters() })),
                 );
             }
             AnyOutcome::Conflict => {
@@ -89,10 +89,10 @@ impl<A> CommandObserver<A> for CommandActivityObserver
 where
     A: Aggregate,
     A::Command: Command,
-    A::Error: Rejection,
+    A::Rejection: Rejection,
 {
-    fn command(&self, report: &CommandReport<'_, A>) {
-        observer::AnyCommandObserver::command(self, &AnyCommandReport::of(report));
+    fn observe(&self, report: &CommandReport<'_, A>) {
+        observer::AnyCommandObserver::observe(self, &AnyCommandReport::of(report));
     }
 }
 
@@ -117,7 +117,7 @@ impl ProjectionObserver for ActivityObserver {
     /// One document took the events of a live batch (or skipped them as already applied).
     fn applied(&self, report: &Applied<'_>) {
         self.activity.publish(
-            "projection.updated",
+            "projection.applied",
             json!({
                 "projection": self.projection,
                 "view_id": report.aggregate_id,
@@ -160,14 +160,14 @@ impl ProjectionObserver for ActivityObserver {
     }
 
     /// This node took, lost or gave back the projection's checkpoint.
-    fn lease(&self, event: LeaseEvent) {
+    fn lease(&self, event: LeaseChange) {
         let lease = match event {
-            LeaseEvent::Acquired => "acquired",
-            LeaseEvent::Lost => "lost",
-            LeaseEvent::Released => "released",
+            LeaseChange::Acquired => "acquired",
+            LeaseChange::Lost => "lost",
+            LeaseChange::Released => "released",
         };
         self.activity.publish(
-            "projection.lease",
+            "projection.lease_changed",
             json!({ "projection": self.projection, "lease": lease, "owner": self.owner }),
         );
     }
@@ -227,7 +227,7 @@ mod tests {
                 reason,
             });
         }
-        for event in [LeaseEvent::Acquired, LeaseEvent::Lost, LeaseEvent::Released] {
+        for event in [LeaseChange::Acquired, LeaseChange::Lost, LeaseChange::Released] {
             observer.lease(event);
         }
         let entries = entries(&activity);
@@ -235,14 +235,14 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                "projection.updated",
+                "projection.applied",
                 "projection.failed",
                 "projection.failed",
                 "projection.rebuilt",
                 "projection.rebuilt",
-                "projection.lease",
-                "projection.lease",
-                "projection.lease"
+                "projection.lease_changed",
+                "projection.lease_changed",
+                "projection.lease_changed"
             ]
         );
         assert_eq!(
@@ -344,7 +344,7 @@ mod tests {
         type Id = ConcertId;
         type Command = HallCommand;
         type Event = Booked;
-        type Error = Refused;
+        type Rejection = Refused;
         type Rules = ();
 
         fn apply(&mut self, _: Booked) {}
@@ -355,7 +355,7 @@ mod tests {
         type Id = FanLedgerId;
         type Command = Record;
         type Event = Booked;
-        type Error = Refused;
+        type Rejection = Refused;
         type Rules = ();
 
         fn apply(&mut self, _: Booked) {}
@@ -391,7 +391,7 @@ mod tests {
     fn an_accepted_command_is_published_once_with_its_tasks_and_no_read_model_news() {
         let activity = Arc::new(ActivityHub::new(8, 8));
         let observer = CommandActivityObserver::new(activity.clone());
-        observer.command(&CommandReport::<Hall> {
+        observer.observe(&CommandReport::<Hall> {
             aggregate_id: &hall(),
             command: &announce(),
             metadata: &ui(),
@@ -411,7 +411,7 @@ mod tests {
     fn an_accepted_command_reports_the_tasks_its_commit_published() {
         let activity = Arc::new(ActivityHub::new(8, 8));
         let task = NewTask::from_payload(TaskFormat::try_new("encore_record_ticket", 1).unwrap(), json!({})).unwrap();
-        CommandActivityObserver::new(activity.clone()).command(&CommandReport::<Hall> {
+        CommandActivityObserver::new(activity.clone()).observe(&CommandReport::<Hall> {
             aggregate_id: &hall(),
             command: &announce(),
             metadata: &ui(),
@@ -434,7 +434,7 @@ mod tests {
             Outcome::Conflict,
             Outcome::Unavailable,
         ] {
-            observer.command(&CommandReport::<Hall> {
+            observer.observe(&CommandReport::<Hall> {
                 aggregate_id: &hall(),
                 command: &book("fox"),
                 metadata: &metadata,
@@ -477,7 +477,7 @@ mod tests {
         let observer = CommandActivityObserver::new(activity.clone());
         let metadata = HashMap::new();
         for command in [book("fox"), announce()] {
-            observer.command(&CommandReport::<Hall> {
+            observer.observe(&CommandReport::<Hall> {
                 aggregate_id: &hall(),
                 command: &command,
                 metadata: &metadata,
@@ -485,7 +485,7 @@ mod tests {
             });
         }
         let ledger = FanLedgerId::parse("panda:c-1").unwrap();
-        observer.command(&CommandReport::<Ledger> {
+        observer.observe(&CommandReport::<Ledger> {
             aggregate_id: &ledger,
             command: &Record { seat: "B4".into() },
             metadata: &metadata,

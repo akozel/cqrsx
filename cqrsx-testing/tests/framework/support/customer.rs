@@ -19,7 +19,7 @@ impl Aggregate for Customer {
     type Id = String;
     type Command = CustomerCommand;
     type Event = CustomerEvent;
-    type Error = CustomerError;
+    type Rejection = CustomerError;
     type Rules = CustomerService;
 
     fn apply(&mut self, event: Self::Event) {

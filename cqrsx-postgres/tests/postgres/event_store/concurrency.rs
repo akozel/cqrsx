@@ -12,11 +12,11 @@ async fn stress_same_version_has_exactly_one_complete_winner() {
                     repository
                         .persist::<Ledger>(
                             &[event_for(&id, 1, 10)],
-                            Some(SnapshotUpdate {
+                            Some(SerializedSnapshot {
                                 aggregate_id: id.clone(),
                                 payload: json!([10]),
                                 last_sequence: 1,
-                                next_version: 1,
+                                revision: 1,
                             }),
                         )
                         .await
@@ -43,17 +43,17 @@ async fn stress_same_version_has_exactly_one_complete_winner() {
                         ];
                         let snapshot = match mode {
                             "events" => None,
-                            "first-snapshot" => Some(SnapshotUpdate {
+                            "first-snapshot" => Some(SerializedSnapshot {
                                 aggregate_id: id.clone(),
                                 payload: json!([writer + 1, writer + 101]),
                                 last_sequence: start + 1,
-                                next_version: 1,
+                                revision: 1,
                             }),
-                            _ => Some(SnapshotUpdate {
+                            _ => Some(SerializedSnapshot {
                                 aggregate_id: id.clone(),
                                 payload: json!([10, writer + 1, writer + 101]),
                                 last_sequence: start + 1,
-                                next_version: 2,
+                                revision: 2,
                             }),
                         };
                         barrier.wait().await;
@@ -69,7 +69,7 @@ async fn stress_same_version_has_exactly_one_complete_winner() {
                 assert_eq!(winners.len(), 1, "{id}");
                 for (_, _, result) in &outcomes {
                     if let Err(error) = result {
-                        assert!(matches!(error, PersistenceError::OptimisticLockError), "{id}: {error:?}");
+                        assert!(matches!(error, PersistenceError::Conflict), "{id}: {error:?}");
                     }
                 }
                 let (_, batch, _) = winners[0];
@@ -85,9 +85,9 @@ async fn stress_same_version_has_exactly_one_complete_winner() {
                         snapshot,
                         Some(SerializedSnapshot {
                             aggregate_id: id.clone(),
-                            aggregate: json!(expected.iter().map(|e| e.payload.as_i64().unwrap()).collect::<Vec<_>>()),
+                            payload: json!(expected.iter().map(|e| e.payload.as_i64().unwrap()).collect::<Vec<_>>()),
                             last_sequence: start + 1,
-                            snapshot_version: if start == 2 { 2 } else { 1 }
+                            revision: if start == 2 { 2 } else { 1 }
                         })
                     );
                 }
@@ -107,11 +107,11 @@ async fn stress_snapshot_cas_losers_roll_back_distinct_events() {
                 let repo = PostgresEventRepository::new(db.pool.clone());
                 repo.persist::<Ledger>(
                     &[event_for(&id, 1, 10)],
-                    Some(SnapshotUpdate {
+                    Some(SerializedSnapshot {
                         aggregate_id: id.clone(),
                         payload: json!([10]),
                         last_sequence: 1,
-                        next_version: 1,
+                        revision: 1,
                     }),
                 )
                 .await
@@ -127,11 +127,11 @@ async fn stress_snapshot_cas_losers_roll_back_distinct_events() {
                     let id = id.clone();
                     tasks.spawn(async move {
                         let events = vec![event_for(&id, writer + 2, writer as i32)];
-                        let snapshot = Some(SnapshotUpdate {
+                        let snapshot = Some(SerializedSnapshot {
                             aggregate_id: id.clone(),
                             payload: json!([10, writer]),
                             last_sequence: writer + 2,
-                            next_version: 2,
+                            revision: 2,
                         });
                         let result = if outbox {
                             PostgresEventRepositoryWithOutbox::new(pool)
@@ -150,7 +150,7 @@ async fn stress_snapshot_cas_losers_roll_back_distinct_events() {
                 assert_eq!(winners.len(), 1);
                 for (_, _, result) in &outcomes {
                     if let Err(error) = result {
-                        assert!(matches!(error, PersistenceError::OptimisticLockError));
+                        assert!(matches!(error, PersistenceError::Conflict));
                     }
                 }
                 let (winner, batch, _) = winners[0];
@@ -159,9 +159,9 @@ async fn stress_snapshot_cas_losers_roll_back_distinct_events() {
                     [vec![event_for(&id, 1, 10)], batch.clone()].concat()
                 );
                 let snapshot = repo.snapshot::<Ledger>(&id).await.unwrap().unwrap();
-                assert_eq!(snapshot.aggregate, json!([10, winner]));
+                assert_eq!(snapshot.payload, json!([10, winner]));
                 assert_eq!(snapshot.last_sequence, winner + 2);
-                assert_eq!(snapshot.snapshot_version, 2);
+                assert_eq!(snapshot.revision, 2);
                 let task_count: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox WHERE aggregate_id=$1")
                     .bind(&id)
                     .fetch_one(&db.pool)
@@ -181,11 +181,11 @@ async fn row_lock_on_one_aggregate_does_not_block_independent_id_or_type() {
     for id in ["blocked", "independent"] {
         repo.persist::<Ledger>(
             &[event_for(id, 1, 10)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: id.into(),
                 payload: json!([10]),
                 last_sequence: 1,
-                next_version: 1,
+                revision: 1,
             }),
         )
         .await
@@ -202,11 +202,11 @@ async fn row_lock_on_one_aggregate_does_not_block_independent_id_or_type() {
         PostgresEventRepository::new(pool)
             .persist::<Ledger>(
                 &[event_for("blocked", 2, 20)],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "blocked".into(),
                     payload: json!([10, 20]),
                     last_sequence: 2,
-                    next_version: 2,
+                    revision: 2,
                 }),
             )
             .await
@@ -216,11 +216,11 @@ async fn row_lock_on_one_aggregate_does_not_block_independent_id_or_type() {
         Duration::from_secs(10),
         repo.persist::<Ledger>(
             &[event_for("independent", 2, 30)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "independent".into(),
                 payload: json!([10, 30]),
                 last_sequence: 2,
-                next_version: 2,
+                revision: 2,
             }),
         ),
     )
@@ -231,11 +231,11 @@ async fn row_lock_on_one_aggregate_does_not_block_independent_id_or_type() {
         Duration::from_secs(10),
         repo.persist::<OtherLedger>(
             &[event_for("blocked", 1, 99)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "blocked".into(),
                 payload: json!([99]),
                 last_sequence: 1,
-                next_version: 1,
+                revision: 1,
             }),
         ),
     )
@@ -261,15 +261,15 @@ async fn row_lock_on_one_aggregate_does_not_block_independent_id_or_type() {
     assert_eq!(other[0].payload, json!(99));
     assert_eq!(other[0].aggregate_type, OtherLedger::TYPE);
     assert_eq!(
-        repo.snapshot::<Ledger>("blocked").await.unwrap().unwrap().aggregate,
+        repo.snapshot::<Ledger>("blocked").await.unwrap().unwrap().payload,
         json!([10, 20])
     );
     assert_eq!(
-        repo.snapshot::<Ledger>("independent").await.unwrap().unwrap().aggregate,
+        repo.snapshot::<Ledger>("independent").await.unwrap().unwrap().payload,
         json!([10, 30])
     );
     assert_eq!(
-        repo.snapshot::<OtherLedger>("blocked").await.unwrap().unwrap().aggregate,
+        repo.snapshot::<OtherLedger>("blocked").await.unwrap().unwrap().payload,
         json!([99])
     );
     db.close().await;

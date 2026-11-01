@@ -5,7 +5,7 @@ use crate::{
     shared::domain::{ConcertId, FanId, FanLedgerId, venue::SeatId},
 };
 use cqrsx::{
-    command::CommandGatewayError,
+    command::CommandError,
     task::Task,
     worker::{TaskResult, context::TaskContext, task_handler},
 };
@@ -41,17 +41,15 @@ impl RecordCancellationV1 {
     }
 }
 
-/// The ledger records the cancellation (PLAN.md §2.7): R9 (already recorded) and R11 (already cancelled) mean
+/// The ledger records the cancellation (DESIGN.md §1.6): R9 (already recorded) and R11 (already cancelled) mean
 /// "already done", a redelivery; R10 (the cancellation overtook its ticket) means "too early, retry"; a conflict and
 /// an unavailable ledger are retried. The command continues the task's causation chain.
 #[task_handler]
 pub async fn record_cancellation(task: RecordCancellationV1, ctx: &TaskContext) -> TaskResult {
     let ledger = task.ledger();
     match ctx.execute::<Fan>(&ledger, task.command()).await {
-        Err(CommandGatewayError::Domain(FanError::AlreadyRecorded { .. } | FanError::AlreadyCancelled { .. })) => {
-            TaskResult::done()
-        }
-        Err(CommandGatewayError::Domain(FanError::UnknownTicket { .. })) => TaskResult::retry("unknown_ticket"),
+        Err(CommandError::Rejected(FanError::AlreadyRecorded { .. } | FanError::AlreadyCancelled { .. })) => TaskResult::done(),
+        Err(CommandError::Rejected(FanError::UnknownTicket { .. })) => TaskResult::retry("unknown_ticket"),
         other => other.into(), // accepted: done; conflict, unavailable: retry
     }
 }
@@ -64,7 +62,7 @@ mod tests {
         test_support::{attempt, fans, ledger, steps, ticket},
     };
     use cqrsx::journal::EventStore;
-    use cqrsx_testing::mem_store::MemStore;
+    use cqrsx_testing::memory_store::MemoryStore;
     use uuid::Uuid;
 
     fn cancellation(booking_id: Uuid) -> RecordCancellationV1 {
@@ -81,7 +79,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancellation_that_overtook_its_ticket_is_retried_later() {
-        let (fans, executor) = fans(MemStore::default());
+        let (fans, executor) = fans(MemoryStore::default());
         let payload = cancellation(ticket().booking_id);
         let result = record_cancellation
             .call(payload.clone(), &steps(&fans, attempt(&payload, Uuid::now_v7())))
@@ -100,7 +98,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_recorded_ticket_is_cancelled_and_the_refund_mail_task_published() {
-        let store = MemStore::default();
+        let store = MemoryStore::default();
         let (fans, executor) = fans(store.clone());
         let ticket = ticket();
         assert_eq!(

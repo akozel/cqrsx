@@ -1,0 +1,419 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Command path</title>
+<meta name="description" content="How cqrsx runs a command: the aggregate lock, the attempt, the decision, task planning, the atomic write, conflicts and retries.">
+<style>
+/* Layout: one reading column (~72ch) for prose; figures and tables break out to 1120px and scroll sideways on phones. */
+:root {
+  --bg: #f3f5f7; --surface: #ffffff; --frame: #eef2f6; --ink: #131920; --ink-2: #465263; --muted: #6c7787;
+  --rule: #d4dbe3; --axis: #b9c2cd; --accent: #0a6e8a; --accent-soft: #e0eff4; --warn: #8f5400; --warn-soft: #fbf0de;
+  --crit: #b42f2f; --crit-soft: #fbe7e7; --band-a: #f1f4f8; --band-b: #ecf5f7; --code-bg: #edf1f5;
+  --font-body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-display: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --font-mono: ui-monospace, "SFMono-Regular", Menlo, Consolas, "Liberation Mono", monospace;
+  --text-col: 72ch; --wide: 1120px;
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+    --rule: #2c343e; --axis: #3a4552; --accent: #4cb6d4; --accent-soft: #15303a; --warn: #e3a23b; --warn-soft: #2e2413;
+    --crit: #ef6b6b; --crit-soft: #331b1d; --band-a: #141a21; --band-b: #12212a; --code-bg: #1d242d; color-scheme: dark;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #0f1318; --surface: #161b22; --frame: #1a2029; --ink: #e7ebf0; --ink-2: #b3bcc8; --muted: #8b96a6;
+  --rule: #2c343e; --axis: #3a4552; --accent: #4cb6d4; --accent-soft: #15303a; --warn: #e3a23b; --warn-soft: #2e2413;
+  --crit: #ef6b6b; --crit-soft: #331b1d; --band-a: #141a21; --band-b: #12212a; --code-bg: #1d242d; color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink); font: 16px/1.6 var(--font-body);
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  padding-block: 0 64px;
+}
+.page { max-width: var(--wide); margin: 0 auto; display: grid; gap: 56px; }
+.prose { max-width: var(--text-col); }
+h1, h2, h3 { font-family: var(--font-display); text-wrap: balance; margin: 0; color: var(--ink); }
+h1 { font-size: clamp(2rem, 5vw, 2.9rem); line-height: 1.08; font-weight: 650; letter-spacing: -0.015em; }
+h2 { font-size: 1.65rem; line-height: 1.2; font-weight: 650; }
+h3 { font-size: 1.15rem; line-height: 1.3; font-weight: 600; margin-top: 8px; }
+p { margin: 0; }
+section { display: grid; gap: 18px; min-width: 0; }
+code, .mono { font-family: var(--font-mono); font-size: 0.88em; }
+code { background: var(--code-bg); padding: 0.05em 0.35em; border-radius: 4px; overflow-wrap: anywhere; }
+a { color: var(--accent); }
+a:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.eyebrow { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+
+/* Navigation between the pages */
+.topnav { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px 18px; padding: 14px 0 12px; border-bottom: 1px solid var(--rule);
+  font-size: 0.9rem; }
+.topnav .home { font-family: var(--font-mono); font-weight: 600; color: var(--ink); text-decoration: none; margin-right: 6px; }
+.topnav a { color: var(--ink-2); text-decoration: none; }
+.topnav a:hover { color: var(--accent); }
+.topnav a[aria-current="page"] { color: var(--accent); font-weight: 600; }
+.topnav .sep { color: var(--rule); }
+
+/* Header */
+.hero { display: grid; gap: 18px; padding-top: 32px; }
+.lede { font-size: 1.1rem; color: var(--ink-2); max-width: var(--text-col); }
+.facts { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 0; margin: 8px 0 0; border-top: 2px solid var(--ink); }
+.facts > div { padding: 14px 18px 4px 0; display: grid; gap: 6px; align-content: start; }
+.facts > div + div { padding-left: 18px; border-left: 1px solid var(--rule); }
+.facts dt { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--accent); }
+.facts dd { margin: 0; font-size: 0.97rem; }
+@media (max-width: 760px) { .facts > div + div { padding-left: 0; border-left: 0; border-top: 1px solid var(--rule); } }
+.toc { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 0.92rem; }
+.toc a { text-decoration: none; border-bottom: 1px solid var(--rule); color: var(--ink-2); }
+.toc a:hover { color: var(--accent); border-color: var(--accent); }
+
+/* Figures */
+figure { margin: 0; display: grid; gap: 10px; min-width: 0; }
+.scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+.diagram { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px; }
+.diagram svg { display: block; width: 100%; height: auto; }
+figcaption { font-size: 0.9rem; color: var(--ink-2); max-width: var(--text-col); }
+svg text { font-family: var(--font-body); fill: var(--ink); }
+.t-title { font-size: 13.5px; font-weight: 600; }
+.t-sub { font-size: 12px; fill: var(--ink-2); }
+.t-mono { font-family: var(--font-mono); font-size: 12px; }
+.t-label { font-size: 11.5px; fill: var(--ink-2); }
+.t-cap { font-family: var(--font-mono); font-size: 10.5px; letter-spacing: 0.08em; fill: var(--muted); }
+.t-acc { fill: var(--accent); }
+.t-crit { fill: var(--crit); }
+.t-warn { fill: var(--warn); }
+.frame { fill: var(--frame); stroke: var(--rule); }
+.box { fill: var(--surface); stroke: var(--axis); stroke-width: 1; }
+.box-acc { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; }
+.box-warn { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; }
+.box-crit { fill: var(--crit-soft); stroke: var(--crit); stroke-width: 1.5; }
+.note { fill: var(--surface); stroke: var(--axis); stroke-dasharray: 3 3; }
+.ln { stroke: var(--ink-2); stroke-width: 1.5; fill: none; }
+.ln-acc { stroke: var(--accent); stroke-width: 2; fill: none; }
+.ln-mut { stroke: var(--muted); stroke-width: 1.25; fill: none; }
+.ln-crit { stroke: var(--crit); stroke-width: 1.5; fill: none; }
+.dash { stroke-dasharray: 5 4; }
+.life { stroke: var(--axis); stroke-width: 1; }
+.band-a { fill: var(--band-a); }
+.band-b { fill: var(--band-b); }
+.m-ink { fill: var(--ink-2); }
+.m-acc { fill: var(--accent); }
+.m-mut { fill: var(--muted); }
+.m-crit { fill: var(--crit); }
+.tx-done { fill: var(--frame); stroke: var(--ink-2); stroke-width: 1.25; }
+.tx-open { fill: var(--warn-soft); stroke: var(--warn); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.tx-lost { fill: var(--crit-soft); stroke: var(--crit); stroke-width: 1.5; }
+.tx-head { fill: var(--accent-soft); stroke: var(--accent); stroke-width: 1.5; stroke-dasharray: 4 3; }
+.wait-zone { fill: var(--band-a); stroke: var(--rule); stroke-dasharray: 3 3; }
+
+/* Lists of parts and guarantees */
+.parts { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 16px 28px; margin: 0; }
+.parts > div { display: grid; gap: 4px; align-content: start; border-top: 1px solid var(--rule); padding-top: 10px; }
+.parts dt { font-weight: 600; }
+.parts dd { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+.two { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 28px; }
+.two > div { display: grid; gap: 12px; align-content: start; min-width: 0; }
+.verdict { font-family: var(--font-mono); font-size: 0.78rem; letter-spacing: 0.06em; text-transform: uppercase; display: flex; align-items: center; gap: 8px; }
+.verdict::before { content: ""; width: 10px; height: 10px; border-radius: 2px; background: var(--accent); }
+.verdict.no::before { background: var(--warn); }
+.claims { display: grid; gap: 12px; margin: 0; }
+.claims > div { display: grid; gap: 2px; }
+.claims dt { font-weight: 600; }
+.claims dd { margin: 0; color: var(--ink-2); font-size: 0.95rem; }
+.g { font-family: var(--font-mono); font-size: 0.78rem; color: var(--muted); white-space: nowrap; }
+
+/* Tables */
+table { border-collapse: collapse; width: 100%; font-size: 0.92rem; }
+th, td { text-align: left; vertical-align: top; padding: 9px 12px; border-bottom: 1px solid var(--rule); }
+th { font-family: var(--font-mono); font-size: 0.74rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); font-weight: 500; border-bottom: 1.5px solid var(--ink-2); }
+td:first-child { font-weight: 600; }
+.steps td:first-child { min-width: 9em; }
+.steps td:nth-child(3) { font-family: var(--font-mono); font-size: 0.8rem; color: var(--ink-2); min-width: 15em; }
+.steps, .weak { min-width: 860px; }
+.tablewrap { overflow-x: auto; border: 1px solid var(--rule); border-radius: 10px; background: var(--surface); }
+.tablewrap table tr:last-child td { border-bottom: 0; }
+
+/* Callouts and lists */
+.math { display: grid; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); gap: 12px; }
+.math > div { background: var(--surface); border: 1px solid var(--rule); border-radius: 10px; padding: 12px 14px; display: grid; gap: 2px; }
+.math .k { font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase; color: var(--muted); }
+.math .v { font-size: 1.25rem; font-weight: 650; font-family: var(--font-display); }
+.math .d { font-size: 0.9rem; color: var(--ink-2); }
+ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: var(--text-col); }
+.foot { font-size: 0.85rem; color: var(--muted); border-top: 1px solid var(--rule); padding-top: 14px; max-width: var(--text-col); }
+</style>
+</head>
+<body>
+<div class="page">
+<nav class="topnav" aria-label="Documentation"><a class="home" href="../README.md">cqrsx</a> <a href="command-path.html" aria-current="page">Command path</a> <a href="read-path.html">Read path</a> <a href="task-path.html">Task path</a> <span class="sep" aria-hidden="true">|</span> <a href="../README.md">README</a> <a href="components.md">Components</a> <a href="crates.md">Crates</a> <a href="typical_scenario.md">Typical scenario</a> <a href="guarantees.md">Guarantees</a></nav>
+<header class="hero">
+  <p class="eyebrow">cqrsx · how it works · 1 of 3</p>
+  <h1>Command path: from a request to the commit</h1>
+  <p class="lede">What happens to a command between the moment an entry point hands it to the engine and the moment the caller gets its answer: the lock of its aggregate, the attempt that loads, decides, plans and writes, the conflict retry, and the report to the observer. The answer means the event is in the journal; the views follow later, on the <a href="read-path.html">read path</a>, and the tasks on the <a href="task-path.html">task path</a>.</p>
+  <dl class="facts">
+    <div><dt>Guarantee</dt><dd>An accepted command wrote its one event, the snapshot when one was due and its tasks in one SQL statement: all of them or nothing.</dd></div>
+    <div><dt>One key at a time</dt><dd>Inside a process the commands of one aggregate queue on its lock, first in, first out; other aggregates run in parallel. Between processes only the optimistic check of the write decides.</dd></div>
+    <div><dt>Four answers</dt><dd>Accepted, rejected by the aggregate, conflict after the retries, or unavailable: not run, or its outcome unknown.</dd></div>
+  </dl>
+  <nav class="toc" aria-label="Sections">
+    <a href="#flow">Overall diagram</a><a href="#steps">One command step by step</a><a href="#conflicts">Conflicts and retries</a><a href="#snapshots">Snapshots</a><a href="#guarantees">Guarantees</a><a href="#weak">Weak spots and limits</a><a href="#further">Further reading</a>
+  </nav>
+</header>
+
+<section id="flow">
+  <h2>Overall diagram</h2>
+  <p class="prose">The engine builds one <code>StoreCommandExecutor</code> per aggregate type and process, over a <code>JournalEventStore</code>; on PostgreSQL the store writes through <code>PostgresEventRepositoryWithOutbox</code>. Everything a command does happens inside that executor while it holds the aggregate's lock, except the report to the observer, which comes after the lock is released.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 1000 540" role="img" aria-label="An entry point passes a command to the executor of its aggregate type. The executor takes the aggregate's lock, runs an attempt (load, decide, plan, commit) that writes the event, the snapshot and the tasks to PostgreSQL in one statement and is repeated on a conflict, wakes the projection processors, releases the lock and tells its observer. The task runtime later claims the tasks from the outbox." style="min-width:820px">
+        <defs>
+          <marker id="c1-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-ink" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="c1-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-acc" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="c1-mut" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-mut" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <!-- frames -->
+        <rect class="frame" x="186" y="16" width="468" height="508" rx="12"/>
+        <text class="t-cap" x="202" y="34">PROCESS · ONE EXECUTOR PER AGGREGATE TYPE</text>
+        <rect class="frame" x="744" y="16" width="230" height="350" rx="12"/>
+        <text class="t-cap" x="760" y="40">POSTGRESQL</text>
+        <!-- callers -->
+        <rect class="box" x="16" y="44" width="140" height="56" rx="8"/>
+        <text class="t-title" x="86" y="68" text-anchor="middle">Client</text>
+        <text class="t-sub" x="86" y="87" text-anchor="middle">HTTP request</text>
+        <rect class="box" x="16" y="386" width="140" height="56" rx="8"/>
+        <text class="t-title" x="86" y="410" text-anchor="middle">Task handler</text>
+        <text class="t-mono" x="86" y="429" text-anchor="middle">ctx.execute</text>
+        <!-- entry point -->
+        <rect class="box" x="206" y="44" width="428" height="56" rx="8"/>
+        <text class="t-title" x="420" y="67" text-anchor="middle">Entry point: Source::execute</text>
+        <text class="t-sub" x="420" y="86" text-anchor="middle">CommandMetadata::root(source): a new causation chain</text>
+        <!-- lock -->
+        <rect class="box" x="206" y="126" width="428" height="56" rx="8"/>
+        <text class="t-title" x="420" y="149" text-anchor="middle">Aggregate lock</text>
+        <text class="t-sub" x="420" y="168" text-anchor="middle">one FIFO line per busy key · max_wait 1 s · max_waiters 128</text>
+        <!-- attempt -->
+        <rect class="box-acc" x="206" y="206" width="428" height="160" rx="10"/>
+        <text class="t-title" x="222" y="228">Attempt (CommandAttempt), at most 3 on a conflict</text>
+        <rect class="box" x="222" y="246" width="90" height="58" rx="6"/>
+        <text class="t-title" x="267" y="266" text-anchor="middle">load</text>
+        <text class="t-label" x="267" y="282" text-anchor="middle">snapshot,</text>
+        <text class="t-label" x="267" y="296" text-anchor="middle">events after</text>
+        <rect class="box" x="324" y="246" width="90" height="58" rx="6"/>
+        <text class="t-title" x="369" y="266" text-anchor="middle">decide</text>
+        <text class="t-label" x="369" y="282" text-anchor="middle">one event</text>
+        <text class="t-label" x="369" y="296" text-anchor="middle">or rejection</text>
+        <rect class="box" x="426" y="246" width="90" height="58" rx="6"/>
+        <text class="t-title" x="471" y="266" text-anchor="middle">plan</text>
+        <text class="t-label" x="471" y="282" text-anchor="middle">reactions</text>
+        <text class="t-label" x="471" y="296" text-anchor="middle">→ tasks</text>
+        <rect class="box" x="528" y="246" width="90" height="58" rx="6"/>
+        <text class="t-title" x="573" y="266" text-anchor="middle">commit</text>
+        <text class="t-label" x="573" y="282" text-anchor="middle">one statement</text>
+        <text class="t-label" x="573" y="296" text-anchor="middle">event + tasks</text>
+        <line class="ln" x1="312" y1="275" x2="322" y2="275" marker-end="url(#c1-ink)"/>
+        <line class="ln" x1="414" y1="275" x2="424" y2="275" marker-end="url(#c1-ink)"/>
+        <line class="ln" x1="516" y1="275" x2="526" y2="275" marker-end="url(#c1-ink)"/>
+        <path class="ln-mut dash" d="M573,304 V328 H267 V306" marker-end="url(#c1-mut)"/>
+        <text class="t-label" x="420" y="348" text-anchor="middle">Conflict: pause, reload, decide and plan again</text>
+        <!-- wake and observer -->
+        <rect class="box" x="206" y="388" width="428" height="52" rx="8"/>
+        <text class="t-title" x="420" y="409" text-anchor="middle">CommitWakeup::wake</text>
+        <text class="t-sub" x="420" y="427" text-anchor="middle">after a commit with an event, still under the lock</text>
+        <rect class="box" x="206" y="456" width="428" height="52" rx="8"/>
+        <text class="t-title" x="420" y="477" text-anchor="middle">Lock released → CommandObserver::observe → answer</text>
+        <text class="t-sub" x="420" y="495" text-anchor="middle">CommitReport (event, tasks) or CommandError</text>
+        <!-- vertical flow -->
+        <line class="ln" x1="420" y1="100" x2="420" y2="124" marker-end="url(#c1-ink)"/>
+        <line class="ln" x1="420" y1="182" x2="420" y2="204" marker-end="url(#c1-ink)"/>
+        <line class="ln" x1="420" y1="366" x2="420" y2="386" marker-end="url(#c1-ink)"/>
+        <line class="ln" x1="420" y1="440" x2="420" y2="454" marker-end="url(#c1-ink)"/>
+        <!-- callers' arrows -->
+        <line class="ln" x1="156" y1="72" x2="204" y2="72" marker-start="url(#c1-ink)" marker-end="url(#c1-ink)"/>
+        <path class="ln" d="M156,414 H174 V154 H204" marker-end="url(#c1-ink)"/>
+        <!-- postgres -->
+        <rect class="note" x="764" y="56" width="190" height="112" rx="6"/>
+        <text class="t-mono" x="776" y="78">WITH</text>
+        <text class="t-mono" x="790" y="96">written_snapshot,</text>
+        <text class="t-mono" x="790" y="114">written_events,</text>
+        <text class="t-mono" x="790" y="132">written_tasks</text>
+        <text class="t-mono" x="776" y="152">SELECT written</text>
+        <rect class="box" x="764" y="190" width="190" height="36" rx="6"/>
+        <text class="t-mono" x="859" y="213" text-anchor="middle">snapshots</text>
+        <rect class="box-acc" x="764" y="236" width="190" height="56" rx="6"/>
+        <text class="t-mono" x="859" y="259" text-anchor="middle" style="font-weight:600">events</text>
+        <text class="t-sub" x="859" y="278" text-anchor="middle">tx = this transaction's id</text>
+        <rect class="box" x="764" y="302" width="190" height="36" rx="6"/>
+        <text class="t-mono" x="859" y="325" text-anchor="middle">transactional_outbox</text>
+        <line class="ln-acc" x1="756" y1="208" x2="756" y2="320"/>
+        <line class="ln-acc" x1="756" y1="208" x2="764" y2="208"/>
+        <line class="ln-acc" x1="756" y1="264" x2="764" y2="264"/>
+        <line class="ln-acc" x1="756" y1="320" x2="764" y2="320"/>
+        <line class="ln-acc" x1="618" y1="275" x2="754" y2="275" marker-end="url(#c1-acc)"/>
+        <text class="t-label t-acc" x="699" y="268" text-anchor="middle">write</text>
+        <line class="ln-mut dash" x1="756" y1="222" x2="636" y2="222" marker-end="url(#c1-mut)"/>
+        <text class="t-label" x="699" y="215" text-anchor="middle">read</text>
+        <!-- consumers -->
+        <rect class="box" x="744" y="388" width="150" height="52" rx="8"/>
+        <text class="t-title" x="819" y="409" text-anchor="middle">Processors</text>
+        <text class="t-sub" x="819" y="427" text-anchor="middle">of the views</text>
+        <line class="ln-acc dash" x1="634" y1="414" x2="742" y2="414" marker-end="url(#c1-acc)"/>
+        <text class="t-label t-acc" x="689" y="406" text-anchor="middle">wake</text>
+        <rect class="box" x="744" y="466" width="230" height="52" rx="8"/>
+        <text class="t-title" x="859" y="487" text-anchor="middle">Task runtime</text>
+        <text class="t-sub" x="859" y="505" text-anchor="middle">claims the tasks later</text>
+        <line class="ln-mut dash" x1="940" y1="338" x2="940" y2="464" marker-end="url(#c1-mut)"/>
+      </svg>
+    </div>
+    <figcaption>Black arrows: the command's own way. The write is one statement with three parts; the tasks are inserted only when the event was. The wake-up reaches the processors of this process only; the task runtime finds the tasks at its next claim.</figcaption>
+  </figure>
+  <dl class="parts">
+    <div><dt>Entry point</dt><dd><code>Cqrs::source(name)</code> gives a <code>Source</code>; <code>execute</code> and <code>execute_with_id</code> find the executor of the aggregate type and start a causation chain from this source. A task handler uses <code>TaskContext::execute</code>, which continues the task's chain.</dd></div>
+    <div><dt>Executor</dt><dd><code>StoreCommandExecutor</code>: the lock registry, the conflict retry policy, one <code>CommandAttempt</code> for its life, the commit wake-up and the observer. A second executor of the same type is like a second process: it has locks of its own.</dd></div>
+    <div><dt>Aggregate lock</dt><dd>A private registry with one line per key that is busy right now; an idle registry is empty. Limits: <code>LockLimits</code>, defaults <code>DEFAULT_LOCK_MAX_WAIT</code> (1 s) and <code>DEFAULT_LOCK_MAX_WAITERS</code> (128).</dd></div>
+    <div><dt>Decision</dt><dd><code>Decide::decide(self, &amp;state, &amp;rules)</code>: a command decides one event or a rejection, pure and synchronous, on the committed state.</dd></div>
+    <div><dt>Task planning</dt><dd>The engine sets a <code>ReactionsPlanner</code>: each aggregate's <code>Reactions::react</code> is one <code>match</code> over its events that plans tasks through <code>Then</code>.</dd></div>
+    <div><dt>Store</dt><dd><code>JournalEventStore</code> loads and commits; its repository <code>PostgresEventRepositoryWithOutbox</code> turns a commit into one statement (<code>persist_with_tasks</code>).</dd></div>
+  </dl>
+</section>
+
+<section id="steps">
+  <h2>One command step by step</h2>
+  <p class="prose">The demo books a seat: <code>POST /api/concerts/{id}/commands</code> with <code>BookSeat</code>. Its handler calls <code>cqrs.source("ui").execute_with_id::&lt;Concert&gt;(command_id, &amp;concert_id, command)</code>; the concert decides <code>SeatBooked</code>, and its reactions plan the task <code>encore_record_ticket</code> for the fan's ledger.</p>
+  <div class="tablewrap">
+    <table class="steps">
+      <thead><tr><th>Step</th><th>What happens</th><th>Storage</th><th>If it fails here</th></tr></thead>
+      <tbody>
+        <tr><td>1. Entry</td><td>The engine finds the executor of <code>Concert</code> and builds the metadata with <code>CommandMetadata::root</code>: the command's id (its <code>#[command_id]</code>, the given id or a new v7) is also its correlation and causation id; the source <code>ui</code> and <code>recorded_at</code> join them. Every event the command commits stores this map.</td><td>none</td><td>No executor of the type: <code>Unavailable</code>, the wiring fault is logged.</td></tr>
+        <tr><td>2. Lock</td><td>The command takes the concert's lock at once when it is free, otherwise it waits in the key's line, first in, first out. The id's text is formatted once here, and every attempt uses it.</td><td>none</td><td>The line already holds 128 waiters, or the lock does not come within 1 s: <code>Unavailable</code>, logged as <code>command refused before it ran</code> with <code>too_many_waiters</code> or <code>timed_out</code>. Nothing is loaded or written.</td></tr>
+        <tr><td>3. Load</td><td><code>JournalEventStore::load_aggregate</code> reads the latest snapshot, then the events after its <code>last_sequence</code>, and applies them in order.</td><td>SELECT … FROM snapshots WHERE aggregate_type = $1 AND aggregate_id = $2; SELECT … FROM events WHERE … AND sequence &gt; $3 ORDER BY sequence</td><td>A storage error: <code>Unavailable</code>. A snapshot that no longer deserializes is ignored and the whole history is loaded. An event that does not decode fails the load.</td></tr>
+        <tr><td>4. Decide</td><td><code>BookSeat</code> decides on the committed state with the aggregate's rules: <code>SeatBooked</code>, or a rejection such as a seat that is taken.</td><td>none</td><td>A rejection: <code>CommandError::Rejected</code>, nothing written (the demo answers 422 with the rejection's code).</td></tr>
+        <tr><td>5. Plan</td><td>The planner applies the event to a copy of the state and runs <code>Concert</code>'s reactions on the <code>Decided</code>: <code>SeatBooked</code> plans <code>encore_record_ticket</code>, with the attempt budget of its type's policy. The core stamps the command's causation on the task and derives its id: a UUID v5 of the aggregate type and id, the command id, the task's format and its ordinal.</td><td>none</td><td>A <code>TaskPlanError</code>: <code>Unavailable</code>, logged once with the category <code>task_plan</code>; nothing written.</td></tr>
+        <tr><td>6. Commit</td><td><code>EventStore::commit</code> hands the event, the snapshot (when this commit crosses a multiple of the interval, 10 in the engine) and the task to <code>persist_with_tasks</code>: one statement. The event gets the sequence <code>last_sequence + 1</code> and, in <code>tx</code>, the id of its transaction, its place in the journal.</td><td>WITH written_snapshot AS (…), written_events AS (INSERT INTO events …), written_tasks AS (INSERT INTO transactional_outbox … WHERE EXISTS (SELECT 1 FROM written_events)) SELECT … AS written</td><td>The sequence or the snapshot's revision is taken: <code>Conflict</code>, the attempt runs again (<a href="#conflicts">next section</a>). A broken connection: <code>Unavailable</code>, and the outcome is unknown: the event may be committed. It is not retried.</td></tr>
+        <tr><td>7. Wake</td><td>A commit with an event wakes the projection processors of <code>Concert</code> in this process (<code>CommitWakeup::wake</code>), before the lock is released.</td><td>none</td><td>Nothing to fail: the wake-up carries no data. A processor that was not waiting finds the commit at its next read.</td></tr>
+        <tr><td>8. Release and report</td><td>The lock passes to the next command in the line. The observer hears a <code>CommandReport</code>: the id, the command, the metadata and the <code>Outcome</code> (<code>Accepted { tasks }</code>, <code>Rejected</code>, <code>Conflict</code>, <code>Unavailable</code>). Then the caller gets <code>CommitReport</code>, the event and the tasks, or <code>CommandError</code>.</td><td>none</td><td>An observer that panics panics the caller; the commit stays. The demo answers 200 with the formats of the tasks, 409 for <code>Conflict</code>, 503 for <code>Unavailable</code>.</td></tr>
+      </tbody>
+    </table>
+  </div>
+  <p class="prose">Steps 3 to 6 are one attempt. The aggregate never sees the outbox: it decides an event, and the reactions turn the event into tasks. A command never runs an effect itself; the effect is a task, and the task commits with the event or not at all.</p>
+</section>
+
+<section id="conflicts">
+  <h2>Conflicts and retries</h2>
+  <p class="prose">Two guards keep one aggregate consistent. Inside a process the lock orders the commands of a key, so commands of one executor never conflict with each other. Between processes, or between two executors of one type, nothing is shared but the database: the write is an optimistic check. The event's primary key is <code>(aggregate_type, aggregate_id, sequence)</code>: of two commands that loaded the same state, the second finds its sequence taken. Without a snapshot the insert is <code>ON CONFLICT DO NOTHING</code> and the statement reports zero written rows; with a snapshot the snapshot's revision check fails first or the primary key raises an error that rolls the snapshot back with the event. Either way the attempt is <code>AttemptError::Conflict</code> and nothing of it was written.</p>
+  <figure>
+    <div class="scroll diagram">
+      <svg viewBox="0 0 1000 286" role="img" aria-label="Node A and node B load concert c-1 at sequence 41. A commits sequence 42 first. B's write of sequence 42 finds it taken and is a conflict; B pauses about 5 ms, reloads at 42 and decides again: either a commit of 43 or a rejection." style="min-width:820px">
+        <defs>
+          <marker id="c2-ink" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-ink" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="c2-acc" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-acc" d="M0,0 L10,5 L0,10 z"/></marker>
+          <marker id="c2-crit" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path class="m-crit" d="M0,0 L10,5 L0,10 z"/></marker>
+        </defs>
+        <text class="t-cap" x="16" y="58">NODE A</text>
+        <text class="t-cap" x="16" y="238">NODE B</text>
+        <rect class="box" x="96" y="34" width="110" height="44" rx="6"/><text class="t-sub" x="151" y="61" text-anchor="middle">load: up to 41</text>
+        <rect class="box" x="226" y="34" width="90" height="44" rx="6"/><text class="t-sub" x="271" y="61" text-anchor="middle">decide</text>
+        <rect class="box-acc" x="336" y="34" width="130" height="44" rx="6"/><text class="t-sub" x="401" y="61" text-anchor="middle">commit 42: won</text>
+        <rect class="box" x="96" y="214" width="110" height="44" rx="6"/><text class="t-sub" x="151" y="241" text-anchor="middle">load: up to 41</text>
+        <rect class="box" x="226" y="214" width="90" height="44" rx="6"/><text class="t-sub" x="271" y="241" text-anchor="middle">decide</text>
+        <rect class="box-crit" x="386" y="214" width="130" height="44" rx="6"/><text class="t-sub" x="451" y="241" text-anchor="middle">commit 42: taken</text>
+        <rect class="note" x="536" y="214" width="110" height="44" rx="6"/><text class="t-sub" x="591" y="234" text-anchor="middle">pause</text><text class="t-label" x="591" y="250" text-anchor="middle">5 ms ± 20 %</text>
+        <rect class="box" x="666" y="214" width="110" height="44" rx="6"/><text class="t-sub" x="721" y="241" text-anchor="middle">load: up to 42</text>
+        <rect class="box-acc" x="796" y="214" width="188" height="44" rx="6"/><text class="t-sub" x="890" y="234" text-anchor="middle">decide again: commit 43</text><text class="t-label" x="890" y="250" text-anchor="middle">or a rejection (seat taken)</text>
+        <line class="ln" x1="206" y1="56" x2="224" y2="56" marker-end="url(#c2-ink)"/>
+        <line class="ln" x1="316" y1="56" x2="334" y2="56" marker-end="url(#c2-ink)"/>
+        <line class="ln" x1="206" y1="236" x2="224" y2="236" marker-end="url(#c2-ink)"/>
+        <line class="ln" x1="316" y1="236" x2="384" y2="236" marker-end="url(#c2-ink)"/>
+        <line class="ln" x1="516" y1="236" x2="534" y2="236" marker-end="url(#c2-ink)"/>
+        <line class="ln" x1="646" y1="236" x2="664" y2="236" marker-end="url(#c2-ink)"/>
+        <line class="ln" x1="776" y1="236" x2="794" y2="236" marker-end="url(#c2-ink)"/>
+        <rect class="frame" x="336" y="116" width="310" height="54" rx="8"/>
+        <text class="t-mono" x="491" y="139" text-anchor="middle">events PRIMARY KEY</text>
+        <text class="t-mono" x="491" y="157" text-anchor="middle">(aggregate_type, aggregate_id, sequence)</text>
+        <line class="ln-acc" x1="401" y1="78" x2="401" y2="114" marker-end="url(#c2-acc)"/>
+        <line class="ln-crit" x1="451" y1="212" x2="451" y2="172" marker-end="url(#c2-crit)"/>
+        <text class="t-label t-crit" x="462" y="196">written = 0 → Conflict</text>
+      </svg>
+    </div>
+    <figcaption>Two nodes take commands for one concert. Each lock is local, so both load the same state; the database lets one write through. The loser repeats the whole attempt on the fresh state, inside its own lock.</figcaption>
+  </figure>
+  <ul class="plain">
+    <li><strong>What is retried.</strong> Only <code>AttemptError::Conflict</code>. A rejection is an answer; a storage error may hide a commit that happened, so it is never repeated (<code>Unavailable</code>).</li>
+    <li><strong>How.</strong> <code>AggregateConflictRetryPolicy::default</code>: three attempts in all, a pause of 5 ms before the second and 10 ms before the third (doubling, at most 50 ms), each ±20 %. After the last conflict the answer is <code>CommandError::Conflict</code>.</li>
+    <li><strong>Inside the lock.</strong> The retry runs while the command still holds its lock, so the next command of the key waits for it and never sees a half-done command.</li>
+    <li><strong>Every attempt starts over.</strong> It reloads the aggregate, decides a clone of the command with a clone of its metadata and plans again from its own decision. The task ids do not change: they are derived from the command id, not from the attempt. Only the tasks of the attempt that committed reach the outbox.</li>
+  </ul>
+</section>
+
+<section id="snapshots">
+  <h2>Snapshots</h2>
+  <p class="prose">With snapshots on (<code>JournalEventStore::with_snapshots</code>; the engine sets 10, <code>DEFAULT_SNAPSHOT_EVERY</code>), a load reads the snapshot and only the events after it. The snapshot is written by the commit that reaches the next multiple of the interval, in the same statement as its event: the state after the event, its <code>last_sequence</code> and a <code>revision</code> one higher than the stored one. The first snapshot of an aggregate is an insert; later ones update the row only where its revision is still the one the attempt loaded, which is a second optimistic check. A snapshot that no longer deserializes after a change of the aggregate's type is not an error: the load reads the whole history, and the next snapshot replaces the old row.</p>
+</section>
+
+<section id="guarantees">
+  <h2>Guarantees</h2>
+  <p class="prose">The numbers refer to <a href="guarantees.md">guarantees.md</a>, which names the code and the tests that hold each guarantee.</p>
+  <div class="two">
+    <div>
+      <p class="verdict">Guaranteed</p>
+      <dl class="claims">
+        <div><dt>One command of a key at a time <span class="g">G-01, G-02</span></dt><dd>Inside a process the commands of one aggregate run one by one, in arrival order; waiting is bounded by time and by the number of waiters.</dd></div>
+        <div><dt>A refusal runs nothing <span class="g">G-03</span></dt><dd>A command refused by the lock loads, plans and writes nothing.</dd></div>
+        <div><dt>One load, one decision per attempt <span class="g">G-04</span></dt><dd>The decision sees the committed state; the planner sees that state and the state after the event.</dd></div>
+        <div><dt>Bounded retry on a conflict <span class="g">G-05</span></dt><dd>Three attempts, each reloading the aggregate and planning its tasks again.</dd></div>
+        <div><dt>Atomic write <span class="g">G-06</span></dt><dd>Event, snapshot and tasks in one statement; at most one event per command; never a task without its event.</dd></div>
+        <div><dt>Tasks only from the committed attempt <span class="g">G-15</span></dt><dd>A rejected or conflicting attempt publishes no task; a refused plan writes nothing <span class="g">G-08</span>.</dd></div>
+        <div><dt>Stable task ids <span class="g">G-13</span></dt><dd>Every attempt of a command plans the same ids; the same command id on the same aggregate cannot publish its tasks twice.</dd></div>
+        <div><dt>Wake before the answer <span class="g">G-09</span></dt><dd>A commit with an event wakes the processors of its aggregate type before the caller is answered.</dd></div>
+        <div><dt>Causation on every event <span class="g">G-12</span></dt><dd>Command, correlation and causation id, source and <code>recorded_at</code> in the metadata of every event.</dd></div>
+      </dl>
+    </div>
+    <div>
+      <p class="verdict no">Not guaranteed</p>
+      <dl class="claims">
+        <div><dt>Order between processes <span class="g">G-11</span></dt><dd>Two processes, or two executors of one type, meet only at the optimistic check: the loser retries, and after three conflicts it gets <code>Conflict</code>.</dd></div>
+        <div><dt>A known outcome after a storage error <span class="g">G-10</span></dt><dd><code>Unavailable</code> may follow a commit that happened. The command is not repeated automatically.</dd></div>
+        <div><dt>A command id that deduplicates events</dt><dd>The command id makes the task ids collide, which fails a repeated write that plans tasks. A repeated command without tasks commits a second event; whether that is allowed is the aggregate's decision.</dd></div>
+        <div><dt>Reading your own write</dt><dd>The answer means the event is in the journal. The views are updated after it, by their processors.</dd></div>
+        <div><dt>Reports in commit order, always</dt><dd>The observer hears the commands of one aggregate in commit order, unless on a multi-threaded runtime the next command commits and reports between the release of the lock and the report.</dd></div>
+      </dl>
+    </div>
+  </div>
+</section>
+
+<section id="weak">
+  <h2>Weak spots and limits</h2>
+  <div class="tablewrap">
+    <table class="weak">
+      <thead><tr><th>Place</th><th>What happens</th><th>How the system reacts</th><th>What you see</th></tr></thead>
+      <tbody>
+        <tr><td>A hot aggregate</td><td>All its commands queue on one lock: a key takes one command per time under the lock (a load, a decision, a plan and one write, with their round trips to the database).</td><td>Commands beyond 128 waiters, or waiting longer than 1 s, are refused at once and write nothing. More nodes do not help one key: they only add conflicts.</td><td><code>Unavailable</code> answers; the warning <code>command refused before it ran</code>.</td></tr>
+        <tr><td>One key on two nodes</td><td>Each node has its own lock; both may load the same state.</td><td>The loser retries inside its lock, three attempts in all, then answers <code>Conflict</code>. Routing the commands of a key to one node keeps conflicts away.</td><td><code>Conflict</code> answers (409 in the demo).</td></tr>
+        <tr><td>Connection lost during the write</td><td>The statement may have committed.</td><td><code>Unavailable</code>, not retried. Repeating the command with the same command id fails if it plans tasks (their ids are taken); without tasks it may commit twice.</td><td>The error <code>command execution failed</code> with the category <code>connection</code>.</td></tr>
+        <tr><td>A caller that drops the command</td><td>A command's future is not cancellation-safe while its write is in flight (an HTTP client that disconnected).</td><td>The event and its tasks may be committed while nobody learns it, and the processors are not woken: they find the event at their next poll. A caller that must know the outcome runs the command in a task of its own (<a href="../cqrsx/README.md#rules-worth-knowing">rules worth knowing</a>).</td><td>Nothing in the answer path.</td></tr>
+        <tr><td>A snapshot of an old shape</td><td>The aggregate's type changed; stored snapshots no longer deserialize.</td><td>Every load reads the whole history until the next snapshot is written over the old row.</td><td>Slower loads, no error.</td></tr>
+        <tr><td>A reaction that fails</td><td>A task that cannot be built refuses the command that decided its event.</td><td>Every such command is <code>Unavailable</code> with nothing written, until the reaction is fixed.</td><td><code>command execution failed</code> with the category <code>task_plan</code>.</td></tr>
+        <tr><td>A slow observer</td><td>The observer runs on the caller's task after the lock is released.</td><td>It delays the answer of its own command, not the next command of the key.</td><td>Answer latency.</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<section id="further">
+  <h2>Further reading</h2>
+  <ul class="plain">
+    <li><a href="components.md#inventory">Components, inventory</a>: every type named here with its contract; <a href="components.md#naming-and-integration-rules">naming and integration rules</a>; the rules an application follows, including the cancellation of a command, in <a href="../cqrsx/README.md#rules-worth-knowing">the core's README</a>.</li>
+    <li><a href="typical_scenario.md">A typical application</a>: aggregate, commands, reactions and the engine, step by step.</li>
+    <li><a href="guarantees.md">Guarantees</a> G-01 to G-15, with the code and the tests behind each.</li>
+    <li><a href="../cqrsx/README.md">cqrsx</a> and <a href="../cqrsx-engine/README.md">cqrsx-engine</a>: the crates, their settings (<code>COMMAND_LOCK_MAX_WAIT_MS</code>, <code>COMMAND_LOCK_MAX_WAITERS</code>, <code>SNAPSHOT_EVERY</code> under the application's prefix) and operations; <a href="crates.md">crates and their boundaries</a>.</li>
+    <li>Next: <a href="read-path.html">read path</a>, how the event reaches the views; <a href="task-path.html">task path</a>, how the task reaches its handler.</li>
+  </ul>
+  <p class="foot">Verified against the code of <code>cqrsx::command</code> (executor, attempt, locks, retry, planner, observer), <code>cqrsx::journal::store</code>, <code>cqrsx::reactions</code>, <code>cqrsx_postgres::outbox</code> and <code>cqrsx_engine</code> (<code>Source</code>, the assembly of the executors). Defaults are the library's and the engine's; an application may set its own.</p>
+</section>
+</div>
+</body>
+</html>

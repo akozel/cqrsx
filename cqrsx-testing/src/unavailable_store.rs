@@ -1,5 +1,5 @@
 //! An event store that is never reachable.
-use crate::mem_store::MemStoreAggregateContext;
+use crate::memory_store::MemoryStoreAggregateContext;
 use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{EventStore, PersistenceError},
@@ -7,18 +7,18 @@ use cqrsx::{
 };
 use std::collections::HashMap;
 
-/// Every call fails with [`PersistenceError::ConnectionError`], which the command boundary
-/// reports as [`Unavailable`](cqrsx::command::CommandGatewayError::Unavailable). Drives the
+/// Every call fails with [`PersistenceError::Connection`], which the command boundary
+/// reports as [`Unavailable`](cqrsx::command::CommandError::Unavailable). Drives the
 /// "storage unavailable" branches of a use case and proves that a path never touches storage.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableStore;
 
 fn unavailable() -> PersistenceError {
-    PersistenceError::ConnectionError("the event store is unavailable".into())
+    PersistenceError::Connection("the event store is unavailable".into())
 }
 
 impl<A: Aggregate> EventStore<A> for UnavailableStore {
-    type Context = MemStoreAggregateContext<A>;
+    type Context = MemoryStoreAggregateContext<A>;
 
     async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         Err(unavailable())
@@ -49,20 +49,20 @@ mod tests {
         let store = UnavailableStore;
         assert!(matches!(
             EventStore::<TestAggregate>::load_events(&store, "id").await,
-            Err(PersistenceError::ConnectionError(error)) if error.to_string() == "the event store is unavailable"
+            Err(PersistenceError::Connection(error)) if error.to_string() == "the event store is unavailable"
         ));
         assert!(matches!(
             EventStore::<TestAggregate>::load_aggregate(&store, "id").await,
-            Err(PersistenceError::ConnectionError(_))
+            Err(PersistenceError::Connection(_))
         ));
-        let context = MemStoreAggregateContext {
+        let context = MemoryStoreAggregateContext {
             aggregate_id: "id".into(),
             aggregate: TestAggregate::default(),
-            current_sequence: 0,
+            last_sequence: 0,
         };
         assert!(matches!(
             store.commit(vec![], context, HashMap::new(), &[]).await,
-            Err(PersistenceError::ConnectionError(_))
+            Err(PersistenceError::Connection(_))
         ));
     }
 }

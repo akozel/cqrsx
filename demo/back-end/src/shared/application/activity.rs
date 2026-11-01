@@ -1,11 +1,12 @@
 //! In-memory activity log: a `tokio::broadcast` channel plus a ring buffer of the last entries so
 //! a new SSE subscriber sees recent history. This is a log, not state — nothing is persisted.
 use chrono::{SecondsFormat, Utc};
+use cqrsx::mutex::lock;
 use serde::Serialize;
 use serde_json::{Map, Value};
 use std::{
     collections::VecDeque,
-    sync::{Arc, Mutex, MutexGuard},
+    sync::{Arc, Mutex},
 };
 use tokio::sync::broadcast;
 
@@ -43,11 +44,6 @@ impl ActivityHub {
         }
     }
 
-    /// A poisoned lock only means another publisher panicked mid-way; the log is still usable.
-    fn backlog(&self) -> MutexGuard<'_, Backlog> {
-        self.backlog.lock().unwrap_or_else(|poisoned| poisoned.into_inner())
-    }
-
     /// Publishes one entry; `fields` must be a JSON object (other values are wrapped as `data`).
     ///
     /// Id assignment, the backlog push and the broadcast happen under one lock, so a subscriber
@@ -58,7 +54,7 @@ impl ActivityHub {
             Value::Object(map) => map,
             other => Map::from_iter([("data".to_owned(), other)]),
         };
-        let mut backlog = self.backlog();
+        let mut backlog = lock(&self.backlog, "activity_backlog");
         let entry = Arc::new(ActivityEntry {
             id: backlog.next_id,
             at: Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true),
@@ -78,7 +74,7 @@ impl ActivityHub {
     /// Recent entries (oldest first) and a live receiver that continues exactly where the
     /// backlog ends.
     pub fn subscribe(&self) -> (Vec<Arc<ActivityEntry>>, broadcast::Receiver<Arc<ActivityEntry>>) {
-        let backlog = self.backlog();
+        let backlog = lock(&self.backlog, "activity_backlog");
         (backlog.entries.iter().cloned().collect(), self.sender.subscribe())
     }
 }

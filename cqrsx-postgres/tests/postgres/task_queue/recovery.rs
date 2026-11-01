@@ -14,7 +14,7 @@ async fn concurrent_recovery_skips_locked_rows_and_reports_each_failed_transitio
     enqueue(&db.pool, tasks.clone()).await;
     let deliveries = claim(&queue).await;
     assert_eq!(deliveries.len(), tasks.len());
-    sqlx::query("UPDATE transactional_outbox SET locked_until = now() - interval '1 second'")
+    sqlx::query("UPDATE transactional_outbox SET lease_until = now() - interval '1 second'")
         .execute(&db.pool)
         .await
         .unwrap();
@@ -95,7 +95,7 @@ async fn a_mid_batch_recovery_error_rolls_back_prior_updates_and_preserves_all_l
     .with_max_attempts(NonZeroU16::new(1).unwrap());
     enqueue(&db.pool, vec![retry.clone(), rejected.clone()]).await;
     let deliveries = claim(&queue).await;
-    sqlx::query("UPDATE transactional_outbox SET locked_until = now() - CASE WHEN id = $1 THEN interval '2 seconds' ELSE interval '1 second' END")
+    sqlx::query("UPDATE transactional_outbox SET lease_until = now() - CASE WHEN id = $1 THEN interval '2 seconds' ELSE interval '1 second' END")
         .bind(retry.id()).execute(&db.pool).await.unwrap();
     let mut before = Vec::new();
     for delivery in &deliveries {
@@ -159,7 +159,7 @@ async fn retries_failed_tasks_and_expired_leases_preserve_identity_and_fence_old
     make_ready(&db.pool, msg.id()).await;
     let second = claim(&queue).await.pop().unwrap();
     assert_eq!(second.attempt().number(), 2);
-    assert_ne!(first.lease().lock_token(), second.lease().lock_token());
+    assert_ne!(first.lease().token(), second.lease().token());
     assert!(!queue.settle(&first, SettlementRequest::Completed).await.unwrap().is_applied());
     expire(&db.pool, msg.id()).await;
     assert!(
@@ -256,7 +256,7 @@ async fn recovery_backoff_keeps_the_bounds_of_redelivery_backoff_per_attempt() {
     let owned = claim(&queue).await;
     assert_eq!(owned.len(), 64);
     for (index, task) in owned.iter().enumerate() {
-        sqlx::query("UPDATE transactional_outbox SET attempts = $2, locked_until = now() - interval '1 second' WHERE id = $1")
+        sqlx::query("UPDATE transactional_outbox SET attempts = $2, lease_until = now() - interval '1 second' WHERE id = $1")
             .bind(task.attempt().task_id())
             .bind(1 + (index / 8) as i32)
             .execute(&db.pool)

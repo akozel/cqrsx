@@ -12,13 +12,13 @@ where
     /// Returns the current view instance.
     fn load(&self, view_id: &str) -> impl Future<Output = Result<Option<V>, PersistenceError>> + Send;
 
-    /// Returns the current view instance with its id, version and last applied event, used by the `ViewProjection`
+    /// Returns the current view instance with its id, revision and last applied event, used by the `ViewProjection`
     /// to update views with committed events.
-    fn load_with_context(&self, view_id: &str) -> impl Future<Output = Result<Option<StoredView<V>>, PersistenceError>> + Send;
+    fn load_stored(&self, view_id: &str) -> impl Future<Output = Result<Option<StoredView<V>>, PersistenceError>> + Send;
 
-    /// Updates the view instance and context, used by the `ViewProjection` to update
+    /// Updates the view instance and its metadata, used by the `ViewProjection` to update
     /// views with committed events.
-    fn update_view(&self, view: V, context: ViewContext) -> impl Future<Output = Result<(), PersistenceError>> + Send;
+    fn update_view(&self, view: V, context: ViewMeta) -> impl Future<Output = Result<(), PersistenceError>> + Send;
 
     /// Every document, ordered by id: by the bytes of the ids (the order of `str`), whatever the store's collation.
     fn list(&self) -> impl Future<Output = Result<Vec<StoredView<V>>, PersistenceError>> + Send;
@@ -29,35 +29,35 @@ where
     fn range(&self, lower: &str, upper: &str) -> impl Future<Output = Result<Vec<StoredView<V>>, PersistenceError>> + Send;
 }
 
-/// One stored document as the queries return it: its id, its optimistic version, the last event of its aggregate it
+/// One stored document as the queries return it: its id, its optimistic revision, the last event of its aggregate it
 /// has applied and the view.
 #[derive(Debug, Clone, PartialEq)]
 pub struct StoredView<V> {
     pub id: String,
-    pub version: i64,
+    pub revision: i64,
     pub last_sequence: usize,
     pub view: V,
 }
 
-/// A data structure maintaining context when updating views.
+/// The stored document's id, revision and last event: what a write needs besides the view.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct ViewContext {
+pub struct ViewMeta {
     /// Unique identifier of the view instance that is being modified.
-    pub view_instance_id: String,
-    /// The current version of the view instance, used for optimistic locking.
-    pub version: i64,
+    pub id: String,
+    /// The current revision of the view instance, used for optimistic locking.
+    pub revision: i64,
     /// The last event of the view's aggregate applied to this document; 0 for a new document.
     /// A document takes only event `last_sequence + 1` (see `ViewProjection`), so a repository
     /// stores it next to the version and writes it with the same optimistic check.
     pub last_sequence: usize,
 }
 
-impl ViewContext {
-    /// Convenience function to create a new [`ViewContext`].
-    pub fn new(view_instance_id: String, version: i64, last_sequence: usize) -> Self {
+impl ViewMeta {
+    /// Convenience function to create a new [`ViewMeta`].
+    pub fn new(id: String, revision: i64, last_sequence: usize) -> Self {
         Self {
-            view_instance_id,
-            version,
+            id,
+            revision,
             last_sequence,
         }
     }

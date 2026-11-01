@@ -25,7 +25,7 @@ services:
   mongo:
     image: docker.io/library/mongo:8.2
     ports:
-      - "127.0.0.1:${ENCORE_MONGO_PORT:-27018}:27017"
+      - "127.0.0.1:${ENCORE_MONGODB_PORT:-27018}:27017"
     volumes:
       - encore-mongo:/data/db
     healthcheck:

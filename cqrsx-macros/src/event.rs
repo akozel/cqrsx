@@ -27,7 +27,7 @@ pub(crate) fn expand_event(input: &DeriveInput) -> syn::Result<TokenStream> {
     Ok(quote! {
         #[automatically_derived]
         impl #impl_generics ::cqrsx::domain::event::Event for #ident #type_generics #where_clause {
-            const NAME: &'static str = #name;
+            const TYPE: &'static str = #name;
             const VERSION: &'static str = #version;
         }
     })
@@ -62,7 +62,7 @@ pub(crate) fn expand_events(input: &DeriveInput) -> syn::Result<TokenStream> {
             quote! { Self::#variant(_) => <#payload as ::cqrsx::domain::event::Event>::#constant, }
         })
     };
-    let (names, versions) = (arms("NAME"), arms("VERSION"));
+    let (names, versions) = (arms("TYPE"), arms("VERSION"));
     let ident = &input.ident;
     let (impl_generics, type_generics, where_clause) = input.generics.split_for_impl();
     Ok(quote! {
@@ -98,7 +98,7 @@ mod tests {
         let expected = quote! {
             #[automatically_derived]
             impl ::cqrsx::domain::event::Event for BookingCancelled {
-                const NAME: &'static str = "BookingCancelled";
+                const TYPE: &'static str = "BookingCancelled";
                 const VERSION: &'static str = "1.0";
             }
         };
@@ -115,7 +115,7 @@ mod tests {
         let expected = quote! {
             #[automatically_derived]
             impl<'a, T: Clone> ::cqrsx::domain::event::Event for Wrapped<'a, T> where T: Send {
-                const NAME: &'static str = "Wrapped";
+                const TYPE: &'static str = "Wrapped";
                 const VERSION: &'static str = "2";
             }
         };
@@ -197,9 +197,9 @@ mod tests {
             impl ::cqrsx::domain::event::Events for ConcertEvent {
                 fn event_type(&self) -> &'static str {
                     match *self {
-                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::domain::event::Event>::NAME,
+                        Self::SeatBooked(_) => <SeatBooked as ::cqrsx::domain::event::Event>::TYPE,
                         Self::BookingCancelled(_) =>
-                            <events::BookingCancelled as ::cqrsx::domain::event::Event>::NAME,
+                            <events::BookingCancelled as ::cqrsx::domain::event::Event>::TYPE,
                     }
                 }
                 fn event_version(&self) -> &'static str {
@@ -221,7 +221,7 @@ mod tests {
             #[automatically_derived]
             impl<T: Send> ::cqrsx::domain::event::Events for Either<T> where T: Sync {
                 fn event_type(&self) -> &'static str {
-                    match *self { Self::One(_) => <T as ::cqrsx::domain::event::Event>::NAME, }
+                    match *self { Self::One(_) => <T as ::cqrsx::domain::event::Event>::TYPE, }
                 }
                 fn event_version(&self) -> &'static str {
                     match *self { Self::One(_) => <T as ::cqrsx::domain::event::Event>::VERSION, }

@@ -209,14 +209,14 @@ impl MailService for HttpMailer {
 mod tests {
     use super::*;
     use axum::{Json, Router, extract::State, http::HeaderMap, routing::post};
-    use cqrsx::task::{format::TaskFormat, policy::Retry};
+    use cqrsx::task::{format::TaskFormat, policy::RetryPause};
     use std::{
         collections::VecDeque,
         sync::{Arc, Mutex},
     };
 
     /// The pauses of the `MAIL` policy under the demo defaults: what the task runtime tells an attempt.
-    const MAIL_PAUSE: Retry = Retry::backoff(Duration::from_secs(1), Duration::from_secs(8));
+    const MAIL_PAUSE: RetryPause = RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8));
 
     /// The mail service, scripted: one `(status, body, delay)` per request, oldest first; when the
     /// script runs out, every request is a delivery. Every request is recorded.

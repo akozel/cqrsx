@@ -2,11 +2,9 @@
 //! of their projections ([`checkpoint_store::MongoCheckpointStore`]), next to each other in the read
 //! database.
 //!
-//! MongoDB is only the read side here: the journal, the outbox and the task queue stay in PostgreSQL. A
-//! checkpoint keeps a position of the PostgreSQL journal, so the two databases are reset together: a journal
-//! recreated under old checkpoints would start below their positions, and its events would never reach the
-//! views. Dropping the read side alone is safe: a processor registers its checkpoint again and rebuilds every
-//! document from the start of the journal.
+//! MongoDB is only the read side here: the journal, the outbox and the task queue stay in PostgreSQL, and a
+//! checkpoint keeps a position of that journal. How the two databases are reset is in the README of `cqrsx-engine`
+//! («Resetting the databases»). Nothing needs to be applied: a collection appears with its first document.
 //!
 //! Every write is one statement on one document; leases compare against the server clock (`$$NOW`, MongoDB
 //! 4.2 or later). Nothing here connects: the application builds the `mongodb::Client` with its own options and
@@ -23,12 +21,12 @@ const DUPLICATE_KEY: i32 = 11000;
 
 /// A driver error as a persistence error: a server out of reach is a connection error, anything else is
 /// unexpected.
-fn persistence(error: Error) -> PersistenceError {
+fn persistence_error(error: Error) -> PersistenceError {
     match error.kind.as_ref() {
         ErrorKind::Io(_) | ErrorKind::ServerSelection { .. } | ErrorKind::ConnectionPoolCleared { .. } => {
-            PersistenceError::ConnectionError(Box::new(error))
+            PersistenceError::Connection(Box::new(error))
         }
-        _ => PersistenceError::UnknownError(Box::new(error)),
+        _ => PersistenceError::Unexpected(Box::new(error)),
     }
 }
 
@@ -85,7 +83,7 @@ pub(crate) mod test_support {
         type Id = String;
         type Command = ();
         type Event = Delta;
-        type Error = Rejected;
+        type Rejection = Rejected;
         type Rules = ();
         fn apply(&mut self, event: Delta) {
             self.balance += i64::from(event.0);
@@ -140,9 +138,9 @@ mod tests {
 
     #[test]
     fn a_server_out_of_reach_is_a_connection_error_and_everything_else_is_unexpected() {
-        assert!(matches!(persistence(io()), PersistenceError::ConnectionError(source) if source.is::<Error>()));
+        assert!(matches!(persistence_error(io()), PersistenceError::Connection(source) if source.is::<Error>()));
         for error in [command(2), write(121), write_concern(64), bson(), custom()] {
-            assert!(matches!(persistence(error), PersistenceError::UnknownError(source) if source.is::<Error>()));
+            assert!(matches!(persistence_error(error), PersistenceError::Unexpected(source) if source.is::<Error>()));
         }
     }
 

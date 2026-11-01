@@ -22,7 +22,7 @@ use std::sync::Arc;
 /// transactional outbox tasks for any other reaction that must happen.
 ///
 /// A handler never executes a command, not even from a task it spawns: it writes its read model and
-/// nothing else, and a follow-up started there would be recorded nowhere, repeated by every replay of the
+/// nothing else, and a follow-up started there would be recorded nowhere, repeated by every rebuild from the
 /// journal and lost by a crash. Plan the follow-up as an outbox task from the command's decision instead
 /// ([`TaskPlanner`](crate::command::planner::TaskPlanner)); the framework does not detect the mistake
 /// (see the naming and integration rules in `doc/components.md`).
@@ -65,7 +65,7 @@ pub trait RebuildableProjection<A: Aggregate>: EventHandler<A> {
     /// aggregate's complete history from its first event, as it was read; `0 < prefix <= history.len()`:
     /// the whole history for a rebuild in one write, `1` for a paced rebuild that then applies the rest
     /// event by event through `handle`. A document that is ahead of `history` (its `last_sequence` is above
-    /// the last event) is newer than the read and is refused with `OptimisticLockError`, so that a reader
+    /// the last event) is newer than the read and is refused with `Conflict`, so that a reader
     /// whose history is stale never rolls a document back: the caller re-reads the history. An empty
     /// history writes nothing.
     async fn rebuild(&self, aggregate_id: &str, history: &[EventEnvelope<A>], prefix: usize) -> Result<(), PersistenceError>;
@@ -86,7 +86,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::persisted::tests::TestAggregate;
+    use crate::journal::store::tests::TestAggregate;
 
     struct Unnamed;
 
@@ -110,7 +110,7 @@ mod tests {
         async fn handle(&self, _: &str, _: &[EventEnvelope<TestAggregate>]) -> Result<(), PersistenceError> {
             match self.0.fetch_add(1, std::sync::atomic::Ordering::SeqCst) {
                 0 => Ok(()),
-                _ => Err(PersistenceError::OptimisticLockError),
+                _ => Err(PersistenceError::Conflict),
             }
         }
     }
@@ -122,10 +122,7 @@ mod tests {
         let boxed: Vec<Box<dyn EventHandler<TestAggregate>>> = vec![Box::new(erased.clone()), Box::new(shared.clone())];
         assert_eq!(boxed.iter().map(|h| h.name()).collect::<Vec<_>>(), ["counting", "counting"]);
         boxed[0].handle("id", &[]).await.unwrap();
-        assert!(matches!(
-            boxed[1].handle("id", &[]).await,
-            Err(PersistenceError::OptimisticLockError)
-        ));
+        assert!(matches!(boxed[1].handle("id", &[]).await, Err(PersistenceError::Conflict)));
         assert_eq!(shared.0.load(std::sync::atomic::Ordering::SeqCst), 2);
     }
 

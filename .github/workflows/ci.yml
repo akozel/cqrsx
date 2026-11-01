@@ -81,6 +81,10 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v6
 
+      # Relative links and anchors of the tracked .md and .html files: no compilation, so it goes first.
+      - name: Check the links of the documentation
+        run: python3 .github/scripts/check-links.py
+
       - name: Install Rust toolchain
         run: rustup toolchain install --no-self-update
 
@@ -122,7 +126,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: property-regressions
-          path: target/stage4/proptest-regressions.txt
+          path: target/proptest-regressions.txt
           if-no-files-found: ignore
 
   coverage:
@@ -214,7 +218,7 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: commit-property-regressions
-          path: target/stage4/proptest-regressions.txt
+          path: target/proptest-regressions.txt
           if-no-files-found: ignore
 
   demo:

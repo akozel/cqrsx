@@ -2,7 +2,7 @@
 //! a command, the task its reaction published, the command of the task's chain, the view; the pools the engine opens.
 use crate::{database::Database, modules::*};
 use cqrsx::{command::causation::CORRELATION_ID, journal::feed::Position};
-use cqrsx_engine::{Cqrs, build::BuildError, mongodb::MongoDb, postgres::Postgres, settings::Defaults, views::JournalTotals};
+use cqrsx_engine::{Cqrs, build::BuildError, postgres::Postgres, settings::Defaults, views::JournalTotals};
 use cqrsx_fixtures::mongo::Mongo;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
@@ -14,7 +14,7 @@ const SHOP: Defaults = Defaults::new("shop-test", &[]);
 fn url(database: &Database) -> String {
     let options = database.pool.connect_options();
     format!(
-        "postgresql://{}:outbox_test@{}:{}/{}?sslmode=disable",
+        "postgresql://{}:cqrsx_test@{}:{}/{}?sslmode=disable",
         options.get_username(),
         options.get_host(),
         options.get_port(),
@@ -26,7 +26,7 @@ fn url(database: &Database) -> String {
 fn variables(url: String, read_db: String) -> impl Fn(&str) -> Option<String> + Send + Sync + 'static {
     move |name| match name {
         "SHOP_DATABASE_URL" => Some(url.clone()),
-        "SHOP_READ_DB" => Some(read_db.clone()),
+        "SHOP_MONGODB_DATABASE" => Some(read_db.clone()),
         "SHOP_ATTEMPTS" => Some("4".to_owned()),
         _ => None,
     }
@@ -36,7 +36,7 @@ fn variables(url: String, read_db: String) -> impl Fn(&str) -> Option<String> + 
 async fn book_and_follow_the_chain(cqrs: &Cqrs, outbox: &Outbox) {
     let booking_id = Uuid::now_v7();
     let booked = cqrs
-        .from("ui")
+        .source("ui")
         .execute::<Show>(
             &"s-1".into(),
             BookSeat {
@@ -105,11 +105,11 @@ fn engine(url: String, read_db: String, outbox: &Arc<Outbox>) -> cqrsx_engine::b
 /// G-09, G-11, G-27: the journal, the outbox and the queue in PostgreSQL, the halls and their checkpoint in MongoDB.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_modules_run_on_postgres_with_their_views_in_mongodb() {
-    let (database, mongo) = (Database::new().await, Mongo::new().await);
+    let (database, mongo) = (Database::new().await, Mongo::start().await);
     let outbox = Arc::new(Outbox::default());
     let read_db = mongo.database.name().to_owned();
     let cqrs = engine(url(&database), read_db, &outbox)
-        .projections(MongoDb)
+        .projections(cqrsx_engine::mongodb::Mongo)
         .mongodb_client(mongo.database.client().clone())
         .build()
         .await
@@ -131,7 +131,7 @@ async fn the_modules_run_on_postgres_with_their_views_in_mongodb() {
 async fn the_modules_run_on_postgres_with_their_views_in_postgres() {
     let database = Database::new().await;
     sqlx::raw_sql(
-        "CREATE TABLE halls (view_id TEXT COLLATE \"C\" PRIMARY KEY, version BIGINT CHECK (version >= 0), \
+        "CREATE TABLE halls (view_id TEXT COLLATE \"C\" PRIMARY KEY, revision BIGINT CHECK (revision >= 0), \
          last_sequence BIGINT NOT NULL DEFAULT 0, payload JSON NOT NULL)",
     )
     .execute(&database.pool)
@@ -144,7 +144,7 @@ async fn the_modules_run_on_postgres_with_their_views_in_postgres() {
         .await
         .unwrap();
     book_and_follow_the_chain(&cqrs, &outbox).await;
-    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM projection_checkpoints WHERE projection_name = 'halls'")
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM projection_checkpoints WHERE projection = 'halls'")
         .fetch_one(&database.pool)
         .await
         .unwrap();
@@ -178,7 +178,7 @@ async fn the_engine_opens_its_pools_as_the_plan_says() {
         }
     })
     .event_store(Postgres)
-    .projections(MongoDb)
+    .projections(cqrsx_engine::mongodb::Mongo)
     .module(box_office)
     .build()
     .await;
@@ -198,7 +198,7 @@ async fn the_engine_opens_its_pools_as_the_plan_says() {
             _ => None,
         })
         .event_store(Postgres)
-        .projections(MongoDb)
+        .projections(cqrsx_engine::mongodb::Mongo)
         .build()
         .await
         .err()
@@ -217,7 +217,7 @@ async fn serve_runs_the_tasks_on_postgres_until_the_signal() {
     let database = Database::new().await;
     let outbox = Arc::new(Outbox::default());
     let cqrs = engine(url(&database), "unused".into(), &outbox).build().await.unwrap();
-    cqrs.from("ui")
+    cqrs.source("ui")
         .execute::<Show>(
             &"s-1".into(),
             BookSeat {

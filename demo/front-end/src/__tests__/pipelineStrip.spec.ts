@@ -240,7 +240,7 @@ describe('PipelineStrip', () => {
     expect(tokens(w)).toHaveLength(0)
   })
 
-  it('dims the projection after a wipe and runs the replay dash on both events → read database edges', async () => {
+  it('dims the projection after a wipe and runs the Encore! dash on both events → read database edges', async () => {
     w = mountStrip()
     useConcertsStore().stale = true
     await w.vm.$nextTick()
@@ -249,13 +249,13 @@ describe('PipelineStrip', () => {
 
     useRebuildStore().status = {
       ...useRebuildStore().status,
-      rebuild: { rebuild_id: 'r-1', pace_ms: 0, started_at: '', keys_total: 3 },
+      running: { rebuild_id: 'r-1', pace_ms: 0, started_at: '', keys_total: 3 },
     }
     await w.vm.$nextTick()
     expect(
       w.findAll('path.pipe-edge-flow').map((p) => p.element.parentElement?.getAttribute('data-id')),
     ).toEqual(['store-read_db', 'fan_store-read_db'])
-    expect(w.findAll('text.pipe-edge-label').map((t) => t.text())).toEqual(['⏪ replay', '⏪ replay'])
+    expect(w.findAll('text.pipe-edge-label').map((t) => t.text())).toEqual(['⏪ Encore!', '⏪ Encore!'])
   })
 
   it('renders the English labels too', async () => {

@@ -42,11 +42,11 @@ use std::{collections::HashMap, fmt};
 /// # use cqrsx::projection::EventHandler;
 /// # use cqrsx::view::View;
 /// # use cqrsx::domain::command::Decide;
-/// # use cqrsx::journal::repository::PersistedEventRepository;
+/// # use cqrsx::journal::repository::EventRepository;
 /// # use cqrsx::journal::PersistenceError;
 /// # use cqrsx::journal::serialized_event::SerializedEvent;
 /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-/// # use cqrsx::view::repository::ViewContext;
+/// # use cqrsx::view::repository::ViewMeta;
 /// # use cqrsx::view::repository::ViewRepository;
 /// #
 /// # #[derive(Serialize, Deserialize, Default)]
@@ -62,7 +62,7 @@ use std::{collections::HashMap, fmt};
 /// #     type Id = String;
 /// #     type Command = CustomerCommand;
 /// #     type Event = CustomerEvent;
-/// #     type Error = CustomerError;
+/// #     type Rejection = CustomerError;
 /// #     type Rules = CustomerService;
 /// #
 /// #     fn apply(&mut self, event: Self::Event) {
@@ -181,7 +181,7 @@ pub trait Events: Serialize + DeserializeOwned + Clone + PartialEq + fmt::Debug 
 ///     BookingCancelled(BookingCancelled),
 /// }
 ///
-/// assert_eq!((SeatBooked::NAME, SeatBooked::VERSION), ("SeatBooked", "1.0"));
+/// assert_eq!((SeatBooked::TYPE, SeatBooked::VERSION), ("SeatBooked", "1.0"));
 /// let cancelled = ConcertEvent::BookingCancelled(BookingCancelled { seat: "B4".into(), refund: 80 });
 /// assert_eq!(cancelled.event_type(), "BookingCancelled");
 /// assert_eq!(cancelled.event_version(), "2.0");
@@ -246,7 +246,7 @@ pub trait Events: Serialize + DeserializeOwned + Clone + PartialEq + fmt::Debug 
 )]
 pub trait Event {
     /// The name stored with every event of the type: `event_type`.
-    const NAME: &'static str;
+    const TYPE: &'static str;
     /// The version stored with every event of the type: `event_version`.
     const VERSION: &'static str;
 }

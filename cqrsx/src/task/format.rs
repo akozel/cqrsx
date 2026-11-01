@@ -33,17 +33,17 @@ impl TaskFormat {
     }
 
     /// The format of `T`. Its constants obey the rules of [`try_new`](Self::try_new), checked when the compiler
-    /// instantiates this function for `T`: a payload type with an empty `TASK_TYPE` or a `TASK_VERSION` below 1 fails
+    /// instantiates this function for `T`: a payload type with an empty `TYPE` or a `VERSION` below 1 fails
     /// `cargo build` (a check made after monomorphization, which `cargo check` may not report), whether its
     /// `Task` is derived or written by hand.
     pub fn of<T: Task>() -> Self {
         const {
-            assert!(!T::TASK_TYPE.is_empty(), "the task type must not be empty");
-            assert!(T::TASK_VERSION > 0, "the task version must be positive");
+            assert!(!T::TYPE.is_empty(), "the task type must not be empty");
+            assert!(T::VERSION > 0, "the task version must be positive");
         }
         Self {
-            task_type: T::TASK_TYPE.to_owned(),
-            task_version: T::TASK_VERSION,
+            task_type: T::TYPE.to_owned(),
+            task_version: T::VERSION,
         }
     }
     pub fn task_type(&self) -> &str {

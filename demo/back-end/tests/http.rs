@@ -15,7 +15,7 @@ use cqrsx::{
 use cqrsx_engine::{
     Cqrs,
     build::Builder,
-    mongodb::MongoDb,
+    mongodb::Mongo,
     postgres::{Postgres, PostgresPools},
 };
 use encore_backend::{
@@ -48,8 +48,8 @@ use uuid::Uuid;
 fn modules() -> Builder {
     Cqrs::from_lookup("ENCORE", |name| match name {
         "ENCORE_MAIL_SERVICE_URL" => Some("http://127.0.0.1:1".to_owned()),
-        "ENCORE_REPLAY_SLOW_DELAY_MS" => Some("0".to_owned()),
-        "ENCORE_READ_DB" => Some("encore_read_test".to_owned()),
+        "ENCORE_REBUILD_SLOW_PACE_MS" => Some("0".to_owned()),
+        "ENCORE_MONGODB_DATABASE" => Some("encore_read_test".to_owned()),
         _ => None,
     })
     .defaults(DEMO_DEFAULTS)
@@ -86,7 +86,7 @@ async fn app() -> App {
     let cqrs = modules()
         .event_store(Postgres)
         .postgres_pools(pools)
-        .projections(MongoDb)
+        .projections(Mongo)
         .mongodb_client(lazy_mongo().await)
         .build()
         .await
@@ -118,7 +118,7 @@ async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrs>) {
         city: "C".into(),
         date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
     };
-    let ui = cqrs.from("ui");
+    let ui = cqrs.source("ui");
     ui.execute::<Concert>(&concert_id, ConcertCommand::AnnounceConcert(announce))
         .await
         .unwrap();
@@ -143,13 +143,13 @@ async fn app_reading(halls: Vec<StoredView<ConcertHallView>>, wallets: Vec<Store
     let hall_documents = cqrs.documents::<ConcertHallView, Concert>().unwrap();
     for document in halls {
         hall_documents
-            .put(&document.id, document.version, document.last_sequence, &document.view)
+            .put(&document.id, document.revision, document.last_sequence, &document.view)
             .unwrap();
     }
     let wallet_documents = cqrs.documents::<FanWalletView, Fan>().unwrap();
     for document in wallets {
         wallet_documents
-            .put(&document.id, document.version, document.last_sequence, &document.view)
+            .put(&document.id, document.revision, document.last_sequence, &document.view)
             .unwrap();
     }
     Arc::new(cqrs).router()
@@ -198,13 +198,13 @@ async fn health_and_config_need_no_storage() {
         "the cast is a demo prop, served by the sidecar"
     );
     assert_eq!(
-        body["replay_slow_delay_ms"], 0,
+        body["rebuild_slow_pace_ms"], 0,
         "the slow-motion pause the UI asks Encore! for"
     );
     // MongoDB does not answer: the status says so instead of failing, and nothing is registered yet.
     let (status, body) = send(&app.router, get("/api/projections/status")).await;
     assert_eq!(
-        (status, body["state"].as_str(), body["stale"].as_bool()),
+        (status, body["state"].as_str(), body["from_cache"].as_bool()),
         (StatusCode::OK, Some("starting"), Some(true))
     );
 }
@@ -299,7 +299,7 @@ async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
     let (router, cqrs) = app_with_checkpoints("node-a").await;
     let (status, body) = send(&router, get("/api/projections/status")).await;
     assert_eq!(
-        (status, body["state"].as_str(), body["stale"].as_bool()),
+        (status, body["state"].as_str(), body["from_cache"].as_bool()),
         (StatusCode::OK, Some("live"), Some(false))
     );
     let names: Vec<&str> = body["projections"]
@@ -434,16 +434,16 @@ async fn read_models_are_served_in_the_documented_shapes() {
         total_spent: price,
         last_sequence: 1,
     };
-    let stored = |id: &str, version: i64, view: FanWalletView| StoredView {
+    let stored = |id: &str, revision: i64, view: FanWalletView| StoredView {
         id: id.into(),
-        version,
+        revision,
         last_sequence: 1,
         view,
     };
     let router = app_reading(
         vec![StoredView {
             id: "c-1".into(),
-            version: 3,
+            revision: 3,
             last_sequence: 2,
             view: hall.clone(),
         }],
@@ -458,10 +458,10 @@ async fn read_models_are_served_in_the_documented_shapes() {
     assert_eq!(
         body,
         json!([{ "concert_id": "c-1", "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21", "sold": 1,
-                 "capacity": 40, "revenue": 80, "sold_out": false, "last_sequence": 2, "version": 3 }])
+                 "capacity": 40, "revenue": 80, "sold_out": false, "last_sequence": 2, "revision": 3 }])
     );
     let (_, body) = send(&router, get("/api/concerts/c-1")).await;
-    assert_eq!(body, json!({ "concert_id": "c-1", "version": 3, "view": hall }));
+    assert_eq!(body, json!({ "concert_id": "c-1", "revision": 3, "view": hall }));
     let (_, body) = send(&router, get("/api/fans/fox/wallet")).await;
     let ticket = |concert: &str, price: i64| {
         json!({ "concert_id": concert, "seat": "B4", "price": price, "state": "active", "sequence": 1,
@@ -472,8 +472,8 @@ async fn read_models_are_served_in_the_documented_shapes() {
         json!({
             "fan_id": "fox",
             "ledgers": [
-                { "concert_id": "muse-2027-01-16", "version": 2, "last_sequence": 1 },
-                { "concert_id": "radiohead-2026-11-21", "version": 1, "last_sequence": 1 },
+                { "concert_id": "muse-2027-01-16", "revision": 2, "last_sequence": 1 },
+                { "concert_id": "radiohead-2026-11-21", "revision": 1, "last_sequence": 1 },
             ],
             "view": {
                 "fan_id": "fox", "fan_name": "Fox",

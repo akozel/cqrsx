@@ -1,4 +1,4 @@
-//! `#[derive(Rejection)]`: a business refusal as the API and the activity feed report it, its code and its params.
+//! `#[derive(Rejection)]`: a business refusal as the API and the activity feed report it, its code and its parameters.
 use crate::attribute::{Pairs, not_empty};
 use heck::ToSnakeCase;
 use proc_macro2::TokenStream;
@@ -6,7 +6,7 @@ use quote::quote;
 use syn::{Data, DeriveInput, Error, Fields, Ident, LitStr, ext::IdentExt};
 
 /// `impl ::cqrsx::domain::rejection::Rejection` for an enum of rejections: the code of a variant is its name in snake
-/// case unless `#[rejection(code = "…")]` gives it, its params are its named fields as a JSON object (a unit variant
+/// case unless `#[rejection(code = "…")]` gives it, its parameters are its named fields as a JSON object (a unit variant
 /// has `{}`).
 pub(crate) fn expand_rejection(input: &DeriveInput) -> syn::Result<TokenStream> {
     let Data::Enum(data) = &input.data else {
@@ -44,7 +44,7 @@ pub(crate) fn expand_rejection(input: &DeriveInput) -> syn::Result<TokenStream> 
             Fields::Unnamed(_) => {
                 return Err(Error::new_spanned(
                     variant,
-                    "`#[derive(Rejection)]` reports named fields as params: a tuple variant has no names",
+                    "`#[derive(Rejection)]` reports named fields as parameters: a tuple variant has no names",
                 ));
             }
         };
@@ -61,7 +61,7 @@ pub(crate) fn expand_rejection(input: &DeriveInput) -> syn::Result<TokenStream> 
             fn code(&self) -> &'static str {
                 match *self { #(#code_arms)* }
             }
-            fn params(&self) -> ::cqrsx::__private::serde_json::Value {
+            fn parameters(&self) -> ::cqrsx::__private::serde_json::Value {
                 match *self { #(#params_arms)* }
             }
         }
@@ -103,7 +103,7 @@ mod tests {
                         Self::Empty { .. } => "empty",
                     }
                 }
-                fn params(&self) -> ::cqrsx::__private::serde_json::Value {
+                fn parameters(&self) -> ::cqrsx::__private::serde_json::Value {
                     match *self {
                         Self::ConcertNotFound => ::cqrsx::__private::serde_json::json!({}),
                         Self::SeatTaken { ref seat, ref by } =>
@@ -125,7 +125,7 @@ mod tests {
                 fn code(&self) -> &'static str {
                     match *self { Self::Late { .. } => "late", }
                 }
-                fn params(&self) -> ::cqrsx::__private::serde_json::Value {
+                fn parameters(&self) -> ::cqrsx::__private::serde_json::Value {
                     match *self { Self::Late { ref by } => ::cqrsx::__private::serde_json::json!({ "by": by }), }
                 }
             }
@@ -170,7 +170,7 @@ mod tests {
             #[automatically_derived]
             impl ::cqrsx::domain::rejection::Rejection for Never {
                 fn code(&self) -> &'static str { match *self {} }
-                fn params(&self) -> ::cqrsx::__private::serde_json::Value { match *self {} }
+                fn parameters(&self) -> ::cqrsx::__private::serde_json::Value { match *self {} }
             }
         };
         assert_eq!(expanded.to_string(), expected.to_string());
@@ -180,7 +180,7 @@ mod tests {
     fn a_tuple_variant_is_refused() {
         assert_eq!(
             refusal(&parse_quote! { enum ConcertError { SoldOut, SeatTaken(SeatId, String) } }),
-            "`#[derive(Rejection)]` reports named fields as params: a tuple variant has no names"
+            "`#[derive(Rejection)]` reports named fields as parameters: a tuple variant has no names"
         );
     }
 

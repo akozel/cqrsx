@@ -71,8 +71,8 @@ export const useCommandsStore = defineStore('commands', () => {
     if (response.outcome === 'accepted') {
       emit('accepted')
       if (!options.quiet) pushToast({ kind: 'success', text: `${body.type}${seat ? ` ${seat}` : ''}` })
-      // Accepted = in the ledger; the hall follows a moment later (D-17). Reading it now would show the seat as
-      // it was, so the screen waits for the hall's projection.updated in the feed, with one fallback refresh.
+      // Accepted = in the journal; the hall follows a moment later (D-17). Reading it now would show the seat as
+      // it was, so the screen waits for the hall's projection.applied in the feed, with one fallback refresh.
       // The wallet follows the task chain the same way.
       concerts.refreshFallback()
     } else {
@@ -80,7 +80,7 @@ export const useCommandsStore = defineStore('commands', () => {
       else emit('failed', response.error?.code ?? response.outcome)
       const code = response.error?.code ?? response.outcome
       if (!options.quiet) pushToast({ kind: 'error', code, params: response.error?.params })
-      // Nothing was written, but the screen may be behind the ledger the aggregate judged by: read it again.
+      // Nothing was written, but the screen may be behind the journal the aggregate judged by: read it again.
       void concerts.refreshAll()
     }
     return response

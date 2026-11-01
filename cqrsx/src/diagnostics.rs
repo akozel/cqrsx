@@ -5,7 +5,7 @@
 //! - [`safe_type`]: a name chosen by the application as a log field, never a free text;
 //! - [`StorageFailure`]: the fixed category and the code of a failed storage operation. An adapter wraps the error of
 //!   its driver in it; the core finds it in the chain of sources of a failed command or projection batch and writes
-//!   `storage_category` and `sqlstate` fields, without knowing the driver.
+//!   `storage_category` and `storage_code` fields, without knowing the driver.
 //!
 //! The log lines of the core are private: their fields are fixed, and no id, payload or error text reaches them.
 use crate::projection::processor::{Operation, observer::FailureCategory};
@@ -25,7 +25,7 @@ pub fn safe_type(value: &str) -> &str {
 /// ...) and the storage's own `code` (for PostgreSQL, the SQLSTATE), never the message of the driver.
 ///
 /// A storage adapter wraps the error of its driver in it where the error becomes a [`PersistenceError`] (or another
-/// error of the core); the core then logs `storage_category` and `sqlstate` for a failed command or projection batch.
+/// error of the core); the core then logs `storage_category` and `storage_code` for a failed command or projection batch.
 /// The wrapper is transparent: `Display`, `Debug` and [`source`](Error::source) are those of the cause, so the text of
 /// every error that holds it is the one the driver's error gave. To reach the driver's error, find the `StorageFailure`
 /// in the chain of sources (`downcast_ref::<StorageFailure>()`) and take [`cause`](Self::cause).
@@ -82,7 +82,7 @@ impl Error for StorageFailure {
 }
 
 /// The first [`StorageFailure`] in `source`'s chain: the only technical detail safe to log.
-fn find_storage<'e>(source: &'e (dyn Error + 'static)) -> Option<&'e StorageFailure> {
+fn find_storage_failure<'e>(source: &'e (dyn Error + 'static)) -> Option<&'e StorageFailure> {
     let mut current = Some(source);
     while let Some(error) = current {
         if let Some(failure) = error.downcast_ref::<StorageFailure>() {
@@ -94,11 +94,11 @@ fn find_storage<'e>(source: &'e (dyn Error + 'static)) -> Option<&'e StorageFail
 }
 
 pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, source: &(dyn std::error::Error + 'static)) {
-    // These details are inspected before CommandGatewayError intentionally discards
+    // These details are inspected before CommandError intentionally discards
     // technical sources. They never change the outward error or retry policy.
-    if let Some(failure) = find_storage(source) {
+    if let Some(failure) = find_storage_failure(source) {
         tracing::error!(component = "command", operation = "execute", aggregate_type = safe_type(aggregate_type), category,
-            storage_category = failure.category(), sqlstate = ?failure.code(), "command execution failed");
+            storage_category = failure.category(), storage_code = ?failure.code(), "command execution failed");
         return;
     }
     tracing::error!(
@@ -142,10 +142,10 @@ pub(crate) fn log_projection_batch_failure(
     jobs: usize,
     source: &(dyn std::error::Error + 'static),
 ) {
-    if let Some(failure) = find_storage(source) {
+    if let Some(failure) = find_storage_failure(source) {
         tracing::error!(component = "projection", operation, projection = safe_type(projection),
             aggregate_type = safe_type(aggregate_type), jobs, storage_category = failure.category(),
-            sqlstate = ?failure.code(), "projection batch failed");
+            storage_code = ?failure.code(), "projection batch failed");
         return;
     }
     tracing::error!(
@@ -188,13 +188,13 @@ pub(crate) fn log_poisoned_lock(lock: &'static str) {
 
 /// A projection processor changed state: a lease acquired, lost or released, a rebuild started, finished
 /// or interrupted, a key healed. `projection` is the projection's name, chosen by the application.
-pub(crate) fn log_projection_event(projection: &str, aggregate_type: &str, event: &'static str) {
+pub(crate) fn log_projection_change(projection: &str, aggregate_type: &str, change: &'static str) {
     tracing::info!(
         component = "projection",
         projection = safe_type(projection),
         aggregate_type = safe_type(aggregate_type),
-        event,
-        "projection processor event"
+        change,
+        "projection processor changed"
     );
 }
 
@@ -223,6 +223,7 @@ pub(crate) fn log_task_failure(task: &crate::worker::queue::settlement::TaskFail
     let task_type = task.format.task_type();
     let safe_type = crate::diagnostics::safe_type(task_type);
     tracing::error!(
+        component = "task",
         task_id = %task.task_id,
         task_type = %safe_type,
         task_version = task.format.task_version(),
@@ -236,6 +237,7 @@ pub(crate) fn log_task_failure(task: &crate::worker::queue::settlement::TaskFail
 /// lease token reach the log: the message may hold the payload, the token fences the lease.
 pub(crate) fn log_task_handler_panic(attempt: &crate::task::attempt::TaskAttempt) {
     tracing::error!(
+        component = "task",
         task_id = %attempt.task_id(),
         task_type = %safe_type(attempt.format().task_type()),
         task_version = attempt.format().task_version(),
@@ -279,10 +281,10 @@ pub(crate) mod test_support {
             &StorageFailure::new("prime", None, io::Error::other("prime")),
         );
         log_projection_batch_panic("prime", "prime", "prime", 1);
-        log_projection_event("prime", "prime", "prime");
+        log_projection_change("prime", "prime", "prime");
         log_poisoned_lock("prime");
         log_broken_invariant("prime", "prime");
-        log_projection_failure("prime", "prime", Operation::Page, FailureCategory::Unknown, 1);
+        log_projection_failure("prime", "prime", Operation::Page, FailureCategory::Unexpected, 1);
     }
 }
 
@@ -369,7 +371,7 @@ mod tests {
             "aggregate_type=\"unknown\"",
             "category=\"deserialization\"",
             "storage_category=\"database\"",
-            "sqlstate=Some(\"23505\")",
+            "storage_code=Some(\"23505\")",
         ] {
             assert!(log.contains(field), "missing {field}: {log}");
         }
@@ -381,7 +383,7 @@ mod tests {
         assert_eq!(log.lines().count(), 1);
         assert!(log.contains("category=\"unexpected\""));
         assert!(!log.contains("storage_category"));
-        assert!(!log.contains("sqlstate"));
+        assert!(!log.contains("storage_code"));
         assert!(!log.contains("private_"));
     }
 
@@ -391,7 +393,7 @@ mod tests {
         let (_, log) = test_support::capture(async { log_command_failure("Account", "connection", &failure) }).await;
         assert_eq!(log.lines().count(), 1);
         assert!(
-            log.contains("storage_category=\"pool_closed\"") && log.contains("sqlstate=None"),
+            log.contains("storage_category=\"pool_closed\"") && log.contains("storage_code=None"),
             "{log}"
         );
         assert!(!log.contains("private_"));
@@ -399,7 +401,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_projection_batch_failure_logs_the_code_of_the_storage_failure() {
-        let source = crate::journal::PersistenceError::ConnectionError(Box::new(StorageFailure::new(
+        let source = crate::journal::PersistenceError::Connection(Box::new(StorageFailure::new(
             "database",
             Some("40001".into()),
             std::io::Error::other("private_driver"),
@@ -408,7 +410,7 @@ mod tests {
             test_support::capture(async { log_projection_batch_failure("halls", "Concert", "deliver", 2, &source) }).await;
         assert_eq!(log.lines().count(), 1, "{log}");
         assert!(
-            log.contains("storage_category=\"database\"") && log.contains("sqlstate=Some(\"40001\")"),
+            log.contains("storage_category=\"database\"") && log.contains("storage_code=Some(\"40001\")"),
             "{log}"
         );
         assert!(!log.contains("private_"), "{log}");
@@ -437,7 +439,7 @@ mod tests {
 
     #[tokio::test]
     async fn projection_batch_diagnostics_log_one_safe_event_per_batch_with_the_storage_category() {
-        let source = crate::journal::PersistenceError::UnknownError(Box::new(StorageFailure::new(
+        let source = crate::journal::PersistenceError::Unexpected(Box::new(StorageFailure::new(
             "pool_timeout",
             None,
             std::io::Error::other("private_driver"),
@@ -484,13 +486,13 @@ mod tests {
 
 #[cfg(test)]
 mod projection_tests {
-    use super::{FailureCategory, Operation, log_projection_event, log_projection_failure, test_support};
+    use super::{FailureCategory, Operation, log_projection_change, log_projection_failure, test_support};
 
     #[tokio::test]
     async fn projection_diagnostics_name_the_projection_safely_and_carry_fixed_fields_only() {
         let (_, log) = test_support::capture_at(tracing::Level::INFO, async {
-            log_projection_event("concert_halls", "Concert", "lease acquired");
-            log_projection_event("private\nmail@example.com", "Concert", "rebuild finished");
+            log_projection_change("concert_halls", "Concert", "lease acquired");
+            log_projection_change("private\nmail@example.com", "Concert", "rebuild finished");
             log_projection_failure("concert_halls", "Concert", Operation::Page, FailureCategory::Connection, 3);
         })
         .await;
@@ -498,10 +500,10 @@ mod projection_tests {
         assert_eq!(lines.len(), 3, "{log}");
         assert!(
             lines[0].contains("INFO")
-                && lines[0].contains("projection processor event")
+                && lines[0].contains("projection processor changed")
                 && lines[0].contains("projection=\"concert_halls\"")
                 && lines[0].contains("aggregate_type=\"Concert\"")
-                && lines[0].contains("event=\"lease acquired\""),
+                && lines[0].contains("change=\"lease acquired\""),
             "{log}"
         );
         assert!(lines[1].contains("projection=\"unknown\""), "{log}");
@@ -527,7 +529,7 @@ mod task_failure_tests {
     async fn confirmed_failure_events_contain_identity_and_safe_reason_only() {
         let (_, log) = test_support::capture(async {
             for cause in [
-                TaskFailureCause::PermanentRejection,
+                TaskFailureCause::HandlerFailure,
                 TaskFailureCause::AttemptLimitReached,
                 TaskFailureCause::LeaseExpired,
             ] {
@@ -549,6 +551,7 @@ mod task_failure_tests {
         })
         .await;
         assert_eq!(log.lines().count(), 4);
+        assert_eq!(log.matches("component=\"task\"").count(), 4, "{log}");
         assert!(log.contains("task_id=00000000-0000-0000-0000-000000000001"));
         assert!(log.contains("task_type=create_account task_version=1 attempt=2"));
         for reason in ["permanent failure", "retry limit reached", "worker lease expired"] {

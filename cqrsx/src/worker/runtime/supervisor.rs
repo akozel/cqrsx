@@ -37,7 +37,7 @@ pub async fn run<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapt
     let _cancel_on_exit = shutdown.clone().drop_guard();
     config.validate_for_storage_timeout(executor.storage_timeout())?;
     run_prepared(
-        super::RuntimeContext::new(queue, executor),
+        super::QueueAndExecutor::new(queue, executor),
         config,
         Arc::new(dispatcher),
         shutdown,
@@ -47,7 +47,7 @@ pub async fn run<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapt
 
 /// Shared execution engine for a ready dispatcher and the low-level entry point.
 pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapter + 'static>(
-    context: super::RuntimeContext<Q, E>,
+    context: super::QueueAndExecutor<Q, E>,
     config: TaskWorkerPoolConfig,
     dispatcher: Arc<TaskDispatcher<A>>,
     shutdown: CancellationToken,
@@ -72,9 +72,9 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
     for index in 0..config.concurrency() {
         pool.spawn(index, dispatcher.clone());
     }
-    info!(concurrency = config.concurrency(), buffer_capacity = config.buffer_capacity(),
+    info!(component = "task", concurrency = config.concurrency(), buffer_capacity = config.buffer_capacity(),
         buffer_refill_percent = config.buffer_refill_percent(),
-        lease_seconds = config.lease_duration().as_secs(), owner = %owner, "task runtime started");
+        lease_seconds = config.lease().as_secs(), owner = %owner, "task runtime started");
     let refill_level = config.buffer_refill_level();
     let mut interval = tokio::time::interval(config.poll_interval());
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -84,7 +84,7 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
             _ = shutdown.cancelled() => break,
             Some(exit) = pool.next_exit() => {
                 let index = exit.index;
-                error!(worker = index, tokio_task_id = %exit.tokio_task_id,
+                error!(component = "task", worker_index = index, tokio_task_id = %exit.tokio_task_id,
                     panicked = exit.panicked, cancelled = exit.cancelled,
                     owner = %owner, "task worker stopped; restarting");
                 if shutdown.is_cancelled() {
@@ -100,7 +100,7 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
                 };
                 match recovery {
                     Ok(report) => for failure in report.failures() { crate::diagnostics::log_task_failure(failure); },
-                    Err(error) => error!(error = %error, "task lease recovery failed"),
+                    Err(error) => error!(component = "task", operation = "recover_expired", error = %error, "task lease recovery failed"),
                 }
             }
             _ = capacity_available.notified() => {},
@@ -116,7 +116,7 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
         let claimed = tokio::select! {
             biased;
             _ = shutdown.cancelled() => break,
-            result = poller.claim(&owner, limit, config.lease_duration()) => result,
+            result = poller.claim(&owner, limit, config.lease()) => result,
         };
         match claimed {
             Ok(tasks) => {
@@ -125,7 +125,7 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
                 }
                 admit(&sender, tasks, limit);
             }
-            Err(error) => error!(error = %error, "task claim failed"),
+            Err(error) => error!(component = "task", operation = "claim", error = %error, "task claim failed"),
         }
     }
     // Notify the host before waiting for healthy workers.
@@ -142,15 +142,20 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
 fn admit(sender: &Sender<LeasedTask>, tasks: Vec<LeasedTask>, limit: usize) {
     if tasks.len() > limit {
         error!(
+            component = "task",
             claimed = tasks.len(),
-            limit, "TaskQueue::claim broke its contract: more tasks than the limit; the extra tasks wait for lease recovery"
+            limit,
+            "TaskQueue::claim broke its contract: more tasks than the limit; the extra tasks wait for lease recovery"
         );
     }
     let admitted = tasks.into_iter().take(limit);
     for task in admitted {
         // The error holds the LeasedTask: never format it, its payload and lease token are private.
         if sender.try_send(task).is_err() {
-            error!("a claimed task did not fit the workers' channel of its single producer; it waits for lease recovery");
+            error!(
+                component = "task",
+                "a claimed task did not fit the workers' channel of its single producer; it waits for lease recovery"
+            );
         }
     }
 }
@@ -171,7 +176,14 @@ mod tests {
         .unwrap();
     }
     fn worker_config(c: usize, q: usize, poll: Duration) -> TaskWorkerPoolConfig {
-        TaskWorkerPoolConfig::try_new(c, q, poll, Duration::from_secs(30), Duration::from_secs(120)).unwrap()
+        TaskWorkerPoolConfig::builder()
+            .concurrency(c)
+            .buffer_capacity(q)
+            .poll_interval(poll)
+            .handler_timeout(Duration::from_secs(30))
+            .lease(Duration::from_secs(120))
+            .build()
+            .unwrap()
     }
 
     #[tokio::test]
@@ -201,8 +213,9 @@ mod tests {
         })
         .await;
         assert_eq!(log.matches("task runtime started").count(), 1);
+        assert!(log.contains("component=\"task\""), "{log}");
         assert!(log.contains("concurrency=2 buffer_capacity=3 buffer_refill_percent=25"));
-        assert!(log.contains(&format!("lease_seconds={}", config.lease_duration().as_secs())));
+        assert!(log.contains(&format!("lease_seconds={}", config.lease().as_secs())));
         let owner = log.split("owner=").nth(1).unwrap().split_whitespace().next().unwrap();
         assert!(Uuid::parse_str(owner).is_ok());
         assert!(queue.outcomes.lock().unwrap().is_empty());
@@ -252,6 +265,45 @@ mod tests {
         );
     }
 
+    /// A failed claim and a failed lease recovery are logged as lines of the task runtime with their operation, and the
+    /// runtime goes on.
+    #[tokio::test]
+    async fn failed_claims_and_recoveries_are_logged_with_their_operation() {
+        let queue = Arc::new(Queue::default());
+        queue.claim_error.store(true, Ordering::SeqCst);
+        queue.recovery_error.store(true, Ordering::SeqCst);
+        let stop = CancellationToken::new();
+        let (_, log) = crate::diagnostics::test_support::capture(async {
+            let stopping = async {
+                wait_until(|| queue.recovery_calls.load(Ordering::SeqCst) > 1).await;
+                stop.cancel();
+            };
+            let (result, ()) = tokio::join!(
+                super::run(
+                    queue.clone(),
+                    Arc::new(DefaultTaskExecutor::new(
+                        queue.clone(),
+                        crate::worker::queue::storage_config::TaskStorageConfig::default()
+                    )),
+                    TaskDispatcher::try_new(vec![adapter()]).unwrap(),
+                    worker_config(1, 1, Duration::from_millis(2)),
+                    stop.clone()
+                ),
+                stopping
+            );
+            result.unwrap();
+        })
+        .await;
+        assert!(
+            log.contains("component=\"task\" operation=\"recover_expired\"") && log.contains("task lease recovery failed"),
+            "{log}"
+        );
+        assert!(
+            log.contains("component=\"task\" operation=\"claim\"") && log.contains("task claim failed"),
+            "{log}"
+        );
+    }
+
     /// A batch that does not fit the channel (a broken invariant of the single producer) is dropped with an error, not a
     /// panic.
     #[tokio::test]
@@ -263,6 +315,7 @@ mod tests {
         .await;
         assert_eq!(receiver.len(), 1);
         assert!(log.contains("did not fit the workers' channel"), "{log}");
+        assert!(log.contains("component=\"task\""), "{log}");
         assert!(!log.contains("broke its contract"), "{log}");
     }
 }

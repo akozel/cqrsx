@@ -3,7 +3,7 @@
 //! aggregate type (an activity feed in a module that names no aggregate) hears the same report with the type erased:
 //! [`AnyCommandObserver`].
 use crate::{
-    command::{CommandGatewayError, CommitReport},
+    command::{CommandError, CommitReport},
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
     task::{NewTask, format::TaskFormat},
 };
@@ -28,8 +28,8 @@ use std::{any::Any, collections::HashMap, fmt};
 ///         CommandExecutor, executor::StoreCommandExecutor, locks::LockLimits,
 ///         observer::{CommandObserver, CommandReport, Outcome}, retry::AggregateConflictRetryPolicy,
 ///     },
-///     journal::persisted::PersistedEventStore,
-///     memory::event_repository::MemEventRepository,
+///     journal::store::JournalEventStore,
+///     memory::event_repository::MemoryEventRepository,
 ///     domain::{aggregate::Aggregate, command::Decide, event::Events},
 /// };
 /// use serde::{Deserialize, Serialize};
@@ -51,7 +51,7 @@ use std::{any::Any, collections::HashMap, fmt};
 ///     type Id = String;
 ///     type Command = ();
 ///     type Event = Incremented;
-///     type Error = LimitReached;
+///     type Rejection = LimitReached;
 ///     type Rules = u32;
 ///     fn apply(&mut self, _: Incremented) { self.0 += 1; }
 /// }
@@ -68,7 +68,7 @@ use std::{any::Any, collections::HashMap, fmt};
 /// #[derive(Default)]
 /// struct Log(Mutex<Vec<String>>);
 /// impl CommandObserver<Counter> for Log {
-///     fn command(&self, report: &CommandReport<'_, Counter>) {
+///     fn observe(&self, report: &CommandReport<'_, Counter>) {
 ///         let outcome = match report.outcome {
 ///             Outcome::Accepted { tasks } => format!("accepted with {} tasks", tasks.len()),
 ///             Outcome::Rejected(error) => format!("rejected: {error}"),
@@ -82,7 +82,7 @@ use std::{any::Any, collections::HashMap, fmt};
 ///
 /// # tokio_test(async {
 /// let log = Arc::new(Log::default());
-/// let store = PersistedEventStore::<_, Counter>::new(MemEventRepository::default());
+/// let store = JournalEventStore::<_, Counter>::new(MemoryEventRepository::default());
 /// let counters = StoreCommandExecutor::new(store, 1, AggregateConflictRetryPolicy::default(), LockLimits::default())
 ///     .with_observer(log.clone());
 /// let metadata = [("source".to_owned(), "ui".to_owned())].into();
@@ -99,7 +99,7 @@ use std::{any::Any, collections::HashMap, fmt};
 /// ```
 pub trait CommandObserver<A: Aggregate>: Send + Sync {
     /// One command, as its executor ran it.
-    fn command(&self, report: &CommandReport<'_, A>);
+    fn observe(&self, report: &CommandReport<'_, A>);
 }
 
 /// One command as its executor ran it.
@@ -118,7 +118,7 @@ pub enum Outcome<'a, A: Aggregate> {
     /// Committed: its event and, with it, these tasks.
     Accepted { tasks: &'a [NewTask] },
     /// A business rejection; nothing was written.
-    Rejected(&'a A::Error),
+    Rejected(&'a A::Rejection),
     /// Every attempt met a concurrent change; nothing was written.
     Conflict,
     /// Not run, or its outcome is unknown: the lock refused it, the store failed or its tasks could not be planned.
@@ -155,12 +155,12 @@ fn formats(tasks: &[NewTask]) -> Vec<&TaskFormat> {
 
 impl<'a, A: Aggregate> Outcome<'a, A> {
     /// The outcome `answer` reports.
-    pub(crate) fn of(answer: &'a Result<CommitReport<A>, CommandGatewayError<A::Error>>) -> Self {
+    pub(crate) fn of(answer: &'a Result<CommitReport<A>, CommandError<A::Rejection>>) -> Self {
         match answer {
             Ok(report) => Outcome::Accepted { tasks: &report.tasks },
-            Err(CommandGatewayError::Domain(error)) => Outcome::Rejected(error),
-            Err(CommandGatewayError::Conflict) => Outcome::Conflict,
-            Err(CommandGatewayError::Unavailable) => Outcome::Unavailable,
+            Err(CommandError::Rejected(error)) => Outcome::Rejected(error),
+            Err(CommandError::Conflict) => Outcome::Conflict,
+            Err(CommandError::Unavailable) => Outcome::Unavailable,
         }
     }
 }
@@ -170,7 +170,7 @@ impl<'a, A: Aggregate> Outcome<'a, A> {
 /// commands of every executor it builds; when and how often is [`CommandObserver`]'s.
 pub trait AnyCommandObserver: Send + Sync {
     /// One command, as its executor ran it.
-    fn command(&self, report: &AnyCommandReport<'_>);
+    fn observe(&self, report: &AnyCommandReport<'_>);
 }
 
 /// One command of any aggregate type: what [`CommandReport`] holds, with the command as what is known of it
@@ -180,8 +180,8 @@ pub struct AnyCommandReport<'a> {
     pub aggregate_type: &'static str,
     /// The aggregate's id as its text, its `Display`.
     pub aggregate_id: String,
-    /// The aggregate's id as its type, for an observer that knows the type (`id.downcast_ref::<LedgerId>()`).
-    pub id: &'a (dyn Any + Send + Sync),
+    /// The aggregate's id as its type, for an observer that knows the type (`typed_id.downcast_ref::<LedgerId>()`).
+    pub typed_id: &'a (dyn Any + Send + Sync),
     pub command: &'a dyn Command,
     pub metadata: &'a HashMap<String, String>,
     pub outcome: AnyOutcome<'a>,
@@ -225,12 +225,12 @@ impl<'a> AnyCommandReport<'a> {
     where
         A: Aggregate,
         A::Command: Command,
-        A::Error: Rejection,
+        A::Rejection: Rejection,
     {
         Self {
             aggregate_type: A::TYPE,
             aggregate_id: report.aggregate_id.to_string(),
-            id: report.aggregate_id,
+            typed_id: report.aggregate_id,
             command: report.command,
             metadata: report.metadata,
             outcome: match report.outcome {
@@ -298,7 +298,7 @@ mod tests {
             "seat_taken"
         }
 
-        fn params(&self) -> Value {
+        fn parameters(&self) -> Value {
             json!({ "seat": "B4" })
         }
     }
@@ -314,7 +314,7 @@ mod tests {
         type Id = u32;
         type Command = Book;
         type Event = Booked;
-        type Error = SeatTaken;
+        type Rejection = SeatTaken;
         type Rules = ();
 
         fn apply(&mut self, _: Booked) {}
@@ -325,14 +325,14 @@ mod tests {
     struct Log(Mutex<Vec<String>>);
 
     impl AnyCommandObserver for Log {
-        fn command(&self, report: &AnyCommandReport<'_>) {
+        fn observe(&self, report: &AnyCommandReport<'_>) {
             let outcome = match &report.outcome {
                 AnyOutcome::Accepted { tasks } => format!("accepted with {}", tasks[0].format()),
-                AnyOutcome::Rejected(rejection) => format!("rejected: {} {}", rejection.code(), rejection.params()),
+                AnyOutcome::Rejected(rejection) => format!("rejected: {} {}", rejection.code(), rejection.parameters()),
                 AnyOutcome::Conflict => "conflict".to_owned(),
                 AnyOutcome::Unavailable => "unavailable".to_owned(),
             };
-            let id = report.id.downcast_ref::<u32>().copied();
+            let id = report.typed_id.downcast_ref::<u32>().copied();
             self.0.lock().unwrap().push(format!(
                 "{} {} {:?} {} {:?} {:?}: {outcome}",
                 report.aggregate_type,
@@ -364,7 +364,7 @@ mod tests {
                 metadata: &metadata,
                 outcome,
             };
-            log.command(&AnyCommandReport::of(&report));
+            log.observe(&AnyCommandReport::of(&report));
         }
         // The fixture is an aggregate: its booking decides, its event applies and is stored by name and version.
         let mut hall = Hall;

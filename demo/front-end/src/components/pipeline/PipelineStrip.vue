@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// The architecture diagram block (docs/img.png), half of the top row next to the events and outbox panels: service boundaries, the
+// The architecture diagram block, half of the top row next to the events and outbox panels: service boundaries, the
 // components inside them, the actors outside, and the signals travelling between them, drawn on a
 // Vue Flow canvas. The canvas is static (no drag, pan or zoom) and scales to the strip's width.
 // The layout is data (`graph.ts`); what glows and moves is the choreography (`choreography.ts`),

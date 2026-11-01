@@ -11,7 +11,7 @@ fn driver_error<'e>(error: &'e (dyn std::error::Error + Send + Sync + 'static)) 
 
 fn assert_sql_error(error: &PersistenceError, decode: bool) {
     match (error, decode) {
-        (PersistenceError::UnknownError(source), false) | (PersistenceError::DeserializationError(source), true) => {
+        (PersistenceError::Unexpected(source), false) | (PersistenceError::Deserialization(source), true) => {
             assert!(driver_error(&**source).is_some())
         }
         _ => panic!("incorrect history error category: {error:?}"),
@@ -84,8 +84,8 @@ mod contracts {
             .await
             .unwrap();
         assert!(matches!(
-            PersistedEventStore::<_, Ledger>::new(repo).load_aggregate("one").await,
-            Err(cqrsx::journal::PersistenceError::DeserializationError(_))
+            JournalEventStore::<_, Ledger>::new(repo).load_aggregate("one").await,
+            Err(cqrsx::journal::PersistenceError::Deserialization(_))
         ));
         db.close().await;
     }
@@ -104,8 +104,8 @@ mod contracts {
             .persist::<Ledger>(&[original], None)
             .await
             .unwrap();
-        let store = PersistedEventStore::<_, Ledger>::new(PostgresEventRepository::new(db.pool.clone()))
-            .with_upcasters(delta_upcasters());
+        let store =
+            JournalEventStore::<_, Ledger>::new(PostgresEventRepository::new(db.pool.clone())).with_upcasters(delta_upcasters());
         let loaded = store.load_events("upcast").await.unwrap();
         assert_eq!(SerializedEvent::try_from(&loaded[0]).unwrap(), expected);
         assert_eq!(store.load_aggregate("upcast").await.unwrap().aggregate.0, [4]);
@@ -115,7 +115,7 @@ mod contracts {
             .unwrap();
         assert!(matches!(
             store.load_aggregate("upcast").await,
-            Err(cqrsx::journal::PersistenceError::DeserializationError(_))
+            Err(cqrsx::journal::PersistenceError::Deserialization(_))
         ));
         db.close().await;
     }

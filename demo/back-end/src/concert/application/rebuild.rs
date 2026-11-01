@@ -10,7 +10,10 @@ use cqrsx_engine::{Cqrs, views::ViewsError};
 /// Asks the owner of the halls to rebuild the hall of `concert_id`. A store that fails, or the halls' row not
 /// registered yet (the read side is starting), is a storage error with a message for the operator.
 pub async fn rebuild_hall(cqrs: &Cqrs, concert_id: &ConcertId) -> Result<(), StorageError> {
-    let requested = cqrs.views().rebuild_key(ConcertHallView::NAME, concert_id.as_str()).await;
+    let requested = cqrs
+        .views()
+        .request_rebuild_key(ConcertHallView::NAME, concert_id.as_str())
+        .await;
     requested.map_err(|error| match error {
         ViewsError::Checkpoint(CheckpointError::Invalid(_)) => {
             StorageError("the read side is starting: its checkpoints are not registered yet".into())
@@ -47,8 +50,8 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        let requests = store.take_requests(&halls(), owner.token, 10).await.unwrap().unwrap();
-        assert_eq!((requests.rebuild, requests.keys), (None, vec!["c-1".to_owned()]));
+        let requests = store.take_rebuild_requests(&halls(), owner.token, 10).await.unwrap().unwrap();
+        assert_eq!((requests.rebuild_pace, requests.keys), (None, vec!["c-1".to_owned()]));
         store.set_unavailable(true);
         assert!(rebuild_hall(&cqrs, &c1).await.is_err(), "a store that does not answer");
     }

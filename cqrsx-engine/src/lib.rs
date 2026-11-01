@@ -1,16 +1,3 @@
-//! The engine: an application of modules ([`module::Module`]) assembled from the components of cqrsx, which keep
-//! their logic: an executor per aggregate type with its reactions and policies, a projection processor per view woken
-//! by the commits of its type, one dispatcher of the task handlers, the observers of every command and processor.
-//!
-//! A [`build::Builder`] starts from the library's settings ([`Cqrs::in_memory`]), settings of one's own
-//! ([`Cqrs::with_settings`]) or the variables of the environment under the application's prefix ([`Cqrs::from_env`],
-//! [`Cqrs::from_lookup`]); `build` sets up the modules ([`setup::Setup`]), checks what they register and assembles
-//! the engine over its stores: in memory unless the journal is in PostgreSQL (`event_store`) and the views in
-//! PostgreSQL or MongoDB (`projections`). [`Cqrs::from`] is an entry point of the commands ([`outcome`]),
-//! [`Cqrs::view`] and [`Cqrs::views`] query and operate the views ([`views`]); [`Cqrs::run_tasks`] runs the due tasks
-//! and [`Cqrs::catch_up`] lets the views catch up with the journal. With the feature `http` the modules route HTTP
-//! requests ([`http`]) and `serve` runs the whole application until a signal ([`serve`]).
-//!
 #![doc = include_str!("../README.md")]
 
 pub mod build;
@@ -22,26 +9,26 @@ mod memory;
 pub mod module;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
-pub mod outcome;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 #[cfg(feature = "http")]
 pub mod serve;
 pub mod settings;
 pub mod setup;
+pub mod source;
 #[cfg(test)]
 mod test_support;
 pub mod views;
 
 use crate::{
-    module::ProjectionObservers,
+    module::ProjectionObserverFactory,
     settings::Settings,
-    views::{CheckpointOps, Registry},
+    views::{CheckpointOperations, Registry},
 };
 use cqrsx::{
     command::observer::AnyCommandObserver,
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{EventStore, PersistenceError, persisted::PersistedEventStore, wakeup::CommitWakeup},
+    journal::{EventStore, PersistenceError, store::JournalEventStore, wakeup::CommitWakeup},
     projection::runtime::ProjectionRuntime,
     task::policy::Policies,
     worker::{
@@ -70,9 +57,9 @@ pub struct Cqrs {
     policies: Policies,
     dependencies: Dependencies,
     command_observer: Option<Arc<dyn AnyCommandObserver>>,
-    projection_observers: Option<ProjectionObservers>,
+    projection_observer: Option<ProjectionObserverFactory>,
     /// The executor of every aggregate type, by its type: an `Arc<Executor<A>>`.
-    commands: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    command_executors: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     executors: Executors,
     wakeups: HashMap<TypeId, CommitWakeup>,
     dispatcher: Option<Arc<TaskDispatcher<BoxedTaskAdapter>>>,
@@ -85,7 +72,7 @@ pub struct Cqrs {
     #[cfg(feature = "postgres")]
     view_store: ViewStore,
     /// The checkpoints of every view, its store erased: what the operations over the views read and request.
-    checkpoints: Arc<dyn CheckpointOps>,
+    checkpoints: Arc<dyn CheckpointOperations>,
     processors: Mutex<ProjectionRuntime>,
     #[cfg(feature = "http")]
     routes: axum::Router<Arc<Cqrs>>,
@@ -100,7 +87,7 @@ impl fmt::Debug for Cqrs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cqrs")
             .field("owner", &self.owner)
-            .field("aggregates", &self.commands.len())
+            .field("command_executors", &self.command_executors.len())
             .field("views", &self.views().keys())
             .field("policies", &self.policies)
             .field("dependencies", &self.dependencies)
@@ -122,7 +109,7 @@ pub(crate) enum ViewStore {
     Memory,
     Postgres,
     #[cfg(feature = "mongodb")]
-    MongoDb(::mongodb::Database),
+    Mongo(::mongodb::Database),
 }
 
 impl Cqrs {
@@ -172,9 +159,9 @@ impl Cqrs {
         self.dispatcher.as_deref()
     }
 
-    /// The settings of the engine ([`Settings::describe`]) and what its modules read and described, by key. A key has
+    /// The settings of the engine ([`Settings::description`]) and what its modules read and described, by key. A key has
     /// one value: the build refuses one described twice with two ([`BuildError::DescribedTwice`](build::BuildError)).
-    pub fn describe(&self) -> BTreeMap<String, String> {
+    pub fn description(&self) -> BTreeMap<String, String> {
         self.described.clone()
     }
 
@@ -190,13 +177,13 @@ impl Cqrs {
         let id = id.to_string();
         match &self.journal {
             Journal::Memory => {
-                PersistedEventStore::<_, A>::new(self.memory.journal.clone())
+                JournalEventStore::<_, A>::new(self.memory.journal.clone())
                     .load_events(&id)
                     .await
             }
             #[cfg(feature = "postgres")]
             Journal::Postgres(pools) => {
-                PersistedEventStore::<_, A>::new(PostgresEventRepository::new(pools.history.clone()))
+                JournalEventStore::<_, A>::new(PostgresEventRepository::new(pools.history.clone()))
                     .load_events(&id)
                     .await
             }
@@ -221,7 +208,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let described = cqrs.describe();
+        let described = cqrs.description();
         let value = |key: &str| described.get(key).map(String::as_str);
         assert_eq!(
             (value("SHOP_LIMIT"), value("shop.limit_twice"), value("SHOP_SNAPSHOT_EVERY")),
@@ -241,14 +228,14 @@ mod tests {
         let (cqrs, _) = engine().await;
         let printed = format!("{cqrs:?}");
         let head = format!(
-            "Cqrs {{ owner: {:?}, aggregates: 2, views: {:?}, ",
+            "Cqrs {{ owner: {:?}, command_executors: 2, views: {:?}, ",
             cqrs.owner,
             cqrs.views().keys()
         );
         assert!(printed.starts_with(&head), "{printed}");
         assert!(printed.contains("dispatcher: Some(TaskDispatcher {"), "{printed}");
         assert!(!printed.contains("://"), "no URL of a store: {printed}");
-        assert_eq!(format!("{:?}", cqrs.from("ui")), r#"Source { source: "ui", .. }"#);
+        assert_eq!(format!("{:?}", cqrs.source("ui")), r#"Source { source: "ui", .. }"#);
         assert_eq!(format!("{:?}", cqrs.view::<Hall>()), "ViewQuery { registered: true, .. }");
         assert_eq!(format!("{:?}", cqrs.view::<String>()), "ViewQuery { registered: false, .. }");
         assert_eq!(
@@ -261,7 +248,7 @@ mod tests {
     async fn the_history_of_an_aggregate_is_its_journal_without_snapshots() {
         let (cqrs, _) = engine().await;
         for seat in ["A1", "A2"] {
-            cqrs.from("ui")
+            cqrs.source("ui")
                 .execute::<Show>(&"s-1".into(), book(seat, "fox"))
                 .await
                 .unwrap();
@@ -285,7 +272,7 @@ mod tests {
             assert_eq!(scenario, "variables");
             let read = |setup: &setup::Setup| setup.env("LIMIT", 4).map(|_| module::Module::new("reader"));
             let cqrs = ready(Cqrs::from_env("CQRSX_ENGINE_TEST").module(read).build()).unwrap();
-            let described = cqrs.describe();
+            let described = cqrs.description();
             let value = |key: &str| described.get(key).cloned();
             assert_eq!(
                 (cqrs.settings().snapshot_every().get(), value("CQRSX_ENGINE_TEST_LIMIT")),

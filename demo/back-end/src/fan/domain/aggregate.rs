@@ -65,7 +65,7 @@ impl Aggregate for Fan {
     type Id = FanLedgerId;
     type Command = FanCommand;
     type Event = FanEvent;
-    type Error = FanError;
+    type Rejection = FanError;
     // Each command decides itself (see `commands/`): `FanCommand: Decide<Fan>`; exactly one event per
     // accepted command (D-02), like `Concert`.
     type Rules = ();

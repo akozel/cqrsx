@@ -2,7 +2,7 @@
 use super::support::Database;
 use cqrsx::{
     domain::{aggregate::Aggregate, command::Decide, event::Events},
-    journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository},
+    journal::{EventStore, repository::EventRepository, store::JournalEventStore},
 };
 use cqrsx_postgres::event_repository::PostgresEventRepository;
 use serde::{Deserialize, Serialize};
@@ -34,7 +34,7 @@ impl Aggregate for State {
     type Id = String;
     type Command = i64;
     type Event = Event;
-    type Error = std::convert::Infallible;
+    type Rejection = std::convert::Infallible;
     type Rules = ();
     fn apply(&mut self, event: Event) {
         let Event::ValueSet { value } = event;
@@ -62,12 +62,17 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
             .execute(&db.pool).await.unwrap();
     }
     for snapshot in fixture["snapshots"].as_array().unwrap() {
-        sqlx::query("INSERT INTO snapshots (aggregate_type, aggregate_id, last_sequence, current_snapshot, payload) VALUES ($1,$2,$3,$4,$5)")
-            .bind(snapshot["aggregate_type"].as_str().unwrap())
-            .bind(snapshot["aggregate_id"].as_str().unwrap())
-            .bind(snapshot["last_sequence"].as_i64().unwrap())
-            .bind(snapshot["current_snapshot"].as_i64().unwrap())
-            .bind(&snapshot["payload"]).execute(&db.pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO snapshots (aggregate_type, aggregate_id, last_sequence, revision, payload) VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(snapshot["aggregate_type"].as_str().unwrap())
+        .bind(snapshot["aggregate_id"].as_str().unwrap())
+        .bind(snapshot["last_sequence"].as_i64().unwrap())
+        .bind(snapshot["revision"].as_i64().unwrap())
+        .bind(&snapshot["payload"])
+        .execute(&db.pool)
+        .await
+        .unwrap();
     }
     for (id, value, sequence, snapshot) in [("old", 30, 3, 1), ("shared", 40, 4, 2), ("local", 7, 3, 1)] {
         let repository = PostgresEventRepository::new(db.pool.clone());
@@ -82,16 +87,16 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
                 .unwrap();
             assert_eq!(&found, expected);
         }
-        let store = PersistedEventStore::<_, State>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
+        let store = JournalEventStore::<_, State>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
         let context = store.load_aggregate(id).await.unwrap();
         assert_eq!(context.aggregate.value, value);
-        assert_eq!(context.current_sequence, sequence);
-        assert_eq!(context.snapshot_version, Some(snapshot));
+        assert_eq!(context.last_sequence, sequence);
+        assert_eq!(context.snapshot_revision, Some(snapshot));
         assert_eq!(store.load_events(id).await.unwrap().len(), sequence);
-        let events_only = PersistedEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()));
+        let events_only = JournalEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()));
         assert_eq!(events_only.load_aggregate(id).await.unwrap().aggregate.value, value);
     }
-    let store = PersistedEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
+    let store = JournalEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
         .with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
     let framework = cqrsx::command::executor::StoreCommandExecutor::new(
         store,
@@ -116,11 +121,11 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
     assert_eq!(row.get::<String, _>("event_version"), "1");
     assert_eq!(row.get::<Value, _>("payload"), json!({"ValueSet":{"value":50}}));
     assert_eq!(row.get::<Value, _>("metadata"), json!({"correlation_id":"after-fork"}));
-    let store = PersistedEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
+    let store = JournalEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
         .with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
     let context = store.load_aggregate("old").await.unwrap();
     assert_eq!(context.aggregate.value, 50);
-    assert_eq!(context.current_sequence, 4);
-    assert_eq!(context.snapshot_version, Some(2));
+    assert_eq!(context.last_sequence, 4);
+    assert_eq!(context.snapshot_revision, Some(2));
     db.close().await;
 }

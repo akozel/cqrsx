@@ -705,12 +705,13 @@ mod tests {
                 event::{EventEnvelope, Events},
             },
             memory::{
-                checkpoint_store::MemCheckpointStore, event_repository::MemEventRepository, view_repository::MemViewRepository,
+                checkpoint_store::MemoryCheckpointStore, event_repository::MemoryEventRepository,
+                view_repository::MemoryViewRepository,
             },
             projection::processor::{
                 ProjectionProcessor,
                 config::ProcessorConfig,
-                observer::{LeaseEvent, ProjectionObserver},
+                observer::{LeaseChange, ProjectionObserver},
             },
             view::{View, projection::ViewProjection},
         };
@@ -741,7 +742,7 @@ mod tests {
             type Id = String;
             type Command = ();
             type Event = Counted;
-            type Error = Never;
+            type Rejection = Never;
             type Rules = ();
             fn apply(&mut self, _: Counted) {}
         }
@@ -757,24 +758,26 @@ mod tests {
 
         impl View<Counter> for Total {
             const NAME: &'static str = "totals";
-            fn update(&mut self, _: &EventEnvelope<Counter>) {}
+            fn apply(&mut self, _: &EventEnvelope<Counter>) {}
         }
 
         /// An observer that panics as soon as its processor holds the checkpoint: a bug in the read side.
         struct Panicking;
 
         impl ProjectionObserver for Panicking {
-            fn lease(&self, event: LeaseEvent) {
-                assert!(event != LeaseEvent::Acquired, "a bug in an observer");
+            fn lease(&self, event: LeaseChange) {
+                assert!(event != LeaseChange::Acquired, "a bug in an observer");
             }
         }
 
         fn runtime(observer: Option<Arc<dyn ProjectionObserver>>) -> ProjectionRuntime {
             let processor = ProjectionProcessor::new(
                 "totals",
-                Arc::new(MemEventRepository::default()),
-                Arc::new(MemCheckpointStore::default()),
-                Arc::new(ViewProjection::new(Arc::new(MemViewRepository::<Total, Counter>::default()))),
+                Arc::new(MemoryEventRepository::default()),
+                Arc::new(MemoryCheckpointStore::default()),
+                Arc::new(ViewProjection::new(Arc::new(
+                    MemoryViewRepository::<Total, Counter>::default(),
+                ))),
                 ProcessorConfig::default(),
             );
             let processor = match observer {

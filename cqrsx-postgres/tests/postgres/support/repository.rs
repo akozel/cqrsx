@@ -26,7 +26,7 @@ impl Aggregate for TestAggregate {
     type Id = String;
     type Command = TestCommand;
     type Event = TestEvent;
-    type Error = TestError;
+    type Rejection = TestError;
     type Rules = TestServices;
 
     fn apply(&mut self, _e: Self::Event) {}
@@ -97,7 +97,7 @@ pub(crate) struct TestView {
 
 impl View<TestAggregate> for TestView {
     const NAME: &'static str = "test_view";
-    fn update(&mut self, event: &EventEnvelope<TestAggregate>) {
+    fn apply(&mut self, event: &EventEnvelope<TestAggregate>) {
         self.events.push(event.payload.clone());
     }
 }
@@ -118,14 +118,14 @@ pub(crate) fn test_serialized_event(id: &str, sequence: usize, event: &TestEvent
 pub(crate) fn serialized_snapshot(
     aggregate_id: String,
     last_sequence: usize,
-    snapshot_version: usize,
-    aggregate: Value,
+    revision: usize,
+    payload: Value,
 ) -> SerializedSnapshot {
     SerializedSnapshot {
         aggregate_id,
-        aggregate,
+        payload,
         last_sequence,
-        snapshot_version,
+        revision,
     }
 }
 
@@ -149,7 +149,7 @@ pub(crate) mod customer {
         type Id = String;
         type Command = CustomerCommand;
         type Event = CustomerEvent;
-        type Error = CustomerError;
+        type Rejection = CustomerError;
         type Rules = CustomerService;
 
         fn apply(&mut self, event: Self::Event) {
