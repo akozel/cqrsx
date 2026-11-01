@@ -2,7 +2,7 @@
 //! tasks through the outbox, the task queue, the checkpoints of the projection processors and the view repository,
 //! with the canonical SQL of their tables.
 //!
-//! The core knows none of it: the stores implement its ports (`cqrsx::journal::repository::PersistedEventRepository`,
+//! The core knows none of it: the stores implement its ports (`cqrsx::journal::repository::EventRepository`,
 //! `cqrsx::worker::queue::TaskQueue`, ...), and the engine (`cqrsx-engine`, feature `postgres`) assembles them. Where a
 //! driver error becomes an error of the core, it is wrapped in `cqrsx::diagnostics::StorageFailure`, so that the core's
 //! logs carry its category and SQLSTATE; the message of the driver is never logged.

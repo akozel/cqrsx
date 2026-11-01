@@ -10,7 +10,7 @@ pub struct AggregateResultValidator<A>
 where
     A: Aggregate,
 {
-    result: Result<A::Event, A::Error>,
+    result: Result<A::Event, A::Rejection>,
 }
 
 // By hand: a derive would require `A` itself to be `Debug`, not only its event and its error.
@@ -41,11 +41,11 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -80,7 +80,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -147,11 +147,11 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -186,7 +186,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -253,11 +253,11 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -292,7 +292,7 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -334,18 +334,18 @@ impl<A: Aggregate> AggregateResultValidator<A> {
     /// let expected = MyUserError("the expected error message".to_string());
     /// assert_eq!(expected,validator.into_result().unwrap_err());
     /// ```
-    pub fn into_result(self) -> Result<A::Event, A::Error> {
+    pub fn into_result(self) -> Result<A::Event, A::Rejection> {
         self.result
     }
 
-    pub(crate) fn new(result: Result<A::Event, A::Error>) -> Self {
+    pub(crate) fn new(result: Result<A::Event, A::Rejection>) -> Self {
         Self { result }
     }
 }
 impl<A> AggregateResultValidator<A>
 where
     A: Aggregate,
-    A::Error: PartialEq,
+    A::Rejection: PartialEq,
 {
     /// Verifies that the result is the expected error.
     ///
@@ -367,11 +367,11 @@ where
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -406,7 +406,7 @@ where
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -448,7 +448,7 @@ where
     /// let expected = MyUserError("the expected error message".to_string());
     /// validator.then_expect_error(&expected);
     /// ```
-    pub fn then_expect_error(self, expected_error: &A::Error) {
+    pub fn then_expect_error(self, expected_error: &A::Rejection) {
         match self.result {
             Ok(event) => {
                 panic!("expected error, received event: '{event:?}'");
@@ -484,7 +484,7 @@ mod contract_tests {
         type Id = String;
         type Command = ();
         type Event = Delta;
-        type Error = Message;
+        type Rejection = Message;
         type Rules = ();
         fn apply(&mut self, _: Delta) {}
     }

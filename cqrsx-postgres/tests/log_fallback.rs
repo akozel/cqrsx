@@ -23,8 +23,8 @@ use cqrsx::domain::event::Events;
 use cqrsx::journal::AggregateContext;
 use cqrsx::journal::EventStore;
 use cqrsx::{
-    command::{CommandGatewayError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
-    journal::persisted::PersistedEventStore,
+    command::{CommandError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
+    journal::store::JournalEventStore,
     task::{attempt::TaskAttempt, format::TaskFormat},
     worker::{
         TaskResult,
@@ -76,7 +76,7 @@ impl Aggregate for ProbeAggregate {
     type Id = String;
     type Command = ();
     type Event = ProbeEvent;
-    type Error = io::Error;
+    type Rejection = io::Error;
     type Rules = ();
     fn apply(&mut self, _: ProbeEvent) {}
 }
@@ -95,12 +95,12 @@ struct UnavailableStore;
 impl EventStore<ProbeAggregate> for UnavailableStore {
     type Context = ProbeContext;
     async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<ProbeAggregate>>, cqrsx::journal::PersistenceError> {
-        Err(cqrsx::journal::PersistenceError::UnknownError(Box::new(io::Error::other(
+        Err(cqrsx::journal::PersistenceError::Unexpected(Box::new(io::Error::other(
             "private_source",
         ))))
     }
     async fn load_aggregate(&self, _: &str) -> Result<ProbeContext, cqrsx::journal::PersistenceError> {
-        Err(cqrsx::journal::PersistenceError::UnknownError(Box::new(io::Error::other(
+        Err(cqrsx::journal::PersistenceError::Unexpected(Box::new(io::Error::other(
             "private_source",
         ))))
     }
@@ -111,7 +111,7 @@ impl EventStore<ProbeAggregate> for UnavailableStore {
         _: HashMap<String, String>,
         _: &[cqrsx::task::NewTask],
     ) -> Result<Vec<EventEnvelope<ProbeAggregate>>, cqrsx::journal::PersistenceError> {
-        Err(cqrsx::journal::PersistenceError::UnknownError(Box::new(io::Error::other(
+        Err(cqrsx::journal::PersistenceError::Unexpected(Box::new(io::Error::other(
             "private_source",
         ))))
     }
@@ -150,7 +150,7 @@ impl TaskQueue for Queue {
             task_id: task.attempt().task_id(),
             format: task.attempt().format().clone(),
             attempt_number: task.attempt().number(),
-            cause: TaskFailureCause::PermanentRejection,
+            cause: TaskFailureCause::HandlerFailure,
         }))
     }
     async fn recover_expired(&self, _: usize) -> Result<LeaseRecoveryReport, TaskProcessingError> {
@@ -167,13 +167,13 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         .connect_lazy("postgres://localhost/unused")
         .unwrap();
     pool.close().await;
-    let store = PersistedEventStore::new(PostgresEventRepositoryWithOutbox::new(pool))
+    let store = JournalEventStore::new(PostgresEventRepositoryWithOutbox::new(pool))
         .with_snapshots(std::num::NonZeroUsize::new(25).unwrap());
     let executor =
         StoreCommandExecutor::<ProbeAggregate, _>::new(store, (), AggregateConflictRetryPolicy::default(), LockLimits::default());
     assert!(matches!(
         executor.execute(&"private_id".into(), ()).await,
-        Err(CommandGatewayError::Unavailable)
+        Err(CommandError::Unavailable)
     ));
     let executor = StoreCommandExecutor::new(
         UnavailableStore,
@@ -183,7 +183,7 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
     );
     assert!(matches!(
         executor.execute(&"private_id".into(), ()).await,
-        Err(CommandGatewayError::Unavailable)
+        Err(CommandError::Unavailable)
     ));
     let stop = CancellationToken::new();
     let id = Uuid::new_v4();
@@ -201,8 +201,14 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         ))),
         stop: stop.clone(),
     });
-    let config =
-        TaskWorkerPoolConfig::try_new(1, 1, Duration::from_secs(1), Duration::from_secs(15), Duration::from_secs(60)).unwrap();
+    let config = TaskWorkerPoolConfig::builder()
+        .concurrency(1)
+        .buffer_capacity(1)
+        .poll_interval(Duration::from_secs(1))
+        .handler_timeout(Duration::from_secs(15))
+        .lease(Duration::from_secs(60))
+        .build()
+        .unwrap();
     tokio::time::timeout(
         Duration::from_secs(5),
         runtime::supervisor::run(

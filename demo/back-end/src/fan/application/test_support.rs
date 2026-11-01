@@ -17,14 +17,14 @@ use cqrsx::{
     task::{Task, attempt::TaskAttempt},
     worker::context::{Executors, TaskContext},
 };
-use cqrsx_testing::{command_executor::TestCommandExecutor, mem_store::MemStore};
+use cqrsx_testing::{command_executor::TestCommandExecutor, memory_store::MemoryStore};
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
 /// The ledgers' executor, which plans with its reactions as in production, for the handlers, and a clone of it (for
 /// the task records).
-pub fn fans(store: MemStore<Fan>) -> (Arc<TestCommandExecutor<Fan>>, TestCommandExecutor<Fan>) {
+pub fn fans(store: MemoryStore<Fan>) -> (Arc<TestCommandExecutor<Fan>>, TestCommandExecutor<Fan>) {
     let executor = TestCommandExecutor::configured(store, (), |executor| {
         executor.with_task_planner(ReactionsPlanner::<Fan>::new(crate::testing::policies()))
     });
@@ -38,7 +38,7 @@ pub fn attempt<P: Task>(payload: &P, correlation_id: Uuid) -> TaskAttempt {
 
 /// The context of a step of the ledger: `attempt`, the step's pause, `fans` as the ledgers' executor.
 pub fn steps<E: CommandExecutor<Fan> + 'static>(fans: &Arc<E>, attempt: TaskAttempt) -> TaskContext {
-    TaskContext::new(attempt, CHAIN_RETRY_AFTER).with_executors(Executors::default().with::<Fan, E>(fans.clone()).unwrap())
+    TaskContext::new(attempt, CHAIN_RETRY_AFTER).with_executors(Executors::default().register::<Fan, E>(fans.clone()).unwrap())
 }
 
 /// Fox's ledger for the Radiohead concert: the stream `ticket()` lands in.

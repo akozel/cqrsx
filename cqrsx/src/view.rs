@@ -17,7 +17,7 @@ use std::fmt::Debug;
 /// A `View` represents a materialized view, generally serialized for persistence, that is updated by a projection.
 /// This is the data of a CQRS read model.
 ///
-/// `update` must be deterministic and free of side effects: a stored document is the fold of `update` over the
+/// `apply` must be deterministic and free of side effects: a stored document is the fold of `apply` over the
 /// events `1..=last_sequence` of its aggregate, and two writers of one document (two processes, a rebuild next to
 /// live delivery) meet at the same document only because the fold is the same.
 pub trait View<A: Aggregate>: Debug + Default + Serialize + DeserializeOwned + Send + Sync {
@@ -28,7 +28,7 @@ pub trait View<A: Aggregate>: Debug + Default + Serialize + DeserializeOwned + S
 
     /// Each implemented view is responsible for updating its state based on events passed via
     /// this method.
-    fn update(&mut self, event: &EventEnvelope<A>);
+    fn apply(&mut self, event: &EventEnvelope<A>);
 }
 
 /// Observes persistence errors from projection reads and event handling.
@@ -70,7 +70,7 @@ mod tests {
         struct Wallets;
         impl View<Ledger> for Wallets {
             const NAME: &'static str = "wallets";
-            fn update(&mut self, _: &EventEnvelope<Ledger>) {}
+            fn apply(&mut self, _: &EventEnvelope<Ledger>) {}
         }
         assert_eq!(
             CheckpointKey::of::<Wallets, Ledger>(),

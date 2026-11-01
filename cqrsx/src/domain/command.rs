@@ -163,7 +163,7 @@ pub struct Label {
 ///     type Id = String;
 ///     type Command = ShelfCommand;
 ///     type Event = ShelfEvent;
-///     type Error = ShelfError;
+///     type Rejection = ShelfError;
 ///     type Rules = Capacity;
 ///
 ///     fn apply(&mut self, event: ShelfEvent) {
@@ -260,7 +260,7 @@ pub struct Label {
 ///     type Id = String;
 ///     type Command = ShelfCommand;
 ///     type Event = Put;
-///     type Error = Full;
+///     type Rejection = Full;
 ///     type Rules = ();
 ///     fn apply(&mut self, _: Put) {}
 /// }
@@ -284,7 +284,7 @@ pub struct Label {
 )]
 pub trait Decide<A: Aggregate>: Sized {
     /// The event this command decides on `state`, the committed state of its aggregate, or the rejection.
-    fn decide(self, state: &A, rules: &A::Rules) -> Result<A::Event, A::Error>;
+    fn decide(self, state: &A, rules: &A::Rules) -> Result<A::Event, A::Rejection>;
 }
 
 #[cfg(test)]

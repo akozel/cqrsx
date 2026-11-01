@@ -1,8 +1,8 @@
-//! A command from an entry point of the application ([`Source`]) and what became of it ([`Outcome`]).
+//! A command from an entry point of the application ([`Source`]) and what became of it ([`CommandResult`]).
 use crate::Cqrs;
 use crate::diagnostics;
 use cqrsx::{
-    command::{CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
+    command::{CommandError, CommandExecutor, CommitReport, metadata::CommandMetadata},
     domain::{aggregate::Aggregate, command::Command},
 };
 use std::fmt;
@@ -10,9 +10,9 @@ use uuid::Uuid;
 
 /// What became of a command: accepted with the tasks committed with its event, rejected by its aggregate, a conflict
 /// after every retry, or unavailable (not run, or its outcome unknown). The same answer as the command executors'.
-pub type Outcome<A> = Result<CommitReport<A>, CommandGatewayError<<A as Aggregate>::Error>>;
+pub type CommandResult<A> = Result<CommitReport<A>, CommandError<<A as Aggregate>::Rejection>>;
 
-/// An entry point of the application, e.g. the HTTP API (`cqrs.from("ui")`): the source of the commands it issues.
+/// An entry point of the application, e.g. the HTTP API (`cqrs.source("ui")`): the source of the commands it issues.
 pub struct Source<'a> {
     cqrs: &'a Cqrs,
     source: String,
@@ -31,31 +31,31 @@ impl Source<'_> {
     /// (`#[command_id]`), else a new time-ordered id, and every event it commits stores them with the source and when
     /// it was issued. Without an executor of `A` the command does not run: unavailable, the wiring fault is logged.
     /// The executor runs the command without an allocation of the engine's own.
-    pub async fn execute<A>(&self, id: &A::Id, command: A::Command) -> Outcome<A>
+    pub async fn execute<A>(&self, id: &A::Id, command: A::Command) -> CommandResult<A>
     where
         A: Aggregate + Clone + 'static,
         A::Command: Command + Clone + 'static,
-        A::Error: Send + 'static,
+        A::Rejection: Send + 'static,
     {
         self.run(None, id, command).await
     }
 
     /// [`execute`](Self::execute), with `command_id` as the id of a command that carries none of its own: the id an
     /// entry point answers with before it knows the outcome (an HTTP response of every outcome names its command).
-    pub async fn execute_with_id<A>(&self, command_id: Uuid, id: &A::Id, command: A::Command) -> Outcome<A>
+    pub async fn execute_with_id<A>(&self, command_id: Uuid, id: &A::Id, command: A::Command) -> CommandResult<A>
     where
         A: Aggregate + Clone + 'static,
         A::Command: Command + Clone + 'static,
-        A::Error: Send + 'static,
+        A::Rejection: Send + 'static,
     {
         self.run(Some(command_id), id, command).await
     }
 
-    async fn run<A>(&self, given: Option<Uuid>, id: &A::Id, command: A::Command) -> Outcome<A>
+    async fn run<A>(&self, given: Option<Uuid>, id: &A::Id, command: A::Command) -> CommandResult<A>
     where
         A: Aggregate + Clone + 'static,
         A::Command: Command + Clone + 'static,
-        A::Error: Send + 'static,
+        A::Rejection: Send + 'static,
     {
         let mut metadata = CommandMetadata::root(self.source.clone());
         if let Some(command_id) = command.command_id().or(given) {
@@ -64,7 +64,7 @@ impl Source<'_> {
         }
         let Some(executor) = self.cqrs.executor_of::<A>() else {
             diagnostics::log_unregistered_aggregate(A::TYPE);
-            return Err(CommandGatewayError::Unavailable);
+            return Err(CommandError::Unavailable);
         };
         executor.execute_with_metadata(id, command, metadata.to_map()).await
     }
@@ -72,7 +72,7 @@ impl Source<'_> {
 
 impl Cqrs {
     /// The entry point `source` of the application: its commands start their chains from it.
-    pub fn from(&self, source: impl Into<String>) -> Source<'_> {
+    pub fn source(&self, source: impl Into<String>) -> Source<'_> {
         Source {
             cqrs: self,
             source: source.into(),
@@ -85,11 +85,11 @@ mod tests {
     use crate::{Cqrs, test_support::*};
     use cqrsx::{
         command::{
-            CommandGatewayError,
+            CommandError,
             causation::{CAUSATION_ID, COMMAND_ID, CORRELATION_ID, SOURCE},
             metadata::RECORDED_AT,
         },
-        journal::repository::PersistedEventRepository,
+        journal::repository::EventRepository,
     };
     use std::collections::BTreeSet;
     use uuid::Uuid;
@@ -102,8 +102,8 @@ mod tests {
             booking_id: Some(booking_id),
             ..book("A1", "fox")
         };
-        cqrs.from("ui").execute::<Show>(&"s-1".into(), carried).await.unwrap();
-        cqrs.from("kiosk")
+        cqrs.source("ui").execute::<Show>(&"s-1".into(), carried).await.unwrap();
+        cqrs.source("kiosk")
             .execute::<Show>(&"s-1".into(), book("A2", "panda"))
             .await
             .unwrap();
@@ -143,20 +143,20 @@ mod tests {
     #[tokio::test]
     async fn execute_answers_a_rejection_and_an_unregistered_aggregate_is_unavailable() {
         let (cqrs, _) = engine().await;
-        let ui = cqrs.from("ui");
+        let ui = cqrs.source("ui");
         ui.execute::<Show>(&"s-1".into(), book("A1", "fox")).await.unwrap();
         assert_eq!(
             ui.execute::<Show>(&"s-1".into(), book("A1", "panda")).await.unwrap_err(),
-            CommandGatewayError::Domain(SeatTaken)
+            CommandError::Rejected(SeatTaken)
         );
         let shows = Cqrs::in_memory().module(shows).build().await.unwrap();
         let (answer, log) = crate::test_support::capture(
             shows
-                .from("ui")
+                .source("ui")
                 .execute::<Wallet>(&"fox".into(), Record { seat: "A1".into() }),
         )
         .await;
-        assert_eq!(answer.unwrap_err(), CommandGatewayError::Unavailable);
+        assert_eq!(answer.unwrap_err(), CommandError::Unavailable);
         assert!(log.contains("no module registers the aggregate type of the command"), "{log}");
         assert!(
             log.contains("wallet") && !log.contains("fox"),
@@ -168,7 +168,7 @@ mod tests {
     async fn a_command_without_an_id_of_its_own_takes_the_id_it_is_executed_with() {
         let (cqrs, _) = engine().await;
         let (given, carried) = (Uuid::now_v7(), Uuid::now_v7());
-        let ui = cqrs.from("ui");
+        let ui = cqrs.source("ui");
         ui.execute_with_id::<Show>(given, &"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();

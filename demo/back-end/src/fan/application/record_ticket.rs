@@ -8,7 +8,7 @@ use crate::{
     },
 };
 use cqrsx::{
-    command::CommandGatewayError,
+    command::CommandError,
     task::Task,
     worker::{TaskResult, context::TaskContext, task_handler},
 };
@@ -55,10 +55,8 @@ impl RecordTicketV1 {
 pub async fn record_ticket(task: RecordTicketV1, ctx: &TaskContext) -> TaskResult {
     let ledger = task.ledger();
     match ctx.execute::<Fan>(&ledger, task.command()).await {
-        Err(CommandGatewayError::Domain(FanError::AlreadyRecorded { .. } | FanError::AlreadyCancelled { .. })) => {
-            TaskResult::done()
-        }
-        Err(CommandGatewayError::Domain(FanError::UnknownTicket { .. })) => TaskResult::retry("unknown_ticket"),
+        Err(CommandError::Rejected(FanError::AlreadyRecorded { .. } | FanError::AlreadyCancelled { .. })) => TaskResult::done(),
+        Err(CommandError::Rejected(FanError::UnknownTicket { .. })) => TaskResult::retry("unknown_ticket"),
         other => other.into(), // accepted: done; conflict, unavailable: retry
     }
 }
@@ -71,12 +69,12 @@ mod tests {
         domain::{FanEvent, events::TicketRecorded},
     };
     use cqrsx::journal::EventStore;
-    use cqrsx_testing::mem_store::MemStore;
+    use cqrsx_testing::memory_store::MemoryStore;
     use serde_json::json;
 
     #[tokio::test]
     async fn records_the_ticket_and_publishes_the_e_ticket_mail_task() {
-        let store = MemStore::default();
+        let store = MemoryStore::default();
         let (fans, executor) = fans(store.clone());
         let (payload, correlation_id) = (ticket(), uuid::Uuid::now_v7());
         let delivery = steps(&fans, attempt(&payload, correlation_id));
@@ -103,7 +101,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_redelivered_task_is_done_without_a_second_ticket() {
-        let store = MemStore::default();
+        let store = MemoryStore::default();
         let (fans, executor) = fans(store.clone());
         let delivery = steps(&fans, attempt(&ticket(), uuid::Uuid::now_v7()));
         assert_eq!(record_ticket.call(ticket(), &delivery).await, TaskResult::Done);

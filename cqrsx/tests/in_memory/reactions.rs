@@ -3,18 +3,18 @@
 //! metadata, and a redelivered step that publishes nothing twice.
 use cqrsx::{
     command::{
-        CommandGatewayError, causation::Causation, executor::StoreCommandExecutor, locks::LockLimits,
+        CommandError, causation::Causation, executor::StoreCommandExecutor, locks::LockLimits,
         retry::AggregateConflictRetryPolicy,
     },
     domain::{aggregate::Aggregate, command::Decide, event::Events},
-    journal::persisted::PersistedEventStore,
-    memory::event_repository::MemEventRepository,
+    journal::store::JournalEventStore,
+    memory::event_repository::MemoryEventRepository,
     reactions::{Decided, Reactions, ReactionsPlanner, Then},
     task::{
         DEFAULT_MAX_ATTEMPTS, NewTask, Task, TaskSchedule,
         attempt::TaskAttempt,
         format::TaskFormat,
-        policy::{Policies, PolicyName, Retry, TaskPolicy},
+        policy::{Policies, PolicyName, RetryPause, TaskPolicy},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -56,7 +56,7 @@ impl Aggregate for Show {
     type Id = String;
     type Command = Book;
     type Event = ShowEvent;
-    type Error = SeatTaken;
+    type Rejection = SeatTaken;
     type Rules = ();
 
     fn apply(&mut self, ShowEvent::Booked { seat, fan }: ShowEvent) {
@@ -103,7 +103,7 @@ impl Aggregate for Wallet {
     type Id = String;
     type Command = String;
     type Event = WalletEvent;
-    type Error = AlreadyRecorded;
+    type Rejection = AlreadyRecorded;
     type Rules = ();
 
     fn apply(&mut self, WalletEvent::Recorded { ticket }: WalletEvent) {
@@ -150,7 +150,7 @@ impl Reactions for Show {
         match decided.event {
             ShowEvent::Booked { seat, fan } => then.task(RecordInWallet {
                 fan: fan.clone(),
-                ticket: format!("{}/{seat}", decided.id),
+                ticket: format!("{}/{seat}", decided.aggregate_id),
             }),
         }
     }
@@ -162,7 +162,7 @@ impl Reactions for Wallet {
         match decided.event {
             WalletEvent::Recorded { ticket } => {
                 then.task(MailTicket {
-                    to: decided.id.clone(),
+                    to: decided.aggregate_id.clone(),
                     ticket: ticket.clone(),
                 });
                 then.task(MailTicket {
@@ -180,19 +180,17 @@ const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
 
 /// Steps wait a second and get six attempts, mails back off and get three; reminders keep the engine's defaults.
 fn policies() -> Policies {
-    let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap());
+    let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap());
     let mail = TaskPolicy::new(
-        Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+        RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
         NonZeroU16::new(3).unwrap(),
     );
-    Policies::default()
-        .with_policy(STEP, step)
-        .unwrap()
-        .with_policy(MAIL, mail)
-        .unwrap()
-        .with_task::<RecordInWallet>(STEP)
-        .unwrap()
-        .with_task::<MailTicket>(MAIL)
+    Policies::builder()
+        .policy(STEP, step)
+        .policy(MAIL, mail)
+        .bind::<RecordInWallet>(STEP)
+        .bind::<MailTicket>(MAIL)
+        .build()
         .unwrap()
 }
 
@@ -211,9 +209,9 @@ fn claim(task: &NewTask, number: i32) -> TaskAttempt {
 /// The wallet step: the task's payload becomes the wallet's command, which continues the task's chain; its
 /// causation and the tasks the wallet's reactions planned.
 async fn record_in_wallet(
-    wallets: &StoreCommandExecutor<Wallet, PersistedEventStore<MemEventRepository, Wallet>>,
+    wallets: &StoreCommandExecutor<Wallet, JournalEventStore<MemoryEventRepository, Wallet>>,
     attempt: &TaskAttempt,
-) -> Result<(Causation, Vec<NewTask>), CommandGatewayError<AlreadyRecorded>> {
+) -> Result<(Causation, Vec<NewTask>), CommandError<AlreadyRecorded>> {
     let step: RecordInWallet = serde_json::from_value(attempt.payload().clone()).unwrap();
     let causation = Causation::from_task(attempt);
     let report = wallets
@@ -224,16 +222,16 @@ async fn record_in_wallet(
 
 #[tokio::test]
 async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type() {
-    let journal = MemEventRepository::default();
+    let journal = MemoryEventRepository::default();
     let shows = StoreCommandExecutor::<Show, _>::new(
-        PersistedEventStore::new(journal.clone()),
+        JournalEventStore::new(journal.clone()),
         (),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
     )
     .with_task_planner(ReactionsPlanner::<Show>::new(policies()));
     let wallets = StoreCommandExecutor::<Wallet, _>::new(
-        PersistedEventStore::new(journal.clone()),
+        JournalEventStore::new(journal.clone()),
         (),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
@@ -254,7 +252,7 @@ async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type(
     };
     assert_eq!(step.id(), root.task_id(Show::TYPE, "gig-1", step.format(), 0));
     assert_eq!(step.payload(), &json!({ "fan": "fox", "ticket": "gig-1/A1" }));
-    assert_eq!((step.max_attempts().get(), step.schedule()), (6, &TaskSchedule::Now));
+    assert_eq!((step.max_attempts().get(), step.schedule()), (6, &TaskSchedule::now()));
 
     let delivery = claim(step, 1);
     let (chain, follow_ups) = record_in_wallet(&wallets, &delivery).await.unwrap();
@@ -287,9 +285,12 @@ async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type(
             .map(|task| (task.max_attempts().get(), task.schedule().clone()))
             .collect::<Vec<_>>(),
         [
-            (3, TaskSchedule::Now),
-            (3, TaskSchedule::Now),
-            (DEFAULT_MAX_ATTEMPTS.get(), TaskSchedule::After(Duration::from_secs(3600)))
+            (3, TaskSchedule::now()),
+            (3, TaskSchedule::now()),
+            (
+                DEFAULT_MAX_ATTEMPTS.get(),
+                TaskSchedule::after(Duration::from_secs(3600)).unwrap()
+            )
         ],
         "the budget of each type's policy; a type without one keeps the engine's"
     );
@@ -306,7 +307,7 @@ async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type(
     // published.
     assert_eq!(
         record_in_wallet(&wallets, &claim(step, 2)).await.map(|(_, tasks)| tasks),
-        Err(CommandGatewayError::Domain(AlreadyRecorded))
+        Err(CommandError::Rejected(AlreadyRecorded))
     );
     assert_eq!((journal.outbox::<Show>().len(), journal.outbox::<Wallet>().len()), (1, 3));
 }

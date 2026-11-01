@@ -94,7 +94,7 @@ fn find_storage_failure<'e>(source: &'e (dyn Error + 'static)) -> Option<&'e Sto
 }
 
 pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, source: &(dyn std::error::Error + 'static)) {
-    // These details are inspected before CommandGatewayError intentionally discards
+    // These details are inspected before CommandError intentionally discards
     // technical sources. They never change the outward error or retry policy.
     if let Some(failure) = find_storage_failure(source) {
         tracing::error!(component = "command", operation = "execute", aggregate_type = safe_type(aggregate_type), category,
@@ -282,7 +282,7 @@ pub(crate) mod test_support {
         log_projection_change("prime", "prime", "prime");
         log_poisoned_lock("prime");
         log_broken_invariant("prime", "prime");
-        log_projection_failure("prime", "prime", Operation::Page, FailureCategory::Unknown, 1);
+        log_projection_failure("prime", "prime", Operation::Page, FailureCategory::Unexpected, 1);
     }
 }
 
@@ -399,7 +399,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_projection_batch_failure_logs_the_code_of_the_storage_failure() {
-        let source = crate::journal::PersistenceError::ConnectionError(Box::new(StorageFailure::new(
+        let source = crate::journal::PersistenceError::Connection(Box::new(StorageFailure::new(
             "database",
             Some("40001".into()),
             std::io::Error::other("private_driver"),
@@ -437,7 +437,7 @@ mod tests {
 
     #[tokio::test]
     async fn projection_batch_diagnostics_log_one_safe_event_per_batch_with_the_storage_category() {
-        let source = crate::journal::PersistenceError::UnknownError(Box::new(StorageFailure::new(
+        let source = crate::journal::PersistenceError::Unexpected(Box::new(StorageFailure::new(
             "pool_timeout",
             None,
             std::io::Error::other("private_driver"),
@@ -527,7 +527,7 @@ mod task_failure_tests {
     async fn confirmed_failure_events_contain_identity_and_safe_reason_only() {
         let (_, log) = test_support::capture(async {
             for cause in [
-                TaskFailureCause::PermanentRejection,
+                TaskFailureCause::HandlerFailure,
                 TaskFailureCause::AttemptLimitReached,
                 TaskFailureCause::LeaseExpired,
             ] {

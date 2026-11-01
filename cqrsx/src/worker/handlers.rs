@@ -75,7 +75,7 @@ impl TaskHandlers {
 
     /// The handlers of `adapters` with `dependencies` already provided, to which more can still be registered: for an
     /// assembly that gathered both from several modules, as `cqrsx-engine` does.
-    pub fn assembled(adapters: Vec<BoxedTaskAdapter>, dependencies: Dependencies) -> Self {
+    pub fn from_adapters(adapters: Vec<BoxedTaskAdapter>, dependencies: Dependencies) -> Self {
         Self {
             adapters,
             dependencies,
@@ -114,7 +114,7 @@ impl TaskHandlers {
         A: Aggregate + 'static,
         E: CommandExecutor<A> + 'static,
     {
-        match self.executors.clone().with::<A, E>(executor) {
+        match self.executors.clone().register::<A, E>(executor) {
             Ok(executors) => self.executors = executors,
             Err(twice) => self.refuse(twice.into()),
         }
@@ -138,7 +138,7 @@ impl TaskHandlers {
 mod tests {
     use super::*;
     use crate::{
-        command::{CommandGatewayError, CommitReport},
+        command::{CommandError, CommitReport},
         domain::{command::Decide, event::Events},
         task::{attempt::TaskAttempt, format::TaskFormat},
         worker::{
@@ -181,7 +181,7 @@ mod tests {
         type Id = String;
         type Command = ();
         type Event = Recorded;
-        type Error = Refused;
+        type Rejection = Refused;
         type Rules = ();
 
         fn apply(&mut self, _: Recorded) {}
@@ -196,8 +196,8 @@ mod tests {
             _: &String,
             _: (),
             _: HashMap<String, String>,
-        ) -> Result<CommitReport<Ledger>, CommandGatewayError<Refused>> {
-            Err(CommandGatewayError::Conflict)
+        ) -> Result<CommitReport<Ledger>, CommandError<Refused>> {
+            Err(CommandError::Conflict)
         }
     }
 
@@ -207,16 +207,16 @@ mod tests {
     }
 
     impl Task for Record {
-        const TASK_TYPE: &'static str = "record";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "record";
+        const VERSION: i32 = 1;
     }
 
     #[derive(Serialize, Deserialize)]
     struct Stamp {}
 
     impl Task for Stamp {
-        const TASK_TYPE: &'static str = "stamp";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "stamp";
+        const VERSION: i32 = 1;
     }
 
     /// Runs the ledger's command and reports the prefix it was given and the answer.
@@ -230,7 +230,7 @@ mod tests {
                 return TaskResult::fail("no prefix");
             };
             let answer = match ctx.execute::<Ledger>(&task.ledger, ()).await {
-                Err(CommandGatewayError::Conflict) => "conflict",
+                Err(CommandError::Conflict) => "conflict",
                 _ => "something else",
             };
             TaskResult::retry(format!("{prefix}: {answer}"))
@@ -329,7 +329,7 @@ mod tests {
     async fn assembled_handlers_are_built_with_the_dependencies_they_were_given() {
         let adapters = vec![BoxedTaskAdapter::json::<Record, _>(RecordHandler)];
         let dependencies = Dependencies::default().provide(Arc::new(String::from("module")));
-        let dispatcher = TaskHandlers::assembled(adapters, dependencies)
+        let dispatcher = TaskHandlers::from_adapters(adapters, dependencies)
             .executor::<Ledger, _>(Arc::new(Conflicting))
             .build()
             .unwrap();
@@ -340,7 +340,7 @@ mod tests {
         );
         let adapters = vec![BoxedTaskAdapter::json::<Record, _>(RecordHandler)];
         assert_eq!(
-            TaskHandlers::assembled(adapters, Dependencies::default()).build().err(),
+            TaskHandlers::from_adapters(adapters, Dependencies::default()).build().err(),
             Some(TaskDispatcherError::MissingDependency {
                 format: TaskFormat::of::<Record>(),
                 dependency: DependencyId::of::<String>().name(),

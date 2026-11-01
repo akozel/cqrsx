@@ -1,6 +1,6 @@
 use crate::support::ledger::*;
 use cqrsx::command::CommandExecutor;
-use cqrsx::{journal::persisted::PersistedEventStore, memory::event_repository::MemEventRepository};
+use cqrsx::{journal::store::JournalEventStore, memory::event_repository::MemoryEventRepository};
 use std::{
     collections::HashMap,
     io,
@@ -11,17 +11,17 @@ use std::{
     time::Duration,
 };
 use {
-    cqrsx::command::CommandGatewayError, cqrsx::command::executor::StoreCommandExecutor,
+    cqrsx::command::CommandError, cqrsx::command::executor::StoreCommandExecutor,
     cqrsx::command::retry::AggregateConflictRetryPolicy, cqrsx::domain::event::EventEnvelope, cqrsx::journal::EventStore,
 };
 #[derive(Clone)]
 struct LostAcknowledgementStore {
-    inner: Arc<PersistedEventStore<MemEventRepository, Ledger>>,
+    inner: Arc<JournalEventStore<MemoryEventRepository, Ledger>>,
     commits: Arc<AtomicUsize>,
 }
 
 impl EventStore<Ledger> for LostAcknowledgementStore {
-    type Context = <PersistedEventStore<MemEventRepository, Ledger> as EventStore<Ledger>>::Context;
+    type Context = <JournalEventStore<MemoryEventRepository, Ledger> as EventStore<Ledger>>::Context;
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
         self.inner.load_events(id).await
     }
@@ -37,7 +37,7 @@ impl EventStore<Ledger> for LostAcknowledgementStore {
     ) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
         self.inner.commit(events, context, metadata, tasks).await?;
         self.commits.fetch_add(1, Ordering::SeqCst);
-        Err(cqrsx::journal::PersistenceError::ConnectionError(Box::new(io::Error::other(
+        Err(cqrsx::journal::PersistenceError::Connection(Box::new(io::Error::other(
             "acknowledgement lost after commit",
         ))))
     }
@@ -46,7 +46,7 @@ impl EventStore<Ledger> for LostAcknowledgementStore {
 #[tokio::test]
 async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command() {
     let store = LostAcknowledgementStore {
-        inner: Arc::new(PersistedEventStore::new(MemEventRepository::default())),
+        inner: Arc::new(JournalEventStore::new(MemoryEventRepository::default())),
         commits: Arc::default(),
     };
     let observed = store.clone();
@@ -60,7 +60,7 @@ async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command(
     );
     assert_eq!(
         CommandExecutor::execute(&executor, &"lost-ack".into(), Command::Adjust(1)).await,
-        Err(CommandGatewayError::Unavailable)
+        Err(CommandError::Unavailable)
     );
     assert_eq!(observed.commits.load(Ordering::SeqCst), 1);
     assert_eq!(*seen.lock().unwrap(), vec!["decide"]);

@@ -1,13 +1,13 @@
-//! An in-memory `PersistedEventRepository` with the write rules of the PostgreSQL one, its outbox and a
+//! An in-memory `EventRepository` with the write rules of the PostgreSQL one, its outbox and a
 //! position per commit: for tests of everything that reads a journal, without a database.
 use crate::{
     domain::aggregate::Aggregate,
     journal::{
         PersistenceError,
         feed::{FeedEntry, Position},
-        repository::PersistedEventRepository,
+        repository::EventRepository,
         serialized_event::SerializedEvent,
-        snapshot::{SerializedSnapshot, SnapshotUpdate},
+        snapshot::SerializedSnapshot,
     },
     memory::task_queue::Delivery,
     mutex::lock,
@@ -45,7 +45,7 @@ pub struct OutboxEntry {
 }
 
 /// A row of the outbox: the task, the aggregate type and the event it was published with, and the columns of its
-/// delivery, which a task queue over the journal reads and writes (`MemTaskQueue`).
+/// delivery, which a task queue over the journal reads and writes (`MemoryTaskQueue`).
 #[derive(Debug)]
 pub(crate) struct OutboxRow {
     pub(crate) aggregate_type: String,
@@ -64,14 +64,14 @@ struct Journal {
 
 /// Events and snapshots in memory with the rules of `postgres::event_repository::PostgresEventRepository`
 /// by meaning, not byte for byte: a taken `(aggregate id, sequence)` is an
-/// [`PersistenceError::OptimisticLockError`] and nothing of the batch is written; a first snapshot
+/// [`PersistenceError::Conflict`] and nothing of the batch is written; a first snapshot
 /// inserts and a later one replaces exactly the previous version, otherwise the same conflict; every
 /// non-empty `persist` takes the next [`Position`], shared by all its events, so `feed_after`, `head`
 /// and `aggregate_ids_after` behave like the journal of one PostgreSQL aggregate type. The snapshot is
 /// kept per aggregate (PostgreSQL keys it by `last_sequence` as well), which decides the same conflicts.
 ///
 /// Clones share the journal, so a test can commit through one handle and read through another. The outbox rows keep
-/// the columns of their delivery, which `memory::task_queue::MemTaskQueue` claims and settles: the outbox and
+/// the columns of their delivery, which `memory::task_queue::MemoryTaskQueue` claims and settles: the outbox and
 /// the task queue are one table, as in PostgreSQL. [`hold_loads`](Self::hold_loads) makes the loads of the aggregates
 /// wait for a test, so that a command can hold its aggregate's lock while others queue behind it.
 ///
@@ -95,7 +95,7 @@ struct Journal {
 /// #     type Id = String;
 /// #     type Command = ();
 /// #     type Event = Counted;
-/// #     type Error = Never;
+/// #     type Rejection = Never;
 /// #     type Rules = ();
 /// #     fn apply(&mut self, _: Counted) {}
 /// # }
@@ -105,13 +105,13 @@ struct Journal {
 /// # }
 /// # use example::{Counted, Counter};
 /// # use cqrsx::domain::event::EventEnvelope;
-/// use cqrsx::journal::{feed::Position, repository::PersistedEventRepository, serialized_event::SerializedEvent};
-/// use cqrsx::memory::event_repository::MemEventRepository;
+/// use cqrsx::journal::{feed::Position, repository::EventRepository, serialized_event::SerializedEvent};
+/// use cqrsx::memory::event_repository::MemoryEventRepository;
 ///
 /// # async fn example() -> Result<(), cqrsx::journal::PersistenceError> {
 /// # let event = |id: &str, sequence| SerializedEvent::try_from(&EventEnvelope::<Counter> {
 /// #     aggregate_id: id.into(), sequence, payload: Counted, metadata: Default::default() }).unwrap();
-/// let journal = MemEventRepository::default();
+/// let journal = MemoryEventRepository::default();
 /// journal.persist::<Counter>(&[event("a", 1), event("a", 2)], None).await?; // position 1
 /// journal.persist::<Counter>(&[event("b", 1)], None).await?;                // position 2
 /// journal.persist::<Counter>(&[event("a", 3)], None).await?;                // position 3
@@ -127,12 +127,12 @@ struct Journal {
 /// # tokio::runtime::Builder::new_current_thread().build().unwrap().block_on(example()).unwrap();
 /// ```
 #[derive(Clone, Debug, Default)]
-pub struct MemEventRepository {
+pub struct MemoryEventRepository {
     journal: Arc<Mutex<Journal>>,
     gate: Arc<Mutex<Option<Arc<Semaphore>>>>,
 }
 
-impl MemEventRepository {
+impl MemoryEventRepository {
     fn journal(&self) -> MutexGuard<'_, Journal> {
         lock(&self.journal, "in-memory journal")
     }
@@ -158,7 +158,7 @@ impl MemEventRepository {
     /// whose checkpoint is `after` is behind, as `PostgresEventRepository::count_after` counts it.
     pub async fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> Result<u64, PersistenceError> {
         if cap == 0 {
-            return Err(PersistenceError::UnknownError("count cap must be positive".into()));
+            return Err(PersistenceError::Unexpected("count cap must be positive".into()));
         }
         let journal = self.journal();
         let behind = journal
@@ -196,12 +196,12 @@ impl MemEventRepository {
 /// A journal page needs a positive limit, checked before anything is read.
 fn page_limit(limit: usize) -> Result<(), PersistenceError> {
     if limit == 0 {
-        return Err(PersistenceError::UnknownError("feed page limit must be positive".into()));
+        return Err(PersistenceError::Unexpected("feed page limit must be positive".into()));
     }
     Ok(())
 }
 
-impl PersistedEventRepository for MemEventRepository {
+impl EventRepository for MemoryEventRepository {
     async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
         self.events_after::<A>(aggregate_id, 0).await
     }
@@ -240,16 +240,16 @@ impl PersistedEventRepository for MemEventRepository {
             .get(&(A::TYPE.to_owned(), aggregate_id.to_owned()))
             .map(|snapshot| SerializedSnapshot {
                 aggregate_id: aggregate_id.to_owned(),
-                aggregate: snapshot.payload.clone(),
+                payload: snapshot.payload.clone(),
                 last_sequence: snapshot.last_sequence,
-                snapshot_version: snapshot.revision,
+                revision: snapshot.revision,
             }))
     }
 
     async fn persist<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<SnapshotUpdate>,
+        snapshot_update: Option<SerializedSnapshot>,
     ) -> Result<(), PersistenceError> {
         self.persist_with_tasks::<A>(events, snapshot_update, &[]).await
     }
@@ -261,14 +261,14 @@ impl PersistedEventRepository for MemEventRepository {
     async fn persist_with_tasks<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<SnapshotUpdate>,
+        snapshot_update: Option<SerializedSnapshot>,
         tasks: &[NewTask],
     ) -> Result<(), PersistenceError> {
         let mut journal = self.journal();
         // Everything is checked before anything is written: one transaction, all or nothing.
         let last_event = match (events.last(), tasks.is_empty()) {
             (None, false) => {
-                return Err(PersistenceError::UnknownError(
+                return Err(PersistenceError::Unexpected(
                     "outbox tasks require a committed domain event".into(),
                 ));
             }
@@ -277,7 +277,7 @@ impl PersistedEventRepository for MemEventRepository {
         let mut ids = HashSet::new();
         for task in tasks {
             if !ids.insert(task.id()) || journal.outbox.iter().any(|row| row.entry.task.id() == task.id()) {
-                return Err(PersistenceError::UnknownError(
+                return Err(PersistenceError::Unexpected(
                     "duplicate task id: the outbox already holds it".into(),
                 ));
             }
@@ -290,21 +290,21 @@ impl PersistedEventRepository for MemEventRepository {
                     && row.event.sequence == event.sequence
             });
             if taken || !batch.insert((event.aggregate_id.as_str(), event.sequence)) {
-                return Err(PersistenceError::OptimisticLockError);
+                return Err(PersistenceError::Conflict);
             }
         }
         if let Some(snapshot) = &snapshot_update {
-            if snapshot.next_version == 0 {
-                return Err(PersistenceError::UnknownError("snapshot version must be positive".into()));
+            if snapshot.revision == 0 {
+                return Err(PersistenceError::Unexpected("snapshot version must be positive".into()));
             }
             let stored = journal
                 .snapshots
                 .get(&(A::TYPE.to_owned(), snapshot.aggregate_id.clone()))
                 .map(|stored| stored.revision);
-            match (snapshot.next_version, stored) {
+            match (snapshot.revision, stored) {
                 (1, None) => {}
                 (next, Some(version)) if version.checked_add(1) == Some(next) => {}
-                _ => return Err(PersistenceError::OptimisticLockError),
+                _ => return Err(PersistenceError::Conflict),
             }
         }
         if !events.is_empty() {
@@ -322,7 +322,7 @@ impl PersistedEventRepository for MemEventRepository {
                 Snapshot {
                     payload: snapshot.payload,
                     last_sequence: snapshot.last_sequence,
-                    revision: snapshot.next_version,
+                    revision: snapshot.revision,
                 },
             );
         }
@@ -399,7 +399,7 @@ mod tests {
         },
         journal::{
             EventStore,
-            persisted::{PersistedEventStore, tests::TestAggregate},
+            store::{JournalEventStore, tests::TestAggregate},
         },
     };
     use std::{collections::HashMap, future::Future};
@@ -426,18 +426,18 @@ mod tests {
             .collect()
     }
 
-    fn snapshot(id: &str, last_sequence: usize, next_version: usize) -> SnapshotUpdate {
-        SnapshotUpdate {
+    fn snapshot(id: &str, last_sequence: usize, revision: usize) -> SerializedSnapshot {
+        SerializedSnapshot {
             aggregate_id: id.into(),
             payload: serde_json::json!({ "last": last_sequence }),
             last_sequence,
-            next_version,
+            revision,
         }
     }
 
     #[tokio::test]
     async fn a_commit_takes_one_position_shared_by_its_events_and_a_page_ends_on_a_commit() {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         assert_eq!(journal.head::<Ledger>().await.unwrap(), Position::START);
         journal
             .persist::<Ledger>(&[delta("a", 1, 1), delta("a", 2, 2), delta("a", 3, 3)], None)
@@ -473,7 +473,7 @@ mod tests {
 
     #[tokio::test]
     async fn keys_are_listed_in_order_page_by_page_and_other_types_stay_invisible() {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         for id in ["c", "a", "b"] {
             journal
                 .persist::<Ledger>(&[delta(id, 1, 1), delta(id, 2, 2)], None)
@@ -500,7 +500,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_taken_sequence_conflicts_and_the_whole_batch_is_dropped() {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         journal.persist::<Ledger>(&[delta("a", 1, 1)], None).await.unwrap();
         for batch in [
             vec![delta("a", 2, 2), delta("a", 1, 9)],
@@ -508,7 +508,7 @@ mod tests {
         ] {
             assert!(matches!(
                 journal.persist::<Ledger>(&batch, None).await,
-                Err(PersistenceError::OptimisticLockError)
+                Err(PersistenceError::Conflict)
             ));
         }
         assert_eq!(
@@ -525,7 +525,7 @@ mod tests {
 
     #[tokio::test]
     async fn snapshots_follow_the_version_chain_and_a_conflict_writes_no_event_either() {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         assert!(journal.snapshot::<Ledger>("a").await.unwrap().is_none());
         journal
             .persist::<Ledger>(&[delta("a", 1, 1)], Some(snapshot("a", 1, 1)))
@@ -533,16 +533,16 @@ mod tests {
             .unwrap();
         let stored = journal.snapshot::<Ledger>("a").await.unwrap().unwrap();
         assert_eq!(
-            (stored.aggregate_id.as_str(), stored.last_sequence, stored.snapshot_version),
+            (stored.aggregate_id.as_str(), stored.last_sequence, stored.revision),
             ("a", 1, 1)
         );
-        assert_eq!(stored.aggregate, serde_json::json!({ "last": 1 }));
+        assert_eq!(stored.payload, serde_json::json!({ "last": 1 }));
         for wrong in [1, 3] {
             assert!(matches!(
                 journal
                     .persist::<Ledger>(&[delta("a", 2, 2)], Some(snapshot("a", 2, wrong)))
                     .await,
-                Err(PersistenceError::OptimisticLockError)
+                Err(PersistenceError::Conflict)
             ));
         }
         assert_eq!(
@@ -554,14 +554,14 @@ mod tests {
             journal
                 .persist::<Ledger>(&[delta("a", 2, 2)], Some(snapshot("a", 2, 0)))
                 .await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
         journal
             .persist::<Ledger>(&[delta("a", 2, 2)], Some(snapshot("a", 2, 2)))
             .await
             .unwrap();
         journal.persist::<Ledger>(&[], Some(snapshot("a", 2, 3))).await.unwrap();
-        assert_eq!(journal.snapshot::<Ledger>("a").await.unwrap().unwrap().snapshot_version, 3);
+        assert_eq!(journal.snapshot::<Ledger>("a").await.unwrap().unwrap().revision, 3);
         assert_eq!(
             journal.head::<Ledger>().await.unwrap(),
             Position::new(2),
@@ -572,21 +572,21 @@ mod tests {
 
     #[tokio::test]
     async fn a_journal_page_needs_a_positive_limit() {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         assert!(matches!(
             journal.feed_after::<Ledger>(Position::START, 0).await,
-            Err(PersistenceError::UnknownError(error)) if error.to_string() == "feed page limit must be positive"
+            Err(PersistenceError::Unexpected(error)) if error.to_string() == "feed page limit must be positive"
         ));
         assert!(matches!(
             journal.aggregate_ids_after::<Ledger>("", 0).await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
     }
 
     #[tokio::test]
     async fn clones_share_the_journal_and_a_store_commits_into_it() {
-        let journal = MemEventRepository::default();
-        let store = PersistedEventStore::<_, Ledger>::new(journal.clone());
+        let journal = MemoryEventRepository::default();
+        let store = JournalEventStore::<_, Ledger>::new(journal.clone());
         let context = store.load_aggregate("x").await.unwrap();
         store
             .commit(vec![Delta(5), Delta(-2)], context, HashMap::new(), &[])
@@ -602,7 +602,7 @@ mod tests {
 
     #[tokio::test]
     async fn count_after_counts_the_events_of_a_type_above_a_position_up_to_the_cap() {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         journal
             .persist::<Ledger>(&[delta("a", 1, 1), delta("a", 2, 2)], None)
             .await
@@ -617,16 +617,15 @@ mod tests {
         assert_eq!(journal.count_after::<TestAggregate>(Position::START, 10).await.unwrap(), 1);
         assert!(matches!(
             journal.count_after::<Ledger>(Position::START, 0).await,
-            Err(PersistenceError::UnknownError(error)) if error.to_string() == "count cap must be positive"
+            Err(PersistenceError::Unexpected(error)) if error.to_string() == "count cap must be positive"
         ));
     }
 
     #[tokio::test]
     async fn held_loads_wait_for_a_permit_and_the_rest_of_the_journal_does_not() {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         journal.persist::<Ledger>(&[delta("a", 1, 3)], None).await.unwrap();
-        let store =
-            PersistedEventStore::<_, Ledger>::new(journal.clone()).with_snapshots(crate::journal::persisted::tests::every(10));
+        let store = JournalEventStore::<_, Ledger>::new(journal.clone()).with_snapshots(crate::journal::store::tests::every(10));
         let gate = journal.hold_loads();
         let mut load = Box::pin(store.load_aggregate("a"));
         let waiting = std::future::poll_fn(|cx| std::task::Poll::Ready(load.as_mut().poll(cx).is_pending())).await;
@@ -657,14 +656,14 @@ mod tests {
 
     #[tokio::test]
     async fn tasks_publish_with_their_events_and_never_alone() {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         let alone = journal.persist_with_tasks::<Ledger>(&[], None, &[task(0)]).await.unwrap_err();
         assert_eq!(alone.to_string(), "outbox tasks require a committed domain event");
         journal
             .persist_with_tasks::<Ledger>(&[delta("a", 1, 5), delta("a", 2, 6)], None, &[task(1), task(2)])
             .await
             .unwrap();
-        let entries = |journal: &MemEventRepository| -> Vec<(String, usize, u64)> {
+        let entries = |journal: &MemoryEventRepository| -> Vec<(String, usize, u64)> {
             journal
                 .outbox::<Ledger>()
                 .into_iter()
@@ -683,7 +682,7 @@ mod tests {
             journal
                 .persist_with_tasks::<Ledger>(&[delta("a", 2, 7)], None, &[task(3)])
                 .await,
-            Err(PersistenceError::OptimisticLockError)
+            Err(PersistenceError::Conflict)
         ));
         let published = journal.outbox::<Ledger>()[0].task.clone();
         let duplicate = journal

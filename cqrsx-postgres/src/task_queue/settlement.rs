@@ -36,7 +36,7 @@ fn settlement_parameters(request: SettlementRequest) -> SettlementParameters {
             status: "failed",
             delay: Duration::ZERO,
             last_error: Some(reason),
-            failure_cause: Some(TaskFailureCause::PermanentRejection),
+            failure_cause: Some(TaskFailureCause::HandlerFailure),
         },
     }
 }
@@ -87,7 +87,7 @@ pub(super) async fn settle(
         FROM owned
         WHERE o.id = owned.id AND owned.locked_until > clock_timestamp()
         RETURNING o.status
-    "#).bind(task.attempt().task_id()).bind(task.lease().lock_token()).bind(parameters.status).bind(milliseconds(parameters.delay, QueueRequestError::InvalidRetryDelay)?)
+    "#).bind(task.attempt().task_id()).bind(task.lease().token()).bind(parameters.status).bind(milliseconds(parameters.delay, QueueRequestError::InvalidRetryDelay)?)
         .bind(parameters.last_error.map(|reason| reason.chars().take(2048).collect::<String>()))
         .fetch_optional(&queue.pool).await.map_err(|error| storage_error(&error, "settle"))?;
     let status = row

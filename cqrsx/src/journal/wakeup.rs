@@ -3,8 +3,8 @@ use std::sync::Arc;
 use tokio::sync::Notify;
 
 /// Wakes the projection processors of one aggregate type after a commit, so they read the journal at once
-/// instead of at their next poll. One per aggregate type, shared by its command executor
-/// (`with_commit_wakeup`) and its processors (`with_wakeup`): clones share the one notification.
+/// instead of at their next poll. One per aggregate type, shared by its command executor and its
+/// processors (`with_commit_wakeup` of each): clones share the one notification.
 ///
 /// Not a delivery: it carries no events, and a processor reads the journal whether or not it was woken; a
 /// commit on another node reaches that node's processors only through their poll.

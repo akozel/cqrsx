@@ -5,19 +5,18 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
     let db = Database::new().await;
     let first = new_task();
     let mut second = new_task();
-    second = second
-        .with_metadata(json!({"correlation_id": "delivery", "custom": {"worker": true}}))
-        .unwrap();
+    second =
+        second.with_metadata(serde_json::from_value(json!({"correlation_id": "delivery", "custom": {"worker": true}})).unwrap());
     let repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     let repo_tasks = vec![first.clone(), second.clone()];
     let events = [event("batch", 1)];
     repo.persist_with_tasks::<TestAggregate>(
         &events,
-        Some(SnapshotUpdate {
+        Some(SerializedSnapshot {
             aggregate_id: "batch".into(),
             payload: json!({"state": "original"}),
             last_sequence: 1,
-            next_version: 1,
+            revision: 1,
         }),
         &repo_tasks,
     )
@@ -49,11 +48,11 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
         bad_repo
             .persist_with_tasks::<TestAggregate>(
                 &[event("batch", 2)],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "batch".into(),
                     payload: json!({"state": "bad"}),
                     last_sequence: 2,
-                    next_version: 2
+                    revision: 2
                 }),
                 &bad_repo_tasks
             )
@@ -66,7 +65,7 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
         .unwrap();
     assert_eq!(repo.events::<TestAggregate>("batch").await.unwrap().len(), 1);
     assert_eq!(
-        repo.snapshot::<TestAggregate>("batch").await.unwrap().unwrap().aggregate,
+        repo.snapshot::<TestAggregate>("batch").await.unwrap().unwrap().payload,
         json!({"state": "original"})
     );
     let count: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox")
@@ -80,16 +79,16 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
         fresh
             .persist_with_tasks::<TestAggregate>(
                 &[event("batch", 2)],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "batch".into(),
                     payload: json!({}),
                     last_sequence: 4,
-                    next_version: 4
+                    revision: 4
                 }),
                 &fresh_tasks
             )
             .await,
-        Err(PersistenceError::OptimisticLockError)
+        Err(PersistenceError::Conflict)
     ));
     let next_task = new_task();
     let next_repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
@@ -97,11 +96,11 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
     next_repo
         .persist_with_tasks::<TestAggregate>(
             &[event("batch", 2)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "batch".into(),
                 payload: json!({"state": "next"}),
                 last_sequence: 2,
-                next_version: 2,
+                revision: 2,
             }),
             &next_repo_tasks,
         )
@@ -109,7 +108,7 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
         .unwrap();
     assert_eq!(row(&db.pool, next_task.id()).await.get::<i64, _>("aggregate_sequence"), 2);
     assert_eq!(
-        next_repo.snapshot::<TestAggregate>("batch").await.unwrap().unwrap().aggregate,
+        next_repo.snapshot::<TestAggregate>("batch").await.unwrap().unwrap().payload,
         json!({"state": "next"})
     );
     assert!(
@@ -118,13 +117,16 @@ async fn explicit_batches_commit_once_and_rollback_with_events_and_snapshots() {
             .await
             .is_err()
     );
-    assert!(new_task().with_schedule(TaskSchedule::After(Duration::MAX)).is_err());
+    assert_eq!(
+        TaskSchedule::after(Duration::MAX),
+        Err(cqrsx::task::TaskValidationError::DelayTooLong)
+    );
     // A duplicate task ID is not an optimistic aggregate conflict. The whole
     // statement still rolls its otherwise valid new event back.
     assert!(matches!(
         repo.persist_with_tasks::<TestAggregate>(&[event("duplicate-task", 1)], None, &repo_tasks)
             .await,
-        Err(PersistenceError::UnknownError(_))
+        Err(PersistenceError::Unexpected(_))
     ));
     assert!(repo.events::<TestAggregate>("duplicate-task").await.unwrap().is_empty());
     db.close().await;
@@ -140,11 +142,11 @@ async fn persists_events_and_snapshot_without_implicit_outbox() {
     repository
         .persist::<StreamAggregate>(
             &events,
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: AGGREGATE_ID.to_owned(),
                 payload: snapshot.clone(),
                 last_sequence: 1,
-                next_version: 1,
+                revision: 1,
             }),
         )
         .await
@@ -173,9 +175,9 @@ async fn persists_events_and_snapshot_without_implicit_outbox() {
             .expect("snapshot must load"),
         Some(SerializedSnapshot {
             aggregate_id: AGGREGATE_ID.to_owned(),
-            aggregate: snapshot,
+            payload: snapshot,
             last_sequence: 1,
-            snapshot_version: 1,
+            revision: 1,
         })
     );
 
@@ -201,11 +203,11 @@ async fn updates_snapshot_for_a_later_event_batch() {
     repository
         .persist::<StreamAggregate>(
             &[serialized_event(1, "first")],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: AGGREGATE_ID.to_owned(),
                 payload: first_snapshot,
                 last_sequence: 1,
-                next_version: 1,
+                revision: 1,
             }),
         )
         .await
@@ -213,11 +215,11 @@ async fn updates_snapshot_for_a_later_event_batch() {
     repository
         .persist::<StreamAggregate>(
             &[serialized_event(2, "second")],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: AGGREGATE_ID.to_owned(),
                 payload: second_snapshot.clone(),
                 last_sequence: 2,
-                next_version: 2,
+                revision: 2,
             }),
         )
         .await
@@ -230,9 +232,9 @@ async fn updates_snapshot_for_a_later_event_batch() {
             .expect("snapshot must load"),
         Some(SerializedSnapshot {
             aggregate_id: AGGREGATE_ID.to_owned(),
-            aggregate: second_snapshot,
+            payload: second_snapshot,
             last_sequence: 2,
-            snapshot_version: 2,
+            revision: 2,
         })
     );
     assert_eq!(row_count(&database.pool, "events").await, 2);
@@ -254,7 +256,7 @@ async fn maps_duplicate_event_sequence_to_optimistic_lock_error() {
         .persist::<StreamAggregate>(&[serialized_event(1, "duplicate")], None)
         .await;
 
-    assert!(matches!(result, Err(PersistenceError::OptimisticLockError)));
+    assert!(matches!(result, Err(PersistenceError::Conflict)));
     assert_eq!(row_count(&database.pool, "events").await, 1);
     assert_eq!(row_count(&database.pool, "transactional_outbox").await, 0);
 
@@ -270,11 +272,11 @@ async fn rejects_multi_event_snapshot_only_and_tasks_without_event_before_writin
         repository
             .persist::<StreamAggregate>(
                 &[serialized_event(1, "first"), serialized_event(2, "second")],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: AGGREGATE_ID.to_owned(),
                     payload: json!({"state": "second"}),
                     last_sequence: 1,
-                    next_version: 1
+                    revision: 1
                 }),
             )
             .await
@@ -284,11 +286,11 @@ async fn rejects_multi_event_snapshot_only_and_tasks_without_event_before_writin
         repository
             .persist::<StreamAggregate>(
                 &[],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: AGGREGATE_ID.to_owned(),
                     payload: json!({"state": "snapshot"}),
                     last_sequence: 1,
-                    next_version: 1
+                    revision: 1
                 })
             )
             .await

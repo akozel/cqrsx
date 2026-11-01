@@ -430,7 +430,7 @@ impl<A: Aggregate> Drop for KeyLane<A> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::journal::persisted::tests::{TestAggregate, TestEvents};
+    use crate::journal::store::tests::{TestAggregate, TestEvents};
     use async_trait::async_trait;
     use std::{
         collections::HashSet,
@@ -534,7 +534,7 @@ mod tests {
             self.calls.lock().unwrap().push((aggregate_id.to_owned(), sequences));
             match self.call(aggregate_id).await {
                 Finish::Ok => Ok(()),
-                Finish::Fail => Err(PersistenceError::OptimisticLockError),
+                Finish::Fail => Err(PersistenceError::Conflict),
                 Finish::Panic => panic!("the probe panicked as asked"),
             }
         }
@@ -546,7 +546,7 @@ mod tests {
             self.rebuilds.lock().unwrap().push((aggregate_id.to_owned(), pace, stop));
             match self.call(aggregate_id).await {
                 Finish::Ok => Ok(3),
-                Finish::Fail => Err(PersistenceError::OptimisticLockError),
+                Finish::Fail => Err(PersistenceError::Conflict),
                 Finish::Panic => panic!("the probe panicked as asked"),
             }
         }

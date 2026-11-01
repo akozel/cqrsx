@@ -6,17 +6,12 @@ use self::write_plan::WritePlan;
 use crate::event_repository::PostgresEventRepository;
 use cqrsx::{
     domain::aggregate::Aggregate,
-    journal::{
-        PersistenceError,
-        repository::PersistedEventRepository,
-        serialized_event::SerializedEvent,
-        snapshot::{SerializedSnapshot, SnapshotUpdate},
-    },
+    journal::{PersistenceError, repository::EventRepository, serialized_event::SerializedEvent, snapshot::SerializedSnapshot},
     task::NewTask,
 };
 use sqlx::PgPool;
 /// Commit one accepted event, its optional snapshot, and its tasks atomically
-/// ([`persist_with_tasks`](PersistedEventRepository::persist_with_tasks)).
+/// ([`persist_with_tasks`](EventRepository::persist_with_tasks)).
 ///
 /// Multi-event batches, snapshot-only writes, and tasks without an event are
 /// rejected. The repository holds no state of a command: build one per process
@@ -38,7 +33,7 @@ impl PostgresEventRepositoryWithOutbox {
     }
 }
 
-impl PersistedEventRepository for PostgresEventRepositoryWithOutbox {
+impl EventRepository for PostgresEventRepositoryWithOutbox {
     async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
         self.reader.events::<A>(aggregate_id).await
     }
@@ -58,7 +53,7 @@ impl PersistedEventRepository for PostgresEventRepositoryWithOutbox {
     async fn persist<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<SnapshotUpdate>,
+        snapshot_update: Option<SerializedSnapshot>,
     ) -> Result<(), PersistenceError> {
         self.persist_with_tasks::<A>(events, snapshot_update, &[]).await
     }
@@ -66,7 +61,7 @@ impl PersistedEventRepository for PostgresEventRepositoryWithOutbox {
     async fn persist_with_tasks<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<SnapshotUpdate>,
+        snapshot_update: Option<SerializedSnapshot>,
         tasks: &[NewTask],
     ) -> Result<(), PersistenceError> {
         match WritePlan::try_new(events, snapshot_update, tasks)? {

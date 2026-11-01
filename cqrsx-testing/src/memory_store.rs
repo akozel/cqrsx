@@ -26,11 +26,11 @@ use std::{
 /// # use cqrsx::projection::EventHandler;
 /// # use cqrsx::view::View;
 /// # use cqrsx::domain::command::Decide;
-/// # use cqrsx::journal::repository::PersistedEventRepository;
+/// # use cqrsx::journal::repository::EventRepository;
 /// # use cqrsx::journal::PersistenceError;
 /// # use cqrsx::journal::serialized_event::SerializedEvent;
 /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-/// # use cqrsx::view::repository::ViewContext;
+/// # use cqrsx::view::repository::ViewMeta;
 /// # use cqrsx::view::repository::ViewRepository;
 /// #
 /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -65,7 +65,7 @@ use std::{
 /// #     type Id = String;
 /// #     type Command = MyCommands;
 /// #     type Event = MyEvents;
-/// #     type Error = MyUserError;
+/// #     type Rejection = MyUserError;
 /// #     type Rules = MyService;
 /// #
 /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -96,17 +96,17 @@ use std::{
 /// # use example::MyAggregate;
 /// # use example::MyService;
 /// use cqrsx::command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy};
-/// use cqrsx_testing::mem_store::MemStore;
+/// use cqrsx_testing::memory_store::MemoryStore;
 ///
-/// let store = MemStore::<MyAggregate>::default();
+/// let store = MemoryStore::<MyAggregate>::default();
 /// let executor = StoreCommandExecutor::new(store, MyService, AggregateConflictRetryPolicy::default(), LockLimits::default());
 /// ```
 #[derive(Debug, Clone)]
-pub struct MemStore<A: Aggregate + Send + Sync> {
+pub struct MemoryStore<A: Aggregate + Send + Sync> {
     events: Arc<LockedEventEnvelopeMap<A>>,
 }
 
-impl<A: Aggregate> Default for MemStore<A> {
+impl<A: Aggregate> Default for MemoryStore<A> {
     fn default() -> Self {
         let events = Arc::default();
         Self { events }
@@ -115,7 +115,7 @@ impl<A: Aggregate> Default for MemStore<A> {
 
 type LockedEventEnvelopeMap<A> = RwLock<HashMap<String, Vec<EventEnvelope<A>>>>;
 
-impl<A: Aggregate> MemStore<A> {
+impl<A: Aggregate> MemoryStore<A> {
     fn load_committed_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         let committed_events = self
             .events
@@ -137,15 +137,15 @@ impl<A: Aggregate> MemStore<A> {
     }
 }
 
-impl<A: Aggregate> EventStore<A> for MemStore<A> {
-    type Context = MemStoreAggregateContext<A>;
+impl<A: Aggregate> EventStore<A> for MemoryStore<A> {
+    type Context = MemoryStoreAggregateContext<A>;
 
     async fn load_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         let events = self.load_committed_events(aggregate_id)?;
         Ok(events)
     }
 
-    async fn load_aggregate(&self, aggregate_id: &str) -> Result<MemStoreAggregateContext<A>, PersistenceError> {
+    async fn load_aggregate(&self, aggregate_id: &str) -> Result<MemoryStoreAggregateContext<A>, PersistenceError> {
         let committed_events = self.load_events(aggregate_id).await?;
         let mut aggregate = A::default();
         let mut current_sequence = 0;
@@ -154,32 +154,32 @@ impl<A: Aggregate> EventStore<A> for MemStore<A> {
             let event = envelope.payload;
             aggregate.apply(event);
         }
-        Ok(MemStoreAggregateContext {
+        Ok(MemoryStoreAggregateContext {
             aggregate_id: aggregate_id.to_string(),
             aggregate,
-            current_sequence,
+            last_sequence: current_sequence,
         })
     }
 
-    /// Accepts tasks with events and keeps nothing of them (a `MemEventRepository` keeps an outbox); tasks
+    /// Accepts tasks with events and keeps nothing of them (a `MemoryEventRepository` keeps an outbox); tasks
     /// without an event are refused, as by the PostgreSQL outbox.
     async fn commit(
         &self,
         events: Vec<A::Event>,
-        context: MemStoreAggregateContext<A>,
+        context: MemoryStoreAggregateContext<A>,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
     ) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         if events.is_empty() && !tasks.is_empty() {
-            return Err(PersistenceError::UnknownError(
+            return Err(PersistenceError::Unexpected(
                 "outbox tasks require a committed domain event".into(),
             ));
         }
         let aggregate_id = context.aggregate_id;
-        let current_sequence = context.current_sequence;
+        let current_sequence = context.last_sequence;
         current_sequence
             .checked_add(events.len())
-            .ok_or_else(|| PersistenceError::UnknownError("event sequence or snapshot version overflow".into()))?;
+            .ok_or_else(|| PersistenceError::Unexpected("event sequence or snapshot version overflow".into()))?;
         let wrapped_events = Self::wrap_events(&aggregate_id, current_sequence, events, &metadata);
         let new_events_qty = wrapped_events.len();
         if new_events_qty == 0 {
@@ -196,7 +196,7 @@ impl<A: Aggregate> EventStore<A> for MemStore<A> {
     }
 }
 
-impl<A: Aggregate> MemStore<A> {
+impl<A: Aggregate> MemoryStore<A> {
     /// Method to wrap a set of events with the additional metadata needed for persistence and publishing
     fn wrap_events(
         aggregate_id: &str,
@@ -219,10 +219,10 @@ impl<A: Aggregate> MemStore<A> {
             .collect()
     }
 }
-/// Holds context for a pure event store implementation for MemStore.
+/// Holds context for a pure event store implementation for MemoryStore.
 ///
 /// This is used internally by the command executor.
-pub struct MemStoreAggregateContext<A>
+pub struct MemoryStoreAggregateContext<A>
 where
     A: Aggregate,
 {
@@ -231,20 +231,20 @@ where
     /// The current state of the aggregate instance.
     pub aggregate: A,
     /// The last committed event sequence number for this aggregate instance.
-    pub current_sequence: usize,
+    pub last_sequence: usize,
 }
 
 // By hand: the aggregate need not be `Debug`.
-impl<A: Aggregate> fmt::Debug for MemStoreAggregateContext<A> {
+impl<A: Aggregate> fmt::Debug for MemoryStoreAggregateContext<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MemStoreAggregateContext")
+        f.debug_struct("MemoryStoreAggregateContext")
             .field("aggregate_id", &self.aggregate_id)
-            .field("current_sequence", &self.current_sequence)
+            .field("last_sequence", &self.last_sequence)
             .finish_non_exhaustive()
     }
 }
 
-impl<A> AggregateContext<A> for MemStoreAggregateContext<A>
+impl<A> AggregateContext<A> for MemoryStoreAggregateContext<A>
 where
     A: Aggregate,
 {
@@ -285,7 +285,7 @@ mod tests {
         type Id = String;
         type Command = ();
         type Event = TestEvent;
-        type Error = TestError;
+        type Rejection = TestError;
         type Rules = TestService;
 
         fn apply(&mut self, event: Self::Event) {
@@ -357,23 +357,23 @@ mod tests {
     #[tokio::test]
     async fn memory_sequence_overflow_is_atomic_and_last_sequence_is_supported() {
         use crate::test_support::{Delta, Ledger};
-        let store = MemStore::<Ledger>::default();
+        let store = MemoryStore::<Ledger>::default();
         for (sequence, count) in [(usize::MAX, 1), (usize::MAX - 1, 2)] {
-            let context = MemStoreAggregateContext {
+            let context = MemoryStoreAggregateContext {
                 aggregate_id: "overflow".into(),
                 aggregate: Ledger::default(),
-                current_sequence: sequence,
+                last_sequence: sequence,
             };
             assert!(matches!(
                 store.commit(vec![Delta(1); count], context, HashMap::new(), &[]).await,
-                Err(PersistenceError::UnknownError(_))
+                Err(PersistenceError::Unexpected(_))
             ));
             assert!(store.load_events("overflow").await.unwrap().is_empty());
         }
-        let context = MemStoreAggregateContext {
+        let context = MemoryStoreAggregateContext {
             aggregate_id: "last".into(),
             aggregate: Ledger::default(),
-            current_sequence: usize::MAX - 1,
+            last_sequence: usize::MAX - 1,
         };
         assert_eq!(
             store.commit(vec![Delta(1)], context, HashMap::new(), &[]).await.unwrap()[0].sequence,
@@ -382,14 +382,14 @@ mod tests {
     }
     #[tokio::test]
     async fn test_mem_store() {
-        let event_store = MemStore::<TestAggregate>::default();
+        let event_store = MemoryStore::<TestAggregate>::default();
         let id = "test_id_A";
         let initial_events = event_store.load_events(id).await.unwrap();
         assert_eq!(0, initial_events.len());
         let agg_context = event_store.load_aggregate(id).await.unwrap();
         assert_eq!(
             format!("{agg_context:?}"),
-            r#"MemStoreAggregateContext { aggregate_id: "test_id_A", current_sequence: 0, .. }"#
+            r#"MemoryStoreAggregateContext { aggregate_id: "test_id_A", last_sequence: 0, .. }"#
         );
 
         event_store
@@ -450,7 +450,7 @@ mod store_tests {
     use crate::test_support::*;
     #[tokio::test]
     async fn clones_observe_the_same_envelopes() {
-        let store = MemStore::<Ledger>::default();
+        let store = MemoryStore::<Ledger>::default();
         let clone = store.clone();
         let metadata = HashMap::from([("trace".into(), "🦀".into())]);
         clone
@@ -476,20 +476,20 @@ mod store_tests {
     #[tokio::test]
     async fn tasks_commit_only_with_an_event() {
         use crate::test_support::{Delta, Ledger};
-        let store = MemStore::<Ledger>::default();
+        let store = MemoryStore::<Ledger>::default();
         let task = NewTask::from_payload(
             cqrsx::task::format::TaskFormat::try_new("notify", 1).unwrap(),
             serde_json::json!({}),
         )
         .unwrap();
-        let context = || MemStoreAggregateContext {
+        let context = || MemoryStoreAggregateContext {
             aggregate_id: "a".into(),
             aggregate: Ledger::default(),
-            current_sequence: 0,
+            last_sequence: 0,
         };
         assert!(matches!(
             store.commit(vec![], context(), HashMap::new(), std::slice::from_ref(&task)).await,
-            Err(PersistenceError::UnknownError(error)) if error.to_string() == "outbox tasks require a committed domain event"
+            Err(PersistenceError::Unexpected(error)) if error.to_string() == "outbox tasks require a committed domain event"
         ));
         assert_eq!(
             store

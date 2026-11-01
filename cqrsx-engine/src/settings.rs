@@ -12,10 +12,10 @@ use cqrsx::{
         retry::AggregateConflictRetryPolicy,
     },
     projection::processor::config::{
-        DEFAULT_DELIVERY_CAPACITY, DEFAULT_DELIVERY_MAX_BATCH, DEFAULT_PROCESSOR_CONCURRENCY, DEFAULT_PROCESSOR_LEASE,
-        DEFAULT_PROCESSOR_PAGE_SIZE, DEFAULT_PROCESSOR_POLL_INTERVAL, DEFAULT_PROCESSOR_REBUILD_PAGE,
-        DEFAULT_PROCESSOR_RETRY_BASE, DEFAULT_PROCESSOR_RETRY_MAX, DEFAULT_PROCESSOR_SETTLE, DeliveryLimits, DeliveryLimitsError,
-        ProcessorConfig, ProcessorConfigError,
+        DEFAULT_DELIVERY_CAPACITY, DEFAULT_DELIVERY_MAX_BATCH, DEFAULT_PROCESSOR_LEASE, DEFAULT_PROCESSOR_PAGE_SIZE,
+        DEFAULT_PROCESSOR_POLL_INTERVAL, DEFAULT_PROCESSOR_REBUILD_KEYS, DEFAULT_PROCESSOR_RETRY_BASE,
+        DEFAULT_PROCESSOR_RETRY_MAX, DEFAULT_PROCESSOR_WAKE_DELAY, DEFAULT_PROCESSOR_WRITE_CONCURRENCY, DeliveryLimits,
+        DeliveryLimitsError, ProcessorConfig, ProcessorConfigError,
     },
     worker::{
         queue::{lease::LEASE_SAFETY_MARGIN, storage_config::TaskStorageConfig},
@@ -343,7 +343,7 @@ impl Settings {
 
     /// The lease of a claimed task.
     pub fn task_lease(&self) -> Duration {
-        self.task_runtime.worker_pool().lease_duration()
+        self.task_runtime.worker_pool().lease()
     }
 
     pub fn task_storage(&self) -> &TaskStorageConfig {
@@ -377,11 +377,11 @@ impl Settings {
     /// the value the engine uses, read back from the object built from it (`LockLimits`, `ProcessorConfig`,
     /// `TaskRuntimeConfig`); what has no variable of its own (derived values, the plan of the connections) under a
     /// dotted name in lower case. Durations as [`duration_text`] writes them.
-    pub fn describe(&self) -> BTreeMap<String, String> {
+    pub fn description(&self) -> BTreeMap<String, String> {
         self.entries().into_iter().collect()
     }
 
-    /// What [`describe`](Self::describe) holds, in the order described: a key appears once, which the engine's build
+    /// What [`description`](Self::description) holds, in the order described: a key appears once, which the engine's build
     /// checks with what its modules describe.
     pub(crate) fn entries(&self) -> Vec<(String, String)> {
         let name = |name: &str| self.variable(name);
@@ -402,11 +402,11 @@ impl Settings {
             (name(PROJECTION_LEASE_MS), duration_text(projection.lease())),
             (name(PROJECTION_RETRY_BASE_MS), duration_text(projection.retry_base())),
             (name(PROJECTION_RETRY_MAX_MS), duration_text(projection.retry_max())),
-            (name(PROJECTION_CONCURRENCY), projection.concurrency().to_string()),
+            (name(PROJECTION_CONCURRENCY), projection.write_concurrency().to_string()),
             (name(PROJECTION_BUFFER), delivery.capacity().to_string()),
             (name(PROJECTION_MAX_BATCH), delivery.max_batch().to_string()),
-            (name(PROJECTION_REBUILD_PAGE), projection.rebuild_page().to_string()),
-            (name(PROJECTION_SETTLE), duration_text(projection.settle())),
+            (name(PROJECTION_REBUILD_PAGE), projection.rebuild_keys().to_string()),
+            (name(PROJECTION_SETTLE), duration_text(projection.wake_delay())),
             (
                 "projection.pages_in_flight".to_owned(),
                 projection.pages_in_flight().to_string(),
@@ -425,7 +425,7 @@ impl Settings {
                 "OUTBOX_HANDLER_TIMEOUT_SECS".to_owned(),
                 duration_text(worker.handler_timeout()),
             ),
-            ("OUTBOX_LEASE_SECS".to_owned(), duration_text(worker.lease_duration())),
+            ("OUTBOX_LEASE_SECS".to_owned(), duration_text(worker.lease())),
             (
                 "OUTBOX_STORAGE_TIMEOUT_MS".to_owned(),
                 duration_text(self.task_runtime.storage().storage_timeout()),
@@ -565,9 +565,9 @@ fn projection_config(read: &VariableReader) -> Result<ProcessorConfig, SettingsE
     let lease = read.millis(PROJECTION_LEASE_MS, DEFAULT_PROCESSOR_LEASE)?;
     let retry_base = read.millis(PROJECTION_RETRY_BASE_MS, DEFAULT_PROCESSOR_RETRY_BASE)?;
     let retry_max = read.millis(PROJECTION_RETRY_MAX_MS, DEFAULT_PROCESSOR_RETRY_MAX)?;
-    let concurrency = read.value(PROJECTION_CONCURRENCY, DEFAULT_PROCESSOR_CONCURRENCY)?;
-    let rebuild_page = read.value(PROJECTION_REBUILD_PAGE, DEFAULT_PROCESSOR_REBUILD_PAGE)?;
-    let settle = read.millis(PROJECTION_SETTLE, DEFAULT_PROCESSOR_SETTLE)?;
+    let concurrency = read.value(PROJECTION_CONCURRENCY, DEFAULT_PROCESSOR_WRITE_CONCURRENCY)?;
+    let rebuild_page = read.value(PROJECTION_REBUILD_PAGE, DEFAULT_PROCESSOR_REBUILD_KEYS)?;
+    let settle = read.millis(PROJECTION_SETTLE, DEFAULT_PROCESSOR_WAKE_DELAY)?;
     let capacity = read.value(PROJECTION_BUFFER, DEFAULT_DELIVERY_CAPACITY)?;
     let max_batch = read.value(PROJECTION_MAX_BATCH, DEFAULT_DELIVERY_MAX_BATCH)?;
     let delivery_limits = DeliveryLimits::try_new(capacity, max_batch).map_err(|error| match error {
@@ -577,26 +577,31 @@ fn projection_config(read: &VariableReader) -> Result<ProcessorConfig, SettingsE
     let named = |error: ProcessorConfigError| match error {
         ProcessorConfigError::ZeroPollInterval => read.invalid(PROJECTION_POLL_MS, "must be positive"),
         ProcessorConfigError::ZeroPageSize => read.invalid(PROJECTION_PAGE, "must be positive"),
-        ProcessorConfigError::ZeroRebuildPage => read.invalid(PROJECTION_REBUILD_PAGE, "must be positive"),
+        ProcessorConfigError::ZeroRebuildKeys => read.invalid(PROJECTION_REBUILD_PAGE, "must be positive"),
         ProcessorConfigError::LeaseTooShort { min } => {
             read.invalid(PROJECTION_LEASE_MS, &format!("must be at least {} ms", min.as_millis()))
         }
-        ProcessorConfigError::InvalidRetry if retry_base.is_zero() => read.invalid(PROJECTION_RETRY_BASE_MS, "must be positive"),
-        ProcessorConfigError::InvalidRetry => read.invalid(
+        ProcessorConfigError::ZeroRetryBase => read.invalid(PROJECTION_RETRY_BASE_MS, "must be positive"),
+        ProcessorConfigError::RetryBaseTooLong { .. } => read.invalid(
             PROJECTION_RETRY_BASE_MS,
             &format!("must not exceed {}", read.variable(PROJECTION_RETRY_MAX_MS)),
         ),
-        ProcessorConfigError::ZeroConcurrency => read.invalid(PROJECTION_CONCURRENCY, "must be positive"),
-        ProcessorConfigError::SettleTooLong { .. } => read.invalid(
+        ProcessorConfigError::ZeroWriteConcurrency => read.invalid(PROJECTION_CONCURRENCY, "must be positive"),
+        ProcessorConfigError::WakeDelayTooLong { .. } => read.invalid(
             PROJECTION_SETTLE,
             &format!("must not exceed {}", read.variable(PROJECTION_POLL_MS)),
         ),
     };
-    ProcessorConfig::try_new(poll, page, lease, delivery_limits)
-        .and_then(|config| config.with_retry(retry_base, retry_max))
-        .and_then(|config| config.with_rebuild_page(rebuild_page))
-        .and_then(|config| config.with_concurrency(concurrency))
-        .and_then(|config| config.with_settle(settle))
+    ProcessorConfig::builder()
+        .poll_interval(poll)
+        .page_size(page)
+        .lease(lease)
+        .delivery_limits(delivery_limits)
+        .retry(retry_base, retry_max)
+        .rebuild_keys(rebuild_page)
+        .write_concurrency(concurrency)
+        .wake_delay(settle)
+        .build()
         .map_err(named)
 }
 
@@ -735,7 +740,7 @@ mod tests {
             ),
             (
                 runtime.worker_pool().handler_timeout(),
-                runtime.worker_pool().lease_duration(),
+                runtime.worker_pool().lease(),
                 runtime.storage().storage_timeout()
             )
         );
@@ -760,7 +765,7 @@ mod tests {
             ("OUTBOX_LEASE_SECS", "45"),
         ])
         .unwrap();
-        let described = config.describe();
+        let described = config.description();
         let value = |key: &str| described.get(key).map(String::as_str);
         assert_eq!(value(STATEMENT_TIMEOUT), Some("unlimited"));
         assert_eq!(value(PROJECTION_SETTLE), Some("0 s"));
@@ -790,15 +795,15 @@ mod tests {
         for runtime in [demo, wider] {
             let worker = runtime.worker_pool();
             let with_lease = |lease| {
-                TaskWorkerPoolConfig::try_new(
-                    worker.concurrency(),
-                    worker.buffer_capacity(),
-                    worker.poll_interval(),
-                    worker.handler_timeout(),
-                    lease,
-                )
-                .unwrap()
-                .validate_for_storage_timeout(runtime.storage().storage_timeout())
+                TaskWorkerPoolConfig::builder()
+                    .concurrency(worker.concurrency())
+                    .buffer_capacity(worker.buffer_capacity())
+                    .poll_interval(worker.poll_interval())
+                    .handler_timeout(worker.handler_timeout())
+                    .lease(lease)
+                    .build()
+                    .unwrap()
+                    .validate_for_storage_timeout(runtime.storage().storage_timeout())
             };
             let budget = lease_budget(&runtime);
             assert_eq!(with_lease(budget), Err(TaskWorkerPoolConfigError::LeaseTooShort));
@@ -852,7 +857,10 @@ mod tests {
     fn the_projection_processors_default_to_the_library_and_read_every_variable() {
         assert_eq!(
             projection(&[]).unwrap(),
-            ProcessorConfig::default().with_settle(DEFAULT_PROJECTION_SETTLE).unwrap(),
+            ProcessorConfig::builder()
+                .wake_delay(DEFAULT_PROJECTION_SETTLE)
+                .build()
+                .unwrap(),
             "the library's defaults, but a settle of the demo's own"
         );
         assert_eq!(projection(&[(PROJECTION_SETTLE, "0")]).unwrap(), ProcessorConfig::default());
@@ -877,9 +885,9 @@ mod tests {
             (
                 config.retry_base(),
                 config.retry_max(),
-                config.concurrency(),
-                config.rebuild_page(),
-                config.settle()
+                config.write_concurrency(),
+                config.rebuild_keys(),
+                config.wake_delay()
             ),
             (
                 Duration::from_millis(100),
@@ -1021,7 +1029,7 @@ mod tests {
         expected.sort();
         assert_eq!(read, expected);
         let described: Vec<String> = Settings::default()
-            .describe()
+            .description()
             .into_keys()
             .filter(|key| key.starts_with(|c: char| c.is_ascii_uppercase()))
             .collect();
@@ -1044,7 +1052,7 @@ mod tests {
         let entries = Settings::default().entries();
         let keys: HashSet<&str> = entries.iter().map(|(key, _)| key.as_str()).collect();
         assert_eq!(keys.len(), entries.len(), "{entries:?}");
-        assert_eq!(Settings::default().describe().len(), entries.len());
+        assert_eq!(Settings::default().description().len(), entries.len());
     }
 
     #[test]

@@ -32,7 +32,7 @@ fn keys(page: &[FeedEntry]) -> Vec<(Position, &str, usize)> {
 
 /// Reads the whole `Ledger` journal page by page like a projection would: every page starts above
 /// the last position seen and never goes backwards.
-async fn everything<R: PersistedEventRepository>(repo: &R, limit: usize) -> Vec<FeedEntry> {
+async fn everything<R: EventRepository>(repo: &R, limit: usize) -> Vec<FeedEntry> {
     let mut all = Vec::new();
     let mut after = Position::START;
     loop {
@@ -300,7 +300,7 @@ async fn invalid_feed_arguments_are_refused() {
         let ids = repo.aggregate_ids_after::<Ledger>("", limit).await;
         for result in [page.map(|_| ()), ids.map(|_| ())] {
             let error = result.unwrap_err();
-            assert!(matches!(error, PersistenceError::UnknownError(_)), "{error}");
+            assert!(matches!(error, PersistenceError::Unexpected(_)), "{error}");
             let message = error.to_string();
             assert!(
                 message == "feed page limit must be positive" || message.contains("out of range"),

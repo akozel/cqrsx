@@ -139,7 +139,7 @@ async fn a_stop_with_a_stuck_key_releases_after_the_drain_deadline() {
         [(1, 1)],
         "the stale write and the repeat met at the contiguity rule"
     );
-    assert_eq!(h.view("b").await.unwrap().version, 1, "b was not written again");
+    assert_eq!(h.view("b").await.unwrap().revision, 1, "b was not written again");
     b.stop().await;
 }
 
@@ -244,7 +244,7 @@ async fn store_errors_at_register_claim_and_release_are_retried() {
         (3, 2),
         "a failed registration, then one before each claim"
     );
-    h.checkpoints.fail("take_requests", 1);
+    h.checkpoints.fail("take_rebuild_requests", 1);
     h.commit("b", 1).await;
     h.until(async || h.observer.count("failed:checkpoints:storage") == 1).await;
     h.caught_up(&["a", "b"]).await;

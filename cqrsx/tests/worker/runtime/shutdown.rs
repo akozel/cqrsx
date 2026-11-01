@@ -28,14 +28,14 @@ async fn generic_custom_executor_uses_actual_budget_and_stalled_invocation_drain
         }
     }
     let queue = Arc::new(Queue::default());
-    let config = TaskWorkerPoolConfig::try_new(
-        1,
-        1,
-        Duration::from_secs(1),
-        Duration::from_millis(20),
-        Duration::from_secs(60),
-    )
-    .unwrap();
+    let config = TaskWorkerPoolConfig::builder()
+        .concurrency(1)
+        .buffer_capacity(1)
+        .poll_interval(Duration::from_secs(1))
+        .handler_timeout(Duration::from_millis(20))
+        .lease(Duration::from_secs(60))
+        .build()
+        .unwrap();
     let stop = CancellationToken::new();
     let invalid = Arc::new(Executor {
         budget: Duration::from_secs(60),
@@ -94,8 +94,14 @@ async fn shutdown_drains_in_flight_work_and_invalid_worker_wiring_is_rejected() 
     let dispatcher = || TaskDispatcher::try_new(vec![CountingAdapter(seen.clone())]).unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
-    let invalid =
-        TaskWorkerPoolConfig::try_new(1, 1, Duration::from_secs(1), Duration::from_secs(30), Duration::from_secs(45)).unwrap();
+    let invalid = TaskWorkerPoolConfig::builder()
+        .concurrency(1)
+        .buffer_capacity(1)
+        .poll_interval(Duration::from_secs(1))
+        .handler_timeout(Duration::from_secs(30))
+        .lease(Duration::from_secs(45))
+        .build()
+        .unwrap();
     assert!(
         run(queue.clone(), executor.clone(), dispatcher(), invalid, shutdown.child_token())
             .await
@@ -215,9 +221,7 @@ async fn shared_cancellation_stops_dequeue_while_supervisor_is_claiming() {
         io_dispatcher(probe.clone()),
         // A claim for every freed slot, so that a claim is in flight after the second dequeue: this test is
         // about cancellation during a claim, not the refill level.
-        worker_config(1, 2, Duration::from_secs(3600))
-            .with_buffer_refill_percent(100)
-            .unwrap(),
+        eager_worker_config(1, 2, Duration::from_secs(3600)),
         shutdown.clone(),
     ));
     wait_until(|| probe.active.load(Ordering::SeqCst) == 1 && queue.incoming.lock().unwrap().len() == 2).await;

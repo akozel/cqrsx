@@ -20,7 +20,7 @@ pub const DEFAULT_STATEMENT_TIMEOUT: Duration = Duration::from_secs(4);
 ///
 /// The commands and the task queue issue short static statements over indexed tables: the latest
 /// snapshot, the events after it, one write; claim, settle, recovery. A cap turns a stuck statement
-/// (a lock wait, an overloaded server) into a fast failure, reported as `CommandGatewayError::Unavailable`
+/// (a lock wait, an overloaded server) into a fast failure, reported as `CommandError::Unavailable`
 /// with an unknown outcome or as `TaskProcessingError::Unavailable`, instead of a connection held for as
 /// long as it takes. Without snapshots, though, a command reads its aggregate's whole history: an
 /// aggregate with a long history and no snapshots can reach the cap, so give such aggregates snapshots.
@@ -87,7 +87,7 @@ pub enum ConnectionPingPolicy {
     ///
     /// Risk: a connection that died less than this ago (PostgreSQL restarted, network cut) is found
     /// on its first query instead of the ping. That query fails, which a command reports as
-    /// `CommandGatewayError::Unavailable` (the write did not happen, but the contract leaves its
+    /// `CommandError::Unavailable` (the write did not happen, but the contract leaves its
     /// outcome unknown; only conflicts are retried) and a queue operation as
     /// `TaskProcessingError::Unavailable` (the lease recovery returns the task); SQLx then drops the
     /// connection and the next acquisition opens a new one. A failed ping after a longer idle period

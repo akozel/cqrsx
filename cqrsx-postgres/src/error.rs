@@ -37,10 +37,10 @@ impl From<serde_json::Error> for PostgresRepositoryError {
 impl From<PostgresRepositoryError> for PersistenceError {
     fn from(err: PostgresRepositoryError) -> Self {
         match err {
-            PostgresRepositoryError::Conflict => Self::OptimisticLockError,
-            PostgresRepositoryError::Connection(error) => Self::ConnectionError(error),
-            PostgresRepositoryError::Deserialization(error) => Self::DeserializationError(error),
-            PostgresRepositoryError::Unexpected(error) => Self::UnknownError(error),
+            PostgresRepositoryError::Conflict => Self::Conflict,
+            PostgresRepositoryError::Connection(error) => Self::Connection(error),
+            PostgresRepositoryError::Deserialization(error) => Self::Deserialization(error),
+            PostgresRepositoryError::Unexpected(error) => Self::Unexpected(error),
         }
     }
 }
@@ -48,7 +48,7 @@ impl From<PostgresRepositoryError> for PersistenceError {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx::command::AggregateError;
+    use cqrsx::command::AttemptError;
     use std::{convert::Infallible, io};
     #[test]
     fn postgres_categories_retain_causes_through_persistence_to_the_command_error() {
@@ -62,7 +62,7 @@ mod tests {
                     _ => PostgresRepositoryError::Unexpected(cause),
                 }
             };
-            let aggregate = AggregateError::<Infallible>::from(PersistenceError::from(make()));
+            let aggregate = AttemptError::<Infallible>::from(PersistenceError::from(make()));
             if category != 0 {
                 use std::error::Error as _;
                 assert_eq!(
@@ -71,10 +71,8 @@ mod tests {
                 );
             }
             match (category, aggregate) {
-                (0, AggregateError::AggregateConflict) => {}
-                (1, AggregateError::DatabaseConnectionError(e))
-                | (2, AggregateError::DeserializationError(e))
-                | (3, AggregateError::UnexpectedError(e)) => {
+                (0, AttemptError::Conflict) => {}
+                (1, AttemptError::Connection(e)) | (2, AttemptError::Deserialization(e)) | (3, AttemptError::Unexpected(e)) => {
                     assert_eq!(e.downcast_ref::<io::Error>().unwrap().to_string(), "original")
                 }
                 _ => panic!("incorrect aggregate mapping"),
@@ -99,10 +97,10 @@ mod tests {
                 );
             }
             match (category, persistence) {
-                (0, PersistenceError::OptimisticLockError) => {}
-                (1, PersistenceError::ConnectionError(e))
-                | (2, PersistenceError::DeserializationError(e))
-                | (3, PersistenceError::UnknownError(e)) => {
+                (0, PersistenceError::Conflict) => {}
+                (1, PersistenceError::Connection(e))
+                | (2, PersistenceError::Deserialization(e))
+                | (3, PersistenceError::Unexpected(e)) => {
                     assert_eq!(e.downcast_ref::<io::Error>().unwrap().to_string(), "original")
                 }
                 _ => panic!("incorrect persistence mapping"),

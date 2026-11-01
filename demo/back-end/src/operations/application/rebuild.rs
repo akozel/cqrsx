@@ -14,7 +14,7 @@ use crate::{
 };
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
-use cqrsx::projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest};
+use cqrsx::projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildReply};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
@@ -58,7 +58,7 @@ pub trait Checkpoints: Send + Sync {
     /// Every row: `CheckpointStore::status(None)`.
     async fn rows(&self) -> Result<Vec<CheckpointStatus>, CheckpointError>;
     /// Asks the owner of the row `key` to rebuild every document: `CheckpointStore::request_rebuild`.
-    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError>;
+    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError>;
 }
 
 #[async_trait]
@@ -67,7 +67,7 @@ impl<C: CheckpointStore> Checkpoints for C {
         self.status(None).await
     }
 
-    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
+    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
         self.request_rebuild(key, pace).await
     }
 }
@@ -345,8 +345,8 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
         let mut accepted = false;
         for key in &self.read_models {
             match self.checkpoints.ask_rebuild(key, pace).await.map_err(unavailable)? {
-                RebuildRequest::Accepted => accepted = true,
-                RebuildRequest::AlreadyRunning => {}
+                RebuildReply::Accepted => accepted = true,
+                RebuildReply::AlreadyRunning => {}
             }
         }
         if !accepted {
@@ -386,7 +386,7 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
 mod tests {
     use super::*;
     use crate::operations::application::ledger::LedgerTotals;
-    use cqrsx::{journal::feed::Position, memory::checkpoint_store::MemCheckpointStore};
+    use cqrsx::{journal::feed::Position, memory::checkpoint_store::MemoryCheckpointStore};
     use std::collections::HashMap;
 
     fn halls() -> CheckpointKey {
@@ -434,14 +434,14 @@ mod tests {
     };
 
     struct Setup {
-        service: RebuildService<MemCheckpointStore>,
-        store: MemCheckpointStore,
+        service: RebuildService<MemoryCheckpointStore>,
+        store: MemoryCheckpointStore,
         ledger: Arc<Ledger>,
         activity: Arc<ActivityHub>,
     }
 
     async fn setup(registered: &[CheckpointKey]) -> Setup {
-        let store = MemCheckpointStore::default();
+        let store = MemoryCheckpointStore::default();
         for key in registered {
             store.register(key).await.unwrap();
         }
@@ -468,15 +468,15 @@ mod tests {
     }
 
     /// Plays the owner of `key`: takes the request, rebuilds `keys` documents and finishes.
-    async fn run_rebuild(store: &MemCheckpointStore, key: &CheckpointKey, keys: u64) {
+    async fn run_rebuild(store: &MemoryCheckpointStore, key: &CheckpointKey, keys: u64) {
         let owner = store.claim(key, "node-a", Duration::from_secs(10)).await.unwrap().unwrap();
         assert!(
             store
-                .take_requests(key, owner.token, 10)
+                .take_rebuild_requests(key, owner.token, 10)
                 .await
                 .unwrap()
                 .unwrap()
-                .rebuild
+                .rebuild_pace
                 .is_some()
         );
         assert!(store.begin_rebuild(key, owner.token).await.unwrap());
@@ -517,7 +517,7 @@ mod tests {
         let s = setup(&[halls(), wallets()]).await;
         assert_eq!(
             s.store.request_rebuild(&wallets(), Duration::ZERO).await.unwrap(),
-            RebuildRequest::Accepted
+            RebuildReply::Accepted
         );
         assert!(s.service.rebuild(Duration::ZERO).await.is_ok(), "the halls were accepted");
         let s = setup(&[]).await;

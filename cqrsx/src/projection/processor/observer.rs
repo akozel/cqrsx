@@ -28,12 +28,12 @@ pub trait ProjectionObserver: Send + Sync {
     }
 
     /// A rebuild of the whole journal changed state.
-    fn rebuild(&self, event: RebuildEvent) {
-        let _ = event;
+    fn rebuild_phase(&self, phase: RebuildPhase) {
+        let _ = phase;
     }
 
     /// The lease of the checkpoint changed hands.
-    fn lease(&self, event: LeaseEvent) {
+    fn lease(&self, event: LeaseChange) {
         let _ = event;
     }
 
@@ -55,11 +55,11 @@ pub struct Applied<'a> {
     pub position: Position,
 }
 
-/// The checkpoint moved to `position`; `applied` events were delivered by the pages behind the move.
+/// The checkpoint moved to `position`; `delivered` events were delivered by the pages behind the move.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Advanced {
     pub position: Position,
-    pub applied: u64,
+    pub delivered: u64,
 }
 
 /// A round failed: a handler for one key, or the journal or the checkpoint store without a key.
@@ -87,11 +87,11 @@ pub enum FailureCategory {
     /// An event of the journal or a stored document could not be read.
     Deserialization,
     /// The handler's write conflicted with another write of the document.
-    OptimisticLock,
+    Conflict,
     /// A document refused a batch as a gap that was not healed in place.
     SequenceGap,
     /// The handler or the journal failed otherwise.
-    Unknown,
+    Unexpected,
     /// The handler panicked.
     Panic,
     /// The key's lane stopped before it answered.
@@ -110,9 +110,9 @@ impl FailureCategory {
         match self {
             Self::Connection => "connection",
             Self::Deserialization => "deserialization",
-            Self::OptimisticLock => "optimistic_lock",
+            Self::Conflict => "optimistic_lock",
             Self::SequenceGap => "sequence_gap",
-            Self::Unknown => "unknown",
+            Self::Unexpected => "unknown",
             Self::Panic => "panic",
             Self::Stopped => "stopped",
             Self::Storage => "storage",
@@ -147,7 +147,7 @@ pub struct Rebuilt<'a> {
 
 /// A rebuild of the whole journal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum RebuildEvent {
+pub enum RebuildPhase {
     Started {
         pace: Duration,
     },
@@ -164,7 +164,7 @@ pub enum RebuildEvent {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum LeaseEvent {
+pub enum LeaseChange {
     Acquired,
     Lost,
     Released,
@@ -198,7 +198,7 @@ mod tests {
         });
         observer.advanced(&Advanced {
             position: Position::new(5),
-            applied: 2,
+            delivered: 2,
         });
         observer.failed(&Failed {
             aggregate_id: None,
@@ -213,17 +213,17 @@ mod tests {
             reason: RebuildReason::Healed,
         });
         for event in [
-            RebuildEvent::Started { pace: Duration::ZERO },
-            RebuildEvent::Progress { keys: 1 },
-            RebuildEvent::Finished {
+            RebuildPhase::Started { pace: Duration::ZERO },
+            RebuildPhase::Progress { keys: 1 },
+            RebuildPhase::Finished {
                 keys: 1,
                 elapsed: Duration::ZERO,
             },
-            RebuildEvent::Interrupted,
+            RebuildPhase::Interrupted,
         ] {
-            observer.rebuild(event);
+            observer.rebuild_phase(event);
         }
-        for event in [LeaseEvent::Acquired, LeaseEvent::Lost, LeaseEvent::Released] {
+        for event in [LeaseChange::Acquired, LeaseChange::Lost, LeaseChange::Released] {
             observer.lease(event);
         }
         observer.waiting(Waiting::Horizon);
@@ -236,9 +236,9 @@ mod tests {
         let words = [
             (FailureCategory::Connection, "connection"),
             (FailureCategory::Deserialization, "deserialization"),
-            (FailureCategory::OptimisticLock, "optimistic_lock"),
+            (FailureCategory::Conflict, "optimistic_lock"),
             (FailureCategory::SequenceGap, "sequence_gap"),
-            (FailureCategory::Unknown, "unknown"),
+            (FailureCategory::Unexpected, "unknown"),
             (FailureCategory::Panic, "panic"),
             (FailureCategory::Stopped, "stopped"),
             (FailureCategory::Storage, "storage"),

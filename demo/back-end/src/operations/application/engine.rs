@@ -13,7 +13,7 @@ use crate::{
 use async_trait::async_trait;
 use cqrsx::{
     journal::feed::Position,
-    projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, RebuildRequest},
+    projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, RebuildReply},
     view::verify::Verification,
 };
 use cqrsx_engine::{Cqrs, views::ViewsError};
@@ -29,8 +29,8 @@ impl Checkpoints for EngineViews {
     }
 
     /// A view the engine does not have is a request nobody registered.
-    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
-        let requested = self.0.views().rebuild(key.projection(), pace).await;
+    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
+        let requested = self.0.views().request_rebuild(key.projection(), pace).await;
         requested.map_err(|error| match error {
             ViewsError::Checkpoint(error) => error,
             _ => CheckpointError::Invalid("no such projection"),

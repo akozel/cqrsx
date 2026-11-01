@@ -1,6 +1,6 @@
 //! Checked single-event and snapshot decisions before any SQL work.
 use cqrsx::{
-    journal::{PersistenceError, serialized_event::SerializedEvent, snapshot::SnapshotUpdate},
+    journal::{PersistenceError, serialized_event::SerializedEvent, snapshot::SerializedSnapshot},
     task::NewTask,
 };
 use serde_json::Value;
@@ -29,14 +29,14 @@ pub(super) enum SnapshotWrite {
     },
 }
 impl SnapshotWrite {
-    fn try_new(update: Option<cqrsx::journal::snapshot::SnapshotUpdate>) -> Result<Self, PersistenceError> {
+    fn try_new(update: Option<cqrsx::journal::snapshot::SerializedSnapshot>) -> Result<Self, PersistenceError> {
         match update {
             None => Ok(Self::None),
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id,
                 payload,
                 last_sequence,
-                next_version: revision,
+                revision,
             }) => {
                 let revision = checked_bigint(revision)?;
                 let last_sequence = checked_bigint(last_sequence)?;
@@ -72,7 +72,7 @@ impl SnapshotWrite {
 impl<'a> WritePlan<'a> {
     pub(super) fn try_new(
         events: &'a [SerializedEvent],
-        snapshot: Option<cqrsx::journal::snapshot::SnapshotUpdate>,
+        snapshot: Option<cqrsx::journal::snapshot::SerializedSnapshot>,
         tasks: &[NewTask],
     ) -> Result<Self, PersistenceError> {
         match events {
@@ -108,7 +108,7 @@ enum WriteValidationError {
     BindLimitExceeded,
 }
 fn invalid_write(reason: WriteValidationError) -> PersistenceError {
-    PersistenceError::UnknownError(Box::new(reason))
+    PersistenceError::Unexpected(Box::new(reason))
 }
 fn validate_bind_count(tasks: usize, snapshot_binds: usize) -> Result<(), PersistenceError> {
     const EVENT_BINDS: usize = 7;
@@ -152,25 +152,25 @@ mod tests {
             (5_958, None),
             (
                 5_957,
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "aggregate".into(),
                     payload: json!({}),
                     last_sequence: 1,
-                    next_version: 1,
+                    revision: 1,
                 }),
             ),
             (
                 5_957,
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "aggregate".into(),
                     payload: json!({}),
                     last_sequence: 1,
-                    next_version: 2,
+                    revision: 2,
                 }),
             ),
         ] {
             let tasks = vec![task.clone(); count];
-            let Err(PersistenceError::UnknownError(source)) = WritePlan::try_new(&events, snapshot, &tasks) else {
+            let Err(PersistenceError::Unexpected(source)) = WritePlan::try_new(&events, snapshot, &tasks) else {
                 panic!("an oversized batch must be rejected before issuing SQL");
             };
             assert!(matches!(source.downcast_ref(), Some(WriteValidationError::BindLimitExceeded)));
@@ -183,11 +183,11 @@ mod tests {
         for (events, snapshot, tasks, expected) in [
             (
                 vec![],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "aggregate".into(),
                     payload: json!({}),
                     last_sequence: 1,
-                    next_version: 1,
+                    revision: 1,
                 }),
                 &[][..],
                 "a snapshot requires a committed domain event",
@@ -195,11 +195,11 @@ mod tests {
             (vec![], None, &tasks[..], "outbox tasks require a committed domain event"),
             (
                 vec![event(1)],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "aggregate".into(),
                     payload: json!({}),
                     last_sequence: 1,
-                    next_version: 0,
+                    revision: 0,
                 }),
                 &[][..],
                 "snapshot version must be positive",
@@ -211,7 +211,7 @@ mod tests {
                 "a command may commit at most one domain event",
             ),
         ] {
-            let Err(PersistenceError::UnknownError(source)) = WritePlan::try_new(&events, snapshot, tasks) else {
+            let Err(PersistenceError::Unexpected(source)) = WritePlan::try_new(&events, snapshot, tasks) else {
                 panic!("invalid shape must be rejected before SQL");
             };
             assert_eq!(source.to_string(), expected);
@@ -227,24 +227,24 @@ mod tests {
             (event(overflow), None),
             (
                 event(1),
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "aggregate".into(),
                     payload: json!({}),
                     last_sequence: overflow,
-                    next_version: 1,
+                    revision: 1,
                 }),
             ),
             (
                 event(1),
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "aggregate".into(),
                     payload: json!({}),
                     last_sequence: 1,
-                    next_version: overflow,
+                    revision: overflow,
                 }),
             ),
         ] {
-            let Err(PersistenceError::UnknownError(source)) = WritePlan::try_new(&[event], snapshot, &[]) else {
+            let Err(PersistenceError::Unexpected(source)) = WritePlan::try_new(&[event], snapshot, &[]) else {
                 panic!("overflow must fail during validation");
             };
             assert!(matches!(source.downcast_ref(), Some(WriteValidationError::BigintOverflow)));
@@ -259,10 +259,7 @@ mod tests {
     fn rejects_batches_over_the_postgres_bind_limit() {
         assert!(validate_bind_count(1, 6).is_ok());
         assert!(validate_bind_count(5_957, 0).is_ok());
-        assert!(matches!(
-            validate_bind_count(5_958, 0),
-            Err(PersistenceError::UnknownError(_))
-        ));
+        assert!(matches!(validate_bind_count(5_958, 0), Err(PersistenceError::Unexpected(_))));
         assert!(validate_bind_count(usize::MAX, 0).is_err());
         // Snapshot binds count toward the same statement limit as the tasks.
         for snapshot_binds in [5, 6] {
@@ -281,20 +278,20 @@ mod tests {
         for (update, expected_binds) in [
             (None, 0),
             (
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "a".into(),
                     payload: json!({}),
                     last_sequence: 1,
-                    next_version: 1,
+                    revision: 1,
                 }),
                 5,
             ),
             (
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "a".into(),
                     payload: json!({}),
                     last_sequence: 1,
-                    next_version: 2,
+                    revision: 2,
                 }),
                 6,
             ),
@@ -321,6 +318,6 @@ mod tests {
 
         let result = checked_bigint(overflowing_sequence);
 
-        assert!(matches!(result, Err(PersistenceError::UnknownError(_))));
+        assert!(matches!(result, Err(PersistenceError::Unexpected(_))));
     }
 }

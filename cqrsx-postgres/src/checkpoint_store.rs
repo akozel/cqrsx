@@ -5,7 +5,7 @@
 use cqrsx::{
     journal::feed::Position,
     projection::checkpoint::{
-        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest, RebuildRequests,
+        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, PendingRebuilds, RebuildReply,
         RebuildState,
     },
 };
@@ -267,7 +267,7 @@ impl CheckpointStore for PostgresCheckpointStore {
         .await
     }
 
-    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
+    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
         let pace = pace_millis(pace)?;
         let row = sqlx::query(REQUEST_REBUILD)
             .bind(key.projection())
@@ -280,9 +280,9 @@ impl CheckpointStore for PostgresCheckpointStore {
             return Err(CheckpointError::Invalid("projection is not registered"));
         };
         Ok(if column::<bool>(&row, "accepted")? {
-            RebuildRequest::Accepted
+            RebuildReply::Accepted
         } else {
-            RebuildRequest::AlreadyRunning
+            RebuildReply::AlreadyRunning
         })
     }
 
@@ -301,12 +301,12 @@ impl CheckpointStore for PostgresCheckpointStore {
         }
     }
 
-    async fn take_requests(
+    async fn take_rebuild_requests(
         &self,
         key: &CheckpointKey,
         token: LeaseToken,
         limit: usize,
-    ) -> Result<Option<RebuildRequests>, CheckpointError> {
+    ) -> Result<Option<PendingRebuilds>, CheckpointError> {
         let limit = i64::try_from(limit).map_err(|_| CheckpointError::Invalid("request limit does not fit the row"))?;
         let row = sqlx::query(TAKE_REQUESTS)
             .bind(key.projection())
@@ -315,14 +315,14 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(limit)
             .fetch_optional(&self.pool)
             .await
-            .map_err(storage_error("take_requests"))?;
+            .map_err(storage_error("take_rebuild_requests"))?;
         let Some(row) = row else {
             return Ok(None);
         };
         let requested: bool = column(&row, "rebuild_requested")?;
         let pace = pace_out(column(&row, "rebuild_pace_ms")?)?;
-        Ok(Some(RebuildRequests {
-            rebuild: requested.then_some(pace),
+        Ok(Some(PendingRebuilds {
+            rebuild_pace: requested.then_some(pace),
             keys: column(&row, "keys")?,
         }))
     }
@@ -445,7 +445,7 @@ mod tests {
                 store.record_failure(&key, token, "halls: connection").await.err(),
                 store.request_rebuild(&key, Duration::ZERO).await.err(),
                 store.request_rebuild_key(&key, "k").await.err(),
-                store.take_requests(&key, token, 1).await.err(),
+                store.take_rebuild_requests(&key, token, 1).await.err(),
                 store.begin_rebuild(&key, token).await.err(),
                 store.advance_rebuild(&key, token, "k", 1).await.err(),
                 store.finish_rebuild(&key, token).await.err(),
@@ -466,7 +466,7 @@ mod tests {
                 Err(CheckpointError::Invalid(_))
             ));
             assert!(matches!(
-                store.take_requests(&key, token, usize::MAX).await,
+                store.take_rebuild_requests(&key, token, usize::MAX).await,
                 Err(CheckpointError::Invalid(_))
             ));
             assert!(matches!(
@@ -484,7 +484,7 @@ mod tests {
             "record_failure",
             "request_rebuild",
             "request_rebuild_key",
-            "take_requests",
+            "take_rebuild_requests",
             "begin_rebuild",
             "advance_rebuild",
             "finish_rebuild",

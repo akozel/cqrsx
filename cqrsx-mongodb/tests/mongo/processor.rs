@@ -3,8 +3,8 @@
 use crate::support::{Balance, NAME, Node, Recording, caught_up, commit_all, key, mem_ledgers, until, views};
 use cqrsx::{
     journal::wakeup::CommitWakeup,
-    memory::event_repository::MemEventRepository,
-    projection::checkpoint::{CheckpointStore, RebuildRequest},
+    memory::event_repository::MemoryEventRepository,
+    projection::checkpoint::{CheckpointStore, RebuildReply},
     view::repository::ViewRepository,
 };
 use cqrsx_fixtures::mongo::Mongo;
@@ -13,7 +13,7 @@ use mongodb::bson::Document;
 use std::{sync::Arc, time::Duration};
 
 /// Commits `per_key` commands on every key through the in-memory journal.
-async fn commit(journal: &MemEventRepository, wakeup: &CommitWakeup, keys: &[&str], per_key: i32) {
+async fn commit(journal: &MemoryEventRepository, wakeup: &CommitWakeup, keys: &[&str], per_key: i32) {
     let executor = mem_ledgers(journal, wakeup);
     commit_all(keys, per_key, move |id, value| {
         let executor = executor.clone();
@@ -28,7 +28,7 @@ async fn commit(journal: &MemEventRepository, wakeup: &CommitWakeup, keys: &[&st
 async fn forty_commands_over_five_ledgers_reach_the_mongo_views_in_order() {
     let mongo = Mongo::start().await;
     let (journal, observer, wakeup) = (
-        MemEventRepository::default(),
+        MemoryEventRepository::default(),
         Arc::new(Recording::default()),
         CommitWakeup::new(),
     );
@@ -59,7 +59,7 @@ async fn forty_commands_over_five_ledgers_reach_the_mongo_views_in_order() {
 async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     let mongo = Mongo::start().await;
     let (journal, observer, wakeup) = (
-        MemEventRepository::default(),
+        MemoryEventRepository::default(),
         Arc::new(Recording::default()),
         CommitWakeup::new(),
     );
@@ -70,7 +70,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     let store = MongoCheckpointStore::new(&mongo.database);
     assert_eq!(
         store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     commit(&journal, &wakeup, &keys, 4).await;
     let status = tokio::time::timeout(Duration::from_secs(30), async {
@@ -101,7 +101,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
 async fn a_wipe_of_both_collections_is_healed_by_a_full_self_rebuild() {
     let mongo = Mongo::start().await;
     let (journal, observer, wakeup) = (
-        MemEventRepository::default(),
+        MemoryEventRepository::default(),
         Arc::new(Recording::default()),
         CommitWakeup::new(),
     );

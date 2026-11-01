@@ -89,8 +89,8 @@ mod tests {
             name: &'a str,
         }
         impl Task for Greeting<'_> {
-            const TASK_TYPE: &'static str = "greeting";
-            const TASK_VERSION: i32 = 2;
+            const TYPE: &'static str = "greeting";
+            const VERSION: i32 = 2;
         }
         let attempt = TaskAttempt::try_first(&Greeting { name: "fox" }, json!({ "correlation_id": "c-1" })).unwrap();
         assert_eq!(attempt.format(), &TaskFormat::try_new("greeting", 2).unwrap());
@@ -110,8 +110,8 @@ mod tests {
         #[derive(serde::Serialize)]
         struct Text(&'static str);
         impl Task for Text {
-            const TASK_TYPE: &'static str = "text";
-            const TASK_VERSION: i32 = 1;
+            const TYPE: &'static str = "text";
+            const VERSION: i32 = 1;
         }
         struct Broken;
         impl serde::Serialize for Broken {
@@ -120,8 +120,8 @@ mod tests {
             }
         }
         impl Task for Broken {
-            const TASK_TYPE: &'static str = "broken";
-            const TASK_VERSION: i32 = 1;
+            const TYPE: &'static str = "broken";
+            const VERSION: i32 = 1;
         }
         assert_eq!(
             TaskAttempt::try_first(&Text("a string, not an object"), json!({})).unwrap_err(),

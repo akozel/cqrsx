@@ -47,11 +47,11 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -86,7 +86,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -140,11 +140,11 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -179,7 +179,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -233,11 +233,11 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -272,7 +272,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -328,11 +328,11 @@ impl<A: Aggregate> TestFramework<A> {
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -367,7 +367,7 @@ impl<A: Aggregate> TestFramework<A> {
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}

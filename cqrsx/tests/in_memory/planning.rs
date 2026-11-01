@@ -3,7 +3,7 @@
 use crate::support::ledger::{Command, Delta, Ledger, Rejected, Services};
 use cqrsx::{
     command::{
-        CommandGatewayError,
+        CommandError,
         causation::Causation,
         executor::StoreCommandExecutor,
         locks::LockLimits,
@@ -14,12 +14,12 @@ use cqrsx::{
     journal::{
         PersistenceError,
         feed::{FeedEntry, Position},
-        persisted::PersistedEventStore,
-        repository::PersistedEventRepository,
+        repository::EventRepository,
         serialized_event::SerializedEvent,
-        snapshot::{SerializedSnapshot, SnapshotUpdate},
+        snapshot::SerializedSnapshot,
+        store::JournalEventStore,
     },
-    memory::event_repository::MemEventRepository,
+    memory::event_repository::MemoryEventRepository,
     task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat},
 };
 use proptest::prelude::*;
@@ -69,7 +69,7 @@ impl Aggregate for Show {
     type Id = String;
     type Command = Book;
     type Event = Booked;
-    type Error = SeatTaken;
+    type Rejection = SeatTaken;
     type Rules = ();
 
     fn apply(&mut self, Booked { seat, fan }: Booked) {
@@ -116,7 +116,7 @@ impl Aggregate for Wallet {
     type Id = String;
     type Command = String;
     type Event = Recorded;
-    type Error = AlreadyRecorded;
+    type Rejection = AlreadyRecorded;
     type Rules = ();
 
     fn apply(&mut self, Recorded { ticket }: Recorded) {
@@ -141,8 +141,8 @@ struct RecordInWallet {
 }
 
 impl Task for RecordInWallet {
-    const TASK_TYPE: &'static str = "record_in_wallet";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "record_in_wallet";
+    const VERSION: i32 = 1;
 }
 
 /// Step two: a recorded ticket is mailed.
@@ -153,8 +153,8 @@ struct MailTicket {
 }
 
 impl Task for MailTicket {
-    const TASK_TYPE: &'static str = "mail_ticket";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "mail_ticket";
+    const VERSION: i32 = 1;
 }
 
 /// The whole delivery process, read in one place: what it does after the box office and after the wallet.
@@ -162,28 +162,22 @@ struct Delivery;
 
 impl TaskPlanner<Show> for Delivery {
     fn plan(&self, decision: &Decision<'_, Show>) -> Result<Vec<NewTask>, TaskPlanError> {
-        let mut tasks = Vec::new();
-        for Booked { seat, fan } in decision.events {
-            let ticket = format!("{}/{seat}", decision.aggregate_id);
-            tasks.push(NewTask::try_new(RecordInWallet {
-                fan: fan.clone(),
-                ticket,
-            })?);
-        }
-        Ok(tasks)
+        let Booked { seat, fan } = decision.event;
+        let ticket = format!("{}/{seat}", decision.aggregate_id);
+        Ok(vec![NewTask::try_new(RecordInWallet {
+            fan: fan.clone(),
+            ticket,
+        })?])
     }
 }
 
 impl TaskPlanner<Wallet> for Delivery {
     fn plan(&self, decision: &Decision<'_, Wallet>) -> Result<Vec<NewTask>, TaskPlanError> {
-        let mut tasks = Vec::new();
-        for Recorded { ticket } in decision.events {
-            tasks.push(NewTask::try_new(MailTicket {
-                fan: decision.aggregate_id.to_owned(),
-                ticket: ticket.clone(),
-            })?);
-        }
-        Ok(tasks)
+        let Recorded { ticket } = decision.event;
+        Ok(vec![NewTask::try_new(MailTicket {
+            fan: decision.aggregate_id.to_owned(),
+            ticket: ticket.clone(),
+        })?])
     }
 }
 
@@ -201,9 +195,9 @@ fn claim(task: &NewTask, number: i32) -> TaskAttempt {
 
 /// The wallet step: the task's payload becomes the wallet's command, which continues the task's chain.
 async fn record_in_wallet(
-    wallets: &StoreCommandExecutor<Wallet, PersistedEventStore<MemEventRepository, Wallet>>,
+    wallets: &StoreCommandExecutor<Wallet, JournalEventStore<MemoryEventRepository, Wallet>>,
     attempt: &TaskAttempt,
-) -> Result<Vec<NewTask>, CommandGatewayError<AlreadyRecorded>> {
+) -> Result<Vec<NewTask>, CommandError<AlreadyRecorded>> {
     let step: RecordInWallet = serde_json::from_value(attempt.payload().clone()).unwrap();
     let metadata = Causation::from_task(attempt).event_metadata();
     let report = wallets.execute_with_metadata(&step.fan, step.ticket, metadata).await?;
@@ -212,16 +206,16 @@ async fn record_in_wallet(
 
 #[tokio::test]
 async fn a_process_plans_across_two_aggregates_and_the_chain_keeps_its_correlation() {
-    let journal = MemEventRepository::default();
+    let journal = MemoryEventRepository::default();
     let shows = StoreCommandExecutor::<Show, _>::new(
-        PersistedEventStore::new(journal.clone()),
+        JournalEventStore::new(journal.clone()),
         (),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
     )
     .with_task_planner(Delivery);
     let wallets = StoreCommandExecutor::<Wallet, _>::new(
-        PersistedEventStore::new(journal.clone()),
+        JournalEventStore::new(journal.clone()),
         (),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
@@ -271,7 +265,7 @@ async fn a_process_plans_across_two_aggregates_and_the_chain_keeps_its_correlati
     // process publishes no second mail.
     assert_eq!(
         record_in_wallet(&wallets, &claim(first, 2)).await,
-        Err(CommandGatewayError::Domain(AlreadyRecorded))
+        Err(CommandError::Rejected(AlreadyRecorded))
     );
     assert_eq!(journal.outbox::<Show>().len(), 1);
     assert_eq!(journal.outbox::<Wallet>().len(), 1);
@@ -284,8 +278,8 @@ struct Balance {
 }
 
 impl Task for Balance {
-    const TASK_TYPE: &'static str = "balance";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "balance";
+    const VERSION: i32 = 1;
 }
 
 struct BalancePlanner;
@@ -293,7 +287,7 @@ struct BalancePlanner;
 impl TaskPlanner<Ledger> for BalancePlanner {
     fn plan(&self, decision: &Decision<'_, Ledger>) -> Result<Vec<NewTask>, TaskPlanError> {
         Ok(vec![NewTask::try_new(Balance {
-            after: decision.after.balance,
+            after: decision.state.balance,
         })?])
     }
 }
@@ -303,7 +297,7 @@ impl TaskPlanner<Ledger> for BalancePlanner {
 /// first two loads wait for each other.
 #[derive(Clone)]
 struct Interfering {
-    inner: MemEventRepository,
+    inner: MemoryEventRepository,
     schedule: Arc<Mutex<Vec<bool>>>,
     foreign: i32,
     gate: Option<Arc<tokio::sync::Barrier>>,
@@ -311,7 +305,7 @@ struct Interfering {
 }
 
 impl Interfering {
-    fn new(inner: MemEventRepository, schedule: Vec<bool>) -> Self {
+    fn new(inner: MemoryEventRepository, schedule: Vec<bool>) -> Self {
         Self {
             inner,
             schedule: Arc::new(Mutex::new(schedule)),
@@ -322,7 +316,7 @@ impl Interfering {
     }
 }
 
-impl PersistedEventRepository for Interfering {
+impl EventRepository for Interfering {
     async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
         if let Some(gate) = &self.gate
             && self.gated.fetch_add(1, Ordering::SeqCst) < 2
@@ -347,7 +341,7 @@ impl PersistedEventRepository for Interfering {
     async fn persist<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<SnapshotUpdate>,
+        snapshot_update: Option<SerializedSnapshot>,
     ) -> Result<(), PersistenceError> {
         self.persist_with_tasks::<A>(events, snapshot_update, &[]).await
     }
@@ -355,7 +349,7 @@ impl PersistedEventRepository for Interfering {
     async fn persist_with_tasks<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<SnapshotUpdate>,
+        snapshot_update: Option<SerializedSnapshot>,
         tasks: &[NewTask],
     ) -> Result<(), PersistenceError> {
         let interfere = {
@@ -390,9 +384,9 @@ fn no_delay(attempts: usize) -> AggregateConflictRetryPolicy {
 fn ledger_executor(
     journal: Interfering,
     attempts: usize,
-) -> StoreCommandExecutor<Ledger, PersistedEventStore<Interfering, Ledger>> {
+) -> StoreCommandExecutor<Ledger, JournalEventStore<Interfering, Ledger>> {
     StoreCommandExecutor::new(
-        PersistedEventStore::new(journal),
+        JournalEventStore::new(journal),
         Services::default(),
         no_delay(attempts),
         LockLimits::default(),
@@ -401,7 +395,7 @@ fn ledger_executor(
 }
 
 /// The balance of `id` after the journal's first `sequence` events.
-async fn balance_at(journal: &MemEventRepository, id: &str, sequence: usize) -> i64 {
+async fn balance_at(journal: &MemoryEventRepository, id: &str, sequence: usize) -> i64 {
     let events = journal.events::<Ledger>(id).await.unwrap();
     events
         .iter()
@@ -419,7 +413,7 @@ proptest! {
     ) {
         let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
         runtime.block_on(async {
-            let journal = MemEventRepository::default();
+            let journal = MemoryEventRepository::default();
             let executor = ledger_executor(Interfering::new(journal.clone(), schedule), 3);
             let mut published = Vec::new();
             for value in commands {
@@ -430,7 +424,7 @@ proptest! {
                             published.push((last.sequence, task.clone()));
                         }
                     }
-                    Err(CommandGatewayError::Conflict) => {}
+                    Err(CommandError::Conflict) => {}
                     Err(other) => panic!("unexpected result {other:?}"),
                 }
             }
@@ -454,7 +448,7 @@ proptest! {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn two_executors_on_one_journal_replan_the_loser_on_the_winners_state() {
-    let journal = MemEventRepository::default();
+    let journal = MemoryEventRepository::default();
     let shared = Interfering {
         gate: Some(Arc::new(tokio::sync::Barrier::new(2))),
         ..Interfering::new(journal.clone(), Vec::new())
@@ -491,7 +485,7 @@ async fn two_executors_on_one_journal_replan_the_loser_on_the_winners_state() {
 async fn a_conflict_that_makes_the_decision_impossible_publishes_nothing() {
     // The first attempt plans a task, then another node overdraws the account: the retry is refused by the
     // domain, and the first attempt's plan was never published.
-    let journal = MemEventRepository::default();
+    let journal = MemoryEventRepository::default();
     let interfering = Interfering {
         foreign: -1000,
         ..Interfering::new(journal.clone(), vec![true])
@@ -499,7 +493,7 @@ async fn a_conflict_that_makes_the_decision_impossible_publishes_nothing() {
     let executor = ledger_executor(interfering, 3);
     assert_eq!(
         executor.execute(&"account".into(), Command::Adjust(10)).await,
-        Err(CommandGatewayError::Domain(Rejected))
+        Err(CommandError::Rejected(Rejected))
     );
     assert!(journal.outbox::<Ledger>().is_empty());
     assert_eq!(balance_at(&journal, "account", 1).await, -1000, "only the other node's event");

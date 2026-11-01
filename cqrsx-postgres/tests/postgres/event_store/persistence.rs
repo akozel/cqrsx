@@ -6,11 +6,11 @@ async fn statement_and_deferred_commit_failures_restore_full_database_state() {
     let repo = PostgresEventRepository::new(db.pool.clone());
     repo.persist::<Ledger>(
         &[event_for("existing", 1, 4)],
-        Some(SnapshotUpdate {
+        Some(SerializedSnapshot {
             aggregate_id: "existing".into(),
             payload: json!([4]),
             last_sequence: 1,
-            next_version: 1,
+            revision: 1,
         }),
     )
     .await
@@ -24,7 +24,7 @@ async fn statement_and_deferred_commit_failures_restore_full_database_state() {
     assert!(matches!(
         repo.persist::<Ledger>(&[event_for("batch", 1, 2), event_for("batch", 2, 99)], None)
             .await,
-        Err(PersistenceError::UnknownError(_))
+        Err(PersistenceError::Unexpected(_))
     ));
     assert_eq!(database_state(&db.pool).await, before);
     sqlx::query("ALTER TABLE snapshots ADD CONSTRAINT reject_snapshot CHECK (payload::text <> '[99]')")
@@ -35,11 +35,11 @@ async fn statement_and_deferred_commit_failures_restore_full_database_state() {
         assert!(
             repo.persist::<Ledger>(
                 &[event_for(id, sequence, 3)],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: id.into(),
                     payload: json!([99]),
                     last_sequence: version,
-                    next_version: version
+                    revision: version
                 })
             )
             .await
@@ -50,40 +50,40 @@ async fn statement_and_deferred_commit_failures_restore_full_database_state() {
     sqlx::raw_sql("CREATE FUNCTION reject_event_commit() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN RAISE EXCEPTION USING ERRCODE='40001', MESSAGE='deferred failure'; END $$; CREATE CONSTRAINT TRIGGER reject_event_commit AFTER INSERT ON events DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION reject_event_commit();").execute(&db.pool).await.unwrap();
     for snapshot in [
         None,
-        Some(SnapshotUpdate {
+        Some(SerializedSnapshot {
             aggregate_id: String::from("deferred"),
             payload: json!([3]),
             last_sequence: 1,
-            next_version: 1,
+            revision: 1,
         }),
-        Some(SnapshotUpdate {
+        Some(SerializedSnapshot {
             aggregate_id: "existing".into(),
             payload: json!([4, 3]),
             last_sequence: 2,
-            next_version: 2,
+            revision: 2,
         }),
     ] {
         let id = snapshot.as_ref().map_or("deferred", |s| s.aggregate_id.as_str());
         let sequence = if id == "existing" { 2 } else { 1 };
         assert!(matches!(
             repo.persist::<Ledger>(&[event_for(id, sequence, 3)], snapshot).await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
         assert_eq!(database_state(&db.pool).await, before);
     }
     for snapshot in [
         None,
-        Some(SnapshotUpdate {
+        Some(SerializedSnapshot {
             aggregate_id: String::from("deferred"),
             payload: json!([3]),
             last_sequence: 1,
-            next_version: 1,
+            revision: 1,
         }),
-        Some(SnapshotUpdate {
+        Some(SerializedSnapshot {
             aggregate_id: String::from("existing"),
             payload: json!([4, 3]),
             last_sequence: 2,
-            next_version: 2,
+            revision: 2,
         }),
     ] {
         let id = snapshot.as_ref().map_or("deferred", |s| s.aggregate_id.as_str());
@@ -91,7 +91,7 @@ async fn statement_and_deferred_commit_failures_restore_full_database_state() {
         let result = PostgresEventRepositoryWithOutbox::new(db.pool.clone())
             .persist_with_tasks::<Ledger>(&[event_for(id, sequence, 3)], snapshot, &[new_task()])
             .await;
-        let Err(PersistenceError::UnknownError(error)) = result else {
+        let Err(PersistenceError::Unexpected(error)) = result else {
             panic!("deferred COMMIT failure must remain technical")
         };
         let sqlx::Error::Database(error) = error
@@ -133,11 +133,11 @@ async fn cancellation_while_blocked_rolls_back_and_pool_can_be_reused() {
         repository
             .persist::<Ledger>(
                 &[event_for("cancelled", 1, 1)],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "cancelled".into(),
                     payload: json!([1]),
                     last_sequence: 1,
-                    next_version: 1,
+                    revision: 1,
                 }),
             )
             .await
@@ -173,11 +173,11 @@ async fn bigint_sequences_and_snapshot_versions_round_trip_without_narrowing() {
         let event = event_for(&id, sequence, 1);
         repo.persist::<Ledger>(
             std::slice::from_ref(&event),
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: id.clone(),
                 payload: json!([1]),
                 last_sequence: sequence,
-                next_version: 1,
+                revision: 1,
             }),
         )
         .await
@@ -199,33 +199,30 @@ async fn bigint_sequences_and_snapshot_versions_round_trip_without_narrowing() {
             .unwrap();
         repo.persist::<Ledger>(
             &[],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: id.clone(),
                 payload: json!([2]),
                 last_sequence: sequence,
-                next_version: sequence,
+                revision: sequence,
             }),
         )
         .await
         .unwrap();
-        assert_eq!(
-            repo.snapshot::<Ledger>(&id).await.unwrap().unwrap().snapshot_version,
-            sequence
-        );
+        assert_eq!(repo.snapshot::<Ledger>(&id).await.unwrap().unwrap().revision, sequence);
     }
     let before = database_state(&db.pool).await;
     assert!(matches!(
         repo.persist::<Ledger>(
             &[event_for("zero-version", 1, 1)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "zero-version".into(),
                 payload: json!([]),
                 last_sequence: 0,
-                next_version: 0
+                revision: 0
             })
         )
         .await,
-        Err(PersistenceError::UnknownError(_))
+        Err(PersistenceError::Unexpected(_))
     ));
     assert_eq!(database_state(&db.pool).await, before);
     let overflow = i64::MAX as usize + 1;
@@ -236,26 +233,26 @@ async fn bigint_sequences_and_snapshot_versions_round_trip_without_narrowing() {
         ] {
             assert!(matches!(
                 repo.persist::<Ledger>(&events, None).await,
-                Err(PersistenceError::UnknownError(_))
+                Err(PersistenceError::Unexpected(_))
             ));
             assert_eq!(database_state(&db.pool).await, before);
         }
         assert!(matches!(
             repo.persist::<Ledger>(
                 &[event_for("invalid", 1, 1)],
-                Some(SnapshotUpdate {
+                Some(SerializedSnapshot {
                     aggregate_id: "invalid".into(),
                     payload: json!([]),
                     last_sequence: sequence,
-                    next_version: sequence
+                    revision: sequence
                 })
             )
             .await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
         assert!(matches!(
             repo.events_after::<Ledger>("invalid", sequence).await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
         assert_eq!(database_state(&db.pool).await, before);
     }
@@ -268,11 +265,11 @@ async fn custom_tables_distinguish_optimistic_keys_from_unrelated_unique_constra
     sqlx::raw_sql("CREATE TABLE custom_events (LIKE events INCLUDING ALL); CREATE TABLE custom_snapshots (LIKE snapshots INCLUDING ALL); CREATE UNIQUE INDEX unrelated_event ON custom_events (event_type); CREATE UNIQUE INDEX unrelated_snapshot ON custom_snapshots ((payload::text));").execute(&db.pool).await.unwrap();
     let repo = PostgresEventRepository::new(db.pool.clone()).with_tables("custom_events", "custom_snapshots");
     let snapshot = |id: &str| {
-        Some(SnapshotUpdate {
+        Some(SerializedSnapshot {
             aggregate_id: id.into(),
             payload: json!([1]),
             last_sequence: 1,
-            next_version: 1,
+            revision: 1,
         })
     };
     repo.persist::<Ledger>(&[event_for("one", 1, 1)], snapshot("one"))
@@ -280,24 +277,24 @@ async fn custom_tables_distinguish_optimistic_keys_from_unrelated_unique_constra
         .unwrap();
     assert!(matches!(
         repo.persist::<Ledger>(&[event_for("two", 1, 2)], None).await,
-        Err(PersistenceError::UnknownError(_))
+        Err(PersistenceError::Unexpected(_))
     ));
     assert!(matches!(
         repo.persist::<Ledger>(&[event_for("one", 1, 1)], None).await,
-        Err(PersistenceError::OptimisticLockError)
+        Err(PersistenceError::Conflict)
     ));
     sqlx::query("DROP INDEX unrelated_event").execute(&db.pool).await.unwrap();
     assert!(matches!(
         repo.persist::<Ledger>(&[event_for("two", 1, 2)], snapshot("two")).await,
-        Err(PersistenceError::UnknownError(_))
+        Err(PersistenceError::Unexpected(_))
     ));
     assert!(repo.events::<Ledger>("two").await.unwrap().is_empty());
     assert!(matches!(
         repo.persist::<Ledger>(&[event_for("one", 2, 2)], snapshot("one")).await,
-        Err(PersistenceError::OptimisticLockError)
+        Err(PersistenceError::Conflict)
     ));
     assert_eq!(repo.events::<Ledger>("one").await.unwrap(), [event_for("one", 1, 1)]);
-    assert_eq!(repo.snapshot::<Ledger>("one").await.unwrap().unwrap().snapshot_version, 1);
+    assert_eq!(repo.snapshot::<Ledger>("one").await.unwrap().unwrap().revision, 1);
     db.close().await;
 }
 
@@ -323,25 +320,25 @@ async fn every_out_of_range_write_field_is_rejected_before_acquiring_a_connectio
         (vec![event(1), event(overflow)], None),
         (
             vec![event(1)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "range".into(),
                 payload: serde_json::json!({}),
                 last_sequence: overflow,
-                next_version: 1,
+                revision: 1,
             }),
         ),
         (
             vec![event(1)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "range".into(),
                 payload: serde_json::json!({}),
                 last_sequence: 1,
-                next_version: overflow,
+                revision: overflow,
             }),
         ),
     ] {
         assert!(
-            matches!(repo.persist::<Ledger>(&events,snapshot).await,Err(PersistenceError::UnknownError(source)) if source.is::<std::num::TryFromIntError>())
+            matches!(repo.persist::<Ledger>(&events,snapshot).await,Err(PersistenceError::Unexpected(source)) if source.is::<std::num::TryFromIntError>())
         );
     }
 }

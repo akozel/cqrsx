@@ -26,9 +26,9 @@ const DUPLICATE_KEY: i32 = 11000;
 fn persistence_error(error: Error) -> PersistenceError {
     match error.kind.as_ref() {
         ErrorKind::Io(_) | ErrorKind::ServerSelection { .. } | ErrorKind::ConnectionPoolCleared { .. } => {
-            PersistenceError::ConnectionError(Box::new(error))
+            PersistenceError::Connection(Box::new(error))
         }
-        _ => PersistenceError::UnknownError(Box::new(error)),
+        _ => PersistenceError::Unexpected(Box::new(error)),
     }
 }
 
@@ -85,7 +85,7 @@ pub(crate) mod test_support {
         type Id = String;
         type Command = ();
         type Event = Delta;
-        type Error = Rejected;
+        type Rejection = Rejected;
         type Rules = ();
         fn apply(&mut self, event: Delta) {
             self.balance += i64::from(event.0);
@@ -140,9 +140,9 @@ mod tests {
 
     #[test]
     fn a_server_out_of_reach_is_a_connection_error_and_everything_else_is_unexpected() {
-        assert!(matches!(persistence_error(io()), PersistenceError::ConnectionError(source) if source.is::<Error>()));
+        assert!(matches!(persistence_error(io()), PersistenceError::Connection(source) if source.is::<Error>()));
         for error in [command(2), write(121), write_concern(64), bson(), custom()] {
-            assert!(matches!(persistence_error(error), PersistenceError::UnknownError(source) if source.is::<Error>()));
+            assert!(matches!(persistence_error(error), PersistenceError::Unexpected(source) if source.is::<Error>()));
         }
     }
 

@@ -12,12 +12,12 @@ use super::{
     Operation, ProcessorContext,
     delivery::{DeliveryError, DeliverySlot, Done},
     lease::LeaseKeeper,
-    observer::{Advanced, Applied, Failed, FailureCategory, RebuildEvent, RebuildReason, Rebuilt, Waiting},
+    observer::{Advanced, Applied, Failed, FailureCategory, RebuildPhase, RebuildReason, Rebuilt, Waiting},
 };
 use crate::{
     diagnostics,
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{PersistenceError, feed::Position, repository::PersistedEventRepository},
+    journal::{PersistenceError, feed::Position, repository::EventRepository},
     projection::checkpoint::{CheckpointStore, Claimed, LeaseToken},
 };
 use std::{
@@ -181,10 +181,10 @@ pub(super) struct Owner<'a, A: Aggregate, R, C> {
 
 fn persistence_category(error: &PersistenceError) -> FailureCategory {
     match error {
-        PersistenceError::OptimisticLockError => FailureCategory::OptimisticLock,
-        PersistenceError::ConnectionError(_) => FailureCategory::Connection,
-        PersistenceError::DeserializationError(_) => FailureCategory::Deserialization,
-        PersistenceError::UnknownError(_) => FailureCategory::Unknown,
+        PersistenceError::Conflict => FailureCategory::Conflict,
+        PersistenceError::Connection(_) => FailureCategory::Connection,
+        PersistenceError::Deserialization(_) => FailureCategory::Deserialization,
+        PersistenceError::Unexpected(_) => FailureCategory::Unexpected,
         PersistenceError::SequenceGap { .. } => FailureCategory::SequenceGap,
     }
 }
@@ -204,7 +204,7 @@ fn is_gap(error: &DeliveryError) -> bool {
 impl<'a, A, R, C> Owner<'a, A, R, C>
 where
     A: Aggregate + 'static,
-    R: PersistedEventRepository + 'static,
+    R: EventRepository + 'static,
     C: CheckpointStore + 'static,
 {
     /// `anchor` is the instant before the claim request.
@@ -359,7 +359,10 @@ where
             Ok(true) => {
                 self.checkpoint = to;
                 self.failures = 0;
-                self.ctx.observer.advanced(&Advanced { position: to, applied });
+                self.ctx.observer.advanced(&Advanced {
+                    position: to,
+                    delivered: applied,
+                });
                 Ok(())
             }
             Ok(false) => Err(Interrupt::Lost),
@@ -421,7 +424,7 @@ where
         self.read_position = self.checkpoint;
         self.failed_keys.clear();
         self.pending_failure = None;
-        self.pause_until = Some(Instant::now() + self.ctx.config.backoff(failures));
+        self.pause_until = Some(Instant::now() + self.ctx.config.pause(failures));
         Ok(())
     }
 
@@ -434,7 +437,7 @@ where
         let requests = match self
             .ctx
             .checkpoints
-            .take_requests(&self.ctx.key, self.token, self.ctx.config.rebuild_page())
+            .take_rebuild_requests(&self.ctx.key, self.token, self.ctx.config.rebuild_keys())
             .await
         {
             Ok(Some(requests)) => requests,
@@ -445,7 +448,7 @@ where
             }
         };
         self.requested.extend(requests.keys);
-        if let Some(pace) = requests.rebuild
+        if let Some(pace) = requests.rebuild_pace
             && self.rebuild.is_none()
         {
             match self.ctx.checkpoints.begin_rebuild(&self.ctx.key, self.token).await {
@@ -457,7 +460,7 @@ where
                         started: Instant::now(),
                         page: None,
                     });
-                    self.ctx.observer.rebuild(RebuildEvent::Started { pace });
+                    self.ctx.observer.rebuild_phase(RebuildPhase::Started { pace });
                     self.log_change("rebuild started");
                 }
                 Ok(false) => return Err(Interrupt::Lost),
@@ -489,7 +492,7 @@ where
         let ids = match self
             .ctx
             .repository
-            .aggregate_ids_after::<A>(&cursor, self.ctx.config.rebuild_page())
+            .aggregate_ids_after::<A>(&cursor, self.ctx.config.rebuild_keys())
             .await
         {
             Ok(ids) => ids,
@@ -525,7 +528,7 @@ where
         match self.ctx.checkpoints.finish_rebuild(&self.ctx.key, self.token).await {
             Ok(true) => {
                 if let Some(run) = self.rebuild.take() {
-                    self.ctx.observer.rebuild(RebuildEvent::Finished {
+                    self.ctx.observer.rebuild_phase(RebuildPhase::Finished {
                         keys: run.rebuilt,
                         elapsed: run.started.elapsed(),
                     });
@@ -570,7 +573,7 @@ where
                 if let Some(run) = &mut self.rebuild {
                     run.rebuilt += page.keys;
                     run.cursor = page.last_key;
-                    self.ctx.observer.rebuild(RebuildEvent::Progress { keys: run.rebuilt });
+                    self.ctx.observer.rebuild_phase(RebuildPhase::Progress { keys: run.rebuilt });
                 }
                 Ok(())
             }
@@ -836,7 +839,7 @@ where
             }
             Woke::Rebuild(joined) => self.on_rebuild(joined).await,
             Woke::Commit => {
-                let settle = self.ctx.config.settle();
+                let settle = self.ctx.config.wake_delay();
                 if !settle.is_zero() {
                     tokio::select! {
                         biased;
@@ -1022,7 +1025,7 @@ where
             }
         }
         if self.rebuild.is_some() {
-            self.ctx.observer.rebuild(RebuildEvent::Interrupted);
+            self.ctx.observer.rebuild_phase(RebuildPhase::Interrupted);
             self.log_change("rebuild interrupted");
         }
         if let Err(error) = self.ctx.checkpoints.release(&self.ctx.key, self.token).await {
@@ -1041,16 +1044,19 @@ mod tests {
     fn every_delivery_error_has_its_category() {
         let failed = |error: PersistenceError| DeliveryError::Failed(Arc::new(error));
         let cases = [
-            (failed(PersistenceError::OptimisticLockError), FailureCategory::OptimisticLock),
+            (failed(PersistenceError::Conflict), FailureCategory::Conflict),
             (
-                failed(PersistenceError::ConnectionError("down".into())),
+                failed(PersistenceError::Connection("down".into())),
                 FailureCategory::Connection,
             ),
             (
-                failed(PersistenceError::DeserializationError("bad".into())),
+                failed(PersistenceError::Deserialization("bad".into())),
                 FailureCategory::Deserialization,
             ),
-            (failed(PersistenceError::UnknownError("odd".into())), FailureCategory::Unknown),
+            (
+                failed(PersistenceError::Unexpected("odd".into())),
+                FailureCategory::Unexpected,
+            ),
             (
                 failed(PersistenceError::SequenceGap { expected: 2, found: 4 }),
                 FailureCategory::SequenceGap,

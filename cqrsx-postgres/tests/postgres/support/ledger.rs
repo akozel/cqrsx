@@ -20,7 +20,7 @@ impl Aggregate for Ledger {
     type Id = String;
     type Command = i32;
     type Event = Delta;
-    type Error = Rejected;
+    type Rejection = Rejected;
     type Rules = ();
     fn apply(&mut self, event: Delta) {
         self.0.push(event.0);
@@ -52,7 +52,7 @@ impl Aggregate for OtherLedger {
     type Id = String;
     type Command = ();
     type Event = Delta;
-    type Error = Rejected;
+    type Rejection = Rejected;
     type Rules = ();
     fn apply(&mut self, _: Delta) {}
 }

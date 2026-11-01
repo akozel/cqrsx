@@ -84,7 +84,7 @@ use std::{fmt, hash::Hash, str::FromStr};
 ///     type Id = String;
 ///     type Command = CustomerCommand;
 ///     type Event = CustomerEvent;
-///     type Error = CustomerError;
+///     type Rejection = CustomerError;
 ///     type Rules = CustomerService;
 ///
 ///     fn apply(&mut self, event: Self::Event) {
@@ -129,9 +129,9 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// aggregate's events ([`Events`]), one event type per variant; the trait
     /// [`Event`](crate::domain::event::Event) is the stored name and version of one such type.
     type Event: Events;
-    /// The error returned when a command fails due to business logic.
+    /// The refusal returned when a command fails due to business logic.
     /// This is used to provide feedback to the user as to the nature of why the command was refused.
-    type Error: std::error::Error;
+    type Rejection: std::error::Error;
     /// What the rules of the commands depend on besides the state, e.g. a limit from the configuration; the
     /// history does not depend on it (a replay calls only [`apply`](Self::apply)).
     type Rules: Send + Sync;
@@ -213,7 +213,7 @@ pub trait Aggregate: Default + Serialize + DeserializeOwned + Sync + Send {
     /// #     type Id = String;
     /// #     type Command = CustomerCommand;
     /// #     type Event = CustomerEvent;
-    /// #     type Error = CustomerError;
+    /// #     type Rejection = CustomerError;
     /// #     type Rules = CustomerService;
     /// fn apply(&mut self, event: Self::Event) {
     ///     match event {
@@ -282,7 +282,7 @@ pub(crate) mod tests {
         type Id = String;
         type Command = ();
         type Event = Delta;
-        type Error = Rejected;
+        type Rejection = Rejected;
         type Rules = ();
         fn apply(&mut self, event: Delta) {
             self.balance += i64::from(event.0);

@@ -1,5 +1,5 @@
 use super::*;
-use cqrsx::task::policy::{Policies, PolicyName, Retry, TaskPolicy};
+use cqrsx::task::policy::{Policies, PolicyName, RetryPause, TaskPolicy};
 use cqrsx::worker::executor::{TaskExecutor, default_executor::HANDLER_PANICKED};
 
 /// An executor of one's own that panics on its first attempt, outside every handler, so that its worker dies: what the
@@ -91,14 +91,14 @@ async fn supervisor_survives_a_handler_panic_storage_errors_and_lost_acknowledge
         }
     }
     let dispatcher = TaskDispatcher::try_new(vec![PanicOnce { calls: calls.clone() }]).unwrap();
-    let config = TaskWorkerPoolConfig::try_new(
-        1,
-        1,
-        Duration::from_millis(2),
-        TaskWorkerPoolConfig::default().handler_timeout(),
-        TaskWorkerPoolConfig::default().lease_duration(),
-    )
-    .unwrap();
+    let config = TaskWorkerPoolConfig::builder()
+        .concurrency(1)
+        .buffer_capacity(1)
+        .poll_interval(Duration::from_millis(2))
+        .handler_timeout(TaskWorkerPoolConfig::default().handler_timeout())
+        .lease(TaskWorkerPoolConfig::default().lease())
+        .build()
+        .unwrap();
     let shutdown = CancellationToken::new();
     let stop = shutdown.clone();
     let supervisor_task = tokio::spawn(run(queue.clone(), executor, dispatcher, config, shutdown));
@@ -143,14 +143,14 @@ async fn storage_timeouts_allow_polling_and_free_worker_capacity_without_shutdow
             queue.clone(),
             executor,
             TaskDispatcher::try_new(vec![CountingAdapter(calls.clone())]).unwrap(),
-            TaskWorkerPoolConfig::try_new(
-                1,
-                1,
-                Duration::from_millis(2),
-                TaskWorkerPoolConfig::default().handler_timeout(),
-                TaskWorkerPoolConfig::default().lease_duration(),
-            )
-            .unwrap(),
+            TaskWorkerPoolConfig::builder()
+                .concurrency(1)
+                .buffer_capacity(1)
+                .poll_interval(Duration::from_millis(2))
+                .handler_timeout(TaskWorkerPoolConfig::default().handler_timeout())
+                .lease(TaskWorkerPoolConfig::default().lease())
+                .build()
+                .unwrap(),
             shutdown,
         ));
         match stage {
@@ -239,13 +239,13 @@ fn panic_first_dispatcher(
 #[tokio::test]
 async fn a_handler_panic_retries_its_task_after_the_policy_pause_and_the_worker_lives_on() {
     const DUMMY: PolicyName = PolicyName::try_new("dummy").unwrap();
-    let policies = Policies::default()
-        .with_policy(
+    let policies = Policies::builder()
+        .policy(
             DUMMY,
-            TaskPolicy::new(Retry::fixed(Duration::from_secs(7)), NonZeroU16::new(3).unwrap()),
+            TaskPolicy::new(RetryPause::fixed(Duration::from_secs(7)), NonZeroU16::new(3).unwrap()),
         )
-        .unwrap()
-        .with_task::<DummyTask>(DUMMY)
+        .bind::<DummyTask>(DUMMY)
+        .build()
         .unwrap();
     let queue = Arc::new(Queue::default());
     let (first, second) = (claimed(), claimed());

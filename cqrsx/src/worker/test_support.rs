@@ -28,8 +28,8 @@ pub(crate) struct DummyTask {
 }
 
 impl Task for DummyTask {
-    const TASK_TYPE: &'static str = "dummy_task";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "dummy_task";
+    const VERSION: i32 = 1;
 }
 
 pub(crate) fn format() -> TaskFormat {
@@ -113,7 +113,7 @@ impl TaskQueue for Queue {
                 task_id: task.attempt().task_id(),
                 format: task.attempt().format().clone(),
                 attempt_number: task.attempt().number(),
-                cause: TaskFailureCause::PermanentRejection,
+                cause: TaskFailureCause::HandlerFailure,
             }),
         };
         self.outcomes.lock().unwrap().push((task.attempt().task_id(), outcome));
@@ -181,7 +181,7 @@ impl TaskAdapter for CountingAdapter {
 }
 
 pub(crate) fn with_deadline(task: &LeasedTask, deadline: tokio::time::Instant) -> LeasedTask {
-    let token = task.lease().lock_token();
+    let token = task.lease().token();
     LeasedTask::new(task.attempt().clone(), TaskLease::new(token, deadline))
 }
 pub(crate) fn with_format(task: &LeasedTask, format: TaskFormat) -> LeasedTask {

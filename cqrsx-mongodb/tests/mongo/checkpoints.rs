@@ -3,7 +3,7 @@
 use cqrsx::{
     journal::feed::Position,
     projection::checkpoint::{
-        CheckpointError, CheckpointKey, CheckpointStore, LeaseToken, RebuildRequest, RebuildRequests, RebuildState,
+        CheckpointError, CheckpointKey, CheckpointStore, LeaseToken, PendingRebuilds, RebuildReply, RebuildState,
     },
 };
 use cqrsx_fixtures::mongo::Mongo;
@@ -54,7 +54,7 @@ async fn a_row_is_claimed_by_one_owner_until_it_is_released_or_its_lease_runs_ou
     assert!(!store.begin_rebuild(&key(), stale).await.unwrap());
     assert!(!store.advance_rebuild(&key(), stale, "k", 1).await.unwrap());
     assert!(!store.finish_rebuild(&key(), stale).await.unwrap());
-    assert!(store.take_requests(&key(), stale, 5).await.unwrap().is_none());
+    assert!(store.take_rebuild_requests(&key(), stale, 5).await.unwrap().is_none());
     store.release(&key(), stale).await.unwrap();
     assert!(
         store.claim(&key(), "b", LONG).await.unwrap().is_none(),
@@ -147,42 +147,42 @@ async fn rebuild_requests_run_one_at_a_time_and_keys_are_taken_in_request_order_
     ));
     assert_eq!(
         store.request_rebuild(&key(), Duration::from_millis(80)).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     assert_eq!(
         store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::AlreadyRunning
+        RebuildReply::AlreadyRunning
     );
     for id in ["c2", "c1", "c2", "c3"] {
         store.request_rebuild_key(&key(), id).await.unwrap();
     }
     store.request_rebuild_key(&other(), "z").await.unwrap();
     let owner = store.claim(&key(), "a", LONG).await.unwrap().unwrap();
-    let first = store.take_requests(&key(), owner.token, 2).await.unwrap().unwrap();
+    let first = store.take_rebuild_requests(&key(), owner.token, 2).await.unwrap().unwrap();
     assert_eq!(
         first,
-        RebuildRequests {
-            rebuild: Some(Duration::from_millis(80)),
+        PendingRebuilds {
+            rebuild_pace: Some(Duration::from_millis(80)),
             keys: vec!["c2".into(), "c1".into()]
         }
     );
     assert!(store.begin_rebuild(&key(), owner.token).await.unwrap());
-    let rest = store.take_requests(&key(), owner.token, 2).await.unwrap().unwrap();
+    let rest = store.take_rebuild_requests(&key(), owner.token, 2).await.unwrap().unwrap();
     assert_eq!(
         rest,
-        RebuildRequests {
-            rebuild: None,
+        PendingRebuilds {
+            rebuild_pace: None,
             keys: vec!["c3".into()]
         }
     );
     assert_eq!(
-        store.take_requests(&key(), owner.token, 2).await.unwrap().unwrap(),
-        RebuildRequests::default(),
+        store.take_rebuild_requests(&key(), owner.token, 2).await.unwrap().unwrap(),
+        PendingRebuilds::default(),
         "nothing left"
     );
     assert_eq!(
         store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::AlreadyRunning,
+        RebuildReply::AlreadyRunning,
         "running"
     );
     assert!(store.advance_rebuild(&key(), owner.token, "c2", 2).await.unwrap());
@@ -227,11 +227,16 @@ async fn rebuild_requests_run_one_at_a_time_and_keys_are_taken_in_request_order_
     );
     assert_eq!(
         store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     let wallets = store.claim(&other(), "w", LONG).await.unwrap().unwrap();
     assert_eq!(
-        store.take_requests(&other(), wallets.token, 10).await.unwrap().unwrap().keys,
+        store
+            .take_rebuild_requests(&other(), wallets.token, 10)
+            .await
+            .unwrap()
+            .unwrap()
+            .keys,
         ["z"],
         "another row's keys were not taken"
     );
@@ -292,10 +297,10 @@ async fn the_document_keeps_the_documented_shape_and_values_that_look_like_expre
     assert!(store.advance(&key(), owner.token, Position::new(7), 3).await.unwrap());
     assert_eq!(
         store.request_rebuild(&key(), Duration::from_millis(80)).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     assert!(store.record_failure(&key(), owner.token, "$error").await.unwrap());
-    let requests = store.take_requests(&key(), owner.token, 0).await.unwrap().unwrap();
+    let requests = store.take_rebuild_requests(&key(), owner.token, 0).await.unwrap().unwrap();
     assert_eq!(requests.keys, Vec::<String>::new(), "a limit of zero takes nothing");
     assert!(store.begin_rebuild(&key(), owner.token).await.unwrap());
     assert!(store.advance_rebuild(&key(), owner.token, "$cursor", 1).await.unwrap());
@@ -350,7 +355,7 @@ async fn a_dropped_collection_fences_the_old_owner_out_and_register_recreates_th
     documents(&mongo).drop().await.unwrap();
     assert!(!store.extend(&key(), owner.token, LONG).await.unwrap());
     assert!(!store.advance(&key(), owner.token, Position::new(6), 1).await.unwrap());
-    assert!(store.take_requests(&key(), owner.token, 10).await.unwrap().is_none());
+    assert!(store.take_rebuild_requests(&key(), owner.token, 10).await.unwrap().is_none());
     assert!(
         store.claim(&key(), "b", LONG).await.unwrap().is_none(),
         "no row until it is registered"

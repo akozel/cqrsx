@@ -42,7 +42,7 @@
 //!     type Id = String;
 //!     type Command = u32;
 //!     type Event = OrderEvent;
-//!     type Error = AlreadyPlaced;
+//!     type Rejection = AlreadyPlaced;
 //!     type Rules = ();
 //!     fn apply(&mut self, _: OrderEvent) { self.placed = true; }
 //! }
@@ -58,52 +58,44 @@
 //! #[derive(Serialize)]
 //! struct Ship { order_id: String }
 //! impl Task for Ship {
-//!     const TASK_TYPE: &'static str = "ship";
-//!     const TASK_VERSION: i32 = 1;
+//!     const TYPE: &'static str = "ship";
+//!     const VERSION: i32 = 1;
 //! }
 //! #[derive(Serialize)]
 //! struct Invoice { order_id: String, total: u32 }
 //! impl Task for Invoice {
-//!     const TASK_TYPE: &'static str = "invoice";
-//!     const TASK_VERSION: i32 = 1;
+//!     const TYPE: &'static str = "invoice";
+//!     const VERSION: i32 = 1;
 //! }
 //!
 //! /// Shipping: a placed order is shipped.
 //! struct Shipping;
 //! impl TaskPlanner<Order> for Shipping {
 //!     fn plan(&self, decision: &Decision<'_, Order>) -> Result<Vec<NewTask>, TaskPlanError> {
-//!         let mut tasks = Vec::new();
-//!         for event in decision.events {
-//!             let OrderEvent::Placed { .. } = event;
-//!             tasks.push(NewTask::try_new(Ship { order_id: decision.aggregate_id.into() })?);
-//!         }
-//!         Ok(tasks)
+//!         let OrderEvent::Placed { .. } = decision.event;
+//!         Ok(vec![NewTask::try_new(Ship { order_id: decision.aggregate_id.into() })?])
 //!     }
 //! }
 //! /// Billing: a placed order is invoiced at its total.
 //! struct Billing;
 //! impl TaskPlanner<Order> for Billing {
 //!     fn plan(&self, decision: &Decision<'_, Order>) -> Result<Vec<NewTask>, TaskPlanError> {
-//!         let mut tasks = Vec::new();
-//!         for event in decision.events {
-//!             let OrderEvent::Placed { total } = event;
-//!             tasks.push(NewTask::try_new(Invoice { order_id: decision.aggregate_id.into(), total: *total })?);
-//!         }
-//!         Ok(tasks)
+//!         let OrderEvent::Placed { total } = decision.event;
+//!         Ok(vec![NewTask::try_new(Invoice { order_id: decision.aggregate_id.into(), total: *total })?])
 //!     }
 //! }
 //!
 //! // The one planner of the `Order` executor: every process that reacts to an order, in order.
 //! let planner = (Shipping, Billing);
-//! let events = [OrderEvent::Placed { total: 30 }];
-//! let (before, mut after) = (Order::default(), Order::default());
-//! after.apply(events[0].clone());
+//! let event = OrderEvent::Placed { total: 30 };
+//! let (before, mut state) = (Order::default(), Order::default());
+//! state.apply(event.clone());
 //! let decision = Decision {
 //!     aggregate_id: &"o-1".into(),
 //!     before: &before,
-//!     after: &after,
+//!     state: &state,
 //!     command: &30,
-//!     events: &events,
+//!     event: &event,
 //!     metadata: &HashMap::new(),
 //!     causation: None,
 //! };
@@ -126,11 +118,11 @@ pub struct Decision<'a, A: Aggregate> {
     pub aggregate_id: &'a A::Id,
     /// The committed state the command was decided on (`A::default()` for a new aggregate).
     pub before: &'a A,
-    /// `before` with `events` applied: the state the commit leaves (a copy made for the planner).
-    pub after: &'a A,
+    /// `before` with `event` applied: the state the commit leaves (a copy made for the planner).
+    pub state: &'a A,
     pub command: &'a A::Command,
-    /// What the command decided, in commit order: its one event.
-    pub events: &'a [A::Event],
+    /// What the command decided: its one event.
+    pub event: &'a A::Event,
     /// The command's metadata, stored with every event.
     pub metadata: &'a HashMap<String, String>,
     /// The causation in `metadata` ([`Causation::from_event_metadata`]); the core stamps it on every task.
@@ -143,7 +135,7 @@ impl<A: Aggregate> fmt::Debug for Decision<'_, A> {
         f.debug_struct("Decision")
             .field("aggregate_type", &A::TYPE)
             .field("aggregate_id", &format_args!("{}", self.aggregate_id))
-            .field("events", &self.events)
+            .field("event", &self.event)
             .field("causation", &self.causation)
             .finish_non_exhaustive()
     }
@@ -154,7 +146,7 @@ impl<A: Aggregate> fmt::Debug for Decision<'_, A> {
 ///
 /// A planner is pure and synchronous: no I/O (it runs under the lock, and the signature rules out an
 /// `await`), no clock and no randomness its tasks depend on. Data from outside comes in the command;
-/// schedule with `TaskSchedule::After`, not `At(now + …)`. It is called for every decision (an event; a
+/// schedule with `TaskSchedule::after`, not `at(now + …)`. It is called for every decision (an event; a
 /// rejection is not planned), once per attempt. An error refuses the command with nothing written.
 ///
 /// Several planners compose as a tuple of two to eight: `(A, B)` plans `A`'s tasks, then `B`'s, and the
@@ -238,18 +230,18 @@ impl<A: Aggregate> Planning<A> {
         id: &A::Id,
         key: &str,
         before: &A,
-        after: &A,
+        state: &A,
         command: &A::Command,
-        events: &[A::Event],
+        event: &A::Event,
         metadata: &HashMap<String, String>,
     ) -> Result<Vec<NewTask>, TaskPlanError> {
         let causation = Causation::from_event_metadata(metadata);
         let decision = Decision {
             aggregate_id: id,
             before,
-            after,
+            state,
             command,
-            events,
+            event,
             metadata,
             causation: causation.as_ref().ok().and_then(Option::as_ref),
         };
@@ -313,7 +305,7 @@ mod tests {
         type Id = String;
         type Command = u32;
         type Event = Counted;
-        type Error = std::convert::Infallible;
+        type Rejection = std::convert::Infallible;
         type Rules = ();
 
         fn apply(&mut self, event: Counted) {
@@ -333,16 +325,16 @@ mod tests {
     }
 
     impl Task for Ping {
-        const TASK_TYPE: &'static str = "ping";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "ping";
+        const VERSION: i32 = 1;
     }
 
     #[derive(Serialize)]
     struct Pong {}
 
     impl Task for Pong {
-        const TASK_TYPE: &'static str = "pong";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "pong";
+        const VERSION: i32 = 1;
     }
 
     /// Plans `count` pings carrying `value`, or refuses with `fail`; counts its calls.
@@ -388,30 +380,30 @@ mod tests {
         planner.plan(&Decision {
             aggregate_id: &"c-1".into(),
             before: &before,
-            after: &after,
+            state: &after,
             command: &1,
-            events: &[Counted(1)],
+            event: &Counted(1),
             metadata: &HashMap::new(),
             causation: None,
         })
     }
 
     #[test]
-    fn a_decision_prints_its_aggregate_events_and_causation_but_not_the_metadata() {
+    fn a_decision_prints_its_aggregate_event_and_causation_but_not_the_metadata() {
         let (before, after) = (Counter(0), Counter(1));
         let metadata = HashMap::from([("token".to_owned(), "t0k3n".to_owned())]);
         let decision = Decision::<Counter> {
             aggregate_id: &"c-1".into(),
             before: &before,
-            after: &after,
+            state: &after,
             command: &1,
-            events: &[Counted(1)],
+            event: &Counted(1),
             metadata: &metadata,
             causation: None,
         };
         assert_eq!(
             format!("{decision:?}"),
-            r#"Decision { aggregate_type: "counter", aggregate_id: c-1, events: [Counted(1)], causation: None, .. }"#
+            r#"Decision { aggregate_type: "counter", aggregate_id: c-1, event: Counted(1), causation: None, .. }"#
         );
     }
 
@@ -467,7 +459,7 @@ mod tests {
 
     fn plan_with(tasks: Vec<NewTask>, metadata: &HashMap<String, String>) -> Result<Vec<NewTask>, TaskPlanError> {
         let (before, after) = (Counter(0), Counter(1));
-        Planning::new(Fixed(tasks)).plan(&"c-1".into(), "c-1", &before, &after, &1, &[Counted(1)], metadata)
+        Planning::new(Fixed(tasks)).plan(&"c-1".into(), "c-1", &before, &after, &1, &Counted(1), metadata)
     }
 
     fn ping(value: u32) -> NewTask {
@@ -478,11 +470,9 @@ mod tests {
     fn planned_tasks_are_stamped_and_identified_by_format_and_ordinal() {
         let causation = Causation::root("ui");
         let scheduled = ping(1)
-            .with_metadata(json!({ "tenant": "t-1", "command_id": "stale" }))
-            .unwrap()
+            .with_metadata(serde_json::from_value(json!({ "tenant": "t-1", "command_id": "stale" })).unwrap())
             .with_max_attempts(NonZeroU16::new(4).unwrap())
-            .with_schedule(TaskSchedule::After(Duration::from_secs(3)))
-            .unwrap();
+            .with_schedule(TaskSchedule::after(Duration::from_secs(3)).unwrap());
         let pong = NewTask::try_new(Pong {}).unwrap();
         let tasks = plan_with(vec![scheduled.clone(), pong.clone(), ping(2)], &causation.event_metadata()).unwrap();
         let ping_format = TaskFormat::of::<Ping>();
@@ -513,7 +503,10 @@ mod tests {
 
     #[test]
     fn without_causation_the_tasks_keep_their_ids_and_metadata() {
-        let planned = vec![ping(1).with_metadata(json!({ "tenant": "t-1" })).unwrap(), ping(2)];
+        let planned = vec![
+            ping(1).with_metadata(serde_json::from_value(json!({ "tenant": "t-1" })).unwrap()),
+            ping(2),
+        ];
         let metadata = HashMap::from([("source".to_owned(), "ui".to_owned())]);
         assert_eq!(plan_with(planned.clone(), &metadata).unwrap(), planned);
     }
@@ -528,8 +521,8 @@ mod tests {
         assert_eq!(plan_with(vec![], &metadata).unwrap(), vec![]);
     }
 
-    /// The aggregate id, before, after, command, events and causation a planner saw.
-    type View = (String, u32, u32, u32, Vec<Counted>, Option<Causation>);
+    /// The aggregate id, before, state, command, event and causation a planner saw.
+    type View = (String, u32, u32, u32, Counted, Option<Causation>);
 
     /// Hands the planner's view of the decision to the test.
     struct Seen(std::sync::Mutex<Option<View>>);
@@ -539,9 +532,9 @@ mod tests {
             *self.0.lock().unwrap() = Some((
                 d.aggregate_id.to_owned(),
                 d.before.0,
-                d.after.0,
+                d.state.0,
                 *d.command,
-                d.events.to_vec(),
+                d.event.clone(),
                 d.causation.cloned(),
             ));
             Ok(vec![])
@@ -566,17 +559,17 @@ mod tests {
                 &Counter(2),
                 &Counter(5),
                 &3,
-                &[Counted(3)],
+                &Counted(3),
                 &causation.event_metadata(),
             )
             .unwrap();
         assert_eq!(
             seen.0.lock().unwrap().take(),
-            Some(("c-1".to_owned(), 2, 5, 3, vec![Counted(3)], Some(causation)))
+            Some(("c-1".to_owned(), 2, 5, 3, Counted(3), Some(causation)))
         );
         let malformed = HashMap::from([("command_id".to_owned(), "cmd-1".to_owned())]);
         planning
-            .plan(&"c-1".into(), "c-1", &Counter(0), &Counter(1), &1, &[Counted(1)], &malformed)
+            .plan(&"c-1".into(), "c-1", &Counter(0), &Counter(1), &1, &Counted(1), &malformed)
             .unwrap();
         assert_eq!(seen.0.lock().unwrap().take().unwrap().5, None);
         assert_eq!(planning.clone_command(&9), 9);

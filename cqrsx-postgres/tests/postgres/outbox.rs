@@ -35,7 +35,7 @@ impl Aggregate for StreamAggregate {
 
     type Command = ();
     type Event = TestEvent;
-    type Error = std::convert::Infallible;
+    type Rejection = std::convert::Infallible;
     type Rules = ();
 
     fn apply(&mut self, _event: Self::Event) {}

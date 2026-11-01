@@ -64,7 +64,7 @@ The [typical scenario](../doc/typical_scenario.md) follows a cancellation throug
 | `TestFramework` | Aggregate given/when/then tests for a decision and rejection (crate `cqrsx-testing`). |
 | `TestCommandExecutor` | Use-case tests over a test store or a journal in memory (crate `cqrsx-testing`). |
 | `TaskContext::new` | Exercise a handler with an attempt, retry pause, dependencies and executors. |
-| `MemTaskQueue` | Inspect the in-memory outbox queue, delivery and settlement. |
+| `MemoryTaskQueue` | Inspect the in-memory outbox queue, delivery and settlement. |
 
 Whole applications are tested with `Cqrs::in_memory()` of [`cqrsx-engine`](../cqrsx-engine/README.md).
 

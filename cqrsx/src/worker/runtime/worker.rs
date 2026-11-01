@@ -146,7 +146,7 @@ mod tests {
         let received = other.try_recv().unwrap();
         assert_eq!(received.attempt().task_id(), expected.attempt().task_id());
         assert_eq!(received.attempt().payload(), expected.attempt().payload());
-        assert_eq!(received.lease().lock_token(), expected.lease().lock_token());
+        assert_eq!(received.lease().token(), expected.lease().token());
         assert_eq!(received.lease().deadline(), expected.lease().deadline());
         assert!(receiver.is_empty());
     }

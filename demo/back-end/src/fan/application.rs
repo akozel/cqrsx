@@ -22,13 +22,13 @@ mod tests {
     };
     use crate::fan::domain::{Fan, FanCommand, FanError};
     use cqrsx::{
-        command::{CommandExecutor, CommandGatewayError, CommitReport},
+        command::{CommandError, CommandExecutor, CommitReport},
         worker::TaskResult,
     };
     use std::{collections::HashMap, sync::Arc};
     use uuid::Uuid;
 
-    type Answer = Result<CommitReport<Fan>, CommandGatewayError<FanError>>;
+    type Answer = Result<CommitReport<Fan>, CommandError<FanError>>;
 
     /// A row of the plan table: the ledger's answer by name, the answer, the task's result.
     type Row = (&'static str, fn() -> Answer, TaskResult);
@@ -56,39 +56,23 @@ mod tests {
             ("accepted", || Ok(CommitReport::default()), TaskResult::Done),
             (
                 "R9",
-                || {
-                    Err(CommandGatewayError::Domain(FanError::AlreadyRecorded {
-                        booking_id: Uuid::nil(),
-                    }))
-                },
+                || Err(CommandError::Rejected(FanError::AlreadyRecorded { booking_id: Uuid::nil() })),
                 TaskResult::Done,
             ),
             (
                 "R11",
-                || {
-                    Err(CommandGatewayError::Domain(FanError::AlreadyCancelled {
-                        booking_id: Uuid::nil(),
-                    }))
-                },
+                || Err(CommandError::Rejected(FanError::AlreadyCancelled { booking_id: Uuid::nil() })),
                 TaskResult::Done,
             ),
             (
                 "R10",
-                || {
-                    Err(CommandGatewayError::Domain(FanError::UnknownTicket {
-                        booking_id: Uuid::nil(),
-                    }))
-                },
+                || Err(CommandError::Rejected(FanError::UnknownTicket { booking_id: Uuid::nil() })),
                 TaskResult::retry("unknown_ticket"),
             ),
-            (
-                "conflict",
-                || Err(CommandGatewayError::Conflict),
-                TaskResult::retry("conflict"),
-            ),
+            ("conflict", || Err(CommandError::Conflict), TaskResult::retry("conflict")),
             (
                 "unavailable",
-                || Err(CommandGatewayError::Unavailable),
+                || Err(CommandError::Unavailable),
                 TaskResult::retry("unavailable"),
             ),
         ];

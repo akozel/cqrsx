@@ -95,7 +95,7 @@ mod tests {
                 behind_documents: 0,
                 behind_events: 0,
                 differences: vec![Difference {
-                    collection: "concert_halls",
+                    view: "concert_halls",
                     id: "c-1".into(),
                     kind: DifferenceKind::Differs,
                 }],
@@ -105,7 +105,7 @@ mod tests {
         assert_eq!(report["ok"], false);
         assert_eq!(
             report["differences"][0],
-            json!({ "collection": "concert_halls", "id": "c-1", "kind": "differs" })
+            json!({ "view": "concert_halls", "id": "c-1", "kind": "differs" })
         );
         let broken = VerifyService::new(vec![Arc::new(Fixed("concert_halls", Err(StorageError("down".into()))))]);
         assert_eq!(broken.run().await.unwrap_err(), StorageError("down".into()));

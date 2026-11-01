@@ -5,7 +5,7 @@ use crate::{
     mutex::lock,
     view::{
         View,
-        repository::{StoredView, ViewContext, ViewRepository},
+        repository::{StoredView, ViewMeta, ViewRepository},
     },
 };
 use serde_json::Value;
@@ -28,17 +28,17 @@ struct Document {
 /// `postgres::view_repository::PostgresViewRepository`:
 /// version 0 inserts and conflicts with an existing document, a later version updates only the
 /// document stored with exactly that version, and every write stores the next version together with
-/// the document's `last_sequence`. Conflicts are [`PersistenceError::OptimisticLockError`]. Because
+/// the document's `last_sequence`. Conflicts are [`PersistenceError::Conflict`]. Because
 /// documents are JSON, `V` needs no `Clone` and serde failures surface as in a real store. The queries
 /// order the documents by the bytes of their ids, as the PostgreSQL and MongoDB repositories do.
 ///
 /// Clones share the documents, so a test can seed (`put`), wipe (`clear`) or query the repository a projection uses.
-pub struct MemViewRepository<V, A> {
+pub struct MemoryViewRepository<V, A> {
     documents: Arc<Mutex<BTreeMap<String, Document>>>,
     phantom: PhantomData<fn() -> (V, A)>,
 }
 
-impl<V, A> Default for MemViewRepository<V, A> {
+impl<V, A> Default for MemoryViewRepository<V, A> {
     fn default() -> Self {
         Self {
             documents: Arc::default(),
@@ -48,15 +48,15 @@ impl<V, A> Default for MemViewRepository<V, A> {
 }
 
 // By hand: a derive would require the view and the aggregate to be `Debug`; the documents are JSON.
-impl<V, A> fmt::Debug for MemViewRepository<V, A> {
+impl<V, A> fmt::Debug for MemoryViewRepository<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MemViewRepository")
+        f.debug_struct("MemoryViewRepository")
             .field("documents", &self.documents)
             .finish()
     }
 }
 
-impl<V, A> Clone for MemViewRepository<V, A> {
+impl<V, A> Clone for MemoryViewRepository<V, A> {
     fn clone(&self) -> Self {
         Self {
             documents: self.documents.clone(),
@@ -65,7 +65,7 @@ impl<V, A> Clone for MemViewRepository<V, A> {
     }
 }
 
-impl<V, A> MemViewRepository<V, A>
+impl<V, A> MemoryViewRepository<V, A>
 where
     V: View<A>,
     A: Aggregate,
@@ -108,7 +108,7 @@ where
             .map(|(id, document)| {
                 Ok(StoredView {
                     id,
-                    version: document.version,
+                    revision: document.version,
                     last_sequence: document.last_sequence,
                     view: V::deserialize(document.payload)?,
                 })
@@ -117,42 +117,42 @@ where
     }
 }
 
-impl<V, A> ViewRepository<V, A> for MemViewRepository<V, A>
+impl<V, A> ViewRepository<V, A> for MemoryViewRepository<V, A>
 where
     V: View<A>,
     A: Aggregate,
 {
     async fn load(&self, view_id: &str) -> Result<Option<V>, PersistenceError> {
-        Ok(self.load_with_context(view_id).await?.map(|stored| stored.view))
+        Ok(self.load_stored(view_id).await?.map(|stored| stored.view))
     }
 
-    async fn load_with_context(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
+    async fn load_stored(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
         let Some(document) = self.documents().get(view_id).cloned() else {
             return Ok(None);
         };
         Ok(Some(StoredView {
             id: view_id.to_owned(),
-            version: document.version,
+            revision: document.version,
             last_sequence: document.last_sequence,
             view: V::deserialize(document.payload)?,
         }))
     }
 
-    async fn update_view(&self, view: V, context: ViewContext) -> Result<(), PersistenceError> {
+    async fn update_view(&self, view: V, context: ViewMeta) -> Result<(), PersistenceError> {
         let version = context
-            .version
+            .revision
             .checked_add(1)
-            .ok_or_else(|| PersistenceError::UnknownError("view version overflow".into()))?;
+            .ok_or_else(|| PersistenceError::Unexpected("view version overflow".into()))?;
         let payload = serde_json::to_value(&view)?;
         let mut documents = self.documents();
-        let stored = documents.get(&context.view_instance_id).map(|document| document.version);
-        match (context.version, stored) {
+        let stored = documents.get(&context.id).map(|document| document.version);
+        match (context.revision, stored) {
             (0, None) => {}
             (expected, Some(stored)) if expected != 0 && expected == stored => {}
-            _ => return Err(PersistenceError::OptimisticLockError),
+            _ => return Err(PersistenceError::Conflict),
         }
         documents.insert(
-            context.view_instance_id,
+            context.id,
             Document {
                 version,
                 last_sequence: context.last_sequence,
@@ -177,7 +177,7 @@ mod tests {
     use crate::projection::EventHandler;
     use crate::{
         domain::event::EventEnvelope,
-        journal::persisted::tests::{TestAggregate, TestEvents},
+        journal::store::tests::{TestAggregate, TestEvents},
         view::projection::ViewProjection,
     };
     use serde::{Deserialize, Serialize, Serializer};
@@ -187,12 +187,12 @@ mod tests {
 
     impl View<TestAggregate> for Sequences {
         const NAME: &'static str = "sequences";
-        fn update(&mut self, event: &EventEnvelope<TestAggregate>) {
+        fn apply(&mut self, event: &EventEnvelope<TestAggregate>) {
             self.0.push(event.sequence);
         }
     }
 
-    type Repository = MemViewRepository<Sequences, TestAggregate>;
+    type Repository = MemoryViewRepository<Sequences, TestAggregate>;
 
     async fn listed(repository: &Repository) -> Vec<(String, i64, usize, Sequences)> {
         repository
@@ -200,7 +200,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|stored| (stored.id, stored.version, stored.last_sequence, stored.view))
+            .map(|stored| (stored.id, stored.revision, stored.last_sequence, stored.view))
             .collect()
     }
 
@@ -209,18 +209,18 @@ mod tests {
         let repository = Repository::default();
         assert_eq!(
             format!("{repository:?}"),
-            "MemViewRepository { documents: Mutex { data: {}, poisoned: false, .. } }"
+            "MemoryViewRepository { documents: Mutex { data: {}, poisoned: false, .. } }"
         );
         assert_eq!(repository.load("a").await.unwrap(), None);
         repository
-            .update_view(Sequences(vec![1]), ViewContext::new("a".into(), 0, 1))
+            .update_view(Sequences(vec![1]), ViewMeta::new("a".into(), 0, 1))
             .await
             .unwrap();
         assert_eq!(
-            repository.load_with_context("a").await.unwrap(),
+            repository.load_stored("a").await.unwrap(),
             Some(StoredView {
                 id: "a".into(),
-                version: 1,
+                revision: 1,
                 last_sequence: 1,
                 view: Sequences(vec![1]),
             })
@@ -228,19 +228,19 @@ mod tests {
         for stale in [0, 2] {
             assert!(matches!(
                 repository
-                    .update_view(Sequences(vec![9]), ViewContext::new("a".into(), stale, 9))
+                    .update_view(Sequences(vec![9]), ViewMeta::new("a".into(), stale, 9))
                     .await,
-                Err(PersistenceError::OptimisticLockError)
+                Err(PersistenceError::Conflict)
             ));
         }
         assert!(matches!(
             repository
-                .update_view(Sequences(vec![9]), ViewContext::new("b".into(), 1, 9))
+                .update_view(Sequences(vec![9]), ViewMeta::new("b".into(), 1, 9))
                 .await,
-            Err(PersistenceError::OptimisticLockError)
+            Err(PersistenceError::Conflict)
         ));
         repository
-            .update_view(Sequences(vec![1, 2]), ViewContext::new("a".into(), 1, 2))
+            .update_view(Sequences(vec![1, 2]), ViewMeta::new("a".into(), 1, 2))
             .await
             .unwrap();
         assert_eq!(repository.load("a").await.unwrap(), Some(Sequences(vec![1, 2])));
@@ -266,10 +266,10 @@ mod tests {
         };
         projection.handle("b", &[event]).await.unwrap();
         assert_eq!(
-            repository.load_with_context("b").await.unwrap(),
+            repository.load_stored("b").await.unwrap(),
             Some(StoredView {
                 id: "b".into(),
-                version: 5,
+                revision: 5,
                 last_sequence: 3,
                 view: Sequences(vec![2, 3]),
             })
@@ -317,7 +317,7 @@ mod tests {
             stored,
             [StoredView {
                 id: "fox;".into(),
-                version: 4,
+                revision: 4,
                 last_sequence: 3,
                 view: Sequences(vec![1, 2, 3]),
             }]
@@ -329,8 +329,8 @@ mod tests {
         let repository = Repository::default();
         repository.put("max", i64::MAX, 0, &Sequences(vec![])).unwrap();
         assert!(matches!(
-            repository.update_view(Sequences(vec![]), ViewContext::new("max".into(), i64::MAX, 1)).await,
-            Err(PersistenceError::UnknownError(error)) if error.to_string() == "view version overflow"
+            repository.update_view(Sequences(vec![]), ViewMeta::new("max".into(), i64::MAX, 1)).await,
+            Err(PersistenceError::Unexpected(error)) if error.to_string() == "view version overflow"
         ));
         repository.documents().insert(
             "broken".into(),
@@ -342,12 +342,9 @@ mod tests {
         );
         assert!(matches!(
             repository.load("broken").await,
-            Err(PersistenceError::DeserializationError(_))
+            Err(PersistenceError::Deserialization(_))
         ));
-        assert!(matches!(
-            repository.list().await,
-            Err(PersistenceError::DeserializationError(_))
-        ));
+        assert!(matches!(repository.list().await, Err(PersistenceError::Deserialization(_))));
 
         #[derive(Debug, Default, Deserialize)]
         struct Unserializable;
@@ -358,13 +355,13 @@ mod tests {
         }
         impl View<TestAggregate> for Unserializable {
             const NAME: &'static str = "unserializable";
-            fn update(&mut self, _: &EventEnvelope<TestAggregate>) {}
+            fn apply(&mut self, _: &EventEnvelope<TestAggregate>) {}
         }
-        let repository = MemViewRepository::<Unserializable, TestAggregate>::default();
+        let repository = MemoryViewRepository::<Unserializable, TestAggregate>::default();
         assert!(repository.put("a", 1, 0, &Unserializable).is_err());
         assert!(
             repository
-                .update_view(Unserializable, ViewContext::new("a".into(), 0, 1))
+                .update_view(Unserializable, ViewMeta::new("a".into(), 0, 1))
                 .await
                 .is_err()
         );

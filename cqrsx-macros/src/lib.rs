@@ -56,7 +56,7 @@ pub fn derive_events(input: TokenStream) -> TokenStream {
 }
 
 /// The wire format of a task's payload: `#[task(name = "encore_record_cancellation", version = 1)]` on the type
-/// implements `cqrsx::task::Task` with them (`TASK_TYPE`, `TASK_VERSION`). A queued task keeps them, so
+/// implements `cqrsx::task::Task` with them (`TYPE`, `VERSION`). A queued task keeps them, so
 /// they never change. The fields of a struct marked `#[label]` are its `LABELS`, in field order: the task keeps them
 /// in its metadata, not in its body. A missing attribute or key, another key, a key given twice, a type that is not a
 /// string or is empty and a version that is not a positive `i32` do not compile; nor does a `#[label]` with arguments,
@@ -70,7 +70,7 @@ pub fn derive_task(input: TokenStream) -> TokenStream {
 
 /// A business refusal as the API and the activity feed report it, on an enum of rejections: implements
 /// `cqrsx::domain::rejection::Rejection`. The code of a variant is its name in snake case (`SeatTaken` → `seat_taken`),
-/// or what `#[rejection(code = "…")]` on the variant gives; its params are its named fields as a JSON object, a unit
+/// or what `#[rejection(code = "…")]` on the variant gives; its parameters are its named fields as a JSON object, a unit
 /// variant's are `{}`. A tuple variant, the attribute on the enum, another key, an empty code and two variants with
 /// one code do not compile. Examples: `cqrsx::domain::rejection::Rejection`.
 #[proc_macro_derive(Rejection, attributes(rejection))]

@@ -20,7 +20,7 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
   of a failed storage operation, which a store's crate gives the core's logs); the log lines are private.
 - `cqrsx/src/mutex.rs` — `lock`, `get_mut`: the one public helper that takes a `std::sync::Mutex` (rule 10).
 - `cqrsx-engine/src` — the engine, a crate of its own on top of `cqrsx` (the core does not know it): `lib.rs` (`Cqrs`),
-  `build.rs` (`Builder`, the assembly over the stores), `executor.rs`, `settings.rs`, `module.rs`, `setup.rs`, `outcome.rs`,
+  `build.rs` (`Builder`, the assembly over the stores), `executor.rs`, `settings.rs`, `module.rs`, `setup.rs`, `source.rs`,
   `views.rs`, `memory.rs`, `diagnostics.rs` (the engine's own log line);
   `postgres.rs` (feature `postgres`), `mongodb.rs` (feature `mongodb`), `http.rs` and `serve.rs` with
   `serve/{lifecycle,signal,error,logging}.rs` (feature `http`).
@@ -33,7 +33,7 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
 - `cqrsx-mongodb` — views and projection checkpoints in MongoDB (no features); `tests/mongo.rs` starts MongoDB,
   `journal_in_postgres` also PostgreSQL.
 - `cqrsx-testing` — test tools for the code that uses `cqrsx`, on its public API: `framework.rs` (`TestFramework`, aggregate
-  given/when/then), `command_executor.rs`, `mem_store.rs`, `unavailable_store.rs`, `validator.rs`; depends on `cqrsx` only;
+  given/when/then), `command_executor.rs`, `memory_store.rs`, `unavailable_store.rs`, `validator.rs`; depends on `cqrsx` only;
   `tests/framework.rs` runs the tools on an example application. A failed check is a panic, allowed by the crate's `lib.rs`.
 - `cqrsx-macros` — the derive macros (`Event`, `Events`, `Command`, `Decide`, `Task`, `Rejection`) and `#[task_handler]`;
   the expansions name `::cqrsx` only; its `README.md` is its documentation.

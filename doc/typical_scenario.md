@@ -26,7 +26,7 @@ and [Fan](../demo/back-end/src/fan/domain/aggregate.rs).
 
 Each command implements `Decide<A>`: given the current aggregate and its rules it returns one event or
 a rejection, without side effects. `Command` and `Decide` derive, for an aggregate's enum of commands, the information the engine needs and the routing of the decision;
-`Rejection` supplies a code and parameters. A caller uses `cqrs.from("ui").execute::<A>(id, command)`;
+`Rejection` supplies a code and parameters. A caller uses `cqrs.source("ui").execute::<A>(id, command)`;
 inside a task, `ctx.execute::<A>` continues the task's causation. The executor serializes commands per
 key in a process; an optimistic conflict across processes reloads and retries the decision. See
 [BookSeat](../demo/back-end/src/concert/domain/commands/book_seat.rs).
@@ -66,7 +66,7 @@ See [concert hall](../demo/back-end/src/concert/application/views/concert_hall.r
 `Cqrs::in_memory()` assembles the same module registrations over in-memory stores. For a durable
 application, `Cqrs::from_env("ENCORE")` reads engine and module keys with that prefix; `OUTBOX_*`
 remain unprefixed. `.defaults(DEMO_DEFAULTS)` supplies application defaults only when a variable is
-absent. Register `Postgres`, `MongoDb` and module roots, then `serve()` with the `http` feature. `Setup`
+absent. Register `Postgres`, `Mongo` and module roots, then `serve()` with the `http` feature. `Setup`
 provides module-local configuration and engine settings, not shared infrastructure. The exact running
 assembly is [main.rs](../demo/back-end/src/main.rs); configuration and feature flags are in the
 [README](../cqrsx-engine/README.md#configuration).
@@ -90,7 +90,7 @@ The code is in [cancel booking](../demo/back-end/src/concert/domain/commands/can
 ## Testing and rules
 
 `TestFramework` (crate `cqrsx-testing`) tests an aggregate's decisions; `Cqrs::in_memory()` tests modules and their chains;
-`run_tasks()` runs due work and `catch_up()` waits for views. A task context and `MemTaskQueue` permit
+`run_tasks()` runs due work and `catch_up()` waits for views. A task context and `MemoryTaskQueue` permit
 focused task tests. Modules register one executor per aggregate and one owner per view name; handlers
 must tolerate repeat delivery, while reactions must stay pure. The tests in
 [`tests/engine/scenario.rs`](../cqrsx-engine/tests/engine/scenario.rs) cover the full in-memory path.

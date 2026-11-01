@@ -29,7 +29,7 @@ impl Aggregate for Ledger {
     type Id = String;
     type Command = ();
     type Event = Delta;
-    type Error = Rejected;
+    type Rejection = Rejected;
     type Rules = ();
     fn apply(&mut self, event: Delta) {
         self.balance += i64::from(event.0);

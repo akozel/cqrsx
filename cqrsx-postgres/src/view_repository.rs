@@ -9,7 +9,7 @@ use cqrsx::{
     journal::PersistenceError,
     view::{
         View,
-        repository::{StoredView, ViewContext, ViewRepository},
+        repository::{StoredView, ViewMeta, ViewRepository},
     },
 };
 use serde_json::Value;
@@ -50,7 +50,7 @@ where
 {
     /// Creates a new `PostgresViewRepository` that will store serialized views in a Postgres table named after
     /// the view, [`View::NAME`]. The application creates the table before use, with this shape (`last_sequence` is
-    /// the last applied event of the view's aggregate, see `ViewContext`):
+    /// the last applied event of the view's aggregate, see `ViewMeta`):
     ///
     /// ```sql
     /// CREATE TABLE my_view_table (
@@ -77,11 +77,11 @@ where
     /// # use cqrsx::projection::EventHandler;
     /// # use cqrsx::view::View;
     /// # use cqrsx::domain::command::Decide;
-    /// # use cqrsx::journal::repository::PersistedEventRepository;
+    /// # use cqrsx::journal::repository::EventRepository;
     /// # use cqrsx::journal::PersistenceError;
     /// # use cqrsx::journal::serialized_event::SerializedEvent;
     /// # use cqrsx::journal::snapshot::SerializedSnapshot;
-    /// # use cqrsx::view::repository::ViewContext;
+    /// # use cqrsx::view::repository::ViewMeta;
     /// # use cqrsx::view::repository::ViewRepository;
     /// #
     /// # #[derive(Debug, Serialize, Deserialize, PartialEq, Eq, Clone)]
@@ -116,7 +116,7 @@ where
     /// #     type Id = String;
     /// #     type Command = MyCommands;
     /// #     type Event = MyEvents;
-    /// #     type Error = MyUserError;
+    /// #     type Rejection = MyUserError;
     /// #     type Rules = MyService;
     /// #
     /// #     fn apply(&mut self, _event: Self::Event) {}
@@ -149,7 +149,7 @@ where
     /// #
     /// # impl View<MyAggregate> for MyView {
     /// #     const NAME: &'static str = "my_view_table";
-    /// #     fn update(&mut self, _event: &EventEnvelope<MyAggregate>) {
+    /// #     fn apply(&mut self, _event: &EventEnvelope<MyAggregate>) {
     /// #         todo!()
     /// #     }
     /// # }
@@ -209,7 +209,7 @@ where
         }
     }
 
-    async fn load_with_context(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
+    async fn load_stored(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
         let row: Option<PgRow> = sqlx::query(&self.select_sql)
             .bind(view_id)
             .fetch_optional(&self.pool)
@@ -223,7 +223,7 @@ where
                 let view = serde_json::from_value(payload(&row)?)?;
                 Ok(Some(StoredView {
                     id: view_id.to_owned(),
-                    version,
+                    revision: version,
                     last_sequence,
                     view,
                 }))
@@ -231,15 +231,15 @@ where
         }
     }
 
-    async fn update_view(&self, view: V, context: ViewContext) -> Result<(), PersistenceError> {
-        let sql = match context.version {
+    async fn update_view(&self, view: V, context: ViewMeta) -> Result<(), PersistenceError> {
+        let sql = match context.revision {
             0 => &self.insert_sql,
             _ => &self.update_sql,
         };
         let version = context
-            .version
+            .revision
             .checked_add(1)
-            .ok_or_else(|| PersistenceError::UnknownError("view version overflow".into()))?;
+            .ok_or_else(|| PersistenceError::Unexpected("view version overflow".into()))?;
         let last_sequence = encode_bigint(context.last_sequence)?;
         let payload = serde_json::to_value(&view).map_err(PostgresRepositoryError::from)?;
         // The INSERT reads the first four binds, the UPDATE all five.
@@ -247,14 +247,14 @@ where
             .bind(payload)
             .bind(version)
             .bind(last_sequence)
-            .bind(context.view_instance_id)
-            .bind(context.version)
+            .bind(context.id)
+            .bind(context.revision)
             .execute(&self.pool)
             .await
             .map_err(PostgresRepositoryError::from)?
             .rows_affected();
         if rows_affected < 1 {
-            return Err(PersistenceError::OptimisticLockError);
+            return Err(PersistenceError::Conflict);
         }
         Ok(())
     }
@@ -279,11 +279,11 @@ where
 }
 
 /// A row of `list` or `range`, decoded. A column the table lacks or holds in another type is a
-/// `DeserializationError`, as is a payload that is no view.
+/// `Deserialization` error, as is a payload that is no view.
 fn stored_view<V: serde::de::DeserializeOwned>(row: &PgRow) -> Result<StoredView<V>, PersistenceError> {
     Ok(StoredView {
         id: row.try_get("view_id").map_err(row_decode_error)?,
-        version: row.try_get("version").map_err(row_decode_error)?,
+        revision: row.try_get("version").map_err(row_decode_error)?,
         last_sequence: decode_usize(row.try_get("last_sequence").map_err(row_decode_error)?)?,
         view: serde_json::from_value(payload(row)?)?,
     })

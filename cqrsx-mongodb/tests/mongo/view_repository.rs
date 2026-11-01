@@ -5,7 +5,7 @@ use cqrsx::{
     projection::EventHandler,
     view::{
         projection::ViewProjection,
-        repository::{StoredView, ViewContext, ViewRepository},
+        repository::{StoredView, ViewMeta, ViewRepository},
     },
 };
 use cqrsx_fixtures::mongo::Mongo;
@@ -22,14 +22,14 @@ async fn a_view_is_inserted_updated_and_loaded_with_its_context() {
         history: vec![(1, 1)],
     };
     views
-        .update_view(first.clone(), ViewContext::new("l1".into(), 0, 1))
+        .update_view(first.clone(), ViewMeta::new("l1".into(), 0, 1))
         .await
         .unwrap();
     assert_eq!(
-        views.load_with_context("l1").await.unwrap(),
+        views.load_stored("l1").await.unwrap(),
         Some(StoredView {
             id: "l1".into(),
-            version: 1,
+            revision: 1,
             last_sequence: 1,
             view: first
         })
@@ -39,15 +39,15 @@ async fn a_view_is_inserted_updated_and_loaded_with_its_context() {
         history: vec![(1, 1), (2, 2)],
     };
     views
-        .update_view(second.clone(), ViewContext::new("l1".into(), 1, 2))
+        .update_view(second.clone(), ViewMeta::new("l1".into(), 1, 2))
         .await
         .unwrap();
     assert_eq!(views.load("l1").await.unwrap(), Some(second.clone()));
     assert_eq!(
-        views.load_with_context("l1").await.unwrap(),
+        views.load_stored("l1").await.unwrap(),
         Some(StoredView {
             id: "l1".into(),
-            version: 2,
+            revision: 2,
             last_sequence: 2,
             view: second
         })
@@ -74,37 +74,35 @@ async fn a_duplicate_insert_a_stale_version_and_an_overflow_are_explicit() {
     let views = views(&mongo.database);
     let view = Balance::default();
     views
-        .update_view(view.clone(), ViewContext::new("l1".into(), 0, 1))
+        .update_view(view.clone(), ViewMeta::new("l1".into(), 0, 1))
         .await
         .unwrap();
     assert!(matches!(
-        views.update_view(view.clone(), ViewContext::new("l1".into(), 0, 1)).await,
-        Err(PersistenceError::OptimisticLockError)
+        views.update_view(view.clone(), ViewMeta::new("l1".into(), 0, 1)).await,
+        Err(PersistenceError::Conflict)
     ));
-    for stale in [ViewContext::new("l1".into(), 5, 2), ViewContext::new("none".into(), 1, 2)] {
+    for stale in [ViewMeta::new("l1".into(), 5, 2), ViewMeta::new("none".into(), 1, 2)] {
         assert!(matches!(
             views.update_view(view.clone(), stale).await,
-            Err(PersistenceError::OptimisticLockError)
+            Err(PersistenceError::Conflict)
         ));
     }
     assert!(matches!(
-        views
-            .update_view(view.clone(), ViewContext::new("l1".into(), i64::MAX, 2))
-            .await,
-        Err(PersistenceError::UnknownError(_))
+        views.update_view(view.clone(), ViewMeta::new("l1".into(), i64::MAX, 2)).await,
+        Err(PersistenceError::Unexpected(_))
     ));
     #[cfg(target_pointer_width = "64")]
     assert!(matches!(
         views
-            .update_view(view.clone(), ViewContext::new("l1".into(), 1, usize::MAX))
+            .update_view(view.clone(), ViewMeta::new("l1".into(), 1, usize::MAX))
             .await,
-        Err(PersistenceError::UnknownError(_))
+        Err(PersistenceError::Unexpected(_))
     ));
     assert_eq!(
-        views.load_with_context("l1").await.unwrap(),
+        views.load_stored("l1").await.unwrap(),
         Some(StoredView {
             id: "l1".into(),
-            version: 1,
+            revision: 1,
             last_sequence: 1,
             view
         }),
@@ -119,7 +117,7 @@ async fn missing_and_corrupt_documents_are_explicit() {
     let mongo = Mongo::start().await;
     let views = views(&mongo.database);
     assert!(views.load("none").await.unwrap().is_none());
-    assert!(views.load_with_context("none").await.unwrap().is_none());
+    assert!(views.load_stored("none").await.unwrap().is_none());
     let valid = doc! { "total": 1_i64, "history": [[1_i64, 1_i32]] };
     mongo
         .database
@@ -135,14 +133,11 @@ async fn missing_and_corrupt_documents_are_explicit() {
         .unwrap();
     for id in ["not-a-balance", "negative", "no-sequence", "no-version"] {
         assert!(
-            matches!(views.load(id).await, Err(PersistenceError::DeserializationError(_))),
+            matches!(views.load(id).await, Err(PersistenceError::Deserialization(_))),
             "{id}"
         );
         assert!(
-            matches!(
-                views.load_with_context(id).await,
-                Err(PersistenceError::DeserializationError(_))
-            ),
+            matches!(views.load_stored(id).await, Err(PersistenceError::Deserialization(_))),
             "{id}"
         );
     }
@@ -202,7 +197,7 @@ async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
         views.range("fox;", "fox_").await.unwrap(),
         [StoredView {
             id: "fox;".into(),
-            version: 4,
+            revision: 4,
             last_sequence: 3,
             view: Balance {
                 total: 3,
@@ -215,10 +210,10 @@ async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
         .insert_one(doc! { "_id": "zz-broken", "version": 1_i64, "last_sequence": -1_i64, "view": {} })
         .await
         .unwrap();
-    assert!(matches!(views.list().await, Err(PersistenceError::DeserializationError(_))));
+    assert!(matches!(views.list().await, Err(PersistenceError::Deserialization(_))));
     assert!(matches!(
         views.range("zz", "zz~").await,
-        Err(PersistenceError::DeserializationError(_))
+        Err(PersistenceError::Deserialization(_))
     ));
     assert_eq!(ids(views.range("F", "zz").await.unwrap()), IDS);
     mongo.close().await;
@@ -257,7 +252,7 @@ async fn stress_concurrent_writers_of_one_mongo_document_converge() {
                 while let Some(result) = tasks.join_next().await {
                     result.unwrap().unwrap();
                 }
-                let stored = repository.load_with_context(&id).await.unwrap().unwrap();
+                let stored = repository.load_stored(&id).await.unwrap().unwrap();
                 let expected: Vec<_> = (1..=total).map(|sequence| (sequence, sequence as i32)).collect();
                 assert_eq!(
                     stored.view.history, expected,
@@ -266,9 +261,9 @@ async fn stress_concurrent_writers_of_one_mongo_document_converge() {
                 assert_eq!(stored.last_sequence, total, "{id}");
                 let versions = (initial as i64 + 1)..=((initial + writers) as i64);
                 assert!(
-                    versions.contains(&stored.version),
+                    versions.contains(&stored.revision),
                     "{id}: version {} outside {versions:?}",
-                    stored.version
+                    stored.revision
                 );
             }
         }

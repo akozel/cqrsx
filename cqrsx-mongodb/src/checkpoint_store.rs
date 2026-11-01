@@ -12,7 +12,7 @@ use chrono::{DateTime, Utc};
 use cqrsx::{
     journal::feed::Position,
     projection::checkpoint::{
-        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest, RebuildRequests,
+        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, PendingRebuilds, RebuildReply,
         RebuildState,
     },
 };
@@ -313,7 +313,7 @@ impl CheckpointStore for MongoCheckpointStore {
         self.fenced("record_failure", owned(key, token), update).await
     }
 
-    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
+    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
         let pace = pace_millis(pace)?;
         let request = doc! {
             "rebuild_requested": { "$or": ["$rebuild_requested", { "$eq": ["$rebuild_cursor", null] }] },
@@ -334,9 +334,9 @@ impl CheckpointStore for MongoCheckpointStore {
         };
         let before: Requested = decode(before)?;
         Ok(if !before.rebuild_requested && before.rebuild_cursor.is_none() {
-            RebuildRequest::Accepted
+            RebuildReply::Accepted
         } else {
-            RebuildRequest::AlreadyRunning
+            RebuildReply::AlreadyRunning
         })
     }
 
@@ -352,12 +352,12 @@ impl CheckpointStore for MongoCheckpointStore {
         Ok(())
     }
 
-    async fn take_requests(
+    async fn take_rebuild_requests(
         &self,
         key: &CheckpointKey,
         token: LeaseToken,
         limit: usize,
-    ) -> Result<Option<RebuildRequests>, CheckpointError> {
+    ) -> Result<Option<PendingRebuilds>, CheckpointError> {
         let slice = limit_in(limit)?;
         let rest = doc! {
             "$cond": [
@@ -372,14 +372,14 @@ impl CheckpointStore for MongoCheckpointStore {
             .projection(doc! { "rebuild_requested": 1, "rebuild_pace_ms": 1, "rebuild_keys": 1 })
             .return_document(ReturnDocument::Before)
             .await
-            .map_err(storage_error("take_requests"))?;
+            .map_err(storage_error("take_rebuild_requests"))?;
         let Some(before) = before else {
             return Ok(None);
         };
         let before: Requests = decode(before)?;
         let pace = pace_out(before.rebuild_pace_ms)?;
-        Ok(Some(RebuildRequests {
-            rebuild: before.rebuild_requested.then_some(pace),
+        Ok(Some(PendingRebuilds {
+            rebuild_pace: before.rebuild_requested.then_some(pace),
             keys: before.rebuild_keys.into_iter().take(limit).collect(),
         }))
     }
@@ -597,7 +597,7 @@ mod tests {
                 store.record_failure(&key, token, "halls: connection").await.err(),
                 store.request_rebuild(&key, Duration::ZERO).await.err(),
                 store.request_rebuild_key(&key, "k").await.err(),
-                store.take_requests(&key, token, 1).await.err(),
+                store.take_rebuild_requests(&key, token, 1).await.err(),
                 store.begin_rebuild(&key, token).await.err(),
                 store.advance_rebuild(&key, token, "k", 1).await.err(),
                 store.finish_rebuild(&key, token).await.err(),
@@ -615,7 +615,7 @@ mod tests {
                 store.advance(&key, token, Position::new(u64::MAX), 1).await.err(),
                 store.advance(&key, token, Position::new(1), u64::MAX).await.err(),
                 store.request_rebuild(&key, Duration::MAX).await.err(),
-                store.take_requests(&key, token, usize::MAX).await.err(),
+                store.take_rebuild_requests(&key, token, usize::MAX).await.err(),
                 store.advance_rebuild(&key, token, "k", u64::MAX).await.err(),
             ] {
                 assert!(matches!(invalid, Some(CheckpointError::Invalid(_))), "{invalid:?}");
@@ -631,7 +631,7 @@ mod tests {
             "record_failure",
             "request_rebuild",
             "request_rebuild_key",
-            "take_requests",
+            "take_rebuild_requests",
             "begin_rebuild",
             "advance_rebuild",
             "finish_rebuild",

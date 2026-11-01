@@ -11,7 +11,7 @@ use cqrsx::{
     journal::{
         PersistenceError,
         feed::{FeedEntry, Position},
-        repository::PersistedEventRepository,
+        repository::EventRepository,
         serialized_event::SerializedEvent,
         snapshot::SerializedSnapshot,
     },
@@ -26,7 +26,7 @@ const DEFAULT_SNAPSHOT_TABLE: &str = "snapshots";
 /// hold them. Counted in one round trip by [`PostgresEventRepository::totals`]; meant for operator
 /// dashboards. It reads the whole journal of the type: give it a pool without a statement timeout.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct LedgerTotals {
+pub struct JournalTotals {
     pub events: u64,
     pub aggregates: u64,
 }
@@ -46,7 +46,7 @@ pub struct PostgresEventRepository {
     query_factory: Arc<SqlTexts>,
 }
 
-impl PersistedEventRepository for PostgresEventRepository {
+impl EventRepository for PostgresEventRepository {
     async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
         self.fetch_events(
             sqlx::query(self.query_factory.select_events())
@@ -75,7 +75,7 @@ impl PersistedEventRepository for PostgresEventRepository {
     async fn persist<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<cqrsx::journal::snapshot::SnapshotUpdate>,
+        snapshot_update: Option<cqrsx::journal::snapshot::SerializedSnapshot>,
     ) -> Result<(), PersistenceError> {
         self.persist_batch::<A>(events, snapshot_update).await
     }

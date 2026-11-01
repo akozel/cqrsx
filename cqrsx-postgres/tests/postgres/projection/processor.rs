@@ -6,13 +6,13 @@ use crate::{
 use cqrsx::{
     command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
+    journal::{EventStore, repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
     projection::{
-        checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
+        checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildReply},
         processor::{
             ProjectionProcessor,
             config::{DeliveryLimits, ProcessorConfig},
-            observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
+            observer::{Advanced, Applied, Failed, LeaseChange, ProjectionObserver, RebuildPhase, Rebuilt, Waiting},
         },
     },
     view::{View, projection::ViewProjection, repository::ViewRepository},
@@ -38,7 +38,7 @@ struct Balance {
 
 impl View<Ledger> for Balance {
     const NAME: &'static str = NAME;
-    fn update(&mut self, event: &EventEnvelope<Ledger>) {
+    fn apply(&mut self, event: &EventEnvelope<Ledger>) {
         self.total += i64::from(event.payload.0);
         self.history.push((event.sequence, event.payload.0));
     }
@@ -81,10 +81,10 @@ impl ProjectionObserver for Recording {
     fn rebuilt(&self, report: &Rebuilt<'_>) {
         self.push(format!("rebuilt:{}:{:?}", report.aggregate_id, report.reason));
     }
-    fn rebuild(&self, event: RebuildEvent) {
+    fn rebuild_phase(&self, event: RebuildPhase) {
         self.push(format!("rebuild:{event:?}"));
     }
-    fn lease(&self, event: LeaseEvent) {
+    fn lease(&self, event: LeaseChange) {
         self.push(format!("lease:{event:?}"));
     }
     fn waiting(&self, reason: Waiting) {
@@ -92,13 +92,13 @@ impl ProjectionObserver for Recording {
     }
 }
 
-type Store = PersistedEventStore<PostgresEventRepositoryWithOutbox, Ledger>;
+type Store = JournalEventStore<PostgresEventRepositoryWithOutbox, Ledger>;
 
 fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<StoreCommandExecutor<Ledger, Store>> {
     let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
     Arc::new(
         StoreCommandExecutor::new(
-            PersistedEventStore::new(repository),
+            JournalEventStore::new(repository),
             (),
             Default::default(),
             LockLimits::default(),
@@ -108,15 +108,14 @@ fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<StoreCommandExecutor<Led
 }
 
 fn config() -> ProcessorConfig {
-    ProcessorConfig::try_new(
-        Duration::from_millis(50),
-        100,
-        Duration::from_secs(1),
-        DeliveryLimits::default(),
-    )
-    .unwrap()
-    .with_retry(Duration::from_millis(50), Duration::from_millis(200))
-    .unwrap()
+    ProcessorConfig::builder()
+        .poll_interval(Duration::from_millis(50))
+        .page_size(100)
+        .lease(Duration::from_secs(1))
+        .delivery_limits(DeliveryLimits::default())
+        .retry(Duration::from_millis(50), Duration::from_millis(200))
+        .build()
+        .unwrap()
 }
 
 fn processor(
@@ -135,7 +134,7 @@ fn processor(
     )
     .with_owner(owner)
     .with_observer(observer.clone())
-    .with_wakeup(wakeup.clone())
+    .with_commit_wakeup(wakeup.clone())
 }
 
 async fn create_views(pool: &PgPool) {
@@ -146,14 +145,14 @@ async fn create_views(pool: &PgPool) {
 }
 
 async fn fold(pool: &PgPool, id: &str) -> Option<Balance> {
-    let store = PersistedEventStore::<_, Ledger>::new(PostgresEventRepository::new(pool.clone()));
+    let store = JournalEventStore::<_, Ledger>::new(PostgresEventRepository::new(pool.clone()));
     let events = store.load_events(id).await.unwrap();
     if events.is_empty() {
         return None;
     }
     let mut balance = Balance::default();
     for event in &events {
-        balance.update(event);
+        balance.apply(event);
     }
     Some(balance)
 }
@@ -383,7 +382,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     let store = PostgresCheckpointStore::new(db.pool.clone());
     assert_eq!(
         store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-        RebuildRequest::Accepted
+        RebuildReply::Accepted
     );
     commit_all(&db.pool, &wakeup, &keys, 4).await;
     let status = tokio::time::timeout(Duration::from_secs(30), async {

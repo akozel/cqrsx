@@ -124,7 +124,7 @@ mod tests {
                 assert_eq!(claimed.attempt().number(), 2);
                 assert_eq!(claimed.attempt().payload(), &json!({"value": 1}));
                 assert_eq!(claimed.lease().deadline(), deadline);
-                assert_eq!(claimed.lease().lock_token(), lock_token);
+                assert_eq!(claimed.lease().token(), lock_token);
             } else {
                 assert!(matches!(result, Err(TaskProcessingError::InvalidDelivery)));
             }

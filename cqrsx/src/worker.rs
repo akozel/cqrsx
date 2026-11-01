@@ -13,7 +13,7 @@ pub mod runtime;
 pub(crate) mod test_support;
 
 use crate::{
-    command::CommandGatewayError,
+    command::CommandError,
     domain::rejection::Rejection,
     task::Task,
     worker::{context::TaskContext, dependencies::DependencyId},
@@ -47,8 +47,8 @@ use std::{fmt, future::Future};
 /// #[derive(Serialize, Deserialize)]
 /// struct Payload {}
 /// impl Task for Payload {
-///     const TASK_TYPE: &'static str = "non_send_example";
-///     const TASK_VERSION: i32 = 1;
+///     const TYPE: &'static str = "non_send_example";
+///     const VERSION: i32 = 1;
 /// }
 /// struct Handler;
 /// impl TaskHandler<Payload> for Handler {
@@ -221,13 +221,13 @@ impl fmt::Display for TaskResult {
 /// task's result: accepted is done; a conflict and an unavailable store are retried, with the reasons `conflict` and
 /// `unavailable`; a rejection fails the task with the rejection's code. A handler matches the rejections that mean
 /// "already done" or "too early" first and converts the rest.
-impl<T, E: Rejection> From<Result<T, CommandGatewayError<E>>> for TaskResult {
-    fn from(answer: Result<T, CommandGatewayError<E>>) -> Self {
+impl<T, E: Rejection> From<Result<T, CommandError<E>>> for TaskResult {
+    fn from(answer: Result<T, CommandError<E>>) -> Self {
         match answer {
             Ok(_) => Self::Done,
-            Err(CommandGatewayError::Domain(rejection)) => Self::fail(rejection.code()),
-            Err(CommandGatewayError::Conflict) => Self::retry("conflict"),
-            Err(CommandGatewayError::Unavailable) => Self::retry("unavailable"),
+            Err(CommandError::Rejected(rejection)) => Self::fail(rejection.code()),
+            Err(CommandError::Conflict) => Self::retry("conflict"),
+            Err(CommandError::Unavailable) => Self::retry("unavailable"),
         }
     }
 }
@@ -245,7 +245,7 @@ mod tests {
             "sold_out"
         }
 
-        fn params(&self) -> Value {
+        fn parameters(&self) -> Value {
             json!({})
         }
     }
@@ -273,11 +273,11 @@ mod tests {
 
     #[test]
     fn the_answer_of_a_command_becomes_done_a_retry_with_the_old_reasons_or_a_failure_with_its_code() {
-        let answers: [Result<u8, CommandGatewayError<SoldOut>>; 4] = [
+        let answers: [Result<u8, CommandError<SoldOut>>; 4] = [
             Ok(7),
-            Err(CommandGatewayError::Domain(SoldOut)),
-            Err(CommandGatewayError::Conflict),
-            Err(CommandGatewayError::Unavailable),
+            Err(CommandError::Rejected(SoldOut)),
+            Err(CommandError::Conflict),
+            Err(CommandError::Unavailable),
         ];
         assert_eq!(
             answers.map(TaskResult::from),

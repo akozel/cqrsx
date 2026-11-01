@@ -3,7 +3,7 @@
 use crate::support::{Ledger, NAME, Node, Recording, caught_up, commit_all, until};
 use cqrsx::{
     command::{executor::StoreCommandExecutor, locks::LockLimits},
-    journal::{feed::Position, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
+    journal::{feed::Position, repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
 };
 use cqrsx_fixtures::{mongo::Mongo, postgres::Postgres};
 use cqrsx_mongodb::checkpoint_store::PROJECTION_CHECKPOINTS_COLLECTION;
@@ -22,7 +22,7 @@ async fn commit(pool: &PgPool, wakeup: &CommitWakeup, keys: &[&str], per_key: i3
     let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
     let executor = Arc::new(
         StoreCommandExecutor::new(
-            PersistedEventStore::<_, Ledger>::new(repository),
+            JournalEventStore::<_, Ledger>::new(repository),
             (),
             Default::default(),
             LockLimits::default(),

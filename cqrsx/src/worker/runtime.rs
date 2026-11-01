@@ -134,7 +134,13 @@ mod tests {
     fn config(c: usize) -> TaskRuntimeConfig {
         TaskRuntimeConfig::try_new(
             TaskStorageConfig::default(),
-            TaskWorkerPoolConfig::try_new(c, c, Duration::from_secs(1), Duration::from_secs(15), Duration::from_secs(60))
+            TaskWorkerPoolConfig::builder()
+                .concurrency(c)
+                .buffer_capacity(c)
+                .poll_interval(Duration::from_secs(1))
+                .handler_timeout(Duration::from_secs(15))
+                .lease(Duration::from_secs(60))
+                .build()
                 .unwrap(),
         )
         .unwrap()

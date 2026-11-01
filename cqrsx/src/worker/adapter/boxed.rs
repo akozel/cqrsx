@@ -103,8 +103,8 @@ mod tests {
         name: String,
     }
     impl Task for Greeting {
-        const TASK_TYPE: &'static str = "greeting";
-        const TASK_VERSION: i32 = 1;
+        const TYPE: &'static str = "greeting";
+        const VERSION: i32 = 1;
     }
 
     #[derive(Serialize, Deserialize)]
@@ -112,8 +112,8 @@ mod tests {
         amount: u32,
     }
     impl Task for Invoice {
-        const TASK_TYPE: &'static str = "invoice";
-        const TASK_VERSION: i32 = 2;
+        const TYPE: &'static str = "invoice";
+        const VERSION: i32 = 2;
     }
 
     type Calls = Arc<Mutex<Vec<String>>>;

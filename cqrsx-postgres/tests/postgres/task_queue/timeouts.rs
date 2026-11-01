@@ -165,7 +165,7 @@ async fn delayed_batch_keeps_the_original_task_deadline_and_skips_expired_execut
     );
     make_ready(&db.pool, task.id()).await;
     let fresh = claim(&queue.inner).await.pop().unwrap();
-    assert_ne!(old.lease().lock_token(), fresh.lease().lock_token());
+    assert_ne!(old.lease().token(), fresh.lease().token());
     assert!(
         !queue
             .inner
@@ -205,10 +205,7 @@ async fn insufficient_remaining_lease_returns_task_to_retry_without_performing_i
     // ownership remains live, so the original attempt can safely request retry.
     old = LeasedTask::new(
         old.attempt().clone(),
-        TaskLease::new(
-            old.lease().lock_token(),
-            tokio::time::Instant::now() + Duration::from_secs(10),
-        ),
+        TaskLease::new(old.lease().token(), tokio::time::Instant::now() + Duration::from_secs(10)),
     );
     let calls = Arc::new(AtomicUsize::new(0));
     assert!(
@@ -239,7 +236,7 @@ async fn insufficient_remaining_lease_returns_task_to_retry_without_performing_i
         .unwrap();
     assert_eq!(fresh.attempt().task_id(), old.attempt().task_id());
     assert_eq!(fresh.attempt().payload(), old.attempt().payload());
-    assert_ne!(fresh.lease().lock_token(), old.lease().lock_token());
+    assert_ne!(fresh.lease().token(), old.lease().token());
     assert!(
         executor
             .execute_and_settle(&dispatcher(CountingAdapter(calls.clone())), fresh, Duration::from_secs(30))
@@ -437,14 +434,14 @@ async fn shutdown_after_committed_claim_or_settlement_preserves_durable_outcomes
             queue.clone(),
             executor.clone(),
             dispatcher(CountingAdapter(calls.clone())),
-            TaskWorkerPoolConfig::try_new(
-                1,
-                1,
-                Duration::from_secs(3600),
-                Duration::from_secs(1),
-                Duration::from_secs(120),
-            )
-            .unwrap(),
+            TaskWorkerPoolConfig::builder()
+                .concurrency(1)
+                .buffer_capacity(1)
+                .poll_interval(Duration::from_secs(3600))
+                .handler_timeout(Duration::from_secs(1))
+                .lease(Duration::from_secs(120))
+                .build()
+                .unwrap(),
             shutdown.clone(),
         ));
         let expected = if stage == "claim" { "processing" } else { "completed" };

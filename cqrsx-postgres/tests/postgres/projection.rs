@@ -5,7 +5,7 @@ use super::support::repository::*;
 use cqrsx::domain::event::EventEnvelope;
 use cqrsx::view::View;
 use cqrsx::view::repository::StoredView;
-use cqrsx::view::repository::ViewContext;
+use cqrsx::view::repository::ViewMeta;
 use cqrsx::view::repository::ViewRepository;
 use cqrsx_postgres::view_repository::PostgresViewRepository;
 use serde::{Deserialize, Serialize};
@@ -17,7 +17,7 @@ struct Unprovisioned;
 
 impl View<TestAggregate> for Unprovisioned {
     const NAME: &'static str = "missing";
-    fn update(&mut self, _: &EventEnvelope<TestAggregate>) {}
+    fn apply(&mut self, _: &EventEnvelope<TestAggregate>) {}
 }
 
 /// A view whose table holds `version` as `integer` and `payload` as `text`: other types than the repository reads.
@@ -26,7 +26,7 @@ struct Mistyped;
 
 impl View<TestAggregate> for Mistyped {
     const NAME: &'static str = "mistyped_view";
-    fn update(&mut self, _: &EventEnvelope<TestAggregate>) {}
+    fn apply(&mut self, _: &EventEnvelope<TestAggregate>) {}
 }
 
 async fn create_view(pool: &sqlx::PgPool) {
@@ -58,15 +58,15 @@ async fn test_valid_view_repository() {
             id: "just a test event for this view".to_string(),
         })],
     };
-    repo.update_view(view.clone(), ViewContext::new(test_view_id.to_string(), 0, 1))
+    repo.update_view(view.clone(), ViewMeta::new(test_view_id.to_string(), 0, 1))
         .await
         .unwrap();
-    let stored = repo.load_with_context(&test_view_id).await.unwrap().unwrap();
+    let stored = repo.load_stored(&test_view_id).await.unwrap().unwrap();
     assert_eq!(
         stored,
         StoredView {
             id: test_view_id.to_string(),
-            version: 1,
+            revision: 1,
             last_sequence: 1,
             view: view.clone(),
         }
@@ -79,15 +79,15 @@ async fn test_valid_view_repository() {
             id: "a totally different view".to_string(),
         })],
     };
-    repo.update_view(updated_view.clone(), ViewContext::new(stored.id, stored.version, 2))
+    repo.update_view(updated_view.clone(), ViewMeta::new(stored.id, stored.revision, 2))
         .await
         .unwrap();
-    let stored = repo.load_with_context(&test_view_id).await.unwrap().unwrap();
+    let stored = repo.load_stored(&test_view_id).await.unwrap().unwrap();
     assert_eq!(
         stored,
         StoredView {
             id: test_view_id.to_string(),
-            version: 2,
+            revision: 2,
             last_sequence: 2,
             view: updated_view,
         }
@@ -109,7 +109,7 @@ async fn stress_optimistic_view_create_and_update_has_one_winner() {
                 let id = format!("view-{version}-{writers}-{round}");
                 let repo = PostgresViewRepository::<TestView, TestAggregate>::new(db.pool.clone());
                 if version == 1 {
-                    repo.update_view(TestView::default(), ViewContext::new(id.clone(), 0, 0))
+                    repo.update_view(TestView::default(), ViewMeta::new(id.clone(), 0, 0))
                         .await
                         .unwrap();
                 }
@@ -129,7 +129,7 @@ async fn stress_optimistic_view_create_and_update_has_one_winner() {
                             })],
                         };
                         let result = PostgresViewRepository::<TestView, TestAggregate>::new(pool)
-                            .update_view(view.clone(), ViewContext::new(id, version, 1))
+                            .update_view(view.clone(), ViewMeta::new(id, version, 1))
                             .await;
                         (view, result)
                     });
@@ -151,15 +151,15 @@ async fn stress_optimistic_view_create_and_update_has_one_winner() {
                 for (view, result) in finish_writers(&mut tasks).await {
                     match result {
                         Ok(()) => winners.push(view),
-                        Err(PersistenceError::OptimisticLockError) => conflicts += 1,
+                        Err(PersistenceError::Conflict) => conflicts += 1,
                         other => panic!("unexpected view result: {other:?}"),
                     }
                 }
                 assert_eq!(winners.len(), 1, "{id}");
                 assert_eq!(conflicts, writers - 1);
-                let stored = repo.load_with_context(&id).await.unwrap().unwrap();
+                let stored = repo.load_stored(&id).await.unwrap().unwrap();
                 assert_eq!(stored.view, winners[0]);
-                assert_eq!((stored.version, stored.last_sequence), (version + 1, 1));
+                assert_eq!((stored.revision, stored.last_sequence), (version + 1, 1));
                 assert_eq!(stored.id, id);
             }
         }
@@ -174,7 +174,7 @@ async fn stress_two_writers_of_one_document_converge() {
     use super::support::repository::{finish_writers, wait_for_writers};
     use cqrsx::{
         domain::event::EventEnvelope,
-        journal::{repository::PersistedEventRepository, serialized_event::SerializedEvent},
+        journal::{repository::EventRepository, serialized_event::SerializedEvent},
         projection::EventHandler,
         view::projection::ViewProjection,
     };
@@ -241,7 +241,7 @@ async fn stress_two_writers_of_one_document_converge() {
                 for result in finish_writers(&mut tasks).await {
                     result.unwrap();
                 }
-                let stored = repository.load_with_context(&id).await.unwrap().unwrap();
+                let stored = repository.load_stored(&id).await.unwrap().unwrap();
                 let expected: Vec<_> = source.iter().map(|e| e.payload.clone()).collect();
                 assert_eq!(
                     stored.view.events, expected,
@@ -250,9 +250,9 @@ async fn stress_two_writers_of_one_document_converge() {
                 assert_eq!(stored.last_sequence, total, "{id}");
                 let versions = (initial as i64 + 1)..=((initial + writers) as i64);
                 assert!(
-                    versions.contains(&stored.version),
+                    versions.contains(&stored.revision),
                     "{id}: version {} outside {versions:?}",
-                    stored.version
+                    stored.revision
                 );
                 assert_eq!(
                     PostgresEventRepository::new(db.pool.clone())
@@ -275,43 +275,37 @@ async fn missing_and_corrupt_views_and_sql_failures_are_explicit() {
     create_view(&db.pool).await;
     let repo = PostgresViewRepository::<TestView, TestAggregate>::new(db.pool.clone());
     assert_eq!(repo.load("missing").await.unwrap(), None);
-    assert!(repo.load_with_context("missing").await.unwrap().is_none());
+    assert!(repo.load_stored("missing").await.unwrap().is_none());
     sqlx::query("INSERT INTO test_view VALUES ('broken', 1, 0, '{}')")
         .execute(&db.pool)
         .await
         .unwrap();
+    assert!(matches!(repo.load("broken").await, Err(PersistenceError::Deserialization(_))));
     assert!(matches!(
-        repo.load("broken").await,
-        Err(PersistenceError::DeserializationError(_))
-    ));
-    assert!(matches!(
-        repo.load_with_context("broken").await,
-        Err(PersistenceError::DeserializationError(_))
+        repo.load_stored("broken").await,
+        Err(PersistenceError::Deserialization(_))
     ));
     let missing = PostgresViewRepository::<Unprovisioned, TestAggregate>::new(db.pool.clone());
-    assert!(matches!(missing.load("a").await, Err(PersistenceError::UnknownError(_))));
+    assert!(matches!(missing.load("a").await, Err(PersistenceError::Unexpected(_))));
+    assert!(matches!(missing.load_stored("a").await, Err(PersistenceError::Unexpected(_))));
     assert!(matches!(
-        missing.load_with_context("a").await,
-        Err(PersistenceError::UnknownError(_))
-    ));
-    assert!(matches!(
-        missing.update_view(Unprovisioned, ViewContext::new("a".into(), 0, 0)).await,
-        Err(PersistenceError::UnknownError(_))
+        missing.update_view(Unprovisioned, ViewMeta::new("a".into(), 0, 0)).await,
+        Err(PersistenceError::Unexpected(_))
     ));
     #[cfg(target_pointer_width = "64")]
     {
         // A `last_sequence` beyond `bigint` is refused before the statement.
         assert!(matches!(
-            repo.update_view(TestView::default(), ViewContext::new("too-far".into(), 0, usize::MAX))
+            repo.update_view(TestView::default(), ViewMeta::new("too-far".into(), 0, usize::MAX))
                 .await,
-            Err(PersistenceError::UnknownError(_))
+            Err(PersistenceError::Unexpected(_))
         ));
         assert!(repo.load("too-far").await.unwrap().is_none());
     }
     db.close().await;
 }
 
-/// A table whose columns have other types than the repository reads fails every read with a `DeserializationError`,
+/// A table whose columns have other types than the repository reads fails every read with a `Deserialization` error,
 /// as a payload that is no view does, instead of panicking in the handler of the projection or in a query.
 #[tokio::test]
 async fn columns_of_other_types_are_deserialization_errors_not_panics() {
@@ -325,15 +319,15 @@ async fn columns_of_other_types_are_deserialization_errors_not_panics() {
     .await
     .unwrap();
     let repo = PostgresViewRepository::<Mistyped, TestAggregate>::new(db.pool.clone());
-    assert!(matches!(repo.load("a").await, Err(PersistenceError::DeserializationError(_))));
+    assert!(matches!(repo.load("a").await, Err(PersistenceError::Deserialization(_))));
     assert!(matches!(
-        repo.load_with_context("a").await,
-        Err(PersistenceError::DeserializationError(_))
+        repo.load_stored("a").await,
+        Err(PersistenceError::Deserialization(_))
     ));
-    assert!(matches!(repo.list().await, Err(PersistenceError::DeserializationError(_))));
+    assert!(matches!(repo.list().await, Err(PersistenceError::Deserialization(_))));
     assert!(matches!(
         repo.range("a", "b").await,
-        Err(PersistenceError::DeserializationError(_))
+        Err(PersistenceError::Deserialization(_))
     ));
     db.close().await;
 }
@@ -348,42 +342,39 @@ async fn unrelated_view_uniqueness_is_technical_and_stale_versions_are_conflicts
         .await
         .unwrap();
     let repo = PostgresViewRepository::<TestView, TestAggregate>::new(db.pool.clone());
-    repo.update_view(TestView::default(), ViewContext::new("one".into(), 0, 1))
+    repo.update_view(TestView::default(), ViewMeta::new("one".into(), 0, 1))
         .await
         .unwrap();
     assert!(matches!(
-        repo.update_view(TestView::default(), ViewContext::new("two".into(), 0, 1))
-            .await,
-        Err(PersistenceError::UnknownError(_))
+        repo.update_view(TestView::default(), ViewMeta::new("two".into(), 0, 1)).await,
+        Err(PersistenceError::Unexpected(_))
     ));
     assert!(matches!(
-        repo.update_view(TestView::default(), ViewContext::new("one".into(), 0, 1))
-            .await,
-        Err(PersistenceError::OptimisticLockError)
+        repo.update_view(TestView::default(), ViewMeta::new("one".into(), 0, 1)).await,
+        Err(PersistenceError::Conflict)
     ));
     let other = TestView {
         events: vec![TestEvent::Created(Created { id: "other".into() })],
     };
-    repo.update_view(other.clone(), ViewContext::new("two".into(), 0, 1))
+    repo.update_view(other.clone(), ViewMeta::new("two".into(), 0, 1))
         .await
         .unwrap();
     assert!(matches!(
-        repo.update_view(TestView::default(), ViewContext::new("two".into(), 1, 1))
-            .await,
-        Err(PersistenceError::UnknownError(_))
+        repo.update_view(TestView::default(), ViewMeta::new("two".into(), 1, 1)).await,
+        Err(PersistenceError::Unexpected(_))
     ));
     assert!(matches!(
-        repo.update_view(other.clone(), ViewContext::new("two".into(), 9, 1)).await,
-        Err(PersistenceError::OptimisticLockError)
+        repo.update_view(other.clone(), ViewMeta::new("two".into(), 9, 1)).await,
+        Err(PersistenceError::Conflict)
     ));
     assert!(matches!(
-        repo.update_view(other.clone(), ViewContext::new("two".into(), i64::MAX, 1))
+        repo.update_view(other.clone(), ViewMeta::new("two".into(), i64::MAX, 1))
             .await,
-        Err(PersistenceError::UnknownError(_))
+        Err(PersistenceError::Unexpected(_))
     ));
-    let stored = repo.load_with_context("two").await.unwrap().unwrap();
+    let stored = repo.load_stored("two").await.unwrap().unwrap();
     assert_eq!(stored.view, other);
-    assert_eq!(stored.version, 1);
+    assert_eq!(stored.revision, 1);
     db.close().await;
 }
 
@@ -418,7 +409,7 @@ async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
             .collect(),
     };
     for (n, id) in IDS.iter().rev().enumerate() {
-        repo.update_view(view(n), ViewContext::new((*id).to_owned(), 0, n))
+        repo.update_view(view(n), ViewMeta::new((*id).to_owned(), 0, n))
             .await
             .unwrap();
     }
@@ -442,7 +433,7 @@ async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
         repo.range("fox;", "fox_").await.unwrap(),
         [StoredView {
             id: "fox;".into(),
-            version: 1,
+            revision: 1,
             last_sequence: 3,
             view: view(3),
         }]
@@ -452,18 +443,15 @@ async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
         .execute(&db.pool)
         .await
         .unwrap();
-    assert!(matches!(repo.list().await, Err(PersistenceError::DeserializationError(_))));
+    assert!(matches!(repo.list().await, Err(PersistenceError::Deserialization(_))));
     assert!(matches!(
         repo.range("zz", "zz~").await,
-        Err(PersistenceError::DeserializationError(_))
+        Err(PersistenceError::Deserialization(_))
     ));
     assert_eq!(ids(repo.range("F", "zz").await.unwrap()), IDS);
     let missing = PostgresViewRepository::<Unprovisioned, TestAggregate>::new(db.pool.clone());
-    assert!(matches!(missing.list().await, Err(PersistenceError::UnknownError(_))));
-    assert!(matches!(
-        missing.range("a", "b").await,
-        Err(PersistenceError::UnknownError(_))
-    ));
+    assert!(matches!(missing.list().await, Err(PersistenceError::Unexpected(_))));
+    assert!(matches!(missing.range("a", "b").await, Err(PersistenceError::Unexpected(_))));
     db.close().await;
 }
 

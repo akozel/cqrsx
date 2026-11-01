@@ -28,7 +28,7 @@ use crate::{
 use chrono::NaiveDate;
 use cqrsx::{
     command::{
-        CommandGatewayError,
+        CommandError,
         locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits},
         retry::AggregateConflictRetryPolicy,
     },
@@ -36,7 +36,7 @@ use cqrsx::{
     task::{
         attempt::TaskAttempt,
         format::TaskFormat,
-        policy::{Retry, TaskPolicy},
+        policy::{RetryPause, TaskPolicy},
     },
     worker::TaskResult,
 };
@@ -83,7 +83,10 @@ fn the_engine_settings_are_the_configuration_and_the_library_constants() {
         (
             10,
             library,
-            ProcessorConfig::default().with_settle(Duration::from_millis(10)).unwrap()
+            ProcessorConfig::builder()
+                .wake_delay(Duration::from_millis(10))
+                .build()
+                .unwrap()
         )
     );
     assert_eq!(
@@ -113,7 +116,7 @@ async fn from_lookup_trims_encore_variables_and_passes_outbox_variables_as_they_
     assert_eq!(config.mail.base_url, "http://mail:8025", "without the trailing slash");
     assert_eq!(config.settings.task_runtime().worker_pool().concurrency(), 4);
     assert_eq!(
-        config.settings.task_runtime().worker_pool().lease_duration(),
+        config.settings.task_runtime().worker_pool().lease(),
         Duration::from_secs(30),
         "an absent OUTBOX_* variable takes the demo's default"
     );
@@ -136,7 +139,7 @@ fn outbox_defaults_satisfy_the_lease_budget() {
     let settings = Settings::from_lookup("ENCORE", |_| None, &DEMO_DEFAULTS).expect("demo OUTBOX_* defaults must validate");
     let runtime = settings.task_runtime();
     assert_eq!(runtime.worker_pool().concurrency(), 2);
-    assert_eq!(runtime.worker_pool().lease_duration(), Duration::from_secs(30));
+    assert_eq!(runtime.worker_pool().lease(), Duration::from_secs(30));
     assert_eq!(runtime.worker_pool().handler_timeout(), Duration::from_secs(5));
 }
 
@@ -158,13 +161,13 @@ async fn the_modules_default_to_the_values_of_the_configuration() {
         "encore_issue_refund",
     ]
     .map(|name| TaskFormat::try_new(name, 1).unwrap());
-    let step = TaskPolicy::new(Retry::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap());
+    let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap());
     let mail = TaskPolicy::new(
-        Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+        RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
         NonZeroU16::new(6).unwrap(),
     );
     assert_eq!(
-        formats.clone().map(|format| defaults.policies().of(&format).cloned()),
+        formats.clone().map(|format| defaults.policies().policy_for(&format).cloned()),
         [Some(step), Some(step), Some(mail), Some(mail)]
     );
     assert_eq!(
@@ -199,7 +202,7 @@ async fn the_engine_runs_every_aggregate_and_view_the_modules_register() {
         city: "Tbilisi".into(),
         date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
     };
-    let ui = cqrs.from("ui");
+    let ui = cqrs.source("ui");
     ui.execute::<Concert>(&concert_id, ConcertCommand::AnnounceConcert(announce))
         .await
         .unwrap();
@@ -217,10 +220,10 @@ async fn the_engine_runs_every_aggregate_and_view_the_modules_register() {
         .unwrap();
     let without_fan = Cqrs::in_memory().module(concert::module).build().await.unwrap();
     let refused = without_fan
-        .from("ui")
+        .source("ui")
         .execute::<Fan>(&ledger, FanCommand::RecordTicket(record))
         .await;
-    assert!(matches!(refused, Err(CommandGatewayError::Unavailable)), "{refused:?}");
+    assert!(matches!(refused, Err(CommandError::Unavailable)), "{refused:?}");
 }
 
 /// The e-mails of the process report their attempts to the hub of the activity log the HTTP API streams.

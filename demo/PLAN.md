@@ -225,7 +225,7 @@ pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, st
   `recorded_at` (RFC 3339 фиксированной ширины: `to_rfc3339_opts(SecondsFormat::Micros, true)`), `source`.
   Для UI-команд `correlation_id = command_id`, `causation_id = command_id`, `source = "ui"`. Для внутренних
   команд `correlation_id` наследуется из метаданных задачи, `causation_id = task_id`, `source = "task:<формат>"`.
-  Метаданные создаёт движок: `cqrs.from("ui")` для входа и `TaskContext` для внутренних команд.
+  Метаданные создаёт движок: `cqrs.source("ui")` для входа и `TaskContext` для внутренних команд.
   Ключи и правило наследования задаёт `cqrsx::cqrs::command::causation::Causation` (`root`, `from_task`,
   `event_metadata`, `stamp_task`); `recorded_at` добавляет `CommandMetadata` в cqrsx.
 
@@ -297,7 +297,7 @@ pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, st
 (`CommitWakeup`) и читает новые события страницами — ничто не теряется при сбое, повтор вместо потери. Ответ
 команды — «принято» сразу после коммита (D-17); витрина догоняет мгновением позже. Обе — обычные `ViewProjection` (D-06): `concert_halls` над потоком
 `Concert` (`view_id = concert_id`), `fan_wallets` над потоком `Fan` (`view_id = <fan_id>:<concert_id>`, D-14). Собственный обработчик с
-группировкой по `fan_id` не нужен: `ViewProjection` передаёт в `View::update` события одного агрегата, а
+группировкой по `fan_id` не нужен: `ViewProjection` передаёт в `View::apply` события одного агрегата, а
 `view_id` всегда равен `aggregate_id`. В UI кошелёк отстаёт от зала на один шаг цепочки — это показывается, а не
 прячется.
 
@@ -328,8 +328,8 @@ pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, st
 ```
 
 - `sold_out = (sold == capacity)` — производное поле (событие `ConcertSoldOut` снято, D-03).
-- `version` — версия документа для оптимистической блокировки самого view (`ViewContext`); не путать с `sequence`.
-- `last_sequence` конверта — последнее применённое событие агрегата (`ViewContext::last_sequence`, эпик 03/01):
+- `version` — версия документа для оптимистической блокировки самого view (`ViewMeta`); не путать с `sequence`.
+- `last_sequence` конверта — последнее применённое событие агрегата (`ViewMeta::last_sequence`, эпик 03/01):
   документ принимает только следующее, повтор пропускает, дыру отвергает; документ без истории не создаётся
   (D-15). `last_sequence` внутри `view` — бегущий максимум витрины для UI.
 - `changed_at` берётся из метаданных события (`recorded_at`), а не из `now()`: пересборка даёт тот же документ.
@@ -400,7 +400,7 @@ outbox-обработчиками; wipe и replay его **не трогают**
 ### 2.10 Машина времени
 
 `GET /api/concerts/{id}/state-at/{sequence}`: back-end читает поток событий одного концерта
-(`PersistedEventStore::<PostgresEventRepository, Concert>::new_event_store(repo).load_events(id)` →
+(`JournalEventStore::<PostgresEventRepository, Concert>::new(repo).load_events(id)` →
 `Vec<EventEnvelope<Concert>>`; снапшоты **не** используются), применяет `Concert::apply` к пустому агрегату до
 нужного `sequence` и возвращает состояние агрегата и само событие. В UI — ползунок ⏳ под схемой зала: двигаем — зал перерисовывается
 «в прошлом» (сепия, баннер «Это состояние нигде не хранится — оно вычислено из событий 1…7»).
@@ -417,7 +417,7 @@ UI обращается к HTTP-маршрутам `concert`, `fan` и `operatio
 
 ### 3.2 Поток команды `BookSeat`
 
-Маршрут передаёт команду через `cqrs.from("ui")`; движок загружает `Concert`, вызывает `Decide`, затем его
+Маршрут передаёт команду через `cqrs.source("ui")`; движок загружает `Concert`, вызывает `Decide`, затем его
 `Reactions` и атомарно пишет `SeatBooked` с `encore_record_ticket`. Воркер выполняет задачу, командует `Fan`
 через `TaskContext` и записывает `TicketRecorded` с `encore_send_e_ticket`. Процессоры асинхронно обновляют
 зал и кошелёк; письмо отправляется отдельным обработчиком. Отмена зеркальна: `BookingCancelled` →
@@ -652,7 +652,7 @@ full:     ; $(COMPOSE) --profile app up -d --build      # [P1]
 
 ### 6.3 Сборка компонентов (`main.rs`)
 
-`Cqrs::from_env("ENCORE").defaults(DEMO_DEFAULTS).event_store(Postgres).projections(MongoDb)` подключает
+`Cqrs::from_env("ENCORE").defaults(DEMO_DEFAULTS).event_store(Postgres).projections(Mongo)` подключает
 три корня модулей и вызывает `serve().await`. Движок строит пулы, исполнители, проекции, общий диспетчер,
 HTTP и управляет остановкой. Полный актуальный код — `back-end/src/main.rs`.
 
@@ -770,7 +770,7 @@ Activity хранится только в памяти — это лог, а н�
 | Исход `cqrsx` | HTTP | `outcome` | Activity |
 |---|---|---|---|
 | успех | 200 | `accepted` | `command.accepted` |
-| `CommandGatewayError`: domain (`ConcertError`) | 422 | `rejected` | `command.rejected` |
+| `CommandError`: domain (`ConcertError`) | 422 | `rejected` | `command.rejected` |
 | conflict (после retry-политики) | 409 | `conflict` | `command.failed` |
 | unavailable | 503 | `unavailable` | `command.failed` |
 | битый JSON / неизвестный `type` (в том числе внутренние `RecordTicket`/`RecordCancellation` через HTTP) | 400 | `invalid` | — |
@@ -786,7 +786,7 @@ Activity хранится только в памяти — это лог, а н�
 - Документ: `{ _id: view_id, version: i64, last_sequence: i64, view: <V как BSON> }` (`last_sequence` —
   последнее применённое событие агрегата, поле обязательное: старых документов нет, базы пересоздаются).
 - `load(view_id)` → `find_one({ _id })` → десериализовать `view`.
-- `load_with_context(view_id)` → `(view, ViewContext { view_id, version, last_sequence })`.
+- `load_stored(view_id)` → `(view, ViewMeta { id, revision, last_sequence })`.
 - `update_view(view, ctx)`:
   - `ctx.version == 0` → `insert_one({ _id, version: 1, last_sequence, view })`; duplicate key (E11000) →
     **конфликт**;
@@ -815,7 +815,7 @@ Activity хранится только в памяти — это лог, а н�
   `ProjectionProcessor` с общим `MongoCheckpointStore`, журнал читают через отдельный пул
   `ENCORE_DATABASE_PROJECTION_POOL_SIZE`, `ENCORE_PROJECTION_*` → `ProcessorConfig`, `ENCORE_NODE_NAME` — имя владельца.
   Рантайм проекций — отдельная задача на общем токене остановки; её паника останавливает процесс с ошибкой.
-- Outbox-воркеры, цепочка `Fan` и почтовый inbox replay не затрагивает: replay вызывает только `View::update`,
+- Outbox-воркеры, цепочка `Fan` и почтовый inbox replay не затрагивает: replay вызывает только `View::apply`,
   команды не выполняются, задачи не создаются.
 
 ### 6.9 Тесты back-end
@@ -827,7 +827,7 @@ Activity хранится только в памяти — это лог, а н�
   `RecordTicket` отклоняется, повторный `RecordCancellation` отклоняется.
 - **Инвариант «одно событие на команду»** (D-02): это тип результата `Decide`, в тестах проверяется
   `then_expect_event` или отказ.
-- **Обработчики цепочки**: маппинг исходов `CommandGatewayError` → `TaskResult` по §2.7
+- **Обработчики цепочки**: маппинг исходов `CommandError` → `TaskResult` по §2.7
   (`UnknownTicket` → retry, `AlreadyRecorded` → done), с тестовым контекстом.
 - **Проекции**: свёртка упорядоченной последовательности, повторная доставка и разрыв обрабатываются движком;
   состояние отменённых записей и производные поля проверяются тестами.
@@ -1344,7 +1344,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
    отличие в `docs/API_MAPPING.md` §4.
 3. Нужной возможности в `cqrsx` нет — применить fallback из §13 / §15; библиотеку не «допиливать» сверх Фазы 0.5.
    Fallback невозможен — остановиться и описать блокер.
-4. В рантайме демо никаких моков и in-memory хранилищ (MemStore и фейки — только в тестах).
+4. В рантайме демо никаких моков и in-memory хранилищ (MemoryStore и фейки — только в тестах).
 5. Код, комментарии и коммиты — по-английски; тексты UI — через i18n (RU/EN).
 6. Простота важнее универсальности: без DI-фреймворков, UI-библиотек и «задела на будущее».
 7. Учётные данные — только dev, как в корневом compose; секретов не коммитить.
@@ -1407,7 +1407,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | **D-02** | **Ровно одно событие на принятую команду;** отклонённая не оставляет следа. Пустой успех не используется. Причина: `PostgresEventRepositoryWithOutbox` коммитит один `event` и его задачи (AM §1 КТ-1). | §1, §2.4, §6.9 | ☐ тест инварианта на обоих агрегатах (Фаза 2) ☐ в `handle` каждой команды ровно один `sink.write` на пути успеха |
 | **D-03** | **`ConcertSoldOut` снят.** `sold_out` — производное (`free_seats() == 0` в агрегате, `sold == capacity` в витрине). Межагрегатная цепочка уже демонстрирует «задача → команда», самокоманда `CloseSales` не нужна. | §2.4, §2.6, §2.8, §8.8, §9 | ☐ `ConcertEvent` без `ConcertSoldOut` ☐ конфетти только по витрине |
 | **D-04** | **Метаданные через библиотеку:** `CommandExecutor::execute_with_metadata` добавляется в `cqrsx` (Фаза 0.5). Демо держит два долгоживущих `CommandExecutorCore`, без декоратора `EventStore`. Следствие: `committed_sequence` и счётчик конфликтов в ответе команды отсутствуют (P2). | §2.4, §6.3 п.7, §6.4, §10 Фаза 0.5, §12.1 | ☐ коммит в `cqrsx` с тестами и зелёным CI-набором из `CLAUDE.md` ☐ `events.metadata` проверяется в приёмке Фазы 3 |
-| **D-05** | **Имена форматов задач** только `[A-Za-z0-9_]`: `encore_record_ticket`, `encore_send_e_ticket`, `encore_record_cancellation`, `encore_issue_refund`, все версии 1. Причина: `diagnostics::safe_type` печатает иные имена как `unknown`. | §2.7, §6.4 | ☐ `TASK_TYPE` констант ровно такие |
+| **D-05** | **Имена форматов задач** только `[A-Za-z0-9_]`: `encore_record_ticket`, `encore_send_e_ticket`, `encore_record_cancellation`, `encore_issue_refund`, все версии 1. Причина: `diagnostics::safe_type` печатает иные имена как `unknown`. | §2.7, §6.4 | ☐ `TYPE` констант ровно такие |
 | **D-06** | **Обе витрины — `ViewProjection`** (`view_id == aggregate_id`); `FanWalletsProjection` и `FanOutHandler` из версии 1.0 удалены. | §2.8, §4, §6.2, §6.3 п.6 | ☑ нет собственных `EventHandler`; витрины ведут процессоры (эпик 03) |
 | **D-07** | **Конфигурация runtime:** C=2, Q=2, poll 300 мс, H=5 с, L=30 с, S=3 с через ключи `OUTBOX_*` с демо-дефолтами (`from_lookup`); `RUST_LOG` — один уровень. | §2.7, §5.4, §6.3 | ☐ `Config::from_env` с проверкой `latency_max < H` ☐ `.env.example` |
 | **D-08** | **Backoff почтовых задач — через `retry_after`** (1, 2, 4, 8, 8 с); задачи цепочки без хаоса; `reason` = код причины (виден в `last_error`). | §2.7, §5.4, §8.5 | ☐ `ENCORE_TASK_RETRY_BASE_MS` / `_MAX_MS` ☐ `outboxStatus.ts` по колонке `status` |
@@ -1437,6 +1437,36 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 
 Тексты можно улучшать, но смысл и аналогии (кассовая книга, витрина, конверт в ящике исходящих, «на бис»)
 сохранять — на них держится понятность для неспециалиста.
+
+### A.0 Словарь демо и UI
+
+Одно понятие — одно слово на каждом языке интерфейса (`front-end/src/i18n/{ru,en}.ts`) и одно имя в коде. Правила
+имён библиотеки — `doc/components.md`, раздел «Naming and integration rules»; эта таблица — слова демо. Тексты
+приложения и i18n приводятся к ней при переименованиях демо (эпик 08, задача 05): до того в них ещё встречаются
+«закладка» и «bookmark» для снимка, «ledger» для журнала и «replay» для пересборки.
+
+| Понятие | ru UI | en UI | В коде |
+|---|---|---|---|
+| журнал событий | журнал | journal — не «ledger» | `events` |
+| снимок агрегата | снимок — не «снапшот», не «закладка» | snapshot — не «bookmark» | `snapshots` |
+| ревизия снимка или документа | ревизия — не «версия» | revision | `revision` |
+| закладка проекции | закладка | checkpoint | `projection_checkpoints` |
+| аренда закладки | аренда закладки | checkpoint lease | `projection.lease_changed`, `activity.lease.*` |
+| витрина | витрина | read model — не «projection» | `concert_halls`, `fan_wallets` |
+| проекция (код, процессор) | проекция | projection | `ProjectionProcessor` |
+| пересборка | пересборка, Encore! — не «replay» | rebuild, Encore! — не «replay» | `request_rebuild`, `rebuild_pace` |
+| стереть витрины | стереть витрины | wipe read models | sidecar |
+| сбросить демо | сбросить демо | reset the demo | sidecar |
+| лента записей ноды | лента — только SSE | activity | группа ключей `activity.*` (не `feed.*`) |
+| журнал фаната | журнал фаната | fan's ledger | `FanLedgerId` |
+| задача, исполнитель | задача, воркер | task, worker | `transactional_outbox` |
+| отказ команды | команда отклонена | rejected | `Rejection` |
+| конфликт записи | параллельное изменение | conflict | `Conflict` |
+| отставание | отстаёт событий | lag | `lag`, `lag_capped` |
+| состояния закладки | в строю, пересборка, запускается, без владельца, застряла | live, rebuilding, starting, unclaimed, stalled | `encore.states.*` |
+| лечение дыры | лечение дыры | healed | `RebuildReason::Healed` |
+| витрина обновлена | витрина обновлена | read model updated | `projection.applied` |
+| не витрина | НЕ витрина — внешний сервис | NOT a read model — external service | `inbox` |
 
 ### A.1 Баннер «Как читать этот экран»
 

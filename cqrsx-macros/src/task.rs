@@ -34,8 +34,8 @@ pub(crate) fn expand_task(input: &DeriveInput) -> syn::Result<TokenStream> {
     Ok(quote! {
         #[automatically_derived]
         impl #impl_generics ::cqrsx::task::Task for #ident #type_generics #where_clause {
-            const TASK_TYPE: &'static str = #name;
-            const TASK_VERSION: i32 = #number;
+            const TYPE: &'static str = #name;
+            const VERSION: i32 = #number;
             #labels
         }
     })
@@ -134,8 +134,8 @@ mod tests {
         let expected = quote! {
             #[automatically_derived]
             impl ::cqrsx::task::Task for RecordCancellation {
-                const TASK_TYPE: &'static str = "encore_record_cancellation";
-                const TASK_VERSION: i32 = 1;
+                const TYPE: &'static str = "encore_record_cancellation";
+                const VERSION: i32 = 1;
             }
         };
         assert_eq!(expanded.to_string(), expected.to_string());
@@ -147,8 +147,8 @@ mod tests {
         let expected = quote! {
             #[automatically_derived]
             impl<'a, T> ::cqrsx::task::Task for Greeting<'a, T> where T: Clone {
-                const TASK_TYPE: &'static str = "greeting";
-                const TASK_VERSION: i32 = 2000000000;
+                const TYPE: &'static str = "greeting";
+                const VERSION: i32 = 2000000000;
             }
         };
         assert_eq!(generic.to_string(), expected.to_string());
@@ -174,8 +174,8 @@ mod tests {
         let expected = quote! {
             #[automatically_derived]
             impl ::cqrsx::task::Task for IssueRefund {
-                const TASK_TYPE: &'static str = "issue_refund";
-                const TASK_VERSION: i32 = 1;
+                const TYPE: &'static str = "issue_refund";
+                const VERSION: i32 = 1;
                 const LABELS: &'static [&'static str] = &["tenant", "type"];
             }
         };

@@ -133,15 +133,15 @@ async fn keep<C: CheckpointStore>(store: Arc<C>, key: CheckpointKey, token: Leas
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::memory::checkpoint_store::MemCheckpointStore;
+    use crate::memory::checkpoint_store::MemoryCheckpointStore;
 
     const LEASE: Duration = Duration::from_secs(3);
 
-    async fn held(store: &MemCheckpointStore) -> chrono::DateTime<chrono::Utc> {
+    async fn held(store: &MemoryCheckpointStore) -> chrono::DateTime<chrono::Utc> {
         store.status(None).await.unwrap()[0].locked_until.expect("a held row")
     }
 
-    async fn claimed(store: &MemCheckpointStore, key: &CheckpointKey, owner: &str) -> (LeaseToken, Instant) {
+    async fn claimed(store: &MemoryCheckpointStore, key: &CheckpointKey, owner: &str) -> (LeaseToken, Instant) {
         let anchor = Instant::now();
         let claimed = store.claim(key, owner, LEASE).await.unwrap().expect("a free row");
         (claimed.token, anchor)
@@ -149,7 +149,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn the_keeper_extends_every_third_of_the_lease_and_stops_with_its_owner() {
-        let store = Arc::new(MemCheckpointStore::default());
+        let store = Arc::new(MemoryCheckpointStore::default());
         let key = CheckpointKey::new("halls", "Concert");
         store.register(&key).await.unwrap();
         let (token, anchor) = claimed(&store, &key, "a").await;
@@ -174,7 +174,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_refused_extension_loses_the_lease_at_once() {
-        let store = Arc::new(MemCheckpointStore::default());
+        let store = Arc::new(MemoryCheckpointStore::default());
         let key = CheckpointKey::new("halls", "Concert");
         store.register(&key).await.unwrap();
         let (token, anchor) = claimed(&store, &key, "a").await;
@@ -187,7 +187,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn an_unreachable_store_loses_the_lease_only_when_the_local_deadline_passes() {
-        let store = Arc::new(MemCheckpointStore::default());
+        let store = Arc::new(MemoryCheckpointStore::default());
         let key = CheckpointKey::new("halls", "Concert");
         store.register(&key).await.unwrap();
         let (token, anchor) = claimed(&store, &key, "a").await;

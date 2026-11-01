@@ -60,8 +60,8 @@ pub(super) struct DummyTaskV1 {
 }
 
 impl Task for DummyTaskV1 {
-    const TASK_TYPE: &'static str = "dummy_task";
-    const TASK_VERSION: i32 = 1;
+    const TYPE: &'static str = "dummy_task";
+    const VERSION: i32 = 1;
 }
 
 pub(super) fn event(id: &str, sequence: usize) -> SerializedEvent {
@@ -102,7 +102,7 @@ impl Aggregate for TestAggregate {
     type Id = String;
     type Command = ();
     type Event = TestEvent;
-    type Error = std::convert::Infallible;
+    type Rejection = std::convert::Infallible;
     type Rules = ();
 
     fn apply(&mut self, _: Self::Event) {}
@@ -265,9 +265,9 @@ pub(super) fn executor_with<A: cqrsx::domain::aggregate::Aggregate + 'static>(
     retry: cqrsx::command::retry::AggregateConflictRetryPolicy,
     rules: A::Rules,
 ) -> PostgresExecutor<A> {
-    let store = cqrsx::journal::persisted::PersistedEventStore::new(
-        cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox::new(pool.clone()),
-    )
+    let store = cqrsx::journal::store::JournalEventStore::new(cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox::new(
+        pool.clone(),
+    ))
     .with_snapshots(std::num::NonZeroUsize::new(snapshot_every).unwrap());
     cqrsx::command::executor::StoreCommandExecutor::new(store, rules, retry, cqrsx::command::locks::LockLimits::default())
 }
@@ -275,7 +275,7 @@ pub(super) fn executor_with<A: cqrsx::domain::aggregate::Aggregate + 'static>(
 /// The executor type of [`executor`].
 pub(super) type PostgresExecutor<A> = cqrsx::command::executor::StoreCommandExecutor<
     A,
-    cqrsx::journal::persisted::PersistedEventStore<cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox, A>,
+    cqrsx::journal::store::JournalEventStore<cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox, A>,
 >;
 
 /// The task runtime over the task queue on `pool`.

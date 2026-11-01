@@ -27,10 +27,10 @@ use cqrsx::{
     },
     domain::event::{EventEnvelope, Events},
     journal::{EventStore, PersistenceError, feed::Position},
-    memory::checkpoint_store::MemCheckpointStore,
+    memory::checkpoint_store::MemoryCheckpointStore,
     projection::{
         checkpoint::CheckpointStore,
-        processor::observer::{Applied, Failed, FailureCategory, LeaseEvent, ProjectionObserver, RebuildReason, Rebuilt},
+        processor::observer::{Applied, Failed, FailureCategory, LeaseChange, ProjectionObserver, RebuildReason, Rebuilt},
     },
     reactions::ReactionsPlanner,
     task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat, policy::redelivery_backoff},
@@ -58,7 +58,7 @@ use cqrsx_engine::{
 };
 use cqrsx_testing::{
     command_executor::TestCommandExecutor,
-    mem_store::{MemStore, MemStoreAggregateContext},
+    memory_store::{MemoryStore, MemoryStoreAggregateContext},
     unavailable_store::UnavailableStore,
 };
 use encore_backend::{
@@ -253,7 +253,7 @@ fn checkpoint_keys() -> Vec<CheckpointKey> {
 async fn effective_configuration() -> String {
     let config = Config::from_lookup(|_| None).unwrap();
     let cqrs = config.engine().build().await.unwrap();
-    render(cqrs.describe())
+    render(cqrs.description())
 }
 
 /// The keys of the settings read from a variable: the names of the variables.
@@ -383,7 +383,7 @@ fn mail_context(attempt: TaskAttempt, config: &Config, activity: &Arc<ActivityHu
 fn attempt<P: Task + Serialize>(payload: &P, number: i32) -> TaskAttempt {
     TaskAttempt::try_new(
         Uuid::now_v7(),
-        TaskFormat::try_new(P::TASK_TYPE, P::TASK_VERSION).unwrap(),
+        TaskFormat::try_new(P::TYPE, P::VERSION).unwrap(),
         serde_json::to_value(payload).unwrap(),
         json!({ "correlation_id": Uuid::now_v7() }),
         number,
@@ -461,7 +461,7 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
         (&book, Outcome::Conflict),
         (&announce, Outcome::Unavailable),
     ] {
-        commands.command(&CommandReport::<Concert> {
+        commands.observe(&CommandReport::<Concert> {
             aggregate_id: &concert_id,
             command,
             metadata: &metadata,
@@ -493,12 +493,12 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
             reason,
         });
     }
-    for event in [LeaseEvent::Acquired, LeaseEvent::Lost, LeaseEvent::Released] {
+    for event in [LeaseChange::Acquired, LeaseChange::Lost, LeaseChange::Released] {
         observer.lease(event);
     }
 
     // Encore! (`rebuild.*`): asked, played by the owners of both rows, watched to its end.
-    let store = MemCheckpointStore::default();
+    let store = MemoryCheckpointStore::default();
     for key in checkpoint_keys() {
         store.register(&key).await.unwrap();
     }
@@ -519,11 +519,11 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
         let owner = store.claim(&key, "node-a", Duration::from_secs(10)).await.unwrap().unwrap();
         assert!(
             store
-                .take_requests(&key, owner.token, 10)
+                .take_rebuild_requests(&key, owner.token, 10)
                 .await
                 .unwrap()
                 .unwrap()
-                .rebuild
+                .rebuild_pace
                 .is_some()
         );
         assert!(store.begin_rebuild(&key, owner.token).await.unwrap());
@@ -578,7 +578,7 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
 /// closed gate (holding the concert's lock).
 #[derive(Clone, Default)]
 struct Switched {
-    inner: MemStore<Concert>,
+    inner: MemoryStore<Concert>,
     conflict: Arc<AtomicBool>,
     unavailable: Arc<AtomicBool>,
     gate: Arc<Mutex<Option<Arc<Semaphore>>>>,
@@ -594,7 +594,7 @@ impl Switched {
 }
 
 impl EventStore<Concert> for Switched {
-    type Context = MemStoreAggregateContext<Concert>;
+    type Context = MemoryStoreAggregateContext<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await
@@ -602,7 +602,7 @@ impl EventStore<Concert> for Switched {
 
     async fn load_aggregate(&self, id: &str) -> Result<Self::Context, PersistenceError> {
         if self.unavailable.load(Ordering::SeqCst) {
-            return Err(PersistenceError::ConnectionError("unreachable".into()));
+            return Err(PersistenceError::Connection("unreachable".into()));
         }
         let gate = self.gate.lock().unwrap().clone();
         if let Some(gate) = gate {
@@ -619,7 +619,7 @@ impl EventStore<Concert> for Switched {
         tasks: &[NewTask],
     ) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         if self.conflict.load(Ordering::SeqCst) {
-            return Err(PersistenceError::OptimisticLockError);
+            return Err(PersistenceError::Conflict);
         }
         self.inner.commit(events, context, metadata, tasks).await
     }
@@ -645,7 +645,7 @@ impl Feed {
                 .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
                 .with_observer(observer.clone())
         });
-        let fans = TestCommandExecutor::configured(MemStore::default(), (), |executor| {
+        let fans = TestCommandExecutor::configured(MemoryStore::default(), (), |executor| {
             executor
                 .with_task_planner(ReactionsPlanner::<Fan>::new(policies))
                 .with_observer(observer)
@@ -1093,7 +1093,7 @@ impl TaskQueue for MemQueue {
             if claimed.len() < limit && task.attempt().format() == format {
                 claimed.push(LeasedTask::new(
                     task.attempt().clone(),
-                    TaskLease::new(task.lease().lock_token(), deadline),
+                    TaskLease::new(task.lease().token(), deadline),
                 ));
             } else {
                 rest.push_back(task);
@@ -1111,7 +1111,7 @@ impl TaskQueue for MemQueue {
                 task_id: task.attempt().task_id(),
                 format: task.attempt().format().clone(),
                 attempt_number: task.attempt().number(),
-                cause: TaskFailureCause::PermanentRejection,
+                cause: TaskFailureCause::HandlerFailure,
             }),
         };
         self.settled.lock().unwrap().push((task.attempt().task_id(), request));
@@ -1378,7 +1378,7 @@ async fn every_mail_attempt_is_logged_with_its_values_and_settled_with_the_pause
 #[tokio::test]
 async fn every_answer_of_the_ledger_settles_its_step_as_the_plan_table_says() {
     let config = Config::from_lookup(|_| None).unwrap();
-    let store = MemStore::<Fan>::default();
+    let store = MemoryStore::<Fan>::default();
     let fans = Arc::new(TestCommandExecutor::configured(store.clone(), (), |executor| {
         executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies(&config).unwrap()))
     }));

@@ -46,7 +46,7 @@ pub(crate) async fn open(settings: &Settings) -> Result<PostgresPools, BuildErro
             source,
         })?
         .application_name(&plan.application_name);
-    let main = plan.main.connect(connection.clone()).await.map_err(BuildError::Pool)?;
+    let main = plan.main.connect(connection.clone()).await.map_err(BuildError::MainPool)?;
     let projection = plan
         .projection
         .connect(connection.clone())
@@ -91,7 +91,7 @@ pub(crate) const VARIABLES: [&str; 5] = [
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostgresSettings {
     url: String,
-    pool_size: NonZeroU32,
+    main_pool_size: NonZeroU32,
     statement_timeout: StatementTimeout,
     history_pool_size: NonZeroU32,
     projection_pool_size: NonZeroU32,
@@ -101,7 +101,7 @@ impl Default for PostgresSettings {
     fn default() -> Self {
         Self {
             url: DEFAULT_DATABASE_URL.to_owned(),
-            pool_size: DEFAULT_MAX_CONNECTIONS,
+            main_pool_size: DEFAULT_MAX_CONNECTIONS,
             statement_timeout: StatementTimeout::Default,
             history_pool_size: DEFAULT_HISTORY_POOL_SIZE,
             projection_pool_size: DEFAULT_PROJECTION_POOL_SIZE,
@@ -113,7 +113,7 @@ impl PostgresSettings {
     /// The pools of the database `url`; a custom statement timeout is 1 ms to `i32::MAX` ms.
     pub fn try_new(
         url: impl Into<String>,
-        pool_size: NonZeroU32,
+        main_pool_size: NonZeroU32,
         statement_timeout: StatementTimeout,
         history_pool_size: NonZeroU32,
         projection_pool_size: NonZeroU32,
@@ -125,7 +125,7 @@ impl PostgresSettings {
         }
         Ok(Self {
             url: url.into(),
-            pool_size,
+            main_pool_size,
             statement_timeout,
             history_pool_size,
             projection_pool_size,
@@ -137,8 +137,8 @@ impl PostgresSettings {
     }
 
     /// Connections of the main pool.
-    pub fn pool_size(&self) -> NonZeroU32 {
-        self.pool_size
+    pub fn main_pool_size(&self) -> NonZeroU32 {
+        self.main_pool_size
     }
 
     /// The cap of every statement of the main and the projection pool.
@@ -159,7 +159,7 @@ impl PostgresSettings {
     /// longer than 30 s.
     pub fn pool_plan(&self, application_name: &str) -> PoolPlan {
         let ping = ConnectionPingPolicy::Idle(DEFAULT_IDLE_PING_AFTER);
-        let capped = |max_connections| PostgresPool {
+        let capped = |max_connections| PoolSpec {
             max_connections,
             min_connections: None,
             idle_timeout: None,
@@ -168,9 +168,9 @@ impl PostgresSettings {
         };
         PoolPlan {
             application_name: application_name.to_owned(),
-            main: capped(self.pool_size),
+            main: capped(self.main_pool_size),
             projection: capped(self.projection_pool_size),
-            history: PostgresPool {
+            history: PoolSpec {
                 max_connections: self.history_pool_size,
                 min_connections: Some(0),
                 idle_timeout: Some(HISTORY_IDLE_TIMEOUT),
@@ -181,13 +181,13 @@ impl PostgresSettings {
     }
 
     pub(crate) fn read(read: &VariableReader) -> Result<Self, SettingsError> {
-        let pool_size = read.value(DATABASE_POOL_SIZE, DEFAULT_MAX_CONNECTIONS)?;
+        let main_pool_size = read.value(DATABASE_POOL_SIZE, DEFAULT_MAX_CONNECTIONS)?;
         let history_pool_size = read.value(DATABASE_HISTORY_POOL_SIZE, DEFAULT_HISTORY_POOL_SIZE)?;
         let projection_pool_size = read.value(DATABASE_PROJECTION_POOL_SIZE, DEFAULT_PROJECTION_POOL_SIZE)?;
         let statement_timeout = checked_timeout(read, read.text(DATABASE_STATEMENT_TIMEOUT_MS))?;
         Ok(Self {
             url: read.text(DATABASE_URL).unwrap_or_else(|| DEFAULT_DATABASE_URL.to_owned()),
-            pool_size,
+            main_pool_size,
             statement_timeout,
             history_pool_size,
             projection_pool_size,
@@ -198,7 +198,7 @@ impl PostgresSettings {
     pub(crate) fn entries(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> Vec<(String, String)> {
         let mut entries = vec![
             (name(DATABASE_URL), self.url.clone()),
-            (name(DATABASE_POOL_SIZE), self.pool_size.to_string()),
+            (name(DATABASE_POOL_SIZE), self.main_pool_size.to_string()),
             (name(DATABASE_STATEMENT_TIMEOUT_MS), self.statement_timeout.to_string()),
             (name(DATABASE_HISTORY_POOL_SIZE), self.history_pool_size.to_string()),
             (name(DATABASE_PROJECTION_POOL_SIZE), self.projection_pool_size.to_string()),
@@ -222,7 +222,7 @@ fn checked_timeout(read: &VariableReader, value: Option<String>) -> Result<State
 
 /// How the engine connects one PostgreSQL pool: what it sets; everything else is SQLx's default.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PostgresPool {
+pub struct PoolSpec {
     pub max_connections: NonZeroU32,
     /// `None` keeps SQLx's minimum (none).
     pub min_connections: Option<u32>,
@@ -232,7 +232,7 @@ pub struct PostgresPool {
     pub statement_timeout: StatementTimeout,
 }
 
-impl PostgresPool {
+impl PoolSpec {
     /// SQLx's pool options with what this plan sets on top of its defaults.
     pub fn options(&self) -> PgPoolOptions {
         let mut options = PgPoolOptions::new().max_connections(self.max_connections.get());
@@ -279,21 +279,21 @@ pub struct PoolPlan {
     /// PostgreSQL's `application_name` of every connection.
     pub application_name: String,
     /// Commands, the task queue, the checkpoints: short static statements, each under the statement timeout.
-    pub main: PostgresPool,
+    pub main: PoolSpec,
     /// The projection processors' reads of the journal, under the main pool's statement timeout but apart from the
     /// commands' connections.
-    pub projection: PostgresPool,
+    pub projection: PoolSpec,
     /// Whole-history reads: no statement timeout, and no connection kept while none of them runs.
-    pub history: PostgresPool,
+    pub history: PoolSpec,
 }
 
 impl PoolPlan {
     /// Every pool as `postgres.<pool>.<field>` and the application name, by key.
-    pub fn describe(&self) -> BTreeMap<String, String> {
+    pub fn description(&self) -> BTreeMap<String, String> {
         self.entries().into_iter().collect()
     }
 
-    /// What [`describe`](Self::describe) holds, in the order described.
+    /// What [`description`](Self::description) holds, in the order described.
     pub(crate) fn entries(&self) -> Vec<(String, String)> {
         let mut entries = vec![("postgres.application_name".to_owned(), self.application_name.clone())];
         entries.extend(self.main.entries("main"));
@@ -340,7 +340,7 @@ mod tests {
 
     #[test]
     fn the_pool_size_defaults_to_ten_and_rejects_zero() {
-        assert_eq!(settings(&[]).unwrap().postgres().pool_size().get(), 10);
+        assert_eq!(settings(&[]).unwrap().postgres().main_pool_size().get(), 10);
         let error = settings(&[("ENCORE_DATABASE_POOL_SIZE", "0")]).unwrap_err();
         assert!(error.to_string().contains("ENCORE_DATABASE_POOL_SIZE"), "{error}");
     }
@@ -357,7 +357,7 @@ mod tests {
         .unwrap();
         let plan = config.pool_plan("encore-backend");
         let ping = ConnectionPingPolicy::Idle(Duration::from_millis(100));
-        let capped = |size| PostgresPool {
+        let capped = |size| PoolSpec {
             max_connections: NonZeroU32::new(size).unwrap(),
             min_connections: None,
             idle_timeout: None,
@@ -367,7 +367,7 @@ mod tests {
         assert_eq!((plan.main, plan.projection), (capped(7), capped(3)));
         assert_eq!(
             plan.history,
-            PostgresPool {
+            PoolSpec {
                 max_connections: NonZeroU32::new(2).unwrap(),
                 min_connections: Some(0),
                 idle_timeout: Some(Duration::from_secs(30)),
@@ -394,7 +394,7 @@ mod tests {
             ),
             (2, 0, Some(Duration::from_secs(30)))
         );
-        let described = plan.describe();
+        let described = plan.description();
         for (key, value) in [
             ("postgres.main.statement_timeout", "2500 ms"),
             ("postgres.history.statement_timeout", "unlimited"),
@@ -402,7 +402,7 @@ mod tests {
         ] {
             assert_eq!(described.get(key).map(String::as_str), Some(value), "{key} in {described:?}");
         }
-        let always = PostgresPool {
+        let always = PoolSpec {
             ping: ConnectionPingPolicy::Default,
             ..plan.main
         };
@@ -440,13 +440,13 @@ mod tests {
         use crate::test_support::{Book, Show};
         use cqrsx::{
             command::{
-                CommandGatewayError,
+                CommandError,
                 executor::StoreCommandExecutor,
                 locks::LockLimits,
                 observer::{CommandObserver, CommandReport, Outcome},
                 retry::AggregateConflictRetryPolicy,
             },
-            journal::persisted::PersistedEventStore,
+            journal::store::JournalEventStore,
         };
         use cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox;
         use std::sync::{Arc, Mutex};
@@ -454,7 +454,7 @@ mod tests {
         #[derive(Default)]
         struct Heard(Mutex<Vec<&'static str>>);
         impl CommandObserver<Show> for Heard {
-            fn command(&self, report: &CommandReport<'_, Show>) {
+            fn observe(&self, report: &CommandReport<'_, Show>) {
                 self.0.lock().unwrap().push(match report.outcome {
                     Outcome::Unavailable => "unavailable",
                     Outcome::Accepted { .. } | Outcome::Rejected(_) | Outcome::Conflict => "ran",
@@ -466,7 +466,7 @@ mod tests {
             .acquire_timeout(Duration::from_millis(100))
             .connect_lazy("postgres://nobody@127.0.0.1:1/none")
             .unwrap();
-        let store = PersistedEventStore::new(PostgresEventRepositoryWithOutbox::new(pool)).with_snapshots(NonZeroUsize::MIN);
+        let store = JournalEventStore::new(PostgresEventRepositoryWithOutbox::new(pool)).with_snapshots(NonZeroUsize::MIN);
         let heard = Arc::new(Heard::default());
         let executor =
             StoreCommandExecutor::<Show, _>::new(store, (), AggregateConflictRetryPolicy::default(), LockLimits::default())
@@ -490,7 +490,7 @@ mod tests {
         };
         assert_eq!(
             executor.execute(&"show".into(), book).await.map(|report| report.events.len()),
-            Err(CommandGatewayError::Unavailable)
+            Err(CommandError::Unavailable)
         );
         assert_eq!(*heard.0.lock().unwrap(), ["unavailable"]);
     }

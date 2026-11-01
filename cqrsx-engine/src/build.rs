@@ -1,7 +1,7 @@
 //! How an engine is built: its settings are read, its modules set up, their registrations merged and checked
 //! (`Registrations`), its stores opened, and the components assembled from the registrations over the stores.
 #[cfg(feature = "mongodb")]
-use crate::mongodb::MongoDb;
+use crate::mongodb::Mongo;
 use crate::{
     Cqrs, Journal,
     executor::{AnyObserverAdapter, Executor},
@@ -19,8 +19,8 @@ use crate::{
 use cqrsx::{
     command::{executor::StoreCommandExecutor, observer::CommandObserver},
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
-    journal::{EventStore, persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
-    memory::event_repository::MemEventRepository,
+    journal::{EventStore, repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
+    memory::event_repository::MemoryEventRepository,
     mutex::get_mut,
     projection::{
         RebuildableProjection, checkpoint::CheckpointStore, processor::ProjectionProcessor, runtime::ProjectionRuntime,
@@ -66,7 +66,7 @@ pub enum BuildError {
     ViewTwice(&'static str),
     #[error("the module `{0}` registers a second observer of the commands or of the processors")]
     ObserverTwice(&'static str),
-    /// One key of the engine's description ([`Cqrs::describe`]) with two values: from the engine's settings, a module
+    /// One key of the engine's description ([`Cqrs::description`]) with two values: from the engine's settings, a module
     /// (`Setup::describe`, `Setup::env`) or two modules. The same value twice is one entry.
     #[error("the key `{key}` is described twice, as `{first}` and as `{second}`")]
     DescribedTwice { key: String, first: String, second: String },
@@ -82,7 +82,7 @@ pub enum BuildError {
     DatabaseUrl { variable: String, source: sqlx::Error },
     #[cfg(feature = "postgres")]
     #[error("cannot connect to PostgreSQL: {0}")]
-    Pool(sqlx::Error),
+    MainPool(sqlx::Error),
     #[cfg(feature = "postgres")]
     #[error("cannot connect the history pool to PostgreSQL: {0}")]
     HistoryPool(sqlx::Error),
@@ -114,7 +114,7 @@ mod sealed {
         #[cfg(feature = "postgres")]
         Postgres,
         #[cfg(feature = "mongodb")]
-        MongoDb,
+        Mongo,
     }
 
     pub trait Sealed {
@@ -133,12 +133,12 @@ impl sealed::Sealed for Postgres {
 impl ProjectionStore for Postgres {}
 
 #[cfg(feature = "mongodb")]
-impl sealed::Sealed for MongoDb {
-    const VIEWS: ViewStoreKind = ViewStoreKind::MongoDb;
+impl sealed::Sealed for Mongo {
+    const VIEWS: ViewStoreKind = ViewStoreKind::Mongo;
 }
 
 #[cfg(feature = "mongodb")]
-impl ProjectionStore for MongoDb {}
+impl ProjectionStore for Mongo {}
 
 /// The stores an engine is built over, and what the application opened for them.
 struct Stores {
@@ -294,7 +294,7 @@ impl Builder {
             #[cfg(feature = "postgres")]
             ViewStoreKind::Postgres => Some("PostgreSQL"),
             #[cfg(feature = "mongodb")]
-            ViewStoreKind::MongoDb => Some("MongoDB"),
+            ViewStoreKind::Mongo => Some("MongoDB"),
         };
         if let Some(store) = durable_views
             && !self.stores.journal_in_postgres
@@ -308,7 +308,7 @@ impl Builder {
             .map(|root| root(&setup))
             .collect::<Result<Vec<_>, _>>()?;
         let shutdown = CancellationToken::new();
-        let settings = setup.engine().clone();
+        let settings = setup.settings().clone();
         let described = merge_described(settings.entries().into_iter().chain(setup.described()))?;
         let memory = MemoryBackend::new();
         let checkpoints: Arc<dyn CheckpointOperations> = memory.checkpoints.clone();
@@ -336,10 +336,9 @@ impl Builder {
             _stop: shutdown.clone().drop_guard(),
             shutdown,
         };
+        let mut policies = Policies::builder();
         for policy in modules.iter().flat_map(|module| &module.policies) {
-            cqrs.policies = cqrs
-                .policies
-                .with_policy(policy.name, TaskPolicy::new(policy.retry, policy.max_attempts))?;
+            policies = policies.policy(policy.name, TaskPolicy::new(policy.retry, policy.max_attempts));
         }
         let (mut registered, mut named) = (HashSet::new(), HashSet::new());
         let (mut aggregates, mut views, mut adapters) = (Vec::new(), Vec::new(), Vec::new());
@@ -361,7 +360,7 @@ impl Builder {
             for task in module.tasks {
                 adapters.push(task.adapter);
                 if let Some(binding) = task.binding {
-                    cqrs.policies = (binding.bind)(cqrs.policies, binding.name)?;
+                    policies = (binding.bind)(policies, binding.name);
                 }
             }
             cqrs.dependencies = cqrs.dependencies.merged(&module.dependencies);
@@ -381,6 +380,7 @@ impl Builder {
                 cqrs.routes = std::mem::take(&mut cqrs.routes).merge(routes);
             }
         }
+        cqrs.policies = policies.build()?;
         cqrs.dependencies = cqrs.dependencies.merged(&self.dependencies);
         Ok(Registrations {
             cqrs,
@@ -410,14 +410,14 @@ impl Cqrs {
                     self.view_store = crate::ViewStore::Postgres;
                 }
                 #[cfg(feature = "mongodb")]
-                ViewStoreKind::MongoDb => {
+                ViewStoreKind::Mongo => {
                     let client = match stores.client {
                         Some(client) => client,
                         None => crate::mongodb::client(&self.settings).await?,
                     };
-                    let database = client.database(self.settings.mongodb().read_db());
+                    let database = client.database(self.settings.mongodb().database());
                     self.checkpoints = Arc::new(cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(&database));
-                    self.view_store = crate::ViewStore::MongoDb(database);
+                    self.view_store = crate::ViewStore::Mongo(database);
                 }
                 ViewStoreKind::Memory => {}
             }
@@ -497,7 +497,7 @@ impl Registrations {
     pub(crate) fn command_observer<A: Aggregate>(&self) -> Option<Arc<dyn CommandObserver<A>>>
     where
         A::Command: Command,
-        A::Error: Rejection,
+        A::Rejection: Rejection,
     {
         Some(Arc::new(AnyObserverAdapter(self.cqrs.command_observer.clone()?)))
     }
@@ -519,18 +519,18 @@ impl Registrations {
 
     /// The task handlers with their dependencies, once: the assembly adds the command executors and builds them.
     pub(crate) fn take_task_handlers(&mut self) -> TaskHandlers {
-        TaskHandlers::assembled(std::mem::take(&mut self.adapters), self.cqrs.dependencies.clone())
+        TaskHandlers::from_adapters(std::mem::take(&mut self.adapters), self.cqrs.dependencies.clone())
     }
 }
 
 impl Cqrs {
     /// Installs the executor of `A` over the engine's journal, with the rules its module registered: one per aggregate
-    /// type, shared by the entry points (`from(..).execute`) and the task handlers (`ctx.execute`).
+    /// type, shared by the entry points (`source(..).execute`) and the task handlers (`ctx.execute`).
     pub(crate) fn install_aggregate<A>(&mut self, rules: Box<dyn Any + Send>) -> Result<(), BuildError>
     where
         A: Reactions + Clone + 'static,
         A::Command: Command + Clone,
-        A::Error: Rejection + Send + 'static,
+        A::Rejection: Rejection + Send + 'static,
     {
         // The entry of `A` holds the rules of `A`.
         let Ok(rules) = rules.downcast::<A::Rules>() else {
@@ -542,7 +542,7 @@ impl Cqrs {
             Journal::Postgres(pools) => Executor::Postgres(self.executor::<A, _>(self.postgres_store::<A>(pools), *rules)),
         };
         let executor = Arc::new(executor);
-        let executors = self.executors.clone().with::<A, _>(executor.clone());
+        let executors = self.executors.clone().register::<A, _>(executor.clone());
         self.executors = executors.map_err(|twice| BuildError::AggregateTwice(twice.0))?;
         self.command_executors.insert(TypeId::of::<A>(), executor);
         Ok(())
@@ -554,14 +554,14 @@ impl Cqrs {
     pub(crate) fn postgres_store<A: Aggregate>(
         &self,
         pools: &PostgresPools,
-    ) -> PersistedEventStore<PostgresEventRepositoryWithOutbox, A> {
-        PersistedEventStore::new(PostgresEventRepositoryWithOutbox::new(pools.main.clone()))
+    ) -> JournalEventStore<PostgresEventRepositoryWithOutbox, A> {
+        JournalEventStore::new(PostgresEventRepositoryWithOutbox::new(pools.main.clone()))
             .with_snapshots(self.settings.snapshot_every())
     }
 
     /// The store of the commands of `A` in memory: the journal, a snapshot every `snapshot_every` events.
-    fn store<A: Aggregate>(&self) -> PersistedEventStore<MemEventRepository, A> {
-        PersistedEventStore::new(self.memory.journal.clone()).with_snapshots(self.settings.snapshot_every())
+    fn store<A: Aggregate>(&self) -> JournalEventStore<MemoryEventRepository, A> {
+        JournalEventStore::new(self.memory.journal.clone()).with_snapshots(self.settings.snapshot_every())
     }
 
     /// The executor of `A` over `store` as every backend builds it: the settings' conflict retry and lock limits, the
@@ -570,7 +570,7 @@ impl Cqrs {
     where
         A: Reactions + 'static,
         A::Command: Command + Clone,
-        A::Error: Rejection,
+        A::Rejection: Rejection,
         S: EventStore<A>,
     {
         let settings = &self.settings;
@@ -587,7 +587,7 @@ impl Cqrs {
     fn command_observer<A: Aggregate>(&self) -> Option<Arc<dyn CommandObserver<A>>>
     where
         A::Command: Command,
-        A::Error: Rejection,
+        A::Rejection: Rejection,
     {
         let observer = self.command_observer.clone()?;
         Some(Arc::new(AnyObserverAdapter(observer)))
@@ -626,7 +626,7 @@ impl Cqrs {
                         self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
                     }
                     #[cfg(feature = "mongodb")]
-                    ViewStore::MongoDb(database) => {
+                    ViewStore::Mongo(database) => {
                         let documents = Arc::new(cqrsx_mongodb::view_repository::MongoViewRepository::<V, A>::new(database));
                         let checkpoints = Arc::new(cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(database));
                         self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
@@ -642,10 +642,10 @@ impl Cqrs {
     where
         V: View<A> + PartialEq + 'static,
         A: Aggregate + 'static,
-        R: PersistedEventRepository + 'static,
+        R: EventRepository + 'static,
         C: CheckpointStore + 'static,
         D: ViewRepository<V, A> + 'static,
-        H: PersistedEventRepository + Counts + 'static,
+        H: EventRepository + Counts + 'static,
         K: Counts + 'static,
     {
         let processor = self.processor::<V, A, _, _, _>(feed, checkpoints, documents.clone());
@@ -665,13 +665,13 @@ impl Cqrs {
     where
         V: View<A> + 'static,
         A: Aggregate + 'static,
-        R: PersistedEventRepository + 'static,
+        R: EventRepository + 'static,
         C: CheckpointStore + 'static,
         D: ViewRepository<V, A> + 'static,
     {
         let projection: Arc<dyn RebuildableProjection<A>> = Arc::new(ViewProjection::new(documents));
         let processor = ProjectionProcessor::new(V::NAME, journal, checkpoints, projection, self.settings.processor())
-            .with_wakeup(self.wakeup::<A>())
+            .with_commit_wakeup(self.wakeup::<A>())
             .with_owner(self.owner.clone());
         match &self.projection_observer {
             Some(observers) => processor.with_observer(observers(ObservedProcessor {
@@ -704,9 +704,9 @@ mod tests {
             observer::{AnyCommandReport, AnyOutcome},
             retry::AggregateConflictRetryPolicy,
         },
-        memory::view_repository::MemViewRepository,
+        memory::view_repository::MemoryViewRepository,
         projection::processor::config::{DeliveryLimits, ProcessorConfig},
-        task::{format::TaskFormat, policy::Retry},
+        task::{format::TaskFormat, policy::RetryPause},
         view::View,
         worker::{TaskResult, dependencies::DependencyId, dispatcher::TaskDispatcherError, runtime::config::TaskRuntimeConfig},
     };
@@ -755,11 +755,11 @@ mod tests {
         let three = NonZeroU16::new(3).unwrap();
         let unknown = module(|module| module.task(RecordInWallet).policy(STEP));
         let twice = module(move |module| {
-            let one_second = Retry::fixed(Duration::from_secs(1));
+            let one_second = RetryPause::fixed(Duration::from_secs(1));
             module.policy(STEP, one_second, three).policy(STEP, one_second, three)
         });
         let bound_twice = module(move |module| {
-            let module = module.policy(STEP, Retry::fixed(Duration::from_secs(1)), three);
+            let module = module.policy(STEP, RetryPause::fixed(Duration::from_secs(1)), three);
             module.task(RecordInWallet).policy(STEP).task(RecordInWallet).policy(STEP)
         });
         let refused = [
@@ -866,7 +866,7 @@ mod tests {
         let other = |setup: &Setup| setup.env("LIMIT", 4).map(|_| Module::new("other"));
         let builder = Cqrs::from_lookup("SHOP", |name| (name == "SHOP_LIMIT").then(|| "5".to_owned()));
         let cqrs = ready(builder.module(reader).module(other).build()).unwrap();
-        let described = cqrs.describe();
+        let described = cqrs.description();
         assert_eq!(
             (described.get("SHOP_LIMIT"), described.get("SHOP_SNAPSHOT_EVERY")),
             (Some(&"5".to_owned()), Some(&"10".to_owned())),
@@ -913,7 +913,7 @@ mod tests {
             cqrs.dependency::<String>().unwrap_err().to_string(),
             "the dependency `alloc::string::String` is not provided"
         );
-        cqrs.from("ui")
+        cqrs.source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
@@ -942,7 +942,7 @@ mod tests {
         let entry = Module::new("mail").task(SendMail);
         let printed = format!("{entry:?}");
         assert!(
-            printed.starts_with(r#"TaskEntry { module: Module { name: "mail""#),
+            printed.starts_with(r#"TaskStep { module: Module { name: "mail""#),
             "{printed}"
         );
     }
@@ -950,8 +950,8 @@ mod tests {
     #[tokio::test]
     async fn a_processor_and_the_read_side_print_their_names() {
         let mut cqrs = Cqrs::in_memory().module(shows).registrations().unwrap().cqrs;
-        let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemCheckpointStore::default());
-        let documents = Arc::new(MemViewRepository::<Hall, Show>::default());
+        let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemoryCheckpointStore::default());
+        let documents = Arc::new(MemoryViewRepository::<Hall, Show>::default());
         let journal = Arc::new(cqrs.memory.journal.clone());
         let processor = cqrs.processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
         assert_eq!(
@@ -973,13 +973,13 @@ mod tests {
 
     #[tokio::test]
     async fn the_engine_builds_every_executor_and_processor_with_its_settings() {
-        let processor = ProcessorConfig::try_new(
-            Duration::from_millis(300),
-            50,
-            Duration::from_secs(30),
-            DeliveryLimits::default(),
-        )
-        .unwrap();
+        let processor = ProcessorConfig::builder()
+            .poll_interval(Duration::from_millis(300))
+            .page_size(50)
+            .lease(Duration::from_secs(30))
+            .delivery_limits(DeliveryLimits::default())
+            .build()
+            .unwrap();
         let limits = LockLimits::try_new(Duration::from_millis(500), 7).unwrap();
         let retry = AggregateConflictRetryPolicy::try_new(5, Duration::from_millis(1), Duration::from_millis(2), 0.0).unwrap();
         let settings = Settings::try_new(NonZeroUsize::new(3).unwrap(), limits, processor, TaskRuntimeConfig::default())
@@ -993,8 +993,8 @@ mod tests {
             let mut cqrs = registrations.cqrs;
             let store = cqrs.store::<Show>();
             let executor = cqrs.executor::<Show, _>(store, ());
-            let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemCheckpointStore::default());
-            let documents = Arc::new(MemViewRepository::<Hall, Show>::default());
+            let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemoryCheckpointStore::default());
+            let documents = Arc::new(MemoryViewRepository::<Hall, Show>::default());
             let journal = Arc::new(cqrs.memory.journal.clone());
             let processor = cqrs.processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
             built.push((
@@ -1036,7 +1036,7 @@ mod tests {
         // The reactions plan with the budget of each task type's policy.
         let (cqrs, _) = engine().await;
         let booked = cqrs
-            .from("ui")
+            .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
@@ -1048,9 +1048,9 @@ mod tests {
     struct Log(std::sync::Mutex<Vec<String>>);
 
     impl AnyCommandObserver for Log {
-        fn command(&self, report: &AnyCommandReport<'_>) {
+        fn observe(&self, report: &AnyCommandReport<'_>) {
             let outcome = match &report.outcome {
-                AnyOutcome::Rejected(rejection) => format!("{} {}", rejection.code(), rejection.params()),
+                AnyOutcome::Rejected(rejection) => format!("{} {}", rejection.code(), rejection.parameters()),
                 outcome => (if matches!(outcome, AnyOutcome::Accepted { .. }) {
                     "accepted"
                 } else {
@@ -1094,15 +1094,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(cqrs.settings().node_name(), Some("node-a"));
-        let ui = cqrs.from("ui");
+        let ui = cqrs.source("ui");
         ui.execute::<Show>(&"s-1".into(), book("A1", "fox")).await.unwrap();
         ui.execute::<Show>(&"s-1".into(), book("A1", "panda")).await.unwrap_err();
         cqrs.run_tasks().await;
         let again = ui.execute::<Wallet>(&"fox".into(), Record { seat: "A1".into() }).await;
-        assert_eq!(
-            again.unwrap_err(),
-            cqrsx::command::CommandGatewayError::Domain(AlreadyRecorded)
-        );
+        assert_eq!(again.unwrap_err(), cqrsx::command::CommandError::Rejected(AlreadyRecorded));
         assert_eq!(
             *log.0.lock().unwrap(),
             [
@@ -1145,13 +1142,13 @@ mod tests {
         assert!(registrations.projection_observer("halls").is_some());
         let observer = registrations.command_observer::<Show>().unwrap();
         let metadata = std::collections::HashMap::new();
-        observer.command(&CommandReport {
+        observer.observe(&CommandReport {
             aggregate_id: &"s-1".to_owned(),
             command: &book("A1", "fox"),
             metadata: &metadata,
             outcome: cqrsx::command::observer::Outcome::Accepted { tasks: &[] },
         });
-        observer.command(&CommandReport {
+        observer.observe(&CommandReport {
             aggregate_id: &"s-1".to_owned(),
             command: &book("A2", "fox"),
             metadata: &metadata,
@@ -1183,7 +1180,7 @@ mod tests {
         );
         #[cfg(feature = "mongodb")]
         assert!(matches!(
-            refusal(Cqrs::in_memory().projections(crate::mongodb::MongoDb).module(shows)),
+            refusal(Cqrs::in_memory().projections(crate::mongodb::Mongo).module(shows)),
             BuildError::ViewsWithoutJournal("MongoDB")
         ));
         let settings = refusal(Cqrs::from_lookup("APP", |name| {

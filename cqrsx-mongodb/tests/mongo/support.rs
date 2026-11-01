@@ -7,14 +7,14 @@ use cqrsx::{
         command::Decide,
         event::{EventEnvelope, Events},
     },
-    journal::{persisted::PersistedEventStore, repository::PersistedEventRepository, wakeup::CommitWakeup},
-    memory::event_repository::MemEventRepository,
+    journal::{repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
+    memory::event_repository::MemoryEventRepository,
     projection::{
         checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore},
         processor::{
             ProjectionProcessor,
             config::{DeliveryLimits, ProcessorConfig},
-            observer::{Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt},
+            observer::{Applied, Failed, LeaseChange, ProjectionObserver, RebuildPhase, Rebuilt},
         },
     },
     view::{View, projection::ViewProjection, repository::ViewRepository},
@@ -54,7 +54,7 @@ impl Aggregate for Ledger {
     type Id = String;
     type Command = i32;
     type Event = Delta;
-    type Error = Never;
+    type Rejection = Never;
     type Rules = ();
 
     fn apply(&mut self, event: Delta) {
@@ -76,7 +76,7 @@ pub(crate) struct Balance {
 
 impl View<Ledger> for Balance {
     const NAME: &'static str = NAME;
-    fn update(&mut self, event: &EventEnvelope<Ledger>) {
+    fn apply(&mut self, event: &EventEnvelope<Ledger>) {
         self.total += i64::from(event.payload.0);
         self.history.push((event.sequence, event.payload.0));
     }
@@ -134,24 +134,23 @@ impl ProjectionObserver for Recording {
     fn rebuilt(&self, report: &Rebuilt<'_>) {
         self.push(format!("rebuilt:{}:{:?}", report.aggregate_id, report.reason));
     }
-    fn rebuild(&self, event: RebuildEvent) {
+    fn rebuild_phase(&self, event: RebuildPhase) {
         self.push(format!("rebuild:{event:?}"));
     }
-    fn lease(&self, event: LeaseEvent) {
+    fn lease(&self, event: LeaseChange) {
         self.push(format!("lease:{event:?}"));
     }
 }
 
 fn config() -> ProcessorConfig {
-    ProcessorConfig::try_new(
-        Duration::from_millis(50),
-        100,
-        Duration::from_secs(1),
-        DeliveryLimits::default(),
-    )
-    .unwrap()
-    .with_retry(Duration::from_millis(50), Duration::from_millis(200))
-    .unwrap()
+    ProcessorConfig::builder()
+        .poll_interval(Duration::from_millis(50))
+        .page_size(100)
+        .lease(Duration::from_secs(1))
+        .delivery_limits(DeliveryLimits::default())
+        .retry(Duration::from_millis(50), Duration::from_millis(200))
+        .build()
+        .unwrap()
 }
 
 /// A running processor of [`NAME`].
@@ -162,7 +161,7 @@ pub(crate) struct Node {
 
 impl Node {
     /// Starts a processor of [`NAME`] over `journal` whose views and checkpoint live in `database`.
-    pub(crate) fn start<R: PersistedEventRepository + 'static>(
+    pub(crate) fn start<R: EventRepository + 'static>(
         journal: Arc<R>,
         database: &Database,
         owner: &str,
@@ -179,7 +178,7 @@ impl Node {
         )
         .with_owner(owner)
         .with_observer(observer.clone())
-        .with_wakeup(wakeup.clone());
+        .with_commit_wakeup(wakeup.clone());
         let shutdown = CancellationToken::new();
         Self {
             task: tokio::spawn(processor.run(shutdown.clone())),
@@ -214,13 +213,16 @@ where
     }
 }
 
-type MemStore = PersistedEventStore<MemEventRepository, Ledger>;
+type MemoryStore = JournalEventStore<MemoryEventRepository, Ledger>;
 
 /// Commands over an in-memory journal that wake its processors.
-pub(crate) fn mem_ledgers(journal: &MemEventRepository, wakeup: &CommitWakeup) -> Arc<StoreCommandExecutor<Ledger, MemStore>> {
+pub(crate) fn mem_ledgers(
+    journal: &MemoryEventRepository,
+    wakeup: &CommitWakeup,
+) -> Arc<StoreCommandExecutor<Ledger, MemoryStore>> {
     Arc::new(
         StoreCommandExecutor::new(
-            PersistedEventStore::new(journal.clone()),
+            JournalEventStore::new(journal.clone()),
             (),
             Default::default(),
             LockLimits::default(),
@@ -230,20 +232,20 @@ pub(crate) fn mem_ledgers(journal: &MemEventRepository, wakeup: &CommitWakeup) -
 }
 
 /// The fold of the key's whole history, `None` without a history.
-pub(crate) async fn fold<R: PersistedEventRepository>(journal: &R, id: &str) -> Option<Balance> {
+pub(crate) async fn fold<R: EventRepository>(journal: &R, id: &str) -> Option<Balance> {
     let events = journal.events::<Ledger>(id).await.unwrap();
     if events.is_empty() {
         return None;
     }
     let mut balance = Balance::default();
     for event in events {
-        balance.update(&EventEnvelope::try_from(event).unwrap());
+        balance.apply(&EventEnvelope::try_from(event).unwrap());
     }
     Some(balance)
 }
 
 /// Waits until the checkpoint stands at the journal's head and every view equals the fold of its history.
-pub(crate) async fn caught_up<R: PersistedEventRepository>(journal: &R, database: &Database, keys: &[&str]) -> CheckpointStatus {
+pub(crate) async fn caught_up<R: EventRepository>(journal: &R, database: &Database, keys: &[&str]) -> CheckpointStatus {
     let (checkpoints, views) = (MongoCheckpointStore::new(database), views(database));
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {

@@ -74,7 +74,7 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
     }
     info!(concurrency = config.concurrency(), buffer_capacity = config.buffer_capacity(),
         buffer_refill_percent = config.buffer_refill_percent(),
-        lease_seconds = config.lease_duration().as_secs(), owner = %owner, "task runtime started");
+        lease_seconds = config.lease().as_secs(), owner = %owner, "task runtime started");
     let refill_level = config.buffer_refill_level();
     let mut interval = tokio::time::interval(config.poll_interval());
     interval.set_missed_tick_behavior(MissedTickBehavior::Skip);
@@ -116,7 +116,7 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
         let claimed = tokio::select! {
             biased;
             _ = shutdown.cancelled() => break,
-            result = poller.claim(&owner, limit, config.lease_duration()) => result,
+            result = poller.claim(&owner, limit, config.lease()) => result,
         };
         match claimed {
             Ok(tasks) => {
@@ -171,7 +171,14 @@ mod tests {
         .unwrap();
     }
     fn worker_config(c: usize, q: usize, poll: Duration) -> TaskWorkerPoolConfig {
-        TaskWorkerPoolConfig::try_new(c, q, poll, Duration::from_secs(30), Duration::from_secs(120)).unwrap()
+        TaskWorkerPoolConfig::builder()
+            .concurrency(c)
+            .buffer_capacity(q)
+            .poll_interval(poll)
+            .handler_timeout(Duration::from_secs(30))
+            .lease(Duration::from_secs(120))
+            .build()
+            .unwrap()
     }
 
     #[tokio::test]
@@ -202,7 +209,7 @@ mod tests {
         .await;
         assert_eq!(log.matches("task runtime started").count(), 1);
         assert!(log.contains("concurrency=2 buffer_capacity=3 buffer_refill_percent=25"));
-        assert!(log.contains(&format!("lease_seconds={}", config.lease_duration().as_secs())));
+        assert!(log.contains(&format!("lease_seconds={}", config.lease().as_secs())));
         let owner = log.split("owner=").nth(1).unwrap().split_whitespace().next().unwrap();
         assert!(Uuid::parse_str(owner).is_ok());
         assert!(queue.outcomes.lock().unwrap().is_empty());

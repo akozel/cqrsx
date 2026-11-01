@@ -15,7 +15,7 @@
 //! - Derive macros (crate `cqrsx-macros`) live next to the trait each implements: `Event` and `Events`
 //!   ([`domain::event`]: an event type's stored name and version, an aggregate's enum of events), `Command` and
 //!   `Decide` ([`domain::command`]: what is known of a command, how an enum of commands decides), `Rejection`
-//!   ([`domain::rejection`]: a rejection's code and params), `Task` ([`task`]: a task's wire format) and the
+//!   ([`domain::rejection`]: a rejection's code and parameters), `Task` ([`task`]: a task's wire format) and the
 //!   attribute `task_handler` ([`worker`]: a task handler written as a function).
 //!
 //! Applications own business transitions and repeat-safe task effects. The application is assembled from these

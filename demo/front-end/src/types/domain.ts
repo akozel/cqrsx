@@ -195,7 +195,7 @@ export interface VerifyReport {
   ok: boolean
   checked: Record<string, number>
   behind: { documents: number; events: number }
-  differences: { collection: string; id: string; kind: 'differs' | 'unexpected' }[]
+  differences: { view: string; id: string; kind: 'differs' | 'unexpected' }[]
 }
 
 /** The props of the demo (sidecar `GET /inspect/demo`): what it starts from, who plays in it, and

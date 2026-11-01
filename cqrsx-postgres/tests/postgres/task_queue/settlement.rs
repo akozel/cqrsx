@@ -3,7 +3,7 @@ use super::*;
 async fn competing_settlements_apply_exactly_one_transition_for_the_same_token() {
     let db = Database::new().await;
     let queue = Arc::new(PostgresTaskQueue::new(db.pool.clone()));
-    let task = new_task().with_metadata(json!({"operation": "same-effect"})).unwrap();
+    let task = new_task().with_metadata(serde_json::from_value(json!({"operation": "same-effect"})).unwrap());
     enqueue(&db.pool, vec![task.clone()]).await;
     let claimed = claim(&queue).await.pop().unwrap();
     let mut gate = db.pool.begin().await.unwrap();
@@ -50,7 +50,7 @@ async fn competing_settlements_apply_exactly_one_transition_for_the_same_token()
         }
         (SettlementRequest::Failed { .. }, SettlementResult::Failed(failure)) => {
             assert_eq!(failure.task_id, task.id());
-            assert_eq!(failure.cause, TaskFailureCause::PermanentRejection);
+            assert_eq!(failure.cause, TaskFailureCause::HandlerFailure);
             assert_worker_state(&db.pool, task.id(), "failed", 1, Some("failure winner")).await;
         }
         other => panic!("request and confirmed outcome disagree: {other:?}"),
@@ -122,7 +122,7 @@ async fn settlement_finds_its_row_by_the_primary_key_while_closed_tasks_fill_the
     assert_eq!(types.len(), 5, "settle binds id, token, status, delay and error");
     let values = [
         format!("'{}'", task.attempt().task_id()),
-        format!("'{}'", task.lease().lock_token()),
+        format!("'{}'", task.lease().token()),
         "'completed'".to_owned(),
         "'0'".to_owned(),
         "NULL".to_owned(),

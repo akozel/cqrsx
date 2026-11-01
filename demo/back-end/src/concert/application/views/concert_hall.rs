@@ -80,7 +80,7 @@ impl View<Concert> for ConcertHallView {
     /// it).
     const NAME: &'static str = "concert_halls";
 
-    fn update(&mut self, envelope: &EventEnvelope<Concert>) {
+    fn apply(&mut self, envelope: &EventEnvelope<Concert>) {
         let sequence = envelope.sequence as i64;
         let changed_at = recorded_at(envelope);
         match &envelope.payload {
@@ -203,7 +203,7 @@ mod tests {
     fn apply(events: &[EventEnvelope<Concert>]) -> ConcertHallView {
         let mut view = ConcertHallView::default();
         for event in events {
-            view.update(event);
+            view.apply(event);
         }
         view
     }
@@ -241,7 +241,7 @@ mod tests {
             (40, 8 * 120 + 16 * 80 + 16 * 50, true)
         );
         let mut view = view;
-        view.update(&cancelled(100, "A1", "crowd-0"));
+        view.apply(&cancelled(100, "A1", "crowd-0"));
         assert_eq!((view.sold, view.sold_out), (39, false));
     }
 

@@ -4,7 +4,7 @@ use crate::{
     journal::feed::Position,
     mutex::lock,
     projection::checkpoint::{
-        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest, RebuildRequests,
+        CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, PendingRebuilds, RebuildReply,
         RebuildState,
     },
 };
@@ -67,11 +67,11 @@ struct State {
 /// [`clear`](Self::clear) drops every row as a dropped collection would.
 ///
 /// ```
-/// use cqrsx::{memory::checkpoint_store::MemCheckpointStore, projection::checkpoint::{CheckpointKey, CheckpointStore}};
+/// use cqrsx::{memory::checkpoint_store::MemoryCheckpointStore, projection::checkpoint::{CheckpointKey, CheckpointStore}};
 /// use std::time::Duration;
 ///
 /// # tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap().block_on(async {
-/// let store = MemCheckpointStore::default();
+/// let store = MemoryCheckpointStore::default();
 /// let key = CheckpointKey::new("halls", "Concert");
 /// store.register(&key).await.unwrap();
 /// let claimed = store.claim(&key, "node-a", Duration::from_secs(10)).await.unwrap().unwrap();
@@ -81,7 +81,7 @@ struct State {
 /// # });
 /// ```
 #[derive(Clone, Debug, Default)]
-pub struct MemCheckpointStore {
+pub struct MemoryCheckpointStore {
     state: Arc<Mutex<State>>,
 }
 
@@ -92,7 +92,7 @@ fn pace_fits(pace: Duration) -> Result<(), CheckpointError> {
         .map_err(|_| CheckpointError::Invalid("rebuild pace does not fit the row"))
 }
 
-impl MemCheckpointStore {
+impl MemoryCheckpointStore {
     /// Every operation fails with `CheckpointError::Storage` while `unavailable` is set.
     pub fn set_unavailable(&self, unavailable: bool) {
         self.state().unavailable = unavailable;
@@ -153,7 +153,7 @@ impl MemCheckpointStore {
     }
 }
 
-impl CheckpointStore for MemCheckpointStore {
+impl CheckpointStore for MemoryCheckpointStore {
     async fn register(&self, key: &CheckpointKey) -> Result<(), CheckpointError> {
         self.open_state()?.rows.entry(key.clone()).or_insert_with(|| Row {
             position: Position::START,
@@ -234,19 +234,19 @@ impl CheckpointStore for MemCheckpointStore {
         })
     }
 
-    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
+    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
         pace_fits(pace)?;
         let mut state = self.open_state()?;
         let Some(row) = state.rows.get_mut(key) else {
             return Err(CheckpointError::Invalid("projection is not registered"));
         };
         if row.rebuild_requested || row.cursor.is_some() {
-            return Ok(RebuildRequest::AlreadyRunning);
+            return Ok(RebuildReply::AlreadyRunning);
         }
         row.rebuild_requested = true;
         row.pace = pace;
         row.updated_at = Utc::now();
-        Ok(RebuildRequest::Accepted)
+        Ok(RebuildReply::Accepted)
     }
 
     async fn request_rebuild_key(&self, key: &CheckpointKey, aggregate_id: &str) -> Result<(), CheckpointError> {
@@ -263,12 +263,12 @@ impl CheckpointStore for MemCheckpointStore {
         Ok(())
     }
 
-    async fn take_requests(
+    async fn take_rebuild_requests(
         &self,
         key: &CheckpointKey,
         token: LeaseToken,
         limit: usize,
-    ) -> Result<Option<RebuildRequests>, CheckpointError> {
+    ) -> Result<Option<PendingRebuilds>, CheckpointError> {
         let mut state = self.open_state()?;
         let Some(row) = state.rows.get(key) else {
             return Ok(None);
@@ -280,7 +280,10 @@ impl CheckpointStore for MemCheckpointStore {
         let requests = state.keys.entry(key.clone()).or_default();
         requests.sort();
         let taken = requests.drain(..limit.min(requests.len())).map(|(_, key)| key).collect();
-        Ok(Some(RebuildRequests { rebuild, keys: taken }))
+        Ok(Some(PendingRebuilds {
+            rebuild_pace: rebuild,
+            keys: taken,
+        }))
     }
 
     async fn begin_rebuild(&self, key: &CheckpointKey, token: LeaseToken) -> Result<bool, CheckpointError> {
@@ -368,13 +371,13 @@ mod tests {
 
     const LEASE: Duration = Duration::from_secs(1);
 
-    async fn claimed(store: &MemCheckpointStore, owner: &str) -> Claimed {
+    async fn claimed(store: &MemoryCheckpointStore, owner: &str) -> Claimed {
         store.claim(&key(), owner, LEASE).await.unwrap().expect("a free row")
     }
 
     #[tokio::test(start_paused = true)]
     async fn a_row_is_registered_once_claimed_by_one_owner_and_released_or_expires() {
-        let store = MemCheckpointStore::default();
+        let store = MemoryCheckpointStore::default();
         assert!(store.claim(&key(), "a", LEASE).await.unwrap().is_none(), "no row yet");
         store.register(&key()).await.unwrap();
         store.register(&key()).await.unwrap();
@@ -409,7 +412,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn advance_moves_only_forward_counts_once_and_clears_the_failures() {
-        let store = MemCheckpointStore::default();
+        let store = MemoryCheckpointStore::default();
         store.register(&key()).await.unwrap();
         let owner = claimed(&store, "a").await;
         assert!(store.record_failure(&key(), owner.token, "halls: connection").await.unwrap());
@@ -446,7 +449,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn rebuild_requests_run_one_at_a_time_and_keys_are_taken_in_request_order_by_the_owner() {
-        let store = MemCheckpointStore::default();
+        let store = MemoryCheckpointStore::default();
         assert!(matches!(
             store.request_rebuild(&key(), Duration::ZERO).await,
             Err(CheckpointError::Invalid("projection is not registered"))
@@ -464,39 +467,45 @@ mod tests {
         ));
         assert_eq!(
             store.request_rebuild(&key(), Duration::from_millis(80)).await.unwrap(),
-            RebuildRequest::Accepted
+            RebuildReply::Accepted
         );
         assert_eq!(
             store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-            RebuildRequest::AlreadyRunning
+            RebuildReply::AlreadyRunning
         );
         for id in ["c2", "c1", "c2", "c3"] {
             store.request_rebuild_key(&key(), id).await.unwrap();
         }
         let owner = claimed(&store, "a").await;
         let stale = LeaseToken::new(Uuid::new_v4());
-        assert!(store.take_requests(&key(), stale, 10).await.unwrap().is_none());
-        assert!(store.take_requests(&other(), owner.token, 10).await.unwrap().is_none());
-        let first = store.take_requests(&key(), owner.token, 2).await.unwrap().unwrap();
+        assert!(store.take_rebuild_requests(&key(), stale, 10).await.unwrap().is_none());
+        assert!(
+            store
+                .take_rebuild_requests(&other(), owner.token, 10)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        let first = store.take_rebuild_requests(&key(), owner.token, 2).await.unwrap().unwrap();
         assert_eq!(
             first,
-            RebuildRequests {
-                rebuild: Some(Duration::from_millis(80)),
+            PendingRebuilds {
+                rebuild_pace: Some(Duration::from_millis(80)),
                 keys: vec!["c2".into(), "c1".into()]
             }
         );
         assert!(store.begin_rebuild(&key(), owner.token).await.unwrap());
-        let rest = store.take_requests(&key(), owner.token, 2).await.unwrap().unwrap();
+        let rest = store.take_rebuild_requests(&key(), owner.token, 2).await.unwrap().unwrap();
         assert_eq!(
             rest,
-            RebuildRequests {
-                rebuild: None,
+            PendingRebuilds {
+                rebuild_pace: None,
                 keys: vec!["c3".into()]
             }
         );
         assert_eq!(
             store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-            RebuildRequest::AlreadyRunning,
+            RebuildReply::AlreadyRunning,
             "running"
         );
         assert!(store.advance_rebuild(&key(), owner.token, "c2", 2).await.unwrap());
@@ -537,7 +546,7 @@ mod tests {
         );
         assert_eq!(
             store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
-            RebuildRequest::Accepted
+            RebuildReply::Accepted
         );
         assert!(!store.begin_rebuild(&key(), stale).await.unwrap());
         assert!(!store.finish_rebuild(&key(), stale).await.unwrap());
@@ -545,7 +554,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn status_lists_rows_in_order_and_an_unavailable_store_fails_every_operation() {
-        let store = MemCheckpointStore::default();
+        let store = MemoryCheckpointStore::default();
         store.register(&other()).await.unwrap();
         store.register(&key()).await.unwrap();
         let names: Vec<_> = store
@@ -575,7 +584,7 @@ mod tests {
             store.record_failure(&key(), token, "x").await.err(),
             store.request_rebuild(&key(), Duration::ZERO).await.err(),
             store.request_rebuild_key(&key(), "k").await.err(),
-            store.take_requests(&key(), token, 1).await.err(),
+            store.take_rebuild_requests(&key(), token, 1).await.err(),
             store.begin_rebuild(&key(), token).await.err(),
             store.advance_rebuild(&key(), token, "k", 1).await.err(),
             store.finish_rebuild(&key(), token).await.err(),
@@ -589,7 +598,7 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn a_cleared_store_forgets_every_row_and_fences_the_old_owner_out() {
-        let store = MemCheckpointStore::default();
+        let store = MemoryCheckpointStore::default();
         store.register(&key()).await.unwrap();
         store.register(&other()).await.unwrap();
         store.request_rebuild_key(&key(), "c1").await.unwrap();
@@ -599,7 +608,7 @@ mod tests {
         assert!(store.status(None).await.unwrap().is_empty());
         assert!(!store.extend(&key(), owner.token, LEASE).await.unwrap());
         assert!(!store.advance(&key(), owner.token, Position::new(6), 1).await.unwrap());
-        assert!(store.take_requests(&key(), owner.token, 10).await.unwrap().is_none());
+        assert!(store.take_rebuild_requests(&key(), owner.token, 10).await.unwrap().is_none());
         assert!(
             store.claim(&key(), "b", LEASE).await.unwrap().is_none(),
             "no row until it is registered"
@@ -607,7 +616,7 @@ mod tests {
         store.register(&key()).await.unwrap();
         let next = claimed(&store, "b").await;
         assert_eq!((next.position, next.failures, next.rebuild), (Position::START, 0, None));
-        let requests = store.take_requests(&key(), next.token, 10).await.unwrap().unwrap();
+        let requests = store.take_rebuild_requests(&key(), next.token, 10).await.unwrap().unwrap();
         assert!(requests.keys.is_empty(), "the requested keys went with the row");
     }
 }

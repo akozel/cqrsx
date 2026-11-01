@@ -2,9 +2,7 @@
 use crate::{
     diagnostics,
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{
-        PersistenceError, repository::PersistedEventRepository, serialized_event::deserialize_events, upcaster::EventUpcaster,
-    },
+    journal::{PersistenceError, repository::EventRepository, serialized_event::deserialize_events, upcaster::EventUpcaster},
     projection::{EventHandler, RebuildableProjection, processor::delivery::Rebuilder},
 };
 use async_trait::async_trait;
@@ -19,7 +17,7 @@ pub(super) const REBUILD_READS: usize = 3;
 async fn permit(permits: &Semaphore) -> Result<SemaphorePermit<'_>, PersistenceError> {
     permits.acquire().await.map_err(|_| {
         diagnostics::log_broken_invariant("projection", "the concurrency semaphore of a processor is never closed");
-        PersistenceError::UnknownError("the concurrency semaphore of the projection processor is closed".into())
+        PersistenceError::Unexpected("the concurrency semaphore of the projection processor is closed".into())
     })
 }
 
@@ -76,7 +74,7 @@ impl<A: Aggregate, R> HistoryRebuilder<A, R> {
 }
 
 #[async_trait]
-impl<A: Aggregate + 'static, R: PersistedEventRepository + 'static> Rebuilder for HistoryRebuilder<A, R> {
+impl<A: Aggregate + 'static, R: EventRepository + 'static> Rebuilder for HistoryRebuilder<A, R> {
     async fn rebuild(&self, aggregate_id: &str, pace: Duration, stop: CancellationToken) -> Result<usize, PersistenceError> {
         let mut reads = 0;
         let history: Vec<EventEnvelope<A>> = loop {
@@ -91,7 +89,7 @@ impl<A: Aggregate + 'static, R: PersistedEventRepository + 'static> Rebuilder fo
                 self.projection.rebuild(aggregate_id, &history, prefix).await
             };
             match written {
-                Err(PersistenceError::OptimisticLockError) if reads < REBUILD_READS => continue, // newer than the read
+                Err(PersistenceError::Conflict) if reads < REBUILD_READS => continue, // newer than the read
                 Err(error) => return Err(error),
                 Ok(()) => break history,
             }
@@ -100,9 +98,7 @@ impl<A: Aggregate + 'static, R: PersistedEventRepository + 'static> Rebuilder fo
             let after_first = history.iter().skip(1);
             for event in after_first {
                 if stop.is_cancelled() {
-                    return Err(PersistenceError::UnknownError(
-                        "rebuild interrupted: the owner stopped".into(),
-                    ));
+                    return Err(PersistenceError::Unexpected("rebuild interrupted: the owner stopped".into()));
                 }
                 tokio::time::sleep(pace).await;
                 let _permit = permit(&self.permits).await?;
@@ -119,7 +115,7 @@ mod tests {
     use crate::{
         domain::aggregate::tests::{Delta, Ledger},
         journal::serialized_event::SerializedEvent,
-        memory::{event_repository::MemEventRepository, view_repository::MemViewRepository},
+        memory::{event_repository::MemoryEventRepository, view_repository::MemoryViewRepository},
         view::{View, projection::ViewProjection, repository::ViewRepository},
     };
     use serde::{Deserialize, Serialize};
@@ -134,12 +130,12 @@ mod tests {
 
     impl View<Ledger> for Sequences {
         const NAME: &'static str = "sequences";
-        fn update(&mut self, event: &EventEnvelope<Ledger>) {
+        fn apply(&mut self, event: &EventEnvelope<Ledger>) {
             self.0.push(event.sequence);
         }
     }
 
-    type Views = MemViewRepository<Sequences, Ledger>;
+    type Views = MemoryViewRepository<Sequences, Ledger>;
 
     fn delta(id: &str, sequence: usize) -> SerializedEvent {
         SerializedEvent::try_from(&EventEnvelope::<Ledger> {
@@ -151,8 +147,8 @@ mod tests {
         .unwrap()
     }
 
-    async fn journal_with(id: &str, events: usize) -> MemEventRepository {
-        let journal = MemEventRepository::default();
+    async fn journal_with(id: &str, events: usize) -> MemoryEventRepository {
+        let journal = MemoryEventRepository::default();
         let history: Vec<SerializedEvent> = (1..=events).map(|sequence| delta(id, sequence)).collect();
         journal.persist::<Ledger>(&history, None).await.unwrap();
         journal
@@ -187,17 +183,17 @@ mod tests {
                 .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |n| n.checked_sub(1))
                 .is_ok()
             {
-                return Err(PersistenceError::OptimisticLockError);
+                return Err(PersistenceError::Conflict);
             }
             self.inner.rebuild(aggregate_id, history, prefix).await
         }
     }
 
     fn rebuilder(
-        journal: &MemEventRepository,
+        journal: &MemoryEventRepository,
         projection: Arc<dyn RebuildableProjection<Ledger>>,
         permits: usize,
-    ) -> (HistoryRebuilder<Ledger, MemEventRepository>, Arc<Semaphore>) {
+    ) -> (HistoryRebuilder<Ledger, MemoryEventRepository>, Arc<Semaphore>) {
         let permits = Arc::new(Semaphore::new(permits));
         (
             HistoryRebuilder::new(Arc::new(journal.clone()), Arc::new(Vec::new()), projection, permits.clone()),
@@ -218,9 +214,9 @@ mod tests {
                 .unwrap(),
             4
         );
-        let stored = views.load_with_context("a").await.unwrap().unwrap();
+        let stored = views.load_stored("a").await.unwrap().unwrap();
         assert_eq!(
-            (stored.view, stored.version, stored.last_sequence),
+            (stored.view, stored.revision, stored.last_sequence),
             (Sequences(vec![1, 2, 3, 4]), 1, 4)
         );
         assert_eq!(
@@ -260,9 +256,9 @@ mod tests {
                     )
                     .await
                     .unwrap();
-                let stored = views.load_with_context("a").await.unwrap().unwrap();
+                let stored = views.load_stored("a").await.unwrap().unwrap();
                 assert_eq!(
-                    (stored.view, stored.version, stored.last_sequence),
+                    (stored.view, stored.revision, stored.last_sequence),
                     (Sequences(vec![1]), 6, 1)
                 );
                 assert_eq!(bounded.name(), Sequences::NAME);
@@ -271,9 +267,9 @@ mod tests {
         assert_eq!(rebuilder.rebuild("a", pace, CancellationToken::new()).await.unwrap(), 3);
         assert_eq!(started.elapsed(), pace * 2, "a pause before each event after the first");
         running.await.unwrap();
-        let stored = views.load_with_context("a").await.unwrap().unwrap();
+        let stored = views.load_stored("a").await.unwrap().unwrap();
         assert_eq!(
-            (stored.view, stored.version, stored.last_sequence),
+            (stored.view, stored.revision, stored.last_sequence),
             (Sequences(vec![1, 2, 3]), 8, 3)
         );
         assert_eq!(views.load("b").await.unwrap(), Some(Sequences(vec![1])));
@@ -288,9 +284,9 @@ mod tests {
         let stop = CancellationToken::new();
         stop.cancel();
         let error = rebuilder.rebuild("a", Duration::from_millis(80), stop).await.unwrap_err();
-        assert!(matches!(error, PersistenceError::UnknownError(_)));
+        assert!(matches!(error, PersistenceError::Unexpected(_)));
         assert_eq!(error.to_string(), "rebuild interrupted: the owner stopped");
-        let stored = views.load_with_context("a").await.unwrap().unwrap();
+        let stored = views.load_stored("a").await.unwrap().unwrap();
         assert_eq!(
             (stored.view, stored.last_sequence),
             (Sequences(vec![1]), 1),
@@ -326,7 +322,7 @@ mod tests {
             .0
             .rebuild("a", Duration::ZERO, CancellationToken::new())
             .await,
-            Err(PersistenceError::OptimisticLockError)
+            Err(PersistenceError::Conflict)
         ));
         assert_eq!(views.load("a").await.unwrap(), Some(Sequences(vec![1, 2])));
     }
@@ -346,8 +342,8 @@ mod tests {
             )
         })
         .await;
-        assert!(matches!(rebuilt, Err(PersistenceError::UnknownError(_))));
-        assert!(matches!(handled, Err(PersistenceError::UnknownError(_))));
+        assert!(matches!(rebuilt, Err(PersistenceError::Unexpected(_))));
+        assert!(matches!(handled, Err(PersistenceError::Unexpected(_))));
         assert_eq!(
             log.matches("the concurrency semaphore of a processor is never closed")
                 .count(),

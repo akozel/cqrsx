@@ -2,7 +2,7 @@
 //! a command, the task its reaction published, the command of the task's chain, the view; the pools the engine opens.
 use crate::{database::Database, modules::*};
 use cqrsx::{command::causation::CORRELATION_ID, journal::feed::Position};
-use cqrsx_engine::{Cqrs, build::BuildError, mongodb::MongoDb, postgres::Postgres, settings::Defaults, views::JournalTotals};
+use cqrsx_engine::{Cqrs, build::BuildError, postgres::Postgres, settings::Defaults, views::JournalTotals};
 use cqrsx_fixtures::mongo::Mongo;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
@@ -36,7 +36,7 @@ fn variables(url: String, read_db: String) -> impl Fn(&str) -> Option<String> + 
 async fn book_and_follow_the_chain(cqrs: &Cqrs, outbox: &Outbox) {
     let booking_id = Uuid::now_v7();
     let booked = cqrs
-        .from("ui")
+        .source("ui")
         .execute::<Show>(
             &"s-1".into(),
             BookSeat {
@@ -109,7 +109,7 @@ async fn the_modules_run_on_postgres_with_their_views_in_mongodb() {
     let outbox = Arc::new(Outbox::default());
     let read_db = mongo.database.name().to_owned();
     let cqrs = engine(url(&database), read_db, &outbox)
-        .projections(MongoDb)
+        .projections(cqrsx_engine::mongodb::Mongo)
         .mongodb_client(mongo.database.client().clone())
         .build()
         .await
@@ -178,7 +178,7 @@ async fn the_engine_opens_its_pools_as_the_plan_says() {
         }
     })
     .event_store(Postgres)
-    .projections(MongoDb)
+    .projections(cqrsx_engine::mongodb::Mongo)
     .module(box_office)
     .build()
     .await;
@@ -198,7 +198,7 @@ async fn the_engine_opens_its_pools_as_the_plan_says() {
             _ => None,
         })
         .event_store(Postgres)
-        .projections(MongoDb)
+        .projections(cqrsx_engine::mongodb::Mongo)
         .build()
         .await
         .err()
@@ -217,7 +217,7 @@ async fn serve_runs_the_tasks_on_postgres_until_the_signal() {
     let database = Database::new().await;
     let outbox = Arc::new(Outbox::default());
     let cqrs = engine(url(&database), "unused".into(), &outbox).build().await.unwrap();
-    cqrs.from("ui")
+    cqrs.source("ui")
         .execute::<Show>(
             &"s-1".into(),
             BookSeat {

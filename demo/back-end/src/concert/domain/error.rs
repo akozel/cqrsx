@@ -6,7 +6,7 @@ use thiserror::Error;
 /// front-end i18n. The code (`#[derive(Rejection)]`) is the variant in snake case, the stable key the
 /// i18n files translate; the params are its fields, which the texts interpolate.
 /// `PartialEq` + `Clone` are required by `TestFramework::then_expect_error` and by
-/// `CommandGatewayError`.
+/// `CommandError`.
 #[derive(Debug, Clone, PartialEq, Eq, Error, Rejection)]
 pub enum ConcertError {
     #[error("this concert has not been announced")]
@@ -73,13 +73,13 @@ mod tests {
         let seat = SeatId::parse("B4").unwrap();
         let taken = ConcertError::SeatTaken { seat, by: "Fox".into() };
         assert_eq!(Rejection::code(&taken), "seat_taken");
-        assert_eq!(taken.params(), json!({ "seat": "B4", "by": "Fox" }));
-        assert_eq!(ConcertError::TicketLimit { limit: 4 }.params(), json!({ "limit": 4 }));
+        assert_eq!(taken.parameters(), json!({ "seat": "B4", "by": "Fox" }));
+        assert_eq!(ConcertError::TicketLimit { limit: 4 }.parameters(), json!({ "limit": 4 }));
         assert_eq!(
-            ConcertError::UnknownSeat { seat: "Z9".into() }.params(),
+            ConcertError::UnknownSeat { seat: "Z9".into() }.parameters(),
             json!({ "seat": "Z9" })
         );
-        assert_eq!(ConcertError::NotYourTicket.params(), json!({}));
+        assert_eq!(ConcertError::NotYourTicket.parameters(), json!({}));
     }
 
     /// Every rule R1–R8 as the API and the activity feed report it, variant by variant: the code and the fields the UI
@@ -101,7 +101,7 @@ mod tests {
             ConcertError::NotYourTicket,
         ]
         .iter()
-        .map(|error| (Rejection::code(error), Rejection::params(error)))
+        .map(|error| (Rejection::code(error), Rejection::parameters(error)))
         .collect();
         assert_eq!(
             reported,

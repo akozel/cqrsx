@@ -16,10 +16,10 @@ in the fan's wallet, a second task mails it, and the hall view catches up. It ru
 
 ```rust
 use cqrsx::{
-    command::CommandGatewayError,
+    command::CommandError,
     domain::{aggregate::Aggregate, command::{Command, Decide}, event::{Event, EventEnvelope, Events}, rejection::Rejection},
     reactions::{Decided, Reactions, Then},
-    task::{Task, policy::{PolicyName, Retry}},
+    task::{Task, policy::{PolicyName, RetryPause}},
     view::View,
     worker::{TaskResult, context::TaskContext, task_handler},
 };
@@ -72,7 +72,7 @@ impl Aggregate for Show {
     type Id = String;
     type Command = BookSeat;
     type Event = ShowEvent;
-    type Error = ShowError;
+    type Rejection = ShowError;
     type Rules = ();
 
     fn apply(&mut self, ShowEvent::SeatBooked(booked): ShowEvent) {
@@ -137,7 +137,7 @@ impl Aggregate for Wallet {
     type Id = String;
     type Command = Record;
     type Event = WalletEvent;
-    type Error = WalletError;
+    type Rejection = WalletError;
     type Rules = ();
 
     fn apply(&mut self, WalletEvent::TicketRecorded(recorded): WalletEvent) {
@@ -159,7 +159,7 @@ impl Reactions for Wallet {
     fn react(decided: &Decided<'_, Self>, then: &mut Then) {
         match decided.event {
             WalletEvent::TicketRecorded(recorded) => then.task(MailTicket {
-                to: decided.id.clone(),
+                to: decided.aggregate_id.clone(),
                 seat: recorded.seat.clone(),
             }),
         }
@@ -178,7 +178,7 @@ struct RecordTicket {
 #[task_handler]
 async fn record_ticket(task: RecordTicket, ctx: &TaskContext) -> TaskResult {
     match ctx.execute::<Wallet>(&task.fan, Record { seat: task.seat }).await {
-        Err(CommandGatewayError::Domain(WalletError::AlreadyRecorded { .. })) => TaskResult::done(),
+        Err(CommandError::Rejected(WalletError::AlreadyRecorded { .. })) => TaskResult::done(),
         other => other.into(),
     }
 }
@@ -222,7 +222,7 @@ struct Hall {
 impl View<Show> for Hall {
     const NAME: &'static str = "halls";
 
-    fn update(&mut self, event: &EventEnvelope<Show>) {
+    fn apply(&mut self, event: &EventEnvelope<Show>) {
         let ShowEvent::SeatBooked(booked) = &event.payload;
         self.seats.insert(booked.seat.clone(), booked.fan.clone());
     }
@@ -246,8 +246,8 @@ fn wallets(setup: &Setup) -> Result<Module, SetupError> {
     Ok(Module::new("wallets")
         .aggregate::<Wallet>(())
         .provide(mail)
-        .policy(STEP, Retry::fixed(Duration::from_secs(1)), attempts)
-        .policy(MAIL, Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), attempts)
+        .policy(STEP, RetryPause::fixed(Duration::from_secs(1)), attempts)
+        .policy(MAIL, RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)), attempts)
         .task(record_ticket)
         .policy(STEP)
         .task(mail_ticket)
@@ -260,7 +260,7 @@ async fn main() {
     let cqrs = Cqrs::in_memory().module(box_office).module(wallets)
         .provide(mail).build().await.unwrap();
     let booking_id = Uuid::now_v7();
-    cqrs.from("ui").execute::<Show>(&"show-1".into(), BookSeat {
+    cqrs.source("ui").execute::<Show>(&"show-1".into(), BookSeat {
         seat: "A1".into(), fan: "fox".into(), booking_id,
     }).await.unwrap();
     assert_eq!(cqrs.run_tasks().await, 2); // record the ticket, then mail it
@@ -283,7 +283,7 @@ serves the module routes alongside the workers and projection processors.
 //! Encore back-end: the box office on the cqrsx engine. The engine reads its settings from the `ENCORE_*` variables
 //! (and the library's `OUTBOX_*`), keeps the journal in PostgreSQL and the read models in MongoDB, and serves the HTTP
 //! API of the modules next to the task runtime and the projection processors until a signal.
-use cqrsx_engine::{Cqrs, mongodb::MongoDb, postgres::Postgres};
+use cqrsx_engine::{Cqrs, mongodb::Mongo, postgres::Postgres};
 use encore_backend::{DEMO_DEFAULTS, concert, fan, operations};
 
 fn fail(message: impl std::fmt::Display) -> ! {
@@ -298,7 +298,7 @@ async fn main() {
     let served = Cqrs::from_env("ENCORE")
         .defaults(DEMO_DEFAULTS)
         .event_store(Postgres)
-        .projections(MongoDb)
+        .projections(Mongo)
         .module(concert::module)
         .module(fan::module)
         .module(operations::module)
@@ -314,7 +314,7 @@ async fn main() {
 
 Every tunable is a checked value with a default. The engine reads its settings from variables under the
 application's prefix (`Cqrs::from_env("SHOP")`: `SHOP_SNAPSHOT_EVERY`, …) and the task runtime's `OUTBOX_*` as they
-are, with the application's `Defaults` where a variable is absent; `settings().describe()` lists what it uses. A
+are, with the application's `Defaults` where a variable is absent; `settings().description()` lists what it uses. A
 module reads its own variables through its `Setup`, under the same prefix. Read by hand, a component's settings come
 from two helpers that say so in their names.
 

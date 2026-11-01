@@ -61,7 +61,7 @@ impl View<Fan> for FanWalletView {
     /// it).
     const NAME: &'static str = "fan_wallets";
 
-    fn update(&mut self, envelope: &EventEnvelope<Fan>) {
+    fn apply(&mut self, envelope: &EventEnvelope<Fan>) {
         let sequence = envelope.sequence as i64;
         let changed_at = envelope.metadata.get("recorded_at").cloned().unwrap_or_default();
         if self.fan_id.is_empty() {
@@ -175,7 +175,7 @@ mod tests {
     fn apply(events: &[EventEnvelope<Fan>]) -> FanWalletView {
         let mut view = FanWalletView::default();
         for event in events {
-            view.update(event);
+            view.apply(event);
         }
         view
     }

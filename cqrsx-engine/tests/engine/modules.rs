@@ -1,7 +1,7 @@
 //! The modules of the engine's tests: a box office whose bookings go into the fans' wallets by a step of a chain, whose
 //! recorded tickets are mailed through a dependency, with a view of the halls; written with the derive macros.
 use cqrsx::{
-    command::CommandGatewayError,
+    command::CommandError,
     domain::{
         aggregate::Aggregate,
         command::{Command, Decide},
@@ -11,7 +11,7 @@ use cqrsx::{
     reactions::{Decided, Reactions, Then},
     task::{
         Task,
-        policy::{PolicyName, Retry},
+        policy::{PolicyName, RetryPause},
     },
     view::View,
     worker::{TaskResult, context::TaskContext, task_handler},
@@ -68,7 +68,7 @@ impl Aggregate for Show {
     type Id = String;
     type Command = BookSeat;
     type Event = ShowEvent;
-    type Error = ShowError;
+    type Rejection = ShowError;
     type Rules = ();
 
     fn apply(&mut self, ShowEvent::SeatBooked(booked): ShowEvent) {
@@ -133,7 +133,7 @@ impl Aggregate for Wallet {
     type Id = String;
     type Command = Record;
     type Event = WalletEvent;
-    type Error = WalletError;
+    type Rejection = WalletError;
     type Rules = ();
 
     fn apply(&mut self, WalletEvent::TicketRecorded(recorded): WalletEvent) {
@@ -155,7 +155,7 @@ impl Reactions for Wallet {
     fn react(decided: &Decided<'_, Self>, then: &mut Then) {
         match decided.event {
             WalletEvent::TicketRecorded(recorded) => then.task(MailTicket {
-                to: decided.id.clone(),
+                to: decided.aggregate_id.clone(),
                 seat: recorded.seat.clone(),
             }),
         }
@@ -174,7 +174,7 @@ pub(crate) struct RecordTicket {
 #[task_handler]
 pub(crate) async fn record_ticket(task: RecordTicket, ctx: &TaskContext) -> TaskResult {
     match ctx.execute::<Wallet>(&task.fan, Record { seat: task.seat }).await {
-        Err(CommandGatewayError::Domain(WalletError::AlreadyRecorded { .. })) => TaskResult::done(),
+        Err(CommandError::Rejected(WalletError::AlreadyRecorded { .. })) => TaskResult::done(),
         other => other.into(),
     }
 }
@@ -218,7 +218,7 @@ pub(crate) struct Hall {
 impl View<Show> for Hall {
     const NAME: &'static str = "halls";
 
-    fn update(&mut self, event: &EventEnvelope<Show>) {
+    fn apply(&mut self, event: &EventEnvelope<Show>) {
         let ShowEvent::SeatBooked(booked) = &event.payload;
         self.seats.insert(booked.seat.clone(), booked.fan.clone());
     }
@@ -242,8 +242,12 @@ pub(crate) fn wallets(setup: &Setup) -> Result<Module, SetupError> {
     Ok(Module::new("wallets")
         .aggregate::<Wallet>(())
         .provide(mail)
-        .policy(STEP, Retry::fixed(Duration::from_secs(1)), attempts)
-        .policy(MAIL, Retry::backoff(Duration::from_secs(1), Duration::from_secs(8)), attempts)
+        .policy(STEP, RetryPause::fixed(Duration::from_secs(1)), attempts)
+        .policy(
+            MAIL,
+            RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+            attempts,
+        )
         .task(record_ticket)
         .policy(STEP)
         .task(mail_ticket)

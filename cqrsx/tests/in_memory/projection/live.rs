@@ -1,10 +1,10 @@
 //! Live delivery: pages, the window, failures of one key, poison events, concurrency.
-use crate::projection::support::{Balance, Harness, Heal, POLL, RETRY_BASE, config, delta, old_delta};
+use crate::projection::support::{Balance, Harness, Heal, POLL, RETRY_BASE, config, config_builder, delta, old_delta};
 use crate::support::ledger::{Command, Ledger};
 use cqrsx::{
     domain::event::EventEnvelope,
-    journal::{feed::Position, repository::PersistedEventRepository, upcaster::EventUpcaster},
-    memory::view_repository::MemViewRepository,
+    journal::{feed::Position, repository::EventRepository, upcaster::EventUpcaster},
+    memory::view_repository::MemoryViewRepository,
     projection::{
         checkpoint::CheckpointStore,
         processor::{
@@ -79,7 +79,7 @@ async fn a_crash_between_the_view_writes_and_the_advance_applies_nothing_twice()
     let node = h.node("n2");
     h.caught_up(&["a", "b"]).await;
     let stored = h.view("a").await.unwrap();
-    assert_eq!((stored.view.history, stored.version), (vec![(1, 1)], 1), "no second write");
+    assert_eq!((stored.view.history, stored.revision), (vec![(1, 1)], 1), "no second write");
     assert_eq!(h.views.writes(), 2);
     node.stop().await;
 }
@@ -236,7 +236,7 @@ async fn a_panic_in_the_handler_is_a_failure_of_its_key_only() {
 
 #[tokio::test(start_paused = true)]
 async fn concurrency_bounds_the_keys_in_flight() {
-    let h = Harness::with_config(config().with_concurrency(4).unwrap());
+    let h = Harness::with_config(config_builder().write_concurrency(4).build().unwrap());
     let keys: Vec<String> = (0..50).map(|n| format!("k{n:02}")).collect();
     for key in &keys {
         h.journal.inner.persist::<Ledger>(&[delta(key, 1, 1)], None).await.unwrap();
@@ -256,7 +256,13 @@ async fn concurrency_bounds_the_keys_in_flight() {
 #[tokio::test(start_paused = true)]
 async fn a_page_smaller_than_a_transaction_is_delivered_whole() {
     let h = Harness::with_config(
-        ProcessorConfig::try_new(POLL, 1, crate::projection::support::LEASE, DeliveryLimits::default()).unwrap(),
+        ProcessorConfig::builder()
+            .poll_interval(POLL)
+            .page_size(1)
+            .lease(crate::projection::support::LEASE)
+            .delivery_limits(DeliveryLimits::default())
+            .build()
+            .unwrap(),
     );
     h.journal
         .inner
@@ -293,13 +299,13 @@ async fn queued_pages_of_one_key_are_handled_in_one_call() {
 #[tokio::test(start_paused = true)]
 async fn the_window_is_bounded_by_the_buffer_capacity() {
     let h = Harness::with_config(
-        ProcessorConfig::try_new(
-            POLL,
-            1000,
-            crate::projection::support::LEASE,
-            DeliveryLimits::try_new(3, 32).unwrap(),
-        )
-        .unwrap(),
+        ProcessorConfig::builder()
+            .poll_interval(POLL)
+            .page_size(1000)
+            .lease(crate::projection::support::LEASE)
+            .delivery_limits(DeliveryLimits::try_new(3, 32).unwrap())
+            .build()
+            .unwrap(),
     );
     let gate = h.views.gate("a");
     let node = h.node("n1");
@@ -392,7 +398,13 @@ async fn a_commit_costs_one_read_and_neither_the_end_of_the_page_nor_its_receipt
 
 #[tokio::test(start_paused = true)]
 async fn a_full_page_is_followed_at_once_by_the_next_read_and_the_last_short_page_ends_them() {
-    let config = ProcessorConfig::try_new(POLL, 2, Duration::from_secs(1), DeliveryLimits::default()).unwrap();
+    let config = ProcessorConfig::builder()
+        .poll_interval(POLL)
+        .page_size(2)
+        .lease(Duration::from_secs(1))
+        .delivery_limits(DeliveryLimits::default())
+        .build()
+        .unwrap();
     let h = Harness::with_config(config);
     for delta in 1..=5 {
         h.commit("a", delta).await;
@@ -422,7 +434,7 @@ async fn a_settle_time_gathers_the_commits_of_a_burst_into_one_page() {
     assert_eq!(eager.view("a").await.unwrap().view.total, 15);
     node.stop().await;
 
-    let patient = Harness::with_config(config().with_settle(SHORT).unwrap());
+    let patient = Harness::with_config(config_builder().wake_delay(SHORT).build().unwrap());
     let node = patient.node("n1");
     patient.run_for(POLL * 2).await;
     let patient_reads = reads_during(&patient, async || burst(&patient).await).await;
@@ -442,7 +454,7 @@ async fn a_settle_time_gathers_the_commits_of_a_burst_into_one_page() {
 
 #[tokio::test(start_paused = true)]
 async fn a_settling_owner_stops_on_shutdown_and_still_sees_a_commit_made_while_it_settles() {
-    let h = Harness::with_config(config().with_settle(SHORT * 4).unwrap());
+    let h = Harness::with_config(config_builder().wake_delay(SHORT * 4).build().unwrap());
     let node = h.node("n1");
     h.run_for(POLL * 2).await;
     h.commit("a", 1).await;
@@ -462,7 +474,7 @@ struct Sources(Vec<String>);
 
 impl View<Ledger> for Sources {
     const NAME: &'static str = "sources";
-    fn update(&mut self, event: &EventEnvelope<Ledger>) {
+    fn apply(&mut self, event: &EventEnvelope<Ledger>) {
         self.0.push(event.metadata.get("source").cloned().unwrap_or_default());
     }
 }
@@ -470,7 +482,7 @@ impl View<Ledger> for Sources {
 #[tokio::test(start_paused = true)]
 async fn the_metadata_of_an_event_reaches_the_projection() {
     let h = Harness::new();
-    let sources = Arc::new(MemViewRepository::<Sources, Ledger>::default());
+    let sources = Arc::new(MemoryViewRepository::<Sources, Ledger>::default());
     let processor = ProjectionProcessor::new(
         "sources",
         h.journal.clone(),
@@ -478,7 +490,7 @@ async fn the_metadata_of_an_event_reaches_the_projection() {
         Arc::new(ViewProjection::new(sources.clone())),
         config(),
     )
-    .with_wakeup(h.wakeup.clone());
+    .with_commit_wakeup(h.wakeup.clone());
     let shutdown = CancellationToken::new();
     let running = tokio::spawn(processor.run(shutdown.clone()));
     let metadata = HashMap::from([("source".to_owned(), "box office".to_owned())]);

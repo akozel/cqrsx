@@ -60,7 +60,7 @@ a wrong result, a wrong doc) is fixed wherever it is found. Lints in `[lints]` k
     `event_version`, `sequence` and `version`, `task_id` and `command_id`) or a value has rules of its own
     (validation, format). Do not wrap every primitive: settings stay plain, their parameter or builder names are
     enough. `aggregate_id` stays `&str`/`String` in the typical-scenario API until a real mix-up shows up. A type
-    alias only shortens a long type (`Outcome<A>`), it never expresses meaning.
+    alias only shortens a long type (`CommandResult<A>`), it never expresses meaning.
 14. Named fields instead of tuples and multi-field tuple structs, except newtypes and very local code.
 15. Standard traits instead of look-alike methods (`FromStr`, `Display`, `From`); `#[derive]` when it fits. A
     manual impl is fine where derive would add wrong bounds on generic parameters (`CommitReport`).

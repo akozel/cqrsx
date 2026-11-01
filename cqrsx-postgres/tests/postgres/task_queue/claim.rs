@@ -5,14 +5,10 @@ async fn ready_time_formats_and_skip_locked_distribute_without_overlap() {
     let queue = PostgresTaskQueue::new(db.pool.clone());
     let tasks: Vec<_> = (0..20).map(|_| new_task()).collect();
     let ids: HashSet<_> = tasks.iter().map(|m| m.id()).collect();
-    let delayed = new_task()
-        .with_schedule(TaskSchedule::After(Duration::from_secs(300)))
-        .unwrap();
+    let delayed = new_task().with_schedule(TaskSchedule::after(Duration::from_secs(300)).unwrap());
     let absolute_time = DateTime::from_timestamp_micros((Utc::now() + chrono::Duration::hours(1)).timestamp_micros()).unwrap();
-    let absolute = new_task().with_schedule(TaskSchedule::At(absolute_time)).unwrap();
-    let past = new_task()
-        .with_schedule(TaskSchedule::At(Utc::now() - chrono::Duration::minutes(1)))
-        .unwrap();
+    let absolute = new_task().with_schedule(TaskSchedule::at(absolute_time));
+    let past = new_task().with_schedule(TaskSchedule::at(Utc::now() - chrono::Duration::minutes(1)));
     let unknown = NewTask::from_payload(
         TaskFormat::try_new(format().task_type(), 3).unwrap(),
         json!({"value":"runtime"}),

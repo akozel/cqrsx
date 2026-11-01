@@ -157,7 +157,7 @@ fn settlement_request(result: TaskResult, retry_pause: Duration) -> SettlementRe
 mod tests {
     use crate::task::{
         format::TaskFormat,
-        policy::{PolicyName, Retry, TaskPolicy},
+        policy::{PolicyName, RetryPause, TaskPolicy},
     };
     use crate::worker::{adapter::TaskAdapter, context::TaskContext, queue::lease::LEASE_SAFETY_MARGIN};
 
@@ -309,7 +309,7 @@ mod tests {
         let executor = Arc::new(DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()));
         // The throttled task's type waits 300 s before its next attempt.
         let throttled = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())
-            .with_policies(policies(Retry::fixed(Duration::from_secs(300))));
+            .with_policies(policies(RetryPause::fixed(Duration::from_secs(300))));
         for (result, hang, executor) in [
             (TaskResult::Done, false, executor.as_ref()),
             (TaskResult::retry("throttle"), false, &throttled),
@@ -385,9 +385,9 @@ mod tests {
     async fn a_handler_panic_is_a_retry_after_the_pause_of_its_policy_logged_without_payload_or_lease_token() {
         let queue = Arc::new(Queue::default());
         let executor = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())
-            .with_policies(policies(Retry::fixed(Duration::from_secs(300))));
+            .with_policies(policies(RetryPause::fixed(Duration::from_secs(300))));
         let task = claimed();
-        let (task_id, token) = (task.attempt().task_id(), task.lease().lock_token());
+        let (task_id, token) = (task.attempt().task_id(), task.lease().token());
         let (settled, log) = crate::diagnostics::test_support::capture(executor.execute_and_settle(
             &dispatcher(Panicking),
             task,
@@ -413,12 +413,12 @@ mod tests {
     }
 
     /// The policies binding the dummy task's type to `retry`.
-    fn policies(retry: Retry) -> Policies {
+    fn policies(retry: RetryPause) -> Policies {
         const DUMMY: PolicyName = PolicyName::try_new("dummy").unwrap();
-        Policies::default()
-            .with_policy(DUMMY, TaskPolicy::new(retry, NonZeroU16::new(5).unwrap()))
-            .unwrap()
-            .with_task::<DummyTask>(DUMMY)
+        Policies::builder()
+            .policy(DUMMY, TaskPolicy::new(retry, NonZeroU16::new(5).unwrap()))
+            .bind::<DummyTask>(DUMMY)
+            .build()
             .unwrap()
     }
 
@@ -459,7 +459,7 @@ mod tests {
     async fn a_retry_waits_the_pause_of_its_task_types_policy_which_the_handler_was_told() {
         let queue = Arc::new(Queue::default());
         let executor = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())
-            .with_policies(policies(Retry::backoff(Duration::from_secs(1), Duration::from_secs(8))));
+            .with_policies(policies(RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8))));
         // The claim is attempt 2: the backoff's second pause.
         assert_eq!(
             told_and_settled(executor, &queue).await,
@@ -487,7 +487,7 @@ mod tests {
     async fn a_timeout_and_a_short_lease_wait_the_redelivery_backoff_even_under_a_policy() {
         let queue = Arc::new(Queue::default());
         let executor = DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::try_new(Duration::from_secs(5)).unwrap())
-            .with_policies(policies(Retry::fixed(Duration::from_secs(300))));
+            .with_policies(policies(RetryPause::fixed(Duration::from_secs(300))));
         let mut hanging = adapter();
         hanging.hang = true;
         executor

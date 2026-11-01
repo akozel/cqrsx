@@ -5,8 +5,8 @@ use crate::{Cqrs, Journal};
 use cqrsx::{
     domain::aggregate::Aggregate,
     memory::{
-        checkpoint_store::MemCheckpointStore, event_repository::MemEventRepository, task_queue::MemTaskQueue,
-        view_repository::MemViewRepository,
+        checkpoint_store::MemoryCheckpointStore, event_repository::MemoryEventRepository, task_queue::MemoryTaskQueue,
+        view_repository::MemoryViewRepository,
     },
     mutex::lock,
     view::View,
@@ -29,18 +29,18 @@ use std::{
 /// The stores of the engine in memory: the journal with its outbox, the task queue over that outbox, the checkpoints
 /// of the processors and the repository of every view. Which of them an engine hands out depends on where it keeps its stores (`Cqrs::journal`, `outbox`, `checkpoints`).
 pub(crate) struct MemoryBackend {
-    pub(crate) journal: MemEventRepository,
-    pub(crate) queue: Arc<MemTaskQueue>,
-    pub(crate) checkpoints: Arc<MemCheckpointStore>,
-    /// The repository of every view in memory, by the view's type: an `Arc<MemViewRepository<V, A>>`.
+    pub(crate) journal: MemoryEventRepository,
+    pub(crate) queue: Arc<MemoryTaskQueue>,
+    pub(crate) checkpoints: Arc<MemoryCheckpointStore>,
+    /// The repository of every view in memory, by the view's type: an `Arc<MemoryViewRepository<V, A>>`.
     documents: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
 }
 
 impl MemoryBackend {
     pub(crate) fn new() -> Self {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         Self {
-            queue: Arc::new(MemTaskQueue::new(journal.clone())),
+            queue: Arc::new(MemoryTaskQueue::new(journal.clone())),
             journal,
             checkpoints: Arc::default(),
             documents: HashMap::new(),
@@ -48,11 +48,11 @@ impl MemoryBackend {
     }
 
     /// The repository of the view `V` in memory, made on the first call.
-    pub(crate) fn documents<V: View<A> + 'static, A: Aggregate + 'static>(&mut self) -> Arc<MemViewRepository<V, A>> {
+    pub(crate) fn documents<V: View<A> + 'static, A: Aggregate + 'static>(&mut self) -> Arc<MemoryViewRepository<V, A>> {
         let documents = self
             .documents
             .entry(TypeId::of::<V>())
-            .or_insert_with(|| Arc::new(MemViewRepository::<V, A>::default()));
+            .or_insert_with(|| Arc::new(MemoryViewRepository::<V, A>::default()));
         documents.clone().downcast().unwrap_or_default()
     }
 }
@@ -60,19 +60,19 @@ impl MemoryBackend {
 impl Cqrs {
     /// The journal in memory: the events, the snapshots and the outbox of every aggregate type; `None` when the engine
     /// keeps its journal in PostgreSQL.
-    pub fn journal(&self) -> Option<&MemEventRepository> {
+    pub fn journal(&self) -> Option<&MemoryEventRepository> {
         matches!(self.journal, Journal::Memory).then_some(&self.memory.journal)
     }
 
     /// The task queue over the journal's outbox in memory: every task with its delivery; `None` when the engine keeps
     /// its journal, and with it the outbox, in PostgreSQL.
-    pub fn outbox(&self) -> Option<&MemTaskQueue> {
+    pub fn outbox(&self) -> Option<&MemoryTaskQueue> {
         matches!(self.journal, Journal::Memory).then_some(self.memory.queue.as_ref())
     }
 
     /// The checkpoints of the processors in memory, e.g. for a test that plays an owner or a store that does not
     /// answer; `None` when the engine keeps its views, and with them the checkpoints, in PostgreSQL or MongoDB.
-    pub fn checkpoints(&self) -> Option<&MemCheckpointStore> {
+    pub fn checkpoints(&self) -> Option<&MemoryCheckpointStore> {
         let in_memory = match &self.journal {
             Journal::Memory => true,
             #[cfg(feature = "postgres")]
@@ -83,9 +83,9 @@ impl Cqrs {
 
     /// The documents of the view `V` of the aggregate `A` in memory, e.g. for a test that writes them by hand; `None`
     /// for a view the engine keeps elsewhere or does not have.
-    pub fn documents<V: View<A> + 'static, A: Aggregate + 'static>(&self) -> Option<&MemViewRepository<V, A>> {
+    pub fn documents<V: View<A> + 'static, A: Aggregate + 'static>(&self) -> Option<&MemoryViewRepository<V, A>> {
         let documents = self.memory.documents.get(&TypeId::of::<V>())?;
-        documents.downcast_ref::<MemViewRepository<V, A>>()
+        documents.downcast_ref::<MemoryViewRepository<V, A>>()
     }
 
     /// Runs the tasks until none is due: every task due now, those they publish included, one at a time, by type in the
@@ -149,7 +149,7 @@ mod tests {
     use crate::{Cqrs, test_support::*};
     use cqrsx::{
         command::causation::{CAUSATION_ID, CORRELATION_ID, SOURCE},
-        journal::repository::PersistedEventRepository,
+        journal::repository::EventRepository,
         memory::task_queue::TaskStatus,
         projection::checkpoint::CheckpointStore,
         view::repository::ViewRepository,
@@ -171,11 +171,11 @@ mod tests {
         let (cqrs, mailbox) = engine().await;
         mailbox.refusals.store(1, Ordering::SeqCst);
         let booked = cqrs
-            .from("ui")
+            .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        let _ = cqrs.from("ui").execute::<Show>(&"s-1".into(), book("A1", "panda")).await;
+        let _ = cqrs.source("ui").execute::<Show>(&"s-1".into(), book("A1", "panda")).await;
         assert_eq!(cqrs.run_tasks().await, 2, "the step and the first attempt of its e-mail");
         assert_eq!(
             statuses(&cqrs),
@@ -210,7 +210,7 @@ mod tests {
     async fn a_handler_that_always_panics_spends_the_budget_of_its_policy_and_its_task_fails() {
         let (cqrs, mailbox) = engine().await;
         mailbox.crashes.store(usize::MAX, Ordering::SeqCst);
-        cqrs.from("ui")
+        cqrs.source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
@@ -235,7 +235,7 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_step_redelivered_after_a_lost_acknowledgement_is_done_and_publishes_nothing_twice() {
         let (cqrs, mailbox) = engine().await;
-        cqrs.from("ui")
+        cqrs.source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
@@ -263,7 +263,7 @@ mod tests {
     #[tokio::test]
     async fn an_engine_without_task_types_runs_none() {
         let cqrs = Cqrs::in_memory().module(shows).build().await.unwrap();
-        cqrs.from("ui")
+        cqrs.source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
@@ -274,7 +274,7 @@ mod tests {
     #[tokio::test]
     async fn a_test_reaches_the_checkpoints_and_the_documents_in_memory() {
         let (cqrs, _) = engine().await;
-        cqrs.from("ui")
+        cqrs.source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();

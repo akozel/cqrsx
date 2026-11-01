@@ -245,8 +245,8 @@ mod tests {
             value: String,
         }
         impl<const VERSION: i32> Task for Payload<VERSION> {
-            const TASK_TYPE: &'static str = "versioned_operation";
-            const TASK_VERSION: i32 = VERSION;
+            const TYPE: &'static str = "versioned_operation";
+            const VERSION: i32 = VERSION;
         }
         struct Handler(Arc<Mutex<Vec<(i32, String)>>>);
         impl<const VERSION: i32> TaskHandler<Payload<VERSION>> for Handler {

@@ -49,7 +49,7 @@ pub fn assemble(fan_id: &FanId, ledgers: Vec<StoredView<FanWalletView>>) -> Opti
     let mut refs = Vec::with_capacity(ledgers.len());
     for StoredView {
         id,
-        version,
+        revision: version,
         view: ledger,
         ..
     } in ledgers
@@ -110,7 +110,7 @@ mod tests {
         };
         StoredView {
             id: id.into(),
-            version,
+            revision: version,
             last_sequence: sequence as usize,
             view: FanWalletView {
                 fan_id: "fox".into(),

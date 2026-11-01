@@ -159,7 +159,7 @@ async fn retries_failed_tasks_and_expired_leases_preserve_identity_and_fence_old
     make_ready(&db.pool, msg.id()).await;
     let second = claim(&queue).await.pop().unwrap();
     assert_eq!(second.attempt().number(), 2);
-    assert_ne!(first.lease().lock_token(), second.lease().lock_token());
+    assert_ne!(first.lease().token(), second.lease().token());
     assert!(!queue.settle(&first, SettlementRequest::Completed).await.unwrap().is_applied());
     expire(&db.pool, msg.id()).await;
     assert!(

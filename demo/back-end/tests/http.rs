@@ -15,7 +15,7 @@ use cqrsx::{
 use cqrsx_engine::{
     Cqrs,
     build::Builder,
-    mongodb::MongoDb,
+    mongodb::Mongo,
     postgres::{Postgres, PostgresPools},
 };
 use encore_backend::{
@@ -86,7 +86,7 @@ async fn app() -> App {
     let cqrs = modules()
         .event_store(Postgres)
         .postgres_pools(pools)
-        .projections(MongoDb)
+        .projections(Mongo)
         .mongodb_client(lazy_mongo().await)
         .build()
         .await
@@ -118,7 +118,7 @@ async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrs>) {
         city: "C".into(),
         date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
     };
-    let ui = cqrs.from("ui");
+    let ui = cqrs.source("ui");
     ui.execute::<Concert>(&concert_id, ConcertCommand::AnnounceConcert(announce))
         .await
         .unwrap();
@@ -143,13 +143,13 @@ async fn app_reading(halls: Vec<StoredView<ConcertHallView>>, wallets: Vec<Store
     let hall_documents = cqrs.documents::<ConcertHallView, Concert>().unwrap();
     for document in halls {
         hall_documents
-            .put(&document.id, document.version, document.last_sequence, &document.view)
+            .put(&document.id, document.revision, document.last_sequence, &document.view)
             .unwrap();
     }
     let wallet_documents = cqrs.documents::<FanWalletView, Fan>().unwrap();
     for document in wallets {
         wallet_documents
-            .put(&document.id, document.version, document.last_sequence, &document.view)
+            .put(&document.id, document.revision, document.last_sequence, &document.view)
             .unwrap();
     }
     Arc::new(cqrs).router()
@@ -436,14 +436,14 @@ async fn read_models_are_served_in_the_documented_shapes() {
     };
     let stored = |id: &str, version: i64, view: FanWalletView| StoredView {
         id: id.into(),
-        version,
+        revision: version,
         last_sequence: 1,
         view,
     };
     let router = app_reading(
         vec![StoredView {
             id: "c-1".into(),
-            version: 3,
+            revision: 3,
             last_sequence: 2,
             view: hall.clone(),
         }],

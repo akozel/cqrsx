@@ -9,28 +9,29 @@ use cqrsx::{
     journal::{
         EventStore, PersistenceError,
         feed::{FeedEntry, Position},
-        persisted::PersistedEventStore,
-        repository::PersistedEventRepository,
+        repository::EventRepository,
         serialized_event::{EventFormat, SerializedEvent},
-        snapshot::{SerializedSnapshot, SnapshotUpdate},
+        snapshot::SerializedSnapshot,
+        store::JournalEventStore,
         wakeup::CommitWakeup,
     },
-    memory::{checkpoint_store::MemCheckpointStore, event_repository::MemEventRepository, view_repository::MemViewRepository},
+    memory::{
+        checkpoint_store::MemoryCheckpointStore, event_repository::MemoryEventRepository, view_repository::MemoryViewRepository,
+    },
     projection::{
         checkpoint::{
-            CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, RebuildRequest,
-            RebuildRequests,
+            CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, Claimed, LeaseToken, PendingRebuilds, RebuildReply,
         },
         processor::{
             ProjectionProcessor,
-            config::ProcessorConfig,
-            observer::{Advanced, Applied, Failed, LeaseEvent, ProjectionObserver, RebuildEvent, Rebuilt, Waiting},
+            config::{ProcessorConfig, ProcessorConfigBuilder},
+            observer::{Advanced, Applied, Failed, LeaseChange, ProjectionObserver, RebuildPhase, Rebuilt, Waiting},
         },
     },
     view::{
         View,
         projection::ViewProjection,
-        repository::{StoredView, ViewContext, ViewRepository},
+        repository::{StoredView, ViewMeta, ViewRepository},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -59,7 +60,7 @@ pub(crate) struct Balance {
 
 impl View<Ledger> for Balance {
     const NAME: &'static str = NAME;
-    fn update(&mut self, event: &EventEnvelope<Ledger>) {
+    fn apply(&mut self, event: &EventEnvelope<Ledger>) {
         self.total += i64::from(event.payload.0);
         self.history.push((event.sequence, event.payload.0));
     }
@@ -153,13 +154,13 @@ fn storage_error() -> CheckpointError {
 }
 
 fn connection_error() -> PersistenceError {
-    PersistenceError::ConnectionError("the test asked the store to fail".into())
+    PersistenceError::Connection("the test asked the store to fail".into())
 }
 
 /// The view repository with gates on a key's writes, failures per key, one-shot panics and a count of the
 /// writes in flight at once.
 pub(crate) struct Views {
-    inner: MemViewRepository<Balance, Ledger>,
+    inner: MemoryViewRepository<Balance, Ledger>,
     faults: Mutex<Faults>,
     panics: Mutex<HashSet<String>>,
     in_flight: AtomicUsize,
@@ -168,7 +169,7 @@ pub(crate) struct Views {
 }
 
 impl Views {
-    fn new(inner: MemViewRepository<Balance, Ledger>) -> Self {
+    fn new(inner: MemoryViewRepository<Balance, Ledger>) -> Self {
         Self {
             inner,
             faults: Mutex::default(),
@@ -212,7 +213,7 @@ impl Views {
         self.inner.clear();
         for stored in kept {
             self.inner
-                .put(&stored.id, stored.version, stored.last_sequence, &stored.view)
+                .put(&stored.id, stored.revision, stored.last_sequence, &stored.view)
                 .unwrap();
         }
     }
@@ -236,12 +237,12 @@ impl ViewRepository<Balance, Ledger> for Views {
         self.inner.load(view_id).await
     }
 
-    async fn load_with_context(&self, view_id: &str) -> Result<Option<StoredView<Balance>>, PersistenceError> {
-        self.inner.load_with_context(view_id).await
+    async fn load_stored(&self, view_id: &str) -> Result<Option<StoredView<Balance>>, PersistenceError> {
+        self.inner.load_stored(view_id).await
     }
 
-    async fn update_view(&self, view: Balance, context: ViewContext) -> Result<(), PersistenceError> {
-        let key = context.view_instance_id.clone();
+    async fn update_view(&self, view: Balance, context: ViewMeta) -> Result<(), PersistenceError> {
+        let key = context.id.clone();
         if self.panics.lock().unwrap().remove(&key) {
             panic!("the test asked the view store to panic");
         }
@@ -277,7 +278,7 @@ impl ViewRepository<Balance, Ledger> for Views {
 /// The checkpoint store with gates before and after an operation, failures that count down, replies that
 /// get lost after the effect and an `extend` that lies.
 pub(crate) struct Checkpoints {
-    pub(crate) inner: MemCheckpointStore,
+    pub(crate) inner: MemoryCheckpointStore,
     before: Mutex<Faults>,
     after: Mutex<Faults>,
     extend_lies: AtomicBool,
@@ -285,7 +286,7 @@ pub(crate) struct Checkpoints {
 }
 
 impl Checkpoints {
-    fn new(inner: MemCheckpointStore) -> Self {
+    fn new(inner: MemoryCheckpointStore) -> Self {
         Self {
             inner,
             before: Mutex::default(),
@@ -381,7 +382,7 @@ impl CheckpointStore for Checkpoints {
         self.run("record_failure", self.inner.record_failure(key, token, error)).await
     }
 
-    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
+    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
         self.run("request_rebuild", self.inner.request_rebuild(key, pace)).await
     }
 
@@ -390,13 +391,14 @@ impl CheckpointStore for Checkpoints {
             .await
     }
 
-    async fn take_requests(
+    async fn take_rebuild_requests(
         &self,
         key: &CheckpointKey,
         token: LeaseToken,
         limit: usize,
-    ) -> Result<Option<RebuildRequests>, CheckpointError> {
-        self.run("take_requests", self.inner.take_requests(key, token, limit)).await
+    ) -> Result<Option<PendingRebuilds>, CheckpointError> {
+        self.run("take_rebuild_requests", self.inner.take_rebuild_requests(key, token, limit))
+            .await
     }
 
     async fn begin_rebuild(&self, key: &CheckpointKey, token: LeaseToken) -> Result<bool, CheckpointError> {
@@ -429,7 +431,7 @@ impl CheckpointStore for Checkpoints {
 
 /// The journal with a gate and failures on the feed and the head, and a count of the pages read.
 pub(crate) struct Journal {
-    pub(crate) inner: MemEventRepository,
+    pub(crate) inner: MemoryEventRepository,
     faults: Mutex<Faults>,
     feeds: AtomicUsize,
     /// Added to the head: a slower transaction with a lower id that the pages cannot see yet.
@@ -437,7 +439,7 @@ pub(crate) struct Journal {
 }
 
 impl Journal {
-    fn new(inner: MemEventRepository) -> Self {
+    fn new(inner: MemoryEventRepository) -> Self {
         Self {
             inner,
             faults: Mutex::default(),
@@ -485,7 +487,7 @@ impl Journal {
     }
 }
 
-impl PersistedEventRepository for Journal {
+impl EventRepository for Journal {
     async fn events<A: Aggregate>(&self, aggregate_id: &str) -> Result<Vec<SerializedEvent>, PersistenceError> {
         self.fault("history").await?;
         let history = self.inner.events::<A>(aggregate_id).await;
@@ -511,7 +513,7 @@ impl PersistedEventRepository for Journal {
     async fn persist<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<SnapshotUpdate>,
+        snapshot_update: Option<SerializedSnapshot>,
     ) -> Result<(), PersistenceError> {
         self.inner.persist::<A>(events, snapshot_update).await
     }
@@ -571,7 +573,7 @@ impl ProjectionObserver for Recording {
         self.push(format!("applied:{}:{}", report.aggregate_id, report.last_sequence));
     }
     fn advanced(&self, report: &Advanced) {
-        self.push(format!("advanced:{}:{}", report.position, report.applied));
+        self.push(format!("advanced:{}:{}", report.position, report.delivered));
     }
     fn failed(&self, report: &Failed<'_>) {
         self.push(format!(
@@ -588,10 +590,10 @@ impl ProjectionObserver for Recording {
             report.aggregate_id, report.reason, report.events
         ));
     }
-    fn rebuild(&self, event: RebuildEvent) {
+    fn rebuild_phase(&self, event: RebuildPhase) {
         self.push(format!("rebuild:{event:?}"));
     }
-    fn lease(&self, event: LeaseEvent) {
+    fn lease(&self, event: LeaseChange) {
         self.push(format!("lease:{event:?}"));
     }
     fn waiting(&self, reason: Waiting) {
@@ -599,7 +601,7 @@ impl ProjectionObserver for Recording {
     }
 }
 
-type Store = PersistedEventStore<MemEventRepository, Ledger>;
+type Store = JournalEventStore<MemoryEventRepository, Ledger>;
 
 /// A running processor.
 pub(crate) struct Node {
@@ -635,15 +637,17 @@ pub(crate) struct Harness {
 }
 
 pub(crate) fn config() -> ProcessorConfig {
-    ProcessorConfig::try_new(
-        POLL,
-        1000,
-        LEASE,
-        cqrsx::projection::processor::config::DeliveryLimits::default(),
-    )
-    .unwrap()
-    .with_retry(RETRY_BASE, Duration::from_secs(10))
-    .unwrap()
+    config_builder().build().unwrap()
+}
+
+/// The configuration of the tests as a builder, for a test that changes one bound.
+pub(crate) fn config_builder() -> ProcessorConfigBuilder {
+    ProcessorConfig::builder()
+        .poll_interval(POLL)
+        .page_size(1000)
+        .lease(LEASE)
+        .delivery_limits(cqrsx::projection::processor::config::DeliveryLimits::default())
+        .retry(RETRY_BASE, Duration::from_secs(10))
 }
 
 impl Harness {
@@ -652,11 +656,11 @@ impl Harness {
     }
 
     pub(crate) fn with_config(config: ProcessorConfig) -> Self {
-        let journal = MemEventRepository::default();
+        let journal = MemoryEventRepository::default();
         let wakeup = CommitWakeup::new();
         let executor = Arc::new(
             StoreCommandExecutor::new(
-                PersistedEventStore::new(journal.clone()),
+                JournalEventStore::new(journal.clone()),
                 Services::default(),
                 AggregateConflictRetryPolicy::default(),
                 LockLimits::default(),
@@ -665,8 +669,8 @@ impl Harness {
         );
         Self {
             journal: Arc::new(Journal::new(journal)),
-            views: Arc::new(Views::new(MemViewRepository::default())),
-            checkpoints: Arc::new(Checkpoints::new(MemCheckpointStore::default())),
+            views: Arc::new(Views::new(MemoryViewRepository::default())),
+            checkpoints: Arc::new(Checkpoints::new(MemoryCheckpointStore::default())),
             wakeup,
             observer: Arc::new(Recording::default()),
             config,
@@ -690,7 +694,7 @@ impl Harness {
         let processor = ProjectionProcessor::new(NAME, self.journal.clone(), checkpoints, projection, self.config)
             .with_owner(owner)
             .with_observer(self.observer.clone())
-            .with_wakeup(self.wakeup.clone());
+            .with_commit_wakeup(self.wakeup.clone());
         let shutdown = CancellationToken::new();
         Node {
             task: tokio::spawn(processor.run(shutdown.clone())),
@@ -710,7 +714,7 @@ impl Harness {
         let processor = ProjectionProcessor::new(name, self.journal.clone(), self.checkpoints.clone(), projection, config)
             .with_owner(owner)
             .with_observer(self.observer.clone())
-            .with_wakeup(self.wakeup.clone())
+            .with_commit_wakeup(self.wakeup.clone())
             .with_upcasters(upcasters);
         let shutdown = CancellationToken::new();
         Node {
@@ -748,20 +752,20 @@ impl Harness {
 
     /// The fold of the key's whole history, `None` without a history.
     pub(crate) async fn fold(&self, key: &str) -> Option<Balance> {
-        let store = PersistedEventStore::<_, Ledger>::new(self.journal.inner.clone());
+        let store = JournalEventStore::<_, Ledger>::new(self.journal.inner.clone());
         let events = store.load_events(key).await.unwrap();
         if events.is_empty() {
             return None;
         }
         let mut balance = Balance::default();
         for event in &events {
-            balance.update(event);
+            balance.apply(event);
         }
         Some(balance)
     }
 
     pub(crate) async fn view(&self, key: &str) -> Option<StoredView<Balance>> {
-        self.views.load_with_context(key).await.unwrap()
+        self.views.load_stored(key).await.unwrap()
     }
 
     pub(crate) async fn status(&self) -> CheckpointStatus {

@@ -173,7 +173,7 @@ describe('Encore panel', () => {
     const reports = [
       { ok: true, checked: { concert_halls: 3, fan_wallets: 5 }, behind: { documents: 0, events: 0 }, differences: [] },
       { ok: true, checked: { concert_halls: 3, fan_wallets: 5 }, behind: { documents: 2, events: 7 }, differences: [] },
-      { ok: false, checked: {}, behind: { documents: 0, events: 0 }, differences: [{ collection: 'concert_halls', id: 'c', kind: 'differs' }] },
+      { ok: false, checked: {}, behind: { documents: 0, events: 0 }, differences: [{ view: 'concert_halls', id: 'c', kind: 'differs' }] },
     ]
     stubFetch((url) => (url === '/api/projections/verify' ? reply(200, reports.shift()) : undefined))
     const rebuild = useRebuildStore()

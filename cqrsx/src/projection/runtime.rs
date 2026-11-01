@@ -1,7 +1,7 @@
 //! Several projection processors run as one: for a host that starts the read side next to its task runtime.
 use crate::{
     domain::aggregate::Aggregate,
-    journal::repository::PersistedEventRepository,
+    journal::repository::EventRepository,
     projection::{checkpoint::CheckpointStore, processor::ProjectionProcessor},
 };
 use std::{collections::HashMap, fmt, future::Future, pin::Pin};
@@ -46,7 +46,7 @@ impl ProjectionRuntime {
     pub fn with_processor<A, R, C>(mut self, processor: ProjectionProcessor<A, R, C>) -> Self
     where
         A: Aggregate + 'static,
-        R: PersistedEventRepository + 'static,
+        R: EventRepository + 'static,
         C: CheckpointStore + 'static,
     {
         let name = processor.name().to_owned();

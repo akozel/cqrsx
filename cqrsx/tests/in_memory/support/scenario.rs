@@ -31,7 +31,7 @@ impl Aggregate for TestAggregate {
     type Id = String;
     type Command = TestCommand;
     type Event = TestEvent;
-    type Error = TestError;
+    type Rejection = TestError;
     type Rules = TestService;
 
     fn apply(&mut self, event: Self::Event) {

@@ -2,9 +2,9 @@
 use crate::Cqrs;
 use cqrsx::{
     domain::aggregate::Aggregate,
-    journal::{PersistenceError, feed::Position, repository::PersistedEventRepository},
-    memory::event_repository::MemEventRepository,
-    projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildRequest},
+    journal::{PersistenceError, feed::Position, repository::EventRepository},
+    memory::event_repository::MemoryEventRepository,
+    projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildReply},
     view::{
         View,
         repository::{StoredView, ViewRepository},
@@ -38,13 +38,13 @@ pub(crate) trait Counts: Send + Sync {
     fn totals<A: Aggregate>(&self) -> impl Future<Output = Result<JournalTotals, PersistenceError>> + Send;
 }
 
-impl Counts for MemEventRepository {
+impl Counts for MemoryEventRepository {
     fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
-        MemEventRepository::count_after::<A>(self, after, cap)
+        MemoryEventRepository::count_after::<A>(self, after, cap)
     }
 
     async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
-        let events = MemEventRepository::count_after::<A>(self, Position::START, u64::MAX).await?;
+        let events = MemoryEventRepository::count_after::<A>(self, Position::START, u64::MAX).await?;
         let (mut aggregates, mut after) = (0, String::new());
         loop {
             let page = self.aggregate_ids_after::<A>(&after, 100).await?;
@@ -75,7 +75,7 @@ impl Counts for cqrsx_postgres::event_repository::PostgresEventRepository {
 /// What the operations over the views ask of the checkpoints, the store erased.
 pub(crate) trait CheckpointOperations: Send + Sync {
     fn status<'a>(&'a self, projection: Option<&'a str>) -> CheckpointAnswer<'a, Vec<CheckpointStatus>>;
-    fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildRequest>;
+    fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildReply>;
     fn request_rebuild_key<'a>(&'a self, key: &'a CheckpointKey, id: &'a str) -> CheckpointAnswer<'a, ()>;
 }
 
@@ -84,7 +84,7 @@ impl<C: CheckpointStore + 'static> CheckpointOperations for C {
         Box::pin(CheckpointStore::status(self, projection))
     }
 
-    fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildRequest> {
+    fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildReply> {
         Box::pin(CheckpointStore::request_rebuild(self, key, pace))
     }
 
@@ -129,7 +129,7 @@ where
     K: Send + Sync,
 {
     fn get<'a>(&'a self, id: &'a str) -> Answer<'a, Option<StoredView<V>>> {
-        Box::pin(async move { self.documents.load_with_context(id).await })
+        Box::pin(async move { self.documents.load_stored(id).await })
     }
 
     fn list(&self) -> Answer<'_, Vec<StoredView<V>>> {
@@ -146,7 +146,7 @@ where
     V: View<A> + PartialEq + 'static,
     A: Aggregate + 'static,
     D: ViewRepository<V, A> + 'static,
-    H: PersistedEventRepository + Counts + 'static,
+    H: EventRepository + Counts + 'static,
     K: Counts + 'static,
 {
     fn name(&self) -> &'static str {
@@ -187,7 +187,7 @@ impl Registry {
         V: View<A> + PartialEq + 'static,
         A: Aggregate + 'static,
         D: ViewRepository<V, A> + 'static,
-        H: PersistedEventRepository + Counts + 'static,
+        H: EventRepository + Counts + 'static,
         K: Counts + 'static,
     {
         let view = Arc::new(Registered::<V, A, D, H, K> {
@@ -244,7 +244,7 @@ impl<V: 'static> ViewQuery<'_, V> {
 
     fn queries(&self) -> Result<&dyn Queries<V>, PersistenceError> {
         let unknown = || format!("the view `{}` is not registered", type_name::<V>()).into();
-        self.queries.ok_or_else(|| PersistenceError::UnknownError(unknown()))
+        self.queries.ok_or_else(|| PersistenceError::Unexpected(unknown()))
     }
 }
 
@@ -287,13 +287,13 @@ impl Views<'_> {
     }
 
     /// Asks the processor of the view `name` to rebuild every document, `pace` between the events of a key.
-    pub async fn rebuild(&self, name: &str, pace: Duration) -> Result<RebuildRequest, ViewsError> {
+    pub async fn request_rebuild(&self, name: &str, pace: Duration) -> Result<RebuildReply, ViewsError> {
         let key = self.cqrs.views.named(name)?.key();
         Ok(self.cqrs.checkpoints.request_rebuild(&key, pace).await?)
     }
 
     /// Asks the processor of the view `name` to rebuild the document of the aggregate `id`.
-    pub async fn rebuild_key(&self, name: &str, id: &str) -> Result<(), ViewsError> {
+    pub async fn request_rebuild_key(&self, name: &str, id: &str) -> Result<(), ViewsError> {
         let key = self.cqrs.views.named(name)?.key();
         Ok(self.cqrs.checkpoints.request_rebuild_key(&key, id).await?)
     }
@@ -366,7 +366,7 @@ mod tests {
 
     async fn book_every(cqrs: &Cqrs, bookings: &[(&str, &str, &str)]) {
         for (show, seat, fan) in bookings {
-            cqrs.from("ui")
+            cqrs.source("ui")
                 .execute::<Show>(&(*show).into(), book(seat, fan))
                 .await
                 .unwrap();
@@ -435,14 +435,14 @@ mod tests {
         let verified = views.verify("halls").await.unwrap();
         assert_eq!((verified.checked, verified.differences.len()), (2, 0));
         assert_eq!(
-            views.rebuild("halls", Duration::ZERO).await.unwrap(),
-            RebuildRequest::Accepted
+            views.request_rebuild("halls", Duration::ZERO).await.unwrap(),
+            RebuildReply::Accepted
         );
         assert_eq!(
-            views.rebuild("halls", Duration::ZERO).await.unwrap(),
-            RebuildRequest::AlreadyRunning
+            views.request_rebuild("halls", Duration::ZERO).await.unwrap(),
+            RebuildReply::AlreadyRunning
         );
-        views.rebuild_key("halls", "s-1").await.unwrap();
+        views.request_rebuild_key("halls", "s-1").await.unwrap();
         while views.status().await.unwrap()[0].rebuilt < 2 {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
@@ -452,8 +452,8 @@ mod tests {
             "the rebuild folds the history"
         );
         for refused in [
-            views.rebuild("seats", Duration::ZERO).await.map(|_| ()),
-            views.rebuild_key("seats", "s-1").await,
+            views.request_rebuild("seats", Duration::ZERO).await.map(|_| ()),
+            views.request_rebuild_key("seats", "s-1").await,
             views.verify("seats").await.map(|_| ()),
             views.lag("seats").await.map(|_| ()),
         ] {
@@ -461,7 +461,7 @@ mod tests {
         }
         let error: ViewsError = CheckpointError::Invalid("pace").into();
         assert_eq!(error.to_string(), "invalid checkpoint request: pace");
-        let error: ViewsError = PersistenceError::OptimisticLockError.into();
+        let error: ViewsError = PersistenceError::Conflict.into();
         assert!(!error.to_string().is_empty());
     }
 
@@ -469,13 +469,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_commit_wakes_the_processors_of_its_type_before_their_poll() {
         let config = Settings::default().processor();
-        let hour = cqrsx::projection::processor::config::ProcessorConfig::try_new(
-            Duration::from_secs(3600),
-            config.page_size(),
-            config.lease(),
-            config.delivery_limits(),
-        )
-        .unwrap();
+        let hour = cqrsx::projection::processor::config::ProcessorConfig::builder()
+            .poll_interval(Duration::from_secs(3600))
+            .page_size(config.page_size())
+            .lease(config.lease())
+            .delivery_limits(config.delivery_limits())
+            .build()
+            .unwrap();
         let defaults = Settings::default();
         let settings = Settings::try_new(
             defaults.snapshot_every(),

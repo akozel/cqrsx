@@ -6,16 +6,16 @@ use crate::{
         PersistenceError,
         feed::{FeedEntry, Position},
         serialized_event::SerializedEvent,
-        snapshot::{SerializedSnapshot, SnapshotUpdate},
+        snapshot::SerializedSnapshot,
     },
     task::NewTask,
 };
 use std::future::Future;
 
-/// The persistence behind a `PersistedEventStore`: the events and snapshots of every aggregate,
+/// The persistence behind a `JournalEventStore`: the events and snapshots of every aggregate,
 /// written one commit per transaction, and the journal of an aggregate type read in commit order
 /// (`feed_after`, `head`, `aggregate_ids_after`; see `journal::feed`).
-pub trait PersistedEventRepository: Send + Sync {
+pub trait EventRepository: Send + Sync {
     /// Returns all events for a single aggregate instance.
     fn events<A: Aggregate>(
         &self,
@@ -39,7 +39,7 @@ pub trait PersistedEventRepository: Send + Sync {
     fn persist<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<crate::journal::snapshot::SnapshotUpdate>,
+        snapshot_update: Option<crate::journal::snapshot::SerializedSnapshot>,
     ) -> impl Future<Output = Result<(), PersistenceError>> + Send;
 
     /// Commits the events, the snapshot and the tasks planned from them in one transaction. A repository
@@ -48,12 +48,12 @@ pub trait PersistedEventRepository: Send + Sync {
     fn persist_with_tasks<A: Aggregate>(
         &self,
         events: &[SerializedEvent],
-        snapshot_update: Option<SnapshotUpdate>,
+        snapshot_update: Option<SerializedSnapshot>,
         tasks: &[NewTask],
     ) -> impl Future<Output = Result<(), PersistenceError>> + Send {
         async move {
             if !tasks.is_empty() {
-                return Err(PersistenceError::UnknownError(
+                return Err(PersistenceError::Unexpected(
                     "the event repository has no outbox: its commits cannot publish tasks".into(),
                 ));
             }

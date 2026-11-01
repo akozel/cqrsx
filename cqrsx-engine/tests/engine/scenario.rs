@@ -3,8 +3,8 @@
 //! halls; the commands, the tasks, the view and the chain's causation, written with the derive macros.
 use crate::modules::*;
 use cqrsx::{
-    command::{CommandGatewayError, causation::CORRELATION_ID},
-    journal::repository::PersistedEventRepository,
+    command::{CommandError, causation::CORRELATION_ID},
+    journal::repository::EventRepository,
     memory::task_queue::TaskStatus,
 };
 use cqrsx_engine::Cqrs;
@@ -22,7 +22,7 @@ async fn the_box_office_and_the_wallets_run_through_their_modules_in_memory() {
         .build()
         .await
         .unwrap();
-    let ui = cqrs.from("ui");
+    let ui = cqrs.source("ui");
     let booking_id = Uuid::now_v7();
     let book = |fan: &str, booking_id| BookSeat {
         seat: "A1".into(),
@@ -39,7 +39,7 @@ async fn the_box_office_and_the_wallets_run_through_their_modules_in_memory() {
         ui.execute::<Show>(&"s-1".into(), book("panda", Uuid::now_v7()))
             .await
             .unwrap_err(),
-        CommandGatewayError::Domain(ShowError::SeatTaken { seat: "A1".into() })
+        CommandError::Rejected(ShowError::SeatTaken { seat: "A1".into() })
     );
 
     assert_eq!(cqrs.run_tasks().await, 2, "the step, then the e-mail its command published");

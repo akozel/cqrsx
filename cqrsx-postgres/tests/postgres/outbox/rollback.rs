@@ -6,11 +6,11 @@ async fn outbox_snapshot_conflict_publishes_no_orphan_task() {
     let repo = PostgresEventRepositoryWithOutbox::new(db.pool.clone());
     repo.persist::<Ledger>(
         &[event_for("a", 1, 10)],
-        Some(SnapshotUpdate {
+        Some(SerializedSnapshot {
             aggregate_id: "a".into(),
             payload: json!([10]),
             last_sequence: 1,
-            next_version: 1,
+            revision: 1,
         }),
     )
     .await
@@ -20,16 +20,16 @@ async fn outbox_snapshot_conflict_publishes_no_orphan_task() {
     let result = repo
         .persist_with_tasks::<Ledger>(
             &[event_for("a", 2, 20)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "a".into(),
                 payload: json!([10, 20]),
                 last_sequence: 3,
-                next_version: 3,
+                revision: 3,
             }),
             &[task],
         )
         .await;
-    assert!(matches!(result, Err(PersistenceError::OptimisticLockError)));
+    assert!(matches!(result, Err(PersistenceError::Conflict)));
     assert_eq!(
         database_state(&db.pool).await,
         before,
@@ -45,11 +45,11 @@ async fn an_event_conflict_rolls_back_an_otherwise_valid_snapshot_update_and_tas
     reader
         .persist::<TestAggregate>(
             &[event("rollback-snapshot", 1)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "rollback-snapshot".into(),
                 payload: json!({"state": "initial"}),
                 last_sequence: 1,
-                next_version: 1,
+                revision: 1,
             }),
         )
         .await
@@ -64,16 +64,16 @@ async fn an_event_conflict_rolls_back_an_otherwise_valid_snapshot_update_and_tas
     let result = repository
         .persist_with_tasks::<TestAggregate>(
             &[event("rollback-snapshot", 2)],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: "rollback-snapshot".into(),
                 payload: json!({"state": "uncommitted"}),
                 last_sequence: 2,
-                next_version: 2,
+                revision: 2,
             }),
             &repository_tasks,
         )
         .await;
-    assert!(matches!(result, Err(PersistenceError::OptimisticLockError)));
+    assert!(matches!(result, Err(PersistenceError::Conflict)));
     assert_eq!(reader.snapshot::<TestAggregate>("rollback-snapshot").await.unwrap(), before);
     assert_eq!(reader.events::<TestAggregate>("rollback-snapshot").await.unwrap().len(), 2);
     let task_count: i64 = sqlx::query_scalar("SELECT count(*) FROM transactional_outbox")
@@ -93,11 +93,11 @@ async fn rolls_back_events_and_outbox_when_snapshot_lock_is_stale() {
     repository
         .persist::<StreamAggregate>(
             &[serialized_event(1, "first")],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: AGGREGATE_ID.to_owned(),
                 payload: initial_snapshot.clone(),
                 last_sequence: 1,
-                next_version: 1,
+                revision: 1,
             }),
         )
         .await
@@ -105,16 +105,16 @@ async fn rolls_back_events_and_outbox_when_snapshot_lock_is_stale() {
     let result = repository
         .persist::<StreamAggregate>(
             &[serialized_event(2, "second")],
-            Some(SnapshotUpdate {
+            Some(SerializedSnapshot {
                 aggregate_id: AGGREGATE_ID.to_owned(),
                 payload: json!({ "state": "stale" }),
                 last_sequence: 3,
-                next_version: 3,
+                revision: 3,
             }),
         )
         .await;
 
-    assert!(matches!(result, Err(PersistenceError::OptimisticLockError)));
+    assert!(matches!(result, Err(PersistenceError::Conflict)));
     assert_eq!(row_count(&database.pool, "events").await, 1);
     assert_eq!(row_count(&database.pool, "transactional_outbox").await, 0);
     assert_eq!(
@@ -124,9 +124,9 @@ async fn rolls_back_events_and_outbox_when_snapshot_lock_is_stale() {
             .expect("snapshot must load"),
         Some(SerializedSnapshot {
             aggregate_id: AGGREGATE_ID.to_owned(),
-            aggregate: initial_snapshot,
+            payload: initial_snapshot,
             last_sequence: 1,
-            snapshot_version: 1,
+            revision: 1,
         })
     );
 

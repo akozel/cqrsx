@@ -16,7 +16,7 @@ use crate::{
 };
 use chrono::NaiveDate;
 use cqrsx::{
-    command::{CommandExecutor, CommandGatewayError, CommitReport, metadata::CommandMetadata},
+    command::{CommandError, CommandExecutor, CommitReport, metadata::CommandMetadata},
     domain::event::EventEnvelope,
     journal::{EventStore, PersistenceError},
     reactions::ReactionsPlanner,
@@ -24,7 +24,7 @@ use cqrsx::{
 };
 use cqrsx_testing::{
     command_executor::TestCommandExecutor,
-    mem_store::{MemStore, MemStoreAggregateContext},
+    memory_store::{MemoryStore, MemoryStoreAggregateContext},
 };
 use std::{
     collections::HashMap,
@@ -39,7 +39,7 @@ use std::{
 use uuid::Uuid;
 
 /// What the box office answers a command: what it committed, or why not.
-pub type Answer = Result<CommitReport<Concert>, CommandGatewayError<ConcertError>>;
+pub type Answer = Result<CommitReport<Concert>, CommandError<ConcertError>>;
 
 pub struct Harness<S: EventStore<Concert>> {
     /// The box office's executor: its store, its reactions' planner, the activity feed's observer and the record of
@@ -90,7 +90,7 @@ pub fn committed(answer: &Answer) -> Vec<String> {
 /// An in-memory store that counts the aggregate loads.
 #[derive(Clone, Default)]
 pub struct ProbeStore {
-    inner: MemStore<Concert>,
+    inner: MemoryStore<Concert>,
     loads: Arc<AtomicUsize>,
 }
 
@@ -101,7 +101,7 @@ impl ProbeStore {
 }
 
 impl EventStore<Concert> for ProbeStore {
-    type Context = MemStoreAggregateContext<Concert>;
+    type Context = MemoryStoreAggregateContext<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await

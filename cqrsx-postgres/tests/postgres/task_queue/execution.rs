@@ -1,16 +1,16 @@
 use super::*;
-use cqrsx::task::policy::{Policies, PolicyName, Retry, TaskPolicy};
+use cqrsx::task::policy::{Policies, PolicyName, RetryPause, TaskPolicy};
 
 /// The policies of the queue's tests: the dummy task waits 300 s before its next attempt.
 fn dummy_waits_300_s() -> Policies {
     const DUMMY: PolicyName = PolicyName::try_new("dummy").unwrap();
-    Policies::default()
-        .with_policy(
+    Policies::builder()
+        .policy(
             DUMMY,
-            TaskPolicy::new(Retry::fixed(Duration::from_secs(300)), NonZeroU16::new(10).unwrap()),
+            TaskPolicy::new(RetryPause::fixed(Duration::from_secs(300)), NonZeroU16::new(10).unwrap()),
         )
-        .unwrap()
-        .with_task::<DummyTaskV1>(DUMMY)
+        .bind::<DummyTaskV1>(DUMMY)
+        .build()
         .unwrap()
 }
 
@@ -71,7 +71,7 @@ async fn worker_test_aggregate_covers_success_retry_exhaustion_and_permanent_fai
     let second = claim(&queue).await.pop().unwrap();
     assert_eq!(second.attempt().task_id(), transient.id());
     assert_eq!(second.attempt().number(), 2);
-    assert_ne!(second.lease().lock_token(), first.lease().lock_token());
+    assert_ne!(second.lease().token(), first.lease().token());
     assert!(
         !queue
             .settle(&first, SettlementRequest::Failed { reason: "stale".into() })
@@ -148,7 +148,7 @@ async fn worker_test_aggregate_covers_lease_recovery_and_fenced_settlement() {
     make_ready(&db.pool, task.id()).await;
     let second = claim(&queue).await.pop().unwrap();
     assert_eq!(second.attempt().number(), 2);
-    assert_ne!(first.lease().lock_token(), second.lease().lock_token());
+    assert_ne!(first.lease().token(), second.lease().token());
     assert!(!queue.settle(&first, SettlementRequest::Completed).await.unwrap().is_applied());
     assert_worker_state(&db.pool, task.id(), "processing", 2, Some("worker lease expired")).await;
     expire(&db.pool, task.id()).await;
@@ -233,7 +233,7 @@ async fn worker_test_aggregate_redelivers_after_success_without_acknowledgement(
     make_ready(&db.pool, task.id()).await;
 
     let second = claim(&queue).await.pop().unwrap();
-    assert_ne!(first.lease().lock_token(), second.lease().lock_token());
+    assert_ne!(first.lease().token(), second.lease().token());
     assert!(!queue.settle(&first, SettlementRequest::Completed).await.unwrap().is_applied());
     assert!(
         service
