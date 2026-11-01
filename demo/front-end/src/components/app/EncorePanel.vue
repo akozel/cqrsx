@@ -96,7 +96,7 @@ async function verify() {
       </button>
       <label class="flex items-center gap-1 text-xs"
         ><input v-model="rebuild.slow" type="checkbox" />
-        {{ t('encore.slow', { ms: session.config.replay_slow_delay_ms }) }}</label
+        {{ t('encore.slow', { ms: session.config.rebuild_slow_pace_ms }) }}</label
       >
       <button type="button" class="action-btn text-xs" :disabled="verifying" @click="verify">
         {{ t('encore.verify') }}
@@ -125,7 +125,7 @@ async function verify() {
       </li>
     </ul>
     <div v-if="rebuild.statusDown" class="mt-1 opacity-70">{{ t('encore.status_down') }}</div>
-    <div v-else-if="rebuild.status.stale" class="mt-1 opacity-70">{{ t('encore.stale') }}</div>
+    <div v-else-if="rebuild.status.from_cache" class="mt-1 opacity-70">{{ t('encore.stale') }}</div>
     <div v-if="verifyText" class="mt-1 text-xs" data-test="verify">{{ verifyText }}</div>
     <div v-if="rebuild.running" class="mt-2">
       <ProgressBar

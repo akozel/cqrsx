@@ -65,24 +65,24 @@ services:
       # Empty = the back-end's default. Here, not in an overlay, so a second node (`extends`) gets them too.
       ENCORE_COMMAND_LOCK_MAX_WAIT_MS: ${LOAD_LOCK_MAX_WAIT_MS:-}
       ENCORE_COMMAND_LOCK_MAX_WAITERS: ${LOAD_LOCK_MAX_WAITERS:-}
-      # The projection buffers (run.sh PROJECTION_BUFFER=…, PROJECTION_MAX_BATCH=…).
-      ENCORE_PROJECTION_BUFFER: ${LOAD_PROJECTION_BUFFER:-}
+      # The projection buffers (run.sh PROJECTION_KEY_BUFFER=…, PROJECTION_MAX_BATCH=…).
+      ENCORE_PROJECTION_KEY_BUFFER: ${LOAD_PROJECTION_KEY_BUFFER:-}
       ENCORE_PROJECTION_MAX_BATCH: ${LOAD_PROJECTION_MAX_BATCH:-}
-      # The pause after a commit's wake-up before the processor reads (run.sh PROJECTION_SETTLE_MS=…).
-      ENCORE_PROJECTION_SETTLE_MS: ${LOAD_PROJECTION_SETTLE_MS:-}
+      # The pause after a commit's wake-up before the processor reads (run.sh PROJECTION_WAKE_DELAY_MS=…).
+      ENCORE_PROJECTION_WAKE_DELAY_MS: ${LOAD_PROJECTION_WAKE_DELAY_MS:-}
       # The one PostgreSQL pool shared by HTTP, the poller and the workers: the ceiling of concurrent
       # database work (run.sh POOL=…).
-      ENCORE_DATABASE_POOL_SIZE: ${LOAD_PG_POOL:-10}
+      ENCORE_DATABASE_MAIN_POOL_SIZE: ${LOAD_PG_POOL:-10}
       # The back-end's MongoDB client pool (run.sh MONGO_POOL=…); empty = the back-end's default.
       ENCORE_MONGODB_POOL_SIZE: ${LOAD_MONGO_POOL:-}
       # Workers, queue capacity (run.sh QUEUE=…, default the worker count), the refill percent and the
       # lease. The lease must exceed 2*S + H + 5s + ceil(Q/C)*(H+S): 24 s with Q = C, so a queue above
       # the worker count needs run.sh LEASE=….
       OUTBOX_WORKER_CONCURRENCY: ${LOAD_OUTBOX_WORKERS:-2}
-      OUTBOX_QUEUE_CAPACITY: ${LOAD_OUTBOX_QUEUE:-2}
-      OUTBOX_QUEUE_REFILL_PERCENT: ${LOAD_OUTBOX_REFILL:-25}
-      OUTBOX_LEASE_SECS: ${LOAD_OUTBOX_LEASE:-30}
-      OUTBOX_POLL_INTERVAL_MS: ${LOAD_OUTBOX_POLL_MS:-300}
+      OUTBOX_BUFFER_CAPACITY: ${LOAD_OUTBOX_QUEUE:-2}
+      OUTBOX_BUFFER_REFILL_PERCENT: ${LOAD_OUTBOX_REFILL:-25}
+      OUTBOX_LEASE_MS: ${LOAD_OUTBOX_LEASE_MS:-30000}
+      OUTBOX_POLL_MS: ${LOAD_OUTBOX_POLL_MS:-300}
       # `warn`: the request trace layer logs every request at info, which costs CPU on two cores.
       RUST_LOG: ${LOAD_RUST_LOG:-warn}
     depends_on:

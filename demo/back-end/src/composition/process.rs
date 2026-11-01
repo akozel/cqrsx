@@ -103,7 +103,7 @@ async fn from_lookup_trims_encore_variables_and_passes_outbox_variables_as_they_
         ("ENCORE_NODE_NAME", "   "),
         ("ENCORE_MAIL_SERVICE_URL", "http://mail:8025/"),
         ("OUTBOX_WORKER_CONCURRENCY", "4"),
-        ("OUTBOX_QUEUE_CAPACITY", "4"),
+        ("OUTBOX_BUFFER_CAPACITY", "4"),
     ])
     .await
     .unwrap();
@@ -120,7 +120,7 @@ async fn from_lookup_trims_encore_variables_and_passes_outbox_variables_as_they_
         Duration::from_secs(30),
         "an absent OUTBOX_* variable takes the demo's default"
     );
-    for (name, raw) in [("OUTBOX_LEASE_SECS", ""), ("OUTBOX_LEASE_SECS", " 30")] {
+    for (name, raw) in [("OUTBOX_LEASE_MS", ""), ("OUTBOX_LEASE_MS", " 30000")] {
         assert!(
             matches!(
                 from_pairs(&[(name, raw)]).await,

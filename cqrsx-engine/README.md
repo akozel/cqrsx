@@ -321,18 +321,18 @@ from two helpers that say so in their names.
 | Variable (after the prefix) | Setting | Default |
 |---|---|---|
 | `SNAPSHOT_EVERY` | a snapshot every N events | 10 |
-| `COMMAND_LOCK_MAX_WAIT_MS`, `COMMAND_LOCK_MAX_WAITERS` | the lock limits (`LockLimits`); the wait below `OUTBOX_HANDLER_TIMEOUT_SECS` | 1 s, 128 |
-| `PROJECTION_POLL_MS`, `_PAGE`, `_LEASE_MS`, `_RETRY_BASE_MS`, `_RETRY_MAX_MS`, `_CONCURRENCY`, `_BUFFER`, `_MAX_BATCH`, `_REBUILD_PAGE`, `_SETTLE_MS` | every processor (`ProcessorConfig`, `DeliveryLimits`) | the table below |
+| `COMMAND_LOCK_MAX_WAIT_MS`, `COMMAND_LOCK_MAX_WAITERS` | the lock limits (`LockLimits`); the wait below `OUTBOX_HANDLER_TIMEOUT_MS` | 1 s, 128 |
+| `PROJECTION_POLL_MS`, `_PAGE`, `_LEASE_MS`, `_RETRY_BASE_MS`, `_RETRY_MAX_MS`, `_WRITE_CONCURRENCY`, `_KEY_BUFFER`, `_MAX_BATCH`, `_REBUILD_KEYS`, `_WAKE_DELAY_MS` | every processor (`ProcessorConfig`, `DeliveryLimits`) | the table below |
 | `PROJECTION_LAG_CAP`, `PROJECTION_STATUS_TIMEOUT_MS` | the cap of a view's lag, the wait of an operator's status | 100 000, 1 s |
 | `NODE_NAME` | the owner of this node's checkpoints | a fresh id |
-| `DATABASE_URL`, `DATABASE_POOL_SIZE`, `DATABASE_STATEMENT_TIMEOUT_MS`, `DATABASE_HISTORY_POOL_SIZE`, `DATABASE_PROJECTION_POOL_SIZE` | the three pools of PostgreSQL (`PostgresSettings::pool_plan`; 0 ms: no cap) | `postgresql://cqrsx:cqrsx@localhost:5433/cqrsx`, 10, 4 s, 1, 4 |
-| `MONGODB_URI`, `MONGODB_POOL_SIZE`, `READ_DB` | the client of MongoDB (3 s to select a server and to connect) and the database of the views | `mongodb://localhost:27017`, 10, `read` |
+| `DATABASE_URL`, `DATABASE_MAIN_POOL_SIZE`, `DATABASE_STATEMENT_TIMEOUT_MS`, `DATABASE_HISTORY_POOL_SIZE`, `DATABASE_PROJECTION_POOL_SIZE` | the three pools of PostgreSQL (`PostgresSettings::pool_plan`; 0 ms: no cap) | `postgresql://cqrsx:cqrsx@localhost:5433/cqrsx`, 10, 4 s, 1, 4 |
+| `MONGODB_URI`, `MONGODB_POOL_SIZE`, `MONGODB_DATABASE` | the client of MongoDB (3 s to select a server and to connect) and the database of the views | `mongodb://localhost:27017`, 10, `read` |
 | `HTTP_ADDR` | where `serve` listens | `127.0.0.1:8080` |
 
 Processor configuration and the lower-level building blocks are described in
 [`doc/components.md`](../doc/components.md). The task runtime reads `OUTBOX_WORKER_CONCURRENCY`,
-`OUTBOX_QUEUE_CAPACITY`, `OUTBOX_QUEUE_REFILL_PERCENT`, `OUTBOX_POLL_INTERVAL_MS`,
-`OUTBOX_HANDLER_TIMEOUT_SECS`, `OUTBOX_LEASE_SECS` and `OUTBOX_STORAGE_TIMEOUT_MS` without the
+`OUTBOX_BUFFER_CAPACITY`, `OUTBOX_BUFFER_REFILL_PERCENT`, `OUTBOX_POLL_MS`,
+`OUTBOX_HANDLER_TIMEOUT_MS`, `OUTBOX_LEASE_MS` and `OUTBOX_STORAGE_TIMEOUT_MS` without the
 application prefix. Module-specific variables are read through `Setup` with that prefix.
 
 ## Testing

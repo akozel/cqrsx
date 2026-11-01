@@ -239,7 +239,7 @@ impl PgInspector {
     }
 
     /// Everything the poller needs, from one snapshot.
-    pub async fn snapshot(&self, limits: &Limits) -> Result<PgState, sqlx::Error> {
+    pub async fn read_consistent(&self, limits: &Limits) -> Result<PgState, sqlx::Error> {
         let mut tx = self.begin().await?;
         let events = Self::events_in(&mut tx, None, limits.events).await?;
         let snapshots = Self::snapshots_in(&mut tx, None, limits.snapshots).await?;

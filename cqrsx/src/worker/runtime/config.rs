@@ -118,16 +118,16 @@ mod tests {
                         child
                             .env("OUTBOX_STORAGE_TIMEOUT_MS", "500")
                             .env("OUTBOX_WORKER_CONCURRENCY", "2")
-                            .env("OUTBOX_QUEUE_CAPACITY", "3")
-                            .env("OUTBOX_POLL_INTERVAL_MS", "25")
-                            .env("OUTBOX_HANDLER_TIMEOUT_SECS", "2")
-                            .env("OUTBOX_LEASE_SECS", "30");
+                            .env("OUTBOX_BUFFER_CAPACITY", "3")
+                            .env("OUTBOX_POLL_MS", "25")
+                            .env("OUTBOX_HANDLER_TIMEOUT_MS", "2000")
+                            .env("OUTBOX_LEASE_MS", "30000");
                     }
                     "invalid" => {
                         child.env("OUTBOX_STORAGE_TIMEOUT_MS", "invalid");
                     }
                     "lease_too_short" => {
-                        child.env("OUTBOX_LEASE_SECS", "53");
+                        child.env("OUTBOX_LEASE_MS", "53000");
                     }
                     _ => {}
                 },
@@ -170,7 +170,7 @@ mod tests {
         let c = lookup(&[("OUTBOX_WORKER_CONCURRENCY", "256")]).unwrap();
         assert_eq!(c.worker_pool().buffer_capacity(), 128);
         assert_eq!(c.worker_pool().concurrency(), 256);
-        let q = lookup(&[("OUTBOX_QUEUE_CAPACITY", "256"), ("OUTBOX_LEASE_SECS", "75")]).unwrap();
+        let q = lookup(&[("OUTBOX_BUFFER_CAPACITY", "256"), ("OUTBOX_LEASE_MS", "75000")]).unwrap();
         assert_eq!(q.worker_pool().concurrency(), 128);
         assert_eq!(q.worker_pool().buffer_capacity(), 256);
         let storage = lookup(&[("OUTBOX_STORAGE_TIMEOUT_MS", "5000")]).unwrap();
@@ -196,19 +196,19 @@ mod tests {
 
     #[test]
     fn full_budget_is_checked_at_load_time_with_strict_wave_boundaries() {
-        for settings in [vec![("OUTBOX_LEASE_SECS", "53")], vec![("OUTBOX_QUEUE_CAPACITY", "129")]] {
+        for settings in [vec![("OUTBOX_LEASE_MS", "53000")], vec![("OUTBOX_BUFFER_CAPACITY", "129")]] {
             assert_eq!(
                 lookup(&settings).unwrap_err(),
                 TaskRuntimeConfigError::WorkerPool(TaskWorkerPoolConfigError::LeaseTooShort)
             );
         }
-        lookup(&[("OUTBOX_LEASE_SECS", "54")]).unwrap();
-        lookup(&[("OUTBOX_QUEUE_CAPACITY", "129"), ("OUTBOX_LEASE_SECS", "75")]).unwrap();
+        lookup(&[("OUTBOX_LEASE_MS", "54000")]).unwrap();
+        lookup(&[("OUTBOX_BUFFER_CAPACITY", "129"), ("OUTBOX_LEASE_MS", "75000")]).unwrap();
         #[cfg(target_pointer_width = "64")]
         {
             let capacity = (usize::MAX >> 3).to_string();
             assert_eq!(
-                lookup(&[("OUTBOX_WORKER_CONCURRENCY", "1"), ("OUTBOX_QUEUE_CAPACITY", &capacity)]).unwrap_err(),
+                lookup(&[("OUTBOX_WORKER_CONCURRENCY", "1"), ("OUTBOX_BUFFER_CAPACITY", &capacity)]).unwrap_err(),
                 TaskRuntimeConfigError::WorkerPool(TaskWorkerPoolConfigError::LeaseBudgetOverflow)
             );
         }

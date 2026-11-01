@@ -26,7 +26,7 @@ fn url(database: &Database) -> String {
 fn variables(url: String, read_db: String) -> impl Fn(&str) -> Option<String> + Send + Sync + 'static {
     move |name| match name {
         "SHOP_DATABASE_URL" => Some(url.clone()),
-        "SHOP_READ_DB" => Some(read_db.clone()),
+        "SHOP_MONGODB_DATABASE" => Some(read_db.clone()),
         "SHOP_ATTEMPTS" => Some("4".to_owned()),
         _ => None,
     }

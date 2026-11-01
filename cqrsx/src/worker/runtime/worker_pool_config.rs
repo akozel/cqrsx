@@ -202,8 +202,8 @@ impl TaskWorkerPoolConfig {
         Self::from_lookup(|name| std::env::var(name).ok())
     }
     /// The limits from the variables, each an unsigned integer with its default: `OUTBOX_WORKER_CONCURRENCY` (128),
-    /// `OUTBOX_QUEUE_CAPACITY` (128), `OUTBOX_POLL_INTERVAL_MS` (1 000), `OUTBOX_HANDLER_TIMEOUT_SECS` (15),
-    /// `OUTBOX_LEASE_SECS` (60), `OUTBOX_QUEUE_REFILL_PERCENT` (25). A missing variable takes its default, one that is
+    /// `OUTBOX_BUFFER_CAPACITY` (128), `OUTBOX_POLL_MS` (1 000), `OUTBOX_HANDLER_TIMEOUT_MS` (15 000),
+    /// `OUTBOX_LEASE_MS` (60 000), `OUTBOX_BUFFER_REFILL_PERCENT` (25). A missing variable takes its default, one that is
     /// not an unsigned integer is `NotAnInteger` with its name; the values are then checked as
     /// [`build`](TaskWorkerPoolConfigBuilder::build) checks them.
     /// The lease against the storage timeout is checked by [`TaskRuntimeConfig`](super::config::TaskRuntimeConfig).
@@ -213,15 +213,18 @@ impl TaskWorkerPoolConfig {
         };
         let concurrency = usize::try_from(read_u64("OUTBOX_WORKER_CONCURRENCY", DEFAULT_CONCURRENCY)?)
             .map_err(|_| TaskWorkerPoolConfigError::NotAnInteger("OUTBOX_WORKER_CONCURRENCY"))?;
-        let buffer_capacity = usize::try_from(read_u64("OUTBOX_QUEUE_CAPACITY", DEFAULT_BUFFER_CAPACITY)?).map_err(|_| {
+        let buffer_capacity = usize::try_from(read_u64("OUTBOX_BUFFER_CAPACITY", DEFAULT_BUFFER_CAPACITY)?).map_err(|_| {
             TaskWorkerPoolConfigError::BufferCapacityTooLarge {
                 max: MAX_BUFFER_CAPACITY,
             }
         })?;
-        let poll_interval = Duration::from_millis(read_u64("OUTBOX_POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL.as_millis() as u64)?);
-        let handler_timeout = Duration::from_secs(read_u64("OUTBOX_HANDLER_TIMEOUT_SECS", DEFAULT_HANDLER_TIMEOUT.as_secs())?);
-        let lease = Duration::from_secs(read_u64("OUTBOX_LEASE_SECS", DEFAULT_LEASE.as_secs())?);
-        let refill = u8::try_from(read_u64("OUTBOX_QUEUE_REFILL_PERCENT", DEFAULT_BUFFER_REFILL_PERCENT)?)
+        let poll_interval = Duration::from_millis(read_u64("OUTBOX_POLL_MS", DEFAULT_POLL_INTERVAL.as_millis() as u64)?);
+        let handler_timeout = Duration::from_millis(read_u64(
+            "OUTBOX_HANDLER_TIMEOUT_MS",
+            DEFAULT_HANDLER_TIMEOUT.as_millis() as u64,
+        )?);
+        let lease = Duration::from_millis(read_u64("OUTBOX_LEASE_MS", DEFAULT_LEASE.as_millis() as u64)?);
+        let refill = u8::try_from(read_u64("OUTBOX_BUFFER_REFILL_PERCENT", DEFAULT_BUFFER_REFILL_PERCENT)?)
             .map_err(|_| TaskWorkerPoolConfigError::BufferRefillPercentTooLarge)?;
         Self::builder()
             .concurrency(concurrency)
@@ -351,11 +354,11 @@ mod tests {
             Some(
                 match name {
                     "OUTBOX_WORKER_CONCURRENCY" => "2",
-                    "OUTBOX_QUEUE_CAPACITY" => "3",
-                    "OUTBOX_POLL_INTERVAL_MS" => "50",
-                    "OUTBOX_HANDLER_TIMEOUT_SECS" => "10",
-                    "OUTBOX_LEASE_SECS" => "120",
-                    "OUTBOX_QUEUE_REFILL_PERCENT" => "100",
+                    "OUTBOX_BUFFER_CAPACITY" => "3",
+                    "OUTBOX_POLL_MS" => "50",
+                    "OUTBOX_HANDLER_TIMEOUT_MS" => "10000",
+                    "OUTBOX_LEASE_MS" => "120000",
+                    "OUTBOX_BUFFER_REFILL_PERCENT" => "100",
                     _ => panic!("unexpected variable {name}"),
                 }
                 .into(),
@@ -370,10 +373,10 @@ mod tests {
         let only_c =
             TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_WORKER_CONCURRENCY").then(|| "1000".into())).unwrap();
         assert_eq!(only_c.buffer_capacity(), 128);
-        let only_q = TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_QUEUE_CAPACITY").then(|| "256".into())).unwrap();
+        let only_q = TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_BUFFER_CAPACITY").then(|| "256".into())).unwrap();
         assert_eq!(only_q.concurrency(), 128);
         let only_refill =
-            TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_QUEUE_REFILL_PERCENT").then(|| "1".into())).unwrap();
+            TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_BUFFER_REFILL_PERCENT").then(|| "1".into())).unwrap();
         assert_eq!(only_refill.buffer_refill_percent(), 1);
         assert_eq!(only_refill.buffer_capacity(), 128);
     }
@@ -383,18 +386,18 @@ mod tests {
         for (key, value) in [
             ("OUTBOX_WORKER_CONCURRENCY", "garbage"),
             ("OUTBOX_WORKER_CONCURRENCY", "0"),
-            ("OUTBOX_QUEUE_CAPACITY", "0"),
-            ("OUTBOX_QUEUE_CAPACITY", "18446744073709551615"),
-            ("OUTBOX_POLL_INTERVAL_MS", "0"),
-            ("OUTBOX_HANDLER_TIMEOUT_SECS", "0"),
-            ("OUTBOX_HANDLER_TIMEOUT_SECS", "120"),
-            ("OUTBOX_LEASE_SECS", "0"),
-            ("OUTBOX_LEASE_SECS", "18446744073709551615"),
-            ("OUTBOX_POLL_INTERVAL_MS", "18446744073709551615"),
-            ("OUTBOX_QUEUE_REFILL_PERCENT", "garbage"),
-            ("OUTBOX_QUEUE_REFILL_PERCENT", "0"),
-            ("OUTBOX_QUEUE_REFILL_PERCENT", "101"),
-            ("OUTBOX_QUEUE_REFILL_PERCENT", "256"),
+            ("OUTBOX_BUFFER_CAPACITY", "0"),
+            ("OUTBOX_BUFFER_CAPACITY", "18446744073709551615"),
+            ("OUTBOX_POLL_MS", "0"),
+            ("OUTBOX_HANDLER_TIMEOUT_MS", "0"),
+            ("OUTBOX_HANDLER_TIMEOUT_MS", "120000"),
+            ("OUTBOX_LEASE_MS", "0"),
+            ("OUTBOX_LEASE_MS", "18446744073709551615"),
+            ("OUTBOX_POLL_MS", "18446744073709551615"),
+            ("OUTBOX_BUFFER_REFILL_PERCENT", "garbage"),
+            ("OUTBOX_BUFFER_REFILL_PERCENT", "0"),
+            ("OUTBOX_BUFFER_REFILL_PERCENT", "101"),
+            ("OUTBOX_BUFFER_REFILL_PERCENT", "256"),
         ] {
             assert!(
                 TaskWorkerPoolConfig::from_lookup(|name| (name == key).then(|| value.into())).is_err(),
@@ -402,11 +405,11 @@ mod tests {
             );
         }
         let refill = |value: &'static str| {
-            TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_QUEUE_REFILL_PERCENT").then(|| value.into())).unwrap_err()
+            TaskWorkerPoolConfig::from_lookup(|name| (name == "OUTBOX_BUFFER_REFILL_PERCENT").then(|| value.into())).unwrap_err()
         };
         assert_eq!(
             refill("garbage"),
-            TaskWorkerPoolConfigError::NotAnInteger("OUTBOX_QUEUE_REFILL_PERCENT")
+            TaskWorkerPoolConfigError::NotAnInteger("OUTBOX_BUFFER_REFILL_PERCENT")
         );
         assert_eq!(refill("0"), TaskWorkerPoolConfigError::ZeroBufferRefillPercent);
         for value in ["101", "256"] {

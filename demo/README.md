@@ -261,12 +261,12 @@ Key points, each visible on screen:
   checkpoint kept in MongoDB next to the documents (`projection_checkpoints`): a commit wakes the
   processor, which reads the new events page by page and applies them per document; a failed round is
   retried after a pause and nothing is lost. A command answers *accepted* as soon as its event is in the
-  ledger — the read models follow a moment later, and the screen waits for the `projection.updated` of its
+  ledger — the read models follow a moment later, and the screen waits for the `projection.applied` of its
   document on the activity stream. Only one node owns a checkpoint at a time (a lease): a killed owner is
   replaced after its lease expires.
 - **Replay** (⏪ Encore!) asks the owners to rebuild every document in place from its history, with the box
   office open: bookings made meanwhile appear as soon as the rebuild reaches their hall (slow motion pauses
-  `ENCORE_REPLAY_SLOW_DELAY_MS` between events). The 🔍 verify button compares every document with the
+  `ENCORE_REBUILD_SLOW_PACE_MS` between events). The 🔍 verify button compares every document with the
   history it has applied and counts the documents still behind apart from the wrong ones. The mail inbox
   belongs to the mail service, in a database the back-end never connects to: rebuilding read models
   cannot resend e-mails.
@@ -320,7 +320,7 @@ timeout); the mail handler asks for 1–8 s itself.
 ## Troubleshooting
 
 - **`make up` hangs in `wait-db.sh`** — check `podman compose ps`; port 5434/27018 may be taken
-  (`ENCORE_POSTGRES_PORT`, `ENCORE_MONGO_PORT`).
+  (`ENCORE_POSTGRES_PORT`, `ENCORE_MONGODB_PORT`).
 - **Back-end exits at start** — it needs PostgreSQL immediately (`ENCORE_DATABASE_URL`); MongoDB may
   come later (commands are accepted; the read models catch up when it answers).
 - **Mail tasks retry with `last_error = mail_unreachable`** — the sidecar, which hosts the demo's mail

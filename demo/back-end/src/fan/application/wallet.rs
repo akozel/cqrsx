@@ -10,11 +10,11 @@ use cqrsx::{journal::PersistenceError, view::repository::StoredView};
 use cqrsx_engine::views::ViewQuery;
 use serde::Serialize;
 
-/// One ledger behind the wallet: the concert, the document version and the last event applied.
+/// One ledger behind the wallet: the concert, the document revision and the last event applied.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct LedgerRef {
     pub concert_id: String,
-    pub version: i64,
+    pub revision: i64,
     pub last_sequence: i64,
 }
 
@@ -49,7 +49,7 @@ pub fn assemble(fan_id: &FanId, ledgers: Vec<StoredView<FanWalletView>>) -> Opti
     let mut refs = Vec::with_capacity(ledgers.len());
     for StoredView {
         id,
-        revision: version,
+        revision,
         view: ledger,
         ..
     } in ledgers
@@ -59,7 +59,7 @@ pub fn assemble(fan_id: &FanId, ledgers: Vec<StoredView<FanWalletView>>) -> Opti
             .unwrap_or(id);
         refs.push(LedgerRef {
             concert_id,
-            version,
+            revision,
             last_sequence: ledger.last_sequence,
         });
         let FanWalletView {
@@ -98,7 +98,7 @@ mod tests {
     use std::collections::BTreeMap;
 
     /// A ledger document with one active ticket.
-    fn ledger(id: &str, version: i64, booking: &str, concert: &str, price: i64, sequence: i64) -> StoredView<FanWalletView> {
+    fn ledger(id: &str, revision: i64, booking: &str, concert: &str, price: i64, sequence: i64) -> StoredView<FanWalletView> {
         let ticket = TicketEntry {
             concert_id: concert.into(),
             seat: "B4".into(),
@@ -110,7 +110,7 @@ mod tests {
         };
         StoredView {
             id: id.into(),
-            revision: version,
+            revision,
             last_sequence: sequence as usize,
             view: FanWalletView {
                 fan_id: "fox".into(),
@@ -143,12 +143,12 @@ mod tests {
             vec![
                 LedgerRef {
                     concert_id: "muse-2027-01-16".into(),
-                    version: 2,
+                    revision: 2,
                     last_sequence: 1
                 },
                 LedgerRef {
                     concert_id: "radiohead-2026-11-21".into(),
-                    version: 5,
+                    revision: 5,
                     last_sequence: 3
                 },
             ]

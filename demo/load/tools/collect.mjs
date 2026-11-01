@@ -400,8 +400,8 @@ const result = {
     git: env('GIT', 'unknown'),
     cpu_pinning: env('PIN', 'off'),
     outbox_workers: num(env('WORKERS')) ?? 2,
-    // OUTBOX_QUEUE_CAPACITY, OUTBOX_LEASE_SECS and OUTBOX_QUEUE_REFILL_PERCENT as run.sh passed them (ticket
-    // 04/19); an image before that ticket ignores the refill and claims for every freed slot.
+    // OUTBOX_BUFFER_CAPACITY, OUTBOX_LEASE_MS (LEASE here, in seconds) and OUTBOX_BUFFER_REFILL_PERCENT as run.sh passed them
+    // (ticket 04/19); an image before that ticket ignores the refill and claims for every freed slot.
     outbox_queue_capacity: num(env('QUEUE')) ?? num(env('WORKERS')) ?? 2,
     outbox_lease_s: num(env('LEASE')) ?? 30,
     outbox_refill_percent: num(env('REFILL')) ?? 25,
@@ -409,8 +409,8 @@ const result = {
     // ENCORE_PROJECTION_MAX_BATCH as run.sh passed it; `default` = the back-end's own default. Runs before
     // backlog 02/08d also have `projection_delivery`, before 08c `command_ordering`.
     projection_max_batch: num(env('MAX_BATCH')) ?? 'default',
-    // ENCORE_PROJECTION_SETTLE_MS as run.sh passed it (ticket 03/04b).
-    projection_settle_ms: num(env('SETTLE')) ?? 'default',
+    // ENCORE_PROJECTION_WAKE_DELAY_MS as run.sh passed it (ticket 03/04b).
+    projection_settle_ms: num(env('WAKE_DELAY')) ?? 'default',
     pg_pool: num(env('POOL')) ?? 10,
     // ENCORE_MONGODB_POOL_SIZE as run.sh passed it (MONGO_POOL=…, ticket 04/06); `default` = the back-end's own.
     mongo_pool: num(env('MONGO_POOL')) ?? 'default',

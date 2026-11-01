@@ -311,7 +311,7 @@ pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, st
 ```json
 {
   "_id": "radiohead-2026-11-21",
-  "version": 14,
+  "revision": 14,
   "last_sequence": 14,
   "view": {
     "concert": { "artist": "Radiohead", "city": "Tbilisi", "date": "2026-11-21" },
@@ -328,7 +328,7 @@ pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, st
 ```
 
 - `sold_out = (sold == capacity)` — производное поле (событие `ConcertSoldOut` снято, D-03).
-- `version` — версия документа для оптимистической блокировки самого view (`ViewMeta`); не путать с `sequence`.
+- `revision` — ревизия документа для оптимистической блокировки самого view (`ViewMeta`); не путать с `sequence`.
 - `last_sequence` конверта — последнее применённое событие агрегата (`ViewMeta::last_sequence`, эпик 03/01):
   документ принимает только следующее, повтор пропускает, дыру отвергает; документ без истории не создаётся
   (D-15). `last_sequence` внутри `view` — бегущий максимум витрины для UI.
@@ -342,7 +342,7 @@ pub struct Ticket { concert_id: String, seat: SeatId, zone: Zone, price: u32, st
 ```json
 {
   "_id": "fox:radiohead-2026-11-21",
-  "version": 5,
+  "revision": 5,
   "view": {
     "fan_id": "fox", "fan_name": "Fox",
     "tickets": {
@@ -377,11 +377,11 @@ outbox-обработчиками; wipe и replay его **не трогают**
   истории). Документ, удалённый поодиночке, чинит первая бронь по нему (самолечение процессора).
 - **⏪ Encore!** (`POST /api/projections/rebuild`, тело `{ "pace_ms": 80 }` или `{}`; `202`, если принята хотя бы
   одна строка закладки, `409 rebuild_in_progress`, если обе пересборки уже идут, `400`, если `pace_ms` больше
-  `ENCORE_REPLAY_MAX_PACE_MS`, `503` при отказе хранилища закладок): `RebuildService` просит обе закладки
+  `ENCORE_REBUILD_MAX_PACE_MS`, `503` при отказе хранилища закладок): `ReadSideService` просит обе закладки
   (`request_rebuild`), владелец каждой на любой ноде идёт по ключам журнала и **заменяет документы на месте**
   свёрткой истории агрегата через те же рабочие потоки ключей, что и живые события. Витрины не стираются, касса
   открыта (D-16): команды принимаются, а бронь во время пересборки видна сразу или в конце, когда пересборка дойдёт
-  до её зала. `pace_ms` — пауза между событиями одного ключа (D-18; UI шлёт `ENCORE_REPLAY_SLOW_DELAY_MS = 80` в
+  до её зала. `pace_ms` — пауза между событиями одного ключа (D-18; UI шлёт `ENCORE_REBUILD_SLOW_PACE_MS = 80` в
   медленном режиме или 0). Наблюдатель сервиса раз в 250 мс читает строки закладок: `rebuild.started { rebuild_id,
   pace_ms, keys_total, events_total }`, `rebuild.progress { keys }`, `rebuild.finished { keys, duration_ms }`;
   каждый заменённый документ даёт `projection.rebuilt { projection, view_id, events, reason }`.
@@ -389,10 +389,10 @@ outbox-обработчиками; wipe и replay его **не трогают**
   (`request_rebuild_key`), остальное не трогается.
 - **Статус** (`GET /api/projections/status`): по каждой проекции закладка, отставание в событиях (`count_after` с
   потолком `ENCORE_PROJECTION_LAG_CAP`), владелец, сбои и состояние `stalled` > `unclaimed` > `starting` >
-  `rebuilding` > `live`; при недоступном хранилище закладок — последние известные строки с `stale: true`.
+  `rebuilding` > `live`; при недоступном хранилище закладок — последние известные строки с `from_cache: true`.
 - **🔍 Проверить витрину** `[P1]` (`GET /api/projections/verify`, разрешён всегда, и во время Encore!): каждый документ
   сравнивается со свёрткой **применённой им части** истории (`last_sequence`, D-20). Отстающий или отсутствующий
-  документ — не ошибка, он считается в `behind { documents, events }`; расхождением (`differs`, `unexpected`)
+  документ — не ошибка, он считается в `behind { documents, events }`; расхождением (`differs`, `without_history`)
   становится только неверный. Ответ `{ ok, checked, behind, differences }`: «✅ N верны, M отстают на K событий» или
   «❌ N расхождений». Документы читаются раньше истории, поэтому коммит между чтениями даёт `behind`, а не ложное
   расхождение.
@@ -496,7 +496,7 @@ services:
       retries: 30
   mongo:
     image: docker.io/library/mongo:8.0               # можно 9.0; драйвер 3.9 требует сервер ≥ 4.4
-    ports: ["127.0.0.1:${ENCORE_MONGO_PORT:-27018}:27017"]
+    ports: ["127.0.0.1:${ENCORE_MONGODB_PORT:-27018}:27017"]
     volumes: ["encore-mongo:/data/db"]
     healthcheck:
       test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
@@ -551,7 +551,7 @@ MongoDB для демо — без аутентификации; порты Post
 | Сервис | Порт (host) | Переопределение |
 |---|---|---|
 | PostgreSQL | 5434 | `ENCORE_POSTGRES_PORT` |
-| MongoDB | 27018 | `ENCORE_MONGO_PORT` |
+| MongoDB | 27018 | `ENCORE_MONGODB_PORT` |
 | back-end | 8080 | `ENCORE_HTTP_ADDR` |
 | sidecar | 8090 | `SIDECAR_HTTP_ADDR` |
 | front-end (dev, Vite) | 5173 | `vite.config.ts` |
@@ -561,8 +561,8 @@ MongoDB для демо — без аутентификации; порты Post
 |---|---|---|---|
 | `ENCORE_DATABASE_URL` | back-end | `postgresql://cqrsx:cqrsx@localhost:5434/encore` | event store + outbox |
 | `ENCORE_MONGODB_URI` | back-end | `mongodb://localhost:27018` | проекции |
-| `ENCORE_READ_DB` | back-end, sidecar | `encore_read` | база витрин |
-| `ENCORE_MAIL_DB` | sidecar | `mail_service` | база почтового сервиса (пишет его имитация в sidecar, показывает X-ray; back-end к ней не подключается) |
+| `ENCORE_MONGODB_DATABASE` | back-end, sidecar | `encore_read` | база витрин |
+| `SIDECAR_MAIL_DB` | sidecar | `mail_service` | база почтового сервиса (пишет его имитация в sidecar, показывает X-ray; back-end к ней не подключается) |
 | `ENCORE_MAIL_SERVICE_URL` | back-end | `http://127.0.0.1:8090` | внешний почтовый сервис (`POST /mail`); в демо его хостит sidecar |
 | `ENCORE_HTTP_ADDR` | back-end | `127.0.0.1:8080` | |
 | `SIDECAR_MAIL_FAILURE_RATE` | sidecar | `0.2` | DEMO ONLY: шанс, что почтовый сервис ответит `503` и задача уйдёт в retry (до 2026-10-17 — `ENCORE_TASK_FAILURE_RATE` back-end) |
@@ -572,7 +572,7 @@ MongoDB для демо — без аутентификации; порты Post
 | `ENCORE_TASK_RETRY_BASE_MS` / `ENCORE_TASK_RETRY_MAX_MS` | back-end | `1000` / `8000` | backoff почтовых задач через `retry_after`: 1, 2, 4, 8, 8 с |
 | `ENCORE_TICKET_LIMIT` | back-end | `4` | правило R6 |
 | `ENCORE_SNAPSHOT_EVERY` | back-end | `10` | снапшот каждые N событий (U12) |
-| `ENCORE_REPLAY_SLOW_DELAY_MS` | back-end | `80` | slow-motion replay |
+| `ENCORE_REBUILD_SLOW_PACE_MS` | back-end | `80` | slow-motion replay |
 | `SIDECAR_SEED` | sidecar | `true` | анонс трёх концертов по умолчанию при старте (через API back-end) |
 | `SIDECAR_RESET_ENABLED` | sidecar | `true` | `POST /inspect/reset` (кнопка ⟲ в UI) |
 | `SIDECAR_BACKEND_URL` | sidecar | `http://127.0.0.1:8080` | куда слать `AnnounceConcert` |
@@ -583,11 +583,11 @@ MongoDB для демо — без аутентификации; порты Post
 | `SIDECAR_POLL_MS` | sidecar | `400` | период опроса БД |
 | `RUST_LOG` | оба | `info` | **один уровень** (`off/error/warn/info/debug/trace`): `cqrsx::logging::LoggingConfig::from_env` директивы вида `info,crate=debug` отвергает; sidecar читает так же |
 | `OUTBOX_WORKER_CONCURRENCY` (C) | back-end | `2` (библиотека: 128) | воркеры task runtime |
-| `OUTBOX_QUEUE_CAPACITY` (Q) | back-end | `2` (128) | локальный буфер claim-ов (`buffer_capacity`) |
-| `OUTBOX_QUEUE_REFILL_PERCENT` | back-end | `25` (25) | claim, когда в буфере меньше этой доли Q; тогда буфер заполняется (`buffer_refill_percent`) |
-| `OUTBOX_POLL_INTERVAL_MS` | back-end | `300` (1000) | период опроса outbox и recovery просроченных lease |
-| `OUTBOX_HANDLER_TIMEOUT_SECS` (H) | back-end | `5` (15) | запрос к почтовому сервису сдаётся на секунду раньше (`Config::mail_request_timeout`), чтобы попытка закончилась своим retry, а не таймаутом обработчика |
-| `OUTBOX_LEASE_SECS` (L) | back-end | `30` (60) | валидируется библиотекой: `L > 2·S + H + 5 с + ceil(Q/C)·(H+S)` = 24 с |
+| `OUTBOX_BUFFER_CAPACITY` (Q) | back-end | `2` (128) | локальный буфер claim-ов (`buffer_capacity`) |
+| `OUTBOX_BUFFER_REFILL_PERCENT` | back-end | `25` (25) | claim, когда в буфере меньше этой доли Q; тогда буфер заполняется (`buffer_refill_percent`) |
+| `OUTBOX_POLL_MS` | back-end | `300` (1000) | период опроса outbox и recovery просроченных lease |
+| `OUTBOX_HANDLER_TIMEOUT_MS` (H) | back-end | `5000` (15000) | запрос к почтовому сервису сдаётся на секунду раньше (`Config::mail_request_timeout`), чтобы попытка закончилась своим retry, а не таймаутом обработчика |
+| `OUTBOX_LEASE_MS` (L) | back-end | `30000` (60000) | валидируется библиотекой: `L > 2·S + H + 5 с + ceil(Q/C)·(H+S)` = 24 с |
 | `OUTBOX_STORAGE_TIMEOUT_MS` (S) | back-end | `3000` (6000) | бюджет claim/settle; с дефолтом 6000 lease 30 с не пройдёт |
 | `OUTBOX_POSTGRES_STATEMENT_TIMEOUT_MS` | back-end | `4000` (4000) | statement_timeout транзакций очереди |
 
@@ -670,7 +670,7 @@ HTTP и управляет остановкой. Полный актуальны
 | `POST /api/concerts/{concert_id}/commands` | write | выполнить команду | 200, 400, 409, 422, 503 |
 | `GET /api/concerts` | read: `concert_halls` | сводка по всем концертам | 200 (`[]`, если витрина пуста) |
 | `GET /api/concerts/{concert_id}` | read: `concert_halls` | документ схемы зала | 200, 404 `projection_missing` |
-| `GET /api/fans/{fan_id}/wallet` | read: `fan_wallets`, диапазон `_id` журналов фаната | кошелёк фаната, собранный из его журналов: `{ fan_id, ledgers: [{ concert_id, version, last_sequence }], view }` (D-14) | 200, 404 |
+| `GET /api/fans/{fan_id}/wallet` | read: `fan_wallets`, диапазон `_id` журналов фаната | кошелёк фаната, собранный из его журналов: `{ fan_id, ledgers: [{ concert_id, revision, last_sequence }], view }` (D-14) | 200, 404 |
 | `GET /api/concerts/{concert_id}/timeline` | event store | события концерта для ползунка | 200 |
 | `GET /api/concerts/{concert_id}/state-at/{sequence}` | event store | машина времени | 200, 404 |
 | `POST /api/projections/rebuild` | admin | Encore! `{ pace_ms }` при открытой кассе | 202, 400, 409, 503 |
@@ -735,8 +735,8 @@ fallback, UI берёт текст из i18n по `code` и `params`.
 Персонажи и концерты по умолчанию — реквизит демо, их отдаёт sidecar (`GET /inspect/demo`); параметры имитации
 почты у back-end больше нет (аудит 2026-10-17).
 
-**`GET /api/concerts`** — `[{ concert_id, artist, city, date, sold, capacity, revenue, sold_out, last_sequence, version }]`.
-**`GET /api/concerts/{id}`** — `{ concert_id, version, view }` (как в §2.8).
+**`GET /api/concerts`** — `[{ concert_id, artist, city, date, sold, capacity, revenue, sold_out, last_sequence, revision }]`.
+**`GET /api/concerts/{id}`** — `{ concert_id, revision, view }` (как в §2.8).
 **`GET /api/concerts/{id}/timeline`** — `[{ sequence, event_type, recorded_at, summary }]`, где `summary` — короткая
 строка вида `"B4 → Fox"`.
 **`GET /api/concerts/{id}/state-at/{n}`** — `{ sequence: n, last_sequence, state: { info, bookings }, event }`.
@@ -752,10 +752,10 @@ Activity хранится только в памяти — это лог, а н�
 | `command.accepted` | команда закоммичена | `aggregate_type`, `aggregate_id`, `command_id`, `correlation_id`, `source`, `command_type`, `fan_id?`, `tasks` (без `sequence`: executor его не возвращает, D-04) |
 | `command.rejected` | доменный отказ | `aggregate_type`, `aggregate_id`, `command_id`, `correlation_id`, `source`, `command_type`, `code`, `params` (для `source: "task:…"` UI не показывает тост) |
 | `command.failed` | conflict / unavailable | `aggregate_type`, `aggregate_id`, `command_id`, `source`, `outcome`, `message` |
-| `projection.updated` | процессор применил события к документу | `projection`, `view_id`, `sequence`, `events` |
+| `projection.applied` | процессор применил события к документу | `projection`, `view_id`, `sequence`, `events` |
 | `projection.failed` | раунд процессора не удался (повтор после паузы) | `projection`, `view_id?`, `handler`, `category`, `failures`, `message` |
 | `projection.rebuilt` | документ заменён свёрткой своей истории (Encore!, один зал, лечение дыры) | `projection`, `view_id`, `events`, `reason` (`requested` / `healed`) |
-| `projection.lease` | нода взяла, потеряла или отдала закладку | `projection`, `lease` (`acquired` / `lost` / `released`), `owner` |
+| `projection.lease_changed` | нода взяла, потеряла или отдала закладку | `projection`, `lease` (`acquired` / `lost` / `released`), `owner` |
 | `task.attempt.started` | обработчик задачи начал попытку | `task_id`, `format`, `attempt`, `correlation_id` |
 | `task.attempt.failed` | 🎲 отказ (retry) | `task_id`, `format`, `attempt`, `reason_code`, `retry: true` |
 | `task.attempt.succeeded` | письмо доставлено | `task_id`, `format`, `attempt`, `inbox_id`, `duplicate` |
@@ -799,18 +799,18 @@ Activity хранится только в памяти — это лог, а н�
 - Запись документов — у процессора (библиотечный `MongoViewRepository`), чтение для API — `MongoReadModel` демо; сброс
   коллекции — 🧨 wipe у sidecar, не у back-end.
 
-### 6.8 `RebuildService`
+### 6.8 `ReadSideService`
 
-- `RebuildService<C: CheckpointStore>` за портом `ReadSide` (`status`, `rebuild(pace)`, `rebuild_concert(id)`): только
+- `ReadSideService<C: CheckpointStore>` за портом `ReadSide` (`status`, `rebuild(pace)`, `rebuild_concert(id)`): только
   просит и смотрит; пересобирают владельцы закладок. Состояние в памяти ноды — запущенный Encore! и `last_result`
   плюс последние прочитанные строки закладок для статуса при недоступном хранилище.
 - `rebuild(pace)` → `request_rebuild` обеим строкам (`concert_halls`/`Concert`, `fan_wallets`/`Fan`): принята хотя бы
-  одна → `202`; обе уже идут → `409 rebuild_in_progress`; `pace > ENCORE_REPLAY_MAX_PACE_MS` → `400`; отказ хранилища
+  одна → `202`; обе уже идут → `409 rebuild_in_progress`; `pace > ENCORE_REBUILD_MAX_PACE_MS` → `400`; отказ хранилища
   или ещё не зарегистрированная строка → `503`. Затем `tokio::spawn` наблюдателя: раз в 250 мс читает строки,
   публикует `rebuild.progress`, и когда ни у одной строки нет запроса и курсора (или строки нет), — `rebuild.finished`.
 - `rebuild_concert(id)` → `request_rebuild_key` строки залов.
 - `status()` — раздел 2.9: таймаут чтения `ENCORE_PROJECTION_STATUS_TIMEOUT_MS`, отставание
-  `PostgresEventRepository::count_after(position, cap)` через порт `EventLedgerStats` (D-24).
+  `PostgresEventRepository::count_after(position, cap)` через порт `JournalStats` (D-24).
 - Процессоры (`bootstrap::projections`): по одному на витрину, `ViewProjection::new(MongoReadModel)` под
   `ProjectionProcessor` с общим `MongoCheckpointStore`, журнал читают через отдельный пул
   `ENCORE_DATABASE_PROJECTION_POOL_SIZE`, `ENCORE_PROJECTION_*` → `ProcessorConfig`, `ENCORE_NODE_NAME` — имя владельца.
@@ -956,7 +956,7 @@ back-end оставался production-подобным: seed концертов
 │    A  ▢ ▢ 🦊 ▢ ▢ ▢ ▢ ▢   VIP 120 €         ├─────────────────────────┼─────────────────────────┤
 │    B  ▢ ▢ ▢ 🐼 ▢ ▢ ▢ ▢   Standard 80 €     │ 🍃 concert_halls │ wallets│ 📬 inbox │ 📜 activity  │
 │    C  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢                     │ { "_id": "radiohead-2026-11-21",│ 🎫 B4 → Fox (поп. 2)  │
-│    D  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢   Balcony 50 €      │   "version": 13,        │ 🎲 B5: попытка 1 ✖      │
+│    D  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢   Balcony 50 €      │   "revision": 13,       │ 🎲 B5: попытка 1 ✖      │
 │    E  ▢ ▢ ▢ ▢ ▢ ▢ ▢ ▢                     │   "view": { "sold": 12, │ ✅ B4 доставлен         │
 │ ⏳ ●━━━━━━━━━━━━━━━━━━○  событие 12 из 12   │     … } }               │                         │
 │ [🤖 Перекупщик] [🌊 Толпа] [⚡ Гонка]       │                         │                         │
@@ -1076,7 +1076,7 @@ Fan и письмо накладывались бы друг на друга. Е
 
 Правила обновления данных:
 - после ответа на собственную команду → перезапросить зал (концерт), кошелёк (персонаж) и список;
-- `projection.updated` (например, из другой вкладки) → перезапрос с debounce 150 мс;
+- `projection.applied` (например, из другой вкладки) → перезапрос с debounce 150 мс;
 - во время rebuild → перезапрос зала и списка не чаще раза в 250 мс (места «загораются» по одному), по
   `rebuild.finished` — финальный перезапрос;
 - `projections.wiped` → сбросить кэш view → места `unknown`;
@@ -1281,10 +1281,10 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 
 ### Фаза 6 — Replay и машина времени
 
-- `RebuildService` (пересборка на месте процессорами, прогресс, slow-motion через `pace_ms`), `timeline`, `state-at`;
+- `ReadSideService` (пересборка на месте процессорами, прогресс, slow-motion через `pace_ms`), `timeline`, `state-at`;
   🧨 wipe — у sidecar (Фаза 7).
 - **Приёмка:** после wipe коллекций нет, бронь занятого места → всё так же 422; fast-rebuild даёт документы,
-  совпадающие с документами до wipe (сравнение JSON без `version` — тестом или `scripts/compare-projections.sh`);
+  совпадающие с документами до wipe (сравнение JSON без `revision` — тестом или `scripts/compare-projections.sh`);
   slow-rebuild 100 событий ≈ 8 с с прогрессом; команды во время rebuild принимаются (D-16), задачи цепочки идут как
   обычно; число писем в inbox и строк outbox не меняется; `state-at` возвращает верное
   историческое состояние.
@@ -1371,7 +1371,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | U7 | API `TaskHandlerError` (retry / permanent), `TaskAttempt` (`task_id`, `number`), требования `TaskDispatcherFactory` | `task/handler.rs`, `task/attempt.rs`, `task/runtime/dispatcher_factory.rs` | — (разобраться обязательно) |
 | U8 | API `EventReplay` / `ReplayStream` (все id и один id), поведение при ошибке обработчика. *Снято в 03/05 (2026-10-25): replay и потоки удалены, пересборку ведёт процессор (`request_rebuild`, `request_rebuild_key`).* | `cqrs/event_handler/replay.rs`, `cqrs/store/stream.rs`, `postgres/event_repository/stream.rs` | — |
 | U9 | Где SQL-файлы схем для корневого compose; путь тома PG 18; флаги SELinux | корневой `compose.yaml`, `postgres.rs` (`include_str!`) | применять константы при старте back-end (§5.2) |
-| U10 | Какие env-ключи читает `cqrsx` (`OUTBOX_QUEUE_CAPACITY` и др.), дефолты, кросс-валидация бюджетов (lease vs задержка) | `task/runtime/config.rs`, `env.rs`, `postgres/task_runtime.rs` | задать значения кодом |
+| U10 | Какие env-ключи читает `cqrsx` (`OUTBOX_BUFFER_CAPACITY` и др.), дефолты, кросс-валидация бюджетов (lease vs задержка) | `task/runtime/config.rs`, `env.rs`, `postgres/task_runtime.rs` | задать значения кодом |
 | U11 | Feature-флаги `cqrsx`, версия `sqlx` | `cqrsx/Cargo.toml` | — |
 | U12 | Как включить снапшоты (`SnapshotPolicy` приватна) и схема `snapshots` | `cqrs/store/persisted.rs`, `PostgresCommandConfig` | без снапшотов: панель пишет «снапшоты выключены» |
 | U13 | Сигнатура `host::lifecycle::run` (как передать axum как inbound) | `host/lifecycle.rs` | — |
@@ -1419,13 +1419,13 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 | **D-14** | **Журнал `Fan` — на пару «фанат + концерт»:** `aggregate_id = <fan_id>:<concert_id>`, `fan_wallets._id` тот же; домен `Fan`, wire-форматы событий и снапшота, `ViewProjection`, rebuild и verify не меняются. Кошелёк фаната собирается при чтении из диапазона `_id` `[<fan>:, <fan>;)` и отвечает `{ fan_id, ledgers, view }`. Причина: нагрузочный прогон 03b 2026-10-18 — состояние, снапшот и документ кошелька одного фаната росли без границы, стоимость задачи O(n), слив outbox 120 → 12 задач/с, потери проекции (`docs/discussions/06_fan_ledger_growth.md`). Данные демо пересоздаются (`make reset`). | §2.1, §2.3, §2.8, §3.2, §6.4 | ☑ реализовано 2026-10-18 |
 | **D-15** | **Документ без истории не создаётся.** Документ витрины хранит `last_sequence` и принимает только следующее событие своего агрегата (`cqrsx`, эпик 03/01: повтор пропускается, дыра — `SequenceGap` без записи); пересборка и лечение дыры заменяют документ свёрткой истории с начала. Флаг `incomplete` удалён из вида, API и UI. Совместимость со старыми базами не поддерживается: проект не выпущен, данные пересоздаются (`make reset`). | §2.8, §2.9, §6.7, §8.6 | ☑ реализовано 2026-10-24 |
 | **D-16** | **Касса открыта во время Encore!:** пересборка идёт на месте, команды принимаются, `BoxOfficeLock`, `423` и `ENCORE_CHAIN_MAX_ATTEMPTS` удалены. | §2.9, §3.4, §6.4, §6.8 | ☑ реализовано 2026-10-25 |
-| **D-17** | **Ответ команды — «принято» сразу после коммита**, без `projection_failed`; состояние витрины — SSE `projection.updated` и `/api/projections/status`; UI ждёт `projection.updated` своего документа вместо немедленного чтения. | §2.8, §6.6, §8 | ☑ реализовано 2026-10-25 |
-| **D-18** | **`pace_ms` вместо `speed`** в Encore!: пауза между событиями одного ключа; верхняя граница `ENCORE_REPLAY_MAX_PACE_MS`. | §2.9, §6.4 | ☑ реализовано 2026-10-25 |
+| **D-17** | **Ответ команды — «принято» сразу после коммита**, без `projection_failed`; состояние витрины — SSE `projection.applied` и `/api/projections/status`; UI ждёт `projection.applied` своего документа вместо немедленного чтения. | §2.8, §6.6, §8 | ☑ реализовано 2026-10-25 |
+| **D-18** | **`pace_ms` вместо `speed`** в Encore!: пауза между событиями одного ключа; верхняя граница `ENCORE_REBUILD_MAX_PACE_MS`. | §2.9, §6.4 | ☑ реализовано 2026-10-25 |
 | **D-20** | **Verify сравнивает документ со свёрткой применённой им части истории;** отстающие и отсутствующие считаются в `behind`, расхождение — только неверный документ; стенд проверяет после догона и требует ноль отстающих. | §2.9 | ☑ реализовано 2026-10-25 |
 | **D-21** | **Сцена «убитая нода» — только на стенде** (`load/chaos/`); compose демо с одной нодой, потому что лента событий живёт в памяти ноды. | §3.4 | ☑ стенд 2026-10-25 |
 | **D-22** | **Нагрузочные и стресс-прогоны не дольше 5 минут;** часовой soak не нужен. | `load/` | ☑ принято 2026-10-24 |
 | **D-23** | **Полный замер тикета 04 — 42 прогона** с отставанием проекций p50/p99 в каждой точке. | `load/` | см. `PROGRESS.md` |
-| **D-24** | **Отставание считает `PostgresEventRepository::count_after(position, cap)`** через порт `EventLedgerStats`, потолок `ENCORE_PROJECTION_LAG_CAP` (100 000). | §2.9, §6.8 | ☑ реализовано 2026-10-25 |
+| **D-24** | **Отставание считает `PostgresEventRepository::count_after(position, cap)`** через порт `JournalStats`, потолок `ENCORE_PROJECTION_LAG_CAP` (100 000). | §2.9, §6.8 | ☑ реализовано 2026-10-25 |
 | **D-25** | **Историческое решение: задачи планируются из решения агрегата** (эпик 04, тикет 20). Агрегат решает только события; процесс — один тип с `TaskPlanner<Concert>` и `TaskPlanner<Fan>`; исполнитель регистрирует кортеж процессов. Метаданные — карта; ядро читает из неё `Causation`, штампует задачи и выводит их id (UUID v5). Отмена без предварительного чтения концерта. | §2.4, §2.7 | ☑ реализовано 2026-10-26 |
 | **D-26** | **Реакции по агрегату в модуле; процесс читается от события по типам задач.** Заменяет D-25: `Reactions` определяет задачи из фактов, функции-обработчики и их политики регистрирует модуль; инфраструктуру собирает `Cqrs`. | §2.4, §2.7, §3 | ☑ реализовано в эпике 05 |
 
@@ -1442,8 +1442,7 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 
 Одно понятие — одно слово на каждом языке интерфейса (`front-end/src/i18n/{ru,en}.ts`) и одно имя в коде. Правила
 имён библиотеки — `doc/components.md`, раздел «Naming and integration rules»; эта таблица — слова демо. Тексты
-приложения и i18n приводятся к ней при переименованиях демо (эпик 08, задача 05): до того в них ещё встречаются
-«закладка» и «bookmark» для снимка, «ledger» для журнала и «replay» для пересборки.
+приложения и i18n приведены к ней задачей 05 эпика 08 (2026-11-01).
 
 | Понятие | ru UI | en UI | В коде |
 |---|---|---|---|
@@ -1480,18 +1479,18 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 **① Журнал событий / Event store**
 - **RU:** Мы ничего не исправляем и не удаляем. Каждое принятое решение — «место B4 продано Fox» — дописывается
   новой строкой в таблицу `events`, как в кассовой книге. Текущее состояние зала — это все записи концерта,
-  прочитанные по порядку. Каждые 10 событий движок кладёт закладку (snapshot), чтобы не перечитывать книгу с начала.
+  прочитанные по порядку. Каждые 10 событий движок кладёт снимок (snapshot), чтобы не перечитывать книгу с начала.
   *Попробуйте:* забронируйте место и найдите новую строку в 🐘 events; подвигайте ⏳ машину времени.
 - **EN:** Nothing is ever edited or deleted. Every accepted decision — "seat B4 sold to Fox" — is appended to the
-  `events` table, like a ledger. The current state of the hall is simply all of the concert's records read in order.
-  Every 10 events the engine stores a bookmark (snapshot) so it doesn't have to reread the whole book.
+  `events` table, like a journal. The current state of the hall is simply all of the concert's records read in order.
+  Every 10 events the engine stores a snapshot so it doesn't have to reread the whole book.
   *Try it:* book a seat and find the new row in 🐘 events; drag the ⏳ time machine.
 
 **② Команды и правила / Commands and rules**
 - **RU:** Клик — это команда: просьба, а не факт. Агрегат «Концерт» восстанавливает себя из журнала и проверяет
   правила: место существует, оно свободно, не больше 4 билетов в одни руки. Нарушено правило — команда отклонена,
   и в журнал не попадает ни одной строки. *Попробуйте:* любую кнопку 🧪 или 🤖 перекупщика.
-- **EN:** A click is a command — a request, not a fact. The Concert aggregate rebuilds itself from the ledger and
+- **EN:** A click is a command — a request, not a fact. The Concert aggregate rebuilds itself from the journal and
   checks the rules: the seat exists, it is free, no more than 4 tickets per fan. If a rule is broken, the command is
   rejected and not a single row is written. *Try it:* any 🧪 button or the 🤖 scalper.
 
@@ -1513,10 +1512,10 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
   и кошелёк догоняет зал на шаг позже. MongoDB здесь — витрина, которую не страшно разбить: правда хранится только
   в журнале PostgreSQL.
   *Попробуйте:* запустите 🌊 толпу и сравните документы `concert_halls` и `fan_wallets`.
-- **EN:** A screen needs data shaped for it, not a ledger. Event handlers turn events into MongoDB documents: a seat
-  map from the concert's ledger and a wallet from the fan's ledger. One click, two event streams, two different read
+- **EN:** A screen needs data shaped for it, not a journal. Event handlers turn events into MongoDB documents: a seat
+  map from the concert's journal and a wallet from the fan's ledger. One click, two event streams, two different read
   models, and the wallet catches up one step later. MongoDB is a shop window that is safe to break: the truth lives
-  only in the PostgreSQL ledger.
+  only in the PostgreSQL journal.
   *Try it:* run the 🌊 crowd and compare the `concert_halls` and `fan_wallets` documents.
 
 **⑤ Encore! / Replay**
@@ -1525,8 +1524,8 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
   пропали и закладки процессоров, поэтому они сами перечитывают журнал с начала. Письма при этом повторно не
   отправляются: внешние действия живут в outbox, а не в витринах.
   *Попробуйте:* 🧨 стереть → кликнуть занятое место → ⏪ Encore! в замедленном режиме и забронировать место.
-- **EN:** Wipe the read models — the hall goes dark, but the rules keep working: decisions are made from the ledger,
-  not the shop window. The processors lost their checkpoints too, so they read the ledger again from the start.
+- **EN:** Wipe the read models — the hall goes dark, but the rules keep working: decisions are made from the journal,
+  not the shop window. The processors lost their checkpoints too, so they read the journal again from the start.
   Press "Encore!" — every document is rebuilt in place from its history while the box office stays open. No email is
   re-sent: side effects live in the outbox, not in read models.
   *Try it:* 🧨 wipe → click a taken seat → ⏪ Encore! in slow motion and book a seat.
@@ -1535,17 +1534,17 @@ export function seatState(seat: SeatId, ctx: SeatContext): SeatUiState {
 
 | Ключ | RU | EN |
 |---|---|---|
-| `panels.events` | Журнал событий. Только INSERT — никогда UPDATE или DELETE. Ключ — (aggregate_type, aggregate_id, sequence); sequence — номер события внутри одного концерта. Если два запроса пишут одно и то же sequence, побеждает первый — это оптимистическая блокировка. | The event ledger. INSERT only — never UPDATE or DELETE. Key: (aggregate_type, aggregate_id, sequence); sequence is the event number within one concert. If two requests write the same sequence, the first wins — that's optimistic locking. |
-| `panels.snapshots` | Закладки: сохранённое состояние агрегата на событии N. Загрузка концерта = снапшот + события после него. | Bookmarks: the aggregate's saved state at event N. Loading a concert = snapshot + the events after it. |
+| `panels.events` | Журнал событий. Только INSERT — никогда UPDATE или DELETE. Ключ — (aggregate_type, aggregate_id, sequence); sequence — номер события внутри одного концерта. Если два запроса пишут одно и то же sequence, побеждает первый — это оптимистическая блокировка. | The event journal. INSERT only — never UPDATE or DELETE. Key: (aggregate_type, aggregate_id, sequence); sequence is the event number within one concert. If two requests write the same sequence, the first wins — that's optimistic locking. |
+| `panels.snapshots` | Снимки: сохранённое состояние агрегата на событии N. Загрузка концерта = снимок + события после него. | Snapshots: the aggregate's saved state at event N. Loading a concert = snapshot + the events after it. |
 | `panels.outbox` | Задачи, записанные в той же транзакции, что и событие. Воркер берёт задачу в аренду (lease), выполняет и фиксирует результат: готово — или повтор после паузы (backoff). Задача переживёт даже падение сервера. | Tasks written in the same transaction as the event. A worker leases a task, runs it and records the outcome: done, or retry after a pause (backoff). A task survives even a server crash. |
 | `panels.concert_halls` | Витрина «схема зала»: один документ на концерт. Строится только из событий; её можно удалить и пересобрать. | Read model "seat map": one document per concert. Built only from events; safe to delete and rebuild. |
 | `panels.fan_wallets` | Витрина «кошелёк фаната»: один документ на пару фанат + концерт (журнал фаната по этому концерту, агрегат Fan), который заполняется задачами outbox после каждой брони. Кошелёк на экране собран из всех журналов фаната. | Read model "fan wallet": one document per fan and concert (the fan's ledger for that concert, the Fan aggregate), which outbox tasks fill in after every booking. The wallet on screen is assembled from all of the fan's ledgers. |
-| `panels.inbox` | Не витрина! Это «внешний почтовый сервис» (имитация). Replay его не трогает — письма не уходят повторно. | Not a read model! This is the "external mail service" (simulated). Replay never touches it — no email is sent twice. |
+| `panels.inbox` | Не витрина! Это «внешний почтовый сервис» (имитация). Encore! его не трогает — письма не уходят повторно. | Not a read model! This is the "external mail service" (simulated). Encore! never touches it — no email is sent twice. |
 | `panels.activity` | Живой лог back-end: что происходит прямо сейчас. Хранится только в памяти. | Live back-end log: what is happening right now. Kept in memory only. |
 | `states.race` | Оба запроса прочитали версию N и попытались записать N+1. База приняла только первый; второй повторился на свежем состоянии — и правило «место свободно» его отклонило. | Both requests read version N and tried to write N+1. The database accepted only the first; the second was retried on fresh state — and the "seat must be free" rule rejected it. |
 | `states.history` | Это состояние нигде не хранится — оно вычислено из событий 1…{n}. | This state isn't stored anywhere — it was computed from events 1…{n}. |
-| `states.wiped` | Витрины пусты. Журнал цел: процессоры перечитывают его с начала, и зал вернётся сам. | Read models are empty. The ledger is intact: the processors read it again from the start, and the hall comes back by itself. |
-| `states.replaying` | ⏪ Encore!: витрины пересобираются по журналу на месте. Касса открыта — бронируйте. | ⏪ Encore!: the read models are rebuilt from the ledger in place. The box office stays open — book away. |
+| `states.wiped` | Витрины пусты. Журнал цел: процессоры перечитывают его с начала, и зал вернётся сам. | Read models are empty. The journal is intact: the processors read it again from the start, and the hall comes back by itself. |
+| `states.replaying` | ⏪ Encore!: витрины пересобираются по журналу на месте. Касса открыта — бронируйте. | ⏪ Encore!: the read models are rebuilt from the journal in place. The box office stays open — book away. |
 
 ### A.4 Сообщения правил
 
@@ -1577,10 +1576,10 @@ retry scheduled".
 
 RU: Сервис Concert · Сервис Fan · проекция · имена элементов как в EN (user, Command, Aggregate (rules),
 events + outbox, Outbox worker → Fan, Outbox worker → email, mail server, email, read database, UI) ·
-ничего не записано · ⏪ replay · пусто · «клик по блоку — подробности»
+ничего не записано · ⏪ Encore! · пусто · «клик по блоку — подробности»
 EN: Concert service · Fan service · projection · user · Command · Aggregate (rules) · events + outbox ·
 Outbox worker → Fan · Outbox worker → email · mail server · email · read database · UI · nothing written ·
-⏪ replay · empty · "click a block for details"
+⏪ Encore! · empty · "click a block for details"
 
 Пояснения блоков (`explain.<id>`: заголовок, вводная фраза, пункты; у агрегатов — таблица правил) — в
 `front-end/src/i18n/explain.{en,ru}.ts`.

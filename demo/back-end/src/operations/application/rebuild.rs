@@ -6,19 +6,22 @@
 //! on whatever node, walks the keys of the journal and replaces the documents in place through the same key
 //! workers as the live events, so commands keep running and nothing is wiped. This service only asks, then
 //! watches the rows until both rebuilds have ended and reports what it saw. It reads the rows through the port
-//! [`Checkpoints`] and the journal through [`EventLedgerStats`]: the engine's views in the process
-//! ([`EngineViews`](super::engine::EngineViews)), doubles in the tests.
+//! [`Checkpoints`] and the journal through [`JournalStats`]: the engine's views in the process
+//! ([`EngineReadSide`](super::engine::EngineReadSide)), doubles in the tests.
 use crate::{
-    operations::application::ledger::EventLedgerStats,
+    operations::application::journal::JournalStats,
     shared::application::{StorageError, activity::ActivityHub},
 };
 use async_trait::async_trait;
 use chrono::{SecondsFormat, Utc};
-use cqrsx::projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildReply};
+use cqrsx::{
+    mutex::lock,
+    projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildReply},
+};
 use serde::Serialize;
 use serde_json::{Value, json};
 use std::{
-    sync::{Arc, Mutex, MutexGuard, PoisonError},
+    sync::{Arc, Mutex},
     time::Duration,
 };
 use tokio::time::Instant;
@@ -27,23 +30,23 @@ use uuid::Uuid;
 
 /// How often a running Encore! reads the checkpoint rows for its progress and its end.
 pub const REBUILD_WATCH_INTERVAL: Duration = Duration::from_millis(250);
-/// The longest pause between the events of one key a rebuild may ask for (`ENCORE_REPLAY_MAX_PACE_MS`): a
+/// The longest pause between the events of one key a rebuild may ask for (`ENCORE_REBUILD_MAX_PACE_MS`): a
 /// longer one would hold its keys, and through the window the whole projection, for hours.
 pub const DEFAULT_MAX_PACE: Duration = Duration::from_secs(1);
-/// The pause between the events of one key a slow-motion Encore! asks for (`ENCORE_REPLAY_SLOW_DELAY_MS`): the
+/// The pause between the events of one key a slow-motion Encore! asks for (`ENCORE_REBUILD_SLOW_PACE_MS`): the
 /// UI sends it as `pace_ms`, so the seats light up one by one.
 pub const DEFAULT_SLOW_PACE: Duration = Duration::from_millis(80);
 
-/// The pace of Encore! (`ENCORE_REPLAY_*`): the slow motion the UI asks for, at most the longest pause anybody may ask
+/// The pace of Encore! (`ENCORE_REBUILD_*`): the slow motion the UI asks for, at most the longest pause anybody may ask
 /// for. The `operations` module reads it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Replay {
-    pub slow_delay: Duration,
+pub struct RebuildPace {
+    pub slow_pace: Duration,
     pub max_pace: Duration,
 }
 
 /// The bounds of the read side's operations: the lag cap and the status timeout of the engine, the longest pace of
-/// [`Replay`].
+/// [`RebuildPace`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadSideLimits {
     /// Events counted at most for one projection's lag.
@@ -58,7 +61,7 @@ pub trait Checkpoints: Send + Sync {
     /// Every row: `CheckpointStore::status(None)`.
     async fn rows(&self) -> Result<Vec<CheckpointStatus>, CheckpointError>;
     /// Asks the owner of the row `key` to rebuild every document: `CheckpointStore::request_rebuild`.
-    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError>;
+    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError>;
 }
 
 #[async_trait]
@@ -67,8 +70,8 @@ impl<C: CheckpointStore> Checkpoints for C {
         self.status(None).await
     }
 
-    async fn ask_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
-        self.request_rebuild(key, pace).await
+    async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
+        CheckpointStore::request_rebuild(self, key, pace).await
     }
 }
 
@@ -116,28 +119,24 @@ struct State {
 }
 
 /// What this node saw of the read side: the Encore! it started and the last one it saw finish, the rows it read last.
-/// The `operations` module keeps one for the process; every [`RebuildService`] of a request shares it.
+/// The `operations` module keeps one for the process; every [`ReadSideService`] of a request shares it.
 #[derive(Default)]
-pub struct RebuildState(Mutex<State>);
+pub struct ReadSideState(Mutex<State>);
 
 /// Encore! and the status of the read side, over the checkpoint rows of `C`.
-pub struct RebuildService<C> {
+pub struct ReadSideService<C> {
     checkpoints: Arc<C>,
     /// Every read model's row, the concert halls first.
     read_models: Vec<CheckpointKey>,
-    ledger: Arc<dyn EventLedgerStats>,
+    journal: Arc<dyn JournalStats>,
     activity: Arc<ActivityHub>,
     limits: ReadSideLimits,
     shutdown: CancellationToken,
-    state: Arc<RebuildState>,
+    state: Arc<ReadSideState>,
 }
 
 fn now() -> String {
     Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true)
-}
-
-fn lock(state: &RebuildState) -> MutexGuard<'_, State> {
-    state.0.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
 fn is_row_of(key: &CheckpointKey, row: &CheckpointStatus) -> bool {
@@ -170,12 +169,12 @@ fn unavailable(error: CheckpointError) -> RebuildRefused {
 /// The states of a projection, the worst first: the overall state is the worst of them.
 const STATES: [&str; 5] = ["stalled", "unclaimed", "starting", "rebuilding", "live"];
 
-impl<C: Checkpoints + 'static> RebuildService<C> {
+impl<C: Checkpoints + 'static> ReadSideService<C> {
     /// `read_models` are the rows of every read model, the concert halls first.
     pub fn new(
         checkpoints: Arc<C>,
         read_models: Vec<CheckpointKey>,
-        ledger: Arc<dyn EventLedgerStats>,
+        journal: Arc<dyn JournalStats>,
         activity: Arc<ActivityHub>,
         limits: ReadSideLimits,
         shutdown: CancellationToken,
@@ -183,7 +182,7 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
         Self {
             checkpoints,
             read_models,
-            ledger,
+            journal,
             activity,
             limits,
             shutdown,
@@ -192,7 +191,7 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
     }
 
     /// The same service over the state of this node `state`, shared with the services of the other requests.
-    pub fn with_state(mut self, state: Arc<RebuildState>) -> Self {
+    pub fn with_state(mut self, state: Arc<ReadSideState>) -> Self {
         self.state = state;
         self
     }
@@ -201,10 +200,10 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
     async fn rows(&self) -> (Vec<CheckpointStatus>, bool) {
         match tokio::time::timeout(self.limits.status_timeout, self.checkpoints.rows()).await {
             Ok(Ok(rows)) => {
-                lock(&self.state).last_rows = rows.clone();
+                lock(&self.state.0, "read_side_state").last_rows = rows.clone();
                 (rows, false)
             }
-            Ok(Err(_)) | Err(_) => (lock(&self.state).last_rows.clone(), true),
+            Ok(Err(_)) | Err(_) => (lock(&self.state.0, "read_side_state").last_rows.clone(), true),
         }
     }
 
@@ -221,7 +220,7 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
             ));
         };
         let lag = self
-            .ledger
+            .journal
             .count_after(key.aggregate_type(), row.position, self.limits.lag_cap)
             .await?;
         let rebuilding = is_rebuilding(row);
@@ -242,11 +241,11 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
                 "aggregate_type": row.aggregate_type,
                 "state": state,
                 "position": row.position.to_string(),
-                "applied": row.delivered,
+                "delivered": row.delivered,
                 "lag": lag,
                 "lag_capped": lag >= self.limits.lag_cap,
                 "owner": row.owner,
-                "locked_until": row.lease_until.map(|until| until.to_rfc3339_opts(SecondsFormat::Millis, true)),
+                "lease_until": row.lease_until.map(|until| until.to_rfc3339_opts(SecondsFormat::Millis, true)),
                 "failures": row.failures,
                 "last_error": row.last_error,
                 "rebuild": {
@@ -266,7 +265,7 @@ async fn watch<C: Checkpoints>(
     checkpoints: Arc<C>,
     keys: Vec<CheckpointKey>,
     activity: Arc<ActivityHub>,
-    state: Arc<RebuildState>,
+    state: Arc<ReadSideState>,
     shutdown: CancellationToken,
     rebuild_id: Uuid,
 ) {
@@ -299,17 +298,17 @@ async fn watch<C: Checkpoints>(
             "rebuild.finished",
             json!({ "rebuild_id": rebuild_id, "keys": result.keys, "duration_ms": result.duration_ms }),
         );
-        let mut state = lock(&state);
+        let mut state = lock(&state.0, "read_side_state");
         state.running = None;
         state.last_result = Some(result);
         return;
     }
 }
 
-impl<C: Checkpoints + 'static> RebuildService<C> {
+impl<C: Checkpoints + 'static> ReadSideService<C> {
     /// Every projection's checkpoint, lag and state, plus the rebuild this node started.
     pub async fn status(&self) -> Result<Value, StorageError> {
-        let (rows, stale) = self.rows().await;
+        let (rows, from_cache) = self.rows().await;
         let mut projections = Vec::new();
         let mut worst = STATES.len() - 1;
         for key in &self.read_models {
@@ -317,7 +316,7 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
             worst = worst.min(STATES.iter().position(|known| *known == state).unwrap_or(0));
             projections.push(projection);
         }
-        let state = lock(&self.state);
+        let state = lock(&self.state.0, "read_side_state");
         let running = state.running.as_ref().map(|running| {
             json!({
                 "rebuild_id": running.rebuild_id,
@@ -328,9 +327,9 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
         });
         Ok(json!({
             "state": STATES[worst],
-            "stale": stale,
+            "from_cache": from_cache,
             "projections": projections,
-            "rebuild": running,
+            "running": running,
             "last_result": state.last_result,
         }))
     }
@@ -344,7 +343,7 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
         }
         let mut accepted = false;
         for key in &self.read_models {
-            match self.checkpoints.ask_rebuild(key, pace).await.map_err(unavailable)? {
+            match self.checkpoints.request_rebuild(key, pace).await.map_err(unavailable)? {
                 RebuildReply::Accepted => accepted = true,
                 RebuildReply::AlreadyRunning => {}
             }
@@ -353,9 +352,9 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
             return Err(RebuildRefused::AlreadyRunning);
         }
         // Progress figures only: a failed count is reported as zero.
-        let totals = self.ledger.totals().await.unwrap_or_default();
+        let totals = self.journal.totals().await.unwrap_or_default();
         let rebuild_id = Uuid::now_v7();
-        lock(&self.state).running = Some(Running {
+        lock(&self.state.0, "read_side_state").running = Some(Running {
             rebuild_id,
             pace,
             started_at: now(),
@@ -385,8 +384,8 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operations::application::ledger::LedgerTotals;
     use cqrsx::{journal::feed::Position, memory::checkpoint_store::MemoryCheckpointStore};
+    use cqrsx_engine::views::JournalTotals;
     use std::collections::HashMap;
 
     fn halls() -> CheckpointKey {
@@ -398,9 +397,9 @@ mod tests {
     }
 
     /// Fixed totals and a lag per aggregate type; `None` fails the count.
-    struct Ledger(Mutex<HashMap<&'static str, Option<u64>>>);
+    struct Journal(Mutex<HashMap<&'static str, Option<u64>>>);
 
-    impl Ledger {
+    impl Journal {
         fn new() -> Arc<Self> {
             Arc::new(Self(Mutex::new(HashMap::from([("Concert", Some(0)), ("Fan", Some(0))]))))
         }
@@ -411,9 +410,9 @@ mod tests {
     }
 
     #[async_trait]
-    impl EventLedgerStats for Ledger {
-        async fn totals(&self) -> Result<LedgerTotals, StorageError> {
-            Ok(LedgerTotals {
+    impl JournalStats for Journal {
+        async fn totals(&self) -> Result<JournalTotals, StorageError> {
+            Ok(JournalTotals {
                 events: 9,
                 aggregates: 3,
             })
@@ -434,9 +433,9 @@ mod tests {
     };
 
     struct Setup {
-        service: RebuildService<MemoryCheckpointStore>,
+        service: ReadSideService<MemoryCheckpointStore>,
         store: MemoryCheckpointStore,
-        ledger: Arc<Ledger>,
+        journal: Arc<Journal>,
         activity: Arc<ActivityHub>,
     }
 
@@ -445,12 +444,12 @@ mod tests {
         for key in registered {
             store.register(key).await.unwrap();
         }
-        let ledger = Ledger::new();
+        let journal = Journal::new();
         let activity = Arc::new(ActivityHub::new(64, 64));
-        let service = RebuildService::new(
+        let service = ReadSideService::new(
             Arc::new(store.clone()),
             vec![halls(), wallets()],
-            ledger.clone(),
+            journal.clone(),
             activity.clone(),
             LIMITS,
             CancellationToken::new(),
@@ -458,7 +457,7 @@ mod tests {
         Setup {
             service,
             store,
-            ledger,
+            journal,
             activity,
         }
     }
@@ -516,7 +515,9 @@ mod tests {
     async fn one_row_already_running_is_enough_and_a_missing_row_or_store_is_unavailable() {
         let s = setup(&[halls(), wallets()]).await;
         assert_eq!(
-            s.store.request_rebuild(&wallets(), Duration::ZERO).await.unwrap(),
+            CheckpointStore::request_rebuild(&s.store, &wallets(), Duration::ZERO)
+                .await
+                .unwrap(),
             RebuildReply::Accepted
         );
         assert!(s.service.rebuild(Duration::ZERO).await.is_ok(), "the halls were accepted");
@@ -540,7 +541,7 @@ mod tests {
         tokio::time::sleep(REBUILD_WATCH_INTERVAL * 3).await;
         assert_eq!(kinds(&s.activity), ["rebuild.started"], "nobody took the requests yet");
         assert_eq!(
-            s.service.status().await.unwrap()["rebuild"]["rebuild_id"],
+            s.service.status().await.unwrap()["running"]["rebuild_id"],
             json!(started.rebuild_id)
         );
         run_rebuild(&s.store, &halls(), 2).await;
@@ -555,7 +556,7 @@ mod tests {
         let finished = s.activity.subscribe().0.last().unwrap().clone();
         assert_eq!(finished.fields["keys"], json!(3));
         let status = s.service.status().await.unwrap();
-        assert_eq!(status["rebuild"], Value::Null);
+        assert_eq!(status["running"], Value::Null);
         assert_eq!(status["last_result"]["keys"], json!(3));
         assert_eq!(status["last_result"]["rebuild_id"], json!(started.rebuild_id));
     }
@@ -616,7 +617,7 @@ mod tests {
             ),
             (Some("node-a"), Some(0))
         );
-        s.ledger.set_lag("Concert", Some(150));
+        s.journal.set_lag("Concert", Some(150));
         s.store
             .record_failure(&halls(), halls_owner.token, "concert_halls: connection")
             .await
@@ -633,13 +634,15 @@ mod tests {
             (Some("stalled"), Some(100), Some(true), Some("concert_halls: connection"))
         );
         assert_eq!(status["state"], "stalled");
-        s.ledger.set_lag("Concert", Some(0));
+        s.journal.set_lag("Concert", Some(0));
         let status = s.service.status().await.unwrap();
         assert_eq!(
             status["projections"][0]["state"], "live",
             "a failure the journal has moved past is no stall"
         );
-        s.store.request_rebuild(&wallets(), Duration::from_millis(80)).await.unwrap();
+        CheckpointStore::request_rebuild(&s.store, &wallets(), Duration::from_millis(80))
+            .await
+            .unwrap();
         let status = s.service.status().await.unwrap();
         assert_eq!(status["projections"][1]["state"], "rebuilding");
         assert_eq!(status["projections"][1]["rebuild"]["pace_ms"], 80);
@@ -657,13 +660,13 @@ mod tests {
     async fn a_store_that_does_not_answer_gives_the_rows_seen_last_and_a_failed_count_is_an_error() {
         let s = setup(&[halls(), wallets()]).await;
         let fresh = s.service.status().await.unwrap();
-        assert_eq!(fresh["stale"], false);
+        assert_eq!(fresh["from_cache"], false);
         s.store.set_unavailable(true);
-        let stale = s.service.status().await.unwrap();
-        assert_eq!(stale["stale"], true);
-        assert_eq!(stale["projections"], fresh["projections"]);
+        let cached = s.service.status().await.unwrap();
+        assert_eq!(cached["from_cache"], true);
+        assert_eq!(cached["projections"], fresh["projections"]);
         s.store.set_unavailable(false);
-        s.ledger.set_lag("Fan", None);
+        s.journal.set_lag("Fan", None);
         assert_eq!(
             s.service.status().await.unwrap_err(),
             StorageError("journal unavailable".into())

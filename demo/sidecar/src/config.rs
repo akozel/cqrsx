@@ -1,4 +1,4 @@
-//! Sidecar configuration (`SIDECAR_*`, `ENCORE_READ_DB`, `ENCORE_MAIL_DB`, `RUST_LOG`). Parsed once
+//! Sidecar configuration (`SIDECAR_*`, `ENCORE_MONGODB_DATABASE`, `SIDECAR_MAIL_DB`, `RUST_LOG`). Parsed once
 //! at start-up.
 use std::{env, net::SocketAddr, time::Duration};
 use thiserror::Error;
@@ -29,7 +29,7 @@ pub struct Config {
     /// DEMO ONLY: the external mail service hosted here (`POST /mail`) — the chance that a delivery
     /// is refused (and the back-end's task retried), the simulated network latency, and an optional
     /// seed that makes the dice deterministic. The latency must stay below the back-end's mail
-    /// request timeout (its `OUTBOX_HANDLER_TIMEOUT_SECS` minus one second: 4 s by default).
+    /// request timeout (its `OUTBOX_HANDLER_TIMEOUT_MS` minus one second: 4 s by default).
     pub mail_failure_rate: f64,
     pub mail_latency: (Duration, Duration),
     pub mail_chaos_seed: Option<u64>,
@@ -88,8 +88,8 @@ impl Config {
             seed: parse("SIDECAR_SEED", "true")?,
             reset_enabled: parse("SIDECAR_RESET_ENABLED", "true")?,
             mongodb_uri: var("SIDECAR_MONGODB_URI").unwrap_or_else(|| "mongodb://localhost:27018".into()),
-            read_db: var("ENCORE_READ_DB").unwrap_or_else(|| "encore_read".into()),
-            mail_db: var("ENCORE_MAIL_DB").unwrap_or_else(|| "mail_service".into()),
+            read_db: var("ENCORE_MONGODB_DATABASE").unwrap_or_else(|| "encore_read".into()),
+            mail_db: var("SIDECAR_MAIL_DB").unwrap_or_else(|| "mail_service".into()),
             http_addr: parse("SIDECAR_HTTP_ADDR", "127.0.0.1:8090")?,
             poll_interval: Duration::from_millis(poll_ms),
             mail_failure_rate,

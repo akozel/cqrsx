@@ -682,7 +682,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ("shared/application/x.rs", "use crate::concert;\n"),
         (
             "shared/infrastructure/x.rs",
-            "use crate::operations::application::ledger::EventLedgerStats;\n",
+            "use crate::operations::application::journal::JournalStats;\n",
         ),
         ("concert/domain/x.rs", "use crate::concert::application::app::ConcertApp;\n"),
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),

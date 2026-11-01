@@ -72,7 +72,7 @@ export const useCommandsStore = defineStore('commands', () => {
       emit('accepted')
       if (!options.quiet) pushToast({ kind: 'success', text: `${body.type}${seat ? ` ${seat}` : ''}` })
       // Accepted = in the ledger; the hall follows a moment later (D-17). Reading it now would show the seat as
-      // it was, so the screen waits for the hall's projection.updated in the feed, with one fallback refresh.
+      // it was, so the screen waits for the hall's projection.applied in the feed, with one fallback refresh.
       // The wallet follows the task chain the same way.
       concerts.refreshFallback()
     } else {

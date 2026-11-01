@@ -2,7 +2,7 @@
 //! the journal while the box office stays open (`202`). `pace_ms` is the pause between the events of one key
 //! (D-18): the UI sends the slow-motion delay or 0.
 use crate::{
-    operations::application::rebuild::{RebuildRefused, RebuildService},
+    operations::application::rebuild::{ReadSideService, RebuildRefused},
     shared::presentation::error::ApiError,
 };
 use axum::{
@@ -18,7 +18,7 @@ use std::{sync::Arc, time::Duration};
 
 #[derive(Debug, Default, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct RebuildRequest {
+pub struct RebuildBody {
     #[serde(default)]
     pace_ms: u64,
 }
@@ -37,17 +37,14 @@ pub fn refused(refusal: RebuildRefused) -> ApiError {
     }
 }
 
-pub async fn handle(
-    State(cqrs): State<Arc<Cqrs>>,
-    body: Result<Json<RebuildRequest>, JsonRejection>,
-) -> Result<Response, ApiError> {
+pub async fn handle(State(cqrs): State<Arc<Cqrs>>, body: Result<Json<RebuildBody>, JsonRejection>) -> Result<Response, ApiError> {
     // No body means full speed; anything else must parse.
     let request = match body {
         Ok(Json(request)) => request,
-        Err(JsonRejection::MissingJsonContentType(_)) => RebuildRequest::default(),
+        Err(JsonRejection::MissingJsonContentType(_)) => RebuildBody::default(),
         Err(error) => return Err(ApiError::invalid(format!("invalid rebuild request: {error}"))),
     };
-    let started = RebuildService::of(&cqrs)?
+    let started = ReadSideService::of(&cqrs)?
         .rebuild(Duration::from_millis(request.pace_ms))
         .await
         .map_err(refused)?;

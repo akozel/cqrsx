@@ -352,7 +352,7 @@ describe('demo operations (sidecar)', () => {
         if (url === '/api/fans/fox/wallet')
           return ok({
             fan_id: 'fox',
-            ledgers: [{ concert_id: 'radiohead-2026-11-21', version: 1, last_sequence: 0 }],
+            ledgers: [{ concert_id: 'radiohead-2026-11-21', revision: 1, last_sequence: 0 }],
             view: { fan_id: 'fox', fan_name: 'Fox', tickets: {}, active_count: 0, total_spent: 0, last_sequence: 0 },
           })
         if (url === '/inspect/mail/fox')
@@ -415,7 +415,7 @@ describe('demo operations (sidecar)', () => {
         const ok = (body: unknown) => ({ ok: true, status: 200, json: async () => body })
         if (url === '/inspect/reset') return ok({ outcome: 'reset', report: { announced: [] } })
         if (url === '/api/concerts') return ok([])
-        if (url === '/api/projections/status') return ok({ state: 'live', stale: false, projections: [], rebuild: null, last_result: null })
+        if (url === '/api/projections/status') return ok({ state: 'live', from_cache: false, projections: [], running: null, last_result: null })
         return { ok: false, status: 404, json: async () => null }
       }),
     )

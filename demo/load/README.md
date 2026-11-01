@@ -184,13 +184,13 @@ dependency outages are `chaos/`.
 ## Knobs worth turning
 
 - `WORKERS`: outbox workers. They share the PostgreSQL pool with HTTP and the poller.
-- `QUEUE`, `REFILL`, `LEASE`: the claimed tasks waiting for a worker (`OUTBOX_QUEUE_CAPACITY`, default
+- `QUEUE`, `REFILL`, `LEASE`: the claimed tasks waiting for a worker (`OUTBOX_BUFFER_CAPACITY`, default
   `WORKERS`), the percent of it below which the back-end claims again and fills it
-  (`OUTBOX_QUEUE_REFILL_PERCENT`, default 25; an image before ticket 04/19 claims for every freed slot), and the
-  task lease (`OUTBOX_LEASE_SECS`, default 30). The lease must exceed `16 + ceil(QUEUE / WORKERS) * 8` seconds
+  (`OUTBOX_BUFFER_REFILL_PERCENT`, default 25; an image before ticket 04/19 claims for every freed slot), and the
+  task lease (`LEASE` in seconds, default 30; the back-end gets it as `OUTBOX_LEASE_MS`, in milliseconds). The lease must exceed `16 + ceil(QUEUE / WORKERS) * 8` seconds
   with the back-end's handler and storage timeouts, so `run.sh` refuses a `QUEUE` above `WORKERS` without
   `LEASE`. All three are in `meta` (`outbox_queue_capacity`, `outbox_refill_percent`, `outbox_lease_s`).
-- `POOL`: the size of that pool (`ENCORE_DATABASE_POOL_SIZE`, default 10). The 2026-10-18 runs put the
+- `POOL`: the size of that pool (`ENCORE_DATABASE_MAIN_POOL_SIZE`, default 10). The 2026-10-18 runs put the
   write-path plateaus (~7.3k announces/s, ~4.3k bookings/s) on this ceiling: nothing else was saturated.
 - `MONGO_POOL`: the back-end's MongoDB client pool (`ENCORE_MONGODB_POOL_SIZE`; empty = the back-end's default,
   `meta.mongo_pool` in `result.json`). The read models' writes, the processors' checkpoints and the HTTP reads
@@ -200,10 +200,10 @@ dependency outages are `chaos/`.
   under its lock, in arrival order; these bound the wait for the lock, past them a command gets 503. Before
   backlog 02/08c an `ORDERING` parameter could also let them race (`concurrent`); `meta.command_ordering` in
   an older `result.json` records it, and `default` there means `concurrent` for images built before 08b.
-- `PROJECTION_BUFFER` and `PROJECTION_MAX_BATCH`: a projection processor reads the journal by its checkpoint and
+- `PROJECTION_KEY_BUFFER` and `PROJECTION_MAX_BATCH`: a projection processor reads the journal by its checkpoint and
   hands the events to a buffer per document, applied in order and in batches. Before backlog 02/08d a `DELIVERY`
   parameter could also let a command update the read models itself (`inline`); `meta.projection_delivery` in an
-  older `result.json` records it. `PROJECTION_BUFFER` bounds that buffer (64 per aggregate), `PROJECTION_MAX_BATCH`
+  older `result.json` records it. `PROJECTION_KEY_BUFFER` bounds that buffer (64 per aggregate), `PROJECTION_MAX_BATCH`
   the events per read-model update (32; 1 = no batches).
 - `VERIFY=1`: after the burst, wait for the chain tasks and for the projections to catch up, then compare every
   document with the history of its aggregate (`verify.json`, `verify` in `result.json`: `ok`, `behind_documents`

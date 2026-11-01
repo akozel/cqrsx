@@ -55,6 +55,7 @@ use cqrsx_engine::{
     build::{BuildError, Builder},
     settings::{Settings, duration_text},
     setup::Setup,
+    views::JournalTotals,
 };
 use cqrsx_testing::{
     command_executor::TestCommandExecutor,
@@ -85,8 +86,8 @@ use encore_backend::{
     operations,
     operations::application::{
         activity_observer::{ActivityObserver, CommandActivityObserver},
-        ledger::{EventLedgerStats, LedgerTotals},
-        rebuild::{ReadSideLimits, RebuildService},
+        journal::JournalStats,
+        rebuild::{ReadSideLimits, ReadSideService},
     },
     shared::{
         application::{
@@ -310,8 +311,6 @@ fn the_golden_configuration_is_what_env_example_documents() {
         // The golden file writes durations as `duration_text` does; `.env.example` in the variable's unit.
         let in_unit = if name.ends_with("_MS") {
             duration(value).as_millis().to_string()
-        } else if name.ends_with("_SECS") {
-            duration(value).as_secs().to_string()
         } else if name.ends_with("_PERCENT") {
             value.strip_suffix(" %").unwrap().to_owned()
         } else {
@@ -328,12 +327,12 @@ fn the_golden_configuration_is_what_env_example_documents() {
 // --- activity feed -------------------------------------------------------------------------------------------
 
 /// Totals and a lag for the rebuild service.
-struct Ledger;
+struct Journal;
 
 #[async_trait::async_trait]
-impl EventLedgerStats for Ledger {
-    async fn totals(&self) -> Result<LedgerTotals, StorageError> {
-        Ok(LedgerTotals {
+impl JournalStats for Journal {
+    async fn totals(&self) -> Result<JournalTotals, StorageError> {
+        Ok(JournalTotals {
             events: 9,
             aggregates: 3,
         })
@@ -430,7 +429,7 @@ fn variant_field(kind: &str) -> Option<&'static str> {
     match kind {
         "command.failed" => Some("outcome"),
         "projection.rebuilt" => Some("reason"),
-        "projection.lease" => Some("lease"),
+        "projection.lease_changed" => Some("lease"),
         "task.attempt.failed" => Some("retry"),
         _ => None,
     }
@@ -502,10 +501,10 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
     for key in checkpoint_keys() {
         store.register(&key).await.unwrap();
     }
-    let rebuilds = RebuildService::new(
+    let rebuilds = ReadSideService::new(
         Arc::new(store.clone()),
         checkpoint_keys(),
-        Arc::new(Ledger),
+        Arc::new(Journal),
         activity.clone(),
         ReadSideLimits {
             lag_cap: 100,

@@ -1,4 +1,4 @@
-//! `GET /api/concerts/{concert_id}` — the seat-map document `{ concert_id, version, view }`.
+//! `GET /api/concerts/{concert_id}` — the seat-map document `{ concert_id, revision, view }`.
 use crate::{
     concert::application::views::concert_hall::ConcertHallView,
     shared::presentation::{error::ApiError, parse_concert_id, stored_document},

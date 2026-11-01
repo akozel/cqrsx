@@ -117,7 +117,7 @@ impl ProjectionObserver for ActivityObserver {
     /// One document took the events of a live batch (or skipped them as already applied).
     fn applied(&self, report: &Applied<'_>) {
         self.activity.publish(
-            "projection.updated",
+            "projection.applied",
             json!({
                 "projection": self.projection,
                 "view_id": report.aggregate_id,
@@ -167,7 +167,7 @@ impl ProjectionObserver for ActivityObserver {
             LeaseChange::Released => "released",
         };
         self.activity.publish(
-            "projection.lease",
+            "projection.lease_changed",
             json!({ "projection": self.projection, "lease": lease, "owner": self.owner }),
         );
     }
@@ -235,14 +235,14 @@ mod tests {
         assert_eq!(
             kinds,
             [
-                "projection.updated",
+                "projection.applied",
                 "projection.failed",
                 "projection.failed",
                 "projection.rebuilt",
                 "projection.rebuilt",
-                "projection.lease",
-                "projection.lease",
-                "projection.lease"
+                "projection.lease_changed",
+                "projection.lease_changed",
+                "projection.lease_changed"
             ]
         );
         assert_eq!(

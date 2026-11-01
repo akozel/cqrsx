@@ -33,7 +33,7 @@ export const useActivityStore = defineStore('activity', () => {
     if (type.startsWith('task.')) taskSignal.value = { type, entry, seq: ++seq }
     if (type.startsWith('command.')) commandSignal.value = { type, entry, seq: ++seq }
     if (type.startsWith('rebuild.')) rebuild.onActivity(type, entry)
-    if (type === 'projection.updated' || type === 'projection.rebuilt') {
+    if (type === 'projection.applied' || type === 'projection.rebuilt') {
       // A document moved: the screen follows the read models through the feed (D-17), whoever sent the command.
       if (entry.projection === 'concert_halls') concerts.refreshDebounced()
       else if (entry.projection === 'fan_wallets' && isLedgerOf(String(entry.view_id ?? ''), session.persona))
@@ -41,7 +41,7 @@ export const useActivityStore = defineStore('activity', () => {
     }
     if (type === 'projection.rebuilt') rebuild.onRebuilt(entry)
     // A failing round or a new owner changes the status the Encore! panel shows.
-    if (type === 'projection.failed' || type === 'projection.lease') void rebuild.refreshStatus()
+    if (type === 'projection.failed' || type === 'projection.lease_changed') void rebuild.refreshStatus()
     if (type === 'task.attempt.succeeded') wallet.refreshDebounced()
   }
 

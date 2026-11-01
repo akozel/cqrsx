@@ -408,11 +408,11 @@ pub(crate) use cqrsx_fixtures::process::scenario;
 const VARIABLES: [&str; 7] = [
     "OUTBOX_STORAGE_TIMEOUT_MS",
     "OUTBOX_WORKER_CONCURRENCY",
-    "OUTBOX_QUEUE_CAPACITY",
-    "OUTBOX_QUEUE_REFILL_PERCENT",
-    "OUTBOX_POLL_INTERVAL_MS",
-    "OUTBOX_HANDLER_TIMEOUT_SECS",
-    "OUTBOX_LEASE_SECS",
+    "OUTBOX_BUFFER_CAPACITY",
+    "OUTBOX_BUFFER_REFILL_PERCENT",
+    "OUTBOX_POLL_MS",
+    "OUTBOX_HANDLER_TIMEOUT_MS",
+    "OUTBOX_LEASE_MS",
 ];
 
 /// Runs the unit test `test` (its `module_path!()` and name) again in a child process with the `scenario`, after

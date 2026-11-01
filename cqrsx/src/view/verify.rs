@@ -87,14 +87,14 @@ pub struct Difference {
     pub kind: DifferenceKind,
 }
 
-/// How a document is wrong; serialized in snake case (`differs`, `unexpected`).
+/// How a document is wrong; serialized in snake case (`differs`, `without_history`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub enum DifferenceKind {
     /// Not the fold of a prefix of its history, or ahead of its history.
     Differs,
     /// A document without a history.
-    Unexpected,
+    WithoutHistory,
 }
 
 /// What verify found in the documents of one view.
@@ -190,7 +190,9 @@ where
         after = last;
     }
     for id in documents.keys().filter(|id| !keys.contains(*id)) {
-        result.differences.push(difference::<V, A>(id, DifferenceKind::Unexpected));
+        result
+            .differences
+            .push(difference::<V, A>(id, DifferenceKind::WithoutHistory));
     }
     Ok(result)
 }
@@ -332,7 +334,7 @@ mod tests {
             [
                 ("ahead", DifferenceKind::Differs),
                 ("wrong", DifferenceKind::Differs),
-                ("orphan", DifferenceKind::Unexpected)
+                ("orphan", DifferenceKind::WithoutHistory)
             ]
         );
         assert_eq!(
@@ -340,7 +342,7 @@ mod tests {
             serde_json::json!([
                 { "view": "totals", "id": "ahead", "kind": "differs" },
                 { "view": "totals", "id": "wrong", "kind": "differs" },
-                { "view": "totals", "id": "orphan", "kind": "unexpected" }
+                { "view": "totals", "id": "orphan", "kind": "without_history" }
             ])
         );
         assert_eq!((verification.checked, verification.behind_documents), (2, 0));

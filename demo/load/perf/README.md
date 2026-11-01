@@ -34,7 +34,7 @@ its own, which also go on to the stand's run.sh so that `result.json` records th
 
 The stand's own parameters pass through unchanged. Tickets 08a–08d added the back-end's knobs to
 `demo/load/run.sh`: `LOCK_MAX_WAIT_MS=…` and `LOCK_MAX_WAITERS=…` (`ENCORE_COMMAND_LOCK_*`),
-`PROJECTION_BUFFER=…` and `PROJECTION_MAX_BATCH=…` (`ENCORE_PROJECTION_*`); empty = the back-end's default.
+`PROJECTION_KEY_BUFFER=…` and `PROJECTION_MAX_BATCH=…` (`ENCORE_PROJECTION_*`); empty = the back-end's default.
 Runs before 08c also had `ORDERING=per_aggregate|concurrent` (`meta.command_ordering` in `result.json`), runs
 before 08d `DELIVERY=ordered|inline` (`meta.projection_delivery`). They
 live in the stand's `compose.yaml`, not in an overlay here, so the second node inherits them through `extends`.

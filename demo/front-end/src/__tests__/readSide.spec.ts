@@ -26,12 +26,12 @@ const reply = (status: number, body: unknown) => ({ ok: status < 400, status, js
 function status(over: Partial<RebuildStatus> = {}): RebuildStatus {
   return {
     state: 'live',
-    stale: false,
+    from_cache: false,
     projections: [
       { projection: 'concert_halls', aggregate_type: 'Concert', state: 'live', lag: 0, lag_capped: false, owner: 'backend' },
       { projection: 'fan_wallets', aggregate_type: 'Fan', state: 'live', lag: 0, lag_capped: false, owner: 'backend' },
     ],
-    rebuild: null,
+    running: null,
     last_result: null,
     ...over,
   }
@@ -83,7 +83,7 @@ describe('Encore!', () => {
 
   it('counts the progress from the feed and ends on rebuild.finished, even if an old status says running', async () => {
     const running = { rebuild_id: 'r-1', pace_ms: 0, started_at: '', keys_total: 4 }
-    stubFetch((url) => (url === '/api/projections/status' ? reply(200, status({ rebuild: running })) : reply(404, null)))
+    stubFetch((url) => (url === '/api/projections/status' ? reply(200, status({ running })) : reply(404, null)))
     const rebuild = useRebuildStore()
     rebuild.onActivity('rebuild.started', { rebuild_id: 'r-1', pace_ms: 0, keys_total: 4, events_total: 12 })
     expect(rebuild.running).toBe(true)
@@ -177,7 +177,7 @@ describe('Encore panel', () => {
     ]
     stubFetch((url) => (url === '/api/projections/verify' ? reply(200, reports.shift()) : undefined))
     const rebuild = useRebuildStore()
-    rebuild.status = status({ rebuild: { rebuild_id: 'r', pace_ms: 0, started_at: '', keys_total: 1 } })
+    rebuild.status = status({ running: { rebuild_id: 'r', pace_ms: 0, started_at: '', keys_total: 1 } })
     const w = mount(EncorePanel, { global: { plugins: [i18n()] } })
     const verify = w.findAll('button').find((b) => b.text().includes('Verify'))!
     expect(verify.attributes('disabled')).toBeUndefined()
@@ -187,8 +187,8 @@ describe('Encore panel', () => {
       await vi.waitFor(() => expect(w.find('[data-test=verify]').text()).not.toContain('verifying'))
       texts.push(w.find('[data-test=verify]').text())
     }
-    expect(texts[0]).toContain('every document matches the ledger (3 halls, 5 wallet ledgers)')
-    expect(texts[1]).toContain('correct: 6; behind the ledger: 2 (by 7 events)')
+    expect(texts[0]).toContain('every document matches the journal (3 halls, 5 wallet ledgers)')
+    expect(texts[1]).toContain('correct: 6; behind the journal: 2 (by 7 events)')
     expect(texts[2]).toContain('1 differences')
   })
 
@@ -214,17 +214,17 @@ describe('feed and X-ray', () => {
     activity.entries = [
       entry('rebuild.finished', { keys: 4, duration_ms: 50 }, 6),
       entry('rebuild.started', { keys_total: 4, events_total: 12, pace_ms: 80 }, 5),
-      entry('projection.lease', { projection: 'concert_halls', lease: 'lost', owner: 'backend' }, 4),
+      entry('projection.lease_changed', { projection: 'concert_halls', lease: 'lost', owner: 'backend' }, 4),
       entry('projection.rebuilt', { projection: 'concert_halls', view_id: 'c-1', events: 9, reason: 'healed' }, 3),
       entry('projection.failed', { projection: 'fan_wallets', view_id: 'f:c', category: 'connection', failures: 2 }, 2),
-      entry('projection.updated', { projection: 'concert_halls', view_id: 'c-1', sequence: 7, events: 2 }, 1),
+      entry('projection.applied', { projection: 'concert_halls', view_id: 'c-1', sequence: 7, events: 2 }, 1),
     ]
     const text = mount(ActivityFeed, { global: { plugins: [i18n()] } }).text()
     for (const part of [
-      'projection.updated: concert_halls/c-1 #7 (+2)',
+      'projection.applied: concert_halls/c-1 #7 (+2)',
       'fan_wallets/f:c · connection · failures in a row: 2',
       'concert_halls/c-1 · events: 9 · healed a gap',
-      'projection.lease: concert_halls · lost · backend',
+      'projection.lease_changed: concert_halls · lost · backend',
       'documents: 4 · events: 12 · pace_ms 80',
       'rebuild.finished: documents: 4 · 50 ms',
     ])

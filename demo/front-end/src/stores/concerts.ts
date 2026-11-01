@@ -31,7 +31,7 @@ export const useConcertsStore = defineStore('concerts', () => {
         revenue: 0,
         sold_out: false,
         last_sequence: 0,
-        version: 0,
+        revision: 0,
         known: false,
       }))
     return [...fromView, ...fallback]
@@ -67,7 +67,7 @@ export const useConcertsStore = defineStore('concerts', () => {
     await Promise.all([refreshList(), refreshConcert()])
   }
 
-  /** A read model moved (`projection.updated`): one refresh `ms` later covers every update until then, so a
+  /** A read model moved (`projection.applied`): one refresh `ms` later covers every update until then, so a
    * stream of updates never postpones it. */
   function refreshDebounced(ms = 150) {
     if (soon) return

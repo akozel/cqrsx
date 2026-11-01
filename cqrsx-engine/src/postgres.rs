@@ -70,7 +70,7 @@ pub const DEFAULT_PROJECTION_POOL_SIZE: NonZeroU32 = NonZeroU32::new(4).unwrap()
 pub const HISTORY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 const DATABASE_URL: &str = "DATABASE_URL";
-const DATABASE_POOL_SIZE: &str = "DATABASE_POOL_SIZE";
+const DATABASE_MAIN_POOL_SIZE: &str = "DATABASE_MAIN_POOL_SIZE";
 const DATABASE_STATEMENT_TIMEOUT_MS: &str = "DATABASE_STATEMENT_TIMEOUT_MS";
 const DATABASE_HISTORY_POOL_SIZE: &str = "DATABASE_HISTORY_POOL_SIZE";
 const DATABASE_PROJECTION_POOL_SIZE: &str = "DATABASE_PROJECTION_POOL_SIZE";
@@ -78,7 +78,7 @@ const DATABASE_PROJECTION_POOL_SIZE: &str = "DATABASE_PROJECTION_POOL_SIZE";
 /// The variables of the pools, by their names after the prefix.
 pub(crate) const VARIABLES: [&str; 5] = [
     DATABASE_URL,
-    DATABASE_POOL_SIZE,
+    DATABASE_MAIN_POOL_SIZE,
     DATABASE_STATEMENT_TIMEOUT_MS,
     DATABASE_HISTORY_POOL_SIZE,
     DATABASE_PROJECTION_POOL_SIZE,
@@ -181,7 +181,7 @@ impl PostgresSettings {
     }
 
     pub(crate) fn read(read: &VariableReader) -> Result<Self, SettingsError> {
-        let main_pool_size = read.value(DATABASE_POOL_SIZE, DEFAULT_MAX_CONNECTIONS)?;
+        let main_pool_size = read.value(DATABASE_MAIN_POOL_SIZE, DEFAULT_MAX_CONNECTIONS)?;
         let history_pool_size = read.value(DATABASE_HISTORY_POOL_SIZE, DEFAULT_HISTORY_POOL_SIZE)?;
         let projection_pool_size = read.value(DATABASE_PROJECTION_POOL_SIZE, DEFAULT_PROJECTION_POOL_SIZE)?;
         let statement_timeout = checked_timeout(read, read.text(DATABASE_STATEMENT_TIMEOUT_MS))?;
@@ -198,7 +198,7 @@ impl PostgresSettings {
     pub(crate) fn entries(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> Vec<(String, String)> {
         let mut entries = vec![
             (name(DATABASE_URL), self.url.clone()),
-            (name(DATABASE_POOL_SIZE), self.main_pool_size.to_string()),
+            (name(DATABASE_MAIN_POOL_SIZE), self.main_pool_size.to_string()),
             (name(DATABASE_STATEMENT_TIMEOUT_MS), self.statement_timeout.to_string()),
             (name(DATABASE_HISTORY_POOL_SIZE), self.history_pool_size.to_string()),
             (name(DATABASE_PROJECTION_POOL_SIZE), self.projection_pool_size.to_string()),
@@ -341,8 +341,8 @@ mod tests {
     #[test]
     fn the_pool_size_defaults_to_ten_and_rejects_zero() {
         assert_eq!(settings(&[]).unwrap().postgres().main_pool_size().get(), 10);
-        let error = settings(&[("ENCORE_DATABASE_POOL_SIZE", "0")]).unwrap_err();
-        assert!(error.to_string().contains("ENCORE_DATABASE_POOL_SIZE"), "{error}");
+        let error = settings(&[("ENCORE_DATABASE_MAIN_POOL_SIZE", "0")]).unwrap_err();
+        assert!(error.to_string().contains("ENCORE_DATABASE_MAIN_POOL_SIZE"), "{error}");
     }
 
     #[test]

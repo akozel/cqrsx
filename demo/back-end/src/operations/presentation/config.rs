@@ -2,7 +2,7 @@
 //! SSE stream (`hello`). Demo props (the cast, the default concerts) are not the box office's: the
 //! sidecar serves them (`GET /inspect/demo`).
 use crate::{
-    operations::application::rebuild::Replay,
+    operations::application::rebuild::RebuildPace,
     shared::{
         application::TicketLimit,
         domain::venue::{ROWS, SEATS_PER_ROW, Zone},
@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 /// The venue, the ticket limit of the box office, the snapshot interval of the engine and the slow motion of Encore!.
 pub fn config_json(cqrs: &Cqrs) -> Result<Value, ApiError> {
-    let (limit, replay) = (dependency::<TicketLimit>(cqrs)?, dependency::<Replay>(cqrs)?);
+    let (limit, rebuild_pace) = (dependency::<TicketLimit>(cqrs)?, dependency::<RebuildPace>(cqrs)?);
     Ok(json!({
         "venue": {
             "rows": ROWS.iter().map(|r| r.to_string()).collect::<Vec<_>>(),
@@ -30,7 +30,7 @@ pub fn config_json(cqrs: &Cqrs) -> Result<Value, ApiError> {
         "ticket_limit": limit.0,
         "snapshot_every": cqrs.settings().snapshot_every().get(),
         // The pause a slow Encore! asks for between the events of one key (D-18).
-        "replay_slow_delay_ms": u64::try_from(replay.slow_delay.as_millis()).unwrap_or(u64::MAX),
+        "rebuild_slow_pace_ms": u64::try_from(rebuild_pace.slow_pace.as_millis()).unwrap_or(u64::MAX),
     }))
 }
 
