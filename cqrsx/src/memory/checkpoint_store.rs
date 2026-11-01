@@ -30,7 +30,7 @@ struct Lease {
 #[derive(Debug)]
 struct Row {
     position: Position,
-    applied: u64,
+    delivered: u64,
     rebuild_requested: bool,
     pace: Duration,
     cursor: Option<String>,
@@ -157,7 +157,7 @@ impl CheckpointStore for MemoryCheckpointStore {
     async fn register(&self, key: &CheckpointKey) -> Result<(), CheckpointError> {
         self.open_state()?.rows.entry(key.clone()).or_insert_with(|| Row {
             position: Position::START,
-            applied: 0,
+            delivered: 0,
             rebuild_requested: false,
             pace: Duration::ZERO,
             cursor: None,
@@ -211,13 +211,19 @@ impl CheckpointStore for MemoryCheckpointStore {
         })
     }
 
-    async fn advance(&self, key: &CheckpointKey, token: LeaseToken, to: Position, applied: u64) -> Result<bool, CheckpointError> {
+    async fn advance(
+        &self,
+        key: &CheckpointKey,
+        token: LeaseToken,
+        to: Position,
+        delivered: u64,
+    ) -> Result<bool, CheckpointError> {
         self.fenced(key, token, |row| {
             if row.position > to {
                 return false;
             }
             if row.position < to {
-                row.applied += applied;
+                row.delivered += delivered;
             }
             row.position = to;
             row.failures = 0;
@@ -342,13 +348,13 @@ impl CheckpointStore for MemoryCheckpointStore {
                 projection: key.projection().to_owned(),
                 aggregate_type: key.aggregate_type().to_owned(),
                 position: row.position,
-                applied: row.applied,
+                delivered: row.delivered,
                 rebuild_requested: row.rebuild_requested,
                 rebuild_pace: row.pace,
                 rebuild_cursor: row.cursor.clone(),
                 rebuilt: row.rebuilt,
                 owner: row.lease.as_ref().map(|lease| lease.owner.clone()),
-                locked_until: row.lease.as_ref().map(|lease| lease.until_wall),
+                lease_until: row.lease.as_ref().map(|lease| lease.until_wall),
                 failures: row.failures,
                 last_error: row.last_error.clone(),
                 updated_at: row.updated_at,
@@ -431,14 +437,14 @@ mod tests {
         assert!(store.advance(&key(), owner.token, Position::new(9), 2).await.unwrap());
         let row = &store.status(None).await.unwrap()[0];
         assert_eq!(
-            (row.position, row.applied, row.failures, row.last_error.clone()),
+            (row.position, row.delivered, row.failures, row.last_error.clone()),
             (Position::new(9), 9, 0, None)
         );
         assert_eq!(
             (row.owner.as_deref(), row.projection.as_str(), row.aggregate_type.as_str()),
             (Some("a"), "halls", "Concert")
         );
-        assert!(row.locked_until.unwrap() > Utc::now());
+        assert!(row.lease_until.unwrap() > Utc::now());
         let stale = LeaseToken::new(Uuid::new_v4());
         assert!(!store.record_failure(&key(), stale, "x").await.unwrap());
         assert!(
@@ -562,7 +568,7 @@ mod tests {
             .await
             .unwrap()
             .into_iter()
-            .map(|row| (row.projection, row.aggregate_type, row.owner, row.locked_until))
+            .map(|row| (row.projection, row.aggregate_type, row.owner, row.lease_until))
             .collect();
         assert_eq!(
             names,

@@ -138,7 +138,7 @@ mod tests {
     const LEASE: Duration = Duration::from_secs(3);
 
     async fn held(store: &MemoryCheckpointStore) -> chrono::DateTime<chrono::Utc> {
-        store.status(None).await.unwrap()[0].locked_until.expect("a held row")
+        store.status(None).await.unwrap()[0].lease_until.expect("a held row")
     }
 
     async fn claimed(store: &MemoryCheckpointStore, key: &CheckpointKey, owner: &str) -> (LeaseToken, Instant) {

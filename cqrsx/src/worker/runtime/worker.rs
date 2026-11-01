@@ -38,8 +38,8 @@ pub(super) async fn run_task_worker<E: TaskExecutor, A: TaskAdapter>(
         match executor.execute_and_settle(&dispatcher, task, handler_timeout).await {
             Ok(SettlementResult::Failed(failed)) => crate::diagnostics::log_task_failure(&failed),
             Ok(SettlementResult::Completed | SettlementResult::RetryScheduled) => {}
-            Ok(SettlementResult::OwnershipLost) => error!(task_id = %id, "task ownership lost"),
-            Err(error) => error!(task_id = %id, error = %error, "task processing failed"),
+            Ok(SettlementResult::OwnershipLost) => error!(component = "task", task_id = %id, "task ownership lost"),
+            Err(error) => error!(component = "task", task_id = %id, error = %error, "task processing failed"),
         }
     }
     index

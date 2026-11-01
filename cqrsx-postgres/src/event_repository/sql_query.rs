@@ -91,18 +91,18 @@ SELECT DISTINCT aggregate_id
             ),
             insert_snapshot: format!(
                 "
-INSERT INTO {snapshot_table} (aggregate_type, aggregate_id, last_sequence, current_snapshot, payload)
+INSERT INTO {snapshot_table} (aggregate_type, aggregate_id, last_sequence, revision, payload)
 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (aggregate_type, aggregate_id, last_sequence) DO NOTHING"
             ),
             update_snapshot: format!(
                 "
 UPDATE {snapshot_table}
-  SET last_sequence= $3 , payload= $6, current_snapshot= $4
-  WHERE aggregate_type= $1 AND aggregate_id= $2 AND current_snapshot= $5"
+  SET last_sequence= $3 , payload= $6, revision= $4
+  WHERE aggregate_type= $1 AND aggregate_id= $2 AND revision= $5"
             ),
             select_snapshot: format!(
                 "
-SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
+SELECT aggregate_type, aggregate_id, last_sequence, revision, payload
   FROM {snapshot_table}
   WHERE aggregate_type = $1 AND aggregate_id = $2"
             ),
@@ -169,20 +169,20 @@ VALUES ($1, $2, $3, $4, $5, $6, $7) ON CONFLICT (aggregate_type, aggregate_id, s
         assert_eq!(
             query_factory.insert_snapshot(),
             "
-INSERT INTO my_snapshots (aggregate_type, aggregate_id, last_sequence, current_snapshot, payload)
+INSERT INTO my_snapshots (aggregate_type, aggregate_id, last_sequence, revision, payload)
 VALUES ($1, $2, $3, $4, $5) ON CONFLICT (aggregate_type, aggregate_id, last_sequence) DO NOTHING"
         );
         assert_eq!(
             query_factory.update_snapshot(),
             "
 UPDATE my_snapshots
-  SET last_sequence= $3 , payload= $6, current_snapshot= $4
-  WHERE aggregate_type= $1 AND aggregate_id= $2 AND current_snapshot= $5"
+  SET last_sequence= $3 , payload= $6, revision= $4
+  WHERE aggregate_type= $1 AND aggregate_id= $2 AND revision= $5"
         );
         assert_eq!(
             query_factory.select_snapshot(),
             "
-SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload
+SELECT aggregate_type, aggregate_id, last_sequence, revision, payload
   FROM my_snapshots
   WHERE aggregate_type = $1 AND aggregate_id = $2"
         );

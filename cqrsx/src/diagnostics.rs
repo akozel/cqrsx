@@ -5,7 +5,7 @@
 //! - [`safe_type`]: a name chosen by the application as a log field, never a free text;
 //! - [`StorageFailure`]: the fixed category and the code of a failed storage operation. An adapter wraps the error of
 //!   its driver in it; the core finds it in the chain of sources of a failed command or projection batch and writes
-//!   `storage_category` and `sqlstate` fields, without knowing the driver.
+//!   `storage_category` and `storage_code` fields, without knowing the driver.
 //!
 //! The log lines of the core are private: their fields are fixed, and no id, payload or error text reaches them.
 use crate::projection::processor::{Operation, observer::FailureCategory};
@@ -25,7 +25,7 @@ pub fn safe_type(value: &str) -> &str {
 /// ...) and the storage's own `code` (for PostgreSQL, the SQLSTATE), never the message of the driver.
 ///
 /// A storage adapter wraps the error of its driver in it where the error becomes a [`PersistenceError`] (or another
-/// error of the core); the core then logs `storage_category` and `sqlstate` for a failed command or projection batch.
+/// error of the core); the core then logs `storage_category` and `storage_code` for a failed command or projection batch.
 /// The wrapper is transparent: `Display`, `Debug` and [`source`](Error::source) are those of the cause, so the text of
 /// every error that holds it is the one the driver's error gave. To reach the driver's error, find the `StorageFailure`
 /// in the chain of sources (`downcast_ref::<StorageFailure>()`) and take [`cause`](Self::cause).
@@ -98,7 +98,7 @@ pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, 
     // technical sources. They never change the outward error or retry policy.
     if let Some(failure) = find_storage_failure(source) {
         tracing::error!(component = "command", operation = "execute", aggregate_type = safe_type(aggregate_type), category,
-            storage_category = failure.category(), sqlstate = ?failure.code(), "command execution failed");
+            storage_category = failure.category(), storage_code = ?failure.code(), "command execution failed");
         return;
     }
     tracing::error!(
@@ -145,7 +145,7 @@ pub(crate) fn log_projection_batch_failure(
     if let Some(failure) = find_storage_failure(source) {
         tracing::error!(component = "projection", operation, projection = safe_type(projection),
             aggregate_type = safe_type(aggregate_type), jobs, storage_category = failure.category(),
-            sqlstate = ?failure.code(), "projection batch failed");
+            storage_code = ?failure.code(), "projection batch failed");
         return;
     }
     tracing::error!(
@@ -193,8 +193,8 @@ pub(crate) fn log_projection_change(projection: &str, aggregate_type: &str, chan
         component = "projection",
         projection = safe_type(projection),
         aggregate_type = safe_type(aggregate_type),
-        event = change,
-        "projection processor event"
+        change,
+        "projection processor changed"
     );
 }
 
@@ -223,6 +223,7 @@ pub(crate) fn log_task_failure(task: &crate::worker::queue::settlement::TaskFail
     let task_type = task.format.task_type();
     let safe_type = crate::diagnostics::safe_type(task_type);
     tracing::error!(
+        component = "task",
         task_id = %task.task_id,
         task_type = %safe_type,
         task_version = task.format.task_version(),
@@ -236,6 +237,7 @@ pub(crate) fn log_task_failure(task: &crate::worker::queue::settlement::TaskFail
 /// lease token reach the log: the message may hold the payload, the token fences the lease.
 pub(crate) fn log_task_handler_panic(attempt: &crate::task::attempt::TaskAttempt) {
     tracing::error!(
+        component = "task",
         task_id = %attempt.task_id(),
         task_type = %safe_type(attempt.format().task_type()),
         task_version = attempt.format().task_version(),
@@ -369,7 +371,7 @@ mod tests {
             "aggregate_type=\"unknown\"",
             "category=\"deserialization\"",
             "storage_category=\"database\"",
-            "sqlstate=Some(\"23505\")",
+            "storage_code=Some(\"23505\")",
         ] {
             assert!(log.contains(field), "missing {field}: {log}");
         }
@@ -381,7 +383,7 @@ mod tests {
         assert_eq!(log.lines().count(), 1);
         assert!(log.contains("category=\"unexpected\""));
         assert!(!log.contains("storage_category"));
-        assert!(!log.contains("sqlstate"));
+        assert!(!log.contains("storage_code"));
         assert!(!log.contains("private_"));
     }
 
@@ -391,7 +393,7 @@ mod tests {
         let (_, log) = test_support::capture(async { log_command_failure("Account", "connection", &failure) }).await;
         assert_eq!(log.lines().count(), 1);
         assert!(
-            log.contains("storage_category=\"pool_closed\"") && log.contains("sqlstate=None"),
+            log.contains("storage_category=\"pool_closed\"") && log.contains("storage_code=None"),
             "{log}"
         );
         assert!(!log.contains("private_"));
@@ -408,7 +410,7 @@ mod tests {
             test_support::capture(async { log_projection_batch_failure("halls", "Concert", "deliver", 2, &source) }).await;
         assert_eq!(log.lines().count(), 1, "{log}");
         assert!(
-            log.contains("storage_category=\"database\"") && log.contains("sqlstate=Some(\"40001\")"),
+            log.contains("storage_category=\"database\"") && log.contains("storage_code=Some(\"40001\")"),
             "{log}"
         );
         assert!(!log.contains("private_"), "{log}");
@@ -498,10 +500,10 @@ mod projection_tests {
         assert_eq!(lines.len(), 3, "{log}");
         assert!(
             lines[0].contains("INFO")
-                && lines[0].contains("projection processor event")
+                && lines[0].contains("projection processor changed")
                 && lines[0].contains("projection=\"concert_halls\"")
                 && lines[0].contains("aggregate_type=\"Concert\"")
-                && lines[0].contains("event=\"lease acquired\""),
+                && lines[0].contains("change=\"lease acquired\""),
             "{log}"
         );
         assert!(lines[1].contains("projection=\"unknown\""), "{log}");
@@ -549,6 +551,7 @@ mod task_failure_tests {
         })
         .await;
         assert_eq!(log.lines().count(), 4);
+        assert_eq!(log.matches("component=\"task\"").count(), 4, "{log}");
         assert!(log.contains("task_id=00000000-0000-0000-0000-000000000001"));
         assert!(log.contains("task_type=create_account task_version=1 attempt=2"));
         for reason in ["permanent failure", "retry limit reached", "worker lease expired"] {

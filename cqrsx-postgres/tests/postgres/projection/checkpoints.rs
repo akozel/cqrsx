@@ -73,7 +73,7 @@ async fn a_row_is_claimed_by_one_owner_until_it_is_released_or_its_lease_runs_ou
         ),
         (Some("c"), "halls", "Concert")
     );
-    assert!(rows[0].locked_until.unwrap() > rows[0].updated_at);
+    assert!(rows[0].lease_until.unwrap() > rows[0].updated_at);
     db.close().await;
 }
 
@@ -99,7 +99,7 @@ async fn advance_moves_only_forward_counts_a_repeat_once_and_clears_the_failures
     assert!(store.advance(&key(), owner.token, Position::new(9), 2).await.unwrap());
     let row = store.status(None).await.unwrap().remove(0);
     assert_eq!(
-        (row.position, row.applied, row.failures, row.last_error),
+        (row.position, row.delivered, row.failures, row.last_error),
         (Position::new(9), 9, 0, None)
     );
     store.release(&key(), owner.token).await.unwrap();
@@ -229,7 +229,7 @@ async fn the_schema_rejects_inconsistent_rows_and_applies_again_unchanged() {
     sqlx::raw_sql(PROJECTION_CHECKPOINTS_SCHEMA).execute(&db.pool).await.unwrap();
     let store = PostgresCheckpointStore::new(db.pool.clone());
     store.register(&key()).await.unwrap();
-    let original: Value = sqlx::query_scalar("SELECT to_jsonb(c) FROM projection_checkpoints c WHERE projection_name = $1")
+    let original: Value = sqlx::query_scalar("SELECT to_jsonb(c) FROM projection_checkpoints c WHERE projection = $1")
         .bind("halls")
         .fetch_one(&db.pool)
         .await
@@ -237,23 +237,23 @@ async fn the_schema_rejects_inconsistent_rows_and_applies_again_unchanged() {
     let token = Uuid::new_v4();
     let until = chrono::Utc::now() + chrono::Duration::minutes(1);
     for (number, invalid) in [
-        json!({"projection_name": ""}),
+        json!({"projection": ""}),
         json!({"aggregate_type": ""}),
-        json!({"applied": -1}),
+        json!({"delivered": -1}),
         json!({"rebuild_pace_ms": -1}),
         json!({"rebuilt": -1}),
         json!({"failures": -1}),
         json!({"owner": "x"}),
-        json!({"lock_token": token}),
-        json!({"locked_until": until}),
-        json!({"owner": "x", "lock_token": token}),
+        json!({"lease_token": token}),
+        json!({"lease_until": until}),
+        json!({"owner": "x", "lease_token": token}),
         json!({"rebuild_requested": true, "rebuild_cursor": ""}),
     ]
     .into_iter()
     .enumerate()
     {
         let mut candidate = original.clone();
-        candidate["projection_name"] = json!(format!("candidate-{number}"));
+        candidate["projection"] = json!(format!("candidate-{number}"));
         candidate
             .as_object_mut()
             .unwrap()
@@ -272,7 +272,7 @@ async fn the_schema_rejects_inconsistent_rows_and_applies_again_unchanged() {
         );
     }
     for (number, valid) in [
-        json!({"owner": "x", "lock_token": token, "locked_until": until}),
+        json!({"owner": "x", "lease_token": token, "lease_until": until}),
         json!({"rebuild_requested": true}),
         json!({"rebuild_cursor": ""}),
         json!({"rebuild_cursor": "k", "rebuilt": 3}),
@@ -281,7 +281,7 @@ async fn the_schema_rejects_inconsistent_rows_and_applies_again_unchanged() {
     .enumerate()
     {
         let mut candidate = original.clone();
-        candidate["projection_name"] = json!(format!("valid-{number}"));
+        candidate["projection"] = json!(format!("valid-{number}"));
         candidate.as_object_mut().unwrap().extend(valid.as_object().unwrap().clone());
         sqlx::query("INSERT INTO projection_checkpoints SELECT * FROM jsonb_populate_record(NULL::projection_checkpoints, $1)")
             .bind(candidate)

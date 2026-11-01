@@ -13,9 +13,9 @@ pub const EVENTS_QUERY: &str = "SELECT row_to_json(t) AS row FROM (SELECT aggreg
 FROM events ORDER BY metadata->>'recorded_at' DESC NULLS LAST, aggregate_id, sequence DESC LIMIT $1) t";
 pub const EVENTS_BY_AGGREGATE_QUERY: &str = "SELECT row_to_json(t) AS row FROM (SELECT aggregate_type, aggregate_id, sequence, event_type, event_version, payload, metadata \
 FROM events WHERE aggregate_id = $2 ORDER BY sequence DESC LIMIT $1) t";
-pub const SNAPSHOTS_QUERY: &str = "SELECT row_to_json(t) AS row FROM (SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload \
+pub const SNAPSHOTS_QUERY: &str = "SELECT row_to_json(t) AS row FROM (SELECT aggregate_type, aggregate_id, last_sequence, revision, payload \
 FROM snapshots ORDER BY aggregate_type, aggregate_id LIMIT $1) t";
-pub const SNAPSHOTS_BY_AGGREGATE_QUERY: &str = "SELECT row_to_json(t) AS row FROM (SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload \
+pub const SNAPSHOTS_BY_AGGREGATE_QUERY: &str = "SELECT row_to_json(t) AS row FROM (SELECT aggregate_type, aggregate_id, last_sequence, revision, payload \
 FROM snapshots WHERE aggregate_id = $2 ORDER BY aggregate_type LIMIT $1) t";
 pub const OUTBOX_QUERY: &str =
     "SELECT row_to_json(t) AS row FROM (SELECT * FROM transactional_outbox ORDER BY created_at DESC, id LIMIT $1) t";

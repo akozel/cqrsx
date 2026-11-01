@@ -6,7 +6,7 @@ use sqlx::Error;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PostgresRepositoryError {
-    #[error("optimistic lock error")]
+    #[error("conflict with a concurrent write")]
     Conflict,
     #[error("{0}")]
     Connection(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),

@@ -225,7 +225,7 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
             .count_after(key.aggregate_type(), row.position, self.limits.lag_cap)
             .await?;
         let rebuilding = is_rebuilding(row);
-        let claimed = row.owner.is_some() && row.locked_until.is_some_and(|until| until > Utc::now());
+        let claimed = row.owner.is_some() && row.lease_until.is_some_and(|until| until > Utc::now());
         let state = if row.failures > 0 && (lag > 0 || rebuilding) {
             "stalled"
         } else if !claimed {
@@ -242,11 +242,11 @@ impl<C: Checkpoints + 'static> RebuildService<C> {
                 "aggregate_type": row.aggregate_type,
                 "state": state,
                 "position": row.position.to_string(),
-                "applied": row.applied,
+                "applied": row.delivered,
                 "lag": lag,
                 "lag_capped": lag >= self.limits.lag_cap,
                 "owner": row.owner,
-                "locked_until": row.locked_until.map(|until| until.to_rfc3339_opts(SecondsFormat::Millis, true)),
+                "locked_until": row.lease_until.map(|until| until.to_rfc3339_opts(SecondsFormat::Millis, true)),
                 "failures": row.failures,
                 "last_error": row.last_error,
                 "rebuild": {

@@ -64,7 +64,7 @@ async fn a_lost_store_is_retried_and_the_claim_is_renewed() {
         1,
         "a lost reply is repeated, not a lost lease"
     );
-    assert_eq!(status.applied, 3, "the repeated advance counted the events once");
+    assert_eq!(status.delivered, 3, "the repeated advance counted the events once");
     node.stop().await;
 }
 
@@ -277,7 +277,7 @@ async fn a_wiped_checkpoint_row_is_registered_again_and_the_journal_is_read_from
     h.until(async || h.observer.count("lease:Acquired") == 2).await;
     let status = h.caught_up(&["a", "b"]).await;
     assert_eq!(
-        (status.applied, status.failures),
+        (status.delivered, status.failures),
         (4, 0),
         "the journal was read again from the start"
     );
@@ -288,7 +288,7 @@ async fn a_wiped_checkpoint_row_is_registered_again_and_the_journal_is_read_from
     h.until(async || h.observer.count("lease:Acquired") == 3).await;
     h.commit("a", 3).await;
     let status = h.caught_up(&["a", "b"]).await;
-    assert_eq!(status.applied, 5);
+    assert_eq!(status.delivered, 5);
     assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2), (3, 3)]);
     assert_eq!(h.views.writes(), writes + 1, "only the new event was written");
     assert_eq!(h.observer.count("failed:"), 0);

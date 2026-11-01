@@ -212,7 +212,7 @@ pub(super) fn decode_snapshot_row(row: &PgRow) -> Result<SerializedSnapshot, Pos
         aggregate_id: row.try_get("aggregate_id").map_err(row_decode_error)?,
         payload: row.try_get("payload").map_err(row_decode_error)?,
         last_sequence: decode_usize(row.try_get("last_sequence").map_err(row_decode_error)?)?,
-        revision: decode_usize(row.try_get("current_snapshot").map_err(row_decode_error)?)?,
+        revision: decode_usize(row.try_get("revision").map_err(row_decode_error)?)?,
     })
 }
 

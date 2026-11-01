@@ -28,11 +28,11 @@ pub const PROJECTION_CHECKPOINTS_COLLECTION: &str = "projection_checkpoints";
 ///
 /// ```text
 /// { _id: { projection, aggregate_type },
-///   position, applied, rebuild_requested, rebuild_pace_ms, rebuild_cursor, rebuilt,
-///   owner, lock_token, locked_until, failures, last_error, updated_at, rebuild_keys: [aggregate ids] }
+///   position, delivered, rebuild_requested, rebuild_pace_ms, rebuild_cursor, rebuilt,
+///   owner, lease_token, lease_until, failures, last_error, updated_at, rebuild_keys: [aggregate ids] }
 /// ```
 ///
-/// Numbers are `Int64`, `lock_token` a UUID string, `locked_until` and `updated_at` dates by the server's
+/// Numbers are `Int64`, `lease_token` a UUID string, `lease_until` and `updated_at` dates by the server's
 /// clock. The rules are those of `PostgresCheckpointStore` with one difference: a rebuild cursor is accepted
 /// again only when it is the same cursor (the journal orders the keys, the document cannot), so a page
 /// repeated after a lost reply is counted once and never refused. Needs MongoDB 4.2 or later.
@@ -63,14 +63,14 @@ struct CheckpointRecord {
     #[serde(rename = "_id")]
     id: RowId,
     position: i64,
-    applied: i64,
+    delivered: i64,
     rebuild_requested: bool,
     rebuild_pace_ms: i64,
     rebuild_cursor: Option<String>,
     rebuilt: i64,
     owner: Option<String>,
-    lock_token: Option<String>,
-    locked_until: Option<bson::DateTime>,
+    lease_token: Option<String>,
+    lease_until: Option<bson::DateTime>,
     failures: i64,
     last_error: Option<String>,
     updated_at: bson::DateTime,
@@ -118,7 +118,7 @@ fn by_id(key: &CheckpointKey) -> Document {
 }
 
 fn owned(key: &CheckpointKey, token: LeaseToken) -> Document {
-    doc! { "_id": id(key), "lock_token": token.value().to_string() }
+    doc! { "_id": id(key), "lease_token": token.value().to_string() }
 }
 
 /// A value an update pipeline must not read as an expression (an id may start with `$`).
@@ -182,7 +182,7 @@ fn decode_claim(document: Document) -> Result<Claimed, CheckpointError> {
         None => None,
     };
     Ok(Claimed {
-        token: token_out(row.lock_token)?,
+        token: token_out(row.lease_token)?,
         position: Position::new(count_out(row.position)?),
         failures: failures_out(row.failures)?,
         rebuild,
@@ -195,13 +195,13 @@ fn decode_status(document: Document) -> Result<CheckpointStatus, CheckpointError
         projection: row.id.projection,
         aggregate_type: row.id.aggregate_type,
         position: Position::new(count_out(row.position)?),
-        applied: count_out(row.applied)?,
+        delivered: count_out(row.delivered)?,
         rebuild_requested: row.rebuild_requested,
         rebuild_pace: pace_out(row.rebuild_pace_ms)?,
         rebuild_cursor: row.rebuild_cursor,
         rebuilt: count_out(row.rebuilt)?,
         owner: row.owner,
-        locked_until: row.locked_until.map(date_out).transpose()?,
+        lease_until: row.lease_until.map(date_out).transpose()?,
         failures: failures_out(row.failures)?,
         last_error: row.last_error,
         updated_at: date_out(row.updated_at)?,
@@ -213,14 +213,14 @@ fn defaults() -> Document {
     let mut fields = Document::new();
     for (field, default) in [
         ("position", Bson::Int64(0)),
-        ("applied", Bson::Int64(0)),
+        ("delivered", Bson::Int64(0)),
         ("rebuild_requested", Bson::Boolean(false)),
         ("rebuild_pace_ms", Bson::Int64(0)),
         ("rebuild_cursor", Bson::Null),
         ("rebuilt", Bson::Int64(0)),
         ("owner", Bson::Null),
-        ("lock_token", Bson::Null),
-        ("locked_until", Bson::Null),
+        ("lease_token", Bson::Null),
+        ("lease_until", Bson::Null),
         ("failures", Bson::Int64(0)),
         ("last_error", Bson::Null),
         ("rebuild_keys", Bson::Array(Vec::new())),
@@ -261,12 +261,12 @@ impl CheckpointStore for MongoCheckpointStore {
         let lease = lease_millis(lease)?;
         let free = doc! {
             "_id": id(key),
-            "$or": [{ "locked_until": null }, { "$expr": { "$lt": ["$locked_until", "$$NOW"] } }],
+            "$or": [{ "lease_until": null }, { "$expr": { "$lt": ["$lease_until", "$$NOW"] } }],
         };
         let claim = doc! {
             "owner": literal(owner),
-            "lock_token": literal(&Uuid::new_v4().to_string()),
-            "locked_until": { "$add": ["$$NOW", lease] },
+            "lease_token": literal(&Uuid::new_v4().to_string()),
+            "lease_until": { "$add": ["$$NOW", lease] },
             "updated_at": "$$NOW",
         };
         let claimed = self
@@ -284,18 +284,24 @@ impl CheckpointStore for MongoCheckpointStore {
         self.fenced(
             "extend",
             owned(key, token),
-            doc! { "locked_until": { "$add": ["$$NOW", lease] } },
+            doc! { "lease_until": { "$add": ["$$NOW", lease] } },
         )
         .await
     }
 
-    async fn advance(&self, key: &CheckpointKey, token: LeaseToken, to: Position, applied: u64) -> Result<bool, CheckpointError> {
+    async fn advance(
+        &self,
+        key: &CheckpointKey,
+        token: LeaseToken,
+        to: Position,
+        delivered: u64,
+    ) -> Result<bool, CheckpointError> {
         let to = count_in(to.value(), "position does not fit the row")?;
-        let applied = count_in(applied, "applied count does not fit the row")?;
+        let delivered = count_in(delivered, "delivered count does not fit the row")?;
         let mut filter = owned(key, token);
         filter.insert("position", doc! { "$lte": to });
         let update = doc! {
-            "applied": { "$add": ["$applied", { "$cond": [{ "$lt": ["$position", to] }, applied, 0_i64] }] },
+            "delivered": { "$add": ["$delivered", { "$cond": [{ "$lt": ["$position", to] }, delivered, 0_i64] }] },
             "position": to,
             "failures": 0_i64,
             "last_error": null,
@@ -417,7 +423,7 @@ impl CheckpointStore for MongoCheckpointStore {
     }
 
     async fn release(&self, key: &CheckpointKey, token: LeaseToken) -> Result<(), CheckpointError> {
-        let update = doc! { "owner": null, "lock_token": null, "locked_until": null, "updated_at": "$$NOW" };
+        let update = doc! { "owner": null, "lease_token": null, "lease_until": null, "updated_at": "$$NOW" };
         self.fenced("release", owned(key, token), update).await?;
         Ok(())
     }
@@ -446,10 +452,10 @@ mod tests {
     fn stored() -> Document {
         doc! {
             "_id": { "projection": "halls", "aggregate_type": "Concert" },
-            "position": 9_i64, "applied": 7_i64,
+            "position": 9_i64, "delivered": 7_i64,
             "rebuild_requested": false, "rebuild_pace_ms": 80_i64, "rebuild_cursor": "c3", "rebuilt": 3_i64,
-            "owner": "node-a", "lock_token": "00000000-0000-0000-0000-000000000007",
-            "locked_until": bson::DateTime::from_millis(2_000), "failures": 2_i64, "last_error": "halls: connection",
+            "owner": "node-a", "lease_token": "00000000-0000-0000-0000-000000000007",
+            "lease_until": bson::DateTime::from_millis(2_000), "failures": 2_i64, "last_error": "halls: connection",
             "updated_at": bson::DateTime::from_millis(1_000), "rebuild_keys": ["c9"],
         }
     }
@@ -522,7 +528,7 @@ mod tests {
                 status.projection.as_str(),
                 status.aggregate_type.as_str(),
                 status.position,
-                status.applied
+                status.delivered
             ),
             ("halls", "Concert", Position::new(9), 7)
         );
@@ -539,10 +545,10 @@ mod tests {
             (status.owner.as_deref(), status.failures, status.last_error.as_deref()),
             (Some("node-a"), 2, Some("halls: connection"))
         );
-        assert_eq!(status.locked_until.map(|date| date.timestamp_millis()), Some(2_000));
+        assert_eq!(status.lease_until.map(|date| date.timestamp_millis()), Some(2_000));
         assert_eq!(status.updated_at.timestamp_millis(), 1_000);
-        let free = decode_status(with("locked_until", Bson::Null)).unwrap();
-        assert_eq!(free.locked_until, None);
+        let free = decode_status(with("lease_until", Bson::Null)).unwrap();
+        assert_eq!(free.lease_until, None);
     }
 
     #[test]
@@ -555,10 +561,10 @@ mod tests {
             with("failures", -1_i64),
         ];
         let status_only = [
-            with("applied", -1_i64),
+            with("delivered", -1_i64),
             with("updated_at", "yesterday"),
             with("updated_at", bson::DateTime::MAX),
-            with("locked_until", bson::DateTime::MAX),
+            with("lease_until", bson::DateTime::MAX),
         ];
         for broken in unreadable.iter().chain(&status_only) {
             assert!(
@@ -566,7 +572,7 @@ mod tests {
                 "{broken}"
             );
         }
-        let claim_only = [with("lock_token", "not a uuid"), with("lock_token", Bson::Null)];
+        let claim_only = [with("lease_token", "not a uuid"), with("lease_token", Bson::Null)];
         for broken in unreadable.iter().chain(&claim_only) {
             assert!(
                 matches!(decode_claim(broken.clone()), Err(CheckpointError::Corrupt(_))),
@@ -640,6 +646,6 @@ mod tests {
         ] {
             assert!(log.contains(&format!("operation=\"{operation}\"")), "{operation}: {log}");
         }
-        assert_eq!(log.matches("category=\"server_selection\"").count(), 13, "{log}");
+        assert_eq!(log.matches("storage_category=\"server_selection\"").count(), 13, "{log}");
     }
 }

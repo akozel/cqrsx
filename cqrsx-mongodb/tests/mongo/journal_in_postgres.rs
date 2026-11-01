@@ -60,7 +60,7 @@ async fn commands_in_postgres_reach_views_and_checkpoints_in_mongo() {
     let keys = ["l1", "l2", "l3", "l4", "l5"];
     commit(&postgres.pool, &wakeup, &keys, 8).await;
     let status = caught_up(journal.as_ref(), &mongo.database, &keys).await;
-    assert_eq!((status.applied, status.failures), (40, 0));
+    assert_eq!((status.delivered, status.failures), (40, 0));
     assert!(status.position > Position::START);
     assert_eq!(
         status.position,
@@ -79,7 +79,7 @@ async fn commands_in_postgres_reach_views_and_checkpoints_in_mongo() {
     commit(&postgres.pool, &wakeup, &keys, 2).await;
     let status = caught_up(journal.as_ref(), &mongo.database, &keys).await;
     assert_eq!(
-        (status.applied, status.failures),
+        (status.delivered, status.failures),
         (50, 0),
         "every document came back from the journal"
     );

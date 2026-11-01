@@ -70,7 +70,7 @@ pub struct QueuedTask {
     pub last_error: Option<String>,
 }
 
-/// The lease of a task in processing: `locked_by`, `lock_token`, `locked_until`.
+/// The lease of a task in processing: `owner`, `lease_token`, `lease_until`.
 #[derive(Debug)]
 struct Lease {
     owner: String,

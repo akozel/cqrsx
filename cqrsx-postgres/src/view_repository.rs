@@ -16,7 +16,7 @@ use serde_json::Value;
 use sqlx::{Pool, Postgres, Row, postgres::PgRow};
 use std::{fmt, marker::PhantomData};
 
-/// Stores serialized read-model views in a PostgreSQL table with optimistic versions and the last applied
+/// Stores serialized read-model views in a PostgreSQL table with optimistic revisions and the last applied
 /// event of each document's aggregate.
 pub struct PostgresViewRepository<V, A> {
     insert_sql: String,
@@ -55,7 +55,7 @@ where
     /// ```sql
     /// CREATE TABLE my_view_table (
     ///     view_id       text   PRIMARY KEY,
-    ///     version       bigint NOT NULL,
+    ///     revision      bigint NOT NULL,
     ///     last_sequence bigint NOT NULL CHECK (last_sequence >= 0),
     ///     payload       json   NOT NULL
     /// );
@@ -167,15 +167,15 @@ where
     pub fn new(pool: Pool<Postgres>) -> Self {
         let table_name = V::NAME;
         let insert_sql = format!(
-            "INSERT INTO {table_name} (payload, version, last_sequence, view_id) VALUES ( $1, $2, $3, $4 ) ON CONFLICT (view_id) DO NOTHING"
+            "INSERT INTO {table_name} (payload, revision, last_sequence, view_id) VALUES ( $1, $2, $3, $4 ) ON CONFLICT (view_id) DO NOTHING"
         );
         let update_sql =
-            format!("UPDATE {table_name} SET payload= $1 , version= $2 , last_sequence= $3 WHERE view_id= $4 AND version= $5");
-        let select_sql = format!("SELECT version, last_sequence, payload FROM {table_name} WHERE view_id= $1");
+            format!("UPDATE {table_name} SET payload= $1 , revision= $2 , last_sequence= $3 WHERE view_id= $4 AND revision= $5");
+        let select_sql = format!("SELECT revision, last_sequence, payload FROM {table_name} WHERE view_id= $1");
         let list_sql =
-            format!(r#"SELECT view_id, version, last_sequence, payload FROM {table_name} ORDER BY view_id COLLATE "C""#);
+            format!(r#"SELECT view_id, revision, last_sequence, payload FROM {table_name} ORDER BY view_id COLLATE "C""#);
         let range_sql = format!(
-            r#"SELECT view_id, version, last_sequence, payload FROM {table_name} WHERE view_id COLLATE "C" >= $1 AND view_id COLLATE "C" < $2 ORDER BY view_id COLLATE "C""#
+            r#"SELECT view_id, revision, last_sequence, payload FROM {table_name} WHERE view_id COLLATE "C" >= $1 AND view_id COLLATE "C" < $2 ORDER BY view_id COLLATE "C""#
         );
         Self {
             insert_sql,
@@ -218,12 +218,12 @@ where
         match row {
             None => Ok(None),
             Some(row) => {
-                let version = row.try_get("version").map_err(row_decode_error)?;
+                let revision = row.try_get("revision").map_err(row_decode_error)?;
                 let last_sequence = decode_usize(row.try_get("last_sequence").map_err(row_decode_error)?)?;
                 let view = serde_json::from_value(payload(&row)?)?;
                 Ok(Some(StoredView {
                     id: view_id.to_owned(),
-                    revision: version,
+                    revision,
                     last_sequence,
                     view,
                 }))
@@ -236,16 +236,16 @@ where
             0 => &self.insert_sql,
             _ => &self.update_sql,
         };
-        let version = context
+        let revision = context
             .revision
             .checked_add(1)
-            .ok_or_else(|| PersistenceError::Unexpected("view version overflow".into()))?;
+            .ok_or_else(|| PersistenceError::Unexpected("view revision overflow".into()))?;
         let last_sequence = encode_bigint(context.last_sequence)?;
         let payload = serde_json::to_value(&view).map_err(PostgresRepositoryError::from)?;
         // The INSERT reads the first four binds, the UPDATE all five.
         let rows_affected = sqlx::query(sql.as_str())
             .bind(payload)
-            .bind(version)
+            .bind(revision)
             .bind(last_sequence)
             .bind(context.id)
             .bind(context.revision)
@@ -283,7 +283,7 @@ where
 fn stored_view<V: serde::de::DeserializeOwned>(row: &PgRow) -> Result<StoredView<V>, PersistenceError> {
     Ok(StoredView {
         id: row.try_get("view_id").map_err(row_decode_error)?,
-        revision: row.try_get("version").map_err(row_decode_error)?,
+        revision: row.try_get("revision").map_err(row_decode_error)?,
         last_sequence: decode_usize(row.try_get("last_sequence").map_err(row_decode_error)?)?,
         view: serde_json::from_value(payload(row)?)?,
     })

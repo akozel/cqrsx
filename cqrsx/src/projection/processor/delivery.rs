@@ -122,7 +122,7 @@ fn guarded<A: Aggregate>(buffers: &Buffers<A>) -> MutexGuard<'_, HashMap<String,
 
 struct Inner<A: Aggregate> {
     /// The processor's name, for the logs.
-    projection_name: String,
+    projection: String,
     handler: Arc<dyn EventHandler<A>>,
     rebuilder: Arc<dyn Rebuilder>,
     limits: DeliveryLimits,
@@ -154,7 +154,7 @@ impl<A: Aggregate + 'static> OrderedDelivery<A> {
     ) -> Self {
         Self {
             inner: Arc::new(Inner {
-                projection_name: projection.to_owned(),
+                projection: projection.to_owned(),
                 handler,
                 rebuilder,
                 limits,
@@ -360,7 +360,7 @@ impl<A: Aggregate> KeyLane<A> {
     /// One handler call for the whole batch, or one rebuild, isolated from a panic of the callee. The events of a
     /// batch of several jobs move into the first job's vector.
     async fn handle(&self, batch: &mut [Job<A>]) -> Result<Done, DeliveryError> {
-        let projection = &self.inner.projection_name;
+        let projection = &self.inner.projection;
         if let [
             Job {
                 work: Work::Rebuild { pace, stop },
@@ -815,7 +815,7 @@ mod tests {
             (outcomes, next.outcome().await.map_err(|e| e.to_string()))
         })
         .await;
-        let failed = Err("event handler failed: optimistic lock error".to_owned());
+        let failed = Err("event handler failed: conflict with a concurrent write".to_owned());
         assert_eq!(outcomes, [Ok(Done::Applied), failed.clone(), failed.clone(), failed]);
         assert_eq!(next, Ok(Done::Applied), "the buffer keeps working after a failure");
         assert_eq!(log.matches("projection batch failed").count(), 1, "{log}");
@@ -1005,7 +1005,10 @@ mod tests {
             (failed, panicked, next.outcome().await)
         })
         .await;
-        assert_eq!(failed, Err("event handler failed: optimistic lock error".to_owned()));
+        assert_eq!(
+            failed,
+            Err("event handler failed: conflict with a concurrent write".to_owned())
+        );
         assert_eq!(panicked, Err("event handler panicked".to_owned()));
         assert_eq!(next.unwrap(), Done::Applied);
         assert_eq!(log.matches("projection batch failed").count(), 1, "{log}");

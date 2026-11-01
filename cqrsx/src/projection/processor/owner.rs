@@ -351,18 +351,15 @@ where
         Ok(())
     }
 
-    async fn advance_to(&mut self, to: Position, applied: u64) -> Result<(), Interrupt> {
+    async fn advance_to(&mut self, to: Position, delivered: u64) -> Result<(), Interrupt> {
         if to <= self.checkpoint {
             return Ok(());
         }
-        match self.ctx.checkpoints.advance(&self.ctx.key, self.token, to, applied).await {
+        match self.ctx.checkpoints.advance(&self.ctx.key, self.token, to, delivered).await {
             Ok(true) => {
                 self.checkpoint = to;
                 self.failures = 0;
-                self.ctx.observer.advanced(&Advanced {
-                    position: to,
-                    delivered: applied,
-                });
+                self.ctx.observer.advanced(&Advanced { position: to, delivered });
                 Ok(())
             }
             Ok(false) => Err(Interrupt::Lost),

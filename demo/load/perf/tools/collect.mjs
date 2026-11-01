@@ -83,7 +83,7 @@ const statementCalls = (rows) => (rows === null ? null : rows.reduce((sum, row) 
 // is fenced by the lease token (a CTE `owned`, or one UPDATE with the token in its WHERE).
 const STATEMENT_KINDS = {
   claim: (query) => /WITH ready AS/.test(query) && /FOR UPDATE SKIP LOCKED/.test(query),
-  settle: (query) => /WITH owned AS MATERIALIZED/.test(query) || (/^UPDATE transactional_outbox\b/.test(query) && /lock_token = \$2/.test(query)),
+  settle: (query) => /WITH owned AS MATERIALIZED/.test(query) || (/^UPDATE transactional_outbox\b/.test(query) && /lease_token = \$2/.test(query)),
 };
 
 // The command path's statements, told apart by their text (whitespace collapsed by the hook): a load of
@@ -91,7 +91,7 @@ const STATEMENT_KINDS = {
 // loads once; a load no commit follows is a rejection, a conflict, or a read outside the command (the
 // pre-read of a cancellation before ticket 04/20).
 const COMMAND_KINDS = {
-  load: (query) => /^\s*SELECT aggregate_type, aggregate_id, last_sequence, current_snapshot, payload FROM snapshots WHERE/.test(query),
+  load: (query) => /^\s*SELECT aggregate_type, aggregate_id, last_sequence, revision, payload FROM snapshots WHERE/.test(query),
   commit: (query) => /written_events AS \(INSERT INTO events/.test(query),
 };
 

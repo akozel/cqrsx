@@ -24,7 +24,7 @@ fn sqlstate(error: &sqlx::Error) -> Option<Cow<'_, str>> {
 
 /// Logs a failed storage operation of the adapter itself, before its error is erased.
 pub(crate) fn log_sqlx_failure(operation: &'static str, error: &sqlx::Error) {
-    tracing::error!(component = "postgres", operation, category = sqlx_category(error), sqlstate = ?sqlstate(error), "storage operation failed");
+    tracing::error!(component = "postgres", operation, storage_category = sqlx_category(error), sqlstate = ?sqlstate(error), "storage operation failed");
 }
 
 /// The error of the driver with its category and SQLSTATE, for the logs of the core (`cqrsx::diagnostics`). Every place

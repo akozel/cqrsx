@@ -16,7 +16,7 @@ struct ClaimRow {
     payload: serde_json::Value,
     metadata: serde_json::Value,
     attempts: i32,
-    lock_token: uuid::Uuid,
+    lease_token: uuid::Uuid,
 }
 
 impl FromRow<'_, PgRow> for ClaimRow {
@@ -26,7 +26,7 @@ impl FromRow<'_, PgRow> for ClaimRow {
             payload: row.try_get("payload")?,
             metadata: row.try_get("metadata")?,
             attempts: row.try_get("attempts")?,
-            lock_token: row.try_get("lock_token")?,
+            lease_token: row.try_get("lease_token")?,
         })
     }
 }
@@ -35,7 +35,7 @@ impl ClaimRow {
     fn into_leased_task(self, format: &TaskFormat, lease_deadline: Instant) -> Result<LeasedTask, TaskProcessingError> {
         let delivery = TaskAttempt::try_new(self.id, format.clone(), self.payload, self.metadata, self.attempts)
             .map_err(|_| TaskProcessingError::InvalidDelivery)?;
-        Ok(LeasedTask::new(delivery, TaskLease::new(self.lock_token, lease_deadline)))
+        Ok(LeasedTask::new(delivery, TaskLease::new(self.lease_token, lease_deadline)))
     }
 }
 pub(super) async fn claim(
@@ -63,11 +63,11 @@ pub(super) async fn claim(
             ORDER BY available_at, id LIMIT $3 FOR UPDATE SKIP LOCKED
         )
         UPDATE transactional_outbox AS o
-        SET status = 'processing', attempts = attempts + 1, locked_by = $4,
-            lock_token = gen_random_uuid(),
-            locked_until = clock_timestamp() + $5 * interval '1 millisecond'
+        SET status = 'processing', attempts = attempts + 1, owner = $4,
+            lease_token = gen_random_uuid(),
+            lease_until = clock_timestamp() + $5 * interval '1 millisecond'
         FROM ready WHERE o.id = ready.id
-        RETURNING o.id, o.payload, o.metadata, o.attempts, o.lock_token
+        RETURNING o.id, o.payload, o.metadata, o.attempts, o.lease_token
     "#,
     )
     .bind(format.task_type())
@@ -86,8 +86,10 @@ pub(super) async fn claim(
         let task_id = row.id;
         match row.into_leased_task(format, lease_deadline) {
             Ok(task) => tasks.push(task),
-            Err(_) => tracing::error!(%task_id, task_type = %cqrsx::diagnostics::safe_type(format.task_type()),
-                task_version = format.task_version(), "claimed task is not a valid delivery; left to lease recovery"),
+            Err(_) => {
+                tracing::error!(component = "postgres", operation = "claim", %task_id, task_type = %cqrsx::diagnostics::safe_type(format.task_type()),
+                task_version = format.task_version(), "claimed task is not a valid delivery; left to lease recovery")
+            }
         }
     }
     Ok(tasks)
@@ -101,7 +103,7 @@ mod tests {
     fn claim_rows_validate_delivery_data_and_preserve_lease_context() {
         use serde_json::json;
         let id = uuid::Uuid::new_v4();
-        let lock_token = uuid::Uuid::new_v4();
+        let lease_token = uuid::Uuid::new_v4();
         let deadline = Instant::now();
         let format = TaskFormat::try_new("test", 1).unwrap();
         for (payload, metadata, attempts, valid) in [
@@ -115,7 +117,7 @@ mod tests {
                 payload,
                 metadata,
                 attempts,
-                lock_token,
+                lease_token,
             };
             let result = row.into_leased_task(&format, deadline);
             if valid {
@@ -124,7 +126,7 @@ mod tests {
                 assert_eq!(claimed.attempt().number(), 2);
                 assert_eq!(claimed.attempt().payload(), &json!({"value": 1}));
                 assert_eq!(claimed.lease().deadline(), deadline);
-                assert_eq!(claimed.lease().token(), lock_token);
+                assert_eq!(claimed.lease().token(), lease_token);
             } else {
                 assert!(matches!(result, Err(TaskProcessingError::InvalidDelivery)));
             }

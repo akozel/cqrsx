@@ -59,12 +59,15 @@ async fn a_view_is_inserted_updated_and_loaded_with_its_context() {
         .await
         .unwrap()
         .unwrap();
-    assert_eq!(raw.keys().collect::<Vec<_>>(), ["_id", "version", "last_sequence", "view"]);
     assert_eq!(
-        (raw.get("_id"), raw.get("version"), raw.get("last_sequence")),
+        raw.keys().collect::<Vec<_>>(),
+        ["_id", "revision", "last_sequence", "payload"]
+    );
+    assert_eq!(
+        (raw.get("_id"), raw.get("revision"), raw.get("last_sequence")),
         (Some(&Bson::String("l1".into())), Some(&Bson::Int64(2)), Some(&Bson::Int64(2)))
     );
-    assert!(matches!(raw.get("view"), Some(Bson::Document(_))));
+    assert!(matches!(raw.get("payload"), Some(Bson::Document(_))));
     mongo.close().await;
 }
 
@@ -123,15 +126,15 @@ async fn missing_and_corrupt_documents_are_explicit() {
         .database
         .collection::<Document>(NAME)
         .insert_many([
-            doc! { "_id": "not-a-balance", "version": 1_i64, "last_sequence": 1_i64, "view": {} },
-            doc! { "_id": "negative", "version": 1_i64, "last_sequence": -1_i64, "view": valid.clone() },
-            doc! { "_id": "no-sequence", "version": 1_i64, "view": valid.clone() },
-            doc! { "_id": "no-version", "last_sequence": 1_i64, "view": valid.clone() },
-            doc! { "_id": "valid", "version": 1_i64, "last_sequence": 1_i64, "view": valid },
+            doc! { "_id": "not-a-balance", "revision": 1_i64, "last_sequence": 1_i64, "payload": {} },
+            doc! { "_id": "negative", "revision": 1_i64, "last_sequence": -1_i64, "payload": valid.clone() },
+            doc! { "_id": "no-sequence", "revision": 1_i64, "payload": valid.clone() },
+            doc! { "_id": "no-revision", "last_sequence": 1_i64, "payload": valid.clone() },
+            doc! { "_id": "valid", "revision": 1_i64, "last_sequence": 1_i64, "payload": valid },
         ])
         .await
         .unwrap();
-    for id in ["not-a-balance", "negative", "no-sequence", "no-version"] {
+    for id in ["not-a-balance", "negative", "no-sequence", "no-revision"] {
         assert!(
             matches!(views.load(id).await, Err(PersistenceError::Deserialization(_))),
             "{id}"
@@ -177,8 +180,8 @@ async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
             .map(|s| Bson::Array(vec![Bson::Int64(s), Bson::Int32(1)]))
             .collect();
         collection
-            .insert_one(doc! { "_id": *id, "version": n as i64 + 1, "last_sequence": n as i64,
-            "view": { "total": n as i64, "history": history } })
+            .insert_one(doc! { "_id": *id, "revision": n as i64 + 1, "last_sequence": n as i64,
+            "payload": { "total": n as i64, "history": history } })
             .await
             .unwrap();
     }
@@ -207,7 +210,7 @@ async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
     );
     // A document that is no view fails the listing and every range that holds it.
     collection
-        .insert_one(doc! { "_id": "zz-broken", "version": 1_i64, "last_sequence": -1_i64, "view": {} })
+        .insert_one(doc! { "_id": "zz-broken", "revision": 1_i64, "last_sequence": -1_i64, "payload": {} })
         .await
         .unwrap();
     assert!(matches!(views.list().await, Err(PersistenceError::Deserialization(_))));

@@ -110,9 +110,9 @@ impl FailureCategory {
         match self {
             Self::Connection => "connection",
             Self::Deserialization => "deserialization",
-            Self::Conflict => "optimistic_lock",
+            Self::Conflict => "conflict",
             Self::SequenceGap => "sequence_gap",
-            Self::Unexpected => "unknown",
+            Self::Unexpected => "unexpected",
             Self::Panic => "panic",
             Self::Stopped => "stopped",
             Self::Storage => "storage",
@@ -236,9 +236,9 @@ mod tests {
         let words = [
             (FailureCategory::Connection, "connection"),
             (FailureCategory::Deserialization, "deserialization"),
-            (FailureCategory::Conflict, "optimistic_lock"),
+            (FailureCategory::Conflict, "conflict"),
             (FailureCategory::SequenceGap, "sequence_gap"),
-            (FailureCategory::Unexpected, "unknown"),
+            (FailureCategory::Unexpected, "unexpected"),
             (FailureCategory::Panic, "panic"),
             (FailureCategory::Stopped, "stopped"),
             (FailureCategory::Storage, "storage"),

@@ -18,12 +18,12 @@ use std::{fmt, marker::PhantomData};
 /// Stores serialized read-model views in a MongoDB collection, one document per view:
 ///
 /// ```text
-/// { _id: <view id>, version: <Int64>, last_sequence: <Int64>, view: <the view as BSON> }
+/// { _id: <view id>, revision: <Int64>, last_sequence: <Int64>, payload: <the view as BSON> }
 /// ```
 ///
-/// The collection is the view's name ([`View::NAME`]). `version` is the optimistic version (1 after the first
+/// The collection is the view's name ([`View::NAME`]). `revision` is the optimistic revision (1 after the first
 /// write) and `last_sequence` the last applied event of the view's aggregate (see `ViewMeta`). A new document is
-/// inserted, and a duplicate `_id` is a conflict; an existing one is replaced only at the version it was read with.
+/// inserted, and a duplicate `_id` is a conflict; an existing one is replaced only at the revision it was read with.
 /// The queries read by `_id`: one document (`find_one`), every document and a range of ids (`find` sorted by `_id`,
 /// the order of the ids' bytes), so the collection needs no index beyond `_id`. The application drops the
 /// collection to wipe the read model.
@@ -102,9 +102,9 @@ impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
 struct Stored {
     #[serde(rename = "_id")]
     id: String,
-    version: i64,
+    revision: i64,
     last_sequence: i64,
-    view: Bson,
+    payload: Bson,
 }
 
 fn stored_sequence(last_sequence: usize) -> Result<i64, PersistenceError> {
@@ -125,14 +125,14 @@ fn decode<V: View<A>, A: Aggregate>(document: Document) -> Result<StoredView<V>,
     let last_sequence = applied_sequence(stored.last_sequence)?;
     Ok(StoredView {
         id: stored.id,
-        revision: stored.version,
+        revision: stored.revision,
         last_sequence,
-        view: bson::from_bson(stored.view).map_err(unreadable)?,
+        view: bson::from_bson(stored.payload).map_err(unreadable)?,
     })
 }
 
 impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
-    /// The view with its version and last applied event.
+    /// The view with its revision and last applied event.
     async fn stored(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
         let Some(document) = self
             .collection
@@ -179,13 +179,13 @@ where
 
     async fn update_view(&self, view: V, context: ViewMeta) -> Result<(), PersistenceError> {
         let view = bson::to_bson(&view).map_err(|error| PersistenceError::Unexpected(Box::new(error)))?;
-        let version = context
+        let revision = context
             .revision
             .checked_add(1)
-            .ok_or_else(|| PersistenceError::Unexpected("view version overflow".into()))?;
+            .ok_or_else(|| PersistenceError::Unexpected("view revision overflow".into()))?;
         let last_sequence = stored_sequence(context.last_sequence)?;
         if context.revision == 0 {
-            let document = doc! { "_id": &context.id, "version": version, "last_sequence": last_sequence, "view": view };
+            let document = doc! { "_id": &context.id, "revision": revision, "last_sequence": last_sequence, "payload": view };
             return match self.collection.insert_one(document).await {
                 Ok(_) => Ok(()),
                 Err(error) if is_duplicate_key(&error) => Err(PersistenceError::Conflict),
@@ -195,8 +195,8 @@ where
         let updated = self
             .collection
             .update_one(
-                doc! { "_id": &context.id, "version": context.revision },
-                doc! { "$set": { "view": view, "version": version, "last_sequence": last_sequence } },
+                doc! { "_id": &context.id, "revision": context.revision },
+                doc! { "$set": { "payload": view, "revision": revision, "last_sequence": last_sequence } },
             )
             .await
             .map_err(persistence_error)?;
@@ -274,15 +274,16 @@ mod tests {
     }
 
     #[test]
-    fn the_envelope_needs_the_version_the_last_applied_event_and_the_view() {
+    fn the_envelope_needs_the_revision_the_last_applied_event_and_the_payload() {
         let stored: Stored =
-            bson::from_document(doc! { "_id": "c-1", "version": 3_i64, "last_sequence": 7_i64, "view": { "count": 7 } }).unwrap();
-        assert_eq!((stored.version, stored.last_sequence), (3, 7));
-        assert_eq!(stored.view, Bson::Document(doc! { "count": 7 }));
+            bson::from_document(doc! { "_id": "c-1", "revision": 3_i64, "last_sequence": 7_i64, "payload": { "count": 7 } })
+                .unwrap();
+        assert_eq!((stored.revision, stored.last_sequence), (3, 7));
+        assert_eq!(stored.payload, Bson::Document(doc! { "count": 7 }));
         for incomplete in [
-            doc! { "version": 1_i64, "view": {} },
-            doc! { "last_sequence": 1_i64, "view": {} },
-            doc! { "version": 1_i64, "last_sequence": 1_i64 },
+            doc! { "revision": 1_i64, "payload": {} },
+            doc! { "last_sequence": 1_i64, "payload": {} },
+            doc! { "revision": 1_i64, "last_sequence": 1_i64 },
         ] {
             assert!(bson::from_document::<Stored>(incomplete).is_err());
         }

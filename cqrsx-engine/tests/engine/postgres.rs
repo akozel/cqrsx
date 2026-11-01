@@ -131,7 +131,7 @@ async fn the_modules_run_on_postgres_with_their_views_in_mongodb() {
 async fn the_modules_run_on_postgres_with_their_views_in_postgres() {
     let database = Database::new().await;
     sqlx::raw_sql(
-        "CREATE TABLE halls (view_id TEXT COLLATE \"C\" PRIMARY KEY, version BIGINT CHECK (version >= 0), \
+        "CREATE TABLE halls (view_id TEXT COLLATE \"C\" PRIMARY KEY, revision BIGINT CHECK (revision >= 0), \
          last_sequence BIGINT NOT NULL DEFAULT 0, payload JSON NOT NULL)",
     )
     .execute(&database.pool)
@@ -144,7 +144,7 @@ async fn the_modules_run_on_postgres_with_their_views_in_postgres() {
         .await
         .unwrap();
     book_and_follow_the_chain(&cqrs, &outbox).await;
-    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM projection_checkpoints WHERE projection_name = 'halls'")
+    let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM projection_checkpoints WHERE projection = 'halls'")
         .fetch_one(&database.pool)
         .await
         .unwrap();

@@ -216,7 +216,7 @@ where
         }
     }
     /// Sets an observer of the projection's failures: it sees every error of [`load`](Self::load), of
-    /// [`handle`](EventHandler::handle) (a read or a write of the view, a gap in the events, a version conflict once the
+    /// [`handle`](EventHandler::handle) (a read or a write of the view, a gap in the events, a revision conflict once the
     /// retries are spent) and of [`rebuild`](RebuildableProjection::rebuild), before the error is returned. The
     /// observer only looks: the error is still the caller's `Err`, nothing is retried, suppressed or replaced. Without an
     /// observer the errors are returned all the same. A second call replaces the observer.
@@ -532,7 +532,7 @@ where
     }
 
     /// Applies the batch to the stored document under the contiguity rule and writes the document when
-    /// something was applied. A version conflict reloads the document and runs the rule again against what
+    /// something was applied. A revision conflict reloads the document and runs the rule again against what
     /// the other writer left, up to `max_attempts` times.
     pub(crate) async fn apply_events(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
         let mut attempt = 1;
@@ -1061,7 +1061,7 @@ mod tests {
             ));
             assert_eq!(
                 *errors.lock().unwrap(),
-                ["optimistic lock error", "sequence gap: expected event 3, found 4"]
+                ["conflict with a concurrent write", "sequence gap: expected event 3, found 4"]
             );
             assert_eq!(repo.saved(), (prefix(1..=3), context(1, 3)));
         }

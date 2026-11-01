@@ -13,31 +13,30 @@ use sqlx::{PgPool, Row, postgres::PgRow};
 use std::time::Duration;
 use uuid::Uuid;
 
-const REGISTER: &str =
-    "INSERT INTO projection_checkpoints (projection_name, aggregate_type) VALUES ($1, $2) ON CONFLICT DO NOTHING";
+const REGISTER: &str = "INSERT INTO projection_checkpoints (projection, aggregate_type) VALUES ($1, $2) ON CONFLICT DO NOTHING";
 
 const CLAIM: &str = r"
 UPDATE projection_checkpoints
-   SET owner = $3, lock_token = gen_random_uuid(),
-       locked_until = clock_timestamp() + $4 * interval '1 millisecond', updated_at = statement_timestamp()
- WHERE projection_name = $1 AND aggregate_type = $2
-   AND (locked_until IS NULL OR locked_until < clock_timestamp())
-RETURNING lock_token, position::text AS position, failures, rebuild_cursor, rebuild_pace_ms, rebuilt";
+   SET owner = $3, lease_token = gen_random_uuid(),
+       lease_until = clock_timestamp() + $4 * interval '1 millisecond', updated_at = statement_timestamp()
+ WHERE projection = $1 AND aggregate_type = $2
+   AND (lease_until IS NULL OR lease_until < clock_timestamp())
+RETURNING lease_token, position::text AS position, failures, rebuild_cursor, rebuild_pace_ms, rebuilt";
 
 const EXTEND: &str = r"
-UPDATE projection_checkpoints SET locked_until = clock_timestamp() + $4 * interval '1 millisecond'
- WHERE projection_name = $1 AND aggregate_type = $2 AND lock_token = $3";
+UPDATE projection_checkpoints SET lease_until = clock_timestamp() + $4 * interval '1 millisecond'
+ WHERE projection = $1 AND aggregate_type = $2 AND lease_token = $3";
 
 /// Only forward; a repeat of the row's position changes nothing and counts nothing.
 const ADVANCE: &str = r"
 UPDATE projection_checkpoints
-   SET applied = applied + CASE WHEN position < $4::text::xid8 THEN $5 ELSE 0 END,
+   SET delivered = delivered + CASE WHEN position < $4::text::xid8 THEN $5 ELSE 0 END,
        position = $4::text::xid8, failures = 0, last_error = NULL, updated_at = statement_timestamp()
- WHERE projection_name = $1 AND aggregate_type = $2 AND lock_token = $3 AND position <= $4::text::xid8";
+ WHERE projection = $1 AND aggregate_type = $2 AND lease_token = $3 AND position <= $4::text::xid8";
 
 const RECORD_FAILURE: &str = r"
 UPDATE projection_checkpoints SET failures = failures + 1, last_error = $4, updated_at = statement_timestamp()
- WHERE projection_name = $1 AND aggregate_type = $2 AND lock_token = $3";
+ WHERE projection = $1 AND aggregate_type = $2 AND lease_token = $3";
 
 /// One rebuild at a time: the flag is set only while none is requested or running (PostgreSQL 18 `old`).
 const REQUEST_REBUILD: &str = r"
@@ -45,13 +44,13 @@ UPDATE projection_checkpoints
    SET rebuild_requested = rebuild_requested OR rebuild_cursor IS NULL,
        rebuild_pace_ms = CASE WHEN rebuild_requested OR rebuild_cursor IS NOT NULL THEN rebuild_pace_ms ELSE $3 END,
        updated_at = statement_timestamp()
- WHERE projection_name = $1 AND aggregate_type = $2
+ WHERE projection = $1 AND aggregate_type = $2
 RETURNING (NOT old.rebuild_requested AND old.rebuild_cursor IS NULL) AS accepted";
 
 /// Only for a registered projection; a repeated key is one request.
 const REQUEST_REBUILD_KEY: &str = r"
-WITH known AS (SELECT 1 FROM projection_checkpoints WHERE projection_name = $1 AND aggregate_type = $2),
-     inserted AS (INSERT INTO projection_rebuild_keys (projection_name, aggregate_type, aggregate_id)
+WITH known AS (SELECT 1 FROM projection_checkpoints WHERE projection = $1 AND aggregate_type = $2),
+     inserted AS (INSERT INTO projection_rebuild_keys (projection, aggregate_type, aggregate_id)
                   SELECT $1, $2, $3 FROM known ON CONFLICT DO NOTHING RETURNING 1)
 SELECT EXISTS (SELECT 1 FROM known) AS known";
 
@@ -60,41 +59,41 @@ SELECT EXISTS (SELECT 1 FROM known) AS known";
 const TAKE_REQUESTS: &str = r"
 WITH taken AS (
     DELETE FROM projection_rebuild_keys k USING projection_checkpoints c
-     WHERE c.projection_name = $1 AND c.aggregate_type = $2 AND c.lock_token = $3
-       AND k.projection_name = c.projection_name AND k.aggregate_type = c.aggregate_type
+     WHERE c.projection = $1 AND c.aggregate_type = $2 AND c.lease_token = $3
+       AND k.projection = c.projection AND k.aggregate_type = c.aggregate_type
        AND k.aggregate_id IN (SELECT aggregate_id FROM projection_rebuild_keys
-                               WHERE projection_name = $1 AND aggregate_type = $2
+                               WHERE projection = $1 AND aggregate_type = $2
                                ORDER BY requested_at, aggregate_id LIMIT $4)
     RETURNING k.aggregate_id, k.requested_at)
 SELECT c.rebuild_requested, c.rebuild_pace_ms,
        coalesce((SELECT array_agg(aggregate_id ORDER BY requested_at, aggregate_id) FROM taken), '{}') AS keys
   FROM projection_checkpoints c
- WHERE c.projection_name = $1 AND c.aggregate_type = $2 AND c.lock_token = $3";
+ WHERE c.projection = $1 AND c.aggregate_type = $2 AND c.lease_token = $3";
 
 const BEGIN_REBUILD: &str = r"
 UPDATE projection_checkpoints SET rebuild_requested = false, rebuild_cursor = '', rebuilt = 0, updated_at = statement_timestamp()
- WHERE projection_name = $1 AND aggregate_type = $2 AND lock_token = $3";
+ WHERE projection = $1 AND aggregate_type = $2 AND lease_token = $3";
 
 /// The cursor only forward; a repeat of the cursor counts nothing.
 const ADVANCE_REBUILD: &str = r"
 UPDATE projection_checkpoints
    SET rebuilt = rebuilt + CASE WHEN rebuild_cursor < $4 THEN $5 ELSE 0 END, rebuild_cursor = $4, updated_at = statement_timestamp()
- WHERE projection_name = $1 AND aggregate_type = $2 AND lock_token = $3 AND rebuild_cursor IS NOT NULL AND rebuild_cursor <= $4";
+ WHERE projection = $1 AND aggregate_type = $2 AND lease_token = $3 AND rebuild_cursor IS NOT NULL AND rebuild_cursor <= $4";
 
 const FINISH_REBUILD: &str = r"
 UPDATE projection_checkpoints SET rebuild_cursor = NULL, updated_at = statement_timestamp()
- WHERE projection_name = $1 AND aggregate_type = $2 AND lock_token = $3";
+ WHERE projection = $1 AND aggregate_type = $2 AND lease_token = $3";
 
 const RELEASE: &str = r"
-UPDATE projection_checkpoints SET owner = NULL, lock_token = NULL, locked_until = NULL, updated_at = statement_timestamp()
- WHERE projection_name = $1 AND aggregate_type = $2 AND lock_token = $3";
+UPDATE projection_checkpoints SET owner = NULL, lease_token = NULL, lease_until = NULL, updated_at = statement_timestamp()
+ WHERE projection = $1 AND aggregate_type = $2 AND lease_token = $3";
 
 const STATUS: &str = r"
-SELECT projection_name, aggregate_type, position::text AS position, applied, rebuild_requested, rebuild_pace_ms, rebuild_cursor,
-       rebuilt, owner, locked_until, failures, last_error, updated_at
+SELECT projection, aggregate_type, position::text AS position, delivered, rebuild_requested, rebuild_pace_ms, rebuild_cursor,
+       rebuilt, owner, lease_until, failures, last_error, updated_at
   FROM projection_checkpoints
- WHERE $1::text IS NULL OR projection_name = $1
- ORDER BY projection_name, aggregate_type";
+ WHERE $1::text IS NULL OR projection = $1
+ ORDER BY projection, aggregate_type";
 
 /// The checkpoint store over the process's pool. Needs PostgreSQL 18 (`RETURNING old`).
 #[derive(Debug)]
@@ -167,7 +166,7 @@ fn decode_claim(row: &PgRow) -> Result<Claimed, CheckpointError> {
         None => None,
     };
     Ok(Claimed {
-        token: LeaseToken::new(column::<Uuid>(row, "lock_token")?),
+        token: LeaseToken::new(column::<Uuid>(row, "lease_token")?),
         position: position_out(&column::<String>(row, "position")?)?,
         failures: failures_out(column(row, "failures")?)?,
         rebuild,
@@ -176,16 +175,16 @@ fn decode_claim(row: &PgRow) -> Result<Claimed, CheckpointError> {
 
 fn decode_status(row: &PgRow) -> Result<CheckpointStatus, CheckpointError> {
     Ok(CheckpointStatus {
-        projection: column(row, "projection_name")?,
+        projection: column(row, "projection")?,
         aggregate_type: column(row, "aggregate_type")?,
         position: position_out(&column::<String>(row, "position")?)?,
-        applied: count_out(column(row, "applied")?)?,
+        delivered: count_out(column(row, "delivered")?)?,
         rebuild_requested: column(row, "rebuild_requested")?,
         rebuild_pace: pace_out(column(row, "rebuild_pace_ms")?)?,
         rebuild_cursor: column(row, "rebuild_cursor")?,
         rebuilt: count_out(column(row, "rebuilt")?)?,
         owner: column(row, "owner")?,
-        locked_until: column(row, "locked_until")?,
+        lease_until: column(row, "lease_until")?,
         failures: failures_out(column(row, "failures")?)?,
         last_error: column(row, "last_error")?,
         updated_at: column(row, "updated_at")?,
@@ -241,8 +240,14 @@ impl CheckpointStore for PostgresCheckpointStore {
         .await
     }
 
-    async fn advance(&self, key: &CheckpointKey, token: LeaseToken, to: Position, applied: u64) -> Result<bool, CheckpointError> {
-        let applied = count_in(applied, "applied count does not fit the row")?;
+    async fn advance(
+        &self,
+        key: &CheckpointKey,
+        token: LeaseToken,
+        to: Position,
+        delivered: u64,
+    ) -> Result<bool, CheckpointError> {
+        let delivered = count_in(delivered, "delivered count does not fit the row")?;
         self.fenced(
             "advance",
             sqlx::query(ADVANCE)
@@ -250,7 +255,7 @@ impl CheckpointStore for PostgresCheckpointStore {
                 .bind(key.aggregate_type())
                 .bind(token.value())
                 .bind(to.to_string())
-                .bind(applied),
+                .bind(delivered),
         )
         .await
     }

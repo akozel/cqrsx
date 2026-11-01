@@ -1,4 +1,4 @@
-//! An in-memory view repository with the version rules of the PostgreSQL one.
+//! An in-memory view repository with the revision rules of the PostgreSQL one.
 use crate::{
     domain::aggregate::Aggregate,
     journal::PersistenceError,
@@ -16,18 +16,18 @@ use std::{
     sync::{Arc, Mutex, MutexGuard},
 };
 
-/// One stored document: its optimistic version, the last applied event of its aggregate and the view as JSON.
+/// One stored document: its optimistic revision, the last applied event of its aggregate and the view as JSON.
 #[derive(Clone, Debug)]
 struct Document {
-    version: i64,
+    revision: i64,
     last_sequence: usize,
     payload: Value,
 }
 
-/// Views stored as JSON documents with optimistic versions, like
+/// Views stored as JSON documents with optimistic revisions, like
 /// `postgres::view_repository::PostgresViewRepository`:
-/// version 0 inserts and conflicts with an existing document, a later version updates only the
-/// document stored with exactly that version, and every write stores the next version together with
+/// revision 0 inserts and conflicts with an existing document, a later revision updates only the
+/// document stored with exactly that revision, and every write stores the next revision together with
 /// the document's `last_sequence`. Conflicts are [`PersistenceError::Conflict`]. Because
 /// documents are JSON, `V` needs no `Clone` and serde failures surface as in a real store. The queries
 /// order the documents by the bytes of their ids, as the PostgreSQL and MongoDB repositories do.
@@ -70,14 +70,14 @@ where
     V: View<A>,
     A: Aggregate,
 {
-    /// Store `view` as `view_id` at `version` with `last_sequence` applied, replacing any document; for
+    /// Store `view` as `view_id` at `revision` with `last_sequence` applied, replacing any document; for
     /// seeding tests.
-    pub fn put(&self, view_id: &str, version: i64, last_sequence: usize, view: &V) -> Result<(), PersistenceError> {
+    pub fn put(&self, view_id: &str, revision: i64, last_sequence: usize, view: &V) -> Result<(), PersistenceError> {
         let payload = serde_json::to_value(view)?;
         self.documents().insert(
             view_id.to_owned(),
             Document {
-                version,
+                revision,
                 last_sequence,
                 payload,
             },
@@ -108,7 +108,7 @@ where
             .map(|(id, document)| {
                 Ok(StoredView {
                     id,
-                    revision: document.version,
+                    revision: document.revision,
                     last_sequence: document.last_sequence,
                     view: V::deserialize(document.payload)?,
                 })
@@ -132,20 +132,20 @@ where
         };
         Ok(Some(StoredView {
             id: view_id.to_owned(),
-            revision: document.version,
+            revision: document.revision,
             last_sequence: document.last_sequence,
             view: V::deserialize(document.payload)?,
         }))
     }
 
     async fn update_view(&self, view: V, context: ViewMeta) -> Result<(), PersistenceError> {
-        let version = context
+        let revision = context
             .revision
             .checked_add(1)
-            .ok_or_else(|| PersistenceError::Unexpected("view version overflow".into()))?;
+            .ok_or_else(|| PersistenceError::Unexpected("view revision overflow".into()))?;
         let payload = serde_json::to_value(&view)?;
         let mut documents = self.documents();
-        let stored = documents.get(&context.id).map(|document| document.version);
+        let stored = documents.get(&context.id).map(|document| document.revision);
         match (context.revision, stored) {
             (0, None) => {}
             (expected, Some(stored)) if expected != 0 && expected == stored => {}
@@ -154,7 +154,7 @@ where
         documents.insert(
             context.id,
             Document {
-                version,
+                revision,
                 last_sequence: context.last_sequence,
                 payload,
             },
@@ -330,12 +330,12 @@ mod tests {
         repository.put("max", i64::MAX, 0, &Sequences(vec![])).unwrap();
         assert!(matches!(
             repository.update_view(Sequences(vec![]), ViewMeta::new("max".into(), i64::MAX, 1)).await,
-            Err(PersistenceError::Unexpected(error)) if error.to_string() == "view version overflow"
+            Err(PersistenceError::Unexpected(error)) if error.to_string() == "view revision overflow"
         ));
         repository.documents().insert(
             "broken".into(),
             Document {
-                version: 1,
+                revision: 1,
                 last_sequence: 1,
                 payload: serde_json::json!("not a list"),
             },

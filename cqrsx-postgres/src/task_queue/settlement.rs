@@ -75,17 +75,17 @@ pub(super) async fn settle(
     // up there, through an entry for every task settled since the last VACUUM.
     let row = sqlx::query(r#"
         WITH owned AS MATERIALIZED (
-            SELECT id, locked_until FROM transactional_outbox
-            WHERE id = $1 AND lock_token = $2
+            SELECT id, lease_until FROM transactional_outbox
+            WHERE id = $1 AND lease_token = $2
             FOR UPDATE
         )
         UPDATE transactional_outbox AS o
         SET status = CASE WHEN $3 = 'pending' AND attempts >= max_attempts THEN 'failed' ELSE $3 END,
             available_at = CASE WHEN $3 = 'pending' AND attempts < max_attempts THEN statement_timestamp() + $4 * interval '1 millisecond' ELSE available_at END,
             finished_at = CASE WHEN $3 <> 'pending' OR attempts >= max_attempts THEN statement_timestamp() ELSE NULL END,
-            last_error = $5, locked_by = NULL, lock_token = NULL, locked_until = NULL
+            last_error = $5, owner = NULL, lease_token = NULL, lease_until = NULL
         FROM owned
-        WHERE o.id = owned.id AND owned.locked_until > clock_timestamp()
+        WHERE o.id = owned.id AND owned.lease_until > clock_timestamp()
         RETURNING o.status
     "#).bind(task.attempt().task_id()).bind(task.lease().token()).bind(parameters.status).bind(milliseconds(parameters.delay, QueueRequestError::InvalidRetryDelay)?)
         .bind(parameters.last_error.map(|reason| reason.chars().take(2048).collect::<String>()))

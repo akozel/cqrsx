@@ -138,7 +138,7 @@ fn processor(
 }
 
 async fn create_views(pool: &PgPool) {
-    sqlx::raw_sql("CREATE TABLE balances (view_id text PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
+    sqlx::raw_sql("CREATE TABLE balances (view_id text PRIMARY KEY, revision bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
         .execute(pool)
         .await
         .unwrap();
@@ -210,7 +210,7 @@ async fn forty_commands_over_five_ledgers_reach_the_checkpointed_view_in_order()
     commit_all(&db.pool, &wakeup, &keys, 8).await;
     let status = caught_up(&db.pool, &keys).await;
     assert_eq!(
-        (status.applied, status.owner.as_deref(), status.failures),
+        (status.delivered, status.owner.as_deref(), status.failures),
         (40, Some("node-a"), 0)
     );
     let views = PostgresViewRepository::<Balance, Ledger>::new(db.pool.clone());
@@ -251,7 +251,7 @@ async fn forty_parallel_commands_to_one_key_reach_the_view_in_commit_order() {
         assert!(result.unwrap().is_ok(), "the lock orders the commands: nothing conflicts");
     }
     let status = caught_up(&db.pool, &["hot"]).await;
-    assert_eq!((status.applied, status.failures), (40, 0));
+    assert_eq!((status.delivered, status.failures), (40, 0));
     let balance = PostgresViewRepository::<Balance, Ledger>::new(db.pool.clone())
         .load("hot")
         .await
@@ -292,7 +292,7 @@ async fn a_lost_database_connection_is_retried_and_the_claim_is_renewed() {
     assert!(!killed.is_empty(), "the processor held sessions");
     commit_all(&db.pool, &wakeup, &keys, 5).await;
     let status = caught_up(&db.pool, &keys).await;
-    assert_eq!((status.applied, status.owner.as_deref()), (20, Some("node-a")));
+    assert_eq!((status.delivered, status.owner.as_deref()), (20, Some("node-a")));
     assert!(observer.count("lease:Acquired") >= 1);
     shutdown.cancel();
     running.await.unwrap();
@@ -322,7 +322,7 @@ async fn a_killed_owner_is_replaced_after_the_lease_expires() {
     commit_all(&db.pool, &wakeup, &keys, 3).await;
     let after = caught_up(&db.pool, &keys).await;
     assert_ne!(after.owner.as_deref(), Some(owner.as_str()), "the survivor took the row");
-    assert_eq!(after.applied, 18, "nothing was lost or applied twice at the checkpoint");
+    assert_eq!(after.delivered, 18, "nothing was lost or applied twice at the checkpoint");
     stop.cancel();
     survivor.await.unwrap();
     assert_eq!(observer.count("lease:Acquired"), 2);
@@ -396,7 +396,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     })
     .await
     .expect("the rebuild finishes");
-    assert_eq!(status.applied, 40);
+    assert_eq!(status.delivered, 40);
     assert_eq!(
         (observer.count("rebuild:Started"), observer.count("rebuild:Finished")),
         (1, 1)

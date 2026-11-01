@@ -68,7 +68,7 @@ pub(crate) fn checked_counter_add(current: usize, count: usize) -> Result<usize,
 #[derive(Debug, thiserror::Error)]
 pub enum PersistenceError {
     /// Optimistic locking conflict occurred while committing and aggregate.
-    #[error("optimistic lock error")]
+    #[error("conflict with a concurrent write")]
     Conflict,
     /// An error occurred connecting to the database.
     #[error("{0}")]

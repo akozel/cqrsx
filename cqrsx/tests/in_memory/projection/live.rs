@@ -34,7 +34,10 @@ async fn an_event_committed_before_the_processor_started_is_applied() {
             history: vec![(1, 5), (2, 7)]
         }
     );
-    assert_eq!((status.applied, status.owner.as_deref(), status.failures), (2, Some("n1"), 0));
+    assert_eq!(
+        (status.delivered, status.owner.as_deref(), status.failures),
+        (2, Some("n1"), 0)
+    );
     assert!(h.observer.count("applied:a:") >= 1 && h.observer.count("advanced:") >= 1);
     assert_eq!(h.observer.count("lease:Acquired"), 1);
     node.stop().await;
@@ -107,7 +110,7 @@ async fn a_crash_during_the_advance_is_safe_either_way() {
         let node = h.node("n2");
         let status = h.caught_up(&["a"]).await;
         assert_eq!(h.view("a").await.unwrap().view.history, [(1, 1), (2, 2)]);
-        assert_eq!(status.applied, 2, "a repeated event is skipped and not counted twice");
+        assert_eq!(status.delivered, 2, "a repeated event is skipped and not counted twice");
         node.stop().await;
     }
 }
@@ -366,7 +369,7 @@ async fn a_commit_with_several_events_is_one_transaction_and_one_job() {
     h.commit_together("a", &[1, 2, 3]).await;
     h.caught_up(&["a"]).await;
     assert_eq!(h.observer.count("applied:a:3"), 1);
-    assert_eq!(h.status().await.applied, 3);
+    assert_eq!(h.status().await.delivered, 3);
     node.stop().await;
 }
 
@@ -443,7 +446,7 @@ async fn a_settle_time_gathers_the_commits_of_a_burst_into_one_page() {
         15,
         "the settle delays the reads, it loses nothing"
     );
-    assert_eq!(patient_reads, 1, "five commits within the settle time are one page");
+    assert_eq!(patient_reads, 1, "five commits within the wake delay are one page");
     assert!(
         eager_reads > patient_reads,
         "without it every commit is read on its own ({eager_reads} reads)"

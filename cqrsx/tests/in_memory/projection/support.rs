@@ -374,8 +374,14 @@ impl CheckpointStore for Checkpoints {
         self.run("extend", self.inner.extend(key, token, lease)).await
     }
 
-    async fn advance(&self, key: &CheckpointKey, token: LeaseToken, to: Position, applied: u64) -> Result<bool, CheckpointError> {
-        self.run("advance", self.inner.advance(key, token, to, applied)).await
+    async fn advance(
+        &self,
+        key: &CheckpointKey,
+        token: LeaseToken,
+        to: Position,
+        delivered: u64,
+    ) -> Result<bool, CheckpointError> {
+        self.run("advance", self.inner.advance(key, token, to, delivered)).await
     }
 
     async fn record_failure(&self, key: &CheckpointKey, token: LeaseToken, error: &str) -> Result<bool, CheckpointError> {

@@ -89,7 +89,7 @@ async fn a_row_is_claimed_by_one_owner_until_it_is_released_or_its_lease_runs_ou
         ),
         (Some("c"), "halls", "Concert")
     );
-    assert!(rows[0].locked_until.unwrap() > rows[0].updated_at);
+    assert!(rows[0].lease_until.unwrap() > rows[0].updated_at);
     mongo.close().await;
 }
 
@@ -115,7 +115,7 @@ async fn advance_moves_only_forward_counts_a_repeat_once_and_clears_the_failures
     assert!(store.advance(&key(), owner.token, Position::new(9), 2).await.unwrap());
     let row = store.status(None).await.unwrap().remove(0);
     assert_eq!(
-        (row.position, row.applied, row.failures, row.last_error),
+        (row.position, row.delivered, row.failures, row.last_error),
         (Position::new(9), 9, 0, None)
     );
     store.release(&key(), owner.token).await.unwrap();
@@ -263,11 +263,11 @@ async fn the_document_keeps_the_documented_shape_and_values_that_look_like_expre
         fields,
         [
             "_id",
-            "applied",
+            "delivered",
             "failures",
             "last_error",
-            "lock_token",
-            "locked_until",
+            "lease_token",
+            "lease_until",
             "owner",
             "position",
             "rebuild_cursor",
@@ -305,10 +305,10 @@ async fn the_document_keeps_the_documented_shape_and_values_that_look_like_expre
     assert!(store.begin_rebuild(&key(), owner.token).await.unwrap());
     assert!(store.advance_rebuild(&key(), owner.token, "$cursor", 1).await.unwrap());
     let stored = raw(&mongo, &key()).await;
-    for field in ["position", "applied", "rebuild_pace_ms", "rebuilt", "failures"] {
+    for field in ["position", "delivered", "rebuild_pace_ms", "rebuilt", "failures"] {
         assert!(matches!(stored.get(field), Some(Bson::Int64(_))), "{field}: {stored}");
     }
-    assert!(matches!(stored.get("locked_until"), Some(Bson::DateTime(_))), "{stored}");
+    assert!(matches!(stored.get("lease_until"), Some(Bson::DateTime(_))), "{stored}");
     assert!(matches!(stored.get("updated_at"), Some(Bson::DateTime(_))), "{stored}");
     assert_eq!(
         (
@@ -320,7 +320,7 @@ async fn the_document_keeps_the_documented_shape_and_values_that_look_like_expre
     );
     assert_eq!(stored.get_array("rebuild_keys").unwrap(), &vec![Bson::String("$key".into())]);
     assert_eq!(
-        Uuid::parse_str(stored.get_str("lock_token").unwrap()).unwrap(),
+        Uuid::parse_str(stored.get_str("lease_token").unwrap()).unwrap(),
         owner.token.value()
     );
     let names: Vec<_> = store

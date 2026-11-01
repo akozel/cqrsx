@@ -15,7 +15,7 @@ fn mongodb_category(error: &::mongodb::error::Error) -> &'static str {
 
 /// Logs a failed storage operation before its error is erased.
 pub(crate) fn log_mongodb_failure(operation: &'static str, error: &::mongodb::error::Error) {
-    tracing::error!(component = "mongodb", operation, category = mongodb_category(error), code = ?crate::server_code(error), "storage operation failed");
+    tracing::error!(component = "mongodb", operation, storage_category = mongodb_category(error), code = ?crate::server_code(error), "storage operation failed");
 }
 
 #[cfg(test)]
@@ -60,7 +60,7 @@ mod tests {
             ("io", "None"),
         ] {
             assert!(
-                log.contains(&format!("category=\"{category}\" code={code}")),
+                log.contains(&format!("storage_category=\"{category}\" code={code}")),
                 "{category} {code}: {log}"
             );
         }

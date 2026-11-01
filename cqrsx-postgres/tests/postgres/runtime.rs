@@ -197,7 +197,7 @@ async fn old_terminal_tasks_are_retained_while_old_pending_and_processing_tasks_
     for (id, status) in [(completed.id(), "completed"), (failed.id(), "failed")] {
         sqlx::query("UPDATE transactional_outbox SET status=$2,attempts=1,finished_at=now()-interval '1 year',last_error=CASE WHEN $2='failed' THEN 'historic failure' ELSE NULL END WHERE id=$1").bind(id).bind(status).execute(&db.pool).await.unwrap();
     }
-    sqlx::query("UPDATE transactional_outbox SET status='processing',attempts=1,locked_by='old worker',lock_token=$2,locked_until=now()-interval '1 year' WHERE id=$1").bind(processing.id()).bind(Uuid::new_v4()).execute(&db.pool).await.unwrap();
+    sqlx::query("UPDATE transactional_outbox SET status='processing',attempts=1,owner='old worker',lease_token=$2,lease_until=now()-interval '1 year' WHERE id=$1").bind(processing.id()).bind(Uuid::new_v4()).execute(&db.pool).await.unwrap();
     let terminal = [completed.id(), failed.id()];
     let before = terminal_history(&db.pool, &terminal).await;
     let queue = PostgresTaskQueue::new(db.pool.clone());

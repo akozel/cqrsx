@@ -97,7 +97,7 @@ pub struct CheckpointStatus {
     pub aggregate_type: String,
     pub position: Position,
     /// Events delivered live since the row was created.
-    pub applied: u64,
+    pub delivered: u64,
     pub rebuild_requested: bool,
     pub rebuild_pace: Duration,
     /// `None`: no rebuild runs; `Some("")`: one has begun; otherwise the last key whose rebuild is recorded.
@@ -105,7 +105,7 @@ pub struct CheckpointStatus {
     /// Keys rebuilt by the running or the last rebuild.
     pub rebuilt: u64,
     pub owner: Option<String>,
-    pub locked_until: Option<DateTime<Utc>>,
+    pub lease_until: Option<DateTime<Utc>>,
     pub failures: u32,
     pub last_error: Option<String>,
     pub updated_at: DateTime<Utc>,
@@ -160,7 +160,7 @@ pub trait CheckpointStore: Send + Sync {
         lease: Duration,
     ) -> impl Future<Output = Result<bool, CheckpointError>> + Send;
 
-    /// Records that everything up to `to` is applied and `applied` more events were delivered; clears the
+    /// Records that everything up to `to` is applied and `delivered` more events were delivered; clears the
     /// failure count. Only forward: a position already reached is accepted without a change, one behind the
     /// row's is refused like a lost lease.
     fn advance(
@@ -168,7 +168,7 @@ pub trait CheckpointStore: Send + Sync {
         key: &CheckpointKey,
         token: LeaseToken,
         to: Position,
-        applied: u64,
+        delivered: u64,
     ) -> impl Future<Output = Result<bool, CheckpointError>> + Send;
 
     /// Counts one more failed round and keeps `error` (a category and a handler name, never a payload).

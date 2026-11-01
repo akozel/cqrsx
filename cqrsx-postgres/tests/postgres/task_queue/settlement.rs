@@ -165,7 +165,7 @@ async fn settlement_rechecks_lease_expiry_after_waiting_for_a_row_lock() {
     let claimed = claim(&queue).await.pop().unwrap();
     let mut gate = db.pool.begin().await.unwrap();
     // The settling statement initially sees the old, valid lease, then waits.
-    sqlx::query("UPDATE transactional_outbox SET locked_until = now() - interval '1 second' WHERE id = $1")
+    sqlx::query("UPDATE transactional_outbox SET lease_until = now() - interval '1 second' WHERE id = $1")
         .bind(task.id())
         .execute(&mut *gate)
         .await
@@ -192,7 +192,7 @@ async fn a_lease_expiring_while_settlement_waits_on_an_unchanged_row_cannot_be_c
     let claimed = claim(&queue).await.pop().unwrap();
     // A short real lease expires while an unchanged row is held by another
     // transaction. PostgreSQL's own clock determines when to release the lock.
-    sqlx::query("UPDATE transactional_outbox SET locked_until = clock_timestamp() + interval '1 second' WHERE id = $1")
+    sqlx::query("UPDATE transactional_outbox SET lease_until = clock_timestamp() + interval '1 second' WHERE id = $1")
         .bind(task.id())
         .execute(&db.pool)
         .await
@@ -211,7 +211,7 @@ async fn a_lease_expiring_while_settlement_waits_on_an_unchanged_row_cannot_be_c
     tokio::time::timeout(Duration::from_secs(5), async {
         loop {
             let expired: bool =
-                sqlx::query_scalar("SELECT locked_until <= clock_timestamp() FROM transactional_outbox WHERE id = $1")
+                sqlx::query_scalar("SELECT lease_until <= clock_timestamp() FROM transactional_outbox WHERE id = $1")
                     .bind(task.id())
                     .fetch_one(&db.pool)
                     .await

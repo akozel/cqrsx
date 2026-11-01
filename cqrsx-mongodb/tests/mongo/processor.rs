@@ -37,7 +37,7 @@ async fn forty_commands_over_five_ledgers_reach_the_mongo_views_in_order() {
     commit(&journal, &wakeup, &keys, 8).await;
     let status = caught_up(&journal, &mongo.database, &keys).await;
     assert_eq!(
-        (status.applied, status.owner.as_deref(), status.failures),
+        (status.delivered, status.owner.as_deref(), status.failures),
         (40, Some("node-a"), 0)
     );
     for id in keys {
@@ -84,7 +84,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     })
     .await
     .expect("the rebuild finishes");
-    assert_eq!(status.applied, 40);
+    assert_eq!(status.delivered, 40);
     assert_eq!(
         (observer.count("rebuild:Started"), observer.count("rebuild:Finished")),
         (1, 1)
@@ -121,7 +121,7 @@ async fn a_wipe_of_both_collections_is_healed_by_a_full_self_rebuild() {
     commit(&journal, &wakeup, &keys, 1).await;
     let status = caught_up(&journal, &mongo.database, &keys).await;
     assert_eq!(
-        (status.applied, status.failures),
+        (status.delivered, status.failures),
         (12, 0),
         "the journal was read again from the start"
     );

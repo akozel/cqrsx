@@ -62,12 +62,17 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
             .execute(&db.pool).await.unwrap();
     }
     for snapshot in fixture["snapshots"].as_array().unwrap() {
-        sqlx::query("INSERT INTO snapshots (aggregate_type, aggregate_id, last_sequence, current_snapshot, payload) VALUES ($1,$2,$3,$4,$5)")
-            .bind(snapshot["aggregate_type"].as_str().unwrap())
-            .bind(snapshot["aggregate_id"].as_str().unwrap())
-            .bind(snapshot["last_sequence"].as_i64().unwrap())
-            .bind(snapshot["current_snapshot"].as_i64().unwrap())
-            .bind(&snapshot["payload"]).execute(&db.pool).await.unwrap();
+        sqlx::query(
+            "INSERT INTO snapshots (aggregate_type, aggregate_id, last_sequence, revision, payload) VALUES ($1,$2,$3,$4,$5)",
+        )
+        .bind(snapshot["aggregate_type"].as_str().unwrap())
+        .bind(snapshot["aggregate_id"].as_str().unwrap())
+        .bind(snapshot["last_sequence"].as_i64().unwrap())
+        .bind(snapshot["revision"].as_i64().unwrap())
+        .bind(&snapshot["payload"])
+        .execute(&db.pool)
+        .await
+        .unwrap();
     }
     for (id, value, sequence, snapshot) in [("old", 30, 3, 1), ("shared", 40, 4, 2), ("local", 7, 3, 1)] {
         let repository = PostgresEventRepository::new(db.pool.clone());

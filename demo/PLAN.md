@@ -783,14 +783,14 @@ Activity хранится только в памяти — это лог, а н�
 
 ### 6.7 `MongoViewRepository<V>`
 
-- Документ: `{ _id: view_id, version: i64, last_sequence: i64, view: <V как BSON> }` (`last_sequence` —
+- Документ: `{ _id: view_id, revision: i64, last_sequence: i64, payload: <V как BSON> }` (`last_sequence` —
   последнее применённое событие агрегата, поле обязательное: старых документов нет, базы пересоздаются).
-- `load(view_id)` → `find_one({ _id })` → десериализовать `view`.
+- `load(view_id)` → `find_one({ _id })` → десериализовать `payload`.
 - `load_stored(view_id)` → `(view, ViewMeta { id, revision, last_sequence })`.
 - `update_view(view, ctx)`:
-  - `ctx.version == 0` → `insert_one({ _id, version: 1, last_sequence, view })`; duplicate key (E11000) →
+  - `ctx.revision == 0` → `insert_one({ _id, revision: 1, last_sequence, payload })`; duplicate key (E11000) →
     **конфликт**;
-  - иначе `update_one({ _id, version: ctx.version }, { $set: { view, version: ctx.version + 1, last_sequence } })`;
+  - иначе `update_one({ _id, revision: ctx.revision }, { $set: { payload, revision: ctx.revision + 1, last_sequence } })`;
     `matched_count == 0` → **конфликт**.
 - Конфликт маппится в тот вариант ошибки `cqrsx`, на который `ViewProjection` отвечает повтором; прочее — в
   ошибку соединения/неизвестную.

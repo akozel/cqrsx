@@ -183,7 +183,7 @@ pub(super) async fn make_ready(pool: &PgPool, id: Uuid) {
         .unwrap();
 }
 pub(super) async fn expire(pool: &PgPool, id: Uuid) {
-    sqlx::query("UPDATE transactional_outbox SET locked_until = now() - interval '1 second' WHERE id = $1")
+    sqlx::query("UPDATE transactional_outbox SET lease_until = now() - interval '1 second' WHERE id = $1")
         .bind(id)
         .execute(pool)
         .await
@@ -224,9 +224,9 @@ pub(super) async fn assert_worker_state(pool: &PgPool, id: Uuid, status: &str, a
     assert_eq!(saved.get::<Option<String>, _>("last_error").as_deref(), error);
     let processing = status == "processing";
     let finished = status == "completed" || status == "failed";
-    assert_eq!(saved.get::<Option<String>, _>("locked_by").is_some(), processing);
-    assert_eq!(saved.get::<Option<Uuid>, _>("lock_token").is_some(), processing);
-    assert_eq!(saved.get::<Option<DateTime<Utc>>, _>("locked_until").is_some(), processing);
+    assert_eq!(saved.get::<Option<String>, _>("owner").is_some(), processing);
+    assert_eq!(saved.get::<Option<Uuid>, _>("lease_token").is_some(), processing);
+    assert_eq!(saved.get::<Option<DateTime<Utc>>, _>("lease_until").is_some(), processing);
     assert_eq!(saved.get::<Option<DateTime<Utc>>, _>("finished_at").is_some(), finished);
 }
 

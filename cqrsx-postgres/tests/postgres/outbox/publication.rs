@@ -244,7 +244,7 @@ async fn updates_snapshot_for_a_later_event_batch() {
 }
 
 #[tokio::test]
-async fn maps_duplicate_event_sequence_to_optimistic_lock_error() {
+async fn maps_duplicate_event_sequence_to_a_conflict() {
     let database = Database::new().await;
     let repository = PostgresEventRepositoryWithOutbox::new(database.pool.clone());
 

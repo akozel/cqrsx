@@ -16,12 +16,12 @@ CREATE TABLE IF NOT EXISTS transactional_outbox
     attempts           integer NOT NULL DEFAULT 0 CHECK (attempts >= 0),
     max_attempts       integer NOT NULL DEFAULT 10 CHECK (max_attempts > 0),
     last_error         text,
-    locked_by          text,
-    lock_token         uuid,
-    locked_until       timestamptz,
+    owner              text,
+    lease_token        uuid,
+    lease_until        timestamptz,
     CHECK (attempts <= max_attempts),
-    CHECK ((status = 'processing' AND locked_by IS NOT NULL AND lock_token IS NOT NULL AND locked_until IS NOT NULL)
-        OR (status <> 'processing' AND locked_by IS NULL AND lock_token IS NULL AND locked_until IS NULL)),
+    CHECK ((status = 'processing' AND owner IS NOT NULL AND lease_token IS NOT NULL AND lease_until IS NOT NULL)
+        OR (status <> 'processing' AND owner IS NULL AND lease_token IS NULL AND lease_until IS NULL)),
     CHECK ((status IN ('completed', 'failed')) = (finished_at IS NOT NULL)),
     CHECK (status <> 'pending' OR attempts < max_attempts)
 );
@@ -31,5 +31,5 @@ CREATE INDEX IF NOT EXISTS transactional_outbox_ready_idx
     WHERE status = 'pending';
 
 CREATE INDEX IF NOT EXISTS transactional_outbox_expired_idx
-    ON transactional_outbox (locked_until, id)
+    ON transactional_outbox (lease_until, id)
     WHERE status = 'processing';

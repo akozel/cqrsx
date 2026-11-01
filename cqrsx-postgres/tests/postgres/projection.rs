@@ -20,7 +20,7 @@ impl View<TestAggregate> for Unprovisioned {
     fn apply(&mut self, _: &EventEnvelope<TestAggregate>) {}
 }
 
-/// A view whose table holds `version` as `integer` and `payload` as `text`: other types than the repository reads.
+/// A view whose table holds `revision` as `integer` and `payload` as `text`: other types than the repository reads.
 #[derive(Debug, Default, Serialize, Deserialize)]
 struct Mistyped;
 
@@ -30,7 +30,7 @@ impl View<TestAggregate> for Mistyped {
 }
 
 async fn create_view(pool: &sqlx::PgPool) {
-    sqlx::raw_sql("CREATE TABLE test_view (view_id text PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
+    sqlx::raw_sql("CREATE TABLE test_view (view_id text PRIMARY KEY, revision bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)")
         .execute(pool)
         .await
         .unwrap();
@@ -312,7 +312,7 @@ async fn columns_of_other_types_are_deserialization_errors_not_panics() {
     use cqrsx::journal::PersistenceError;
     let db = Database::new().await;
     sqlx::raw_sql(
-        "CREATE TABLE mistyped_view (view_id text PRIMARY KEY, version integer NOT NULL, last_sequence bigint NOT NULL, payload text NOT NULL);
+        "CREATE TABLE mistyped_view (view_id text PRIMARY KEY, revision integer NOT NULL, last_sequence bigint NOT NULL, payload text NOT NULL);
          INSERT INTO mistyped_view VALUES ('a', 1, 0, 'null')",
     )
     .execute(&db.pool)
@@ -396,7 +396,7 @@ const IDS: [&str; 8] = [
 async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
     use cqrsx::journal::PersistenceError;
     let db = Database::new().await;
-    sqlx::raw_sql(r#"CREATE TABLE test_view (view_id text COLLATE "und-x-icu" PRIMARY KEY, version bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)"#)
+    sqlx::raw_sql(r#"CREATE TABLE test_view (view_id text COLLATE "und-x-icu" PRIMARY KEY, revision bigint NOT NULL, last_sequence bigint NOT NULL CHECK (last_sequence >= 0), payload json NOT NULL)"#)
         .execute(&db.pool)
         .await
         .unwrap();

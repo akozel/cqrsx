@@ -191,7 +191,7 @@ async fn bigint_sequences_and_snapshot_versions_round_trip_without_narrowing() {
         let snapshot = repo.snapshot::<Ledger>(&id).await.unwrap().unwrap();
         assert_eq!(snapshot.last_sequence, sequence);
         // Seed only the previous version, without constructing an enormous history.
-        sqlx::query("UPDATE snapshots SET current_snapshot=$1 WHERE aggregate_id=$2")
+        sqlx::query("UPDATE snapshots SET revision=$1 WHERE aggregate_id=$2")
             .bind(i64::try_from(sequence - 1).unwrap())
             .bind(&id)
             .execute(&db.pool)

@@ -103,7 +103,7 @@ pub enum ProcessorConfigError {
     ZeroPollInterval,
     #[error("the page size must be positive")]
     ZeroPageSize,
-    #[error("the rebuild page must be positive")]
+    #[error("the rebuild keys must be positive")]
     ZeroRebuildKeys,
     #[error("the lease must be at least {min:?}")]
     LeaseTooShort { min: Duration },
@@ -111,9 +111,9 @@ pub enum ProcessorConfigError {
     ZeroRetryBase,
     #[error("the retry base must be at most the retry maximum {max:?}")]
     RetryBaseTooLong { max: Duration },
-    #[error("the concurrency must be positive")]
+    #[error("the write concurrency must be positive")]
     ZeroWriteConcurrency,
-    #[error("the settle time must be at most the poll interval {max:?}")]
+    #[error("the wake delay must be at most the poll interval {max:?}")]
     WakeDelayTooLong { max: Duration },
 }
 
@@ -388,7 +388,7 @@ mod tests {
         );
         assert_eq!(
             ProcessorConfigError::ZeroRebuildKeys.to_string(),
-            "the rebuild page must be positive"
+            "the rebuild keys must be positive"
         );
         assert_eq!(
             ProcessorConfigError::LeaseTooShort { min: seconds(1) }.to_string(),
@@ -404,11 +404,11 @@ mod tests {
         );
         assert_eq!(
             ProcessorConfigError::ZeroWriteConcurrency.to_string(),
-            "the concurrency must be positive"
+            "the write concurrency must be positive"
         );
         assert_eq!(
             ProcessorConfigError::WakeDelayTooLong { max: seconds(1) }.to_string(),
-            "the settle time must be at most the poll interval 1s"
+            "the wake delay must be at most the poll interval 1s"
         );
     }
 
