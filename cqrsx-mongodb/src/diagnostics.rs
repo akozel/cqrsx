@@ -1,7 +1,7 @@
 //! Fixed diagnostic context for the failures of the MongoDB driver, independent of its messages and of payloads.
 
 /// A fixed word for a MongoDB driver error.
-fn mongodb_kind(error: &::mongodb::error::Error) -> &'static str {
+fn mongodb_category(error: &::mongodb::error::Error) -> &'static str {
     use ::mongodb::error::ErrorKind;
     match error.kind.as_ref() {
         ErrorKind::Io(_) => "io",
@@ -15,7 +15,7 @@ fn mongodb_kind(error: &::mongodb::error::Error) -> &'static str {
 
 /// Logs a failed storage operation before its error is erased.
 pub(crate) fn log_mongodb_failure(operation: &'static str, error: &::mongodb::error::Error) {
-    tracing::error!(component = "mongodb", operation, category = mongodb_kind(error), code = ?crate::server_code(error), "storage operation failed");
+    tracing::error!(component = "mongodb", operation, category = mongodb_category(error), code = ?crate::server_code(error), "storage operation failed");
 }
 
 #[cfg(test)]
@@ -41,7 +41,7 @@ mod tests {
     async fn mongodb_failures_log_a_fixed_category_and_the_server_code_without_the_message() {
         let errors = [io(), command(11000), write(121), write_concern(64), bson(), custom()];
         assert_eq!(
-            errors.each_ref().map(mongodb_kind),
+            errors.each_ref().map(mongodb_category),
             ["io", "command", "write", "write", "bson", "other"]
         );
         let (_, log) = test_support::capture(async {

@@ -7,9 +7,9 @@ use thiserror::Error;
 const MAX_BUFFER_CAPACITY: usize = usize::MAX >> 3;
 const DEFAULT_CONCURRENCY: u64 = 128;
 const DEFAULT_BUFFER_CAPACITY: u64 = 128;
-const DEFAULT_POLL_INTERVAL_MS: u64 = 1_000;
-const DEFAULT_HANDLER_TIMEOUT_SECS: u64 = 15;
-const DEFAULT_LEASE_SECS: u64 = 60;
+const DEFAULT_POLL_INTERVAL: Duration = Duration::from_millis(1_000);
+const DEFAULT_HANDLER_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_LEASE: Duration = Duration::from_secs(60);
 // A claim once fewer than a quarter of the buffer waits: chosen by measurement (ticket 04/19).
 const DEFAULT_BUFFER_REFILL_PERCENT: u64 = 25;
 
@@ -54,9 +54,9 @@ impl Default for TaskWorkerPoolConfig {
         Self {
             concurrency: DEFAULT_CONCURRENCY as usize,
             buffer_capacity: DEFAULT_BUFFER_CAPACITY as usize,
-            poll_interval: Duration::from_millis(DEFAULT_POLL_INTERVAL_MS),
-            handler_timeout: Duration::from_secs(DEFAULT_HANDLER_TIMEOUT_SECS),
-            lease_duration: Duration::from_secs(DEFAULT_LEASE_SECS),
+            poll_interval: DEFAULT_POLL_INTERVAL,
+            handler_timeout: DEFAULT_HANDLER_TIMEOUT,
+            lease_duration: DEFAULT_LEASE,
             buffer_refill_percent: DEFAULT_BUFFER_REFILL_PERCENT as u8,
         }
     }
@@ -151,9 +151,9 @@ impl TaskWorkerPoolConfig {
                 .map_err(|_| TaskWorkerPoolConfigError::InvalidConcurrency)?,
             usize::try_from(read_u64("OUTBOX_QUEUE_CAPACITY", DEFAULT_BUFFER_CAPACITY)?)
                 .map_err(|_| TaskWorkerPoolConfigError::InvalidBufferCapacity)?,
-            Duration::from_millis(read_u64("OUTBOX_POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL_MS)?),
-            Duration::from_secs(read_u64("OUTBOX_HANDLER_TIMEOUT_SECS", DEFAULT_HANDLER_TIMEOUT_SECS)?),
-            Duration::from_secs(read_u64("OUTBOX_LEASE_SECS", DEFAULT_LEASE_SECS)?),
+            Duration::from_millis(read_u64("OUTBOX_POLL_INTERVAL_MS", DEFAULT_POLL_INTERVAL.as_millis() as u64)?),
+            Duration::from_secs(read_u64("OUTBOX_HANDLER_TIMEOUT_SECS", DEFAULT_HANDLER_TIMEOUT.as_secs())?),
+            Duration::from_secs(read_u64("OUTBOX_LEASE_SECS", DEFAULT_LEASE.as_secs())?),
         )?;
         let refill = read_u64("OUTBOX_QUEUE_REFILL_PERCENT", DEFAULT_BUFFER_REFILL_PERCENT)?;
         config

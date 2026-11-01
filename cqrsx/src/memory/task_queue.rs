@@ -125,7 +125,7 @@ impl MemTaskQueue {
 
     /// Every task of the outbox, in the order of the writes, with its delivery.
     pub fn tasks(&self) -> Vec<QueuedTask> {
-        self.journal.with_outbox(|rows| {
+        self.journal.outbox_rows(|rows| {
             rows.iter()
                 .map(|row| QueuedTask {
                     aggregate_type: row.aggregate_type.clone(),
@@ -195,7 +195,7 @@ impl TaskQueue for MemTaskQueue {
             .checked_add(lease_duration)
             .ok_or(QueueRequestError::InvalidLeaseDuration)?;
         let limit = checked_limit(limit)?;
-        self.journal.with_outbox(|rows| {
+        self.journal.outbox_rows(|rows| {
             let ready = |row: &OutboxRow| {
                 row.delivery.status == TaskStatus::Pending
                     && row.entry.task.format() == format
@@ -237,7 +237,7 @@ impl TaskQueue for MemTaskQueue {
         }
         let now = Instant::now();
         let attempt = task.attempt();
-        Ok(self.journal.with_outbox(|rows| {
+        Ok(self.journal.outbox_rows(|rows| {
             let owned = rows.iter_mut().find(|row| {
                 row.entry.task.id() == attempt.task_id()
                     && row
@@ -280,7 +280,7 @@ impl TaskQueue for MemTaskQueue {
     async fn recover_expired(&self, limit: usize) -> Result<LeaseRecoveryReport, TaskProcessingError> {
         let limit = checked_limit(limit)?;
         let now = Instant::now();
-        Ok(self.journal.with_outbox(|rows| {
+        Ok(self.journal.outbox_rows(|rows| {
             let expired = |row: &OutboxRow| row.delivery.lease.as_ref().is_some_and(|lease| lease.until <= now);
             let order = |row: &OutboxRow| (row.delivery.lease.as_ref().map(|lease| lease.until), row.entry.task.id());
             let (mut retried, mut failures) = (0, Vec::new());

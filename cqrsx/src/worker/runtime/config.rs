@@ -10,7 +10,7 @@ use thiserror::Error;
 #[derive(Clone, Debug)]
 pub struct TaskRuntimeConfig {
     storage: TaskStorageConfig,
-    worker: TaskWorkerPoolConfig,
+    worker_pool: TaskWorkerPoolConfig,
 }
 
 #[derive(Clone, Debug, Error, PartialEq, Eq)]
@@ -26,7 +26,10 @@ impl TaskRuntimeConfig {
     /// settlement ([`validate_for_storage_timeout`](TaskWorkerPoolConfig::validate_for_storage_timeout)).
     pub fn try_new(storage: TaskStorageConfig, worker: TaskWorkerPoolConfig) -> Result<Self, TaskRuntimeConfigError> {
         worker.validate_for_storage_timeout(storage.storage_timeout())?;
-        Ok(Self { storage, worker })
+        Ok(Self {
+            storage,
+            worker_pool: worker,
+        })
     }
 
     pub fn storage(&self) -> &TaskStorageConfig {
@@ -34,11 +37,11 @@ impl TaskRuntimeConfig {
     }
 
     pub fn worker_pool(&self) -> &TaskWorkerPoolConfig {
-        &self.worker
+        &self.worker_pool
     }
 
     pub(super) fn into_parts(self) -> (TaskStorageConfig, TaskWorkerPoolConfig) {
-        (self.storage, self.worker)
+        (self.storage, self.worker_pool)
     }
 
     /// [`from_lookup`](Self::from_lookup) over the process environment.
@@ -62,7 +65,7 @@ impl Default for TaskRuntimeConfig {
     fn default() -> Self {
         Self {
             storage: TaskStorageConfig::default(),
-            worker: TaskWorkerPoolConfig::default(),
+            worker_pool: TaskWorkerPoolConfig::default(),
         }
     }
 }

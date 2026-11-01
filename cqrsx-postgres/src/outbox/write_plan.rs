@@ -18,13 +18,13 @@ pub(super) enum SnapshotWrite {
     Insert {
         aggregate_id: String,
         payload: Value,
-        version: i64,
+        revision: i64,
         last_sequence: i64,
     },
     Update {
         aggregate_id: String,
         payload: Value,
-        version: i64,
+        revision: i64,
         last_sequence: i64,
     },
 }
@@ -36,25 +36,25 @@ impl SnapshotWrite {
                 aggregate_id,
                 payload,
                 last_sequence,
-                next_version: version,
+                next_version: revision,
             }) => {
-                let version = checked_bigint(version)?;
+                let revision = checked_bigint(revision)?;
                 let last_sequence = checked_bigint(last_sequence)?;
-                if version == 0 {
-                    return Err(invalid_write(WriteValidationError::InvalidSnapshotVersion));
+                if revision == 0 {
+                    return Err(invalid_write(WriteValidationError::InvalidSnapshotRevision));
                 }
-                Ok(if version == 1 {
+                Ok(if revision == 1 {
                     Self::Insert {
                         aggregate_id,
                         payload,
-                        version,
+                        revision,
                         last_sequence,
                     }
                 } else {
                     Self::Update {
                         aggregate_id,
                         payload,
-                        version,
+                        revision,
                         last_sequence,
                     }
                 })
@@ -103,7 +103,7 @@ enum WriteValidationError {
     #[error("persisted integer does not fit PostgreSQL bigint")]
     BigintOverflow,
     #[error("snapshot version must be positive")]
-    InvalidSnapshotVersion,
+    InvalidSnapshotRevision,
     #[error("write batch exceeds PostgreSQL's bind parameter limit")]
     BindLimitExceeded,
 }

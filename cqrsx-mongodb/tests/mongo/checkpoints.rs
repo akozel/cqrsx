@@ -39,7 +39,7 @@ async fn raw(mongo: &Mongo, key: &CheckpointKey) -> Document {
 
 #[tokio::test]
 async fn a_row_is_claimed_by_one_owner_until_it_is_released_or_its_lease_runs_out() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let store = MongoCheckpointStore::new(&mongo.database);
     assert!(store.claim(&key(), "a", LONG).await.unwrap().is_none(), "no row yet");
     store.register(&key()).await.unwrap();
@@ -95,7 +95,7 @@ async fn a_row_is_claimed_by_one_owner_until_it_is_released_or_its_lease_runs_ou
 
 #[tokio::test]
 async fn advance_moves_only_forward_counts_a_repeat_once_and_clears_the_failures() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let store = MongoCheckpointStore::new(&mongo.database);
     store.register(&key()).await.unwrap();
     let owner = store.claim(&key(), "a", LONG).await.unwrap().unwrap();
@@ -127,7 +127,7 @@ async fn advance_moves_only_forward_counts_a_repeat_once_and_clears_the_failures
 
 #[tokio::test]
 async fn rebuild_requests_run_one_at_a_time_and_keys_are_taken_in_request_order_by_the_owner() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let store = MongoCheckpointStore::new(&mongo.database);
     assert!(matches!(
         store.request_rebuild(&key(), Duration::ZERO).await,
@@ -247,7 +247,7 @@ async fn rebuild_requests_run_one_at_a_time_and_keys_are_taken_in_request_order_
 
 #[tokio::test]
 async fn the_document_keeps_the_documented_shape_and_values_that_look_like_expressions() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let store = MongoCheckpointStore::new(&mongo.database);
     store.register(&other()).await.unwrap();
     store.register(&key()).await.unwrap();
@@ -342,7 +342,7 @@ async fn the_document_keeps_the_documented_shape_and_values_that_look_like_expre
 
 #[tokio::test]
 async fn a_dropped_collection_fences_the_old_owner_out_and_register_recreates_the_row() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let store = MongoCheckpointStore::new(&mongo.database);
     store.register(&key()).await.unwrap();
     let owner = store.claim(&key(), "a", LONG).await.unwrap().unwrap();

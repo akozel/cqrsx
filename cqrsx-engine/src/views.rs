@@ -73,13 +73,13 @@ impl Counts for cqrsx_postgres::event_repository::PostgresEventRepository {
 }
 
 /// What the operations over the views ask of the checkpoints, the store erased.
-pub(crate) trait CheckpointOps: Send + Sync {
+pub(crate) trait CheckpointOperations: Send + Sync {
     fn status<'a>(&'a self, projection: Option<&'a str>) -> CheckpointAnswer<'a, Vec<CheckpointStatus>>;
     fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildRequest>;
     fn request_rebuild_key<'a>(&'a self, key: &'a CheckpointKey, id: &'a str) -> CheckpointAnswer<'a, ()>;
 }
 
-impl<C: CheckpointStore + 'static> CheckpointOps for C {
+impl<C: CheckpointStore + 'static> CheckpointOperations for C {
     fn status<'a>(&'a self, projection: Option<&'a str>) -> CheckpointAnswer<'a, Vec<CheckpointStatus>> {
         Box::pin(CheckpointStore::status(self, projection))
     }

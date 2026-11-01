@@ -15,7 +15,7 @@ use tokio::{sync::Barrier, task::JoinSet};
 
 #[tokio::test]
 async fn a_view_is_inserted_updated_and_loaded_with_its_context() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let views = views(&mongo.database);
     let first = Balance {
         total: 1,
@@ -70,7 +70,7 @@ async fn a_view_is_inserted_updated_and_loaded_with_its_context() {
 
 #[tokio::test]
 async fn a_duplicate_insert_a_stale_version_and_an_overflow_are_explicit() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let views = views(&mongo.database);
     let view = Balance::default();
     views
@@ -116,7 +116,7 @@ async fn a_duplicate_insert_a_stale_version_and_an_overflow_are_explicit() {
 
 #[tokio::test]
 async fn missing_and_corrupt_documents_are_explicit() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let views = views(&mongo.database);
     assert!(views.load("none").await.unwrap().is_none());
     assert!(views.load_with_context("none").await.unwrap().is_none());
@@ -172,7 +172,7 @@ const IDS: [&str; 8] = [
 /// of ids, in the order of the ids' bytes.
 #[tokio::test]
 async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let views = views(&mongo.database);
     assert!(views.list().await.unwrap().is_empty());
     assert!(views.range("fox:", "fox;").await.unwrap().is_empty());
@@ -229,7 +229,7 @@ async fn documents_are_listed_and_ranged_in_the_byte_order_of_their_ids() {
 /// winner left.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stress_concurrent_writers_of_one_mongo_document_converge() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let repository = Arc::new(views(&mongo.database));
     for initial in [0usize, 1] {
         for writers in [2usize, 4] {

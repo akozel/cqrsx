@@ -2,7 +2,7 @@
 use super::lease_budget::{ExecutionPlan, execution_plan};
 use crate::{
     task::policy::{Policies, redelivery_backoff},
-    unwinding::{Panicked, unwinding},
+    unwinding::{Panicked, catch_unwind},
     worker::{
         TaskResult,
         adapter::TaskAdapter,
@@ -125,7 +125,7 @@ impl<Q: TaskQueue> TaskExecutor for DefaultTaskExecutor<Q> {
                 reason: "handler timed out".to_owned(),
                 delay: redelivery_backoff(task.attempt().number()),
             },
-            answer = unwinding(dispatcher.dispatch(task.shared_attempt(), retry_pause)) => match answer {
+            answer = catch_unwind(dispatcher.dispatch(task.shared_attempt(), retry_pause)) => match answer {
                 Ok(result) => settlement_request(result, retry_pause),
                 Err(Panicked) => {
                     crate::diagnostics::log_task_handler_panic(task.attempt());

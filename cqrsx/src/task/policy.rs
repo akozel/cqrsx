@@ -142,12 +142,12 @@ impl TaskPolicy {
 /// The policies of an application by name and the policy of every task type bound to one. Shared (`Arc`): the
 /// planner of the reactions reads the budget of a task's type here, and a clone is cheap.
 #[derive(Clone, Debug, Default)]
-pub struct Policies(Arc<Table>);
+pub struct Policies(Arc<PolicyTable>);
 
 #[derive(Clone, Debug, Default)]
-struct Table {
+struct PolicyTable {
     policies: HashMap<PolicyName, TaskPolicy>,
-    tasks: HashMap<TaskFormat, PolicyName>,
+    bindings: HashMap<TaskFormat, PolicyName>,
 }
 
 impl Policies {
@@ -167,7 +167,7 @@ impl Policies {
         if !table.policies.contains_key(&name) {
             return Err(PolicyError::Unknown(name));
         }
-        match table.tasks.entry(format) {
+        match table.bindings.entry(format) {
             Entry::Occupied(entry) => return Err(PolicyError::BoundTwice(entry.key().clone())),
             Entry::Vacant(entry) => entry.insert(name),
         };
@@ -181,7 +181,7 @@ impl Policies {
 
     /// The name of the policy the task type `format` is bound to.
     pub fn name_of(&self, format: &TaskFormat) -> Option<PolicyName> {
-        self.0.tasks.get(format).copied()
+        self.0.bindings.get(format).copied()
     }
 
     /// The policy of the task type `format`; `None` for a type bound to none.

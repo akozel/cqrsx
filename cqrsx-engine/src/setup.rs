@@ -57,10 +57,10 @@ impl Setup {
         lookup: impl Fn(&str) -> Option<String> + Send + Sync + 'static,
         settings: Settings,
     ) -> Self {
-        Self::over(prefix.into(), Arc::new(lookup), settings)
+        Self::from_parts(prefix.into(), Arc::new(lookup), settings)
     }
 
-    pub(crate) fn over(prefix: String, lookup: Lookup, settings: Settings) -> Self {
+    pub(crate) fn from_parts(prefix: String, lookup: Lookup, settings: Settings) -> Self {
         Self {
             prefix,
             lookup,

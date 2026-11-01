@@ -23,7 +23,7 @@ const DUPLICATE_KEY: i32 = 11000;
 
 /// A driver error as a persistence error: a server out of reach is a connection error, anything else is
 /// unexpected.
-fn persistence(error: Error) -> PersistenceError {
+fn persistence_error(error: Error) -> PersistenceError {
     match error.kind.as_ref() {
         ErrorKind::Io(_) | ErrorKind::ServerSelection { .. } | ErrorKind::ConnectionPoolCleared { .. } => {
             PersistenceError::ConnectionError(Box::new(error))
@@ -140,9 +140,9 @@ mod tests {
 
     #[test]
     fn a_server_out_of_reach_is_a_connection_error_and_everything_else_is_unexpected() {
-        assert!(matches!(persistence(io()), PersistenceError::ConnectionError(source) if source.is::<Error>()));
+        assert!(matches!(persistence_error(io()), PersistenceError::ConnectionError(source) if source.is::<Error>()));
         for error in [command(2), write(121), write_concern(64), bson(), custom()] {
-            assert!(matches!(persistence(error), PersistenceError::UnknownError(source) if source.is::<Error>()));
+            assert!(matches!(persistence_error(error), PersistenceError::UnknownError(source) if source.is::<Error>()));
         }
     }
 

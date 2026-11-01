@@ -27,7 +27,7 @@ impl CommitWakeup {
         self.0.notified().await;
     }
 
-    pub(crate) fn notify(&self) -> &Notify {
+    pub(crate) fn notifier(&self) -> &Notify {
         &self.0
     }
 }
@@ -52,7 +52,7 @@ mod tests {
         wakeup.wake(); // nobody waits: nothing is stored
         let mut late = pin!(shared.wait());
         assert!(pending(&mut late), "a wake before the wait is not kept");
-        let mut registered = pin!(wakeup.notify().notified());
+        let mut registered = pin!(wakeup.notifier().notified());
         registered.as_mut().enable();
         let mut other = pin!(shared.wait());
         assert!(pending(&mut other));
@@ -63,7 +63,7 @@ mod tests {
     #[tokio::test]
     async fn a_wait_registered_before_the_wake_resolves_even_when_polled_later() {
         let wakeup = CommitWakeup::default();
-        let mut registered = pin!(wakeup.notify().notified());
+        let mut registered = pin!(wakeup.notifier().notified());
         registered.as_mut().enable();
         wakeup.wake();
         assert!(matches!(

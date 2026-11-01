@@ -26,7 +26,7 @@ async fn commit(journal: &MemEventRepository, wakeup: &CommitWakeup, keys: &[&st
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn forty_commands_over_five_ledgers_reach_the_mongo_views_in_order() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let (journal, observer, wakeup) = (
         MemEventRepository::default(),
         Arc::new(Recording::default()),
@@ -57,7 +57,7 @@ async fn forty_commands_over_five_ledgers_reach_the_mongo_views_in_order() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let (journal, observer, wakeup) = (
         MemEventRepository::default(),
         Arc::new(Recording::default()),
@@ -99,7 +99,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
 /// after them. The processor loses its row, registers it again and reads the journal from the start.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wipe_of_both_collections_is_healed_by_a_full_self_rebuild() {
-    let mongo = Mongo::new().await;
+    let mongo = Mongo::start().await;
     let (journal, observer, wakeup) = (
         MemEventRepository::default(),
         Arc::new(Recording::default()),

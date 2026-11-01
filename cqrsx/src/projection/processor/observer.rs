@@ -94,7 +94,7 @@ pub enum FailureCategory {
     Unknown,
     /// The handler panicked.
     Panic,
-    /// The key's worker stopped before it answered.
+    /// The key's lane stopped before it answered.
     Stopped,
     /// The checkpoint store could not be reached or refused the statement.
     Storage,

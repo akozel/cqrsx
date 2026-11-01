@@ -4,12 +4,12 @@
 use crate::mongodb::MongoDb;
 use crate::{
     Cqrs, Journal,
-    executor::{Commands, Executor},
+    executor::{AnyObserverAdapter, Executor},
     memory::MemoryBackend,
     module::{AggregateEntry, Module, ObservedProcessor, ViewEntry},
     settings::{Defaults, Settings, SettingsError},
     setup::{Lookup, Setup, SetupError},
-    views::{CheckpointOps, Counts},
+    views::{CheckpointOperations, Counts},
 };
 #[cfg(feature = "postgres")]
 use crate::{
@@ -109,7 +109,7 @@ pub trait ProjectionStore: sealed::Sealed {}
 mod sealed {
     /// The views' store an engine is built with.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum Views {
+    pub enum ViewStoreKind {
         Memory,
         #[cfg(feature = "postgres")]
         Postgres,
@@ -118,15 +118,15 @@ mod sealed {
     }
 
     pub trait Sealed {
-        const VIEWS: Views;
+        const VIEWS: ViewStoreKind;
     }
 }
 
-use sealed::Views;
+use sealed::ViewStoreKind;
 
 #[cfg(feature = "postgres")]
 impl sealed::Sealed for Postgres {
-    const VIEWS: Views = Views::Postgres;
+    const VIEWS: ViewStoreKind = ViewStoreKind::Postgres;
 }
 
 #[cfg(feature = "postgres")]
@@ -134,7 +134,7 @@ impl ProjectionStore for Postgres {}
 
 #[cfg(feature = "mongodb")]
 impl sealed::Sealed for MongoDb {
-    const VIEWS: Views = Views::MongoDb;
+    const VIEWS: ViewStoreKind = ViewStoreKind::MongoDb;
 }
 
 #[cfg(feature = "mongodb")]
@@ -143,8 +143,8 @@ impl ProjectionStore for MongoDb {}
 /// The stores an engine is built over, and what the application opened for them.
 struct Stores {
     #[cfg_attr(not(feature = "postgres"), allow(dead_code))]
-    postgres: bool,
-    views: Views,
+    journal_in_postgres: bool,
+    views: ViewStoreKind,
     #[cfg(feature = "postgres")]
     pools: Option<PostgresPools>,
     #[cfg(feature = "mongodb")]
@@ -187,8 +187,8 @@ impl Builder {
             lookup,
             defaults: Defaults::LIBRARY,
             stores: Stores {
-                postgres: false,
-                views: Views::Memory,
+                journal_in_postgres: false,
+                views: ViewStoreKind::Memory,
                 #[cfg(feature = "postgres")]
                 pools: None,
                 #[cfg(feature = "mongodb")]
@@ -209,7 +209,7 @@ impl Builder {
     /// opened when the engine is built (one connection each: an unreachable database fails the build).
     #[cfg(feature = "postgres")]
     pub fn event_store(mut self, _: Postgres) -> Self {
-        self.stores.postgres = true;
+        self.stores.journal_in_postgres = true;
         self
     }
 
@@ -290,18 +290,18 @@ impl Builder {
             None => Settings::from_lookup(&self.prefix, &*self.lookup, &self.defaults)?,
         };
         let durable_views = match self.stores.views {
-            Views::Memory => None,
+            ViewStoreKind::Memory => None,
             #[cfg(feature = "postgres")]
-            Views::Postgres => Some("PostgreSQL"),
+            ViewStoreKind::Postgres => Some("PostgreSQL"),
             #[cfg(feature = "mongodb")]
-            Views::MongoDb => Some("MongoDB"),
+            ViewStoreKind::MongoDb => Some("MongoDB"),
         };
         if let Some(store) = durable_views
-            && !self.stores.postgres
+            && !self.stores.journal_in_postgres
         {
             return Err(BuildError::ViewsWithoutJournal(store));
         }
-        let setup = Setup::over(self.prefix, self.lookup, settings);
+        let setup = Setup::from_parts(self.prefix, self.lookup, settings);
         let modules = self
             .modules
             .into_iter()
@@ -311,15 +311,15 @@ impl Builder {
         let settings = setup.engine().clone();
         let described = merge_described(settings.entries().into_iter().chain(setup.described()))?;
         let memory = MemoryBackend::new();
-        let checkpoints: Arc<dyn CheckpointOps> = memory.checkpoints.clone();
+        let checkpoints: Arc<dyn CheckpointOperations> = memory.checkpoints.clone();
         let mut cqrs = Cqrs {
             owner: settings.node_name().map_or_else(|| Uuid::new_v4().to_string(), str::to_owned),
             settings,
             policies: Policies::default(),
             dependencies: Dependencies::default(),
             command_observer: None,
-            projection_observers: None,
-            commands: Default::default(),
+            projection_observer: None,
+            command_executors: Default::default(),
             executors: Executors::default(),
             wakeups: Default::default(),
             dispatcher: None,
@@ -372,7 +372,7 @@ impl Builder {
                 }
             }
             for observers in module.projection_observers {
-                if cqrs.projection_observers.replace(observers).is_some() {
+                if cqrs.projection_observer.replace(observers).is_some() {
                     return Err(twice);
                 }
             }
@@ -397,20 +397,20 @@ impl Cqrs {
     /// of the plan (main, projection, history), the client of MongoDB (lazy).
     async fn open(&mut self, stores: Stores) -> Result<(), BuildError> {
         #[cfg(feature = "postgres")]
-        if stores.postgres {
+        if stores.journal_in_postgres {
             let pools = match stores.pools {
                 Some(pools) => pools,
                 None => crate::postgres::open(&self.settings).await?,
             };
             match stores.views {
-                Views::Postgres => {
+                ViewStoreKind::Postgres => {
                     self.checkpoints = Arc::new(cqrsx_postgres::checkpoint_store::PostgresCheckpointStore::new(
                         pools.main.clone(),
                     ));
                     self.view_store = crate::ViewStore::Postgres;
                 }
                 #[cfg(feature = "mongodb")]
-                Views::MongoDb => {
+                ViewStoreKind::MongoDb => {
                     let client = match stores.client {
                         Some(client) => client,
                         None => crate::mongodb::client(&self.settings).await?,
@@ -419,7 +419,7 @@ impl Cqrs {
                     self.checkpoints = Arc::new(cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(&database));
                     self.view_store = crate::ViewStore::MongoDb(database);
                 }
-                Views::Memory => {}
+                ViewStoreKind::Memory => {}
             }
             self.journal = Journal::Postgres(pools);
         }
@@ -499,13 +499,13 @@ impl Registrations {
         A::Command: Command,
         A::Error: Rejection,
     {
-        Some(Arc::new(Commands(self.cqrs.command_observer.clone()?)))
+        Some(Arc::new(AnyObserverAdapter(self.cqrs.command_observer.clone()?)))
     }
 
     #[cfg(test)]
     /// The observer of the processor of the view named `projection` on this node.
     pub(crate) fn projection_observer(&self, projection: &'static str) -> Option<Arc<dyn ProjectionObserver>> {
-        let observers = self.cqrs.projection_observers.as_ref()?;
+        let observers = self.cqrs.projection_observer.as_ref()?;
         Some(observers(ObservedProcessor {
             projection,
             node: &self.cqrs.owner,
@@ -544,7 +544,7 @@ impl Cqrs {
         let executor = Arc::new(executor);
         let executors = self.executors.clone().with::<A, _>(executor.clone());
         self.executors = executors.map_err(|twice| BuildError::AggregateTwice(twice.0))?;
-        self.commands.insert(TypeId::of::<A>(), executor);
+        self.command_executors.insert(TypeId::of::<A>(), executor);
         Ok(())
     }
 
@@ -577,20 +577,20 @@ impl Cqrs {
         let executor = StoreCommandExecutor::new(store, rules, settings.conflict_retry(), settings.lock_limits())
             .with_task_planner(ReactionsPlanner::<A>::new(self.policies.clone()))
             .with_commit_wakeup(self.wakeup::<A>());
-        match self.commands_observer::<A>() {
+        match self.command_observer::<A>() {
             Some(observer) => executor.with_observer(observer),
             None => executor,
         }
     }
 
     /// The observer of every command, as the observer of the commands of `A`.
-    fn commands_observer<A: Aggregate>(&self) -> Option<Arc<dyn CommandObserver<A>>>
+    fn command_observer<A: Aggregate>(&self) -> Option<Arc<dyn CommandObserver<A>>>
     where
         A::Command: Command,
         A::Error: Rejection,
     {
         let observer = self.command_observer.clone()?;
-        Some(Arc::new(Commands(observer)))
+        Some(Arc::new(AnyObserverAdapter(observer)))
     }
 
     /// Installs the processor of `V` over the engine's journal and checkpoints, and the repository of its documents,
@@ -673,7 +673,7 @@ impl Cqrs {
         let processor = ProjectionProcessor::new(V::NAME, journal, checkpoints, projection, self.settings.processor())
             .with_wakeup(self.wakeup::<A>())
             .with_owner(self.owner.clone());
-        match &self.projection_observers {
+        match &self.projection_observer {
             Some(observers) => processor.with_observer(observers(ObservedProcessor {
                 projection: V::NAME,
                 node: &self.owner,
@@ -689,7 +689,7 @@ impl Cqrs {
 
     /// The executor of `A`, if a module registered the aggregate type.
     pub(crate) fn executor_of<A: Aggregate + 'static>(&self) -> Option<&Executor<A>> {
-        self.commands.get(&TypeId::of::<A>())?.downcast_ref::<Executor<A>>()
+        self.command_executors.get(&TypeId::of::<A>())?.downcast_ref::<Executor<A>>()
     }
 }
 

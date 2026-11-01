@@ -40,20 +40,20 @@ pub const DEFAULT_APPLICATION_NAME: &str = "cqrsx";
 pub const DEFAULT_HTTP_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8080));
 
 const SNAPSHOT_EVERY: &str = "SNAPSHOT_EVERY";
-const LOCK_MAX_WAIT: &str = "COMMAND_LOCK_MAX_WAIT_MS";
-const LOCK_MAX_WAITERS: &str = "COMMAND_LOCK_MAX_WAITERS";
-const PROJECTION_POLL: &str = "PROJECTION_POLL_MS";
+const COMMAND_LOCK_MAX_WAIT_MS: &str = "COMMAND_LOCK_MAX_WAIT_MS";
+const COMMAND_LOCK_MAX_WAITERS: &str = "COMMAND_LOCK_MAX_WAITERS";
+const PROJECTION_POLL_MS: &str = "PROJECTION_POLL_MS";
 const PROJECTION_PAGE: &str = "PROJECTION_PAGE";
-const PROJECTION_LEASE: &str = "PROJECTION_LEASE_MS";
-const PROJECTION_RETRY_BASE: &str = "PROJECTION_RETRY_BASE_MS";
-const PROJECTION_RETRY_MAX: &str = "PROJECTION_RETRY_MAX_MS";
+const PROJECTION_LEASE_MS: &str = "PROJECTION_LEASE_MS";
+const PROJECTION_RETRY_BASE_MS: &str = "PROJECTION_RETRY_BASE_MS";
+const PROJECTION_RETRY_MAX_MS: &str = "PROJECTION_RETRY_MAX_MS";
 const PROJECTION_CONCURRENCY: &str = "PROJECTION_CONCURRENCY";
 const PROJECTION_BUFFER: &str = "PROJECTION_BUFFER";
 const PROJECTION_MAX_BATCH: &str = "PROJECTION_MAX_BATCH";
 const PROJECTION_REBUILD_PAGE: &str = "PROJECTION_REBUILD_PAGE";
 const PROJECTION_SETTLE: &str = "PROJECTION_SETTLE_MS";
-const LAG_CAP: &str = "PROJECTION_LAG_CAP";
-const STATUS_TIMEOUT: &str = "PROJECTION_STATUS_TIMEOUT_MS";
+const PROJECTION_LAG_CAP: &str = "PROJECTION_LAG_CAP";
+const PROJECTION_STATUS_TIMEOUT_MS: &str = "PROJECTION_STATUS_TIMEOUT_MS";
 const NODE_NAME: &str = "NODE_NAME";
 #[cfg(feature = "http")]
 const HTTP_ADDR: &str = "HTTP_ADDR";
@@ -73,20 +73,20 @@ const OUTBOX: [&str; 7] = [
 pub(crate) fn variables() -> Vec<&'static str> {
     let mut names = vec![
         SNAPSHOT_EVERY,
-        LOCK_MAX_WAIT,
-        LOCK_MAX_WAITERS,
-        PROJECTION_POLL,
+        COMMAND_LOCK_MAX_WAIT_MS,
+        COMMAND_LOCK_MAX_WAITERS,
+        PROJECTION_POLL_MS,
         PROJECTION_PAGE,
-        PROJECTION_LEASE,
-        PROJECTION_RETRY_BASE,
-        PROJECTION_RETRY_MAX,
+        PROJECTION_LEASE_MS,
+        PROJECTION_RETRY_BASE_MS,
+        PROJECTION_RETRY_MAX_MS,
         PROJECTION_CONCURRENCY,
         PROJECTION_BUFFER,
         PROJECTION_MAX_BATCH,
         PROJECTION_REBUILD_PAGE,
         PROJECTION_SETTLE,
-        LAG_CAP,
-        STATUS_TIMEOUT,
+        PROJECTION_LAG_CAP,
+        PROJECTION_STATUS_TIMEOUT_MS,
         NODE_NAME,
     ];
     #[cfg(feature = "postgres")]
@@ -214,7 +214,11 @@ impl Settings {
         processor: ProcessorConfig,
         task_runtime: TaskRuntimeConfig,
     ) -> Result<Self, SettingsError> {
-        below_handler_timeout(&Read::bare(), lock_limits, task_runtime.worker_pool().handler_timeout())?;
+        below_handler_timeout(
+            &VariableReader::without_variables(),
+            lock_limits,
+            task_runtime.worker_pool().handler_timeout(),
+        )?;
         Ok(Self {
             snapshot_every,
             lock_limits,
@@ -233,7 +237,7 @@ impl Settings {
         lookup: impl Fn(&str) -> Option<String>,
         defaults: &Defaults,
     ) -> Result<Self, SettingsError> {
-        let read = Read {
+        let read = VariableReader {
             prefix,
             lookup: &lookup,
             defaults,
@@ -249,7 +253,7 @@ impl Settings {
         let postgres = PostgresSettings::read(&read)?;
         let lock_limits = command_lock_limits(&read, task_runtime.worker_pool().handler_timeout())?;
         let processor = projection_config(&read)?;
-        let (lag_cap, status_timeout) = read_side(&read)?;
+        let (lag_cap, status_timeout) = view_operations(&read)?;
         #[cfg(feature = "mongodb")]
         let mongodb = MongoSettings::read(&read)?;
         Ok(Self {
@@ -259,7 +263,7 @@ impl Settings {
             conflict_retry: AggregateConflictRetryPolicy::default(),
             lock_limits,
             processor,
-            node_name: read.raw(NODE_NAME),
+            node_name: read.text(NODE_NAME),
             lag_cap,
             status_timeout,
             task_runtime,
@@ -391,13 +395,13 @@ impl Settings {
         )]
         let mut entries = vec![
             (name(SNAPSHOT_EVERY), self.snapshot_every.to_string()),
-            (name(LOCK_MAX_WAIT), duration_text(locks.max_wait())),
-            (name(LOCK_MAX_WAITERS), locks.max_waiters().to_string()),
-            (name(PROJECTION_POLL), duration_text(projection.poll_interval())),
+            (name(COMMAND_LOCK_MAX_WAIT_MS), duration_text(locks.max_wait())),
+            (name(COMMAND_LOCK_MAX_WAITERS), locks.max_waiters().to_string()),
+            (name(PROJECTION_POLL_MS), duration_text(projection.poll_interval())),
             (name(PROJECTION_PAGE), projection.page_size().to_string()),
-            (name(PROJECTION_LEASE), duration_text(projection.lease())),
-            (name(PROJECTION_RETRY_BASE), duration_text(projection.retry_base())),
-            (name(PROJECTION_RETRY_MAX), duration_text(projection.retry_max())),
+            (name(PROJECTION_LEASE_MS), duration_text(projection.lease())),
+            (name(PROJECTION_RETRY_BASE_MS), duration_text(projection.retry_base())),
+            (name(PROJECTION_RETRY_MAX_MS), duration_text(projection.retry_max())),
             (name(PROJECTION_CONCURRENCY), projection.concurrency().to_string()),
             (name(PROJECTION_BUFFER), delivery.capacity().to_string()),
             (name(PROJECTION_MAX_BATCH), delivery.max_batch().to_string()),
@@ -407,8 +411,8 @@ impl Settings {
                 "projection.pages_in_flight".to_owned(),
                 projection.pages_in_flight().to_string(),
             ),
-            (name(LAG_CAP), self.lag_cap.to_string()),
-            (name(STATUS_TIMEOUT), duration_text(self.status_timeout)),
+            (name(PROJECTION_LAG_CAP), self.lag_cap.to_string()),
+            (name(PROJECTION_STATUS_TIMEOUT_MS), duration_text(self.status_timeout)),
             (name(NODE_NAME), self.node_name.clone().unwrap_or_else(|| "none".to_owned())),
             ("OUTBOX_WORKER_CONCURRENCY".to_owned(), worker.concurrency().to_string()),
             ("OUTBOX_QUEUE_CAPACITY".to_owned(), worker.buffer_capacity().to_string()),
@@ -462,13 +466,13 @@ pub fn duration_text(duration: Duration) -> String {
 }
 
 /// The variables of the settings: by their names after the prefix, the application's defaults where they are absent.
-pub(crate) struct Read<'a> {
+pub(crate) struct VariableReader<'a> {
     prefix: &'a str,
     lookup: &'a dyn Fn(&str) -> Option<String>,
     defaults: &'a Defaults,
 }
 
-impl<'a> Read<'a> {
+impl<'a> VariableReader<'a> {
     #[cfg(all(test, feature = "postgres"))]
     pub(crate) fn over(prefix: &'a str, lookup: &'a dyn Fn(&str) -> Option<String>, defaults: &'a Defaults) -> Self {
         Self {
@@ -479,8 +483,8 @@ impl<'a> Read<'a> {
     }
 
     /// The names of settings set by hand: no prefix, no variable.
-    pub(crate) fn bare() -> Read<'static> {
-        Read {
+    pub(crate) fn without_variables() -> VariableReader<'static> {
+        VariableReader {
             prefix: "",
             lookup: &|_| None,
             defaults: &Defaults::LIBRARY,
@@ -492,7 +496,7 @@ impl<'a> Read<'a> {
     }
 
     /// The variable `name` trimmed, absent when blank; else the application's default.
-    pub(crate) fn raw(&self, name: &str) -> Option<String> {
+    pub(crate) fn text(&self, name: &str) -> Option<String> {
         (self.lookup)(&self.variable(name))
             .map(|value| value.trim().to_owned())
             .filter(|value| !value.is_empty())
@@ -504,7 +508,7 @@ impl<'a> Read<'a> {
     where
         T::Err: Display,
     {
-        match self.raw(name) {
+        match self.text(name) {
             Some(raw) => raw
                 .parse()
                 .map_err(|error: T::Err| self.invalid(name, &format!("cannot parse {raw:?}: {error}"))),
@@ -514,7 +518,7 @@ impl<'a> Read<'a> {
 
     /// The variable `name` in milliseconds.
     pub(crate) fn millis(&self, name: &str, default: Duration) -> Result<Duration, SettingsError> {
-        match self.raw(name) {
+        match self.text(name) {
             Some(_) => Ok(Duration::from_millis(self.value(name, 0)?)),
             None => Ok(default),
         }
@@ -533,21 +537,21 @@ impl<'a> Read<'a> {
 }
 
 /// A chain task waits for the lock inside its handler, so the wait must end before the handler times out.
-fn below_handler_timeout(read: &Read, limits: LockLimits, handler_timeout: Duration) -> Result<(), SettingsError> {
+fn below_handler_timeout(read: &VariableReader, limits: LockLimits, handler_timeout: Duration) -> Result<(), SettingsError> {
     if limits.max_wait() >= handler_timeout {
-        return Err(read.invalid(LOCK_MAX_WAIT, "must be below OUTBOX_HANDLER_TIMEOUT_SECS"));
+        return Err(read.invalid(COMMAND_LOCK_MAX_WAIT_MS, "must be below OUTBOX_HANDLER_TIMEOUT_SECS"));
     }
     Ok(())
 }
 
 /// Commands to one aggregate run one at a time under its lock, in arrival order; these bound the wait for the lock
 /// and default to the library's.
-fn command_lock_limits(read: &Read, handler_timeout: Duration) -> Result<LockLimits, SettingsError> {
-    let max_wait = read.millis(LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAIT)?;
-    let max_waiters = read.value(LOCK_MAX_WAITERS, DEFAULT_LOCK_MAX_WAITERS.get())?;
+fn command_lock_limits(read: &VariableReader, handler_timeout: Duration) -> Result<LockLimits, SettingsError> {
+    let max_wait = read.millis(COMMAND_LOCK_MAX_WAIT_MS, DEFAULT_LOCK_MAX_WAIT)?;
+    let max_waiters = read.value(COMMAND_LOCK_MAX_WAITERS, DEFAULT_LOCK_MAX_WAITERS.get())?;
     let limits = LockLimits::try_new(max_wait, max_waiters).map_err(|error| match error {
-        LockLimitsError::ZeroMaxWait => read.invalid(LOCK_MAX_WAIT, "must be positive"),
-        LockLimitsError::ZeroMaxWaiters => read.invalid(LOCK_MAX_WAITERS, "must be positive"),
+        LockLimitsError::ZeroMaxWait => read.invalid(COMMAND_LOCK_MAX_WAIT_MS, "must be positive"),
+        LockLimitsError::ZeroMaxWaiters => read.invalid(COMMAND_LOCK_MAX_WAITERS, "must be positive"),
     })?;
     below_handler_timeout(read, limits, handler_timeout)?;
     Ok(limits)
@@ -555,12 +559,12 @@ fn command_lock_limits(read: &Read, handler_timeout: Duration) -> Result<LockLim
 
 /// The projection processors: every bound defaults to the library's (the settle to the application's, if it has one);
 /// the key buffer is the depth of the window of pages plus one, and holds two at least.
-fn projection_config(read: &Read) -> Result<ProcessorConfig, SettingsError> {
-    let poll = read.millis(PROJECTION_POLL, DEFAULT_PROCESSOR_POLL_INTERVAL)?;
+fn projection_config(read: &VariableReader) -> Result<ProcessorConfig, SettingsError> {
+    let poll = read.millis(PROJECTION_POLL_MS, DEFAULT_PROCESSOR_POLL_INTERVAL)?;
     let page = read.value(PROJECTION_PAGE, DEFAULT_PROCESSOR_PAGE_SIZE)?;
-    let lease = read.millis(PROJECTION_LEASE, DEFAULT_PROCESSOR_LEASE)?;
-    let retry_base = read.millis(PROJECTION_RETRY_BASE, DEFAULT_PROCESSOR_RETRY_BASE)?;
-    let retry_max = read.millis(PROJECTION_RETRY_MAX, DEFAULT_PROCESSOR_RETRY_MAX)?;
+    let lease = read.millis(PROJECTION_LEASE_MS, DEFAULT_PROCESSOR_LEASE)?;
+    let retry_base = read.millis(PROJECTION_RETRY_BASE_MS, DEFAULT_PROCESSOR_RETRY_BASE)?;
+    let retry_max = read.millis(PROJECTION_RETRY_MAX_MS, DEFAULT_PROCESSOR_RETRY_MAX)?;
     let concurrency = read.value(PROJECTION_CONCURRENCY, DEFAULT_PROCESSOR_CONCURRENCY)?;
     let rebuild_page = read.value(PROJECTION_REBUILD_PAGE, DEFAULT_PROCESSOR_REBUILD_PAGE)?;
     let settle = read.millis(PROJECTION_SETTLE, DEFAULT_PROCESSOR_SETTLE)?;
@@ -571,21 +575,21 @@ fn projection_config(read: &Read) -> Result<ProcessorConfig, SettingsError> {
         DeliveryLimitsError::ZeroMaxBatch => read.invalid(PROJECTION_MAX_BATCH, "must be positive"),
     })?;
     let named = |error: ProcessorConfigError| match error {
-        ProcessorConfigError::ZeroPollInterval => read.invalid(PROJECTION_POLL, "must be positive"),
+        ProcessorConfigError::ZeroPollInterval => read.invalid(PROJECTION_POLL_MS, "must be positive"),
         ProcessorConfigError::ZeroPageSize => read.invalid(PROJECTION_PAGE, "must be positive"),
         ProcessorConfigError::ZeroRebuildPage => read.invalid(PROJECTION_REBUILD_PAGE, "must be positive"),
         ProcessorConfigError::LeaseTooShort { min } => {
-            read.invalid(PROJECTION_LEASE, &format!("must be at least {} ms", min.as_millis()))
+            read.invalid(PROJECTION_LEASE_MS, &format!("must be at least {} ms", min.as_millis()))
         }
-        ProcessorConfigError::InvalidRetry if retry_base.is_zero() => read.invalid(PROJECTION_RETRY_BASE, "must be positive"),
+        ProcessorConfigError::InvalidRetry if retry_base.is_zero() => read.invalid(PROJECTION_RETRY_BASE_MS, "must be positive"),
         ProcessorConfigError::InvalidRetry => read.invalid(
-            PROJECTION_RETRY_BASE,
-            &format!("must not exceed {}", read.variable(PROJECTION_RETRY_MAX)),
+            PROJECTION_RETRY_BASE_MS,
+            &format!("must not exceed {}", read.variable(PROJECTION_RETRY_MAX_MS)),
         ),
         ProcessorConfigError::ZeroConcurrency => read.invalid(PROJECTION_CONCURRENCY, "must be positive"),
         ProcessorConfigError::SettleTooLong { .. } => read.invalid(
             PROJECTION_SETTLE,
-            &format!("must not exceed {}", read.variable(PROJECTION_POLL)),
+            &format!("must not exceed {}", read.variable(PROJECTION_POLL_MS)),
         ),
     };
     ProcessorConfig::try_new(poll, page, lease, delivery_limits)
@@ -597,14 +601,14 @@ fn projection_config(read: &Read) -> Result<ProcessorConfig, SettingsError> {
 }
 
 /// The operations over the views: a lag is counted up to a cap, a status waits a while for the checkpoints.
-fn read_side(read: &Read) -> Result<(u64, Duration), SettingsError> {
-    let lag_cap = read.value(LAG_CAP, DEFAULT_LAG_CAP)?;
-    let status_timeout = read.millis(STATUS_TIMEOUT, DEFAULT_STATUS_TIMEOUT)?;
+fn view_operations(read: &VariableReader) -> Result<(u64, Duration), SettingsError> {
+    let lag_cap = read.value(PROJECTION_LAG_CAP, DEFAULT_LAG_CAP)?;
+    let status_timeout = read.millis(PROJECTION_STATUS_TIMEOUT_MS, DEFAULT_STATUS_TIMEOUT)?;
     if lag_cap == 0 {
-        return Err(read.invalid(LAG_CAP, "must be positive"));
+        return Err(read.invalid(PROJECTION_LAG_CAP, "must be positive"));
     }
     if status_timeout.is_zero() {
-        return Err(read.invalid(STATUS_TIMEOUT, "must be positive"));
+        return Err(read.invalid(PROJECTION_STATUS_TIMEOUT_MS, "must be positive"));
     }
     Ok((lag_cap, status_timeout))
 }
@@ -671,10 +675,10 @@ mod tests {
     }
 
     /// `lookup` read as the settings of the prefix `ENCORE` read it, the demo's defaults elsewhere.
-    fn reading<T>(pairs: &[(&'static str, &str)], read: impl FnOnce(&Read) -> T) -> T {
+    fn reading<T>(pairs: &[(&'static str, &str)], read: impl FnOnce(&VariableReader) -> T) -> T {
         let pairs: HashMap<&str, String> = pairs.iter().map(|(k, v)| (*k, v.to_string())).collect();
         let lookup = |name: &str| pairs.get(name).cloned();
-        read(&Read {
+        read(&VariableReader {
             prefix: "ENCORE",
             lookup: &lookup,
             defaults: &DEMO,
@@ -923,7 +927,7 @@ mod tests {
     }
 
     fn settings(pairs: &[(&'static str, &str)]) -> Result<(u64, Duration), SettingsError> {
-        reading(pairs, read_side)
+        reading(pairs, view_operations)
     }
 
     #[test]

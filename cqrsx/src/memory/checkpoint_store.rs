@@ -123,7 +123,7 @@ impl MemCheckpointStore {
     }
 
     /// The state, unless the store is unavailable.
-    fn available(&self) -> Result<MutexGuard<'_, State>, CheckpointError> {
+    fn open_state(&self) -> Result<MutexGuard<'_, State>, CheckpointError> {
         let state = self.state();
         if state.unavailable {
             return Err(CheckpointError::Storage("checkpoint store unavailable".into()));
@@ -138,7 +138,7 @@ impl MemCheckpointStore {
         token: LeaseToken,
         write: impl FnOnce(&mut Row) -> bool,
     ) -> Result<bool, CheckpointError> {
-        let mut state = self.available()?;
+        let mut state = self.open_state()?;
         let Some(row) = state.rows.get_mut(key) else {
             return Ok(false);
         };
@@ -155,7 +155,7 @@ impl MemCheckpointStore {
 
 impl CheckpointStore for MemCheckpointStore {
     async fn register(&self, key: &CheckpointKey) -> Result<(), CheckpointError> {
-        self.available()?.rows.entry(key.clone()).or_insert_with(|| Row {
+        self.open_state()?.rows.entry(key.clone()).or_insert_with(|| Row {
             position: Position::START,
             applied: 0,
             rebuild_requested: false,
@@ -171,7 +171,7 @@ impl CheckpointStore for MemCheckpointStore {
     }
 
     async fn claim(&self, key: &CheckpointKey, owner: &str, lease: Duration) -> Result<Option<Claimed>, CheckpointError> {
-        let mut state = self.available()?;
+        let mut state = self.open_state()?;
         let Some(row) = state.rows.get_mut(key) else {
             return Ok(None);
         };
@@ -236,7 +236,7 @@ impl CheckpointStore for MemCheckpointStore {
 
     async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildRequest, CheckpointError> {
         pace_fits(pace)?;
-        let mut state = self.available()?;
+        let mut state = self.open_state()?;
         let Some(row) = state.rows.get_mut(key) else {
             return Err(CheckpointError::Invalid("projection is not registered"));
         };
@@ -250,7 +250,7 @@ impl CheckpointStore for MemCheckpointStore {
     }
 
     async fn request_rebuild_key(&self, key: &CheckpointKey, aggregate_id: &str) -> Result<(), CheckpointError> {
-        let mut state = self.available()?;
+        let mut state = self.open_state()?;
         if !state.rows.contains_key(key) {
             return Err(CheckpointError::Invalid("projection is not registered"));
         }
@@ -269,7 +269,7 @@ impl CheckpointStore for MemCheckpointStore {
         token: LeaseToken,
         limit: usize,
     ) -> Result<Option<RebuildRequests>, CheckpointError> {
-        let mut state = self.available()?;
+        let mut state = self.open_state()?;
         let Some(row) = state.rows.get(key) else {
             return Ok(None);
         };
@@ -330,7 +330,7 @@ impl CheckpointStore for MemCheckpointStore {
     }
 
     async fn status(&self, projection: Option<&str>) -> Result<Vec<CheckpointStatus>, CheckpointError> {
-        let state = self.available()?;
+        let state = self.open_state()?;
         Ok(state
             .rows
             .iter()

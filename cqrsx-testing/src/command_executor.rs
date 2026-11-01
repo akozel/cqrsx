@@ -106,7 +106,7 @@ use std::{
 /// ```
 #[must_use]
 pub struct TestCommandExecutor<A: Aggregate, S: EventStore<A> = MemStore<A>> {
-    inner: Arc<StoreCommandExecutor<A, S>>,
+    executor: Arc<StoreCommandExecutor<A, S>>,
     published: Arc<Mutex<Vec<NewTask>>>,
 }
 
@@ -114,7 +114,7 @@ pub struct TestCommandExecutor<A: Aggregate, S: EventStore<A> = MemStore<A>> {
 impl<A: Aggregate, S: EventStore<A>> fmt::Debug for TestCommandExecutor<A, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TestCommandExecutor")
-            .field("executor", &self.inner)
+            .field("executor", &self.executor)
             .finish_non_exhaustive()
     }
 }
@@ -136,14 +136,14 @@ impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
     ) -> Self {
         let executor = StoreCommandExecutor::new(store, rules, AggregateConflictRetryPolicy::default(), LockLimits::default());
         Self {
-            inner: Arc::new(configure(executor)),
+            executor: Arc::new(configure(executor)),
             published: Arc::default(),
         }
     }
 
     /// The store the commands run against.
     pub fn store(&self) -> &S {
-        self.inner.store()
+        self.executor.store()
     }
 
     /// The tasks of the calls that committed since the last call, in call order; clears the record.
@@ -164,7 +164,7 @@ impl<A: Aggregate + 'static> TestCommandExecutor<A, PersistedEventStore<MemEvent
 impl<A: Aggregate, S: EventStore<A>> Clone for TestCommandExecutor<A, S> {
     fn clone(&self) -> Self {
         Self {
-            inner: self.inner.clone(),
+            executor: self.executor.clone(),
             published: self.published.clone(),
         }
     }
@@ -184,7 +184,7 @@ where
         command: A::Command,
         metadata: HashMap<String, String>,
     ) -> Result<CommitReport<A>, CommandGatewayError<A::Error>> {
-        let result = self.inner.execute_with_metadata(id, command, metadata).await;
+        let result = self.executor.execute_with_metadata(id, command, metadata).await;
         if let Ok(report) = &result {
             lock(&self.published, "test executor published tasks").extend(report.tasks.iter().cloned());
         }

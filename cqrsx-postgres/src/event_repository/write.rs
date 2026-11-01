@@ -23,7 +23,7 @@ impl PostgresEventRepository {
             encode_bigint(snapshot.last_sequence)?;
             encode_bigint(snapshot.next_version)?;
             if snapshot.next_version == 0 {
-                return Err(PostgresRepositoryError::UnknownError("snapshot version must be positive".into()).into());
+                return Err(PostgresRepositoryError::Unexpected("snapshot version must be positive".into()).into());
             }
         }
         match snapshot_update {
@@ -60,7 +60,7 @@ impl PostgresEventRepository {
             .execute(&mut *tx)
             .await?;
         if result.rows_affected() != 1 {
-            return Err(PostgresRepositoryError::OptimisticLock);
+            return Err(PostgresRepositoryError::Conflict);
         }
         tx.commit().await?;
         Ok(())
@@ -83,7 +83,7 @@ impl PostgresEventRepository {
             .execute(&mut *tx)
             .await?;
         if result.rows_affected() != 1 {
-            return Err(PostgresRepositoryError::OptimisticLock);
+            return Err(PostgresRepositoryError::Conflict);
         }
         tx.commit().await?;
         Ok(())
@@ -111,7 +111,7 @@ async fn insert_events<A: Aggregate>(
             .execute(&mut **tx)
             .await?;
         if result.rows_affected() != 1 {
-            return Err(PostgresRepositoryError::OptimisticLock);
+            return Err(PostgresRepositoryError::Conflict);
         }
     }
     Ok(())

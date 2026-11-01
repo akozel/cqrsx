@@ -14,7 +14,7 @@ const SHOP: Defaults = Defaults::new("shop-test", &[]);
 fn url(database: &Database) -> String {
     let options = database.pool.connect_options();
     format!(
-        "postgresql://{}:outbox_test@{}:{}/{}?sslmode=disable",
+        "postgresql://{}:cqrsx_test@{}:{}/{}?sslmode=disable",
         options.get_username(),
         options.get_host(),
         options.get_port(),
@@ -105,7 +105,7 @@ fn engine(url: String, read_db: String, outbox: &Arc<Outbox>) -> cqrsx_engine::b
 /// G-09, G-11, G-27: the journal, the outbox and the queue in PostgreSQL, the halls and their checkpoint in MongoDB.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_modules_run_on_postgres_with_their_views_in_mongodb() {
-    let (database, mongo) = (Database::new().await, Mongo::new().await);
+    let (database, mongo) = (Database::new().await, Mongo::start().await);
     let outbox = Arc::new(Outbox::default());
     let read_db = mongo.database.name().to_owned();
     let cqrs = engine(url(&database), read_db, &outbox)

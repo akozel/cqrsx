@@ -7,20 +7,20 @@ use sqlx::Error;
 #[derive(Debug, thiserror::Error)]
 pub enum PostgresRepositoryError {
     #[error("optimistic lock error")]
-    OptimisticLock,
+    Conflict,
     #[error("{0}")]
-    ConnectionError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Connection(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("{0}")]
-    DeserializationError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Deserialization(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
     #[error("{0}")]
-    UnknownError(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
+    Unexpected(#[source] Box<dyn std::error::Error + Send + Sync + 'static>),
 }
 
 impl From<sqlx::Error> for PostgresRepositoryError {
     fn from(err: sqlx::Error) -> Self {
         match &err {
-            Error::Io(_) | Error::Tls(_) => Self::ConnectionError(Box::new(storage_failure(err))),
-            _ => Self::UnknownError(Box::new(storage_failure(err))),
+            Error::Io(_) | Error::Tls(_) => Self::Connection(Box::new(storage_failure(err))),
+            _ => Self::Unexpected(Box::new(storage_failure(err))),
         }
     }
 }
@@ -28,8 +28,8 @@ impl From<sqlx::Error> for PostgresRepositoryError {
 impl From<serde_json::Error> for PostgresRepositoryError {
     fn from(err: serde_json::Error) -> Self {
         match err.classify() {
-            serde_json::error::Category::Data | serde_json::error::Category::Syntax => Self::DeserializationError(Box::new(err)),
-            serde_json::error::Category::Io | serde_json::error::Category::Eof => Self::UnknownError(Box::new(err)),
+            serde_json::error::Category::Data | serde_json::error::Category::Syntax => Self::Deserialization(Box::new(err)),
+            serde_json::error::Category::Io | serde_json::error::Category::Eof => Self::Unexpected(Box::new(err)),
         }
     }
 }
@@ -37,10 +37,10 @@ impl From<serde_json::Error> for PostgresRepositoryError {
 impl From<PostgresRepositoryError> for PersistenceError {
     fn from(err: PostgresRepositoryError) -> Self {
         match err {
-            PostgresRepositoryError::OptimisticLock => Self::OptimisticLockError,
-            PostgresRepositoryError::ConnectionError(error) => Self::ConnectionError(error),
-            PostgresRepositoryError::DeserializationError(error) => Self::DeserializationError(error),
-            PostgresRepositoryError::UnknownError(error) => Self::UnknownError(error),
+            PostgresRepositoryError::Conflict => Self::OptimisticLockError,
+            PostgresRepositoryError::Connection(error) => Self::ConnectionError(error),
+            PostgresRepositoryError::Deserialization(error) => Self::DeserializationError(error),
+            PostgresRepositoryError::Unexpected(error) => Self::UnknownError(error),
         }
     }
 }
@@ -56,10 +56,10 @@ mod tests {
             let make = || {
                 let cause = Box::new(io::Error::other("original"));
                 match category {
-                    0 => PostgresRepositoryError::OptimisticLock,
-                    1 => PostgresRepositoryError::ConnectionError(cause),
-                    2 => PostgresRepositoryError::DeserializationError(cause),
-                    _ => PostgresRepositoryError::UnknownError(cause),
+                    0 => PostgresRepositoryError::Conflict,
+                    1 => PostgresRepositoryError::Connection(cause),
+                    2 => PostgresRepositoryError::Deserialization(cause),
+                    _ => PostgresRepositoryError::Unexpected(cause),
                 }
             };
             let aggregate = AggregateError::<Infallible>::from(PersistenceError::from(make()));
@@ -130,22 +130,22 @@ mod tests {
             let connection = matches!(error, Error::Io(_) | Error::Tls(_));
             let mapped = PostgresRepositoryError::from(error);
             match mapped {
-                PostgresRepositoryError::ConnectionError(e) if connection => assert!(driver_error(&*e).is_some()),
-                PostgresRepositoryError::UnknownError(e) if !connection => assert!(driver_error(&*e).is_some()),
+                PostgresRepositoryError::Connection(e) if connection => assert!(driver_error(&*e).is_some()),
+                PostgresRepositoryError::Unexpected(e) if !connection => assert!(driver_error(&*e).is_some()),
                 _ => panic!("technical error became conflict"),
             }
         }
         let io_error = serde_json::Error::io(io::Error::other("reader failed"));
         assert!(
-            matches!(PostgresRepositoryError::from(io_error),PostgresRepositoryError::UnknownError(source) if source.is::<serde_json::Error>())
+            matches!(PostgresRepositoryError::from(io_error),PostgresRepositoryError::Unexpected(source) if source.is::<serde_json::Error>())
         );
         for text in ["false", "?", ""] {
             let error = serde_json::from_str::<u32>(text).unwrap_err();
             let eof = error.is_eof();
             let mapped = PostgresRepositoryError::from(error);
             assert!(
-                matches!(mapped, PostgresRepositoryError::UnknownError(_) if eof)
-                    || matches!(mapped, PostgresRepositoryError::DeserializationError(_) if !eof)
+                matches!(mapped, PostgresRepositoryError::Unexpected(_) if eof)
+                    || matches!(mapped, PostgresRepositoryError::Deserialization(_) if !eof)
             );
         }
     }

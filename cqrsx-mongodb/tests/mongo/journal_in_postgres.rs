@@ -52,7 +52,7 @@ async fn commands_in_postgres_reach_views_and_checkpoints_in_mongo() {
             &[EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA, PROJECTION_CHECKPOINTS_SCHEMA],
         )
         .await,
-        Mongo::new().await,
+        Mongo::start().await,
     );
     let (observer, wakeup) = (Arc::new(Recording::default()), CommitWakeup::new());
     let journal = Arc::new(PostgresEventRepository::new(postgres.pool.clone()));

@@ -1,6 +1,6 @@
 //! A harness for the processor's fault model: in-memory stores behind wrappers with gates (a call blocks
 //! until the test lets it through), scripted failures and lost replies, a recording observer, and nodes
-//! that can be stopped or crashed. A crash is `JoinHandle::abort`: the key workers of the crashed node
+//! that can be stopped or crashed. A crash is `JoinHandle::abort`: the key lanes of the crashed node
 //! finish their current job, like a slow owner that lost its lease, so every check holds for both outcomes.
 use crate::support::ledger::{Command, Delta, Ledger, Services};
 use cqrsx::{

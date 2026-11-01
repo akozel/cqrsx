@@ -30,7 +30,7 @@ pub struct ObservedProcessor<'a> {
 }
 
 /// The observer of the processor of a view, made from the view's name and the node's (the owner of its checkpoint).
-pub(crate) type ProjectionObservers = Arc<dyn Fn(ObservedProcessor<'_>) -> Arc<dyn ProjectionObserver> + Send + Sync>;
+pub(crate) type ProjectionObserverFactory = Arc<dyn Fn(ObservedProcessor<'_>) -> Arc<dyn ProjectionObserver> + Send + Sync>;
 
 type Bind = fn(Policies, PolicyName) -> Result<Policies, PolicyError>;
 
@@ -70,7 +70,7 @@ pub struct Module {
     pub(crate) tasks: Vec<TaskRegistration>,
     pub(crate) dependencies: Dependencies,
     pub(crate) command_observers: Vec<Arc<dyn AnyCommandObserver>>,
-    pub(crate) projection_observers: Vec<ProjectionObservers>,
+    pub(crate) projection_observers: Vec<ProjectionObserverFactory>,
     #[cfg(feature = "http")]
     pub(crate) routes: Option<axum::Router<Arc<Cqrs>>>,
 }

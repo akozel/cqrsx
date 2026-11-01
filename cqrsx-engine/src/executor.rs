@@ -42,9 +42,9 @@ where
 }
 
 /// The observer of every command as the observer of the commands of one aggregate type.
-pub(crate) struct Commands(pub(crate) Arc<dyn AnyCommandObserver>);
+pub(crate) struct AnyObserverAdapter(pub(crate) Arc<dyn AnyCommandObserver>);
 
-impl<A: Aggregate> CommandObserver<A> for Commands
+impl<A: Aggregate> CommandObserver<A> for AnyObserverAdapter
 where
     A::Command: Command,
     A::Error: Rejection,

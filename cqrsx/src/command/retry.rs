@@ -56,7 +56,7 @@ impl AggregateConflictRetryPolicy {
         (lower, upper)
     }
 
-    pub(super) fn backoff(self, retry: usize) -> Duration {
+    pub(super) fn pause(self, retry: usize) -> Duration {
         let (lower, upper) = self.backoff_bounds(retry);
         if lower == upper {
             lower
@@ -66,7 +66,7 @@ impl AggregateConflictRetryPolicy {
     }
 }
 
-const DEFAULT_MAX_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(3).unwrap();
+const DEFAULT_COMMAND_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(3).unwrap();
 const DEFAULT_INITIAL_BACKOFF: Duration = Duration::from_millis(5);
 const DEFAULT_MAX_BACKOFF: Duration = Duration::from_millis(50);
 const DEFAULT_JITTER_RATIO: f64 = 0.2;
@@ -75,7 +75,7 @@ impl Default for AggregateConflictRetryPolicy {
     /// Three attempts, pauses from 5 ms doubling up to 50 ms, ±20 % jitter.
     fn default() -> Self {
         Self {
-            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            max_attempts: DEFAULT_COMMAND_ATTEMPTS,
             initial_backoff: DEFAULT_INITIAL_BACKOFF,
             max_backoff: DEFAULT_MAX_BACKOFF,
             jitter_ratio: DEFAULT_JITTER_RATIO,
@@ -98,7 +98,7 @@ where
         if !matches!(result, Err(AggregateError::AggregateConflict)) || attempt >= policy.max_attempts.get() {
             return result;
         }
-        tokio::time::sleep(policy.backoff(attempt)).await;
+        tokio::time::sleep(policy.pause(attempt)).await;
         attempt += 1;
     }
 }
@@ -181,7 +181,7 @@ mod tests {
         for retry in 1..=5 {
             let bounds = policy.backoff_bounds(retry);
             for _ in 0..100 {
-                assert!((bounds.0..=bounds.1).contains(&policy.backoff(retry)));
+                assert!((bounds.0..=bounds.1).contains(&policy.pause(retry)));
             }
         }
     }
@@ -191,7 +191,7 @@ mod tests {
         let policy = AggregateConflictRetryPolicy::try_new(2, Duration::from_secs(2), Duration::from_secs(8), 0.5).unwrap();
         let (lower, upper) = policy.backoff_bounds(1);
         assert_eq!((lower, upper), (Duration::from_secs(1), Duration::from_secs(3)));
-        let samples: std::collections::HashSet<_> = (0..128).map(|_| policy.backoff(1)).collect();
+        let samples: std::collections::HashSet<_> = (0..128).map(|_| policy.pause(1)).collect();
         assert!(samples.iter().all(|delay| (lower..=upper).contains(delay)));
         // A two-second interval has about two billion nanosecond outcomes;
         // 128 samples distinguish jitter from a constant endpoint without
@@ -215,7 +215,7 @@ mod tests {
             let (lower, upper) = policy.backoff_bounds(usize::MAX);
             assert!(lower <= upper && upper <= cap);
             for _ in 0..100 {
-                assert!((lower..=upper).contains(&policy.backoff(usize::MAX)));
+                assert!((lower..=upper).contains(&policy.pause(usize::MAX)));
             }
         }
     }

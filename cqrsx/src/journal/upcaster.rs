@@ -31,14 +31,14 @@ pub type EventPayloadTransform = dyn Fn(Value) -> Value + Send + Sync;
 /// lower than its own, so an upcaster of v0.2.3 upcasts an event of v0.2.2 and leaves one of v0.2.3 as it is.
 #[derive(Debug, PartialOrd, PartialEq, Eq)]
 pub struct NumericVersion {
-    major_version: u32,
-    minor_version: u32,
+    major: u32,
+    minor: u32,
     patch: u32,
 }
 
 impl Display for NumericVersion {
     fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
-        write!(f, "{}.{}.{}", self.major_version, self.minor_version, self.patch)
+        write!(f, "{}.{}.{}", self.major, self.minor, self.patch)
     }
 }
 impl FromStr for NumericVersion {
@@ -47,14 +47,10 @@ impl FromStr for NumericVersion {
     fn from_str(event_version: &str) -> Result<Self, Self::Err> {
         let mut split_version = event_version.split('.').fuse();
         // `split` yields at least one component, maybe empty: an empty major version does not parse.
-        let major_version = u32::from_str(split_version.next().unwrap_or_default())?;
-        let minor_version = split_version.next().map_or(Ok(0), u32::from_str)?;
+        let major = u32::from_str(split_version.next().unwrap_or_default())?;
+        let minor = split_version.next().map_or(Ok(0), u32::from_str)?;
         let patch = split_version.next().map_or(Ok(0), u32::from_str)?;
-        Ok(Self {
-            major_version,
-            minor_version,
-            patch,
-        })
+        Ok(Self { major, minor, patch })
     }
 }
 
@@ -195,12 +191,8 @@ mod test {
     use crate::journal::upcaster::NumericVersionError;
     use crate::journal::upcaster::NumericVersionUpcaster;
 
-    fn semantic_version(major_version: u32, minor_version: u32, patch: u32) -> NumericVersion {
-        NumericVersion {
-            major_version,
-            minor_version,
-            patch,
-        }
+    fn semantic_version(major: u32, minor: u32, patch: u32) -> NumericVersion {
+        NumericVersion { major, minor, patch }
     }
 
     #[test]
@@ -238,7 +230,7 @@ mod test {
         assert!(!can_upcast("EventX", "not_a_version"));
         assert_eq!(
             format!("{upcaster:?}"),
-            r#"NumericVersionUpcaster { event_type: "EventX", target_version: NumericVersion { major_version: 2, minor_version: 3, patch: 4 }, .. }"#
+            r#"NumericVersionUpcaster { event_type: "EventX", target_version: NumericVersion { major: 2, minor: 3, patch: 4 }, .. }"#
         );
     }
 

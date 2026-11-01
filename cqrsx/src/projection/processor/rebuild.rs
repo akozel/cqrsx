@@ -24,19 +24,19 @@ async fn permit(permits: &Semaphore) -> Result<SemaphorePermit<'_>, PersistenceE
 }
 
 /// The projection behind the processor's concurrency bound: every live write takes one of `permits`.
-pub(super) struct Bounded<A: Aggregate> {
+pub(super) struct BoundedWrites<A: Aggregate> {
     projection: Arc<dyn RebuildableProjection<A>>,
     permits: Arc<Semaphore>,
 }
 
-impl<A: Aggregate> Bounded<A> {
+impl<A: Aggregate> BoundedWrites<A> {
     pub(super) fn new(projection: Arc<dyn RebuildableProjection<A>>, permits: Arc<Semaphore>) -> Self {
         Self { projection, permits }
     }
 }
 
 #[async_trait]
-impl<A: Aggregate + 'static> EventHandler<A> for Bounded<A> {
+impl<A: Aggregate + 'static> EventHandler<A> for BoundedWrites<A> {
     fn name(&self) -> String {
         self.projection.name()
     }
@@ -244,7 +244,7 @@ mod tests {
         let started = Instant::now();
         let running = tokio::spawn({
             let views = views.clone();
-            let bounded = Bounded::new(projection, permits);
+            let bounded = BoundedWrites::new(projection, permits);
             async move {
                 // Another key's live write goes through while the paced rebuild sleeps: the pause holds no permit.
                 tokio::time::sleep(Duration::from_millis(40)).await;
@@ -338,7 +338,7 @@ mod tests {
         let projection: Arc<dyn RebuildableProjection<Ledger>> = Arc::new(ViewProjection::new(Arc::new(views.clone())));
         let (rebuilder, permits) = rebuilder(&journal, projection.clone(), 1);
         permits.close();
-        let bounded = Bounded::new(projection, permits);
+        let bounded = BoundedWrites::new(projection, permits);
         let ((rebuilt, handled), log) = crate::diagnostics::test_support::capture(async {
             (
                 rebuilder.rebuild("a", Duration::ZERO, CancellationToken::new()).await,

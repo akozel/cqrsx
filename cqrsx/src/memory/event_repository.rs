@@ -32,7 +32,7 @@ struct Row {
 struct Snapshot {
     payload: Value,
     last_sequence: usize,
-    version: usize,
+    revision: usize,
 }
 
 /// A task in the in-memory outbox and the event it was published with.
@@ -150,7 +150,7 @@ impl MemEventRepository {
 
     /// Runs `operation` on the rows of the outbox, in commit order, under the journal's lock: one statement of a task
     /// queue over the journal.
-    pub(crate) fn with_outbox<T>(&self, operation: impl FnOnce(&mut [OutboxRow]) -> T) -> T {
+    pub(crate) fn outbox_rows<T>(&self, operation: impl FnOnce(&mut [OutboxRow]) -> T) -> T {
         operation(&mut self.journal().outbox)
     }
 
@@ -242,7 +242,7 @@ impl PersistedEventRepository for MemEventRepository {
                 aggregate_id: aggregate_id.to_owned(),
                 aggregate: snapshot.payload.clone(),
                 last_sequence: snapshot.last_sequence,
-                snapshot_version: snapshot.version,
+                snapshot_version: snapshot.revision,
             }))
     }
 
@@ -300,7 +300,7 @@ impl PersistedEventRepository for MemEventRepository {
             let stored = journal
                 .snapshots
                 .get(&(A::TYPE.to_owned(), snapshot.aggregate_id.clone()))
-                .map(|stored| stored.version);
+                .map(|stored| stored.revision);
             match (snapshot.next_version, stored) {
                 (1, None) => {}
                 (next, Some(version)) if version.checked_add(1) == Some(next) => {}
@@ -322,7 +322,7 @@ impl PersistedEventRepository for MemEventRepository {
                 Snapshot {
                     payload: snapshot.payload,
                     last_sequence: snapshot.last_sequence,
-                    version: snapshot.next_version,
+                    revision: snapshot.next_version,
                 },
             );
         }

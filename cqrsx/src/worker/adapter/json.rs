@@ -172,7 +172,7 @@ mod tests {
 
     /// The context of `attempt`, as the dispatcher builds it.
     fn context(attempt: &Arc<TaskAttempt>) -> TaskContext {
-        TaskContext::shared(
+        TaskContext::from_parts(
             attempt.clone(),
             Duration::from_secs(1),
             Dependencies::default(),

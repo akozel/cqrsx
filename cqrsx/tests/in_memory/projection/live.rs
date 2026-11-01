@@ -229,7 +229,7 @@ async fn a_panic_in_the_handler_is_a_failure_of_its_key_only() {
     assert_eq!(
         h.view("b").await.unwrap().view.history,
         [(1, 1)],
-        "the key's worker survived the panic"
+        "the key's lane survived the panic"
     );
     node.stop().await;
 }
@@ -446,7 +446,7 @@ async fn a_settling_owner_stops_on_shutdown_and_still_sees_a_commit_made_while_i
     let node = h.node("n1");
     h.run_for(POLL * 2).await;
     h.commit("a", 1).await;
-    tokio::time::sleep(SHORT).await; // the owner is settling now
+    tokio::time::sleep(SHORT).await; // the owner has a failure due now
     h.commit("a", 2).await;
     h.caught_up(&["a"]).await;
     assert_eq!(h.view("a").await.unwrap().view.total, 3);

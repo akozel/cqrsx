@@ -108,7 +108,7 @@ impl PostgresCheckpointStore {
     }
 }
 
-fn storage(operation: &'static str) -> impl FnOnce(sqlx::Error) -> CheckpointError {
+fn storage_error(operation: &'static str) -> impl FnOnce(sqlx::Error) -> CheckpointError {
     move |error| {
         crate::diagnostics::log_sqlx_failure(operation, &error);
         CheckpointError::Storage(Box::new(error))
@@ -199,7 +199,7 @@ impl PostgresCheckpointStore {
         operation: &'static str,
         query: sqlx::query::Query<'_, sqlx::Postgres, sqlx::postgres::PgArguments>,
     ) -> Result<bool, CheckpointError> {
-        let result = query.execute(&self.pool).await.map_err(storage(operation))?;
+        let result = query.execute(&self.pool).await.map_err(storage_error(operation))?;
         Ok(result.rows_affected() == 1)
     }
 }
@@ -211,7 +211,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(key.aggregate_type())
             .execute(&self.pool)
             .await
-            .map_err(storage("register"))?;
+            .map_err(storage_error("register"))?;
         Ok(())
     }
 
@@ -224,7 +224,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(lease)
             .fetch_optional(&self.pool)
             .await
-            .map_err(storage("claim"))?;
+            .map_err(storage_error("claim"))?;
         row.as_ref().map(decode_claim).transpose()
     }
 
@@ -275,7 +275,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(pace)
             .fetch_optional(&self.pool)
             .await
-            .map_err(storage("request_rebuild"))?;
+            .map_err(storage_error("request_rebuild"))?;
         let Some(row) = row else {
             return Err(CheckpointError::Invalid("projection is not registered"));
         };
@@ -293,7 +293,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(aggregate_id)
             .fetch_one(&self.pool)
             .await
-            .map_err(storage("request_rebuild_key"))?;
+            .map_err(storage_error("request_rebuild_key"))?;
         if column::<bool>(&row, "known")? {
             Ok(())
         } else {
@@ -315,7 +315,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(limit)
             .fetch_optional(&self.pool)
             .await
-            .map_err(storage("take_requests"))?;
+            .map_err(storage_error("take_requests"))?;
         let Some(row) = row else {
             return Ok(None);
         };
@@ -386,7 +386,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .bind(projection)
             .fetch_all(&self.pool)
             .await
-            .map_err(storage("status"))?;
+            .map_err(storage_error("status"))?;
         rows.iter().map(decode_status).collect()
     }
 }

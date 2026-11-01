@@ -82,7 +82,7 @@ impl Error for StorageFailure {
 }
 
 /// The first [`StorageFailure`] in `source`'s chain: the only technical detail safe to log.
-fn find_storage<'e>(source: &'e (dyn Error + 'static)) -> Option<&'e StorageFailure> {
+fn find_storage_failure<'e>(source: &'e (dyn Error + 'static)) -> Option<&'e StorageFailure> {
     let mut current = Some(source);
     while let Some(error) = current {
         if let Some(failure) = error.downcast_ref::<StorageFailure>() {
@@ -96,7 +96,7 @@ fn find_storage<'e>(source: &'e (dyn Error + 'static)) -> Option<&'e StorageFail
 pub(crate) fn log_command_failure(aggregate_type: &str, category: &'static str, source: &(dyn std::error::Error + 'static)) {
     // These details are inspected before CommandGatewayError intentionally discards
     // technical sources. They never change the outward error or retry policy.
-    if let Some(failure) = find_storage(source) {
+    if let Some(failure) = find_storage_failure(source) {
         tracing::error!(component = "command", operation = "execute", aggregate_type = safe_type(aggregate_type), category,
             storage_category = failure.category(), sqlstate = ?failure.code(), "command execution failed");
         return;
@@ -142,7 +142,7 @@ pub(crate) fn log_projection_batch_failure(
     jobs: usize,
     source: &(dyn std::error::Error + 'static),
 ) {
-    if let Some(failure) = find_storage(source) {
+    if let Some(failure) = find_storage_failure(source) {
         tracing::error!(component = "projection", operation, projection = safe_type(projection),
             aggregate_type = safe_type(aggregate_type), jobs, storage_category = failure.category(),
             sqlstate = ?failure.code(), "projection batch failed");
@@ -188,12 +188,12 @@ pub(crate) fn log_poisoned_lock(lock: &'static str) {
 
 /// A projection processor changed state: a lease acquired, lost or released, a rebuild started, finished
 /// or interrupted, a key healed. `projection` is the projection's name, chosen by the application.
-pub(crate) fn log_projection_event(projection: &str, aggregate_type: &str, event: &'static str) {
+pub(crate) fn log_projection_change(projection: &str, aggregate_type: &str, change: &'static str) {
     tracing::info!(
         component = "projection",
         projection = safe_type(projection),
         aggregate_type = safe_type(aggregate_type),
-        event,
+        event = change,
         "projection processor event"
     );
 }
@@ -279,7 +279,7 @@ pub(crate) mod test_support {
             &StorageFailure::new("prime", None, io::Error::other("prime")),
         );
         log_projection_batch_panic("prime", "prime", "prime", 1);
-        log_projection_event("prime", "prime", "prime");
+        log_projection_change("prime", "prime", "prime");
         log_poisoned_lock("prime");
         log_broken_invariant("prime", "prime");
         log_projection_failure("prime", "prime", Operation::Page, FailureCategory::Unknown, 1);
@@ -484,13 +484,13 @@ mod tests {
 
 #[cfg(test)]
 mod projection_tests {
-    use super::{FailureCategory, Operation, log_projection_event, log_projection_failure, test_support};
+    use super::{FailureCategory, Operation, log_projection_change, log_projection_failure, test_support};
 
     #[tokio::test]
     async fn projection_diagnostics_name_the_projection_safely_and_carry_fixed_fields_only() {
         let (_, log) = test_support::capture_at(tracing::Level::INFO, async {
-            log_projection_event("concert_halls", "Concert", "lease acquired");
-            log_projection_event("private\nmail@example.com", "Concert", "rebuild finished");
+            log_projection_change("concert_halls", "Concert", "lease acquired");
+            log_projection_change("private\nmail@example.com", "Concert", "rebuild finished");
             log_projection_failure("concert_halls", "Concert", Operation::Page, FailureCategory::Connection, 3);
         })
         .await;

@@ -27,9 +27,9 @@ impl PortLease {
             .ancestors()
             .find(|path| path.join(".git").exists())
             .unwrap_or_else(|| manifest.parent().unwrap());
-        let directory = std::env::var_os("CQRS_TEST_PORT_LEASE_DIR")
+        let directory = std::env::var_os("CQRSX_TEST_PORT_LEASE_DIR")
             .map(std::path::PathBuf::from)
-            .unwrap_or_else(|| root.join("target/stage4/container-ports"));
+            .unwrap_or_else(|| root.join("target/container-ports"));
         std::fs::create_dir_all(&directory).expect("container fixture port lease directory");
         // Avoid the default client ephemeral range and coordinate parallel test
         // processes without serializing container startup or database work.

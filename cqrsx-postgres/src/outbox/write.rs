@@ -14,7 +14,7 @@ fn append_snapshot<A: Aggregate>(snapshot: &SnapshotWrite, query: &mut QueryBuil
         SnapshotWrite::Insert {
             aggregate_id,
             payload,
-            version,
+            revision,
             last_sequence,
         } => {
             query.push("written_snapshot AS (INSERT INTO snapshots (aggregate_type, aggregate_id, last_sequence, current_snapshot, payload) VALUES (");
@@ -25,7 +25,7 @@ fn append_snapshot<A: Aggregate>(snapshot: &SnapshotWrite, query: &mut QueryBuil
                 .push(", ")
                 .push_bind(*last_sequence)
                 .push(", ")
-                .push_bind(*version)
+                .push_bind(*revision)
                 .push(", ")
                 .push_bind(payload.clone())
                 .push(") RETURNING 1), ");
@@ -33,14 +33,14 @@ fn append_snapshot<A: Aggregate>(snapshot: &SnapshotWrite, query: &mut QueryBuil
         SnapshotWrite::Update {
             aggregate_id,
             payload,
-            version,
+            revision,
             last_sequence,
         } => {
             query.push("written_snapshot AS (UPDATE snapshots SET last_sequence = ");
             query
                 .push_bind(*last_sequence)
                 .push(", current_snapshot = ")
-                .push_bind(*version)
+                .push_bind(*revision)
                 .push(", payload = ")
                 .push_bind(payload.clone())
                 .push(" WHERE aggregate_type = ")
@@ -48,7 +48,7 @@ fn append_snapshot<A: Aggregate>(snapshot: &SnapshotWrite, query: &mut QueryBuil
                 .push(" AND aggregate_id = ")
                 .push_bind(aggregate_id.clone())
                 .push(" AND current_snapshot = ")
-                .push_bind(*version - 1)
+                .push_bind(*revision - 1)
                 .push(" RETURNING 1), ");
         }
     }

@@ -34,9 +34,9 @@ mod test_support;
 pub mod views;
 
 use crate::{
-    module::ProjectionObservers,
+    module::ProjectionObserverFactory,
     settings::Settings,
-    views::{CheckpointOps, Registry},
+    views::{CheckpointOperations, Registry},
 };
 use cqrsx::{
     command::observer::AnyCommandObserver,
@@ -70,9 +70,9 @@ pub struct Cqrs {
     policies: Policies,
     dependencies: Dependencies,
     command_observer: Option<Arc<dyn AnyCommandObserver>>,
-    projection_observers: Option<ProjectionObservers>,
+    projection_observer: Option<ProjectionObserverFactory>,
     /// The executor of every aggregate type, by its type: an `Arc<Executor<A>>`.
-    commands: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
+    command_executors: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     executors: Executors,
     wakeups: HashMap<TypeId, CommitWakeup>,
     dispatcher: Option<Arc<TaskDispatcher<BoxedTaskAdapter>>>,
@@ -85,7 +85,7 @@ pub struct Cqrs {
     #[cfg(feature = "postgres")]
     view_store: ViewStore,
     /// The checkpoints of every view, its store erased: what the operations over the views read and request.
-    checkpoints: Arc<dyn CheckpointOps>,
+    checkpoints: Arc<dyn CheckpointOperations>,
     processors: Mutex<ProjectionRuntime>,
     #[cfg(feature = "http")]
     routes: axum::Router<Arc<Cqrs>>,
@@ -100,7 +100,7 @@ impl fmt::Debug for Cqrs {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Cqrs")
             .field("owner", &self.owner)
-            .field("aggregates", &self.commands.len())
+            .field("command_executors", &self.command_executors.len())
             .field("views", &self.views().keys())
             .field("policies", &self.policies)
             .field("dependencies", &self.dependencies)
@@ -241,7 +241,7 @@ mod tests {
         let (cqrs, _) = engine().await;
         let printed = format!("{cqrs:?}");
         let head = format!(
-            "Cqrs {{ owner: {:?}, aggregates: 2, views: {:?}, ",
+            "Cqrs {{ owner: {:?}, command_executors: 2, views: {:?}, ",
             cqrs.owner,
             cqrs.views().keys()
         );

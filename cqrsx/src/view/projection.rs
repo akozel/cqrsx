@@ -20,10 +20,10 @@ use std::{
     sync::Arc,
 };
 
-/// Builds and persists a materialized read model from committed events.
-/// How many times a projection tries to write a document, the first attempt included, unless configured otherwise.
-const DEFAULT_MAX_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
+/// Attempts to write a document on a revision conflict.
+const DEFAULT_WRITE_ATTEMPTS: NonZeroUsize = NonZeroUsize::new(16).unwrap();
 
+/// Builds and persists a materialized read model from committed events.
 /// Also provides read access to the stored view.
 ///
 /// A document takes only the next event of its aggregate: events it has applied are skipped, a gap fails the
@@ -211,7 +211,7 @@ where
         Self {
             view_repository,
             error_observer: None,
-            max_attempts: DEFAULT_MAX_ATTEMPTS,
+            max_attempts: DEFAULT_WRITE_ATTEMPTS,
             phantom: PhantomData,
         }
     }
@@ -508,7 +508,7 @@ where
             .load_with_context(view_id)
             .await
             .map(|option| option.map(|stored| stored.view))
-            .inspect_err(|error| self.handle_error(error))
+            .inspect_err(|error| self.notify_observer(error))
     }
 
     /// Limit optimistic view retries, including the first attempt (default: 16).
@@ -582,7 +582,7 @@ where
         }
     }
 
-    fn handle_error(&self, error: &PersistenceError) {
+    fn notify_observer(&self, error: &PersistenceError) {
         if let Some(handler) = &self.error_observer {
             (handler)(error);
         }
@@ -635,7 +635,7 @@ where
     async fn handle(&self, view_id: &str, events: &[EventEnvelope<A>]) -> Result<(), PersistenceError> {
         self.apply_events(view_id, events)
             .await
-            .inspect_err(|error| self.handle_error(error))
+            .inspect_err(|error| self.notify_observer(error))
     }
 }
 
@@ -649,7 +649,7 @@ where
     async fn rebuild(&self, view_id: &str, history: &[EventEnvelope<A>], prefix: usize) -> Result<(), PersistenceError> {
         self.replace(view_id, history, prefix)
             .await
-            .inspect_err(|error| self.handle_error(error))
+            .inspect_err(|error| self.notify_observer(error))
     }
 }
 

@@ -32,7 +32,7 @@ impl FromRow<'_, PgRow> for ClaimRow {
 }
 
 impl ClaimRow {
-    fn into_claimed_task(self, format: &TaskFormat, lease_deadline: Instant) -> Result<LeasedTask, TaskProcessingError> {
+    fn into_leased_task(self, format: &TaskFormat, lease_deadline: Instant) -> Result<LeasedTask, TaskProcessingError> {
         let delivery = TaskAttempt::try_new(self.id, format.clone(), self.payload, self.metadata, self.attempts)
             .map_err(|_| TaskProcessingError::InvalidDelivery)?;
         Ok(LeasedTask::new(delivery, TaskLease::new(self.lock_token, lease_deadline)))
@@ -84,7 +84,7 @@ pub(super) async fn claim(
     let mut tasks = Vec::with_capacity(rows.len());
     for row in rows {
         let task_id = row.id;
-        match row.into_claimed_task(format, lease_deadline) {
+        match row.into_leased_task(format, lease_deadline) {
             Ok(task) => tasks.push(task),
             Err(_) => tracing::error!(%task_id, task_type = %cqrsx::diagnostics::safe_type(format.task_type()),
                 task_version = format.task_version(), "claimed task is not a valid delivery; left to lease recovery"),
@@ -117,7 +117,7 @@ mod tests {
                 attempts,
                 lock_token,
             };
-            let result = row.into_claimed_task(&format, deadline);
+            let result = row.into_leased_task(&format, deadline);
             if valid {
                 let claimed = result.unwrap();
                 assert_eq!(claimed.attempt().task_id(), id);

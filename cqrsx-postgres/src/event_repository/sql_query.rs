@@ -1,7 +1,7 @@
 // Derived from postgres-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-postgres/licenses/.
 #[derive(Debug)]
-pub(crate) struct SqlQueryFactory {
+pub(crate) struct SqlTexts {
     select_events: String,
     select_events_after: String,
     insert_event: String,
@@ -16,7 +16,7 @@ pub(crate) struct SqlQueryFactory {
     select_snapshot: String,
 }
 
-impl SqlQueryFactory {
+impl SqlTexts {
     pub fn new(event_table: &str, snapshot_table: &str) -> Self {
         Self {
             select_events: format!(
@@ -151,7 +151,7 @@ mod tests {
     use super::*;
     #[test]
     fn test_queries() {
-        let query_factory = SqlQueryFactory::new("my_events", "my_snapshots");
+        let query_factory = SqlTexts::new("my_events", "my_snapshots");
         assert_eq!(
             query_factory.select_events(),
             "

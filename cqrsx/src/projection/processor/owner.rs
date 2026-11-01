@@ -1,4 +1,4 @@
-//! One ownership of a checkpoint: the loop that reads pages, hands them to the key workers, moves the
+//! One ownership of a checkpoint: the loop that reads pages, hands them to the key lanes, moves the
 //! checkpoint behind the applied pages and runs rebuilds, until the lease is lost or the processor stops.
 //!
 //! Pages form a window: the owner keeps reading while the receipts of earlier pages are in flight, up to
@@ -9,7 +9,7 @@
 //! that refuses an event as a gap is healed in place: a rebuild of its key is queued behind the failed job,
 //! and the page waits for the rebuild's receipt as for the job's.
 use super::{
-    Context, Operation,
+    Operation, ProcessorContext,
     delivery::{DeliveryError, DeliverySlot, Done},
     lease::LeaseKeeper,
     observer::{Advanced, Applied, Failed, FailureCategory, RebuildEvent, RebuildReason, Rebuilt, Waiting},
@@ -83,7 +83,7 @@ struct Transaction {
 
 /// A dispatched page: its transactions and the receipts still to come.
 struct Page {
-    no: u64,
+    number: u64,
     last_position: Position,
     events: u64,
     transactions: Vec<Transaction>,
@@ -149,16 +149,16 @@ struct Rebuilding {
 }
 
 pub(super) struct Owner<'a, A: Aggregate, R, C> {
-    ctx: &'a Context<A, R, C>,
+    ctx: &'a ProcessorContext<A, R, C>,
     token: LeaseToken,
-    lease: LeaseKeeper,
+    keeper: LeaseKeeper,
     /// Cancelled when the ownership ends: paced rebuilds stop at their next pause.
     stop: CancellationToken,
     checkpoint: Position,
-    frontier: Position,
+    read_position: Position,
     reading: bool,
     /// The last page was full: read on without waiting.
-    more: bool,
+    page_was_full: bool,
     /// The journal is read only for a reason: a wake-up, the poll, a full page before, the window
     /// having been full, or the end of a pause. The receipt of a page is no reason.
     read_due: bool,
@@ -172,7 +172,7 @@ pub(super) struct Owner<'a, A: Aggregate, R, C> {
     in_flight: HashMap<String, Rebuilding>,
     rebuild_outcomes: JoinSet<RebuildOutcome>,
     failures: u32,
-    backoff_until: Option<Instant>,
+    pause_until: Option<Instant>,
     requests_due: Instant,
     idle_polls: u32,
     waiting: Waiting,
@@ -208,8 +208,8 @@ where
     C: CheckpointStore + 'static,
 {
     /// `anchor` is the instant before the claim request.
-    pub(super) fn new(ctx: &'a Context<A, R, C>, claimed: Claimed, anchor: Instant) -> Self {
-        let lease = LeaseKeeper::spawn(
+    pub(super) fn new(ctx: &'a ProcessorContext<A, R, C>, claimed: Claimed, anchor: Instant) -> Self {
+        let keeper = LeaseKeeper::spawn(
             ctx.checkpoints.clone(),
             ctx.key.clone(),
             claimed.token,
@@ -219,12 +219,12 @@ where
         Self {
             ctx,
             token: claimed.token,
-            lease,
+            keeper,
             stop: CancellationToken::new(),
             checkpoint: claimed.position,
-            frontier: claimed.position,
+            read_position: claimed.position,
             reading: true,
-            more: false,
+            page_was_full: false,
             read_due: true,
             next_page: 0,
             pages: VecDeque::new(),
@@ -242,7 +242,7 @@ where
             in_flight: HashMap::new(),
             rebuild_outcomes: JoinSet::new(),
             failures: claimed.failures,
-            backoff_until: None,
+            pause_until: None,
             requests_due: Instant::now(),
             idle_polls: 0,
             waiting: Waiting::Idle,
@@ -252,10 +252,10 @@ where
 
     pub(super) async fn run(mut self) -> Exit {
         loop {
-            if self.lease.is_lost() {
+            if self.keeper.is_lost() {
                 return self.lost();
             }
-            match self.turn().await {
+            match self.step().await {
                 Ok(()) => {}
                 Err(Interrupt::Lost) => return self.lost(),
                 Err(Interrupt::Shutdown) => return self.drain().await,
@@ -268,8 +268,8 @@ where
         Exit::Lost
     }
 
-    fn log(&self, event: &'static str) {
-        diagnostics::log_projection_event(self.ctx.key.projection(), self.ctx.key.aggregate_type(), event);
+    fn log_change(&self, change: &'static str) {
+        diagnostics::log_projection_change(self.ctx.key.projection(), self.ctx.key.aggregate_type(), change);
     }
 
     fn log_failure(&self, operation: Operation, category: FailureCategory, failures: u32) {
@@ -282,14 +282,14 @@ where
         );
     }
 
-    fn page_no(&mut self) -> u64 {
+    fn next_page_number(&mut self) -> u64 {
         self.next_page += 1;
         self.next_page
     }
 
     /// A failure without a page (the journal, the checkpoint store, a rebuild): stops the reading; the
     /// first one of a window is the one recorded.
-    fn store_failure(&mut self, operation: Operation, category: FailureCategory) {
+    fn remember_failure(&mut self, operation: Operation, category: FailureCategory) {
         let handler = match operation {
             Operation::Feed | Operation::Head => "journal",
             Operation::Checkpoints | Operation::Page | Operation::Rebuild | Operation::Lease => "checkpoints",
@@ -304,9 +304,9 @@ where
         self.reading = false;
     }
 
-    /// The window has a failure whose turn it is: the first page is complete and failed, or a failure
+    /// The window has a failure that is due: the first page is complete and failed, or a failure
     /// without a page waits.
-    fn settling(&self) -> bool {
+    fn failure_due(&self) -> bool {
         self.pending_failure.is_some()
             || self
                 .pages
@@ -314,32 +314,32 @@ where
                 .is_some_and(|page| page.pending == 0 && !page.failed.is_empty())
     }
 
-    /// One turn: register the wake-up, settle, back off or work, then wait for something to happen.
-    async fn turn(&mut self) -> Result<(), Interrupt> {
+    /// One step: register the wake-up, advance the checkpoint, pause after a failure or work, then wait for something to happen.
+    async fn step(&mut self) -> Result<(), Interrupt> {
         let ctx = self.ctx;
         // Registered before the page is read: a commit between the read and the wait is not lost.
-        let mut woken = pin!(ctx.wakeup.notify().notified());
+        let mut woken = pin!(ctx.wakeup.notifier().notified());
         woken.as_mut().enable();
-        self.settle().await?;
-        if self.settling() {
+        self.advance_completed().await?;
+        if self.failure_due() {
             if self.outcomes.is_empty() {
-                self.back_off().await?;
+                self.pause_after_failure().await?;
             }
-        } else if self.backoff_until.is_some_and(|until| Instant::now() >= until) {
-            self.backoff_until = None;
+        } else if self.pause_until.is_some_and(|until| Instant::now() >= until) {
+            self.pause_until = None;
             self.reading = true;
             self.read_due = true;
         }
-        if self.backoff_until.is_none() && !self.settling() {
+        if self.pause_until.is_none() && !self.failure_due() {
             self.poll_requests().await?;
-            self.dispatch_rebuilds().await?;
+            self.start_rebuilds().await?;
             self.read_page().await?;
         }
         self.wait(woken).await
     }
 
     /// Moves the checkpoint behind the complete, successful pages at the front of the window.
-    async fn settle(&mut self) -> Result<(), Interrupt> {
+    async fn advance_completed(&mut self) -> Result<(), Interrupt> {
         while self
             .pages
             .front()
@@ -364,7 +364,7 @@ where
             }
             Ok(false) => Err(Interrupt::Lost),
             Err(error) => {
-                self.store_failure(Operation::Checkpoints, error.category());
+                self.remember_failure(Operation::Checkpoints, error.category());
                 Ok(())
             }
         }
@@ -372,7 +372,7 @@ where
 
     /// The live receipts are in and a failure waits: move the checkpoint as far as the failed page allows,
     /// record the failure, clear the window and pause.
-    async fn back_off(&mut self) -> Result<(), Interrupt> {
+    async fn pause_after_failure(&mut self) -> Result<(), Interrupt> {
         let mut first = self.pending_failure.take();
         if self
             .pages
@@ -418,10 +418,10 @@ where
         });
         self.log_failure(failure.operation, failure.category, failures);
         self.pages.clear();
-        self.frontier = self.checkpoint;
+        self.read_position = self.checkpoint;
         self.failed_keys.clear();
         self.pending_failure = None;
-        self.backoff_until = Some(Instant::now() + self.ctx.config.backoff(failures));
+        self.pause_until = Some(Instant::now() + self.ctx.config.backoff(failures));
         Ok(())
     }
 
@@ -440,7 +440,7 @@ where
             Ok(Some(requests)) => requests,
             Ok(None) => return Err(Interrupt::Lost),
             Err(error) => {
-                self.store_failure(Operation::Checkpoints, error.category());
+                self.remember_failure(Operation::Checkpoints, error.category());
                 return Ok(());
             }
         };
@@ -458,10 +458,10 @@ where
                         page: None,
                     });
                     self.ctx.observer.rebuild(RebuildEvent::Started { pace });
-                    self.log("rebuild started");
+                    self.log_change("rebuild started");
                 }
                 Ok(false) => return Err(Interrupt::Lost),
-                Err(error) => self.store_failure(Operation::Checkpoints, error.category()), // the flag stays: next poll
+                Err(error) => self.remember_failure(Operation::Checkpoints, error.category()), // the flag stays: next poll
             }
         }
         Ok(())
@@ -469,7 +469,7 @@ where
 
     /// Queues the requested keys that are not in flight and, when a rebuild runs and its last page of keys
     /// is recorded, the next page of the cursor.
-    async fn dispatch_rebuilds(&mut self) -> Result<(), Interrupt> {
+    async fn start_rebuilds(&mut self) -> Result<(), Interrupt> {
         let requested: Vec<String> = self.requested.drain(..).collect();
         for key in requested {
             if self.in_flight.contains_key(&key) {
@@ -494,7 +494,7 @@ where
         {
             Ok(ids) => ids,
             Err(error) => {
-                self.store_failure(Operation::Feed, persistence_category(&error));
+                self.remember_failure(Operation::Feed, persistence_category(&error));
                 return Ok(());
             }
         };
@@ -529,13 +529,13 @@ where
                         keys: run.rebuilt,
                         elapsed: run.started.elapsed(),
                     });
-                    self.log("rebuild finished");
+                    self.log_change("rebuild finished");
                 }
                 Ok(())
             }
             Ok(false) => Err(Interrupt::Lost),
             Err(error) => {
-                self.store_failure(Operation::Checkpoints, error.category());
+                self.remember_failure(Operation::Checkpoints, error.category());
                 Ok(())
             }
         }
@@ -552,7 +552,7 @@ where
         if let Some(category) = page.failed {
             self.pending_failure.get_or_insert(Failure {
                 key: None,
-                handler: self.ctx.handler.clone(),
+                handler: self.ctx.handler_name.clone(),
                 operation: Operation::Rebuild,
                 category,
                 position: self.checkpoint,
@@ -576,7 +576,7 @@ where
             }
             Ok(false) => Err(Interrupt::Lost),
             Err(error) => {
-                self.store_failure(Operation::Checkpoints, error.category());
+                self.remember_failure(Operation::Checkpoints, error.category());
                 Ok(())
             }
         }
@@ -629,7 +629,7 @@ where
         tokio::select! {
             biased;
             _ = self.ctx.shutdown.cancelled() => Err(Interrupt::Shutdown),
-            _ = self.lease.lost() => Err(Interrupt::Lost),
+            _ = self.keeper.until_lost() => Err(Interrupt::Lost),
             slot = self.ctx.delivery.reserve(key) => Ok(slot),
         }
     }
@@ -637,7 +637,7 @@ where
     /// Reads the next page when the window has room and dispatches it; an event that does not decode cuts
     /// the page before its transaction and stops the reading on it.
     async fn read_page(&mut self) -> Result<(), Interrupt> {
-        self.more = false;
+        self.page_was_full = false;
         if !self.reading {
             return Ok(());
         }
@@ -650,10 +650,10 @@ where
         }
         self.read_due = false;
         let page_size = self.ctx.config.page_size();
-        let entries = match self.ctx.repository.feed_after::<A>(self.frontier, page_size).await {
+        let entries = match self.ctx.repository.feed_after::<A>(self.read_position, page_size).await {
             Ok(entries) => entries,
             Err(error) => {
-                self.store_failure(Operation::Feed, persistence_category(&error));
+                self.remember_failure(Operation::Feed, persistence_category(&error));
                 return Ok(());
             }
         };
@@ -680,12 +680,12 @@ where
             decoded.retain(|(p, _)| p < position);
         }
         if !decoded.is_empty() {
-            self.dispatch(decoded).await?;
-            self.more = full;
+            self.hand_out(decoded).await?;
+            self.page_was_full = full;
             self.read_due = full;
         }
         if let Some((position, key)) = poison {
-            let no = self.page_no();
+            let number = self.next_page_number();
             let failure = Failure {
                 key: Some(key),
                 handler: "journal".to_owned(),
@@ -694,7 +694,7 @@ where
                 position,
             };
             self.pages.push_back(Page {
-                no,
+                number,
                 last_position: position,
                 events: 0,
                 transactions: Vec::new(),
@@ -702,15 +702,15 @@ where
                 failed: vec![(0, failure)],
             });
             self.reading = false;
-            self.more = false;
+            self.page_was_full = false;
         }
         Ok(())
     }
 
     /// Groups the page by key in order of first appearance, reserves space for every key and then delivers
     /// without waiting, so an interrupted page leaves nothing half-dispatched.
-    async fn dispatch(&mut self, decoded: Vec<(Position, EventEnvelope<A>)>) -> Result<(), Interrupt> {
-        let last_position = decoded.last().map_or(self.frontier, |(position, _)| *position);
+    async fn hand_out(&mut self, decoded: Vec<(Position, EventEnvelope<A>)>) -> Result<(), Interrupt> {
+        let last_position = decoded.last().map_or(self.read_position, |(position, _)| *position);
         let mut keys: Vec<String> = Vec::new();
         let mut index: HashMap<String, usize> = HashMap::new();
         let mut groups: Vec<Vec<EventEnvelope<A>>> = Vec::new();
@@ -749,10 +749,10 @@ where
         for key in &keys {
             slots.push(self.reserve(key).await?);
         }
-        let no = self.page_no();
+        let number = self.next_page_number();
         let events = transactions.iter().map(|transaction| transaction.events).sum();
         self.pages.push_back(Page {
-            no,
+            number,
             last_position,
             events,
             transactions,
@@ -765,7 +765,7 @@ where
             let receipt = slot.deliver(events);
             self.outcomes.spawn(async move {
                 LiveOutcome {
-                    page: no,
+                    page: number,
                     key,
                     aggregate_id,
                     last_sequence,
@@ -774,7 +774,7 @@ where
                 }
             });
         }
-        self.frontier = last_position;
+        self.read_position = last_position;
         Ok(())
     }
 
@@ -783,7 +783,7 @@ where
         self.idle_polls = self.idle_polls.wrapping_add(1);
         if self.idle_polls % HEAD_CHECK_EVERY == 1 {
             self.waiting = match self.ctx.repository.head::<A>().await {
-                Ok(head) if head > self.frontier => Waiting::Horizon,
+                Ok(head) if head > self.read_position => Waiting::Horizon,
                 Ok(_) => Waiting::Idle,
                 Err(error) => {
                     self.log_failure(Operation::Head, persistence_category(&error), 0);
@@ -797,23 +797,23 @@ where
 
     async fn wait(&mut self, woken: Pin<&mut Notified<'_>>) -> Result<(), Interrupt> {
         let can_read = self.reading
-            && self.backoff_until.is_none()
-            && !self.settling()
+            && self.pause_until.is_none()
+            && !self.failure_due()
             && self.pages.len() < self.ctx.config.pages_in_flight();
-        if (can_read && self.more) || (self.settling() && self.outcomes.is_empty()) {
+        if (can_read && self.page_was_full) || (self.failure_due() && self.outcomes.is_empty()) {
             // The window has room and the journal has more, or a failure waits with nothing in flight:
-            // the next turn reads on or backs off; nothing to wait for.
+            // the next step reads on or backs off; nothing to wait for.
             tokio::task::yield_now().await;
             return Ok(());
         }
-        let (backing_off, until) = match self.backoff_until {
+        let (backing_off, until) = match self.pause_until {
             Some(until) => (true, until),
             None => (false, Instant::now()),
         };
         let woke = tokio::select! {
             biased;
             _ = self.ctx.shutdown.cancelled() => Woke::Shutdown,
-            _ = self.lease.lost() => Woke::Lost,
+            _ = self.keeper.until_lost() => Woke::Lost,
             Some(joined) = self.outcomes.join_next(), if !self.outcomes.is_empty() => Woke::Live(joined),
             Some(joined) = self.rebuild_outcomes.join_next(), if !self.rebuild_outcomes.is_empty() => Woke::Rebuild(joined),
             _ = tokio::time::sleep_until(until), if backing_off => Woke::Timer,
@@ -841,7 +841,7 @@ where
                     tokio::select! {
                         biased;
                         _ = self.ctx.shutdown.cancelled() => return Err(Interrupt::Shutdown),
-                        _ = self.lease.lost() => return Err(Interrupt::Lost),
+                        _ = self.keeper.until_lost() => return Err(Interrupt::Lost),
                         _ = tokio::time::sleep(settle) => {}
                     }
                 }
@@ -857,7 +857,7 @@ where
 
     async fn on_live(&mut self, joined: Result<LiveOutcome, JoinError>) -> Result<(), Interrupt> {
         let Ok(outcome) = joined else { return Ok(()) }; // a receipt task cannot panic or be cancelled
-        let Some(page) = self.pages.iter_mut().find(|page| page.no == outcome.page) else {
+        let Some(page) = self.pages.iter_mut().find(|page| page.number == outcome.page) else {
             return Ok(());
         };
         let key = outcome.aggregate_id;
@@ -890,7 +890,7 @@ where
             Err(error) => {
                 let failure = Failure {
                     key: Some(key.clone()),
-                    handler: self.ctx.handler.clone(),
+                    handler: self.ctx.handler_name.clone(),
                     operation: Operation::Page,
                     category: delivery_category(&error),
                     position,
@@ -928,10 +928,10 @@ where
                     reason: entry.reason,
                 });
                 if entry.reason == RebuildReason::Healed {
-                    self.log("key healed");
+                    self.log_change("key healed");
                 }
                 for waiter in entry.waiting {
-                    if let Some(page) = self.pages.iter_mut().find(|page| page.no == waiter.page) {
+                    if let Some(page) = self.pages.iter_mut().find(|page| page.number == waiter.page) {
                         page.pending -= 1;
                         let position = page.last_position;
                         self.ctx.observer.applied(&Applied {
@@ -951,14 +951,14 @@ where
             Err(error) => {
                 let category = delivery_category(&error);
                 for waiter in entry.waiting {
-                    if let Some(page) = self.pages.iter_mut().find(|page| page.no == waiter.page) {
+                    if let Some(page) = self.pages.iter_mut().find(|page| page.number == waiter.page) {
                         page.pending -= 1;
                         let position = page.last_position;
                         page.failed.push((
                             waiter.key,
                             Failure {
                                 key: Some(key.clone()),
-                                handler: self.ctx.handler.clone(),
+                                handler: self.ctx.handler_name.clone(),
                                 operation: Operation::Page,
                                 category,
                                 position,
@@ -980,7 +980,7 @@ where
                     }
                     self.pending_failure.get_or_insert(Failure {
                         key: Some(key),
-                        handler: self.ctx.handler.clone(),
+                        handler: self.ctx.handler_name.clone(),
                         operation: Operation::Rebuild,
                         category,
                         position: self.checkpoint,
@@ -999,7 +999,7 @@ where
         self.stop.cancel();
         let deadline = Instant::now() + self.ctx.config.lease();
         loop {
-            if self.lease.is_lost() || self.settle().await.is_err() || self.complete_cursor_page().await.is_err() {
+            if self.keeper.is_lost() || self.advance_completed().await.is_err() || self.complete_cursor_page().await.is_err() {
                 return self.lost();
             }
             if self.outcomes.is_empty() && self.rebuild_outcomes.is_empty() {
@@ -1007,7 +1007,7 @@ where
             }
             let woke = tokio::select! {
                 biased;
-                _ = self.lease.lost() => Woke::Lost,
+                _ = self.keeper.until_lost() => Woke::Lost,
                 Some(joined) = self.outcomes.join_next(), if !self.outcomes.is_empty() => Woke::Live(joined),
                 Some(joined) = self.rebuild_outcomes.join_next(), if !self.rebuild_outcomes.is_empty() => Woke::Rebuild(joined),
                 _ = tokio::time::sleep_until(deadline) => Woke::Timer,
@@ -1023,7 +1023,7 @@ where
         }
         if self.rebuild.is_some() {
             self.ctx.observer.rebuild(RebuildEvent::Interrupted);
-            self.log("rebuild interrupted");
+            self.log_change("rebuild interrupted");
         }
         if let Err(error) = self.ctx.checkpoints.release(&self.ctx.key, self.token).await {
             self.log_failure(Operation::Checkpoints, error.category(), 0);

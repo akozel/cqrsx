@@ -83,7 +83,7 @@ impl LeaseKeeper {
     }
 
     /// Resolves once the lease is lost.
-    pub(super) async fn lost(&self) {
+    pub(super) async fn until_lost(&self) {
         loop {
             let mut changed = pin!(self.shared.changed.notified());
             changed.as_mut().enable();
@@ -181,7 +181,7 @@ mod tests {
         let keeper = LeaseKeeper::spawn(store.clone(), key.clone(), token, LEASE, anchor);
         store.expire_lease(&key);
         claimed(&store, &key, "b").await; // another node took the row
-        let lost = tokio::time::timeout(Duration::from_secs(2), keeper.lost()).await;
+        let lost = tokio::time::timeout(Duration::from_secs(2), keeper.until_lost()).await;
         assert!(lost.is_ok() && keeper.is_lost(), "the next extension is refused");
     }
 
@@ -196,10 +196,10 @@ mod tests {
         tokio::time::advance(Duration::from_millis(2500)).await;
         tokio::task::yield_now().await;
         assert!(!keeper.is_lost(), "two failed extensions, deadline not reached");
-        let mut waiting = std::pin::pin!(keeper.lost());
+        let mut waiting = std::pin::pin!(keeper.until_lost());
         assert!(
             std::future::poll_fn(|cx| std::task::Poll::Ready(waiting.as_mut().poll(cx).is_pending())).await,
-            "lost() waits for the deadline"
+            "until_lost() waits for the deadline"
         );
         tokio::time::advance(Duration::from_millis(600)).await;
         tokio::task::yield_now().await;

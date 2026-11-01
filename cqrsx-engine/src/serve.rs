@@ -42,7 +42,7 @@ use tokio_util::sync::CancellationToken;
 pub enum StartupError {
     #[error("logging setup failed: {0}")]
     Logging(String),
-    #[error("{}", built(.0))]
+    #[error("{}", build_error_text(.0))]
     Build(#[from] BuildError),
     #[error("cannot bind {addr}: {source}")]
     Bind { addr: SocketAddr, source: io::Error },
@@ -53,7 +53,7 @@ pub enum StartupError {
 /// A setting, a module's variable, a URL or URI of a store and views without a durable journal are an invalid
 /// configuration; the rest as it is. A key described twice with two values is not: the code of the modules (or of the
 /// engine) reads one key in two ways, which no value of a variable mends for good.
-fn built(error: &BuildError) -> String {
+fn build_error_text(error: &BuildError) -> String {
     let invalid = match error {
         BuildError::Settings(_) | BuildError::Setup(SetupError::Invalid { .. }) | BuildError::ViewsWithoutJournal(_) => true,
         #[cfg(feature = "postgres")]

@@ -4,7 +4,7 @@
 //! says when the engine is built: one connection each, an unreachable database fails the build.
 use crate::{
     build::BuildError,
-    settings::{Read, Settings, SettingsError, duration_text},
+    settings::{Settings, SettingsError, VariableReader, duration_text},
 };
 use cqrsx_postgres::pool::{
     ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, DEFAULT_MAX_CONNECTIONS, StatementTimeout, connect_pool_with,
@@ -71,17 +71,17 @@ pub const HISTORY_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 const DATABASE_URL: &str = "DATABASE_URL";
 const DATABASE_POOL_SIZE: &str = "DATABASE_POOL_SIZE";
-const STATEMENT_TIMEOUT: &str = "DATABASE_STATEMENT_TIMEOUT_MS";
-const HISTORY_POOL_SIZE: &str = "DATABASE_HISTORY_POOL_SIZE";
-const PROJECTION_POOL_SIZE: &str = "DATABASE_PROJECTION_POOL_SIZE";
+const DATABASE_STATEMENT_TIMEOUT_MS: &str = "DATABASE_STATEMENT_TIMEOUT_MS";
+const DATABASE_HISTORY_POOL_SIZE: &str = "DATABASE_HISTORY_POOL_SIZE";
+const DATABASE_PROJECTION_POOL_SIZE: &str = "DATABASE_PROJECTION_POOL_SIZE";
 
 /// The variables of the pools, by their names after the prefix.
 pub(crate) const VARIABLES: [&str; 5] = [
     DATABASE_URL,
     DATABASE_POOL_SIZE,
-    STATEMENT_TIMEOUT,
-    HISTORY_POOL_SIZE,
-    PROJECTION_POOL_SIZE,
+    DATABASE_STATEMENT_TIMEOUT_MS,
+    DATABASE_HISTORY_POOL_SIZE,
+    DATABASE_PROJECTION_POOL_SIZE,
 ];
 
 /// The pools of an engine over PostgreSQL, all over one database: the main pool (commands, the task queue, the
@@ -121,7 +121,7 @@ impl PostgresSettings {
         if let StatementTimeout::Custom(timeout) = statement_timeout
             && !(1..=i32::MAX as u128).contains(&timeout.as_millis())
         {
-            return Err(Read::bare().invalid(STATEMENT_TIMEOUT, OUT_OF_RANGE));
+            return Err(VariableReader::without_variables().invalid(DATABASE_STATEMENT_TIMEOUT_MS, OUT_OF_RANGE));
         }
         Ok(Self {
             url: url.into(),
@@ -180,13 +180,13 @@ impl PostgresSettings {
         }
     }
 
-    pub(crate) fn read(read: &Read) -> Result<Self, SettingsError> {
+    pub(crate) fn read(read: &VariableReader) -> Result<Self, SettingsError> {
         let pool_size = read.value(DATABASE_POOL_SIZE, DEFAULT_MAX_CONNECTIONS)?;
-        let history_pool_size = read.value(HISTORY_POOL_SIZE, DEFAULT_HISTORY_POOL_SIZE)?;
-        let projection_pool_size = read.value(PROJECTION_POOL_SIZE, DEFAULT_PROJECTION_POOL_SIZE)?;
-        let statement_timeout = checked_timeout(read, read.raw(STATEMENT_TIMEOUT))?;
+        let history_pool_size = read.value(DATABASE_HISTORY_POOL_SIZE, DEFAULT_HISTORY_POOL_SIZE)?;
+        let projection_pool_size = read.value(DATABASE_PROJECTION_POOL_SIZE, DEFAULT_PROJECTION_POOL_SIZE)?;
+        let statement_timeout = checked_timeout(read, read.text(DATABASE_STATEMENT_TIMEOUT_MS))?;
         Ok(Self {
-            url: read.raw(DATABASE_URL).unwrap_or_else(|| DEFAULT_DATABASE_URL.to_owned()),
+            url: read.text(DATABASE_URL).unwrap_or_else(|| DEFAULT_DATABASE_URL.to_owned()),
             pool_size,
             statement_timeout,
             history_pool_size,
@@ -199,9 +199,9 @@ impl PostgresSettings {
         let mut entries = vec![
             (name(DATABASE_URL), self.url.clone()),
             (name(DATABASE_POOL_SIZE), self.pool_size.to_string()),
-            (name(STATEMENT_TIMEOUT), self.statement_timeout.to_string()),
-            (name(HISTORY_POOL_SIZE), self.history_pool_size.to_string()),
-            (name(PROJECTION_POOL_SIZE), self.projection_pool_size.to_string()),
+            (name(DATABASE_STATEMENT_TIMEOUT_MS), self.statement_timeout.to_string()),
+            (name(DATABASE_HISTORY_POOL_SIZE), self.history_pool_size.to_string()),
+            (name(DATABASE_PROJECTION_POOL_SIZE), self.projection_pool_size.to_string()),
         ];
         entries.extend(self.pool_plan(application_name).entries());
         entries
@@ -211,12 +211,12 @@ impl PostgresSettings {
 const OUT_OF_RANGE: &str = "must be 0 (no cap) or 1..=2147483647 milliseconds";
 
 /// Unset = `StatementTimeout::Default`, `0` = `Unlimited`, any other number of milliseconds = `Custom`.
-fn checked_timeout(read: &Read, value: Option<String>) -> Result<StatementTimeout, SettingsError> {
+fn checked_timeout(read: &VariableReader, value: Option<String>) -> Result<StatementTimeout, SettingsError> {
     match value.map(|value| value.parse::<u32>()) {
         None => Ok(StatementTimeout::Default),
         Some(Ok(0)) => Ok(StatementTimeout::Unlimited),
         Some(Ok(millis)) if millis <= i32::MAX as u32 => Ok(StatementTimeout::Custom(Duration::from_millis(millis.into()))),
-        Some(_) => Err(read.invalid(STATEMENT_TIMEOUT, OUT_OF_RANGE)),
+        Some(_) => Err(read.invalid(DATABASE_STATEMENT_TIMEOUT_MS, OUT_OF_RANGE)),
     }
 }
 
@@ -313,7 +313,7 @@ mod tests {
     /// value here, as the configuration's parser saw it).
     fn statement_timeout(value: Option<String>) -> Result<StatementTimeout, SettingsError> {
         let lookup = |_: &str| None;
-        checked_timeout(&Read::over("ENCORE", &lookup, &Defaults::LIBRARY), value)
+        checked_timeout(&VariableReader::over("ENCORE", &lookup, &Defaults::LIBRARY), value)
     }
 
     fn settings(pairs: &[(&str, &str)]) -> Result<Settings, SettingsError> {

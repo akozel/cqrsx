@@ -1,5 +1,5 @@
 //! Read-model documents in a MongoDB collection.
-use crate::{is_duplicate_key, persistence};
+use crate::{is_duplicate_key, persistence_error};
 use ::mongodb::{
     Collection, Database,
     bson::{self, Bson, Document, doc},
@@ -134,7 +134,12 @@ fn decode<V: View<A>, A: Aggregate>(document: Document) -> Result<StoredView<V>,
 impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
     /// The view with its version and last applied event.
     async fn stored(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
-        let Some(document) = self.collection.find_one(doc! { "_id": view_id }).await.map_err(persistence)? else {
+        let Some(document) = self
+            .collection
+            .find_one(doc! { "_id": view_id })
+            .await
+            .map_err(persistence_error)?
+        else {
             return Ok(None);
         };
         decode::<V, A>(document).map(Some)
@@ -147,9 +152,9 @@ impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
             .find(filter)
             .sort(doc! { "_id": 1 })
             .await
-            .map_err(persistence)?;
+            .map_err(persistence_error)?;
         let mut documents = Vec::new();
-        while cursor.advance().await.map_err(persistence)? {
+        while cursor.advance().await.map_err(persistence_error)? {
             let document = cursor
                 .deserialize_current()
                 .map_err(|error| PersistenceError::DeserializationError(Box::new(error)))?;
@@ -185,7 +190,7 @@ where
             return match self.collection.insert_one(document).await {
                 Ok(_) => Ok(()),
                 Err(error) if is_duplicate_key(&error) => Err(PersistenceError::OptimisticLockError),
-                Err(error) => Err(persistence(error)),
+                Err(error) => Err(persistence_error(error)),
             };
         }
         let updated = self
@@ -195,7 +200,7 @@ where
                 doc! { "$set": { "view": view, "version": version, "last_sequence": last_sequence } },
             )
             .await
-            .map_err(persistence)?;
+            .map_err(persistence_error)?;
         if updated.matched_count == 0 {
             return Err(PersistenceError::OptimisticLockError);
         }

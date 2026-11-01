@@ -51,7 +51,7 @@ where
     R: PersistedEventRepository,
     A: Aggregate + Send + Sync,
 {
-    repo: R,
+    repository: R,
     snapshot_policy: SnapshotPolicy,
     event_upcasters: Arc<[Box<dyn EventUpcaster>]>,
     _phantom: PhantomData<A>,
@@ -79,7 +79,7 @@ where
 {
     fn clone(&self) -> Self {
         Self {
-            repo: self.repo.clone(),
+            repository: self.repository.clone(),
             snapshot_policy: self.snapshot_policy,
             event_upcasters: self.event_upcasters.clone(),
             _phantom: PhantomData,
@@ -251,7 +251,7 @@ where
     /// ```
     pub fn new(repo: R) -> Self {
         Self {
-            repo,
+            repository: repo,
             snapshot_policy: SnapshotPolicy::Disabled,
             event_upcasters: Arc::new([]),
             _phantom: PhantomData,
@@ -428,7 +428,7 @@ where
     /// E.g., an upcaster for version 0.2.3 should be placed before an upcaster for version 0.2.4
     pub fn with_upcasters(self, event_upcasters: Vec<Box<dyn EventUpcaster>>) -> Self {
         Self {
-            repo: self.repo,
+            repository: self.repository,
             snapshot_policy: self.snapshot_policy,
             event_upcasters: event_upcasters.into(),
             _phantom: PhantomData,
@@ -444,7 +444,7 @@ where
     type Context = EventStoreAggregateContext<A>;
 
     async fn load_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
-        let serialized_events = self.repo.events::<A>(aggregate_id).await?;
+        let serialized_events = self.repository.events::<A>(aggregate_id).await?;
         deserialize_events(serialized_events, &self.event_upcasters)
     }
 
@@ -452,7 +452,7 @@ where
         let mut context: EventStoreAggregateContext<A> = if self.snapshot_policy == SnapshotPolicy::Disabled {
             EventStoreAggregateContext::empty(aggregate_id)
         } else {
-            let snapshot = self.repo.snapshot::<A>(aggregate_id).await?;
+            let snapshot = self.repository.snapshot::<A>(aggregate_id).await?;
             match snapshot {
                 Some(snapshot) => {
                     let version = snapshot.snapshot_version;
@@ -471,8 +471,12 @@ where
             }
         };
         let events_to_apply = match self.snapshot_policy {
-            SnapshotPolicy::Disabled => self.repo.events::<A>(aggregate_id).await?,
-            SnapshotPolicy::Every(_) => self.repo.events_after::<A>(aggregate_id, context.current_sequence).await?,
+            SnapshotPolicy::Disabled => self.repository.events::<A>(aggregate_id).await?,
+            SnapshotPolicy::Every(_) => {
+                self.repository
+                    .events_after::<A>(aggregate_id, context.current_sequence)
+                    .await?
+            }
         };
         // Decoded and applied one by one, never collected: an event that does not decode fails the load, and the
         // state the events before it built is dropped with the context.
@@ -502,7 +506,7 @@ where
             None
         } else {
             let next_version = crate::journal::checked_counter_add(context.snapshot_version.unwrap_or(0), 1)?;
-            Some(Self::update_snapshot_with_events(
+            Some(Self::snapshot_update_from_events(
                 &events,
                 context,
                 snapshot_prefix_len,
@@ -511,7 +515,7 @@ where
         };
         let wrapped_events = Self::wrap_events(&aggregate_id, last_sequence, events, &metadata);
         let serialized_events: Vec<SerializedEvent> = serialize_events(&wrapped_events)?;
-        self.repo
+        self.repository
             .persist_with_tasks::<A>(&serialized_events, snapshot_update, tasks)
             .await?;
         Ok(wrapped_events)
@@ -523,7 +527,7 @@ where
     A: Aggregate + Send + Sync,
     R: PersistedEventRepository,
 {
-    fn update_snapshot_with_events(
+    fn snapshot_update_from_events(
         events: &[A::Event],
         mut context: EventStoreAggregateContext<A>,
         prefix: usize,

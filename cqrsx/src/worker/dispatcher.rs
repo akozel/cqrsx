@@ -129,7 +129,7 @@ impl<A: TaskAdapter> TaskDispatcher<A> {
     /// Route an attempt by its complete format and invoke that adapter with the attempt's context: the pause its
     /// retry would get (`retry_pause`), the dependencies and the executors.
     pub async fn dispatch(&self, attempt: Arc<TaskAttempt>, retry_pause: Duration) -> TaskResult {
-        let ctx = TaskContext::shared(attempt, retry_pause, self.dependencies.clone(), self.executors.clone());
+        let ctx = TaskContext::from_parts(attempt, retry_pause, self.dependencies.clone(), self.executors.clone());
         match self
             .routes
             .get(ctx.attempt().format())

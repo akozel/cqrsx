@@ -29,8 +29,8 @@ use tokio_util::sync::CancellationToken;
 /// Dropping this object simply releases its dispatcher. It cannot be cloned.
 /// A is the concrete adapter type, often [`BoxedTaskAdapter`](crate::worker::adapter::boxed::BoxedTaskAdapter).
 pub struct TaskRuntime<Q: TaskQueue, A> {
-    context: RuntimeContext<Q, DefaultTaskExecutor<Q>>,
-    config: TaskWorkerPoolConfig,
+    context: QueueAndExecutor<Q, DefaultTaskExecutor<Q>>,
+    worker_pool: TaskWorkerPoolConfig,
     dispatcher: Arc<TaskDispatcher<A>>,
 }
 
@@ -38,7 +38,7 @@ pub struct TaskRuntime<Q: TaskQueue, A> {
 impl<Q: TaskQueue, A> fmt::Debug for TaskRuntime<Q, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TaskRuntime")
-            .field("config", &self.config)
+            .field("worker_pool", &self.worker_pool)
             .field("executor", &self.context.executor)
             .field("dispatcher", &self.dispatcher)
             .finish_non_exhaustive()
@@ -50,7 +50,7 @@ impl<Q: TaskQueue + 'static, A: TaskAdapter + 'static> TaskRuntime<Q, A> {
     /// At first poll a DropGuard owns cancellation; a pre-cancelled token skips
     /// spawn/claims/recovery. Active work retains the existing H+S drain contract.
     pub async fn run(self, shutdown: CancellationToken) -> Result<(), TaskRuntimeError> {
-        run_prepared(self.context, self.config, self.dispatcher, shutdown).await
+        run_prepared(self.context, self.worker_pool, self.dispatcher, shutdown).await
     }
 }
 
@@ -66,18 +66,18 @@ pub fn prepare<Q: TaskQueue + 'static, A: TaskAdapter + 'static>(
     let (storage_config, worker_config) = config.into_parts();
     let executor = Arc::new(DefaultTaskExecutor::new(queue.clone(), storage_config).with_policies(policies));
     TaskRuntime {
-        context: RuntimeContext::new(queue, executor),
-        config: worker_config,
+        context: QueueAndExecutor::new(queue, executor),
+        worker_pool: worker_config,
         dispatcher,
     }
 }
 
-struct RuntimeContext<Q: TaskQueue, E: TaskExecutor> {
+struct QueueAndExecutor<Q: TaskQueue, E: TaskExecutor> {
     queue: Arc<Q>,
     executor: Arc<E>,
 }
 
-impl<Q: TaskQueue, E: TaskExecutor> RuntimeContext<Q, E> {
+impl<Q: TaskQueue, E: TaskExecutor> QueueAndExecutor<Q, E> {
     fn new(queue: Arc<Q>, executor: Arc<E>) -> Self {
         Self { queue, executor }
     }
@@ -164,7 +164,7 @@ mod tests {
             Policies::default()
         );
         assert!(
-            printed.starts_with("TaskRuntime { config: TaskWorkerPoolConfig {"),
+            printed.starts_with("TaskRuntime { worker_pool: TaskWorkerPoolConfig {"),
             "{printed}"
         );
         assert!(

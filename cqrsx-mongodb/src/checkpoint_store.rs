@@ -59,7 +59,7 @@ impl MongoCheckpointStore {
 
 /// A stored checkpoint as the owner and the status read it.
 #[derive(Debug, Deserialize)]
-struct Row {
+struct CheckpointRecord {
     #[serde(rename = "_id")]
     id: RowId,
     position: i64,
@@ -97,7 +97,7 @@ struct Requested {
     rebuild_cursor: Option<String>,
 }
 
-fn storage(operation: &'static str) -> impl FnOnce(::mongodb::error::Error) -> CheckpointError {
+fn storage_error(operation: &'static str) -> impl FnOnce(::mongodb::error::Error) -> CheckpointError {
     move |error| {
         crate::diagnostics::log_mongodb_failure(operation, &error);
         CheckpointError::Storage(Box::new(error))
@@ -113,7 +113,7 @@ fn id(key: &CheckpointKey) -> Document {
     doc! { "projection": key.projection(), "aggregate_type": key.aggregate_type() }
 }
 
-fn row(key: &CheckpointKey) -> Document {
+fn by_id(key: &CheckpointKey) -> Document {
     doc! { "_id": id(key) }
 }
 
@@ -172,7 +172,7 @@ fn decode<T: serde::de::DeserializeOwned>(document: Document) -> Result<T, Check
 }
 
 fn decode_claim(document: Document) -> Result<Claimed, CheckpointError> {
-    let row: Row = decode(document)?;
+    let row: CheckpointRecord = decode(document)?;
     let rebuild = match row.rebuild_cursor {
         Some(cursor) => Some(RebuildState {
             cursor,
@@ -190,7 +190,7 @@ fn decode_claim(document: Document) -> Result<Claimed, CheckpointError> {
 }
 
 fn decode_status(document: Document) -> Result<CheckpointStatus, CheckpointError> {
-    let row: Row = decode(document)?;
+    let row: CheckpointRecord = decode(document)?;
     Ok(CheckpointStatus {
         projection: row.id.projection,
         aggregate_type: row.id.aggregate_type,
@@ -238,7 +238,7 @@ impl MongoCheckpointStore {
             .collection
             .update_one(filter, vec![doc! { "$set": update }])
             .await
-            .map_err(storage(operation))?;
+            .map_err(storage_error(operation))?;
         Ok(result.matched_count == 1)
     }
 }
@@ -247,12 +247,12 @@ impl CheckpointStore for MongoCheckpointStore {
     async fn register(&self, key: &CheckpointKey) -> Result<(), CheckpointError> {
         match self
             .collection
-            .update_one(row(key), vec![doc! { "$set": defaults() }])
+            .update_one(by_id(key), vec![doc! { "$set": defaults() }])
             .upsert(true)
             .await
         {
             // Two nodes may race to create the document: either way it exists.
-            Err(error) if !is_duplicate_key(&error) => Err(storage("register")(error)),
+            Err(error) if !is_duplicate_key(&error) => Err(storage_error("register")(error)),
             _ => Ok(()),
         }
     }
@@ -275,7 +275,7 @@ impl CheckpointStore for MongoCheckpointStore {
             .projection(doc! { "rebuild_keys": 0 })
             .return_document(ReturnDocument::After)
             .await
-            .map_err(storage("claim"))?;
+            .map_err(storage_error("claim"))?;
         claimed.map(decode_claim).transpose()
     }
 
@@ -324,11 +324,11 @@ impl CheckpointStore for MongoCheckpointStore {
         };
         let before = self
             .collection
-            .find_one_and_update(row(key), vec![doc! { "$set": request }])
+            .find_one_and_update(by_id(key), vec![doc! { "$set": request }])
             .projection(doc! { "rebuild_requested": 1, "rebuild_cursor": 1 })
             .return_document(ReturnDocument::Before)
             .await
-            .map_err(storage("request_rebuild"))?;
+            .map_err(storage_error("request_rebuild"))?;
         let Some(before) = before else {
             return Err(CheckpointError::Invalid("projection is not registered"));
         };
@@ -343,9 +343,9 @@ impl CheckpointStore for MongoCheckpointStore {
     async fn request_rebuild_key(&self, key: &CheckpointKey, aggregate_id: &str) -> Result<(), CheckpointError> {
         let result = self
             .collection
-            .update_one(row(key), doc! { "$addToSet": { "rebuild_keys": aggregate_id } })
+            .update_one(by_id(key), doc! { "$addToSet": { "rebuild_keys": aggregate_id } })
             .await
-            .map_err(storage("request_rebuild_key"))?;
+            .map_err(storage_error("request_rebuild_key"))?;
         if result.matched_count == 0 {
             return Err(CheckpointError::Invalid("projection is not registered"));
         }
@@ -372,7 +372,7 @@ impl CheckpointStore for MongoCheckpointStore {
             .projection(doc! { "rebuild_requested": 1, "rebuild_pace_ms": 1, "rebuild_keys": 1 })
             .return_document(ReturnDocument::Before)
             .await
-            .map_err(storage("take_requests"))?;
+            .map_err(storage_error("take_requests"))?;
         let Some(before) = before else {
             return Ok(None);
         };
@@ -430,9 +430,9 @@ impl CheckpointStore for MongoCheckpointStore {
             .sort(doc! { "_id": 1 })
             .projection(doc! { "rebuild_keys": 0 })
             .await
-            .map_err(storage("status"))?;
+            .map_err(storage_error("status"))?;
         let mut rows = Vec::new();
-        while cursor.advance().await.map_err(storage("status"))? {
+        while cursor.advance().await.map_err(storage_error("status"))? {
             rows.push(decode_status(cursor.deserialize_current().map_err(corrupt)?)?);
         }
         Ok(rows)

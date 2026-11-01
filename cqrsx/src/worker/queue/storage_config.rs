@@ -1,7 +1,7 @@
 //! The time budget of one call to the task queue's storage.
 use std::time::Duration;
 use thiserror::Error;
-const DEFAULT_STORAGE_TIMEOUT_MS: u64 = 6_000;
+const DEFAULT_STORAGE_TIMEOUT: Duration = Duration::from_millis(6_000);
 /// Validated end-to-end storage budget: the runtime gives up on a claim, settlement or recovery after it
 /// ([`TimedOut`](crate::worker::queue::TaskProcessingError::TimedOut)). Defaults do not read the environment.
 #[derive(Clone, Copy, Debug)]
@@ -19,7 +19,7 @@ impl Default for TaskStorageConfig {
     /// A storage timeout of six seconds.
     fn default() -> Self {
         Self {
-            storage_timeout: Duration::from_millis(DEFAULT_STORAGE_TIMEOUT_MS),
+            storage_timeout: DEFAULT_STORAGE_TIMEOUT,
         }
     }
 }
@@ -41,8 +41,12 @@ impl TaskStorageConfig {
     /// Unicode, for [`from_env`](Self::from_env)) takes the default, one that is not an unsigned integer is
     /// `InvalidEnvironmentValue`, zero is `InvalidStorageTimeout`.
     pub fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Result<Self, TaskStorageConfigError> {
-        let millis = crate::env::read_u64(&mut lookup, "OUTBOX_STORAGE_TIMEOUT_MS", DEFAULT_STORAGE_TIMEOUT_MS)
-            .map_err(|_| TaskStorageConfigError::InvalidEnvironmentValue)?;
+        let millis = crate::env::read_u64(
+            &mut lookup,
+            "OUTBOX_STORAGE_TIMEOUT_MS",
+            DEFAULT_STORAGE_TIMEOUT.as_millis() as u64,
+        )
+        .map_err(|_| TaskStorageConfigError::InvalidEnvironmentValue)?;
         Self::try_new(Duration::from_millis(millis))
     }
 }

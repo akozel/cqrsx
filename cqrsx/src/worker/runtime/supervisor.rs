@@ -37,7 +37,7 @@ pub async fn run<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapt
     let _cancel_on_exit = shutdown.clone().drop_guard();
     config.validate_for_storage_timeout(executor.storage_timeout())?;
     run_prepared(
-        super::RuntimeContext::new(queue, executor),
+        super::QueueAndExecutor::new(queue, executor),
         config,
         Arc::new(dispatcher),
         shutdown,
@@ -47,7 +47,7 @@ pub async fn run<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapt
 
 /// Shared execution engine for a ready dispatcher and the low-level entry point.
 pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapter + 'static>(
-    context: super::RuntimeContext<Q, E>,
+    context: super::QueueAndExecutor<Q, E>,
     config: TaskWorkerPoolConfig,
     dispatcher: Arc<TaskDispatcher<A>>,
     shutdown: CancellationToken,

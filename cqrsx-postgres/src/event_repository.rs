@@ -4,7 +4,7 @@ mod read;
 mod sql_query;
 mod write;
 
-use self::sql_query::SqlQueryFactory;
+use self::sql_query::SqlTexts;
 use crate::{diagnostics::storage_failure, error::PostgresRepositoryError};
 use cqrsx::{
     domain::aggregate::Aggregate,
@@ -43,7 +43,7 @@ pub const DEFAULT_COUNT_AFTER_CAP: u64 = 100_000;
 #[must_use]
 pub struct PostgresEventRepository {
     pool: Pool<Postgres>,
-    query_factory: Arc<SqlQueryFactory>,
+    query_factory: Arc<SqlTexts>,
 }
 
 impl PersistedEventRepository for PostgresEventRepository {
@@ -107,7 +107,7 @@ impl PostgresEventRepository {
     /// }
     /// ```
     pub fn new(pool: Pool<Postgres>) -> Self {
-        Self::use_tables(pool, DEFAULT_EVENT_TABLE, DEFAULT_SNAPSHOT_TABLE)
+        Self::from_tables(pool, DEFAULT_EVENT_TABLE, DEFAULT_SNAPSHOT_TABLE)
     }
 
     /// Configures a `PostgresEventRepository` to use the provided table names.
@@ -125,14 +125,14 @@ impl PostgresEventRepository {
     /// }
     /// ```
     pub fn with_tables(mut self, events_table: &str, snapshots_table: &str) -> Self {
-        self.query_factory = Arc::new(SqlQueryFactory::new(events_table, snapshots_table));
+        self.query_factory = Arc::new(SqlTexts::new(events_table, snapshots_table));
         self
     }
 
-    fn use_tables(pool: Pool<Postgres>, events_table: &str, snapshots_table: &str) -> Self {
+    fn from_tables(pool: Pool<Postgres>, events_table: &str, snapshots_table: &str) -> Self {
         Self {
             pool,
-            query_factory: Arc::new(SqlQueryFactory::new(events_table, snapshots_table)),
+            query_factory: Arc::new(SqlTexts::new(events_table, snapshots_table)),
         }
     }
 
@@ -144,21 +144,21 @@ impl PostgresEventRepository {
 }
 
 pub(super) fn encode_bigint(value: usize) -> Result<i64, PostgresRepositoryError> {
-    i64::try_from(value).map_err(|error| PostgresRepositoryError::UnknownError(Box::new(error)))
+    i64::try_from(value).map_err(|error| PostgresRepositoryError::Unexpected(Box::new(error)))
 }
 
 /// A column a row lacks or holds in another type than the code reads: the table is not what it should be.
 pub(super) fn row_decode_error(error: sqlx::Error) -> PostgresRepositoryError {
-    PostgresRepositoryError::DeserializationError(Box::new(storage_failure(error)))
+    PostgresRepositoryError::Deserialization(Box::new(storage_failure(error)))
 }
 
 pub(super) fn decode_usize(value: i64) -> Result<usize, PostgresRepositoryError> {
-    usize::try_from(value).map_err(|error| PostgresRepositoryError::DeserializationError(Box::new(error)))
+    usize::try_from(value).map_err(|error| PostgresRepositoryError::Deserialization(Box::new(error)))
 }
 
 /// `count(*)` is a `bigint`; a negative count can only mean a broken row decode.
 fn decode_count(value: i64) -> Result<u64, PostgresRepositoryError> {
-    u64::try_from(value).map_err(|error| PostgresRepositoryError::DeserializationError(Box::new(error)))
+    u64::try_from(value).map_err(|error| PostgresRepositoryError::Deserialization(Box::new(error)))
 }
 
 #[cfg(test)]
@@ -173,11 +173,11 @@ mod numeric_tests {
         for invalid in [-1, i64::MIN] {
             assert!(matches!(
                 decode_usize(invalid),
-                Err(PostgresRepositoryError::DeserializationError(_))
+                Err(PostgresRepositoryError::Deserialization(_))
             ));
             assert!(matches!(
                 decode_count(invalid),
-                Err(PostgresRepositoryError::DeserializationError(_))
+                Err(PostgresRepositoryError::Deserialization(_))
             ));
         }
         #[cfg(target_pointer_width = "64")]
@@ -186,7 +186,7 @@ mod numeric_tests {
             assert_eq!(decode_usize(i64::MAX).unwrap(), i64::MAX as usize);
             assert!(matches!(
                 encode_bigint(usize::MAX),
-                Err(PostgresRepositoryError::UnknownError(_))
+                Err(PostgresRepositoryError::Unexpected(_))
             ));
         }
     }
@@ -198,7 +198,7 @@ mod configuration_tests {
 
     #[test]
     fn a_row_the_code_cannot_read_is_a_deserialization_error_holding_the_driver_error_with_its_category() {
-        let PostgresRepositoryError::DeserializationError(source) = row_decode_error(sqlx::Error::RowNotFound) else {
+        let PostgresRepositoryError::Deserialization(source) = row_decode_error(sqlx::Error::RowNotFound) else {
             panic!("a row decode error is a deserialization error")
         };
         let failure = source.downcast_ref::<cqrsx::diagnostics::StorageFailure>().unwrap();

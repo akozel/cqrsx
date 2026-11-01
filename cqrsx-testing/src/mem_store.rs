@@ -130,7 +130,7 @@ impl<A: Aggregate> MemStore<A> {
         Ok(committed_events)
     }
 
-    fn aggregate_id(events: &[EventEnvelope<A>]) -> String {
+    fn first_aggregate_id(events: &[EventEnvelope<A>]) -> String {
         // uninteresting unwrap: this is not a struct for production use
         let &first_event = events.iter().peekable().peek().unwrap();
         first_event.aggregate_id.to_string()
@@ -185,7 +185,7 @@ impl<A: Aggregate> EventStore<A> for MemStore<A> {
         if new_events_qty == 0 {
             return Ok(Vec::default());
         }
-        let aggregate_id = Self::aggregate_id(&wrapped_events);
+        let aggregate_id = Self::first_aggregate_id(&wrapped_events);
         let mut new_events = self.load_committed_events(&aggregate_id).unwrap();
         for event in &wrapped_events {
             new_events.push(event.clone());

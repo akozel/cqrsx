@@ -69,7 +69,7 @@ impl TaskContext {
     }
 
     /// The context the dispatcher builds for one attempt, with what it holds for every handler.
-    pub(crate) fn shared(
+    pub(crate) fn from_parts(
         attempt: Arc<TaskAttempt>,
         retry_pause: Duration,
         dependencies: Dependencies,

@@ -25,7 +25,7 @@ impl std::fmt::Debug for Mongo {
 
 impl Mongo {
     /// Starts the container and waits until the server answers commands.
-    pub async fn new() -> Self {
+    pub async fn start() -> Self {
         let port_lease = PortLease::acquire();
         let container = tokio::time::timeout(
             Duration::from_secs(60),
