@@ -65,9 +65,10 @@ jobs:
       - name: Run Clippy without features
         run: cargo clippy --locked -p cqrsx -p cqrsx-engine --no-default-features --all-targets -- -D warnings
 
-      # The engine's own dev-dependency on itself gives the targets above its `test-utils`: the library alone does not.
+      # The engine's own dev-dependency on itself gives the targets above its `test-utils`: the library alone does not,
+      # and without a store feature it does not compile.
       - name: Run Clippy on the library alone
-        run: cargo clippy --locked -p cqrsx-engine --no-default-features --lib -- -D warnings
+        run: cargo clippy --locked -p cqrsx-engine --no-default-features --features postgres --lib -- -D warnings
 
       # Alone, a crate gets only the features it asks for: the workspace build no longer hides a missing one.
       - name: Check each crate on its own
@@ -75,6 +76,7 @@ jobs:
           for package in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-testing cqrsx-fixtures; do
             cargo check --locked -p "$package" --lib
           done
+          cargo check --locked -p cqrsx --lib --features test-utils
 
   docs:
     needs: formatting
@@ -145,6 +147,7 @@ jobs:
           - { package: cqrsx, flags: "" }
           - { package: cqrsx-postgres, flags: "" }
           - { package: cqrsx-mongodb, flags: "" }
+          - { package: cqrsx-testing, flags: "" }
           - { package: cqrsx-engine, flags: "--all-features" }
     steps:
       - name: Check out repository
@@ -173,11 +176,10 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - { features: in-memory, flags: "" }
           - { features: postgres, flags: "--features postgres" }
           - { features: mongodb, flags: "--features mongodb" }
-          - { features: http, flags: "--features http" }
-          - { features: operation-utils, flags: "--features operation-utils" }
+          - { features: "test-utils,http", flags: "--features test-utils,http" }
+          - { features: "test-utils,operation-utils", flags: "--features test-utils,operation-utils" }
           - { features: test-utils, flags: "--features test-utils" }
     steps:
       - name: Check out repository

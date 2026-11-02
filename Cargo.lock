@@ -558,6 +558,7 @@ dependencies = [
  "async-channel",
  "async-trait",
  "chrono",
+ "cqrsx",
  "cqrsx-fixtures",
  "cqrsx-macros",
  "log",

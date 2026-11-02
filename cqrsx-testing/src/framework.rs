@@ -412,3 +412,22 @@ impl<A: Aggregate> TestFramework<A> {
         AggregateResultValidator::new(command.decide(&state, &self.rules))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::{Delta, Ledger, Rejected};
+
+    #[test]
+    fn a_command_decides_on_the_aggregate_folded_from_the_given_events() {
+        TestFramework::<Ledger>::new(())
+            .given(vec![Delta(2)])
+            .and(vec![Delta(3)])
+            .when(())
+            .then_expect_event(&Delta(-5));
+        TestFramework::<Ledger>::new(())
+            .given(vec![Delta(-1)])
+            .when(())
+            .then_expect_error(&Rejected);
+    }
+}

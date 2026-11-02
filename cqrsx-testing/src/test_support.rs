@@ -1,4 +1,5 @@
-//! The aggregate the unit tests of the tools write and read: a ledger of deltas. Its one command decides a zero delta.
+//! The aggregate the unit tests of the tools write and read: a ledger of deltas. Its one command settles the ledger:
+//! the delta that brings the balance to zero, refused for a negative balance.
 use cqrsx::domain::{aggregate::Aggregate, command::Decide, event::Events};
 use serde::{Deserialize, Serialize};
 
@@ -38,7 +39,10 @@ impl Aggregate for Ledger {
 }
 
 impl Decide<Ledger> for () {
-    fn decide(self, _: &Ledger, _: &()) -> Result<Delta, Rejected> {
-        Ok(Delta(0))
+    fn decide(self, ledger: &Ledger, _: &()) -> Result<Delta, Rejected> {
+        match i32::try_from(ledger.balance) {
+            Ok(balance) if balance >= 0 => Ok(Delta(-balance)),
+            _ => Err(Rejected),
+        }
     }
 }

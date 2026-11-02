@@ -7,7 +7,7 @@ publish = false
 description = "Test tools for the code that uses cqrsx: aggregate given/when/then, a command executor and aggregate stores for tests"
 
 [dependencies]
-cqrsx.workspace = true
+cqrsx = { workspace = true, features = ["test-utils"] }
 
 [dev-dependencies]
 async-trait.workspace = true

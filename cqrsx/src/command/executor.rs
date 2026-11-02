@@ -54,7 +54,7 @@ impl<A: Aggregate + 'static, S: AggregateStore<A>> StoreCommandExecutor<A, S> {
     /// registry of its own, bounded by `lock_limits`, that wakes nobody, tells nobody and plans nothing.
     ///
     /// For experimentation or testing use the [event-sourced store](crate::journal::store::EventSourcedStore)
-    /// over the journal in memory ([`MemoryEventRepository`](crate::memory::event_repository::MemoryEventRepository)); for
+    /// over the journal in memory (`MemoryEventRepository` of `cqrsx::memory`, behind the feature `test-utils`); for
     /// production, the same store over a database repository.
     ///
     /// ```rust

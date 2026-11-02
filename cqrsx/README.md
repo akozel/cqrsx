@@ -88,13 +88,14 @@ an engine are in [its README](../cqrsx-engine/README.md#errors-of-building-and-s
 | `TestCommandExecutor` | `cqrsx-testing` | Use-case tests over a test store or a journal in memory. |
 | `MemoryStore`, `UnavailableStore` | `cqrsx-testing` | An aggregate store in memory; one that is never reachable, for the unavailable branches. |
 | `TaskContext::new` | `cqrsx` | Exercise a handler with an attempt, a retry pause, dependencies and executors. |
-| `MemoryTaskQueue` | `cqrsx` | Inspect the in-memory outbox queue, delivery and settlement. |
+| `MemoryEventRepository`, `MemoryTaskQueue`, `MemoryCheckpointStore`, `MemoryViewRepository` | `cqrsx` (feature `test-utils`) | The stores in memory (`cqrsx::memory`): the journal with its outbox, the task queue over that outbox (inspect its delivery and settlement), the checkpoints and the views. |
 | `event_store(InMemory)`, `projections(InMemory)` | `cqrsx-engine` | A whole application over stores in memory: with the engine's feature `test-utils` (a dev-dependency), `run_tasks()` runs the due tasks and `catch_up()` waits for the views; a test's `.provide` replaces a dependency by type. |
 
 ## Crates
 
-The core has no features and does not know a database. The stores (`cqrsx-postgres`, `cqrsx-mongodb`), the engine,
-the test tools and the derive macros are crates of their own: [Crates and their boundaries](../doc/crates.md).
+The core has one feature, `test-utils` (the stores in memory, for tests), and does not know a database. The stores
+(`cqrsx-postgres`, `cqrsx-mongodb`), the engine, the test tools and the derive macros are crates of their own:
+[Crates and their boundaries](../doc/crates.md).
 
 ## Further reading
 

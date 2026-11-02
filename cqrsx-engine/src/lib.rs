@@ -1,13 +1,15 @@
 #![doc = include_str!("../README.md")]
 
+// The engine is the assembly over the stores: without a store feature nothing can be chosen for `event_store(..)`.
+#[cfg(not(any(feature = "postgres", feature = "test-utils")))]
+compile_error!("cqrsx-engine needs a store: the feature `postgres`, or `test-utils` for an engine in memory");
+
 pub mod build;
 mod diagnostics;
 mod executor;
 #[cfg(feature = "http")]
 pub mod http;
-#[cfg(not(feature = "test-utils"))]
-mod memory;
-// Public only with `test-utils`: its one public item is the store choice `InMemory`.
+// The stores in memory and their marker `InMemory`: the feature `test-utils` only.
 #[cfg(feature = "test-utils")]
 pub mod memory;
 pub mod module;
@@ -28,11 +30,7 @@ mod test_support;
 mod test_utils;
 pub mod views;
 
-use crate::{
-    module::ProjectionObserverFactory,
-    settings::Settings,
-    views::{CheckpointOperations, Registry},
-};
+use crate::{module::ProjectionObserverFactory, settings::Settings, views::Registry};
 use cqrsx::{
     command::observer::AnyCommandObserver,
     journal::wakeup::CommitWakeup,
@@ -72,12 +70,11 @@ pub struct Cqrs {
     /// The settings and what the modules read and described when they were set up, by key: one value per key, checked
     /// when the engine was built.
     described: BTreeMap<String, String>,
+    #[cfg(feature = "test-utils")]
     memory: memory::MemoryBackend,
     journal: Journal,
     #[cfg(feature = "postgres")]
     view_store: ViewStore,
-    /// The checkpoints of every view, its store erased: what the operations over the views read and request.
-    checkpoints: Arc<dyn CheckpointOperations>,
     processors: Mutex<ProjectionRuntime>,
     #[cfg(feature = "http")]
     routes: axum::Router<Arc<Cqrs>>,
@@ -103,6 +100,7 @@ impl fmt::Debug for Cqrs {
 
 /// Where the engine keeps the journal, the snapshots, the outbox and the task queue.
 pub(crate) enum Journal {
+    #[cfg(feature = "test-utils")]
     Memory,
     #[cfg(feature = "postgres")]
     Postgres(postgres::PostgresPools),
@@ -111,6 +109,7 @@ pub(crate) enum Journal {
 /// Where an engine over PostgreSQL keeps the views and their checkpoints.
 #[cfg(feature = "postgres")]
 pub(crate) enum ViewStore {
+    #[cfg(feature = "test-utils")]
     Memory,
     Postgres,
     #[cfg(feature = "mongodb")]

@@ -1,12 +1,13 @@
-//! How an engine is built: its settings are read, its modules set up, their registrations merged and checked
-//! (`Registrations`), its stores opened, and the components assembled from the registrations over the stores.
+//! How an engine is built: its settings are read, its modules set up, their registrations merged and checked into an
+//! `Assembly`, its stores opened, and the components installed from the assembly over the stores.
+#[cfg(feature = "test-utils")]
+use crate::memory::MemoryBackend;
 #[cfg(feature = "mongodb")]
 use crate::mongodb::Mongo;
 use crate::{
     Cqrs, Journal,
     executor::{AnyObserverAdapter, Executor},
-    memory::MemoryBackend,
-    module::{AggregateEntry, Module, ObservedProcessor, ViewEntry},
+    module::{AggregateEntry, Module, ObservedProcessor, ProjectionObserverFactory, ViewEntry},
     settings::{Defaults, Settings, SettingsError},
     setup::{Lookup, Setup, SetupError},
     views::{CheckpointOperations, Counts},
@@ -16,11 +17,15 @@ use crate::{
     ViewStore,
     postgres::{Postgres, PostgresPools},
 };
+#[cfg(feature = "test-utils")]
+use cqrsx::memory::event_repository::MemoryEventRepository;
 use cqrsx::{
-    command::{executor::StoreCommandExecutor, observer::CommandObserver},
+    command::{
+        executor::StoreCommandExecutor,
+        observer::{AnyCommandObserver, CommandObserver},
+    },
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
     journal::{AggregateStore, repository::EventRepository, store::EventSourcedStore, wakeup::CommitWakeup},
-    memory::event_repository::MemoryEventRepository,
     mutex::get_mut,
     projection::{
         RebuildableProjection, checkpoint::CheckpointStore, processor::ProjectionProcessor, runtime::ProjectionRuntime,
@@ -215,6 +220,7 @@ impl sealed::SealedProjectionStore for Mongo {
 impl ProjectionStore for Mongo {}
 
 /// The stores an engine is built over, and what the application opened for them.
+#[derive(Default)]
 struct Stores {
     event_store: Option<EventStoreKind>,
     views: Option<ProjectionStoreKind>,
@@ -225,15 +231,13 @@ struct Stores {
 }
 
 impl Stores {
-    /// The engine has its journal, and its views have a store when there are views.
-    fn ensure_chosen(&self, has_views: bool) -> Result<(), BuildError> {
-        if self.event_store.is_none() {
-            return Err(BuildError::NoJournal);
-        }
+    /// The engine has its journal, and its views have a store when there are views: the kind of the journal.
+    fn ensure_chosen(&self, has_views: bool) -> Result<EventStoreKind, BuildError> {
+        let event_store = self.event_store.ok_or(BuildError::NoJournal)?;
         if has_views && self.views.is_none() {
             return Err(BuildError::ViewsWithoutStore);
         }
-        Ok(())
+        Ok(event_store)
     }
 }
 
@@ -272,14 +276,7 @@ impl Builder {
             prefix,
             lookup,
             defaults: Defaults::LIBRARY,
-            stores: Stores {
-                event_store: None,
-                views: None,
-                #[cfg(feature = "postgres")]
-                pools: None,
-                #[cfg(feature = "mongodb")]
-                client: None,
-            },
+            stores: Stores::default(),
             modules: Vec::new(),
             dependencies: Dependencies::default(),
         }
@@ -338,41 +335,19 @@ impl Builder {
     /// The task handlers of the modules with their dependencies (the builder's winning), checked as `build` checks
     /// them, without the engine: for a runtime or a test of one's own, which adds the command executors and builds them.
     pub fn task_handlers(self) -> Result<TaskHandlers, BuildError> {
-        let mut registrations = self.registrations()?;
-        Ok(registrations.take_task_handlers())
+        let mut assembly = self.assemble()?;
+        Ok(assembly.take_task_handlers())
     }
 
     /// The engine: its settings, its modules set up and checked, its stores opened (or taken from the application),
     /// its components assembled over them; or the first refusal.
     pub async fn build(self) -> Result<Cqrs, BuildError> {
-        let Registrations {
-            mut cqrs,
-            aggregates,
-            views,
-            adapters,
-            stores,
-        } = self.registrations()?;
-        stores.ensure_chosen(!views.is_empty())?;
-        cqrs.open(stores).await?;
-        for entry in aggregates {
-            // The rules are gone only when a test took them.
-            entry.rules.map_or(Ok(()), |rules| (entry.install)(&mut cqrs, rules))?;
-        }
-        for entry in views {
-            (entry.install)(&mut cqrs);
-        }
-        // A dispatcher needs a handler: an engine without task types runs none.
-        if !adapters.is_empty() {
-            let dispatcher = TaskDispatcher::assemble(adapters, cqrs.dependencies.clone(), cqrs.executors.clone())?;
-            cqrs.dispatcher = Some(Arc::new(dispatcher));
-        }
-        Ok(cqrs)
+        self.assemble()?.open().await
     }
 
     /// The settings, then what the modules registered, merged and checked as `build` checks them (an aggregate type and
-    /// a view name once, a task type once, with its policy, one observer of each kind), over stores
-    /// in memory not yet chosen.
-    pub(crate) fn registrations(self) -> Result<Registrations, BuildError> {
+    /// a view name once, a task type once, with its policy, one observer of each kind), before the stores are opened.
+    pub(crate) fn assemble(self) -> Result<Assembly, BuildError> {
         let settings = match self.settings {
             Some(settings) => settings,
             None => Settings::from_lookup(&self.prefix, &*self.lookup, &self.defaults)?,
@@ -388,35 +363,11 @@ impl Builder {
             .into_iter()
             .map(|root| root(&setup))
             .collect::<Result<Vec<_>, _>>()?;
-        let shutdown = CancellationToken::new();
         let settings = setup.settings().clone();
         let described = merge_described(settings.entries().into_iter().chain(setup.described()))?;
-        let memory = MemoryBackend::new();
-        let checkpoints: Arc<dyn CheckpointOperations> = memory.checkpoints.clone();
-        let mut cqrs = Cqrs {
-            owner: settings.node_name().map_or_else(|| Uuid::new_v4().to_string(), str::to_owned),
-            settings,
-            policies: Policies::default(),
-            dependencies: Dependencies::default(),
-            command_observer: None,
-            projection_observer: None,
-            command_executors: Default::default(),
-            executors: Executors::default(),
-            wakeups: Default::default(),
-            dispatcher: None,
-            views: Default::default(),
-            described,
-            memory,
-            journal: Journal::Memory,
-            #[cfg(feature = "postgres")]
-            view_store: crate::ViewStore::Memory,
-            checkpoints,
-            processors: Mutex::new(ProjectionRuntime::new()),
-            #[cfg(feature = "http")]
-            routes: axum::Router::new(),
-            _stop: shutdown.clone().drop_guard(),
-            shutdown,
-        };
+        let (mut dependencies, mut command_observer, mut projection_observer) = (Dependencies::default(), None, None);
+        #[cfg(feature = "http")]
+        let mut routes = axum::Router::new();
         let mut policies = Policies::builder();
         let (mut registered, mut named) = (HashSet::new(), HashSet::new());
         let (mut aggregates, mut views, mut adapters) = (Vec::new(), Vec::new(), Vec::new());
@@ -439,27 +390,33 @@ impl Builder {
                 adapters.push(task.adapter);
                 policies = (task.register)(policies, task.policy);
             }
-            cqrs.dependencies = cqrs.dependencies.merged(&module.dependencies);
+            dependencies = dependencies.merged(&module.dependencies);
             let twice = BuildError::ObserverTwice(module.name);
             for observer in module.command_observers {
-                if cqrs.command_observer.replace(observer).is_some() {
+                if command_observer.replace(observer).is_some() {
                     return Err(twice);
                 }
             }
             for observers in module.projection_observers {
-                if cqrs.projection_observer.replace(observers).is_some() {
+                if projection_observer.replace(observers).is_some() {
                     return Err(twice);
                 }
             }
             #[cfg(feature = "http")]
-            if let Some(routes) = module.routes {
-                cqrs.routes = std::mem::take(&mut cqrs.routes).merge(routes);
+            if let Some(module_routes) = module.routes {
+                routes = routes.merge(module_routes);
             }
         }
-        cqrs.policies = policies.build()?;
-        cqrs.dependencies = cqrs.dependencies.merged(&self.dependencies);
-        Ok(Registrations {
-            cqrs,
+        Ok(Assembly {
+            owner: settings.node_name().map_or_else(|| Uuid::new_v4().to_string(), str::to_owned),
+            settings,
+            policies: policies.build()?,
+            dependencies: dependencies.merged(&self.dependencies),
+            command_observer,
+            projection_observer,
+            described,
+            #[cfg(feature = "http")]
+            routes,
             aggregates,
             views,
             adapters,
@@ -468,40 +425,111 @@ impl Builder {
     }
 }
 
-impl Cqrs {
-    /// Opens the stores the builder chose, or takes those the application opened: the pools of PostgreSQL in the order
-    /// of the plan (main, projection, history), the client of MongoDB (lazy).
-    async fn open(&mut self, stores: Stores) -> Result<(), BuildError> {
-        #[cfg(feature = "postgres")]
-        if stores.event_store == Some(EventStoreKind::Postgres) {
-            let pools = match stores.pools {
-                Some(pools) => pools,
-                None => crate::postgres::open(&self.settings).await?,
-            };
-            match stores.views {
-                Some(ProjectionStoreKind::Postgres) => {
-                    self.checkpoints = Arc::new(cqrsx_postgres::checkpoint_store::PostgresCheckpointStore::new(
-                        pools.main.clone(),
-                    ));
-                    self.view_store = crate::ViewStore::Postgres;
-                }
-                #[cfg(feature = "mongodb")]
-                Some(ProjectionStoreKind::Mongo) => {
-                    let client = match stores.client {
-                        Some(client) => client,
-                        None => crate::mongodb::client(&self.settings).await?,
-                    };
-                    let database = client.database(self.settings.mongodb().database());
-                    self.checkpoints = Arc::new(cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(&database));
-                    self.view_store = crate::ViewStore::Mongo(database);
-                }
-                // In memory (a test), or no views to store.
-                _ => {}
-            }
-            self.journal = Journal::Postgres(pools);
+impl Assembly {
+    /// The engine: its stores opened (or taken from the application), its components installed over them from the
+    /// assembly; or the first refusal.
+    pub(crate) async fn open(mut self) -> Result<Cqrs, BuildError> {
+        let event_store = self.stores.ensure_chosen(!self.views.is_empty())?;
+        let aggregates = std::mem::take(&mut self.aggregates);
+        let views = std::mem::take(&mut self.views);
+        let adapters = std::mem::take(&mut self.adapters);
+        let stores = std::mem::take(&mut self.stores);
+        let mut cqrs = self.open_stores(event_store, stores).await?;
+        for entry in aggregates {
+            // The rules are gone only when a test took them.
+            entry.rules.map_or(Ok(()), |rules| (entry.install)(&mut cqrs, rules))?;
         }
-        let _ = stores;
-        Ok(())
+        for entry in views {
+            (entry.install)(&mut cqrs);
+        }
+        // A dispatcher needs a handler: an engine without task types runs none.
+        if !adapters.is_empty() {
+            let dispatcher = TaskDispatcher::assemble(adapters, cqrs.dependencies.clone(), cqrs.executors.clone())?;
+            cqrs.dispatcher = Some(Arc::new(dispatcher));
+        }
+        Ok(cqrs)
+    }
+
+    /// The engine over its stores, opened now or taken from the application: in memory (a test), or the pools of
+    /// PostgreSQL in the order of the plan (main, projection, history) with the views in PostgreSQL (the main pool), in
+    /// MongoDB (a lazy client) or in memory. The checkpoints live with the views: an engine without views has none.
+    async fn open_stores(self, event_store: EventStoreKind, stores: Stores) -> Result<Cqrs, BuildError> {
+        #[cfg(feature = "test-utils")]
+        let memory = MemoryBackend::new();
+        match event_store {
+            #[cfg(feature = "test-utils")]
+            EventStoreKind::Memory => {
+                // Nothing to open in memory.
+                let _ = stores;
+                Ok(self.over(
+                    Journal::Memory,
+                    #[cfg(feature = "postgres")]
+                    ViewStore::Memory,
+                    memory,
+                ))
+            }
+            #[cfg(feature = "postgres")]
+            EventStoreKind::Postgres => {
+                let pools = match stores.pools {
+                    Some(pools) => pools,
+                    None => crate::postgres::open(&self.settings).await?,
+                };
+                let view_store = match stores.views {
+                    #[cfg(feature = "test-utils")]
+                    Some(ProjectionStoreKind::Memory) => ViewStore::Memory,
+                    #[cfg(feature = "mongodb")]
+                    Some(ProjectionStoreKind::Mongo) => {
+                        let client = match stores.client {
+                            Some(client) => client,
+                            None => crate::mongodb::client(&self.settings).await?,
+                        };
+                        ViewStore::Mongo(client.database(self.settings.mongodb().database()))
+                    }
+                    // Without views nothing reads the store of the views.
+                    Some(ProjectionStoreKind::Postgres) | None => ViewStore::Postgres,
+                };
+                Ok(self.over(
+                    Journal::Postgres(pools),
+                    view_store,
+                    #[cfg(feature = "test-utils")]
+                    memory,
+                ))
+            }
+        }
+    }
+
+    /// The engine before its components: the assembly over the opened stores, the one place that makes a [`Cqrs`].
+    fn over(
+        self,
+        journal: Journal,
+        #[cfg(feature = "postgres")] view_store: ViewStore,
+        #[cfg(feature = "test-utils")] memory: MemoryBackend,
+    ) -> Cqrs {
+        let shutdown = CancellationToken::new();
+        Cqrs {
+            settings: self.settings,
+            owner: self.owner,
+            policies: self.policies,
+            dependencies: self.dependencies,
+            command_observer: self.command_observer,
+            projection_observer: self.projection_observer,
+            command_executors: Default::default(),
+            executors: Executors::default(),
+            wakeups: Default::default(),
+            dispatcher: None,
+            views: Default::default(),
+            described: self.described,
+            #[cfg(feature = "test-utils")]
+            memory,
+            journal,
+            #[cfg(feature = "postgres")]
+            view_store,
+            processors: Mutex::new(ProjectionRuntime::new()),
+            #[cfg(feature = "http")]
+            routes: self.routes,
+            _stop: shutdown.clone().drop_guard(),
+            shutdown,
+        }
     }
 }
 
@@ -528,36 +556,46 @@ fn merge_described(entries: impl IntoIterator<Item = (String, String)>) -> Resul
     Ok(described)
 }
 
-/// What the modules of an engine registered, merged and checked ([`Builder::registrations`]), with the engine they are
-/// installed into and the stores it is built over.
-pub(crate) struct Registrations {
-    cqrs: Cqrs,
+/// What the settings and the modules of an engine gave it, merged and checked ([`Builder::assemble`]), and the stores
+/// it is built over: [`open`](Self::open) makes the engine of them.
+pub(crate) struct Assembly {
+    settings: Settings,
+    /// This node: the owner of the processors' checkpoints and of the claimed tasks.
+    owner: String,
+    policies: Policies,
+    dependencies: Dependencies,
+    command_observer: Option<Arc<dyn AnyCommandObserver>>,
+    projection_observer: Option<ProjectionObserverFactory>,
+    /// The settings and what the modules read and described when they were set up, by key.
+    described: BTreeMap<String, String>,
+    #[cfg(feature = "http")]
+    routes: axum::Router<Arc<Cqrs>>,
     aggregates: Vec<AggregateEntry>,
     views: Vec<ViewEntry>,
     adapters: Vec<BoxedTaskAdapter>,
     stores: Stores,
 }
 
-impl Registrations {
+impl Assembly {
     #[cfg(test)]
     pub(crate) fn settings(&self) -> &Settings {
-        &self.cqrs.settings
+        &self.settings
     }
 
     #[cfg(test)]
     /// The policies of the task types: the reactions plan with them, the task runtime pauses by them.
     pub(crate) fn policies(&self) -> &Policies {
-        &self.cqrs.policies
+        &self.policies
     }
 
     #[cfg(test)]
-    /// The aggregate types, in the order of the registrations.
+    /// The aggregate types, in the order of the assembly.
     pub(crate) fn aggregate_types(&self) -> Vec<&'static str> {
         self.aggregates.iter().map(|entry| entry.name).collect()
     }
 
     #[cfg(test)]
-    /// The names of the views, in the order of the registrations.
+    /// The names of the views, in the order of the assembly.
     pub(crate) fn view_names(&self) -> Vec<&'static str> {
         self.views.iter().map(|entry| entry.name).collect()
     }
@@ -576,27 +614,29 @@ impl Registrations {
         A::Command: Command,
         A::Rejection: Rejection,
     {
-        Some(Arc::new(AnyObserverAdapter(self.cqrs.command_observer.clone()?)))
+        Some(Arc::new(AnyObserverAdapter(self.command_observer.clone()?)))
     }
 
     #[cfg(test)]
     /// The observer of the processor of the view named `projection` on this node.
     pub(crate) fn projection_observer(&self, projection: &'static str) -> Option<Arc<dyn ProjectionObserver>> {
-        let observers = self.cqrs.projection_observer.as_ref()?;
+        let observers = self.projection_observer.as_ref()?;
         Some(observers(ObservedProcessor {
             projection,
-            node: &self.cqrs.owner,
+            node: &self.owner,
         }))
     }
 
     #[cfg(test)]
     pub(crate) fn dependency<T: ?Sized + 'static>(&self) -> Result<Arc<T>, MissingDependency> {
-        self.cqrs.dependency::<T>()
+        self.dependencies
+            .shared::<T>()
+            .ok_or(MissingDependency(std::any::type_name::<T>()))
     }
 
     /// The task handlers with their dependencies, once: the assembly adds the command executors and builds them.
     pub(crate) fn take_task_handlers(&mut self) -> TaskHandlers {
-        TaskHandlers::from_adapters(std::mem::take(&mut self.adapters), self.cqrs.dependencies.clone())
+        TaskHandlers::from_adapters(std::mem::take(&mut self.adapters), self.dependencies.clone())
     }
 }
 
@@ -614,6 +654,7 @@ impl Cqrs {
             return Ok(());
         };
         let executor = match &self.journal {
+            #[cfg(feature = "test-utils")]
             Journal::Memory => Executor::Memory(self.executor::<A, _>(self.store::<A>(), *rules)),
             #[cfg(feature = "postgres")]
             Journal::Postgres(pools) => Executor::Postgres(self.executor::<A, _>(self.postgres_store::<A>(pools), *rules)),
@@ -637,6 +678,7 @@ impl Cqrs {
     }
 
     /// The store of the commands of `A` in memory: the journal, a snapshot every `snapshot_every` events.
+    #[cfg(feature = "test-utils")]
     fn store<A: Aggregate>(&self) -> EventSourcedStore<MemoryEventRepository, A> {
         EventSourcedStore::new(self.memory.journal.clone()).with_snapshots(self.settings.snapshot_every())
     }
@@ -674,6 +716,7 @@ impl Cqrs {
     /// which the queries read.
     pub(crate) fn install_view<V: View<A> + PartialEq + 'static, A: Aggregate + 'static>(&mut self) {
         match &self.journal {
+            #[cfg(feature = "test-utils")]
             Journal::Memory => {
                 let documents = self.memory.documents::<V, A>();
                 let journal = self.memory.journal.clone();
@@ -693,6 +736,7 @@ impl Cqrs {
                 let counter = PostgresEventRepository::new(pools.main.clone());
                 let main = pools.main.clone();
                 match &self.view_store {
+                    #[cfg(feature = "test-utils")]
                     ViewStore::Memory => {
                         let (documents, checkpoints) = (self.memory.documents::<V, A>(), self.memory.checkpoints.clone());
                         self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
@@ -713,8 +757,9 @@ impl Cqrs {
         }
     }
 
-    /// The processor of `V` over `feed` and `checkpoints` into `documents`, and the view's queries and operations:
-    /// verify against `history`, the lag counted on `counter`.
+    /// The processor of `V` over `feed` and `checkpoints` into `documents`, and the view's queries and operations: its
+    /// checkpoint rows are read and requested through `checkpoints`, its documents verified against `history`, its lag
+    /// counted on `counter`.
     fn register_view<V, A, R, C, D, H, K>(&mut self, feed: Arc<R>, checkpoints: Arc<C>, documents: Arc<D>, history: H, counter: K)
     where
         V: View<A> + PartialEq + 'static,
@@ -725,10 +770,11 @@ impl Cqrs {
         H: EventRepository + Counts + 'static,
         K: Counts + 'static,
     {
+        let operations: Arc<dyn CheckpointOperations> = checkpoints.clone();
         let processor = self.processor::<V, A, _, _, _>(feed, checkpoints, documents.clone());
         let processors = get_mut(&mut self.processors, "engine processors");
         *processors = std::mem::take(processors).with_processor(processor);
-        self.views.register::<V, A, _, _, _>(documents, history, counter);
+        self.views.register::<V, A, _, _, _>(documents, operations, history, counter);
     }
 
     /// The processor of `V` as every backend builds it: the settings' configuration, this node as the owner, the
@@ -816,7 +862,7 @@ mod tests {
         assert!(matches!(
             Cqrs::with_settings(Settings::default())
                 .module(in_one_module)
-                .registrations()
+                .assemble()
                 .err(),
             Some(BuildError::AggregateTwice("show"))
         ));
@@ -858,16 +904,10 @@ mod tests {
     fn a_task_type_has_the_policy_it_was_registered_with() {
         let slow = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(9)), NonZeroU16::new(2).unwrap());
         let roots = module(move |module| module.provide(Arc::new(Mailbox::default())).task(RecordInWallet, slow));
-        let registrations = Cqrs::with_settings(Settings::default())
-            .module(roots)
-            .registrations()
-            .unwrap();
-        let policies = registrations.policies();
+        let assembly = Cqrs::with_settings(Settings::default()).module(roots).assemble().unwrap();
+        let policies = assembly.policies();
         assert_eq!(policies.policy_for(&TaskFormat::of::<RecordTicket>()), slow);
-        let defaults = Cqrs::with_settings(Settings::default())
-            .module(wallets)
-            .registrations()
-            .unwrap();
+        let defaults = Cqrs::with_settings(Settings::default()).module(wallets).assemble().unwrap();
         assert_eq!(
             defaults.policies().policy_for(&TaskFormat::of::<RecordTicket>()),
             TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(3).unwrap())
@@ -884,7 +924,7 @@ mod tests {
                 .provide(Arc::new(Mailbox::default()))
                 .task(SendMail, TaskPolicy::default())
         });
-        let kept = Cqrs::with_settings(Settings::default()).module(kept).registrations().unwrap();
+        let kept = Cqrs::with_settings(Settings::default()).module(kept).assemble().unwrap();
         assert_eq!(
             kept.policies().policy_for(&TaskFormat::of::<MailTicket>()),
             TaskPolicy::default()
@@ -1048,11 +1088,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_processor_and_the_read_side_print_their_names() {
-        let mut cqrs = Cqrs::with_settings(Settings::default())
-            .module(shows)
-            .registrations()
-            .unwrap()
-            .cqrs;
+        let mut cqrs = memory_builder().module(shows).build().await.unwrap();
         let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemoryCheckpointStore::default());
         let documents = Arc::new(MemoryViewRepository::<Hall, Show>::default());
         let journal = Arc::new(cqrs.memory.journal.clone());
@@ -1089,14 +1125,16 @@ mod tests {
             .unwrap()
             .with_conflict_retry(retry)
             .with_node_name("node-a");
-        let defaults = Cqrs::with_settings(Settings::default())
+        let defaults = memory_builder().module(shows).build().await.unwrap();
+        let set = Cqrs::with_settings(settings)
+            .event_store(InMemory)
+            .projections(InMemory)
             .module(shows)
-            .registrations()
+            .build()
+            .await
             .unwrap();
-        let set = Cqrs::with_settings(settings).module(shows).registrations().unwrap();
         let mut built = Vec::new();
-        for registrations in [defaults, set] {
-            let mut cqrs = registrations.cqrs;
+        for mut cqrs in [defaults, set] {
             let store = cqrs.store::<Show>();
             let executor = cqrs.executor::<Show, _>(store, ());
             let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemoryCheckpointStore::default());
@@ -1138,7 +1176,7 @@ mod tests {
         assert!(set_processor.contains(&printed(set_owner, processor)), "{set_processor}");
         assert_eq!(set_owner, "node-a");
         let named = Cqrs::with_settings(Settings::default().with_node_name("node-a"));
-        assert_eq!(named.registrations().unwrap().cqrs.owner, "node-a");
+        assert_eq!(named.assemble().unwrap().owner, "node-a");
         // The reactions plan with the budget of each task type's policy.
         let (cqrs, _) = engine().await;
         let booked = cqrs
@@ -1221,7 +1259,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn registrations_hand_out_what_the_modules_registered() {
+    async fn an_assembly_hands_out_what_the_modules_registered() {
         let log = Arc::new(Log::default());
         let feed = log.clone();
         let observers = move |_: &Setup| -> Result<Module, SetupError> {
@@ -1233,25 +1271,22 @@ mod tests {
             .module(shows)
             .module(wallets)
             .module(observers);
-        let mut registrations = builder.provide(Arc::new(String::from("extra"))).registrations().unwrap();
-        assert_eq!(registrations.aggregate_types(), ["show", "wallet"]);
-        assert_eq!(registrations.view_names(), ["halls", "tickets"]);
-        assert_eq!(registrations.settings().snapshot_every().get(), 10);
-        assert_eq!(registrations.take_rules::<Show>(), Some(()));
-        assert_eq!(registrations.take_rules::<Show>(), None, "once");
+        let mut assembly = builder.provide(Arc::new(String::from("extra"))).assemble().unwrap();
+        assert_eq!(assembly.aggregate_types(), ["show", "wallet"]);
+        assert_eq!(assembly.view_names(), ["halls", "tickets"]);
+        assert_eq!(assembly.settings().snapshot_every().get(), 10);
+        assert_eq!(assembly.take_rules::<Show>(), Some(()));
+        assert_eq!(assembly.take_rules::<Show>(), None, "once");
         assert_eq!(
-            registrations.take_rules::<Stranger>(),
+            assembly.take_rules::<Stranger>(),
             None,
             "not an aggregate type of the modules"
         );
-        assert_eq!(
-            registrations.policies().max_attempts(&TaskFormat::of::<MailTicket>()).get(),
-            6
-        );
-        assert_eq!(*registrations.dependency::<String>().unwrap(), "extra");
-        assert!(registrations.dependency::<u8>().is_err());
-        assert!(registrations.projection_observer("halls").is_some());
-        let observer = registrations.command_observer::<Show>().unwrap();
+        assert_eq!(assembly.policies().max_attempts(&TaskFormat::of::<MailTicket>()).get(), 6);
+        assert_eq!(*assembly.dependency::<String>().unwrap(), "extra");
+        assert!(assembly.dependency::<u8>().is_err());
+        assert!(assembly.projection_observer("halls").is_some());
+        let observer = assembly.command_observer::<Show>().unwrap();
         let metadata = std::collections::HashMap::new();
         observer.observe(&CommandReport {
             aggregate_id: &"s-1".to_owned(),
@@ -1272,15 +1307,12 @@ mod tests {
                 r#"show Book [Label { name: "fan", value: "fox" }] other"#
             ]
         );
-        let dispatcher = registrations.take_task_handlers().build().unwrap();
+        let dispatcher = assembly.take_task_handlers().build().unwrap();
         assert_eq!(
             dispatcher.formats(),
             [TaskFormat::of::<RecordTicket>(), TaskFormat::of::<MailTicket>()]
         );
-        let mut bare = Cqrs::with_settings(Settings::default())
-            .module(shows)
-            .registrations()
-            .unwrap();
+        let mut bare = Cqrs::with_settings(Settings::default()).module(shows).assemble().unwrap();
         assert!(bare.command_observer::<Show>().is_none() && bare.projection_observer("halls").is_none());
         assert!(bare.take_task_handlers().build().is_err(), "no task type");
     }

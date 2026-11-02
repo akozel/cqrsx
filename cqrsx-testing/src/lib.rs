@@ -134,12 +134,6 @@
 //! # }
 //! ```
 
-#![allow(
-    clippy::unwrap_used,
-    clippy::panic,
-    reason = "test tools: a panic is the failed check (rule 8 of .claude/rules/rust-style.md)"
-)]
-
 pub mod command_executor;
 pub mod framework;
 pub mod memory_store;

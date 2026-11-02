@@ -283,6 +283,14 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn an_executor_without_registrations_plans_and_publishes_nothing() {
+        let executor = TestCommandExecutor::<Stack, _>::new(MemoryStore::default(), 1);
+        assert!(executor.execute(&"s".into(), 1).await.unwrap().tasks.is_empty());
+        assert_eq!(executor.execute(&"s".into(), 2).await, Err(CommandError::Rejected(Full)));
+        assert!(executor.take_published_tasks().is_empty());
+    }
+
+    #[tokio::test]
     async fn published_tasks_are_those_of_the_committed_calls() {
         let executor = notifying(MemoryStore::<Stack>::default(), 1);
         let use_case = executor.clone();
@@ -375,6 +383,14 @@ mod tests {
                 .unwrap()
                 .push(format!("{} {}: {outcome}", report.aggregate_id, report.command));
         }
+    }
+
+    #[tokio::test]
+    async fn the_observer_hears_an_unavailable_store() {
+        let outcomes = Arc::new(Outcomes::default());
+        let executor = TestCommandExecutor::configured(UnavailableStore, 1, |executor| executor.with_observer(outcomes.clone()));
+        assert_eq!(executor.execute(&"s".into(), 1).await, Err(CommandError::Unavailable));
+        assert_eq!(*outcomes.0.lock().unwrap(), ["s 1: unavailable"]);
     }
 
     #[tokio::test]

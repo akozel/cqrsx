@@ -28,6 +28,7 @@ impl Cqrs {
     pub async fn history<A: Aggregate>(&self, id: &A::Id) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         let id = id.to_string();
         match &self.journal {
+            #[cfg(feature = "test-utils")]
             Journal::Memory => {
                 EventSourcedStore::<_, A>::new(self.memory.journal.clone())
                     .load_events(&id)
@@ -50,21 +51,24 @@ impl<V: 'static> ViewQuery<'_, V> {
     /// yet (the request can be repeated later); [`ViewsError::Unknown`] when the engine does not have the view.
     pub async fn rebuild(&self, id: &impl Display) -> Result<(), ViewsError> {
         let queries = self.queries.ok_or_else(|| ViewsError::Unknown(type_name::<V>().to_owned()))?;
-        Ok(self.checkpoints.request_rebuild_key(&queries.key(), &id.to_string()).await?)
+        Ok(queries
+            .checkpoints()
+            .request_rebuild_key(&queries.key(), &id.to_string())
+            .await?)
     }
 }
 
 impl Views<'_> {
     /// Asks the processor of the view `name` to rebuild every document, `pace` between the events of a key.
     pub async fn request_rebuild(&self, name: &str, pace: Duration) -> Result<RebuildReply, ViewsError> {
-        let key = self.cqrs.views.named(name)?.key();
-        Ok(self.cqrs.checkpoints.request_rebuild(&key, pace).await?)
+        let view = self.cqrs.views.named(name)?;
+        Ok(view.checkpoints().request_rebuild(&view.key(), pace).await?)
     }
 
     /// Asks the processor of the view `name` to rebuild the document of the aggregate `id`.
     pub async fn request_rebuild_key(&self, name: &str, id: &str) -> Result<(), ViewsError> {
-        let key = self.cqrs.views.named(name)?.key();
-        Ok(self.cqrs.checkpoints.request_rebuild_key(&key, id).await?)
+        let view = self.cqrs.views.named(name)?;
+        Ok(view.checkpoints().request_rebuild_key(&view.key(), id).await?)
     }
 
     /// Every document of the view `name` against the fold of the part of its history it applied (D-20).

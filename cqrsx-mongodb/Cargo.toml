@@ -17,6 +17,7 @@ tracing.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+cqrsx = { workspace = true, features = ["test-utils"] }
 cqrsx-fixtures.workspace = true
 cqrsx-postgres.workspace = true
 log.workspace = true

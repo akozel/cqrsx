@@ -2,10 +2,11 @@
 //! The rebuild of one document, the verification, the counts of the journal and the rebuild requests need the feature
 //! `operation-utils`.
 use crate::Cqrs;
+#[cfg(feature = "test-utils")]
+use cqrsx::memory::event_repository::MemoryEventRepository;
 use cqrsx::{
     domain::aggregate::Aggregate,
     journal::{PersistenceError, feed::Position, repository::EventRepository},
-    memory::event_repository::MemoryEventRepository,
     projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore},
     view::{
         View,
@@ -48,6 +49,7 @@ pub(crate) trait Counts: Send + Sync {
     fn totals<A: Aggregate>(&self) -> impl Future<Output = Result<JournalTotals, PersistenceError>> + Send;
 }
 
+#[cfg(feature = "test-utils")]
 impl Counts for MemoryEventRepository {
     fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
         MemoryEventRepository::count_after::<A>(self, after, cap)
@@ -116,6 +118,8 @@ pub(crate) trait Queries<V>: Send + Sync {
     fn range<'a>(&'a self, lower: &'a str, upper: &'a str) -> Answer<'a, Vec<StoredView<V>>>;
     #[cfg(feature = "operation-utils")]
     fn key(&self) -> CheckpointKey;
+    #[cfg(feature = "operation-utils")]
+    fn checkpoints(&self) -> &dyn CheckpointOperations;
 }
 
 /// What the operations need of a view, its types erased. Its name and aggregate type are constants: finding a view by
@@ -125,6 +129,8 @@ pub(crate) trait Operations: Send + Sync {
     #[cfg(feature = "operation-utils")]
     fn aggregate_type(&self) -> &'static str;
     fn key(&self) -> CheckpointKey;
+    /// The checkpoints of the view's processor, the store erased: what the operations read and request.
+    fn checkpoints(&self) -> &dyn CheckpointOperations;
     #[cfg(feature = "operation-utils")]
     fn verify(&self) -> Answer<'_, Verification>;
     fn count_after(&self, after: Position, cap: u64) -> Answer<'_, u64>;
@@ -132,10 +138,11 @@ pub(crate) trait Operations: Send + Sync {
     fn totals(&self) -> Answer<'_, JournalTotals>;
 }
 
-/// A view: its documents, the journal its documents are verified against and its size counted on (`history`), and
-/// the journal its lag is counted on (`counter`).
+/// A view: its documents, the checkpoints of its processor, the journal its documents are verified against and its
+/// size counted on (`history`), and the journal its lag is counted on (`counter`).
 struct Registered<V, A, D, H, K> {
     documents: Arc<D>,
+    checkpoints: Arc<dyn CheckpointOperations>,
     #[cfg_attr(
         not(feature = "operation-utils"),
         expect(
@@ -172,6 +179,11 @@ where
     fn key(&self) -> CheckpointKey {
         CheckpointKey::of::<V, A>()
     }
+
+    #[cfg(feature = "operation-utils")]
+    fn checkpoints(&self) -> &dyn CheckpointOperations {
+        &*self.checkpoints
+    }
 }
 
 impl<V, A, D, H, K> Operations for Registered<V, A, D, H, K>
@@ -193,6 +205,10 @@ where
 
     fn key(&self) -> CheckpointKey {
         CheckpointKey::of::<V, A>()
+    }
+
+    fn checkpoints(&self) -> &dyn CheckpointOperations {
+        &*self.checkpoints
     }
 
     #[cfg(feature = "operation-utils")]
@@ -218,8 +234,13 @@ pub(crate) struct Registry {
 }
 
 impl Registry {
-    pub(crate) fn register<V, A, D, H, K>(&mut self, documents: Arc<D>, history: H, counter: K)
-    where
+    pub(crate) fn register<V, A, D, H, K>(
+        &mut self,
+        documents: Arc<D>,
+        checkpoints: Arc<dyn CheckpointOperations>,
+        history: H,
+        counter: K,
+    ) where
         V: View<A> + PartialEq + 'static,
         A: Aggregate + 'static,
         D: ViewRepository<V, A> + 'static,
@@ -228,6 +249,7 @@ impl Registry {
     {
         let view = Arc::new(Registered::<V, A, D, H, K> {
             documents,
+            checkpoints,
             history,
             counter,
             types: std::marker::PhantomData,
@@ -248,8 +270,6 @@ impl Registry {
 /// have answers with an error.
 pub struct ViewQuery<'a, V> {
     pub(crate) queries: Option<&'a dyn Queries<V>>,
-    #[cfg(feature = "operation-utils")]
-    pub(crate) checkpoints: &'a dyn CheckpointOperations,
 }
 
 // By hand: the queries are a trait object; what matters is whether the engine has the view.
@@ -331,16 +351,21 @@ impl Views<'_> {
         self.cqrs.views.operations.iter().map(|view| view.key()).collect()
     }
 
-    /// The checkpoint rows: positions, owners, leases, failures and rebuilds.
+    /// The checkpoint rows of the engine's views, in the order the modules registered them: positions, owners, leases,
+    /// failures and rebuilds.
     pub async fn status(&self) -> Result<Vec<CheckpointStatus>, CheckpointError> {
-        self.cqrs.checkpoints.status(None).await
+        let mut rows = Vec::new();
+        for view in &self.cqrs.views.operations {
+            rows.extend(view.checkpoints().status(Some(view.name())).await?);
+        }
+        Ok(rows)
     }
 
     /// The events of its aggregate type above the checkpoint of the view `name`, counted up to the lag cap of the
     /// settings.
     pub async fn lag(&self, name: &str) -> Result<u64, ViewsError> {
         let view = self.cqrs.views.named(name)?;
-        let rows = self.cqrs.checkpoints.status(Some(name)).await?;
+        let rows = view.checkpoints().status(Some(name)).await?;
         let after = rows.first().map_or(Position::START, |row| row.position);
         Ok(view.count_after(after, self.cqrs.settings.lag_cap()).await?)
     }
@@ -353,8 +378,6 @@ impl Cqrs {
         let queries = queries.and_then(|queries| queries.downcast_ref::<Arc<dyn Queries<V>>>());
         ViewQuery {
             queries: queries.map(|queries| &**queries),
-            #[cfg(feature = "operation-utils")]
-            checkpoints: &*self.checkpoints,
         }
     }
 

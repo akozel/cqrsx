@@ -7,6 +7,9 @@ pub mod diagnostics;
 pub mod domain;
 mod env;
 pub mod journal;
+// The backend in memory, for tests: the crate's own tests always see it, the tests of the other crates take the feature
+// `test-utils`; a working build has no use for it.
+#[cfg(any(test, feature = "test-utils"))]
 pub mod memory;
 pub mod mutex;
 pub mod projection;

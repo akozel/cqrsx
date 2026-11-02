@@ -330,19 +330,20 @@ async fn main() {
 
 | Feature | Adds | Default |
 |---|---|---|
-| `postgres` | the event store (the journal, the snapshots, the outbox and the task queue) in PostgreSQL (`Builder::event_store`) and the views in PostgreSQL (`Builder::projections`), over the crate `cqrsx-postgres` | no |
+| `postgres` | the event store (the journal, the snapshots, the outbox and the task queue) in PostgreSQL (`Builder::event_store`) and the views in PostgreSQL (`Builder::projections`), over the crate `cqrsx-postgres` | yes |
 | `mongodb` | the views and the checkpoints of their processors in MongoDB, over the crate `cqrsx-mongodb`; includes `postgres` | no |
 | `http` | the HTTP routes of the modules and `serve` (axum 0.8, `TraceLayer`): the process logger, the shutdown signals and the coordinated stop of the server, the task runtime and the processors | no |
 | `operation-utils` | the operations that read without a bound or change the read side: `Cqrs::history` and `Cqrs::dispatcher`; `Views::{totals, verify, count_after, request_rebuild, request_rebuild_key}`; `ViewQuery::rebuild`. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
-| `test-utils` | the engine in memory: the marker `memory::InMemory` for `Builder::event_store` and `Builder::projections`, and the helpers of a test that drives it: `Cqrs::{run_tasks, catch_up}` and the stores themselves, `journal`, `outbox`, `checkpoints`, `documents::<V, A>`. An application enables it in `[dev-dependencies]`; the crate's own tests have it. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
+| `test-utils` | the engine in memory: the marker `memory::InMemory` for `Builder::event_store` and `Builder::projections`, and the helpers of a test that drives it: `Cqrs::{run_tasks, catch_up}` and the raw stores, `journal`, `outbox`, `checkpoints`, `documents::<V, A>` (the stores themselves come with the core's feature `test-utils`, which this one enables). An application enables it in `[dev-dependencies]`; the crate's own tests have it. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
 
-Without a feature the engine only compiles: it has no store to choose. A builder has no default stores either: without
-`event_store(..)` the build is refused (`BuildError::NoJournal`), and modules with views and no `projections(..)` are
-refused too (`BuildError::ViewsWithoutStore`). A test takes `test-utils`, names `InMemory` and drives the engine with
-`run_tasks()` and `catch_up()`. A durable application takes `postgres` and `http`: `serve` runs the routes, the task
-runtime and the processors in one process. It adds `mongodb` to keep its views in MongoDB; the journal stays in
-PostgreSQL, since a checkpoint holds a position of it (views in a database over a journal in memory are refused when the
-engine is built).
+The engine needs a store feature, `postgres` (the default) or `test-utils`: without both it does not compile
+(`compile_error!`), for there would be nothing to give `event_store(..)`. A builder has no default stores either:
+without `event_store(..)` the build is refused (`BuildError::NoJournal`), and modules with views and no
+`projections(..)` are refused too (`BuildError::ViewsWithoutStore`). A test takes `test-utils`, names `InMemory` and
+drives the engine with `run_tasks()` and `catch_up()`. A durable application takes `postgres` and `http`: `serve` runs
+the routes, the task runtime and the processors in one process. It adds `mongodb` to keep its views in MongoDB; the
+journal stays in PostgreSQL, since a checkpoint holds a position of it (views in a database over a journal in memory
+are refused when the engine is built).
 
 ## Configuration
 
@@ -442,9 +443,9 @@ The script takes the task's id as its one parameter: from Rust
 `keys()`, `status()` and `lag(name)` are always there; the requests of a rebuild, `verify`, `count_after` and `totals`, and
 `cqrs.view::<V>().rebuild(&id)`, need the feature `operation-utils`.
 
-- `status()`: the checkpoint rows, with position, owner and lease, `failures` and `last_error` of a failing key, and
-  the progress of a rebuild. A failing key stops its checkpoint before it and is retried after a growing pause; once
-  its cause is fixed the processor goes on by itself.
+- `status()`: the checkpoint rows of the engine's views, with position, owner and lease, `failures` and `last_error` of
+  a failing key, and the progress of a rebuild. A failing key stops its checkpoint before it and is retried after a
+  growing pause; once its cause is fixed the processor goes on by itself.
 - `lag(name)`: the events above the checkpoint, counted up to `PROJECTION_LAG_CAP`.
 - `request_rebuild(name, pace)`: every document from its history, `pace` between the events of a key;
   `request_rebuild_key(name, id)`: one document. The processor that holds the checkpoint takes the request on any

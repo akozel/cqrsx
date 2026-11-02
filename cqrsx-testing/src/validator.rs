@@ -1,6 +1,11 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
 //! The checks of [`TestFramework`](crate::framework::TestFramework): a failed check panics (`# Panics` of each method).
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test tool: a panic is the failed check (rule 8 of .claude/rules/rust-style.md)"
+)]
 use cqrsx::domain::aggregate::Aggregate;
 use std::fmt;
 

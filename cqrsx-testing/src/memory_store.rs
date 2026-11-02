@@ -1,5 +1,10 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
+#![allow(
+    clippy::unwrap_used,
+    clippy::panic,
+    reason = "a test tool: a panic is the failed check (rule 8 of .claude/rules/rust-style.md)"
+)]
 use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{AggregateContext, AggregateStore, PersistenceError},
@@ -271,12 +276,6 @@ mod tests {
     #[error("{0}")]
     struct TestError(String);
 
-    impl From<&str> for TestError {
-        fn from(msg: &str) -> Self {
-            Self(msg.to_string())
-        }
-    }
-
     #[derive(Clone, Debug)]
     struct TestService;
 
@@ -305,7 +304,9 @@ mod tests {
 
     impl Decide<TestAggregate> for () {
         fn decide(self, _: &TestAggregate, _: &TestService) -> Result<TestEvent, TestError> {
-            Ok(TestEvent::Created(Created { id: String::new() }))
+            Ok(TestEvent::Created(Created {
+                id: "test_event_A".to_string(),
+            }))
         }
     }
 
@@ -392,15 +393,9 @@ mod tests {
             r#"MemoryCommittedAggregate { aggregate_id: "test_id_A", last_sequence: 0, .. }"#
         );
 
+        let created = ().decide(agg_context.aggregate(), &TestService).unwrap();
         aggregate_store
-            .commit(
-                vec![TestEvent::Created(Created {
-                    id: "test_event_A".to_string(),
-                })],
-                agg_context,
-                metadata(),
-                &[],
-            )
+            .commit(vec![created], agg_context, metadata(), &[])
             .await
             .unwrap();
         let stored_events = aggregate_store.load_events(id).await.unwrap();
@@ -427,6 +422,20 @@ mod tests {
             .await
             .unwrap();
         let stored_envelopes = aggregate_store.load_events(id).await.unwrap();
+        let kinds: Vec<_> = stored_envelopes
+            .iter()
+            .map(|envelope| (envelope.payload.event_type(), envelope.payload.event_version()))
+            .collect();
+        assert_eq!(
+            kinds,
+            [
+                ("Created", "1.0"),
+                ("Tested", "1.0"),
+                ("Tested", "1.0"),
+                ("SomethingElse", "1.0")
+            ],
+            "the events are stored in the order they were committed"
+        );
 
         let mut agg = TestAggregate::default();
         for stored_envelope in stored_envelopes {
@@ -448,6 +457,7 @@ mod tests {
 mod store_tests {
     use super::*;
     use crate::test_support::*;
+    use cqrsx::domain::event::Events;
     #[tokio::test]
     async fn clones_observe_the_same_envelopes() {
         let store = MemoryStore::<Ledger>::default();
@@ -463,14 +473,31 @@ mod store_tests {
             .await
             .unwrap();
         let events = store.load_events("a").await.unwrap();
-        let [event] = events.as_slice() else {
-            panic!("one committed event is visible through the other clone, got {}", events.len())
-        };
+        assert_eq!(events.len(), 1, "one committed event is visible through the other clone");
+        let event = &events[0];
         assert_eq!(event.aggregate_id, "a");
         assert_eq!(event.sequence, 1);
         assert_eq!(event.payload, Delta(5));
+        assert_eq!((event.payload.event_type(), event.payload.event_version()), ("delta", "1"));
         assert_eq!(event.metadata, metadata);
         assert!(store.load_events("b").await.unwrap().is_empty());
+        let loaded = store.load_aggregate("a").await.unwrap();
+        assert_eq!(
+            loaded.aggregate(),
+            &Ledger {
+                balance: 5,
+                history: vec![5]
+            },
+            "the other clone folds the committed event into the aggregate"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_commit_of_no_events_stores_nothing() {
+        let store = MemoryStore::<Ledger>::default();
+        let context = store.load_aggregate("a").await.unwrap();
+        assert!(store.commit(vec![], context, HashMap::new(), &[]).await.unwrap().is_empty());
+        assert!(store.load_events("a").await.unwrap().is_empty());
     }
 
     #[tokio::test]

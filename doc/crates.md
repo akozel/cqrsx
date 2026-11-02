@@ -15,11 +15,11 @@ dev-dependency (its test of a journal in PostgreSQL); the engine takes the store
 | Crate | Purpose | Knows | Must not know | Public surface |
 |---|---|---|---|---|
 | [`cqrsx-macros`](../cqrsx-macros/README.md) | the derives `Event`, `Events`, `Command`, `Decide`, `Task`, `Rejection` and the attribute `task_handler` | `syn`, `quote`; the paths of `::cqrsx` its expansions name | anything of `cqrsx` at compile time | no features; 6 derives, 1 attribute |
-| [`cqrsx`](../cqrsx/README.md) | the core: aggregates, command execution, reactions, projections and their processor, views, tasks and their runtime, the backend in memory | `cqrsx-macros` | a database, a store crate, the engine, the application | no features; about 145 public types |
+| [`cqrsx`](../cqrsx/README.md) | the core: aggregates, command execution, reactions, projections and their processor, views, tasks and their runtime, the backend in memory | `cqrsx-macros` | a database, a store crate, the engine, the application | one feature, `test-utils` (the backend in memory, for the tests of the other crates; the core's own tests always have it); about 145 public types |
 | [`cqrsx-postgres`](../cqrsx-postgres/src/lib.rs) | the PostgreSQL stores: journal, outbox, task queue, checkpoints, views, pools; the canonical SQL in `sql/` | `cqrsx` | the engine, MongoDB | no features; 8 public types, the schema constants |
 | [`cqrsx-mongodb`](../cqrsx-mongodb/src/lib.rs) | the MongoDB read side: views and the checkpoints of their processors | `cqrsx` | the engine, PostgreSQL | no features; 2 public types |
-| [`cqrsx-engine`](../cqrsx-engine/README.md) | the assembly of an application from modules over the stores, its settings, its HTTP process | `cqrsx`; the stores by feature | business rules; the logic of the components it assembles | features `postgres`, `mongodb` (includes `postgres`), `http`, `operation-utils` (the operations that read without a bound or change the read side), `test-utils` (the engine in memory, `InMemory`, and the helpers of a test of it); about 30 public types |
-| [`cqrsx-testing`](../cqrsx-testing/src/lib.rs) | test tools of applications: given/when/then of an aggregate, a command executor, aggregate stores for tests | the public API of `cqrsx` | the private API of the core, the stores, the engine | no features; 6 public types |
+| [`cqrsx-engine`](../cqrsx-engine/README.md) | the assembly of an application from modules over the stores, its settings, its HTTP process | `cqrsx`; the stores by feature | business rules; the logic of the components it assembles | features `postgres` (the default), `mongodb` (includes `postgres`), `http`, `operation-utils` (the operations that read without a bound or change the read side), `test-utils` (the engine in memory, `InMemory`, and the helpers of a test of it; enables `cqrsx/test-utils`); about 30 public types |
+| [`cqrsx-testing`](../cqrsx-testing/src/lib.rs) | test tools of applications: given/when/then of an aggregate, a command executor, aggregate stores for tests | the public API of `cqrsx`, with `test-utils` | the private API of the core, the stores, the engine | no features; 6 public types |
 | [`cqrsx-fixtures`](../cqrsx-fixtures/src/lib.rs) | test fixtures of the workspace: database containers on leased ports, captured logs, isolated test processes | `testcontainers`, `sqlx`, `mongodb`, `tracing` | `cqrsx` and the stores | no features; 2 public types, 4 functions |
 
 The counts are of the types (structs, enums, traits, aliases) in `cargo doc --all-features --no-deps`, rounded where
@@ -27,9 +27,11 @@ they move often.
 
 ## Boundary rules
 
-- **The core has no features and no database.** Everything a store does goes through a port of the core
+- **The core has no database, and one feature, for tests.** Everything a store does goes through a port of the core
   (`EventRepository`, `CheckpointStore`, `ViewRepository`, `TaskQueue`), and the core proves its rules on its own
-  backend in memory. A feature in the core would multiply the builds every change has to keep compiling.
+  backend in memory. That backend (`memory`) is behind the feature `test-utils`: the core's own tests always see it, the
+  tests of the other crates and `cqrsx-testing` enable it, a working build does not contain it. The feature adds nothing
+  to a working build and so multiplies no builds; any other feature in the core would.
 - **A store knows the core; the core never knows a store.** A store implements the ports, and where a driver error
   becomes an error of the core it wraps it in `cqrsx::diagnostics::StorageFailure`: the core's logs carry the category
   and the code of the failure, never the driver's message. So the core stays testable without a database, and a new
@@ -41,7 +43,8 @@ they move often.
   (what the expansions need, not an API); the core names itself `cqrsx` (`extern crate self as cqrsx`) so its own code
   uses the derives too. A macro crate cannot depend on the crate whose traits it implements.
 - **`cqrsx-testing` is written on the public API of the core.** A tool that needs a private part points at a gap in
-  that API, which an application would meet as well. A failed check of a tool is a panic, allowed by its `lib.rs`.
+  that API, which an application would meet as well. A failed check of a tool is a panic, which the modules of the tools
+  allow for themselves.
 - **`cqrsx-fixtures` does not depend on `cqrsx` or on the stores.** What is specific to a crate (its schemas, how its
   pool is made, the log lines to warm up) the caller passes in. So a crate uses the fixtures in its own unit tests
   without a second copy of its types in the test binary.

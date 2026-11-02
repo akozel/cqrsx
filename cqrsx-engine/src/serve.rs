@@ -146,6 +146,7 @@ impl Cqrs {
         };
         let (config, policies) = (self.settings.task_runtime().clone(), self.policies.clone());
         match &self.journal {
+            #[cfg(feature = "test-utils")]
             Journal::Memory => Box::pin(prepare(self.memory.queue.clone(), dispatcher, config, policies).run(shutdown)),
             #[cfg(feature = "postgres")]
             Journal::Postgres(pools) => Box::pin(
@@ -162,11 +163,15 @@ impl Cqrs {
 
     /// Closes the pools of an engine over PostgreSQL: the main pool, the history pool, the projection pool.
     async fn close(&self) {
-        #[cfg(feature = "postgres")]
-        if let Journal::Postgres(pools) = &self.journal {
-            pools.main.close().await;
-            pools.history.close().await;
-            pools.projection.close().await;
+        match &self.journal {
+            #[cfg(feature = "test-utils")]
+            Journal::Memory => {}
+            #[cfg(feature = "postgres")]
+            Journal::Postgres(pools) => {
+                pools.main.close().await;
+                pools.history.close().await;
+                pools.projection.close().await;
+            }
         }
     }
 }

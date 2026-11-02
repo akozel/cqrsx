@@ -20,7 +20,14 @@ tokio-util.workspace = true
 tracing.workspace = true
 uuid.workspace = true
 
+[features]
+# The backend in memory, for tests: the crate's own tests always see it (`cfg(test)`), the tests of the other crates
+# enable it. A working build has no use for it.
+test-utils = []
+
 [dev-dependencies]
+# The crate's integration tests and doctests get the backend in memory.
+cqrsx = { path = ".", features = ["test-utils"] }
 cqrsx-fixtures.workspace = true
 log.workspace = true
 proptest.workspace = true
