@@ -3,9 +3,8 @@
 //! document is a difference.
 use crate::shared::application::StorageError;
 use async_trait::async_trait;
-use cqrsx::view::verify::Verification;
-use serde_json::{Map, Value, json};
-use std::sync::Arc;
+use cqrsx::view::verify::{Difference, Verification};
+use std::{collections::BTreeMap, sync::Arc};
 
 /// What verify needs from every read model, whatever its view type: the engine's view in the process
 /// (`VerifyService::of`), doubles in the tests.
@@ -14,6 +13,18 @@ pub trait VerifiedReadModel: Send + Sync {
     /// The collection name the API reports: the view's name.
     fn name(&self) -> &str;
     async fn verify(&self) -> Result<Verification, StorageError>;
+}
+
+/// What verifying every read model found: documents behind the journal are counted apart, only a wrong one is a
+/// difference.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifyReport {
+    /// Keys of the journal checked, per read model's name.
+    pub checked: BTreeMap<String, usize>,
+    /// Documents behind their history and the events they still have to apply, summed over the read models.
+    pub behind_documents: usize,
+    pub behind_events: usize,
+    pub differences: Vec<Difference>,
 }
 
 pub struct VerifyService {
@@ -25,24 +36,22 @@ impl VerifyService {
         Self { read_models }
     }
 
-    /// `{ ok, checked: { collection: keys }, behind: { documents, events }, differences }`.
-    pub async fn run(&self) -> Result<Value, StorageError> {
-        let mut checked = Map::new();
-        let (mut documents, mut events) = (0, 0);
-        let mut differences = Vec::new();
+    /// Verifies every read model, one after the other.
+    pub async fn run(&self) -> Result<VerifyReport, StorageError> {
+        let mut report = VerifyReport {
+            checked: BTreeMap::new(),
+            behind_documents: 0,
+            behind_events: 0,
+            differences: Vec::new(),
+        };
         for read_model in &self.read_models {
             let verification = read_model.verify().await?;
-            checked.insert(read_model.name().to_owned(), json!(verification.checked));
-            documents += verification.behind_documents;
-            events += verification.behind_events;
-            differences.extend(verification.differences);
+            report.checked.insert(read_model.name().to_owned(), verification.checked);
+            report.behind_documents += verification.behind_documents;
+            report.behind_events += verification.behind_events;
+            report.differences.extend(verification.differences);
         }
-        Ok(json!({
-            "ok": differences.is_empty(),
-            "checked": checked,
-            "behind": { "documents": documents, "events": events },
-            "differences": differences,
-        }))
+        Ok(report)
     }
 }
 
@@ -86,7 +95,12 @@ mod tests {
         let service = VerifyService::new(vec![Arc::new(halls), Arc::new(wallets)]);
         assert_eq!(
             service.run().await.unwrap(),
-            json!({ "ok": true, "checked": { "concert_halls": 3, "fan_wallets": 5 }, "behind": { "documents": 3, "events": 4 }, "differences": [] })
+            VerifyReport {
+                checked: BTreeMap::from([("concert_halls".to_owned(), 3), ("fan_wallets".to_owned(), 5)]),
+                behind_documents: 3,
+                behind_events: 4,
+                differences: vec![],
+            }
         );
         let wrong = Fixed(
             "concert_halls",
@@ -102,10 +116,13 @@ mod tests {
             }),
         );
         let report = VerifyService::new(vec![Arc::new(wrong)]).run().await.unwrap();
-        assert_eq!(report["ok"], false);
         assert_eq!(
-            report["differences"][0],
-            json!({ "view": "concert_halls", "id": "c-1", "kind": "differs" })
+            report.differences,
+            [Difference {
+                view: "concert_halls",
+                id: "c-1".into(),
+                kind: DifferenceKind::Differs
+            }]
         );
         let broken = VerifyService::new(vec![Arc::new(Fixed("concert_halls", Err(StorageError("down".into()))))]);
         assert_eq!(broken.run().await.unwrap_err(), StorageError("down".into()));

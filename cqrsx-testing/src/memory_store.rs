@@ -2,7 +2,7 @@
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
 use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{AggregateContext, EventStore, PersistenceError},
+    journal::{AggregateContext, AggregateStore, PersistenceError},
     task::NewTask,
 };
 use std::{
@@ -137,15 +137,15 @@ impl<A: Aggregate> MemoryStore<A> {
     }
 }
 
-impl<A: Aggregate> EventStore<A> for MemoryStore<A> {
-    type Context = MemoryStoreAggregateContext<A>;
+impl<A: Aggregate> AggregateStore<A> for MemoryStore<A> {
+    type Context = MemoryCommittedAggregate<A>;
 
     async fn load_events(&self, aggregate_id: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         let events = self.load_committed_events(aggregate_id)?;
         Ok(events)
     }
 
-    async fn load_aggregate(&self, aggregate_id: &str) -> Result<MemoryStoreAggregateContext<A>, PersistenceError> {
+    async fn load_aggregate(&self, aggregate_id: &str) -> Result<MemoryCommittedAggregate<A>, PersistenceError> {
         let committed_events = self.load_events(aggregate_id).await?;
         let mut aggregate = A::default();
         let mut current_sequence = 0;
@@ -154,7 +154,7 @@ impl<A: Aggregate> EventStore<A> for MemoryStore<A> {
             let event = envelope.payload;
             aggregate.apply(event);
         }
-        Ok(MemoryStoreAggregateContext {
+        Ok(MemoryCommittedAggregate {
             aggregate_id: aggregate_id.to_string(),
             aggregate,
             last_sequence: current_sequence,
@@ -166,7 +166,7 @@ impl<A: Aggregate> EventStore<A> for MemoryStore<A> {
     async fn commit(
         &self,
         events: Vec<A::Event>,
-        context: MemoryStoreAggregateContext<A>,
+        context: MemoryCommittedAggregate<A>,
         metadata: HashMap<String, String>,
         tasks: &[NewTask],
     ) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
@@ -219,10 +219,10 @@ impl<A: Aggregate> MemoryStore<A> {
             .collect()
     }
 }
-/// Holds context for a pure event store implementation for MemoryStore.
+/// The aggregate a `MemoryStore` loaded, at its last commit.
 ///
 /// This is used internally by the command executor.
-pub struct MemoryStoreAggregateContext<A>
+pub struct MemoryCommittedAggregate<A>
 where
     A: Aggregate,
 {
@@ -235,16 +235,16 @@ where
 }
 
 // By hand: the aggregate need not be `Debug`.
-impl<A: Aggregate> fmt::Debug for MemoryStoreAggregateContext<A> {
+impl<A: Aggregate> fmt::Debug for MemoryCommittedAggregate<A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MemoryStoreAggregateContext")
+        f.debug_struct("MemoryCommittedAggregate")
             .field("aggregate_id", &self.aggregate_id)
             .field("last_sequence", &self.last_sequence)
             .finish_non_exhaustive()
     }
 }
 
-impl<A> AggregateContext<A> for MemoryStoreAggregateContext<A>
+impl<A> AggregateContext<A> for MemoryCommittedAggregate<A>
 where
     A: Aggregate,
 {
@@ -359,7 +359,7 @@ mod tests {
         use crate::test_support::{Delta, Ledger};
         let store = MemoryStore::<Ledger>::default();
         for (sequence, count) in [(usize::MAX, 1), (usize::MAX - 1, 2)] {
-            let context = MemoryStoreAggregateContext {
+            let context = MemoryCommittedAggregate {
                 aggregate_id: "overflow".into(),
                 aggregate: Ledger::default(),
                 last_sequence: sequence,
@@ -370,7 +370,7 @@ mod tests {
             ));
             assert!(store.load_events("overflow").await.unwrap().is_empty());
         }
-        let context = MemoryStoreAggregateContext {
+        let context = MemoryCommittedAggregate {
             aggregate_id: "last".into(),
             aggregate: Ledger::default(),
             last_sequence: usize::MAX - 1,
@@ -382,17 +382,17 @@ mod tests {
     }
     #[tokio::test]
     async fn test_mem_store() {
-        let event_store = MemoryStore::<TestAggregate>::default();
+        let aggregate_store = MemoryStore::<TestAggregate>::default();
         let id = "test_id_A";
-        let initial_events = event_store.load_events(id).await.unwrap();
+        let initial_events = aggregate_store.load_events(id).await.unwrap();
         assert_eq!(0, initial_events.len());
-        let agg_context = event_store.load_aggregate(id).await.unwrap();
+        let agg_context = aggregate_store.load_aggregate(id).await.unwrap();
         assert_eq!(
             format!("{agg_context:?}"),
-            r#"MemoryStoreAggregateContext { aggregate_id: "test_id_A", last_sequence: 0, .. }"#
+            r#"MemoryCommittedAggregate { aggregate_id: "test_id_A", last_sequence: 0, .. }"#
         );
 
-        event_store
+        aggregate_store
             .commit(
                 vec![TestEvent::Created(Created {
                     id: "test_event_A".to_string(),
@@ -403,11 +403,11 @@ mod tests {
             )
             .await
             .unwrap();
-        let stored_events = event_store.load_events(id).await.unwrap();
+        let stored_events = aggregate_store.load_events(id).await.unwrap();
         assert_eq!(1, stored_events.len());
-        let agg_context = event_store.load_aggregate(id).await.unwrap();
+        let agg_context = aggregate_store.load_aggregate(id).await.unwrap();
 
-        event_store
+        aggregate_store
             .commit(
                 vec![
                     TestEvent::Tested(Tested {
@@ -426,7 +426,7 @@ mod tests {
             )
             .await
             .unwrap();
-        let stored_envelopes = event_store.load_events(id).await.unwrap();
+        let stored_envelopes = aggregate_store.load_events(id).await.unwrap();
 
         let mut agg = TestAggregate::default();
         for stored_envelope in stored_envelopes {
@@ -482,7 +482,7 @@ mod store_tests {
             serde_json::json!({}),
         )
         .unwrap();
-        let context = || MemoryStoreAggregateContext {
+        let context = || MemoryCommittedAggregate {
             aggregate_id: "a".into(),
             aggregate: Ledger::default(),
             last_sequence: 0,

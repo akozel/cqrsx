@@ -5,10 +5,16 @@ mod diagnostics;
 mod executor;
 #[cfg(feature = "http")]
 pub mod http;
+#[cfg(not(feature = "test-utils"))]
 mod memory;
+// Public only with `test-utils`: its one public item is the store choice `InMemory`.
+#[cfg(feature = "test-utils")]
+pub mod memory;
 pub mod module;
 #[cfg(feature = "mongodb")]
 pub mod mongodb;
+#[cfg(feature = "operation-utils")]
+mod operation_utils;
 #[cfg(feature = "postgres")]
 pub mod postgres;
 #[cfg(feature = "http")]
@@ -18,6 +24,8 @@ pub mod setup;
 pub mod source;
 #[cfg(test)]
 mod test_support;
+#[cfg(feature = "test-utils")]
+mod test_utils;
 pub mod views;
 
 use crate::{
@@ -27,8 +35,7 @@ use crate::{
 };
 use cqrsx::{
     command::observer::AnyCommandObserver,
-    domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{EventStore, PersistenceError, store::JournalEventStore, wakeup::CommitWakeup},
+    journal::wakeup::CommitWakeup,
     projection::runtime::ProjectionRuntime,
     task::policy::Policies,
     worker::{
@@ -38,8 +45,6 @@ use cqrsx::{
         dispatcher::TaskDispatcher,
     },
 };
-#[cfg(feature = "postgres")]
-use cqrsx_postgres::event_repository::PostgresEventRepository;
 use std::{
     any::{Any, TypeId, type_name},
     collections::{BTreeMap, HashMap},
@@ -113,14 +118,8 @@ pub(crate) enum ViewStore {
 }
 
 impl Cqrs {
-    /// An engine with the library's settings and no variables: every module reads its defaults. Its stores are in
-    /// memory unless the builder chooses others.
-    pub fn in_memory() -> build::Builder {
-        Self::with_settings(Settings::default())
-    }
-
-    /// An engine with `settings` (e.g. read with [`Settings::from_lookup`] and changed by a test); its modules read no
-    /// variable.
+    /// An engine with `settings` (e.g. [`Settings::default`], or read with [`Settings::from_lookup`] and changed by a
+    /// test); its modules read no variable.
     pub fn with_settings(settings: Settings) -> build::Builder {
         build::Builder::new(Some(settings), String::new(), Arc::new(|_| None))
     }
@@ -153,12 +152,6 @@ impl Cqrs {
         &self.policies
     }
 
-    /// The task handlers of every module in one dispatcher, with their dependencies and the executors of every
-    /// aggregate type; `None` without a task type.
-    pub fn dispatcher(&self) -> Option<&TaskDispatcher<BoxedTaskAdapter>> {
-        self.dispatcher.as_deref()
-    }
-
     /// The settings of the engine ([`Settings::description`]) and what its modules read and described, by key. A key has
     /// one value: the build refuses one described twice with two ([`BuildError::DescribedTwice`](build::BuildError)).
     pub fn description(&self) -> BTreeMap<String, String> {
@@ -170,31 +163,12 @@ impl Cqrs {
     pub fn stopping(&self) -> CancellationToken {
         self.shutdown.child_token()
     }
-
-    /// The committed events of the aggregate `id` of type `A`, from its journal alone, without a snapshot (on
-    /// PostgreSQL through the pool of whole-history reads, without a statement timeout).
-    pub async fn history<A: Aggregate>(&self, id: &A::Id) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
-        let id = id.to_string();
-        match &self.journal {
-            Journal::Memory => {
-                JournalEventStore::<_, A>::new(self.memory.journal.clone())
-                    .load_events(&id)
-                    .await
-            }
-            #[cfg(feature = "postgres")]
-            Journal::Postgres(pools) => {
-                JournalEventStore::<_, A>::new(PostgresEventRepository::new(pools.history.clone()))
-                    .load_events(&id)
-                    .await
-            }
-        }
-    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::*;
+    use crate::{memory::InMemory, test_support::*};
 
     #[tokio::test]
     async fn an_engine_describes_its_settings_and_what_its_modules_read() {
@@ -204,6 +178,7 @@ mod tests {
             Ok(module::Module::new("reader"))
         };
         let cqrs = Cqrs::from_lookup("SHOP", |name| (name == "SHOP_LIMIT").then(|| "5".to_owned()))
+            .event_store(InMemory)
             .module(read)
             .build()
             .await
@@ -253,15 +228,19 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let history = cqrs.history::<Show>(&"s-1".into()).await.unwrap();
-        assert_eq!(history.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1, 2]);
-        assert!(cqrs.history::<Show>(&"s-9".into()).await.unwrap().is_empty());
+        #[cfg(feature = "operation-utils")]
+        {
+            let history = cqrs.history::<Show>(&"s-1".into()).await.unwrap();
+            assert_eq!(history.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1, 2]);
+            assert!(cqrs.history::<Show>(&"s-9".into()).await.unwrap().is_empty());
+        }
         assert_eq!(
             cqrs.policies()
                 .max_attempts(&cqrsx::task::format::TaskFormat::of::<MailTicket>())
                 .get(),
             6
         );
+        #[cfg(feature = "operation-utils")]
         assert!(cqrs.dispatcher().is_some());
     }
 
@@ -271,7 +250,7 @@ mod tests {
         if let Some(scenario) = test_support::scenario() {
             assert_eq!(scenario, "variables");
             let read = |setup: &setup::Setup| setup.env("LIMIT", 4).map(|_| module::Module::new("reader"));
-            let cqrs = ready(Cqrs::from_env("CQRSX_ENGINE_TEST").module(read).build()).unwrap();
+            let cqrs = ready(Cqrs::from_env("CQRSX_ENGINE_TEST").event_store(InMemory).module(read).build()).unwrap();
             let described = cqrs.description();
             let value = |key: &str| described.get(key).cloned();
             assert_eq!(

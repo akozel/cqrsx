@@ -9,7 +9,7 @@
 //! the rejection. It is synchronous: no runtime is needed. The stores in memory stand in for the databases; the
 //! journal in memory, [`MemoryEventRepository`](cqrsx::memory::event_repository::MemoryEventRepository), has the task queue
 //! [`MemoryTaskQueue`](cqrsx::memory::task_queue::MemoryTaskQueue) over its outbox, and the engine in memory
-//! (`cqrsx_engine::Cqrs::in_memory`) assembles all of them.
+//! (`cqrsx_engine::Cqrs` with `event_store(InMemory)`) assembles all of them.
 //!
 //! A failed check is a panic (rule 8 of `.claude/rules/rust-style.md`): the tools say so in `# Panics`.
 //!

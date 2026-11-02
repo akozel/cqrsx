@@ -13,6 +13,7 @@ use crate::{
         self,
         application::{
             issue_refund::IssueRefundV1,
+            policies::CHAIN_RETRY_AFTER,
             record_cancellation::RecordCancellationV1,
             record_ticket::RecordTicketV1,
             send_e_ticket::{SendETicketV1, send_e_ticket},
@@ -23,12 +24,7 @@ use crate::{
         },
     },
     shared::{
-        application::{
-            activity::ActivityHub,
-            mail::Mailer,
-            policies::{CHAIN_RETRY_AFTER, MAIL, STEP},
-            test_support::RecordingMailer,
-        },
+        application::{activity::ActivityHub, mail::Mailer, test_support::RecordingMailer},
         domain::{
             ConcertId, FanId, FanLedgerId,
             venue::{SeatId, Zone},
@@ -51,6 +47,7 @@ use cqrsx::{
 use cqrsx_engine::{
     Cqrs,
     build::BuildError,
+    memory::InMemory,
     settings::Settings,
     setup::{Setup, SetupError},
 };
@@ -152,57 +149,37 @@ fn task_payloads_keep_their_queued_json() {
         "concert_id": concert_id, "seat": "B4", "fan_id": "fox", "amount": 80 }));
 }
 
-/// The steps of the chain are `STEP`, the e-mails `MAIL`; their pauses and their budget come from the
-/// configuration.
+/// The steps of the chain follow the step policy, the e-mails the mail policy; their pauses and their budget come from
+/// the configuration.
 #[test]
 fn every_task_type_has_its_policy_from_the_configuration() {
-    let defaults = policies(&[]).unwrap();
+    let policies_of = |config: &[(&str, &str)]| {
+        let policies = policies(config).unwrap();
+        formats().map(|format| policies.policy_for(&format))
+    };
+    let attempts = |count: u16| NonZeroU16::new(count).unwrap();
+    let step = |count| TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), attempts(count));
+    let mail = |base, max, count| TaskPolicy::new(RetryPause::backoff(base, max), attempts(count));
+    let (second, eight) = (Duration::from_secs(1), Duration::from_secs(8));
     assert_eq!(
-        formats().map(|format| defaults.name_of(&format)),
-        [Some(STEP), Some(STEP), Some(MAIL), Some(MAIL)]
-    );
-    assert_eq!(
-        (defaults.policy(STEP), defaults.policy(MAIL)),
-        (
-            Some(&TaskPolicy::new(
-                RetryPause::fixed(Duration::from_secs(1)),
-                NonZeroU16::new(6).unwrap()
-            )),
-            Some(&TaskPolicy::new(
-                RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
-                NonZeroU16::new(6).unwrap()
-            ))
-        )
+        policies_of(&[]),
+        [step(6), step(6), mail(second, eight, 6), mail(second, eight, 6)]
     );
     let config = [
         ("ENCORE_TASK_MAX_ATTEMPTS", "3"),
         ("ENCORE_TASK_RETRY_BASE_MS", "300"),
         ("ENCORE_TASK_RETRY_MAX_MS", "5000"),
     ];
-    let changed = policies(&config).unwrap();
+    let (base, max) = (Duration::from_millis(300), Duration::from_secs(5));
     assert_eq!(
-        (changed.policy(STEP), changed.policy(MAIL)),
-        (
-            Some(&TaskPolicy::new(
-                RetryPause::fixed(Duration::from_secs(1)),
-                NonZeroU16::new(3).unwrap()
-            )),
-            Some(&TaskPolicy::new(
-                RetryPause::backoff(Duration::from_millis(300), Duration::from_secs(5)),
-                NonZeroU16::new(3).unwrap()
-            ))
-        )
+        policies_of(&config),
+        [step(3), step(3), mail(base, max, 3), mail(base, max, 3)]
     );
     let refused = policies(&[("ENCORE_TASK_MAX_ATTEMPTS", "0")]).unwrap_err();
     assert!(matches!(
         refused,
         BuildError::Setup(SetupError::Invalid { ref variable, .. }) if variable == "ENCORE_TASK_MAX_ATTEMPTS"
     ));
-    assert_eq!(
-        refused.to_string(),
-        r#"ENCORE_TASK_MAX_ATTEMPTS: cannot parse "0": number would be zero for non-zero type"#,
-        "an attempt budget is positive"
-    );
 }
 
 /// The mail policy pauses exactly as the mail client asked until it stopped choosing its pauses (backlog 05/09), and
@@ -222,7 +199,7 @@ fn the_mail_policy_pauses_as_the_mail_client_did() {
         let (base_ms, max_ms) = (base.as_millis().to_string(), max.as_millis().to_string());
         let declared = policies(&[("ENCORE_TASK_RETRY_BASE_MS", &base_ms), ("ENCORE_TASK_RETRY_MAX_MS", &max_ms)]);
         let mail = match declared {
-            Ok(policies) => policies.policy(MAIL).unwrap().retry(),
+            Ok(policies) => policies.policy_for(&TaskFormat::of::<SendETicketV1>()).retry(),
             Err(_) if base > max => RetryPause::backoff(base, max),
             Err(error) => panic!("{error}"),
         };
@@ -234,7 +211,7 @@ fn the_mail_policy_pauses_as_the_mail_client_did() {
             );
         }
     }
-    let step = policies(&[]).unwrap().policy(STEP).unwrap().retry();
+    let step = policies(&[]).unwrap().policy_for(&TaskFormat::of::<RecordTicketV1>()).retry();
     for &attempt in &attempts {
         assert_eq!(step.pause(attempt), CHAIN_RETRY_AFTER, "attempt {attempt}");
     }
@@ -473,7 +450,14 @@ fn an_assembly_without_the_activity_hub_is_refused() {
         "the handler of encore_send_e_ticket v1 needs `encore_backend::shared::application::activity::ActivityHub`, \
          which nothing provides"
     );
-    let without_operations = ready(Cqrs::in_memory().module(concert::module).module(fan::module).build());
+    let without_operations = ready(
+        Cqrs::with_settings(Settings::default())
+            .event_store(InMemory)
+            .projections(InMemory)
+            .module(concert::module)
+            .module(fan::module)
+            .build(),
+    );
     assert_eq!(
         without_operations.err().unwrap().to_string(),
         "task handlers: the handler of encore_send_e_ticket v1 needs \

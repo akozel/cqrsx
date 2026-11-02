@@ -28,7 +28,7 @@ use std::{any::Any, collections::HashMap, fmt};
 ///         CommandExecutor, executor::StoreCommandExecutor, locks::LockLimits,
 ///         observer::{CommandObserver, CommandReport, Outcome}, retry::AggregateConflictRetryPolicy,
 ///     },
-///     journal::store::JournalEventStore,
+///     journal::store::EventSourcedStore,
 ///     memory::event_repository::MemoryEventRepository,
 ///     domain::{aggregate::Aggregate, command::Decide, event::Events},
 /// };
@@ -82,7 +82,7 @@ use std::{any::Any, collections::HashMap, fmt};
 ///
 /// # tokio_test(async {
 /// let log = Arc::new(Log::default());
-/// let store = JournalEventStore::<_, Counter>::new(MemoryEventRepository::default());
+/// let store = EventSourcedStore::<_, Counter>::new(MemoryEventRepository::default());
 /// let counters = StoreCommandExecutor::new(store, 1, AggregateConflictRetryPolicy::default(), LockLimits::default())
 ///     .with_observer(log.clone());
 /// let metadata = [("source".to_owned(), "ui".to_owned())].into();

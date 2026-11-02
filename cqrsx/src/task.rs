@@ -118,7 +118,7 @@ pub trait Task: Serialize {
 }
 
 /// The attempt budget of a task that sets none of its own: no [`with_max_attempts`](NewTask::with_max_attempts) and
-/// no policy of its type (`task::policy::Policies`).
+/// a policy of its type that sets none (`TaskPolicy::default()` holds this value).
 pub const DEFAULT_MAX_ATTEMPTS: NonZeroU16 = NonZeroU16::new(10).unwrap();
 
 /// When a task becomes eligible: at once, after a delay from the commit or at a time. Built by [`now`](Self::now),

@@ -1,6 +1,6 @@
 //! Commands of the `Concert` aggregate, one module per command: the intent and the rules that
 //! decide it (`impl Decide<Concert>`). The enum below is what the aggregate accepts; the derive routes every
-//! variant to its command's decision and reports it to the activity feed (name, `#[label]`, `#[command_id]`).
+//! variant to its command's decision and reports it to the activity feed (name, `#[label]`).
 pub mod announce_concert;
 pub mod book_seat;
 pub mod cancel_booking;
@@ -26,27 +26,26 @@ mod tests {
     use cqrsx::domain::command::Command;
     use uuid::Uuid;
 
-    /// What the activity feed names a command by, and the id a booking and a cancellation share with their command.
+    /// What the activity feed names a command by and filters it by.
     #[test]
-    fn every_command_reports_its_name_its_labels_and_its_id() {
-        let (booking_id, cancellation_id) = (Uuid::now_v7(), Uuid::now_v7());
+    fn every_command_reports_its_name_and_its_labels() {
         let reported = [
             announce(),
-            book("B4", "fox", "Fox", booking_id),
-            cancel("B4", "fox", cancellation_id),
+            book("B4", "fox", "Fox", Uuid::now_v7()),
+            cancel("B4", "fox", Uuid::now_v7()),
         ]
         .iter()
         .map(|command| {
             let labels: Vec<(&str, String)> = command.labels().into_iter().map(|label| (label.name, label.value)).collect();
-            (command.name(), labels, command.command_id())
+            (command.name(), labels)
         })
         .collect::<Vec<_>>();
         assert_eq!(
             reported,
             [
-                ("AnnounceConcert", vec![], None),
-                ("BookSeat", vec![("fan_id", "fox".to_owned())], Some(booking_id)),
-                ("CancelBooking", vec![("fan_id", "fox".to_owned())], Some(cancellation_id)),
+                ("AnnounceConcert", vec![]),
+                ("BookSeat", vec![("fan_id", "fox".to_owned())]),
+                ("CancelBooking", vec![("fan_id", "fox".to_owned())]),
             ]
         );
     }

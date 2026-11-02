@@ -21,10 +21,10 @@ use cqrsx::domain::command::Decide;
 use cqrsx::domain::event::EventEnvelope;
 use cqrsx::domain::event::Events;
 use cqrsx::journal::AggregateContext;
-use cqrsx::journal::EventStore;
+use cqrsx::journal::AggregateStore;
 use cqrsx::{
     command::{CommandError, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
-    journal::store::JournalEventStore,
+    journal::store::EventSourcedStore,
     task::{attempt::TaskAttempt, format::TaskFormat},
     worker::{
         TaskResult,
@@ -92,7 +92,7 @@ impl AggregateContext<ProbeAggregate> for ProbeContext {
     }
 }
 struct UnavailableStore;
-impl EventStore<ProbeAggregate> for UnavailableStore {
+impl AggregateStore<ProbeAggregate> for UnavailableStore {
     type Context = ProbeContext;
     async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<ProbeAggregate>>, cqrsx::journal::PersistenceError> {
         Err(cqrsx::journal::PersistenceError::Unexpected(Box::new(io::Error::other(
@@ -167,7 +167,7 @@ async fn diagnostics_fall_back_to_log_without_a_tracing_subscriber_and_redact_pr
         .connect_lazy("postgres://localhost/unused")
         .unwrap();
     pool.close().await;
-    let store = JournalEventStore::new(PostgresEventRepositoryWithOutbox::new(pool))
+    let store = EventSourcedStore::new(PostgresEventRepositoryWithOutbox::new(pool))
         .with_snapshots(std::num::NonZeroUsize::new(25).unwrap());
     let executor =
         StoreCommandExecutor::<ProbeAggregate, _>::new(store, (), AggregateConflictRetryPolicy::default(), LockLimits::default());

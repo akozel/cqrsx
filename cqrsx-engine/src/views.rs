@@ -1,16 +1,24 @@
 //! The views of an engine: the queries of one view ([`ViewQuery`]) and the operations over all of them ([`Views`]).
+//! The rebuild of one document, the verification, the counts of the journal and the rebuild requests need the feature
+//! `operation-utils`.
 use crate::Cqrs;
 use cqrsx::{
     domain::aggregate::Aggregate,
     journal::{PersistenceError, feed::Position, repository::EventRepository},
     memory::event_repository::MemoryEventRepository,
-    projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildReply},
+    projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore},
     view::{
         View,
         repository::{StoredView, ViewRepository},
-        verify::{Verification, verify},
     },
 };
+#[cfg(feature = "operation-utils")]
+use cqrsx::{
+    projection::checkpoint::RebuildReply,
+    view::verify::{Verification, verify},
+};
+#[cfg(feature = "operation-utils")]
+use std::time::Duration;
 use std::{
     any::{Any, TypeId, type_name},
     collections::HashMap,
@@ -18,14 +26,15 @@ use std::{
     future::Future,
     pin::Pin,
     sync::Arc,
-    time::Duration,
 };
 use thiserror::Error;
 
 type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T, PersistenceError>> + Send + 'a>>;
 type CheckpointAnswer<'a, T> = Pin<Box<dyn Future<Output = Result<T, CheckpointError>> + Send + 'a>>;
 
-/// The size of the journal of the views' aggregate types: their events and the aggregates that hold them.
+/// The size of the journal of the views' aggregate types: their events and the aggregates that hold them
+/// ([`Views::totals`]).
+#[cfg(feature = "operation-utils")]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct JournalTotals {
     pub events: u64,
@@ -35,6 +44,7 @@ pub struct JournalTotals {
 /// What a journal counts of one aggregate type: the events above a position (how far a view is behind) and its size.
 pub(crate) trait Counts: Send + Sync {
     fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send;
+    #[cfg(feature = "operation-utils")]
     fn totals<A: Aggregate>(&self) -> impl Future<Output = Result<JournalTotals, PersistenceError>> + Send;
 }
 
@@ -43,6 +53,7 @@ impl Counts for MemoryEventRepository {
         MemoryEventRepository::count_after::<A>(self, after, cap)
     }
 
+    #[cfg(feature = "operation-utils")]
     async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
         let events = MemoryEventRepository::count_after::<A>(self, Position::START, u64::MAX).await?;
         let (mut aggregates, mut after) = (0, String::new());
@@ -63,6 +74,7 @@ impl Counts for cqrsx_postgres::event_repository::PostgresEventRepository {
         cqrsx_postgres::event_repository::PostgresEventRepository::count_after::<A>(self, after, cap)
     }
 
+    #[cfg(feature = "operation-utils")]
     async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
         let totals = cqrsx_postgres::event_repository::PostgresEventRepository::totals::<A>(self).await?;
         Ok(JournalTotals {
@@ -75,7 +87,9 @@ impl Counts for cqrsx_postgres::event_repository::PostgresEventRepository {
 /// What the operations over the views ask of the checkpoints, the store erased.
 pub(crate) trait CheckpointOperations: Send + Sync {
     fn status<'a>(&'a self, projection: Option<&'a str>) -> CheckpointAnswer<'a, Vec<CheckpointStatus>>;
+    #[cfg(feature = "operation-utils")]
     fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildReply>;
+    #[cfg(feature = "operation-utils")]
     fn request_rebuild_key<'a>(&'a self, key: &'a CheckpointKey, id: &'a str) -> CheckpointAnswer<'a, ()>;
 }
 
@@ -84,30 +98,37 @@ impl<C: CheckpointStore + 'static> CheckpointOperations for C {
         Box::pin(CheckpointStore::status(self, projection))
     }
 
+    #[cfg(feature = "operation-utils")]
     fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildReply> {
         Box::pin(CheckpointStore::request_rebuild(self, key, pace))
     }
 
+    #[cfg(feature = "operation-utils")]
     fn request_rebuild_key<'a>(&'a self, key: &'a CheckpointKey, id: &'a str) -> CheckpointAnswer<'a, ()> {
         Box::pin(CheckpointStore::request_rebuild_key(self, key, id))
     }
 }
 
 /// The queries of a view, its aggregate type erased.
-trait Queries<V>: Send + Sync {
+pub(crate) trait Queries<V>: Send + Sync {
     fn get<'a>(&'a self, id: &'a str) -> Answer<'a, Option<StoredView<V>>>;
     fn list(&self) -> Answer<'_, Vec<StoredView<V>>>;
     fn range<'a>(&'a self, lower: &'a str, upper: &'a str) -> Answer<'a, Vec<StoredView<V>>>;
+    #[cfg(feature = "operation-utils")]
+    fn key(&self) -> CheckpointKey;
 }
 
 /// What the operations need of a view, its types erased. Its name and aggregate type are constants: finding a view by
 /// either allocates nothing; the key of its checkpoint is built only for a request.
-trait Operations: Send + Sync {
+pub(crate) trait Operations: Send + Sync {
     fn name(&self) -> &'static str;
+    #[cfg(feature = "operation-utils")]
     fn aggregate_type(&self) -> &'static str;
     fn key(&self) -> CheckpointKey;
+    #[cfg(feature = "operation-utils")]
     fn verify(&self) -> Answer<'_, Verification>;
     fn count_after(&self, after: Position, cap: u64) -> Answer<'_, u64>;
+    #[cfg(feature = "operation-utils")]
     fn totals(&self) -> Answer<'_, JournalTotals>;
 }
 
@@ -115,6 +136,13 @@ trait Operations: Send + Sync {
 /// the journal its lag is counted on (`counter`).
 struct Registered<V, A, D, H, K> {
     documents: Arc<D>,
+    #[cfg_attr(
+        not(feature = "operation-utils"),
+        expect(
+            dead_code,
+            reason = "only the verification and the totals read the journal of whole histories"
+        )
+    )]
     history: H,
     counter: K,
     types: std::marker::PhantomData<fn() -> (V, A)>,
@@ -139,6 +167,11 @@ where
     fn range<'a>(&'a self, lower: &'a str, upper: &'a str) -> Answer<'a, Vec<StoredView<V>>> {
         Box::pin(self.documents.range(lower, upper))
     }
+
+    #[cfg(feature = "operation-utils")]
+    fn key(&self) -> CheckpointKey {
+        CheckpointKey::of::<V, A>()
+    }
 }
 
 impl<V, A, D, H, K> Operations for Registered<V, A, D, H, K>
@@ -153,6 +186,7 @@ where
         V::NAME
     }
 
+    #[cfg(feature = "operation-utils")]
     fn aggregate_type(&self) -> &'static str {
         A::TYPE
     }
@@ -161,6 +195,7 @@ where
         CheckpointKey::of::<V, A>()
     }
 
+    #[cfg(feature = "operation-utils")]
     fn verify(&self) -> Answer<'_, Verification> {
         Box::pin(verify::<V, A>(&self.history, &*self.documents))
     }
@@ -169,6 +204,7 @@ where
         Box::pin(self.counter.count_after::<A>(after, cap))
     }
 
+    #[cfg(feature = "operation-utils")]
     fn totals(&self) -> Answer<'_, JournalTotals> {
         Box::pin(self.history.totals::<A>())
     }
@@ -178,7 +214,7 @@ where
 #[derive(Default)]
 pub(crate) struct Registry {
     queries: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
-    operations: Vec<Arc<dyn Operations>>,
+    pub(crate) operations: Vec<Arc<dyn Operations>>,
 }
 
 impl Registry {
@@ -201,21 +237,19 @@ impl Registry {
         self.operations.push(view);
     }
 
-    /// The views' names, in the order the modules registered them.
-    pub(crate) fn names(&self) -> impl Iterator<Item = &'static str> + '_ {
-        self.operations.iter().map(|view| view.name())
-    }
-
-    fn named(&self, name: &str) -> Result<&dyn Operations, ViewsError> {
+    pub(crate) fn named(&self, name: &str) -> Result<&dyn Operations, ViewsError> {
         let view = self.operations.iter().find(|view| view.name() == name);
         view.map(|view| &**view).ok_or_else(|| ViewsError::Unknown(name.to_owned()))
     }
 }
 
-/// The three queries of the view `V` ([`Cqrs::view`]): a document by id, every document and a range of ids, ordered by
-/// the bytes of the ids. A view the engine does not have answers with an error.
+/// The queries of the view `V` ([`Cqrs::view`]): a document by id, every document and a range of ids, ordered by the
+/// bytes of the ids; with the feature `operation-utils` also the rebuild of one document. A view the engine does not
+/// have answers with an error.
 pub struct ViewQuery<'a, V> {
-    queries: Option<&'a dyn Queries<V>>,
+    pub(crate) queries: Option<&'a dyn Queries<V>>,
+    #[cfg(feature = "operation-utils")]
+    pub(crate) checkpoints: &'a dyn CheckpointOperations,
 }
 
 // By hand: the queries are a trait object; what matters is whether the engine has the view.
@@ -253,18 +287,34 @@ impl<V: 'static> ViewQuery<'_, V> {
 pub enum ViewsError {
     #[error("the view `{0}` is not registered")]
     Unknown(String),
+    /// Only the operations of the feature `operation-utils` that count a journal by its aggregate type produce it.
     #[error("no view of the aggregate type `{0}` is registered")]
     UnknownAggregateType(String),
+    /// The view's processor has not registered its checkpoint yet (it is starting, or the engine's processors are
+    /// not running): a rebuild request (feature `operation-utils`) has no row to wait on. Repeat it later.
+    #[error("the view's processor has not started: its checkpoint is not registered yet")]
+    NotStarted,
+    /// The checkpoint store failed or refused the request; never `NotRegistered`, which is `NotStarted`.
     #[error(transparent)]
-    Checkpoint(#[from] CheckpointError),
+    Checkpoint(CheckpointError),
     #[error(transparent)]
     Persistence(#[from] PersistenceError),
 }
 
-/// The operations over the views of an engine ([`Cqrs::views`]), by a view's name: its checkpoint, the requests of a
-/// rebuild its processor takes, the verification of its documents, how far it is behind.
+impl From<CheckpointError> for ViewsError {
+    fn from(error: CheckpointError) -> Self {
+        match error {
+            CheckpointError::NotRegistered => Self::NotStarted,
+            CheckpointError::Storage(_) | CheckpointError::Corrupt(_) | CheckpointError::Invalid(_) => Self::Checkpoint(error),
+        }
+    }
+}
+
+/// The operations over the views of an engine ([`Cqrs::views`]), by a view's name: its checkpoint and how far it is
+/// behind; with the feature `operation-utils` also the requests of a rebuild its processor takes, the verification of
+/// its documents and the size of the journal.
 pub struct Views<'a> {
-    cqrs: &'a Cqrs,
+    pub(crate) cqrs: &'a Cqrs,
 }
 
 // By hand: the engine is not printed with its views, only their keys.
@@ -286,23 +336,6 @@ impl Views<'_> {
         self.cqrs.checkpoints.status(None).await
     }
 
-    /// Asks the processor of the view `name` to rebuild every document, `pace` between the events of a key.
-    pub async fn request_rebuild(&self, name: &str, pace: Duration) -> Result<RebuildReply, ViewsError> {
-        let key = self.cqrs.views.named(name)?.key();
-        Ok(self.cqrs.checkpoints.request_rebuild(&key, pace).await?)
-    }
-
-    /// Asks the processor of the view `name` to rebuild the document of the aggregate `id`.
-    pub async fn request_rebuild_key(&self, name: &str, id: &str) -> Result<(), ViewsError> {
-        let key = self.cqrs.views.named(name)?.key();
-        Ok(self.cqrs.checkpoints.request_rebuild_key(&key, id).await?)
-    }
-
-    /// Every document of the view `name` against the fold of the part of its history it applied (D-20).
-    pub async fn verify(&self, name: &str) -> Result<Verification, ViewsError> {
-        Ok(self.cqrs.views.named(name)?.verify().await?)
-    }
-
     /// The events of its aggregate type above the checkpoint of the view `name`, counted up to the lag cap of the
     /// settings.
     pub async fn lag(&self, name: &str) -> Result<u64, ViewsError> {
@@ -310,37 +343,6 @@ impl Views<'_> {
         let rows = self.cqrs.checkpoints.status(Some(name)).await?;
         let after = rows.first().map_or(Position::START, |row| row.position);
         Ok(view.count_after(after, self.cqrs.settings.lag_cap()).await?)
-    }
-
-    /// The events of `aggregate_type` above `after`, counted up to `cap`: how far a view of the type whose checkpoint
-    /// stands at `after` is behind.
-    pub async fn count_after(&self, aggregate_type: &str, after: Position, cap: u64) -> Result<u64, ViewsError> {
-        let view = self.of_type(aggregate_type)?;
-        Ok(view.count_after(after, cap).await?)
-    }
-
-    /// The size of the journals of the views' aggregate types: their events and aggregates, each type once.
-    pub async fn totals(&self) -> Result<JournalTotals, ViewsError> {
-        let mut counted = Vec::new();
-        let mut totals = JournalTotals::default();
-        for view in &self.cqrs.views.operations {
-            let aggregate_type = view.aggregate_type();
-            if counted.contains(&aggregate_type) {
-                continue;
-            }
-            counted.push(aggregate_type);
-            let of_type = view.totals().await?;
-            totals.events += of_type.events;
-            totals.aggregates += of_type.aggregates;
-        }
-        Ok(totals)
-    }
-
-    fn of_type(&self, aggregate_type: &str) -> Result<&dyn Operations, ViewsError> {
-        let views = &self.cqrs.views.operations;
-        let view = views.iter().find(|view| view.aggregate_type() == aggregate_type);
-        view.map(|view| &**view)
-            .ok_or_else(|| ViewsError::UnknownAggregateType(aggregate_type.to_owned()))
     }
 }
 
@@ -351,6 +353,8 @@ impl Cqrs {
         let queries = queries.and_then(|queries| queries.downcast_ref::<Arc<dyn Queries<V>>>());
         ViewQuery {
             queries: queries.map(|queries| &**queries),
+            #[cfg(feature = "operation-utils")]
+            checkpoints: &*self.checkpoints,
         }
     }
 
@@ -362,7 +366,8 @@ impl Cqrs {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{settings::Settings, test_support::*};
+    use crate::{memory::InMemory, settings::Settings, test_support::*};
+    use std::time::Duration;
 
     async fn book_every(cqrs: &Cqrs, bookings: &[(&str, &str, &str)]) {
         for (show, seat, fan) in bookings {
@@ -432,37 +437,84 @@ mod tests {
             })
             .collect();
         assert_eq!(named, [("halls", "show", true), ("tickets", "wallet", true)]);
-        let verified = views.verify("halls").await.unwrap();
-        assert_eq!((verified.checked, verified.differences.len()), (2, 0));
-        assert_eq!(
-            views.request_rebuild("halls", Duration::ZERO).await.unwrap(),
-            RebuildReply::Accepted
-        );
-        assert_eq!(
-            views.request_rebuild("halls", Duration::ZERO).await.unwrap(),
-            RebuildReply::AlreadyRunning
-        );
-        views.request_rebuild_key("halls", "s-1").await.unwrap();
-        while views.status().await.unwrap()[0].rebuilt < 2 {
-            tokio::time::sleep(Duration::from_millis(1)).await;
+        #[cfg(feature = "operation-utils")]
+        {
+            let verified = views.verify("halls").await.unwrap();
+            assert_eq!((verified.checked, verified.differences.len()), (2, 0));
+            assert_eq!(
+                views.request_rebuild("halls", Duration::ZERO).await.unwrap(),
+                RebuildReply::Accepted
+            );
+            assert_eq!(
+                views.request_rebuild("halls", Duration::ZERO).await.unwrap(),
+                RebuildReply::AlreadyRunning
+            );
+            views.request_rebuild_key("halls", "s-1").await.unwrap();
+            while views.status().await.unwrap()[0].rebuilt < 2 {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+            assert_eq!(
+                views.verify("halls").await.unwrap().differences.len(),
+                0,
+                "the rebuild folds the history"
+            );
+            for refused in [
+                views.request_rebuild("seats", Duration::ZERO).await.map(|_| ()),
+                views.request_rebuild_key("seats", "s-1").await,
+                views.verify("seats").await.map(|_| ()),
+            ] {
+                assert_eq!(refused.unwrap_err().to_string(), "the view `seats` is not registered");
+            }
         }
         assert_eq!(
-            views.verify("halls").await.unwrap().differences.len(),
-            0,
-            "the rebuild folds the history"
+            views.lag("seats").await.unwrap_err().to_string(),
+            "the view `seats` is not registered"
         );
-        for refused in [
-            views.request_rebuild("seats", Duration::ZERO).await.map(|_| ()),
-            views.request_rebuild_key("seats", "s-1").await,
-            views.verify("seats").await.map(|_| ()),
-            views.lag("seats").await.map(|_| ()),
-        ] {
-            assert_eq!(refused.unwrap_err().to_string(), "the view `seats` is not registered");
-        }
         let error: ViewsError = CheckpointError::Invalid("pace").into();
         assert_eq!(error.to_string(), "invalid checkpoint request: pace");
+        assert!(matches!(error, ViewsError::Checkpoint(_)));
+        let error: ViewsError = CheckpointError::NotRegistered.into();
+        assert!(matches!(error, ViewsError::NotStarted), "{error:?}");
         let error: ViewsError = PersistenceError::Conflict.into();
         assert!(!error.to_string().is_empty());
+    }
+
+    #[cfg(feature = "operation-utils")]
+    #[tokio::test]
+    async fn a_view_rebuilds_the_document_of_one_aggregate_on_request() {
+        let (cqrs, _) = engine().await;
+        book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-2", "B2", "panda")]).await;
+        let halls = cqrs.view::<Hall>();
+        let early = halls.rebuild(&"s-1").await.unwrap_err();
+        assert!(matches!(early, ViewsError::NotStarted), "{early:?}");
+        assert_eq!(
+            early.to_string(),
+            "the view's processor has not started: its checkpoint is not registered yet"
+        );
+        let by_name = [
+            cqrs.views().request_rebuild("halls", Duration::ZERO).await.map(|_| ()),
+            cqrs.views().request_rebuild_key("halls", "s-1").await,
+        ];
+        assert!(
+            by_name.iter().all(|result| matches!(result, Err(ViewsError::NotStarted))),
+            "{by_name:?}"
+        );
+        let unknown = cqrs.view::<String>().rebuild(&"s-1").await.unwrap_err();
+        assert_eq!(unknown.to_string(), "the view `alloc::string::String` is not registered");
+
+        cqrs.catch_up().await;
+        let revision = async |id: &str| halls.get(&id).await.unwrap().unwrap().revision;
+        let (first, second) = (revision("s-1").await, revision("s-2").await);
+        halls.rebuild(&String::from("s-1")).await.unwrap();
+        tokio::time::timeout(Duration::from_secs(10), async {
+            while revision("s-1").await == first {
+                tokio::time::sleep(Duration::from_millis(1)).await;
+            }
+        })
+        .await
+        .expect("the document is rebuilt");
+        assert_eq!(revision("s-2").await, second, "the other document is not touched");
+        assert_eq!(cqrs.views().verify("halls").await.unwrap().differences.len(), 0);
     }
 
     /// G-09: a commit wakes the processors of its aggregate type, which read the journal before their poll.
@@ -484,7 +536,13 @@ mod tests {
             defaults.task_runtime().clone(),
         )
         .unwrap();
-        let cqrs = Cqrs::with_settings(settings).module(shows).build().await.unwrap();
+        let cqrs = Cqrs::with_settings(settings)
+            .event_store(InMemory)
+            .projections(InMemory)
+            .module(shows)
+            .build()
+            .await
+            .unwrap();
         cqrs.catch_up().await;
         let start = tokio::time::Instant::now();
         book_every(&cqrs, &[("s-1", "A1", "fox")]).await;
@@ -509,33 +567,36 @@ mod tests {
             .map(|key| (key.projection().to_owned(), key.aggregate_type()))
             .collect();
         assert_eq!(keys, [("halls".to_owned(), "show"), ("tickets".to_owned(), "wallet")]);
-        assert_eq!(views.count_after("show", Position::START, 10).await.unwrap(), 3);
-        assert_eq!(
-            views.count_after("show", Position::START, 2).await.unwrap(),
-            2,
-            "up to the cap"
-        );
-        assert_eq!(views.count_after("wallet", Position::START, 10).await.unwrap(), 0);
-        assert_eq!(
-            views.count_after("seat", Position::START, 10).await.unwrap_err().to_string(),
-            "no view of the aggregate type `seat` is registered"
-        );
-        assert_eq!(
-            views.totals().await.unwrap(),
-            JournalTotals {
-                events: 3,
-                aggregates: 2
-            },
-            "the shows, the wallets have no event yet"
-        );
-        cqrs.run_tasks().await;
-        assert_eq!(
-            views.totals().await.unwrap(),
-            JournalTotals {
-                events: 5,
-                aggregates: 4
-            },
-            "every aggregate type of a view once: fox's second A1 is recorded already"
-        );
+        #[cfg(feature = "operation-utils")]
+        {
+            assert_eq!(views.count_after("show", Position::START, 10).await.unwrap(), 3);
+            assert_eq!(
+                views.count_after("show", Position::START, 2).await.unwrap(),
+                2,
+                "up to the cap"
+            );
+            assert_eq!(views.count_after("wallet", Position::START, 10).await.unwrap(), 0);
+            assert_eq!(
+                views.count_after("seat", Position::START, 10).await.unwrap_err().to_string(),
+                "no view of the aggregate type `seat` is registered"
+            );
+            assert_eq!(
+                views.totals().await.unwrap(),
+                JournalTotals {
+                    events: 3,
+                    aggregates: 2
+                },
+                "the shows, the wallets have no event yet"
+            );
+            cqrs.run_tasks().await;
+            assert_eq!(
+                views.totals().await.unwrap(),
+                JournalTotals {
+                    events: 5,
+                    aggregates: 4
+                },
+                "every aggregate type of a view once: fox's second A1 is recorded already"
+            );
+        }
     }
 }

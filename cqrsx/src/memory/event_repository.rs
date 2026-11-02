@@ -398,8 +398,8 @@ mod tests {
             event::EventEnvelope,
         },
         journal::{
-            EventStore,
-            store::{JournalEventStore, tests::TestAggregate},
+            AggregateStore,
+            store::{EventSourcedStore, tests::TestAggregate},
         },
     };
     use std::{collections::HashMap, future::Future};
@@ -586,7 +586,7 @@ mod tests {
     #[tokio::test]
     async fn clones_share_the_journal_and_a_store_commits_into_it() {
         let journal = MemoryEventRepository::default();
-        let store = JournalEventStore::<_, Ledger>::new(journal.clone());
+        let store = EventSourcedStore::<_, Ledger>::new(journal.clone());
         let context = store.load_aggregate("x").await.unwrap();
         store
             .commit(vec![Delta(5), Delta(-2)], context, HashMap::new(), &[])
@@ -625,7 +625,7 @@ mod tests {
     async fn held_loads_wait_for_a_permit_and_the_rest_of_the_journal_does_not() {
         let journal = MemoryEventRepository::default();
         journal.persist::<Ledger>(&[delta("a", 1, 3)], None).await.unwrap();
-        let store = JournalEventStore::<_, Ledger>::new(journal.clone()).with_snapshots(crate::journal::store::tests::every(10));
+        let store = EventSourcedStore::<_, Ledger>::new(journal.clone()).with_snapshots(crate::journal::store::tests::every(10));
         let gate = journal.hold_loads();
         let mut load = Box::pin(store.load_aggregate("a"));
         let waiting = std::future::poll_fn(|cx| std::task::Poll::Ready(load.as_mut().poll(cx).is_pending())).await;

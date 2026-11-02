@@ -12,7 +12,7 @@ use crate::{
 };
 use std::future::Future;
 
-/// The persistence behind a `JournalEventStore`: the events and snapshots of every aggregate,
+/// The persistence behind an `EventSourcedStore`: the events and snapshots of every aggregate,
 /// written one commit per transaction, and the journal of an aggregate type read in commit order
 /// (`feed_after`, `head`, `aggregate_ids_after`; see `journal::feed`).
 pub trait EventRepository: Send + Sync {

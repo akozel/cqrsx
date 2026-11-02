@@ -1,4 +1,4 @@
-//! A box office over a test event store, as the composition runs it (the reactions' planner and the activity feed's
+//! A box office over a test aggregate store, as the composition runs it (the reactions' planner and the activity feed's
 //! observer), for the tests of its flow; the facts and the command its reactions are tested with.
 use crate::{
     concert::domain::{
@@ -18,13 +18,13 @@ use chrono::NaiveDate;
 use cqrsx::{
     command::{CommandError, CommandExecutor, CommitReport, metadata::CommandMetadata},
     domain::event::EventEnvelope,
-    journal::{EventStore, PersistenceError},
+    journal::{AggregateStore, PersistenceError},
     reactions::ReactionsPlanner,
     task::NewTask,
 };
 use cqrsx_testing::{
     command_executor::TestCommandExecutor,
-    memory_store::{MemoryStore, MemoryStoreAggregateContext},
+    memory_store::{MemoryCommittedAggregate, MemoryStore},
 };
 use std::{
     collections::HashMap,
@@ -41,7 +41,7 @@ use uuid::Uuid;
 /// What the box office answers a command: what it committed, or why not.
 pub type Answer = Result<CommitReport<Concert>, CommandError<ConcertError>>;
 
-pub struct Harness<S: EventStore<Concert>> {
+pub struct Harness<S: AggregateStore<Concert>> {
     /// The box office's executor: its store, its reactions' planner, the activity feed's observer and the record of
     /// the tasks it published.
     pub executor: TestCommandExecutor<Concert, S>,
@@ -50,7 +50,7 @@ pub struct Harness<S: EventStore<Concert>> {
 
 pub fn harness<S>(store: S) -> Harness<S>
 where
-    S: EventStore<Concert> + 'static,
+    S: AggregateStore<Concert> + 'static,
     S::Context: Send,
 {
     let activity = Arc::new(ActivityHub::new(64, 64));
@@ -64,7 +64,7 @@ where
 
 impl<S> Harness<S>
 where
-    S: EventStore<Concert> + 'static,
+    S: AggregateStore<Concert> + 'static,
     S::Context: Send,
 {
     /// Runs `command` on the concert under `metadata`, as the HTTP handler does.
@@ -100,8 +100,8 @@ impl ProbeStore {
     }
 }
 
-impl EventStore<Concert> for ProbeStore {
-    type Context = MemoryStoreAggregateContext<Concert>;
+impl AggregateStore<Concert> for ProbeStore {
+    type Context = MemoryCommittedAggregate<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await

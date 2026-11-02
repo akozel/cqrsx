@@ -8,7 +8,7 @@ use crate::{
         planner::{Planning, TaskPlanner},
     },
     domain::{aggregate::Aggregate, command::Decide},
-    journal::{AggregateContext, EventStore},
+    journal::{AggregateContext, AggregateStore},
 };
 use std::{collections::HashMap, fmt};
 
@@ -26,21 +26,21 @@ use std::{collections::HashMap, fmt};
 /// outbox. This is where an error of the journal ([`PersistenceError`](crate::journal::PersistenceError))
 /// becomes the error of a command ([`AttemptError`]).
 #[must_use]
-pub(crate) struct CommandAttempt<A, ES>
+pub(crate) struct CommandAttempt<A, S>
 where
     A: Aggregate,
-    ES: EventStore<A>,
+    S: AggregateStore<A>,
 {
-    store: ES,
+    store: S,
     rules: A::Rules,
     planning: Option<Planning<A>>,
 }
 
 // By hand: the store and the rules need not be `Debug`.
-impl<A, ES> fmt::Debug for CommandAttempt<A, ES>
+impl<A, S> fmt::Debug for CommandAttempt<A, S>
 where
     A: Aggregate,
-    ES: EventStore<A>,
+    S: AggregateStore<A>,
 {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("CommandAttempt")
@@ -50,13 +50,13 @@ where
     }
 }
 
-impl<A, ES> CommandAttempt<A, ES>
+impl<A, S> CommandAttempt<A, S>
 where
     A: Aggregate,
-    ES: EventStore<A>,
+    S: AggregateStore<A>,
 {
     /// An attempt on `store` with the rules the commands decide with ([`Aggregate::Rules`]) and no planner.
-    pub(crate) fn new(store: ES, rules: A::Rules) -> Self {
+    pub(crate) fn new(store: S, rules: A::Rules) -> Self {
         Self {
             store,
             rules,
@@ -75,7 +75,7 @@ where
     }
 
     /// The store the commands run against.
-    pub(crate) fn store(&self) -> &ES {
+    pub(crate) fn store(&self) -> &S {
         &self.store
     }
 
@@ -159,7 +159,7 @@ mod tests {
         },
         domain::event::Events,
         journal::PersistenceError,
-        journal::store::JournalEventStore,
+        journal::store::EventSourcedStore,
         journal::store::tests::{TestAggregate, TestCommands, TestService},
         memory::event_repository::MemoryEventRepository,
         task::{NewTask, Task, format::TaskFormat},
@@ -170,11 +170,11 @@ mod tests {
         atomic::{AtomicUsize, Ordering},
     };
 
-    type Mem<A> = JournalEventStore<MemoryEventRepository, A>;
+    type Mem<A> = EventSourcedStore<MemoryEventRepository, A>;
 
     /// A journal in memory under the store, as the engine in memory has it.
     fn mem_store<A: Aggregate>() -> Mem<A> {
-        JournalEventStore::new(MemoryEventRepository::default())
+        EventSourcedStore::new(MemoryEventRepository::default())
     }
 
     #[tokio::test]
@@ -496,8 +496,8 @@ mod tests {
         on_commit: bool,
     }
 
-    impl EventStore<Echo> for FailingStore {
-        type Context = <Mem<Echo> as EventStore<Echo>>::Context;
+    impl AggregateStore<Echo> for FailingStore {
+        type Context = <Mem<Echo> as AggregateStore<Echo>>::Context;
 
         async fn load_events(&self, id: &str) -> Result<Vec<crate::domain::event::EventEnvelope<Echo>>, PersistenceError> {
             self.inner.load_events(id).await

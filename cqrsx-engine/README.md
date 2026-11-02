@@ -1,12 +1,13 @@
 # cqrsx-engine
 
 The engine of [cqrsx](../cqrsx/README.md): the application's modules assembled into one running application over
-in-memory, PostgreSQL and MongoDB stores, with its settings read from the environment and, with the feature `http`,
-served until a signal. The engine holds no logic of its own: the components it assembles, the contracts of an
+PostgreSQL and MongoDB stores (in tests, over stores in memory), with its settings read from the environment and, with
+the feature `http`, served until a signal. The engine holds no logic of its own: the components it assembles, the contracts of an
 application and the rules are in the README of the core, the crates and their boundaries in
 [`doc/crates.md`](../doc/crates.md).
 
-The application registers its pieces in modules and builds `Cqrs` in memory or with PostgreSQL and MongoDB.
+The application registers its pieces in modules and builds `Cqrs` over the stores it names: `event_store(Postgres)` and
+`projections(Postgres)` or `projections(Mongo)`; a test names `InMemory` for both.
 The [typical scenario](../doc/typical_scenario.md) follows a cancellation through a refund.
 
 ## Quick start
@@ -24,6 +25,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["serde", "v7"] }
 
 [dev-dependencies]
+cqrsx-engine = { git = "https://github.com/akozel/cqrsx", features = ["test-utils"] }
 cqrsx-testing = { git = "https://github.com/akozel/cqrsx" }
 ```
 
@@ -36,11 +38,11 @@ use cqrsx::{
     command::CommandError,
     domain::{aggregate::Aggregate, command::{Command, Decide}, event::{Event, EventEnvelope, Events}, rejection::Rejection},
     reactions::{Decided, Reactions, Then},
-    task::{Task, policy::{PolicyName, RetryPause}},
+    task::{Task, policy::{RetryPause, TaskPolicy}},
     view::View,
     worker::{TaskResult, context::TaskContext, task_handler},
 };
-use cqrsx_engine::{Cqrs, module::Module, setup::{Setup, SetupError}};
+use cqrsx_engine::{Cqrs, memory::InMemory, module::Module, setup::{Setup, SetupError}};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -68,13 +70,12 @@ enum ShowEvent {
     SeatBooked(SeatBooked),
 }
 
-/// A booking: its id is the command's.
+/// A booking, identified by its `booking_id`.
 #[derive(Clone, Debug, Command)]
 struct BookSeat {
     seat: String,
     #[label]
     fan: String,
-    #[command_id]
     booking_id: Uuid,
 }
 
@@ -245,8 +246,6 @@ impl View<Show> for Hall {
     }
 }
 
-const STEP: PolicyName = PolicyName::try_new("step").unwrap();
-const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
 /// The budget of both policies without `ATTEMPTS`.
 const ATTEMPTS: NonZeroU16 = NonZeroU16::new(3).unwrap();
 
@@ -255,26 +254,26 @@ fn box_office(_: &Setup) -> Result<Module, SetupError> {
     Ok(Module::new("box_office").aggregate::<Show>(()).view::<Hall, Show>())
 }
 
-/// The wallets: the step (`STEP`, a second between attempts) and the e-mail (`MAIL`), both with the budget of
-/// `ATTEMPTS`, and a mail service of their own.
+/// The wallets: the step (a second between attempts) and the e-mail (backing off from a second to eight), both with
+/// the budget of `ATTEMPTS`, and a mail service of their own. A policy is a value: tasks that behave alike share it.
 fn wallets(setup: &Setup) -> Result<Module, SetupError> {
     let attempts = setup.env("ATTEMPTS", ATTEMPTS)?;
-    let mail: Arc<Mailer> = Arc::new(Outbox::default());
+    let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), attempts);
+    let mail = TaskPolicy::new(RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)), attempts);
+    let mailer: Arc<Mailer> = Arc::new(Outbox::default());
     Ok(Module::new("wallets")
         .aggregate::<Wallet>(())
-        .provide(mail)
-        .policy(STEP, RetryPause::fixed(Duration::from_secs(1)), attempts)
-        .policy(MAIL, RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)), attempts)
-        .task(record_ticket)
-        .policy(STEP)
-        .task(mail_ticket)
-        .policy(MAIL))
+        .provide(mailer)
+        .task(record_ticket, step)
+        .task(mail_ticket, mail))
 }
 #[tokio::main(flavor = "current_thread")]
 async fn main() {
     let outbox = Arc::new(Outbox::default());
     let mail: Arc<Mailer> = outbox.clone();
-    let cqrs = Cqrs::in_memory().module(box_office).module(wallets)
+    let cqrs = Cqrs::from_lookup("SHOP", |_| None)
+        .event_store(InMemory).projections(InMemory)
+        .module(box_office).module(wallets)
         .provide(mail).build().await.unwrap();
     let booking_id = Uuid::now_v7();
     cqrs.source("ui").execute::<Show>(&"show-1".into(), BookSeat {
@@ -331,19 +330,24 @@ async fn main() {
 
 | Feature | Adds | Default |
 |---|---|---|
-| `postgres` | the journal, the outbox and the task queue in PostgreSQL (`Builder::event_store`) and the views in PostgreSQL (`Builder::projections`), over the crate `cqrsx-postgres` | no |
+| `postgres` | the event store (the journal, the snapshots, the outbox and the task queue) in PostgreSQL (`Builder::event_store`) and the views in PostgreSQL (`Builder::projections`), over the crate `cqrsx-postgres` | no |
 | `mongodb` | the views and the checkpoints of their processors in MongoDB, over the crate `cqrsx-mongodb`; includes `postgres` | no |
 | `http` | the HTTP routes of the modules and `serve` (axum 0.8, `TraceLayer`): the process logger, the shutdown signals and the coordinated stop of the server, the task runtime and the processors | no |
+| `operation-utils` | the operations that read without a bound or change the read side: `Cqrs::history` and `Cqrs::dispatcher`; `Views::{totals, verify, count_after, request_rebuild, request_rebuild_key}`; `ViewQuery::rebuild`. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
+| `test-utils` | the engine in memory: the marker `memory::InMemory` for `Builder::event_store` and `Builder::projections`, and the helpers of a test that drives it: `Cqrs::{run_tasks, catch_up}` and the stores themselves, `journal`, `outbox`, `checkpoints`, `documents::<V, A>`. An application enables it in `[dev-dependencies]`; the crate's own tests have it. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
 
-Without a feature the engine runs on in-memory stores: the choice for tests, which drive it with `run_tasks()` and
-`catch_up()`. A durable application takes `postgres` and `http`: `serve` runs the routes, the task runtime and the
-processors in one process. It adds `mongodb` to keep its views in MongoDB; the journal stays in PostgreSQL, since a
-checkpoint holds a position of it (views in a database over a journal in memory are refused when the engine is built).
+Without a feature the engine only compiles: it has no store to choose. A builder has no default stores either: without
+`event_store(..)` the build is refused (`BuildError::NoJournal`), and modules with views and no `projections(..)` are
+refused too (`BuildError::ViewsWithoutStore`). A test takes `test-utils`, names `InMemory` and drives the engine with
+`run_tasks()` and `catch_up()`. A durable application takes `postgres` and `http`: `serve` runs the routes, the task
+runtime and the processors in one process. It adds `mongodb` to keep its views in MongoDB; the journal stays in
+PostgreSQL, since a checkpoint holds a position of it (views in a database over a journal in memory are refused when the
+engine is built).
 
 ## Configuration
 
-A `Builder` starts from the library's settings (`Cqrs::in_memory()`), from settings of one's own
-(`Cqrs::with_settings`) or from variables (`Cqrs::from_env`, `Cqrs::from_lookup`). Every tunable is a checked value
+A `Builder` starts from settings of one's own (`Cqrs::with_settings`, e.g. `Settings::default()`, the library's) or from
+variables (`Cqrs::from_env`, `Cqrs::from_lookup`). Every tunable is a checked value
 with a default. The engine reads its settings from variables under the
 application's prefix (`Cqrs::from_env("SHOP")`: `SHOP_SNAPSHOT_EVERY`, …) and the task runtime's `OUTBOX_*` as they
 are, with the application's `Defaults` where a variable is absent. A variable of the prefix is trimmed and counts as
@@ -381,7 +385,7 @@ The table lists every variable with the library's default, as `Settings::descrip
 | `DATABASE_URL` | `postgresql://cqrsx:cqrsx@localhost:5433/cqrsx` | the PostgreSQL database (feature `postgres`) |
 | `DATABASE_MAIN_POOL_SIZE` | `10` | connections for the commands, the task queue, the checkpoints and the views in PostgreSQL |
 | `DATABASE_STATEMENT_TIMEOUT_MS` | `4 s` | the statement timeout of the main and the projection pools; 0: no cap |
-| `DATABASE_HISTORY_POOL_SIZE` | `1` | connections for whole-history reads: verify, the size of the journal, the history of one aggregate |
+| `DATABASE_HISTORY_POOL_SIZE` | `1` | connections for whole-history reads: verify, the size of the journal, the history of one aggregate (feature `operation-utils`) |
 | `DATABASE_PROJECTION_POOL_SIZE` | `4` | connections for the processors' reads of the journal |
 | `MONGODB_URI` | `mongodb://localhost:27017` | the MongoDB server (feature `mongodb`); the client waits 3 s to select a server and to connect |
 | `MONGODB_POOL_SIZE` | `10` | connections of the MongoDB client |
@@ -395,8 +399,10 @@ included.
 
 ## Testing
 
-`Cqrs::in_memory()` assembles the application's modules over the stores in memory; the tools for an aggregate, a
-use case and a handler are in the [testing table of the core](../cqrsx/README.md#testing).
+`Cqrs::with_settings(Settings::default()).event_store(InMemory).projections(InMemory)` assembles the application's
+modules over the stores in memory; the tools for an aggregate, a use case and a handler are in the
+[testing table of the core](../cqrsx/README.md#testing). `InMemory`, `run_tasks()`, `catch_up()` and the stores of the
+engine in memory need the feature `test-utils` in the test's `[dev-dependencies]`.
 
 ## Operations
 
@@ -433,6 +439,8 @@ The script takes the task's id as its one parameter: from Rust
 ### Rebuilding and verifying views
 
 `cqrs.views()` operates the views by name; the application exposes what it needs (the demo routes them over HTTP).
+`keys()`, `status()` and `lag(name)` are always there; the requests of a rebuild, `verify`, `count_after` and `totals`, and
+`cqrs.view::<V>().rebuild(&id)`, need the feature `operation-utils`.
 
 - `status()`: the checkpoint rows, with position, owner and lease, `failures` and `last_error` of a failing key, and
   the progress of a rebuild. A failing key stops its checkpoint before it and is retried after a growing pause; once
@@ -440,7 +448,9 @@ The script takes the task's id as its one parameter: from Rust
 - `lag(name)`: the events above the checkpoint, counted up to `PROJECTION_LAG_CAP`.
 - `request_rebuild(name, pace)`: every document from its history, `pace` between the events of a key;
   `request_rebuild_key(name, id)`: one document. The processor that holds the checkpoint takes the request on any
-  node; live delivery goes on meanwhile.
+  node; live delivery goes on meanwhile. `cqrs.view::<V>().rebuild(&id)` is the same one-document request by the
+  view's type. Both ways answer `ViewsError::NotStarted` while the view's processor has not registered its
+  checkpoint; repeat the request later.
 - `verify(name)`: every document against the fold of the part of its history it applied; documents behind are
   counted apart, a difference is a wrong document.
 
@@ -466,9 +476,10 @@ own process only; the others find it at their next poll (`PROJECTION_POLL_MS`).
 ### Errors of building and serving
 
 `build` fails with a `BuildError`: a setting (`Settings`, the variable named), a module's refusal (`Setup`), an
-aggregate type, a view or an observer registered twice, one key of the description with two values, a policy or the
-task handlers refused, views in a database over a journal in memory, a URL or URI that does not parse, a database not
-reachable (each pool named). `serve` adds `ServeError`: the logger, the address taken, or the read side stopped (a
+aggregate type, a view, an observer or a task type registered twice, one key of the description with two values, the
+task handlers refused, no journal (`event_store(..)` not called), views with no store (`projections(..)` not called),
+views in a database over a journal in memory, a URL or URI that does not parse, a database not reachable (each pool
+named). `serve` adds `ServeError`: the logger, the address taken, or the read side stopped (a
 processor panicked); a `BuildError` of a setting, a module's variable, a URL or URI or the store choice is written as
 `invalid configuration: …`.
 

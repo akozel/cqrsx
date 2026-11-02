@@ -12,14 +12,13 @@ use proc_macro2::TokenStream as TokenStream2;
 use syn::{DeriveInput, ItemFn};
 
 /// What an observer knows of one command besides its decision: on a struct, implements
-/// `cqrsx::domain::command::Command`. Its name is the type's (`CancelBooking`); the field marked `#[command_id]`, a
-/// `Uuid` and at most one, is the command's id; the fields marked `#[label]` are its labels, in field order, each as
-/// its name and its `Display`. On an enum of commands, every variant carrying one command type
-/// (`CancelBooking(CancelBooking)`), it implements the same by delegation to the variant's type. A second
-/// `#[command_id]`, an attribute with arguments or on a field without a name, an attribute on a field of an enum's
-/// variant, a command id that is not a `Uuid`, a variant without exactly one field and a union do not compile.
+/// `cqrsx::domain::command::Command`. Its name is the type's (`CancelBooking`); the fields marked `#[label]` are its
+/// labels, in field order, each as its name and its `Display`. On an enum of commands, every variant carrying one
+/// command type (`CancelBooking(CancelBooking)`), it implements the same by delegation to the variant's type. An
+/// attribute with arguments or on a field without a name, an attribute on a field of an enum's variant, a variant
+/// without exactly one field and a union do not compile.
 /// Examples: `cqrsx::domain::command::Command`.
-#[proc_macro_derive(Command, attributes(command_id, label))]
+#[proc_macro_derive(Command, attributes(label))]
 pub fn derive_command(input: TokenStream) -> TokenStream {
     run(command::expand_command, input.into()).into()
 }

@@ -17,7 +17,7 @@ use cqrsx::{
         retry::AggregateConflictRetryPolicy,
     },
     domain::aggregate::Aggregate,
-    journal::{EventStore, repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
+    journal::{AggregateStore, repository::EventRepository, store::EventSourcedStore, wakeup::CommitWakeup},
     memory::{checkpoint_store::MemoryCheckpointStore, view_repository::MemoryViewRepository},
     projection::{
         checkpoint::{CheckpointKey, CheckpointStore},
@@ -31,6 +31,7 @@ use cqrsx::{
 };
 use cqrsx_engine::{
     Cqrs,
+    memory::InMemory,
     mongodb::Mongo,
     postgres::{Postgres, PostgresPools},
     settings::{DEFAULT_SNAPSHOT_EVERY, Settings},
@@ -97,6 +98,8 @@ fn committed(answer: &Result<CommitReport<Concert>, CommandError<ConcertError>>)
 fn process() -> cqrsx_engine::build::Builder {
     Cqrs::from_lookup("ENCORE", |_| None)
         .defaults(DEMO_DEFAULTS)
+        .event_store(InMemory)
+        .projections(InMemory)
         .module(concert::module)
         .module(fan::module)
         .module(operations::module)
@@ -118,9 +121,9 @@ fn concert_executor(
     pool: &PgPool,
     retry: AggregateConflictRetryPolicy,
     ticket_limit: usize,
-) -> StoreCommandExecutor<Concert, JournalEventStore<PostgresEventRepositoryWithOutbox, Concert>> {
+) -> StoreCommandExecutor<Concert, EventSourcedStore<PostgresEventRepositoryWithOutbox, Concert>> {
     let store =
-        JournalEventStore::new(PostgresEventRepositoryWithOutbox::new(pool.clone())).with_snapshots(DEFAULT_SNAPSHOT_EVERY);
+        EventSourcedStore::new(PostgresEventRepositoryWithOutbox::new(pool.clone())).with_snapshots(DEFAULT_SNAPSHOT_EVERY);
     StoreCommandExecutor::new(store, ConcertRules { ticket_limit }, retry, LockLimits::default())
 }
 
@@ -646,7 +649,7 @@ impl ReadSide {
 
     /// The fold of the concert's whole history, `None` without one.
     async fn fold(&self, id: &str) -> Option<ConcertHallView> {
-        let events = JournalEventStore::<_, Concert>::new(PostgresEventRepository::new(self.pool.clone()))
+        let events = EventSourcedStore::<_, Concert>::new(PostgresEventRepository::new(self.pool.clone()))
             .load_events(id)
             .await
             .expect("journal");

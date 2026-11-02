@@ -8,8 +8,8 @@ shape in memory. The detailed contracts and lower-level components are in [Compo
 
 An application contains modules such as a concert box office and a fan's ledger. Each module owns its
 domain (aggregate, commands, events and rules), application (reactions, tasks, views), and presentation
-(HTTP routes). A file inside a module is named by its role (`domain/aggregate.rs`, `domain/commands/`,
-`domain/events/`), never by a name its path already says. A module root registers its pieces. Shared
+(HTTP routes by transport and kind of engine entry). A file inside a module is named by its role (`domain/aggregate.rs`,
+`domain/commands/`, `domain/events/`), never by a name its path already says. A module root registers its pieces. Shared
 contracts and infrastructure live outside the modules; modules do not reach into each other's
 internals. The engine assembles their components; it does not decide business rules. See the [concert root](../demo/back-end/src/concert.rs),
 [fan root](../demo/back-end/src/fan.rs), and [architecture tests](../demo/back-end/tests/architecture.rs).
@@ -26,7 +26,8 @@ and [Fan](../demo/back-end/src/fan/domain/aggregate.rs).
 
 Each command implements `Decide<A>`: given the current aggregate and its rules it returns one event or
 a rejection, without side effects. `Command` and `Decide` derive, for an aggregate's enum of commands, the information the engine needs and the routing of the decision;
-`Rejection` supplies a code and parameters. A caller uses `cqrs.source("ui").execute::<A>(&id, command)`;
+`Rejection` supplies a code and parameters. A caller uses `cqrs.source("ui").execute::<A>(&id, command)`
+(`execute_with_id` when the caller must name the command before the outcome is known);
 inside a task, `ctx.execute::<A>` continues the task's causation. The executor serializes commands per
 key in a process; an optimistic conflict across processes reloads and retries the decision. See
 [BookSeat](../demo/back-end/src/concert/domain/commands/book_seat.rs).
@@ -44,7 +45,9 @@ publish no tasks. Command metadata carries causation and correlation through the
 
 A versioned `Task` and its `#[task_handler]` live near the step they describe. The handler receives
 the task, a `TaskContext` when needed, and dependencies by type. Module roots supply dependencies and
-bind policies to handlers: the policy provides the attempt budget and retry pause. The shared handler
+register every handler with its policy (`module.task(handler, policy)`): the policy provides the attempt budget
+and the retry pause. A policy is a `Copy` value, so tasks of one module or of several share one by passing it (the
+fan module keeps its two in [policies](../demo/back-end/src/fan/application/policies.rs)). The shared handler
 returns done, retry or fail; an external effect must be repeat-safe because delivery is at least once.
 The task ID is suitable as an idempotency key. See
 [record_cancellation](../demo/back-end/src/fan/application/record_cancellation.rs),
@@ -57,13 +60,16 @@ A `View<A>` names a collection and folds events from one aggregate stream. The e
 checkpoint and applies events per key in order. A view document remembers its last applied sequence:
 duplicate delivery is skipped and a gap stops the write; the processor can rebuild from history.
 One collection has one projection. The engine offers get, list and range queries and operations such
-as status, rebuild and verify. Verify compares each document with the fold of its applied history.
+as status, rebuild and verify. Verify compares each document with the fold of its applied history. Rebuild and
+verify are behind the engine's feature `operation-utils`; status and lag are not.
 See [concert hall](../demo/back-end/src/concert/application/views/concert_hall.rs) and
 [fan wallet](../demo/back-end/src/fan/application/views/fan_wallet.rs).
 
 ## Bootstrap and configuration
 
-`Cqrs::in_memory()` assembles the same module registrations over in-memory stores. For a durable
+The same module registrations are assembled over in-memory stores in a test (`event_store(InMemory)`,
+`projections(InMemory)`) and over PostgreSQL and MongoDB in the process (`event_store(Postgres)`,
+`projections(Mongo)`); the builder has no default store and refuses to build without them. For a durable
 application, `Cqrs::from_env("ENCORE")` reads engine and module keys with that prefix; `OUTBOX_*`
 remain unprefixed. `.defaults(DEMO_DEFAULTS)` supplies application defaults only when a variable is
 absent. Register `Postgres`, `Mongo` and module roots, then `serve()` with the `http` feature. `Setup`
@@ -89,8 +95,8 @@ The code is in [cancel booking](../demo/back-end/src/concert/domain/commands/can
 
 ## Testing and rules
 
-`TestFramework` (crate `cqrsx-testing`) tests an aggregate's decisions; `Cqrs::in_memory()` tests modules and their chains;
-`run_tasks()` runs due work and `catch_up()` waits for views. A task context and `MemoryTaskQueue` permit
-focused task tests. Modules register one executor per aggregate and one owner per view name; handlers
+`TestFramework` (crate `cqrsx-testing`) tests an aggregate's decisions; an engine over `InMemory` stores tests modules
+and their chains; `run_tasks()` runs due work and `catch_up()` waits for views (the engine's feature `test-utils`, in
+the application's `[dev-dependencies]`). A task context and `MemoryTaskQueue` permit focused task tests. Modules register one executor per aggregate and one owner per view name; handlers
 must tolerate repeat delivery, while reactions must stay pure. The tests in
 [`tests/engine/scenario.rs`](../cqrsx-engine/tests/engine/scenario.rs) cover the full in-memory path.

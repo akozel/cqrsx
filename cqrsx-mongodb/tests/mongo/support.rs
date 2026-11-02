@@ -7,7 +7,7 @@ use cqrsx::{
         command::Decide,
         event::{EventEnvelope, Events},
     },
-    journal::{repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
+    journal::{repository::EventRepository, store::EventSourcedStore, wakeup::CommitWakeup},
     memory::event_repository::MemoryEventRepository,
     projection::{
         checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore},
@@ -213,7 +213,7 @@ where
     }
 }
 
-type MemoryStore = JournalEventStore<MemoryEventRepository, Ledger>;
+type MemoryStore = EventSourcedStore<MemoryEventRepository, Ledger>;
 
 /// Commands over an in-memory journal that wake its processors.
 pub(crate) fn mem_ledgers(
@@ -222,7 +222,7 @@ pub(crate) fn mem_ledgers(
 ) -> Arc<StoreCommandExecutor<Ledger, MemoryStore>> {
     Arc::new(
         StoreCommandExecutor::new(
-            JournalEventStore::new(journal.clone()),
+            EventSourcedStore::new(journal.clone()),
             (),
             Default::default(),
             LockLimits::default(),

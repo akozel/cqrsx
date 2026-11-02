@@ -3,7 +3,7 @@ use crate::Cqrs;
 use crate::diagnostics;
 use cqrsx::{
     command::{CommandError, CommandExecutor, CommitReport, metadata::CommandMetadata},
-    domain::{aggregate::Aggregate, command::Command},
+    domain::aggregate::Aggregate,
 };
 use std::fmt;
 use uuid::Uuid;
@@ -13,6 +13,10 @@ use uuid::Uuid;
 pub type CommandResult<A> = Result<CommitReport<A>, CommandError<<A as Aggregate>::Rejection>>;
 
 /// An entry point of the application, e.g. the HTTP API (`cqrs.source("ui")`): the source of the commands it issues.
+///
+/// The id of a command that starts a chain is the argument of [`execute_with_id`](Source::execute_with_id);
+/// [`execute`](Source::execute) generates one. A command never tells the engine its own id: a field of it that is a
+/// `Uuid` is data.
 pub struct Source<'a> {
     cqrs: &'a Cqrs,
     source: String,
@@ -27,25 +31,25 @@ impl fmt::Debug for Source<'_> {
 
 impl Source<'_> {
     /// Runs `command` on the aggregate `id` with the executor of `A`. The command starts a chain from this source
-    /// (`CommandMetadata::root`): its id, its correlation id and its cause are the id the command carries
-    /// (`#[command_id]`), else a new time-ordered id, and every event it commits stores them with the source and when
-    /// it was issued. Without an executor of `A` the command does not run: unavailable, the wiring fault is logged.
-    /// The executor runs the command without an allocation of the engine's own.
+    /// (`CommandMetadata::root`): its id, its correlation id and its cause are one new time-ordered id, and every
+    /// event it commits stores them with the source and when it was issued. Without an executor of `A` the command does
+    /// not run: unavailable, the wiring fault is logged. The executor runs the command without an allocation of the
+    /// engine's own.
     pub async fn execute<A>(&self, id: &A::Id, command: A::Command) -> CommandResult<A>
     where
         A: Aggregate + Clone + 'static,
-        A::Command: Command + Clone + 'static,
+        A::Command: Clone + 'static,
         A::Rejection: Send + 'static,
     {
         self.run(None, id, command).await
     }
 
-    /// [`execute`](Self::execute), with `command_id` as the id of a command that carries none of its own: the id an
-    /// entry point answers with before it knows the outcome (an HTTP response of every outcome names its command).
+    /// [`execute`](Self::execute), with `command_id` as the id of the command, its correlation id and its cause: the id
+    /// an entry point answers with before it knows the outcome (an HTTP response of every outcome names its command).
     pub async fn execute_with_id<A>(&self, command_id: Uuid, id: &A::Id, command: A::Command) -> CommandResult<A>
     where
         A: Aggregate + Clone + 'static,
-        A::Command: Command + Clone + 'static,
+        A::Command: Clone + 'static,
         A::Rejection: Send + 'static,
     {
         self.run(Some(command_id), id, command).await
@@ -54,11 +58,11 @@ impl Source<'_> {
     async fn run<A>(&self, given: Option<Uuid>, id: &A::Id, command: A::Command) -> CommandResult<A>
     where
         A: Aggregate + Clone + 'static,
-        A::Command: Command + Clone + 'static,
+        A::Command: Clone + 'static,
         A::Rejection: Send + 'static,
     {
         let mut metadata = CommandMetadata::root(self.source.clone());
-        if let Some(command_id) = command.command_id().or(given) {
+        if let Some(command_id) = given {
             let causation = &mut metadata.causation;
             (causation.command_id, causation.correlation_id, causation.causation_id) = (command_id, command_id, command_id);
         }
@@ -82,7 +86,7 @@ impl Cqrs {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Cqrs, test_support::*};
+    use crate::test_support::*;
     use cqrsx::{
         command::{
             CommandError,
@@ -95,16 +99,19 @@ mod tests {
     use uuid::Uuid;
 
     #[tokio::test]
-    async fn execute_stores_the_metadata_of_its_source_and_the_id_its_command_carries() {
+    async fn a_command_gets_the_given_id_or_a_fresh_one_and_the_metadata_of_its_source() {
         let (cqrs, _) = engine().await;
-        let booking_id = Uuid::now_v7();
-        let carried = Book {
-            booking_id: Some(booking_id),
-            ..book("A1", "fox")
-        };
-        cqrs.source("ui").execute::<Show>(&"s-1".into(), carried).await.unwrap();
+        let given = Uuid::now_v7();
+        cqrs.source("ui")
+            .execute_with_id::<Show>(given, &"s-1".into(), book("A1", "fox"))
+            .await
+            .unwrap();
         cqrs.source("kiosk")
             .execute::<Show>(&"s-1".into(), book("A2", "panda"))
+            .await
+            .unwrap();
+        cqrs.source("kiosk")
+            .execute::<Show>(&"s-1".into(), book("A3", "wolf"))
             .await
             .unwrap();
         let events = cqrs.journal().unwrap().events::<Show>("s-1").await.unwrap();
@@ -114,7 +121,7 @@ mod tests {
             keys,
             BTreeSet::from([COMMAND_ID, CORRELATION_ID, CAUSATION_ID, SOURCE, RECORDED_AT])
         );
-        let id = booking_id.to_string();
+        let id = given.to_string();
         assert_eq!(
             [
                 &metadata[0][COMMAND_ID],
@@ -123,13 +130,23 @@ mod tests {
                 &metadata[0][SOURCE]
             ],
             [&id, &id, &id, "ui"],
-            "the command's own id in every role"
+            "the given id in every role"
         );
-        let fresh = Uuid::parse_str(metadata[1][COMMAND_ID].as_str().unwrap()).unwrap();
-        assert_eq!(fresh.get_version_num(), 7, "a new time-ordered id");
-        assert_eq!(
-            [&metadata[1][CORRELATION_ID], &metadata[1][CAUSATION_ID], &metadata[1][SOURCE]],
-            [&fresh.to_string(), &fresh.to_string(), "kiosk"]
+        let fresh: Vec<Uuid> = metadata[1..]
+            .iter()
+            .map(|metadata| Uuid::parse_str(metadata[COMMAND_ID].as_str().unwrap()).unwrap())
+            .collect();
+        let pairs = fresh.iter().zip(&metadata[1..]);
+        for (fresh, metadata) in pairs {
+            assert_eq!(fresh.get_version_num(), 7, "a new time-ordered id");
+            assert_eq!(
+                [&metadata[CORRELATION_ID], &metadata[CAUSATION_ID], &metadata[SOURCE]],
+                [&fresh.to_string(), &fresh.to_string(), "kiosk"]
+            );
+        }
+        assert!(
+            fresh[0] != fresh[1] && !fresh.contains(&given),
+            "every command without an id gets its own"
         );
         for metadata in metadata {
             assert_eq!(
@@ -149,7 +166,7 @@ mod tests {
             ui.execute::<Show>(&"s-1".into(), book("A1", "panda")).await.unwrap_err(),
             CommandError::Rejected(SeatTaken)
         );
-        let shows = Cqrs::in_memory().module(shows).build().await.unwrap();
+        let shows = memory_builder().module(shows).build().await.unwrap();
         let (answer, log) = crate::test_support::capture(
             shows
                 .source("ui")
@@ -161,28 +178,6 @@ mod tests {
         assert!(
             log.contains("wallet") && !log.contains("fox"),
             "the type, never the id: {log}"
-        );
-    }
-
-    #[tokio::test]
-    async fn a_command_without_an_id_of_its_own_takes_the_id_it_is_executed_with() {
-        let (cqrs, _) = engine().await;
-        let (given, carried) = (Uuid::now_v7(), Uuid::now_v7());
-        let ui = cqrs.source("ui");
-        ui.execute_with_id::<Show>(given, &"s-1".into(), book("A1", "fox"))
-            .await
-            .unwrap();
-        let own = Book {
-            booking_id: Some(carried),
-            ..book("A2", "panda")
-        };
-        ui.execute_with_id::<Show>(given, &"s-1".into(), own).await.unwrap();
-        let events = cqrs.journal().unwrap().events::<Show>("s-1").await.unwrap();
-        let ids: Vec<&serde_json::Value> = events.iter().map(|event| &event.metadata[COMMAND_ID]).collect();
-        assert_eq!(
-            ids,
-            [&serde_json::json!(given), &serde_json::json!(carried)],
-            "the given id for a command without one, the command's own otherwise"
         );
     }
 }

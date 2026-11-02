@@ -7,7 +7,7 @@
     clippy::unreachable,
     clippy::indexing_slicing
 )]
-use cqrsx::journal::store::JournalEventStore;
+use cqrsx::journal::store::EventSourcedStore;
 use cqrsx::task::attempt::TaskAttempt;
 use cqrsx::worker::queue::lease::TaskLease;
 use cqrsx_fixtures::postgres::Postgres;
@@ -58,7 +58,7 @@ use uuid::Uuid;
 
 use cqrsx::{
     domain::event::EventEnvelope,
-    journal::{EventStore, snapshot::SerializedSnapshot},
+    journal::{AggregateStore, snapshot::SerializedSnapshot},
 };
 use cqrsx_postgres::event_repository::PostgresEventRepository;
 use support::ledger::*;
@@ -69,8 +69,8 @@ use tokio::{sync::Barrier, task::JoinSet};
 mod command;
 #[path = "postgres/compatibility.rs"]
 mod compatibility;
-#[path = "postgres/event_store.rs"]
-mod event_store;
+#[path = "postgres/event_repository.rs"]
+mod event_repository;
 #[path = "postgres/outbox.rs"]
 mod outbox;
 #[path = "postgres/planning.rs"]

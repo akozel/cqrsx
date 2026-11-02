@@ -282,7 +282,7 @@ impl CheckpointStore for PostgresCheckpointStore {
             .await
             .map_err(storage_error("request_rebuild"))?;
         let Some(row) = row else {
-            return Err(CheckpointError::Invalid("projection is not registered"));
+            return Err(CheckpointError::NotRegistered);
         };
         Ok(if column::<bool>(&row, "accepted")? {
             RebuildReply::Accepted
@@ -302,7 +302,7 @@ impl CheckpointStore for PostgresCheckpointStore {
         if column::<bool>(&row, "known")? {
             Ok(())
         } else {
-            Err(CheckpointError::Invalid("projection is not registered"))
+            Err(CheckpointError::NotRegistered)
         }
     }
 

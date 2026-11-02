@@ -6,8 +6,8 @@ use cqrsx::command::{
     planner::{Decision, TaskPlanError, TaskPlanner},
     retry::AggregateConflictRetryPolicy,
 };
-use cqrsx::journal::EventStore;
-use cqrsx::journal::store::JournalEventStore;
+use cqrsx::journal::AggregateStore;
+use cqrsx::journal::store::EventSourcedStore;
 use thiserror::Error;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
@@ -351,7 +351,7 @@ async fn configured_snapshot_interval_replays_snapshot_and_later_events() {
     assert_eq!(snapshot.payload, json!({"values": ["first", "second"]}));
     // The third and fourth calls require state from the snapshot, then its tail.
     executor.execute(&"snapshot".into(), record("third", 2)).await.unwrap();
-    let store = JournalEventStore::<_, CommandAggregate>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
+    let store = EventSourcedStore::<_, CommandAggregate>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
     let context = store.load_aggregate("snapshot").await.unwrap();
     assert_eq!(context.last_sequence, 3);
     assert_eq!(context.aggregate.values, vec!["first", "second", "third"]);
@@ -590,15 +590,15 @@ async fn rules_that_are_not_clone_serve_the_executor_which_commits_event_snapsho
 mod contracts {
     use crate::support::ledger::{Delta, Ledger, Rejected, event_for};
     struct CommitBoundary {
-        inner: JournalEventStore<PostgresEventRepository, Ledger>,
+        inner: EventSourcedStore<PostgresEventRepository, Ledger>,
         pool: PgPool,
         mode: u8,
         loads: Arc<AtomicUsize>,
         commits: Arc<AtomicUsize>,
         durable: Arc<tokio::sync::Notify>,
     }
-    impl EventStore<Ledger> for CommitBoundary {
-        type Context = cqrsx::journal::store::EventStoreAggregateContext<Ledger>;
+    impl AggregateStore<Ledger> for CommitBoundary {
+        type Context = cqrsx::journal::store::CommittedAggregate<Ledger>;
         async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
             self.inner.load_events(id).await
         }
@@ -655,7 +655,7 @@ mod contracts {
         let commits = Arc::new(AtomicUsize::new(0));
         let executor = StoreCommandExecutor::new(
             CommitBoundary {
-                inner: JournalEventStore::new(PostgresEventRepository::new(db.pool.clone())),
+                inner: EventSourcedStore::new(PostgresEventRepository::new(db.pool.clone())),
                 pool: db.pool.clone(),
                 mode: 3,
                 loads: loads.clone(),
@@ -692,7 +692,7 @@ mod contracts {
             let durable = Arc::new(tokio::sync::Notify::new());
             let executor = StoreCommandExecutor::new(
                 CommitBoundary {
-                    inner: JournalEventStore::new(PostgresEventRepository::new(pool.clone())),
+                    inner: EventSourcedStore::new(PostgresEventRepository::new(pool.clone())),
                     pool: pool.clone(),
                     mode,
                     loads: loads.clone(),
@@ -727,7 +727,7 @@ mod contracts {
             }
             assert_eq!(loads.load(Ordering::SeqCst), if mode == 0 { 2 } else { 1 });
             assert_eq!(commits.load(Ordering::SeqCst), 1);
-            let context = JournalEventStore::<_, Ledger>::new(repo).load_aggregate(&id).await.unwrap();
+            let context = EventSourcedStore::<_, Ledger>::new(repo).load_aggregate(&id).await.unwrap();
             assert_eq!(context.aggregate.0, if mode == 0 { vec![10, -7] } else { vec![10] });
             assert_eq!(context.last_sequence, if mode == 0 { 2 } else { 1 });
         }

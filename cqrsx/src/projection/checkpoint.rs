@@ -119,7 +119,11 @@ pub enum CheckpointError {
     /// A row holds a value this version cannot read.
     #[error("checkpoint row is corrupt: {0}")]
     Corrupt(#[source] Box<dyn Error + Send + Sync + 'static>),
-    /// The request itself is wrong: a pace beyond the row's range, a projection nobody registered.
+    /// The row of the projection does not exist: its processor registers it before its first claim, so the
+    /// projection has not started yet, or its row was dropped.
+    #[error("checkpoint row is not registered")]
+    NotRegistered,
+    /// The request itself is wrong, e.g. a value beyond the row's range.
     #[error("invalid checkpoint request: {0}")]
     Invalid(&'static str),
 }
@@ -130,7 +134,7 @@ impl CheckpointError {
         match self {
             Self::Storage(_) => FailureCategory::Storage,
             Self::Corrupt(_) => FailureCategory::Corrupt,
-            Self::Invalid(_) => FailureCategory::Invalid,
+            Self::NotRegistered | Self::Invalid(_) => FailureCategory::Invalid,
         }
     }
 }
@@ -180,7 +184,8 @@ pub trait CheckpointStore: Send + Sync {
     ) -> impl Future<Output = Result<bool, CheckpointError>> + Send;
 
     /// Asks the owner, whoever it is or will be, to rebuild every document of the projection with `pace`
-    /// between the events of one key; one rebuild at a time.
+    /// between the events of one key; one rebuild at a time. `CheckpointError::NotRegistered` when the row does
+    /// not exist (its processor has not started).
     fn request_rebuild(
         &self,
         key: &CheckpointKey,
@@ -188,6 +193,7 @@ pub trait CheckpointStore: Send + Sync {
     ) -> impl Future<Output = Result<RebuildReply, CheckpointError>> + Send;
 
     /// Asks the owner to rebuild the document of one aggregate; a repeated request for the same key is one.
+    /// `CheckpointError::NotRegistered` when the row does not exist (its processor has not started).
     fn request_rebuild_key(
         &self,
         key: &CheckpointKey,
@@ -283,14 +289,20 @@ mod tests {
             (corrupt.category(), corrupt.to_string().as_str()),
             (FailureCategory::Corrupt, "checkpoint row is corrupt: bad position")
         );
-        let invalid = CheckpointError::Invalid("projection is not registered");
+        let invalid = CheckpointError::Invalid("rebuild pace does not fit the row");
         assert_eq!(
             (invalid.category(), invalid.to_string().as_str()),
             (
                 FailureCategory::Invalid,
-                "invalid checkpoint request: projection is not registered"
+                "invalid checkpoint request: rebuild pace does not fit the row"
             )
         );
         assert!(std::error::Error::source(&invalid).is_none());
+        let missing = CheckpointError::NotRegistered;
+        assert_eq!(
+            (missing.category(), missing.to_string().as_str()),
+            (FailureCategory::Invalid, "checkpoint row is not registered")
+        );
+        assert!(std::error::Error::source(&missing).is_none());
     }
 }

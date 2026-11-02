@@ -100,7 +100,7 @@ pub enum FailureCategory {
     Storage,
     /// A checkpoint row holds a value this version cannot read.
     Corrupt,
-    /// A checkpoint request was wrong.
+    /// A checkpoint request was wrong, or named a row that is not registered.
     Invalid,
 }
 

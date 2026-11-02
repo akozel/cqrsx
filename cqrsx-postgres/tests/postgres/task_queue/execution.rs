@@ -1,17 +1,10 @@
 use super::*;
-use cqrsx::task::policy::{Policies, PolicyName, RetryPause, TaskPolicy};
+use cqrsx::task::policy::{Policies, RetryPause, TaskPolicy};
 
 /// The policies of the queue's tests: the dummy task waits 300 s before its next attempt.
 fn dummy_waits_300_s() -> Policies {
-    const DUMMY: PolicyName = PolicyName::try_new("dummy").unwrap();
-    Policies::builder()
-        .policy(
-            DUMMY,
-            TaskPolicy::new(RetryPause::fixed(Duration::from_secs(300)), NonZeroU16::new(10).unwrap()),
-        )
-        .bind::<DummyTaskV1>(DUMMY)
-        .build()
-        .unwrap()
+    let policy = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(300)), NonZeroU16::new(10).unwrap());
+    Policies::builder().task::<DummyTaskV1>(policy).build().unwrap()
 }
 
 #[tokio::test]

@@ -7,7 +7,7 @@ use cqrsx::{
     reactions::Reactions,
     task::{
         Task,
-        policy::{PoliciesBuilder, PolicyName, RetryPause},
+        policy::{PoliciesBuilder, TaskPolicy},
     },
     view::View,
     worker::{TaskHandler, adapter::boxed::BoxedTaskAdapter, dependencies::Dependencies},
@@ -16,7 +16,6 @@ use serde::de::DeserializeOwned;
 use std::{
     any::{Any, TypeId},
     fmt,
-    num::NonZeroU16,
     sync::Arc,
 };
 
@@ -32,31 +31,20 @@ pub struct ObservedProcessor<'a> {
 /// The observer of the processor of a view, made from the view's name and the node's (the owner of its checkpoint).
 pub(crate) type ProjectionObserverFactory = Arc<dyn Fn(ObservedProcessor<'_>) -> Arc<dyn ProjectionObserver> + Send + Sync>;
 
-type Bind = fn(PoliciesBuilder, PolicyName) -> PoliciesBuilder;
+/// How a task type registers its policy with the table: `PoliciesBuilder::task::<T>`.
+type RegisterPolicy = fn(PoliciesBuilder, TaskPolicy) -> PoliciesBuilder;
 
-/// A policy of [`Module::policy`].
-pub(crate) struct PolicyEntry {
-    pub(crate) name: PolicyName,
-    pub(crate) retry: RetryPause,
-    pub(crate) max_attempts: NonZeroU16,
-}
-
-/// A task type: its handler and the policy it is bound to.
+/// A task type: its handler, its policy and how its payload type registers the policy.
 pub(crate) struct TaskEntry {
     pub(crate) adapter: BoxedTaskAdapter,
-    pub(crate) binding: Option<PolicyBinding>,
-}
-
-/// The policy a task type is bound to, and how its payload type binds itself.
-pub(crate) struct PolicyBinding {
-    pub(crate) name: PolicyName,
-    pub(crate) bind: Bind,
+    pub(crate) policy: TaskPolicy,
+    pub(crate) register: RegisterPolicy,
 }
 
 /// What one part of an application plugs into the engine; the engine checks it when it is built:
 /// - an aggregate type with its rules, whose reactions plan the tasks of its decisions ([`aggregate`](Self::aggregate));
 /// - the views of an aggregate, each fed by a projection processor ([`view`](Self::view));
-/// - task types with their handlers, bound to policies ([`task`](Self::task), [`policy`](Self::policy));
+/// - task types with their handlers and the policy of each ([`task`](Self::task));
 /// - what the handlers depend on, by type ([`provide`](Self::provide));
 /// - the observers of every command and every processor of the engine ([`observe_commands`](Self::observe_commands),
 ///   [`observe_projections`](Self::observe_projections)), e.g. for an activity feed;
@@ -66,7 +54,6 @@ pub struct Module {
     pub(crate) name: &'static str,
     pub(crate) aggregates: Vec<AggregateEntry>,
     pub(crate) views: Vec<ViewEntry>,
-    pub(crate) policies: Vec<PolicyEntry>,
     pub(crate) tasks: Vec<TaskEntry>,
     pub(crate) dependencies: Dependencies,
     pub(crate) command_observers: Vec<Arc<dyn AnyCommandObserver>>,
@@ -80,12 +67,10 @@ impl fmt::Debug for Module {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let aggregates: Vec<&str> = self.aggregates.iter().map(|aggregate| aggregate.name).collect();
         let views: Vec<&str> = self.views.iter().map(|view| view.name).collect();
-        let policies: Vec<PolicyName> = self.policies.iter().map(|policy| policy.name).collect();
         f.debug_struct("Module")
             .field("name", &self.name)
             .field("aggregates", &aggregates)
             .field("views", &views)
-            .field("policies", &policies)
             .field("tasks", &self.tasks.len())
             .field("dependencies", &self.dependencies)
             .finish_non_exhaustive()
@@ -98,7 +83,6 @@ impl Module {
             name,
             aggregates: Vec::new(),
             views: Vec::new(),
-            policies: Vec::new(),
             tasks: Vec::new(),
             dependencies: Dependencies::default(),
             command_observers: Vec::new(),
@@ -134,25 +118,18 @@ impl Module {
         self
     }
 
-    /// The task type of `handler`; [`TaskStep::policy`] binds it to a policy.
-    pub fn task<T, H>(self, handler: H) -> TaskStep
+    /// The task type of `handler` and the policy its tasks follow: the pause before a retry and the attempt budget
+    /// (`TaskPolicy::default()` keeps the library's defaults). A policy is a `Copy` value: tasks of one module or of
+    /// several share one by passing the same value. A task type is registered once.
+    pub fn task<T, H>(mut self, handler: H, policy: TaskPolicy) -> Self
     where
         T: Task + DeserializeOwned + Send + 'static,
         H: TaskHandler<T> + 'static,
     {
-        TaskStep {
-            module: self,
+        self.tasks.push(TaskEntry {
             adapter: BoxedTaskAdapter::json::<T, H>(handler),
-            bind: PoliciesBuilder::bind::<T>,
-        }
-    }
-
-    /// The policy `name`: the pause before a retry and the attempt budget of its task types.
-    pub fn policy(mut self, name: PolicyName, retry: RetryPause, max_attempts: NonZeroU16) -> Self {
-        self.policies.push(PolicyEntry {
-            name,
-            retry,
-            max_attempts,
+            policy,
+            register: PoliciesBuilder::task::<T>,
         });
         self
     }
@@ -177,35 +154,6 @@ impl Module {
     ) -> Self {
         self.projection_observers.push(Arc::new(observers));
         self
-    }
-}
-
-/// A task type of [`Module::task`], bound to a policy or to none.
-#[derive(Debug)]
-#[must_use = "a task type is registered by `policy` or `without_policy`"]
-pub struct TaskStep {
-    module: Module,
-    adapter: BoxedTaskAdapter,
-    bind: Bind,
-}
-
-impl TaskStep {
-    /// The task type waits the pauses and gets the attempts of the policy `name`.
-    pub fn policy(mut self, name: PolicyName) -> Module {
-        self.module.tasks.push(TaskEntry {
-            adapter: self.adapter,
-            binding: Some(PolicyBinding { name, bind: self.bind }),
-        });
-        self.module
-    }
-
-    /// The task type keeps the engine's defaults: the default budget, the queue's redelivery backoff.
-    pub fn without_policy(mut self) -> Module {
-        self.module.tasks.push(TaskEntry {
-            adapter: self.adapter,
-            binding: None,
-        });
-        self.module
     }
 }
 

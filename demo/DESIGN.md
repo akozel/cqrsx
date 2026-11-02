@@ -184,8 +184,10 @@ arrive by type, the next command is `ctx.execute::<Fan>(..)`. Answers of the cha
 | any other rejection | the task fails |
 
 A handler only answers "done / retry / fail"; the pause comes from the policy of the task type, which the module root
-`fan.rs` binds: `STEP` (chain steps) — 1 s, `MAIL` (e-mails) — from `ENCORE_TASK_RETRY_BASE_MS`, doubling up to
-`ENCORE_TASK_RETRY_MAX_MS`; the number of attempts of both is `ENCORE_TASK_MAX_ATTEMPTS`.
+`fan.rs` gives each task (`task(handler, policy)`). The values are `Policies` in
+`back-end/src/fan/application/policies.rs`: the step policy (chain steps) — 1 s, the mail policy (e-mails) — from
+`ENCORE_TASK_RETRY_BASE_MS`, doubling up to `ENCORE_TASK_RETRY_MAX_MS`; the number of attempts of both is
+`ENCORE_TASK_MAX_ATTEMPTS`.
 
 An e-mail goes to an external mail service over HTTP: the client is `back-end/src/shared/infrastructure/http_mailer.rs`
 (the port is `shared/application/mail.rs`), the request `POST /mail` with an `Idempotency-Key` from `booking_id` or
@@ -282,7 +284,9 @@ again".
 - An observer on the node that accepted the request reads the checkpoint rows every 250 ms and publishes
   `rebuild.started`, `rebuild.progress`, `rebuild.finished` (§2.3); every replaced document gives `projection.rebuilt`.
 - **⟲ One hall** (`POST /api/concerts/{id}/rebuild`, `202`): the owner of the halls' checkpoint replaces one document
-  (`request_rebuild_key`), nothing else is touched.
+  (`cqrs.view::<ConcertHallView>().rebuild(&id)`), nothing else is touched.
+  The engine's rebuild, verify, history and journal-size calls are behind its feature `operation-utils`, which the demo
+  enables in `demo/Cargo.toml`.
 - **Status** (`GET /api/projections/status`): per projection the checkpoint, the lag in events (capped at
   `ENCORE_PROJECTION_LAG_CAP`), the owner, failures and state; the overall state is the worst in the order `stalled` >
   `unclaimed` > `starting` > `rebuilding` > `live`. The read is bounded by `ENCORE_PROJECTION_STATUS_TIMEOUT_MS`; when
@@ -306,8 +310,11 @@ banner "This state isn't stored anywhere — it was computed from events 1…n")
 
 ### 2.1 Routes
 
-The root of each module (`concert.rs`, `fan.rs`, `operations.rs`) registers the routes, one file per route in its
-`presentation/`.
+The root of each module (`concert.rs`, `fan.rs`, `operations.rs`) registers `presentation::http::routes()`: one URL
+table in the module's `presentation/http.rs`, a section per kind, one line per endpoint. How a presentation is laid out
+(transport, kind of engine entry, action), how the request and the response of an endpoint are named and where their
+conversions live are rules 10–12 of [Writing an application on cqrsx](../.claude/rules/cqrsx-application.md#presentation);
+`tests/architecture.rs` checks the layout and the names.
 
 | Method and path | Side | Purpose | Codes |
 |---|---|---|---|
@@ -325,7 +332,7 @@ The root of each module (`concert.rs`, `fan.rs`, `operations.rs`) registers the 
 | `GET /api/projections/verify` | operations | comparison of the documents with the applied part of the history | 200, 503 |
 | `GET /api/activity` | SSE | activity feed (§2.3) | `text/event-stream` |
 
-Errors have one shape: `{ outcome, error: { code, params, message } }` (`shared/presentation/error.rs`).
+Errors have one shape: `{ outcome, error: { code, params, message } }` (`shared/presentation/http/error.rs`).
 Routes of the sidecar — §3.2.
 
 ### 2.2 A command and its answer
@@ -338,9 +345,10 @@ The body is JSON with a `type` field; the internal commands of `Fan` cannot be e
 { "type": "CancelBooking", "seat": "B4", "fan_id": "fox" }
 ```
 
-`concert/presentation/execute_command.rs` picks `command_id = Uuid::now_v7()` (it is also the `booking_id` or
-`cancellation_id`) and runs the command through `cqrs.source("ui")`; the engine adds the metadata (§1.4) and the tasks
-(§1.6).
+`concert/presentation/http/commands/execute.rs` picks `command_id = Uuid::now_v7()`, makes it the `booking_id` or
+`cancellation_id` of the command (`execute/request.rs` turns the body into the command) and runs it with
+`cqrs.source("ui").execute_with_id(command_id, ..)`; the engine adds the metadata (§1.4) and the tasks (§1.6).
+`execute/response.rs` gives the outcome its status and body.
 
 ```json
 // 200

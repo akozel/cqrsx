@@ -10,6 +10,8 @@ description = "The engine of cqrsx: modules assembled into one application over 
 default = []
 postgres = ["dep:cqrsx-postgres", "dep:sqlx"]
 mongodb = ["postgres", "dep:cqrsx-mongodb", "dep:mongodb"]
+operation-utils = []
+test-utils = []
 http = ["dep:axum", "dep:tower-http", "dep:tracing-subscriber", "tokio/net", "tokio/signal"]
 
 [dependencies]
@@ -30,6 +32,8 @@ tracing-subscriber = { workspace = true, optional = true }
 uuid.workspace = true
 
 [dev-dependencies]
+# The crate's own tests (unit, `tests/*`, the README doctest) get the helpers of `test-utils`.
+cqrsx-engine = { path = ".", default-features = false, features = ["test-utils"] }
 cqrsx-fixtures.workspace = true
 log.workspace = true
 serde.workspace = true

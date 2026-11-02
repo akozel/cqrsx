@@ -336,7 +336,7 @@ impl CheckpointStore for MongoCheckpointStore {
             .await
             .map_err(storage_error("request_rebuild"))?;
         let Some(before) = before else {
-            return Err(CheckpointError::Invalid("projection is not registered"));
+            return Err(CheckpointError::NotRegistered);
         };
         let before: Requested = decode(before)?;
         Ok(if !before.rebuild_requested && before.rebuild_cursor.is_none() {
@@ -353,7 +353,7 @@ impl CheckpointStore for MongoCheckpointStore {
             .await
             .map_err(storage_error("request_rebuild_key"))?;
         if result.matched_count == 0 {
-            return Err(CheckpointError::Invalid("projection is not registered"));
+            return Err(CheckpointError::NotRegistered);
         }
         Ok(())
     }

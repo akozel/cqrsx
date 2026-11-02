@@ -57,7 +57,7 @@ pub fn e_ticket_mail(payload: &SendETicketV1) -> Mail {
 }
 
 /// Sends the e-ticket, reporting the attempt to the activity log; the mail service answers whether it was delivered (a
-/// repeat is delivered once) or is retried after the pause of the `MAIL` policy.
+/// repeat is delivered once) or is retried after the pause of the mail policy.
 #[task_handler]
 pub async fn send_e_ticket(task: SendETicketV1, ctx: &TaskContext, mail: &Mailer, activity: &ActivityHub) -> TaskResult {
     mail.send(ctx, activity, e_ticket_mail(&task)).await

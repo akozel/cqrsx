@@ -1,6 +1,6 @@
 //! A fan ledger over in-memory storage, task attempts and their contexts, and the facts and commands of decisions
 //! built by hand, for the tests of the ledger's tasks and reactions.
-use crate::shared::application::policies::CHAIN_RETRY_AFTER;
+use crate::fan::application::policies::CHAIN_RETRY_AFTER;
 use crate::{
     fan::{
         application::record_ticket::RecordTicketV1,

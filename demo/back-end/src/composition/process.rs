@@ -12,11 +12,7 @@ use crate::{
         domain::{Fan, FanCommand, commands::RecordTicket},
     },
     shared::{
-        application::{
-            TicketLimit,
-            activity::ActivityHub,
-            policies::{MAIL, STEP},
-        },
+        application::{TicketLimit, activity::ActivityHub},
         domain::{
             ConcertId, FanId, FanLedgerId,
             venue::{SeatId, Zone},
@@ -43,6 +39,7 @@ use cqrsx::{
 use cqrsx_engine::{
     Cqrs,
     build::BuildError,
+    memory::InMemory,
     settings::{DEFAULT_SNAPSHOT_EVERY, Settings, SettingsError},
     setup::Setup,
 };
@@ -167,15 +164,8 @@ async fn the_modules_default_to_the_values_of_the_configuration() {
         NonZeroU16::new(6).unwrap(),
     );
     assert_eq!(
-        formats.clone().map(|format| defaults.policies().policy_for(&format).cloned()),
-        [Some(step), Some(step), Some(mail), Some(mail)]
-    );
-    assert_eq!(
-        (
-            defaults.policies().name_of(&formats[0]),
-            defaults.policies().name_of(&formats[2])
-        ),
-        (Some(STEP), Some(MAIL))
+        formats.map(|format| defaults.policies().policy_for(&format)),
+        [step, step, mail, mail]
     );
     let mail_of = |cqrs: &Cqrs, url: &'static str| {
         let lookup = move |name: &str| (name == "ENCORE_MAIL_SERVICE_URL" && !url.is_empty()).then(|| url.to_owned());
@@ -218,7 +208,13 @@ async fn the_engine_runs_every_aggregate_and_view_the_modules_register() {
     ui.execute::<Fan>(&ledger, FanCommand::RecordTicket(record.clone()))
         .await
         .unwrap();
-    let without_fan = Cqrs::in_memory().module(concert::module).build().await.unwrap();
+    let without_fan = Cqrs::with_settings(Settings::default())
+        .event_store(InMemory)
+        .projections(InMemory)
+        .module(concert::module)
+        .build()
+        .await
+        .unwrap();
     let refused = without_fan
         .source("ui")
         .execute::<Fan>(&ledger, FanCommand::RecordTicket(record))

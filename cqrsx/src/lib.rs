@@ -20,5 +20,4 @@ pub mod worker;
 #[doc(hidden)]
 pub mod __private {
     pub use serde_json;
-    pub use uuid::Uuid;
 }

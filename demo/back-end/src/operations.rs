@@ -41,7 +41,7 @@ pub fn module(setup: &Setup) -> Result<Module, SetupError> {
                 projections.clone(),
             ))
         })
-        .routes(presentation::routes()))
+        .routes(presentation::http::routes()))
 }
 
 /// Encore! paces between a slow-motion delay the UI asks for and a maximum nobody may exceed.

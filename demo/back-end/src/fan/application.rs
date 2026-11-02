@@ -4,6 +4,7 @@
 //! each of its facts ([`reactions`]), the read model and the wallet assembled from it. Task names are `[a-z0-9_]` only
 //! (decision D-05): the library's diagnostics print other names as `unknown`.
 pub mod issue_refund;
+pub mod policies;
 pub mod reactions;
 pub mod record_cancellation;
 pub mod record_ticket;

@@ -21,17 +21,14 @@ mod tests {
     use cqrsx::domain::command::Command;
     use uuid::Uuid;
 
-    /// The activity feed names a ledger's command by its type; its fan is the ledger's, its id not the command's.
+    /// The activity feed names a ledger's command by its type; its fan is the ledger's, not a label of the command.
     #[test]
     fn every_ledger_command_reports_its_name() {
         let id = Uuid::now_v7();
         let reported = [record(id), cancel(id, Uuid::now_v7())]
             .iter()
-            .map(|command| (command.name(), command.labels(), command.command_id()))
+            .map(|command| (command.name(), command.labels()))
             .collect::<Vec<_>>();
-        assert_eq!(
-            reported,
-            [("RecordTicket", vec![], None), ("RecordCancellation", vec![], None)]
-        );
+        assert_eq!(reported, [("RecordTicket", vec![]), ("RecordCancellation", vec![])]);
     }
 }
