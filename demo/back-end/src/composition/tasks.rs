@@ -44,6 +44,7 @@ use cqrsx::{
         format::TaskFormat,
         policy::{Policies, RetryPause, TaskPolicy},
     },
+    testing::command_executor::TestCommandExecutor,
     worker::{adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, handlers::TaskHandlers},
 };
 use cqrsx_engine::{
@@ -53,7 +54,6 @@ use cqrsx_engine::{
     settings::Settings,
     setup::{Setup, SetupError},
 };
-use cqrsx_testing::command_executor::TestCommandExecutor;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::{num::NonZeroU16, sync::Arc, time::Duration};

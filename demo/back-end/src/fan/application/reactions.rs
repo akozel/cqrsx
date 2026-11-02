@@ -122,8 +122,8 @@ mod tests {
             command::{CommandError, CommandExecutor, metadata::CommandMetadata},
             journal::store::EventSourcedStore,
             memory::event_repository::MemoryEventRepository,
+            testing::{command_executor::TestCommandExecutor, unavailable_store::UnavailableStore},
         };
-        use cqrsx_testing::{command_executor::TestCommandExecutor, unavailable_store::UnavailableStore};
         use std::sync::Arc;
         use uuid::Uuid;
 

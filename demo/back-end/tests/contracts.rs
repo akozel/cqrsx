@@ -41,6 +41,7 @@ use cqrsx::{
     },
     reactions::ReactionsPlanner,
     task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat, policy::redelivery_backoff},
+    testing::{command_executor::TestCommandExecutor, unavailable_store::UnavailableStore},
     worker::{
         TaskHandler, TaskResult,
         adapter::boxed::BoxedTaskAdapter,
@@ -65,7 +66,6 @@ use cqrsx_engine::{
     setup::Setup,
     views::JournalTotals,
 };
-use cqrsx_testing::{command_executor::TestCommandExecutor, unavailable_store::UnavailableStore};
 use encore_backend::{
     DEMO_DEFAULTS, concert,
     concert::{

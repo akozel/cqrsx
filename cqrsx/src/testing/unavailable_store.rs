@@ -1,5 +1,5 @@
 //! An aggregate store that is never reachable.
-use cqrsx::{
+use crate::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{AggregateStore, PersistenceError, store::CommittedAggregate},
     task::NewTask,
@@ -7,7 +7,7 @@ use cqrsx::{
 use std::collections::HashMap;
 
 /// Every call fails with [`PersistenceError::Connection`], which the command boundary
-/// reports as [`Unavailable`](cqrsx::command::CommandError::Unavailable). Drives the
+/// reports as [`Unavailable`](crate::command::CommandError::Unavailable). Drives the
 /// "storage unavailable" branches of a use case and proves that a path never touches storage.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct UnavailableStore;
@@ -41,7 +41,7 @@ impl<A: Aggregate> AggregateStore<A> for UnavailableStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::Ledger as TestAggregate;
+    use crate::domain::aggregate::tests::Ledger as TestAggregate;
 
     #[tokio::test]
     async fn every_call_fails_as_a_connection_error() {

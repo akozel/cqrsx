@@ -73,7 +73,7 @@ jobs:
       # Alone, a crate gets only the features it asks for: the workspace build no longer hides a missing one.
       - name: Check each crate on its own
         run: |
-          for package in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-testing cqrsx-fixtures; do
+          for package in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-fixtures; do
             cargo check --locked -p "$package" --lib
           done
           cargo check --locked -p cqrsx --lib --features test-utils
@@ -147,7 +147,6 @@ jobs:
           - { package: cqrsx, flags: "" }
           - { package: cqrsx-postgres, flags: "" }
           - { package: cqrsx-mongodb, flags: "" }
-          - { package: cqrsx-testing, flags: "" }
           - { package: cqrsx-engine, flags: "--all-features" }
     steps:
       - name: Check out repository

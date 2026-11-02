@@ -21,8 +21,8 @@ tracing.workspace = true
 uuid.workspace = true
 
 [features]
-# The backend in memory, for tests: the crate's own tests always see it (`cfg(test)`), the tests of the other crates
-# enable it. A working build has no use for it.
+# The backend in memory and the test tools of an application (`testing`), for tests: the crate's own tests always see them
+# (`cfg(test)`), the tests of the other crates and of the application enable them. A working build has no use for them.
 test-utils = []
 
 [dev-dependencies]

@@ -15,6 +15,9 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
 - `cqrsx/src/view` — read models: `View`, their projection, repository and verification.
 - `cqrsx/src/memory` — the backend in memory: journal, checkpoints, views, task queue (feature `test-utils`; the crate's
   own tests always have it).
+- `cqrsx/src/testing` — the test tools of an application: `framework.rs` (`TestFramework`, aggregate given/when/then),
+  `validator.rs`, `command_executor.rs` (use-case tests over a journal in memory), `unavailable_store.rs` (feature
+  `test-utils`, as `memory`); `tests/testing.rs` runs them on an example application.
 - `cqrsx/src/task` — a task as data: `NewTask`, format, attempt, policies.
 - `cqrsx/src/worker` — running tasks: handlers, dispatcher, adapters, executor, queue port, runtime.
 - `cqrsx/src/diagnostics.rs` — the one public part of the log module: `safe_type`, `StorageFailure` (category and code
@@ -36,9 +39,6 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
   without a `tracing` subscriber. Derived in part from postgres-es: `licenses/`.
 - `cqrsx-mongodb` — views and projection checkpoints in MongoDB (no features); `tests/mongo.rs` starts MongoDB,
   `journal_in_postgres` also PostgreSQL.
-- `cqrsx-testing` — test tools for the code that uses `cqrsx`: `framework.rs` (`TestFramework`, aggregate
-  given/when/then), `command_executor.rs`, `unavailable_store.rs`, `validator.rs`;
-  `tests/framework.rs` runs the tools on an example application.
 - `cqrsx-macros` — the derive macros (`Event`, `Events`, `Command`, `Decide`, `Task`, `Rejection`) and `#[task_handler]`.
 - `cqrsx-fixtures` — a dev-dependency of the crates' tests: PostgreSQL and MongoDB containers on leased ports, captured
   logs, isolated test processes.
@@ -96,9 +96,9 @@ Every change ships with tests. Cover new code paths, including error branches, w
 next to the code, integration tests in the crate's `tests`, or doctests.
 
 Verification target: CI enforces **97% line coverage** for the workspace and for `cqrsx`, `cqrsx-postgres`,
-`cqrsx-mongodb`, `cqrsx-engine` and `cqrsx-testing` alone (`cqrsx-fixtures` counts only in the workspace total). The
-core has one feature, `test-utils` (the backend in memory): its own tests always have it, the tests of the other crates
-enable it. Keep every feature of the engine (`postgres`, `mongodb`, `http`, `operation-utils`, `test-utils`) compiling
+`cqrsx-mongodb` and `cqrsx-engine` alone (`cqrsx-fixtures` counts only in the workspace total). The core has one
+feature, `test-utils` (the backend in memory and the test tools): its own tests always have it, the tests of the other
+crates enable it. Keep every feature of the engine (`postgres`, `mongodb`, `http`, `operation-utils`, `test-utils`) compiling
 and tested on its own together with a store feature, `postgres` (the default) or `test-utils`: without either the
 engine does not compile. The other crates have no features. The engine's own tests get `test-utils` from its
 dev-dependency on itself.
@@ -114,18 +114,18 @@ cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo clippy --locked -p cqrsx -p cqrsx-engine --no-default-features --all-targets -- -D warnings
 cargo clippy --locked -p cqrsx-engine --no-default-features --features postgres --lib -- -D warnings   # the library alone: no test-utils
-for p in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-testing cqrsx-fixtures; do cargo check --locked -p $p --lib; done
+for p in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-fixtures; do cargo check --locked -p $p --lib; done
 cargo check --locked -p cqrsx --lib --features test-utils
 cargo check --locked -p cqrsx-engine --no-default-features --features postgres --lib   # also with --features test-utils, mongodb, test-utils,http, test-utils,operation-utils
 RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --all-features --no-deps
 python3 .github/scripts/check-links.py                       # relative links and anchors of the documentation
 RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-features
 cargo test --locked -p cqrsx                                  # the crates without features, one by one
-cargo test --locked -p cqrsx-testing                          # also: -p cqrsx-postgres, -p cqrsx-mongodb
+cargo test --locked -p cqrsx-postgres                         # also: -p cqrsx-mongodb
 cargo test --locked -p cqrsx-engine --no-default-features     # engine in memory (without the flag the default feature `postgres` runs the container tests too)
 cargo test --locked -p cqrsx-engine --no-default-features --features postgres   # also: mongodb, test-utils, test-utils,http, test-utils,operation-utils
 cargo llvm-cov --locked --workspace --all-features --fail-under-lines 97
-cargo llvm-cov --locked -p cqrsx --fail-under-lines 97     # also: -p cqrsx-postgres, -p cqrsx-mongodb, -p cqrsx-testing
+cargo llvm-cov --locked -p cqrsx --fail-under-lines 97     # also: -p cqrsx-postgres, -p cqrsx-mongodb
 cargo llvm-cov --locked -p cqrsx-engine --all-features --fail-under-lines 97
 ```
 

@@ -25,8 +25,8 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
 uuid = { version = "1", features = ["serde", "v7"] }
 
 [dev-dependencies]
+cqrsx = { git = "https://github.com/akozel/cqrsx", features = ["test-utils"] }
 cqrsx-engine = { git = "https://github.com/akozel/cqrsx", features = ["test-utils"] }
-cqrsx-testing = { git = "https://github.com/akozel/cqrsx" }
 ```
 
 This complete example is adapted from [`tests/engine/modules.rs`](tests/engine/modules.rs) and

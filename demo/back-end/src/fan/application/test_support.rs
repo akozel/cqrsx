@@ -17,9 +17,9 @@ use cqrsx::{
     memory::event_repository::MemoryEventRepository,
     reactions::ReactionsPlanner,
     task::{Task, attempt::TaskAttempt},
+    testing::command_executor::TestCommandExecutor,
     worker::context::{Executors, TaskContext},
 };
-use cqrsx_testing::command_executor::TestCommandExecutor;
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;

@@ -36,7 +36,7 @@ mod tests {
         Concert, ConcertError,
         test_support::{announce, announced, rules},
     };
-    use cqrsx_testing::framework::TestFramework;
+    use cqrsx::testing::framework::TestFramework;
 
     #[test]
     fn announce_concert_happy_path() {

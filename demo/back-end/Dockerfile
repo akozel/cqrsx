@@ -14,7 +14,6 @@ COPY cqrsx-fixtures ./cqrsx-fixtures
 COPY cqrsx-macros ./cqrsx-macros
 COPY cqrsx-mongodb ./cqrsx-mongodb
 COPY cqrsx-postgres ./cqrsx-postgres
-COPY cqrsx-testing ./cqrsx-testing
 COPY demo/Cargo.toml demo/Cargo.lock ./demo/
 COPY demo/back-end ./demo/back-end
 COPY demo/sidecar ./demo/sidecar
@@ -24,7 +23,7 @@ COPY demo/sidecar ./demo/sidecar
 # sources are touched first, so they are always recompiled. The binary is copied out of the cache.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/demo/target \
-    find cqrsx cqrsx-engine cqrsx-fixtures cqrsx-macros cqrsx-mongodb cqrsx-postgres cqrsx-testing \
+    find cqrsx cqrsx-engine cqrsx-fixtures cqrsx-macros cqrsx-mongodb cqrsx-postgres \
         demo/back-end demo/sidecar \
         -type f -exec touch {} + \
     && cd demo && cargo build --release --locked -p encore-backend \

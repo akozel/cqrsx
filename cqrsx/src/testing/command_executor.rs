@@ -1,5 +1,5 @@
 //! A command executor over a journal in memory or a store of the test's own, for use-case tests.
-use cqrsx::{
+use crate::{
     command::{
         CommandError, CommandExecutor, CommitReport, executor::StoreCommandExecutor, locks::LockLimits,
         retry::AggregateConflictRetryPolicy,
@@ -27,7 +27,7 @@ use std::{
 ///
 /// The commands append to a journal in memory: one of the executor's own over [`new`](Self::new), or the store given to
 /// [`configured`](Self::configured) — an [`EventSourcedStore`] on a [`MemoryEventRepository`] the test shares with its
-/// projection processors (give the executor their [`CommitWakeup`](cqrsx::journal::wakeup::CommitWakeup)) and whose outbox
+/// projection processors (give the executor their [`CommitWakeup`](crate::journal::wakeup::CommitWakeup)) and whose outbox
 /// ([`MemoryEventRepository::outbox`]) holds the published tasks, a wrapper of such a store, or a store that is never
 /// reachable.
 ///
@@ -42,7 +42,7 @@ use std::{
 /// };
 /// use cqrsx::task::{NewTask, Task};
 /// use cqrsx::{journal::store::EventSourcedStore, memory::event_repository::MemoryEventRepository};
-/// use cqrsx_testing::command_executor::TestCommandExecutor;
+/// use cqrsx::testing::command_executor::TestCommandExecutor;
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Clone, Default, Serialize, Deserialize)]
@@ -137,7 +137,7 @@ impl<A: Aggregate + 'static, S: AggregateStore<A>> TestCommandExecutor<A, S> {
     ///
     /// Give it a store of the test's own when a journal is shared with projection processors or its outbox is inspected
     /// (`EventSourcedStore::new(journal.clone())`), a wrapper of such a store (failures, counters), or an
-    /// [`UnavailableStore`](crate::unavailable_store::UnavailableStore).
+    /// [`UnavailableStore`](crate::testing::unavailable_store::UnavailableStore).
     pub fn configured(
         store: S,
         rules: A::Rules,
@@ -195,8 +195,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::unavailable_store::UnavailableStore;
-    use cqrsx::{
+    use crate::{
         command::{
             causation::Causation,
             observer::CommandObserver,
@@ -205,6 +204,7 @@ mod tests {
         domain::{command::Decide, event::Events},
         journal::{repository::EventRepository, wakeup::CommitWakeup},
         task::Task,
+        testing::unavailable_store::UnavailableStore,
     };
     use serde::{Deserialize, Serialize};
 
@@ -309,7 +309,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_executor_of_new_has_a_journal_of_its_own() {
-        use crate::test_support::Ledger;
+        use crate::domain::aggregate::tests::Ledger;
         let (first, second) = (TestCommandExecutor::<Ledger>::new(()), TestCommandExecutor::<Ledger>::new(()));
         first.execute(&"a".into(), ()).await.unwrap();
         assert_eq!(first.store().load_events("a").await.unwrap().len(), 1);
@@ -403,8 +403,8 @@ mod tests {
     struct Outcomes(Mutex<Vec<String>>);
 
     impl CommandObserver<Stack> for Outcomes {
-        fn observe(&self, report: &cqrsx::command::observer::CommandReport<'_, Stack>) {
-            use cqrsx::command::observer::Outcome;
+        fn observe(&self, report: &crate::command::observer::CommandReport<'_, Stack>) {
+            use crate::command::observer::Outcome;
             let outcome = match report.outcome {
                 Outcome::Accepted { tasks } => format!("accepted with {} tasks", tasks.len()),
                 Outcome::Rejected(error) => format!("rejected: {error}"),

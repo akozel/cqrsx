@@ -9,8 +9,8 @@
 //! expanded to full paths and every other qualified path is collected, with comments and string literals removed
 //! first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
-//! the ledger's tasks. Of the framework (the crates `cqrsx`, `cqrsx_engine`, `cqrsx_postgres`, `cqrsx_mongodb` and
-//! `cqrsx_testing`, see `FRAMEWORK`) a domain sees the contracts of the core and their derive macros, a presentation the engine
+//! the ledger's tasks. Of the framework (the crates `cqrsx`, `cqrsx_engine`, `cqrsx_postgres` and `cqrsx_mongodb`, see
+//! `FRAMEWORK`; `cqrsx::testing` and `cqrsx::memory` are test code only) a domain sees the contracts of the core and their derive macros, a presentation the engine
 //! (`cqrsx_engine::Cqrs`: its commands, its views, the dependencies of the modules), the outcomes of a command, the
 //! rejection trait, the documents of the read models and the wrong documents of a verification. `main.rs` and `lib.rs` compose the modules, `testing.rs` and `composition.rs` with
 //! their directories test them as composed: they are exempt. A few rules apply to production code only: test code may use test
@@ -189,7 +189,7 @@ fn externals(layer: Option<Layer>) -> Externals {
     match layer {
         Some(Layer::Domain) => Externals {
             forbidden: &["sqlx", "mongodb", "axum", "tokio"],
-            test_only: &["serde_json", "cqrsx_testing"],
+            test_only: &["serde_json", "cqrsx::testing"],
             // The contracts of the domain, each with its derive macro under the same path (backlog 07/05): what is
             // known of a command (`Command`), the decision of a command (`Decide`), an event's name and version and
             // the enum of events (`domain::event`), the code and params of a rejection (`domain::rejection`).
@@ -199,7 +199,7 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::domain::command::Decide",
                 "cqrsx::domain::event",
                 "cqrsx::domain::rejection",
-                "cqrsx_testing",
+                "cqrsx::testing",
             ]),
         },
         Some(Layer::Application) => Externals {
@@ -214,7 +214,7 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "mongodb",
                 "axum",
             ],
-            test_only: &["cqrsx_testing", "cqrsx::memory"],
+            test_only: &["cqrsx::testing", "cqrsx::memory"],
             cqrsx_allowed: None,
         },
         Some(Layer::Presentation) => Externals {
@@ -569,9 +569,9 @@ fn paths(code: &str) -> Vec<(usize, String)> {
 }
 
 /// The crates of the framework: the core and every crate built on it. A path into any of them is a path into
-/// "cqrsx" for the allowlists, so that a crate split off the core (the engine, the adapters, the testing tools) does not
+/// "cqrsx" for the allowlists, so that a crate split off the core (the engine, the adapters) does not
 /// slip out of the rules.
-const FRAMEWORK: [&str; 5] = ["cqrsx", "cqrsx_engine", "cqrsx_postgres", "cqrsx_mongodb", "cqrsx_testing"];
+const FRAMEWORK: [&str; 4] = ["cqrsx", "cqrsx_engine", "cqrsx_postgres", "cqrsx_mongodb"];
 
 /// Whether `path` goes into a crate of the framework (a bare crate name is not a path into it).
 fn is_framework_path(path: &str) -> bool {
@@ -704,9 +704,9 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
         (
             "fan/application/x.rs",
-            "use cqrsx_testing::unavailable_store::UnavailableStore;\n",
+            "use cqrsx::testing::unavailable_store::UnavailableStore;\n",
         ),
-        ("concert/domain/x.rs", "use cqrsx_testing::framework::TestFramework;\n"),
+        ("concert/domain/x.rs", "use cqrsx::testing::framework::TestFramework;\n"),
         (
             "concert/domain/x.rs",
             "use cqrsx::memory::event_repository::MemoryEventRepository;\n",
@@ -722,7 +722,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     assert!(
         check(
             "fan/application/x.rs",
-            "#[cfg(test)]\nmod tests { use cqrsx_testing::unavailable_store::UnavailableStore; use crate::testing; }\n"
+            "#[cfg(test)]\nmod tests { use cqrsx::testing::unavailable_store::UnavailableStore; use crate::testing; }\n"
         )
         .is_empty(),
         "test tooling in test code"
@@ -730,7 +730,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     assert!(
         check(
             "concert/domain/x.rs",
-            "#[cfg(test)]\nmod tests { use cqrsx_testing::framework::TestFramework; }\n"
+            "#[cfg(test)]\nmod tests { use cqrsx::testing::framework::TestFramework; }\n"
         )
         .is_empty(),
         "test tooling in the test code of a domain"
@@ -859,7 +859,7 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
         "use cqrsx::domain::command::Command;\n",
         "use cqrsx::command::observer::CommandObserver;\n",
         "use cqrsx::command::CommitReport;\n",
-        "use cqrsx_testing::command_executor::TestCommandExecutor;\n",
+        "use cqrsx::testing::command_executor::TestCommandExecutor;\n",
         "use cqrsx::command::executor::StoreCommandExecutor;\n",
         "use cqrsx_engine::build::Builder;\n",
     ] {
@@ -936,11 +936,11 @@ fn every_crate_of_the_framework_is_under_the_rules() {
     // A bare crate name is no path into it; an inline path of any crate of the framework is collected.
     assert!(!is_framework_path("cqrsx_engine") && is_framework_path("cqrsx_engine::Cqrs"));
     assert!(!is_framework_path("cqrsx_other::Cqrs"));
-    let found: Vec<String> = paths("fn f() { cqrsx_testing::framework::TestFramework::default(); }\n")
+    let found: Vec<String> = paths("fn f() { cqrsx::testing::framework::TestFramework::default(); }\n")
         .into_iter()
         .map(|(_, path)| path)
         .collect();
-    assert_eq!(found, ["cqrsx_testing::framework::TestFramework::default"]);
+    assert_eq!(found, ["cqrsx::testing::framework::TestFramework::default"]);
 }
 
 /// Backlog 05/10: a presentation reads a read model through the engine and answers its stored documents; nothing else

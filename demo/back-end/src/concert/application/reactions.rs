@@ -145,8 +145,8 @@ mod tests {
             command::{CommandError, metadata::CommandMetadata},
             journal::AggregateStore,
             task::format::TaskFormat,
+            testing::unavailable_store::UnavailableStore,
         };
-        use cqrsx_testing::unavailable_store::UnavailableStore;
         use serde_json::{Value, json};
         use uuid::Uuid;
 

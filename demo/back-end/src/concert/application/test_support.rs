@@ -25,8 +25,8 @@ use cqrsx::{
     memory::event_repository::MemoryEventRepository,
     reactions::ReactionsPlanner,
     task::NewTask,
+    testing::command_executor::TestCommandExecutor,
 };
-use cqrsx_testing::command_executor::TestCommandExecutor;
 use std::{
     collections::HashMap,
     future::Future,

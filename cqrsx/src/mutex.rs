@@ -1,4 +1,4 @@
-//! The one way to take a `std::sync::Mutex` in cqrsx and in the crates built on it (`cqrsx-engine`, `cqrsx-testing`), so
+//! The one way to take a `std::sync::Mutex` in cqrsx and in the crates built on it (`cqrsx-engine`), so
 //! that a poisoned mutex is handled in one place (rule 10 of `.claude/rules/rust-style.md`).
 //!
 //! # Contract

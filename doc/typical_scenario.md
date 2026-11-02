@@ -95,7 +95,7 @@ The code is in [cancel booking](../demo/back-end/src/concert/domain/commands/can
 
 ## Testing and rules
 
-`TestFramework` (crate `cqrsx-testing`) tests an aggregate's decisions; an engine over `InMemory` stores tests modules
+`TestFramework` (`cqrsx::testing`, feature `test-utils`) tests an aggregate's decisions; an engine over `InMemory` stores tests modules
 and their chains; `run_tasks()` runs due work and `catch_up()` waits for views (the engine's feature `test-utils`, in
 the application's `[dev-dependencies]`). A task context and `MemoryTaskQueue` permit focused task tests. Modules register one executor per aggregate and one owner per view name; handlers
 must tolerate repeat delivery, while reactions must stay pure. The tests in
