@@ -29,8 +29,12 @@ use cqrsx::{
         observer::{CommandObserver, CommandReport, Outcome},
     },
     domain::event::{EventEnvelope, Events},
-    journal::{AggregateStore, PersistenceError, feed::Position},
-    memory::checkpoint_store::MemoryCheckpointStore,
+    journal::{
+        AggregateStore, PersistenceError,
+        feed::Position,
+        store::{CommittedAggregate, EventSourcedStore},
+    },
+    memory::{checkpoint_store::MemoryCheckpointStore, event_repository::MemoryEventRepository},
     projection::{
         checkpoint::CheckpointStore,
         processor::observer::{Applied, Failed, FailureCategory, LeaseChange, ProjectionObserver, RebuildReason, Rebuilt},
@@ -61,11 +65,7 @@ use cqrsx_engine::{
     setup::Setup,
     views::JournalTotals,
 };
-use cqrsx_testing::{
-    command_executor::TestCommandExecutor,
-    memory_store::{MemoryCommittedAggregate, MemoryStore},
-    unavailable_store::UnavailableStore,
-};
+use cqrsx_testing::{command_executor::TestCommandExecutor, unavailable_store::UnavailableStore};
 use encore_backend::{
     DEMO_DEFAULTS, concert,
     concert::{
@@ -576,12 +576,23 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
 
 /// The box office's store in memory with switches: every commit conflicts, every load fails, every load waits at a
 /// closed gate (holding the concert's lock).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Switched {
-    inner: MemoryStore<Concert>,
+    inner: EventSourcedStore<MemoryEventRepository, Concert>,
     conflict: Arc<AtomicBool>,
     unavailable: Arc<AtomicBool>,
     gate: Arc<Mutex<Option<Arc<Semaphore>>>>,
+}
+
+impl Default for Switched {
+    fn default() -> Self {
+        Self {
+            inner: EventSourcedStore::new(MemoryEventRepository::default()),
+            conflict: Arc::default(),
+            unavailable: Arc::default(),
+            gate: Arc::default(),
+        }
+    }
 }
 
 impl Switched {
@@ -594,7 +605,7 @@ impl Switched {
 }
 
 impl AggregateStore<Concert> for Switched {
-    type Context = MemoryCommittedAggregate<Concert>;
+    type Context = CommittedAggregate<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await
@@ -645,7 +656,7 @@ impl Feed {
                 .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
                 .with_observer(observer.clone())
         });
-        let fans = TestCommandExecutor::configured(MemoryStore::default(), (), |executor| {
+        let fans = TestCommandExecutor::configured(EventSourcedStore::new(MemoryEventRepository::default()), (), |executor| {
             executor
                 .with_task_planner(ReactionsPlanner::<Fan>::new(policies))
                 .with_observer(observer)
@@ -665,6 +676,11 @@ impl Feed {
     async fn fan(&self, command: FanCommand, metadata: CommandMetadata) {
         let _ = self.fans.execute_with_metadata(&ledger(), command, metadata.to_map()).await;
     }
+}
+
+/// The ledgers' executor over a store that is never reachable: every step of the chain finds its ledger unavailable.
+fn unreachable_ledgers() -> Arc<TestCommandExecutor<Fan, UnavailableStore>> {
+    Arc::new(TestCommandExecutor::configured(UnavailableStore, (), |executor| executor))
 }
 
 fn ledger() -> FanLedgerId {
@@ -965,7 +981,7 @@ async fn retry_pauses_by_attempt_are_the_golden_ones() {
     // E-mails: the provider refuses every delivery for now.
     let config = config_with_mail(&mail_service(std::iter::repeat_n(503, 16)).await);
     // Chain steps: the fan ledger is unreachable.
-    let fans = Arc::new(TestCommandExecutor::new(UnavailableStore, ()));
+    let fans = unreachable_ledgers();
     let ticket = RecordTicketV1 {
         booking_id: Uuid::now_v7(),
         concert_id: concert(),
@@ -1168,7 +1184,7 @@ fn config_with_mail(url: &str) -> Config {
 /// The handlers of the composition with its mail service at the address of `config`, writing to `activity`; the
 /// steps of the ledger on a ledger nobody reaches.
 fn mail_dispatcher(config: &Config, activity: &Arc<ActivityHub>) -> TaskDispatcher<BoxedTaskAdapter> {
-    let fans = Arc::new(TestCommandExecutor::new(UnavailableStore, ()));
+    let fans = unreachable_ledgers();
     handlers(fans, mailer(config).unwrap(), activity.clone()).unwrap()
 }
 
@@ -1381,12 +1397,13 @@ async fn every_mail_attempt_is_logged_with_its_values_and_settled_with_the_pause
 #[tokio::test]
 async fn every_answer_of_the_ledger_settles_its_step_as_the_table_of_answers_says() {
     let config = Config::from_lookup(|_| None).unwrap();
-    let store = MemoryStore::<Fan>::default();
-    let fans = Arc::new(TestCommandExecutor::configured(store.clone(), (), |executor| {
-        executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies(&config).unwrap()))
-    }));
+    let fans = Arc::new(TestCommandExecutor::<Fan, _>::configured(
+        EventSourcedStore::new(MemoryEventRepository::default()),
+        (),
+        |executor| executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies(&config).unwrap())),
+    ));
     let steps = step_dispatcher(fans.clone());
-    let unavailable = step_dispatcher(Arc::new(TestCommandExecutor::new(UnavailableStore, ())));
+    let unavailable = step_dispatcher(unreachable_ledgers());
     let queue = Arc::new(MemQueue::default());
     let executor = task_executor(&queue, &config);
     let ticket = RecordTicketV1 {
@@ -1442,7 +1459,7 @@ async fn every_answer_of_the_ledger_settles_its_step_as_the_table_of_answers_say
             retry(&cancellation_down, "unavailable"),
         ]
     );
-    let events = store.load_events(ledger().as_str()).await.unwrap();
+    let events = fans.store().load_events(ledger().as_str()).await.unwrap();
     assert_eq!(
         events.iter().map(|event| event.payload.event_type()).collect::<Vec<_>>(),
         ["TicketRecorded", "TicketCancelled"],

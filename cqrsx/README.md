@@ -85,8 +85,8 @@ an engine are in [its README](../cqrsx-engine/README.md#errors-of-building-and-s
 | Tool | Crate | For |
 |---|---|---|
 | `TestFramework` | `cqrsx-testing` | Aggregate given/when/then tests of a decision and a rejection, without a runtime. |
-| `TestCommandExecutor` | `cqrsx-testing` | Use-case tests over a test store or a journal in memory. |
-| `MemoryStore`, `UnavailableStore` | `cqrsx-testing` | An aggregate store in memory; one that is never reachable, for the unavailable branches. |
+| `TestCommandExecutor` | `cqrsx-testing` | Use-case tests over a journal in memory, or a store of the test's own. |
+| `UnavailableStore` | `cqrsx-testing` | An aggregate store that is never reachable, for the unavailable branches. |
 | `TaskContext::new` | `cqrsx` | Exercise a handler with an attempt, a retry pause, dependencies and executors. |
 | `MemoryEventRepository`, `MemoryTaskQueue`, `MemoryCheckpointStore`, `MemoryViewRepository` | `cqrsx` (feature `test-utils`) | The stores in memory (`cqrsx::memory`): the journal with its outbox, the task queue over that outbox (inspect its delivery and settlement), the checkpoints and the views. |
 | `event_store(InMemory)`, `projections(InMemory)` | `cqrsx-engine` | A whole application over stores in memory: with the engine's feature `test-utils` (a dev-dependency), `run_tasks()` runs the due tasks and `catch_up()` waits for the views; a test's `.provide` replaces a dependency by type. |

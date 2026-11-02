@@ -62,7 +62,6 @@ mod tests {
         test_support::{attempt, fans, ledger, steps, ticket},
     };
     use cqrsx::journal::AggregateStore;
-    use cqrsx_testing::memory_store::MemoryStore;
     use uuid::Uuid;
 
     fn cancellation(booking_id: Uuid) -> RecordCancellationV1 {
@@ -79,7 +78,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_cancellation_that_overtook_its_ticket_is_retried_later() {
-        let (fans, executor) = fans(MemoryStore::default());
+        let (fans, executor) = fans();
         let payload = cancellation(ticket().booking_id);
         let result = record_cancellation
             .call(payload.clone(), &steps(&fans, attempt(&payload, Uuid::now_v7())))
@@ -98,8 +97,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_recorded_ticket_is_cancelled_and_the_refund_mail_task_published() {
-        let store = MemoryStore::default();
-        let (fans, executor) = fans(store.clone());
+        let (fans, executor) = fans();
         let ticket = ticket();
         assert_eq!(
             record_ticket
@@ -111,7 +109,7 @@ mod tests {
         let payload = cancellation(ticket.booking_id);
         let delivery = steps(&fans, attempt(&payload, Uuid::now_v7()));
         assert_eq!(record_cancellation.call(payload.clone(), &delivery).await, TaskResult::Done);
-        assert_eq!(store.load_events(ledger().as_str()).await.unwrap().len(), 2);
+        assert_eq!(executor.store().load_events(ledger().as_str()).await.unwrap().len(), 2);
         let refunds = executor.take_published_tasks();
         assert_eq!(
             refunds.iter().map(|task| task.format().to_string()).collect::<Vec<_>>(),
@@ -124,7 +122,7 @@ mod tests {
         assert_eq!(refunds[0].payload()["amount"], 80);
         assert_eq!(record_cancellation.call(payload, &delivery).await, TaskResult::Done);
         assert_eq!(
-            store.load_events(ledger().as_str()).await.unwrap().len(),
+            executor.store().load_events(ledger().as_str()).await.unwrap().len(),
             2,
             "R11: already cancelled"
         );

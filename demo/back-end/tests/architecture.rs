@@ -702,7 +702,10 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
         ("concert/domain/x.rs", "use cqrsx_postgres::pool::connect_pool;\n"),
         ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
-        ("fan/application/x.rs", "use cqrsx_testing::memory_store::MemoryStore;\n"),
+        (
+            "fan/application/x.rs",
+            "use cqrsx_testing::unavailable_store::UnavailableStore;\n",
+        ),
         ("concert/domain/x.rs", "use cqrsx_testing::framework::TestFramework;\n"),
         (
             "concert/domain/x.rs",
@@ -719,7 +722,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     assert!(
         check(
             "fan/application/x.rs",
-            "#[cfg(test)]\nmod tests { use cqrsx_testing::memory_store::MemoryStore; use crate::testing; }\n"
+            "#[cfg(test)]\nmod tests { use cqrsx_testing::unavailable_store::UnavailableStore; use crate::testing; }\n"
         )
         .is_empty(),
         "test tooling in test code"

@@ -1,4 +1,4 @@
-//! A fan ledger over in-memory storage, task attempts and their contexts, and the facts and commands of decisions
+//! A fan ledger over a journal in memory, task attempts and their contexts, and the facts and commands of decisions
 //! built by hand, for the tests of the ledger's tasks and reactions.
 use crate::fan::application::policies::CHAIN_RETRY_AFTER;
 use crate::{
@@ -13,18 +13,21 @@ use crate::{
 };
 use cqrsx::{
     command::CommandExecutor,
+    journal::store::EventSourcedStore,
+    memory::event_repository::MemoryEventRepository,
     reactions::ReactionsPlanner,
     task::{Task, attempt::TaskAttempt},
     worker::context::{Executors, TaskContext},
 };
-use cqrsx_testing::{command_executor::TestCommandExecutor, memory_store::MemoryStore};
+use cqrsx_testing::command_executor::TestCommandExecutor;
 use serde_json::json;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// The ledgers' executor, which plans with its reactions as in production, for the handlers, and a clone of it (for
-/// the task records).
-pub fn fans(store: MemoryStore<Fan>) -> (Arc<TestCommandExecutor<Fan>>, TestCommandExecutor<Fan>) {
+/// The ledgers' executor over a journal in memory of its own, which plans with its reactions as in production, for the
+/// handlers, and a clone of it (for the task records and the journal).
+pub fn fans() -> (Arc<TestCommandExecutor<Fan>>, TestCommandExecutor<Fan>) {
+    let store = EventSourcedStore::new(MemoryEventRepository::default());
     let executor = TestCommandExecutor::configured(store, (), |executor| {
         executor.with_task_planner(ReactionsPlanner::<Fan>::new(crate::testing::policies()))
     });

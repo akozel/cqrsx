@@ -1,12 +1,12 @@
-//! A command executor over a test aggregate store or an in-memory journal, for use-case tests.
-use crate::memory_store::MemoryStore;
+//! A command executor over a journal in memory or a store of the test's own, for use-case tests.
 use cqrsx::{
     command::{
         CommandError, CommandExecutor, CommitReport, executor::StoreCommandExecutor, locks::LockLimits,
         retry::AggregateConflictRetryPolicy,
     },
     domain::aggregate::Aggregate,
-    journal::AggregateStore,
+    journal::{AggregateStore, store::EventSourcedStore},
+    memory::event_repository::MemoryEventRepository,
     mutex::lock,
     task::NewTask,
 };
@@ -25,12 +25,11 @@ use std::{
 /// the record, so a use case can own one clone while the test inspects another. The planner, the wake-up and the
 /// observer are registered on the executor handed to [`configured`](Self::configured), before it is shared.
 ///
-/// Over a [`MemoryStore`] ([`new`](Self::new)) the commands only change the aggregates. Over a
-/// [`EventSourcedStore`](cqrsx::journal::store::EventSourcedStore) on a
-/// [`MemoryEventRepository`](cqrsx::memory::event_repository::MemoryEventRepository) ([`configured`](Self::configured))
-/// they append to a journal that projection processors read, and the journal's outbox
-/// ([`MemoryEventRepository::outbox`](cqrsx::memory::event_repository::MemoryEventRepository::outbox)) holds the published tasks: give
-/// the processors the same journal and the executor their [`CommitWakeup`](cqrsx::journal::wakeup::CommitWakeup).
+/// The commands append to a journal in memory: one of the executor's own over [`new`](Self::new), or the store given to
+/// [`configured`](Self::configured) — an [`EventSourcedStore`] on a [`MemoryEventRepository`] the test shares with its
+/// projection processors (give the executor their [`CommitWakeup`](cqrsx::journal::wakeup::CommitWakeup)) and whose outbox
+/// ([`MemoryEventRepository::outbox`]) holds the published tasks, a wrapper of such a store, or a store that is never
+/// reachable.
 ///
 /// ```
 /// use cqrsx::{
@@ -42,7 +41,8 @@ use std::{
 ///     domain::{aggregate::Aggregate, command::Decide, event::Events},
 /// };
 /// use cqrsx::task::{NewTask, Task};
-/// use cqrsx_testing::{command_executor::TestCommandExecutor, memory_store::MemoryStore};
+/// use cqrsx::{journal::store::EventSourcedStore, memory::event_repository::MemoryEventRepository};
+/// use cqrsx_testing::command_executor::TestCommandExecutor;
 /// use serde::{Deserialize, Serialize};
 ///
 /// #[derive(Clone, Default, Serialize, Deserialize)]
@@ -88,9 +88,8 @@ use std::{
 /// }
 ///
 /// # tokio_test(async {
-/// let executor = TestCommandExecutor::configured(MemoryStore::<Counter>::default(), 1, |executor| {
-///     executor.with_task_planner(Notifier)
-/// });
+/// let store = EventSourcedStore::new(MemoryEventRepository::default());
+/// let executor = TestCommandExecutor::<Counter, _>::configured(store, 1, |executor| executor.with_task_planner(Notifier));
 /// let use_case = executor.clone(); // what the application under test receives
 /// let causation = Causation::root("test");
 /// let report = use_case.execute_with_metadata(&"c-1".into(), (), causation.event_metadata()).await.unwrap();
@@ -106,7 +105,7 @@ use std::{
 /// # }
 /// ```
 #[must_use]
-pub struct TestCommandExecutor<A: Aggregate, S: AggregateStore<A> = MemoryStore<A>> {
+pub struct TestCommandExecutor<A: Aggregate, S: AggregateStore<A> = EventSourcedStore<MemoryEventRepository, A>> {
     executor: Arc<StoreCommandExecutor<A, S>>,
     published: Arc<Mutex<Vec<NewTask>>>,
 }
@@ -120,16 +119,25 @@ impl<A: Aggregate, S: AggregateStore<A>> fmt::Debug for TestCommandExecutor<A, S
     }
 }
 
-impl<A: Aggregate + 'static, S: AggregateStore<A>> TestCommandExecutor<A, S> {
-    /// Execute against `store` with `rules`, the default conflict retry and the default lock limits.
-    pub fn new(store: S, rules: A::Rules) -> Self {
+impl<A: Aggregate + 'static> TestCommandExecutor<A> {
+    /// Execute against a journal in memory of the executor's own with `rules`, the default conflict retry and the default
+    /// lock limits: the production store over a [`MemoryEventRepository`]; [`store`](Self::store) reads what the commands
+    /// committed.
+    pub fn new(rules: A::Rules) -> Self {
+        let store = EventSourcedStore::new(MemoryEventRepository::default());
         Self::configured(store, rules, |executor| executor)
     }
+}
 
-    /// Execute against `store` with `rules` like [`new`](Self::new), on the executor `configure` returns: register the
-    /// task planner (`with_task_planner`), the commit wake-up of the projection processors under test
-    /// (`with_commit_wakeup`) and the observer of every command (`with_observer`) on it. The executor is shared only
-    /// afterwards, so every clone has them.
+impl<A: Aggregate + 'static, S: AggregateStore<A>> TestCommandExecutor<A, S> {
+    /// Execute against `store` with `rules`, the default conflict retry and the default lock limits, on the executor
+    /// `configure` returns: register the task planner (`with_task_planner`), the commit wake-up of the projection
+    /// processors under test (`with_commit_wakeup`) and the observer of every command (`with_observer`) on it. The executor
+    /// is shared only afterwards, so every clone has them.
+    ///
+    /// Give it a store of the test's own when a journal is shared with projection processors or its outbox is inspected
+    /// (`EventSourcedStore::new(journal.clone())`), a wrapper of such a store (failures, counters), or an
+    /// [`UnavailableStore`](crate::unavailable_store::UnavailableStore).
     pub fn configured(
         store: S,
         rules: A::Rules,
@@ -195,8 +203,7 @@ mod tests {
             planner::{Decision, TaskPlanError, TaskPlanner},
         },
         domain::{command::Decide, event::Events},
-        journal::{repository::EventRepository, store::EventSourcedStore, wakeup::CommitWakeup},
-        memory::event_repository::MemoryEventRepository,
+        journal::{repository::EventRepository, wakeup::CommitWakeup},
         task::Task,
     };
     use serde::{Deserialize, Serialize};
@@ -263,6 +270,10 @@ mod tests {
         }
     }
 
+    fn journal() -> EventSourcedStore<MemoryEventRepository, Stack> {
+        EventSourcedStore::new(MemoryEventRepository::default())
+    }
+
     /// A test executor over `store` that plans one notification per pushed value.
     fn notifying<S: AggregateStore<Stack> + 'static>(store: S, cap: usize) -> TestCommandExecutor<Stack, S> {
         TestCommandExecutor::configured(store, cap, |executor| executor.with_task_planner(Notifier))
@@ -270,7 +281,7 @@ mod tests {
 
     #[test]
     fn an_executor_prints_its_attempt_and_settings_but_not_its_tasks() {
-        let executor = notifying(MemoryStore::<Stack>::default(), 1);
+        let executor = notifying(journal(), 1);
         assert_eq!(
             format!("{executor:?}"),
             format!(
@@ -284,15 +295,39 @@ mod tests {
 
     #[tokio::test]
     async fn an_executor_without_registrations_plans_and_publishes_nothing() {
-        let executor = TestCommandExecutor::<Stack, _>::new(MemoryStore::default(), 1);
+        let executor = TestCommandExecutor::<Stack>::new(1);
         assert!(executor.execute(&"s".into(), 1).await.unwrap().tasks.is_empty());
         assert_eq!(executor.execute(&"s".into(), 2).await, Err(CommandError::Rejected(Full)));
         assert!(executor.take_published_tasks().is_empty());
+        let events = executor.store().load_events("s").await.unwrap();
+        assert_eq!(
+            (events.len(), events[0].sequence),
+            (1, 1),
+            "new runs over a journal of its own"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_executor_of_new_has_a_journal_of_its_own() {
+        use crate::test_support::Ledger;
+        let (first, second) = (TestCommandExecutor::<Ledger>::new(()), TestCommandExecutor::<Ledger>::new(()));
+        first.execute(&"a".into(), ()).await.unwrap();
+        assert_eq!(first.store().load_events("a").await.unwrap().len(), 1);
+        assert!(
+            second.store().load_events("a").await.unwrap().is_empty(),
+            "the second never saw the commit"
+        );
+        second.execute(&"a".into(), ()).await.unwrap();
+        assert_eq!(
+            first.clone().store().load_events("a").await.unwrap().len(),
+            1,
+            "a clone shares the journal, a new executor does not"
+        );
     }
 
     #[tokio::test]
     async fn published_tasks_are_those_of_the_committed_calls() {
-        let executor = notifying(MemoryStore::<Stack>::default(), 1);
+        let executor = notifying(journal(), 1);
         let use_case = executor.clone();
         let metadata = Causation::root("test").event_metadata();
         let report = use_case.execute_with_metadata(&"s".into(), 1, metadata).await.unwrap();
@@ -352,9 +387,7 @@ mod tests {
     async fn a_commit_wakes_the_registered_wakeup_of_every_clone() {
         use std::{future::Future, pin::pin, task::Context, task::Waker};
         let wakeup = CommitWakeup::new();
-        let executor = TestCommandExecutor::configured(MemoryStore::<Stack>::default(), 5, |executor| {
-            executor.with_commit_wakeup(wakeup.clone())
-        });
+        let executor = TestCommandExecutor::configured(journal(), 5, |executor| executor.with_commit_wakeup(wakeup.clone()));
         let use_case = executor.clone();
         let mut woken = pin!(wakeup.wait());
         assert!(woken.as_mut().poll(&mut Context::from_waker(Waker::noop())).is_pending());
@@ -396,7 +429,7 @@ mod tests {
     #[tokio::test]
     async fn the_observer_hears_the_commands_of_every_clone() {
         let outcomes = Arc::new(Outcomes::default());
-        let executor = TestCommandExecutor::configured(MemoryStore::<Stack>::default(), 1, |executor| {
+        let executor = TestCommandExecutor::configured(journal(), 1, |executor| {
             executor.with_task_planner(Notifier).with_observer(outcomes.clone())
         });
         let use_case = executor.clone();

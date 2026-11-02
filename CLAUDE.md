@@ -37,7 +37,7 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
 - `cqrsx-mongodb` — views and projection checkpoints in MongoDB (no features); `tests/mongo.rs` starts MongoDB,
   `journal_in_postgres` also PostgreSQL.
 - `cqrsx-testing` — test tools for the code that uses `cqrsx`: `framework.rs` (`TestFramework`, aggregate
-  given/when/then), `command_executor.rs`, `memory_store.rs`, `unavailable_store.rs`, `validator.rs`;
+  given/when/then), `command_executor.rs`, `unavailable_store.rs`, `validator.rs`;
   `tests/framework.rs` runs the tools on an example application.
 - `cqrsx-macros` — the derive macros (`Event`, `Events`, `Command`, `Decide`, `Task`, `Rejection`) and `#[task_handler]`.
 - `cqrsx-fixtures` — a dev-dependency of the crates' tests: PostgreSQL and MongoDB containers on leased ports, captured

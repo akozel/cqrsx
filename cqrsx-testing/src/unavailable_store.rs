@@ -1,8 +1,7 @@
 //! An aggregate store that is never reachable.
-use crate::memory_store::MemoryCommittedAggregate;
 use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{AggregateStore, PersistenceError},
+    journal::{AggregateStore, PersistenceError, store::CommittedAggregate},
     task::NewTask,
 };
 use std::collections::HashMap;
@@ -18,7 +17,7 @@ fn unavailable() -> PersistenceError {
 }
 
 impl<A: Aggregate> AggregateStore<A> for UnavailableStore {
-    type Context = MemoryCommittedAggregate<A>;
+    type Context = CommittedAggregate<A>;
 
     async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         Err(unavailable())
@@ -55,10 +54,11 @@ mod tests {
             AggregateStore::<TestAggregate>::load_aggregate(&store, "id").await,
             Err(PersistenceError::Connection(_))
         ));
-        let context = MemoryCommittedAggregate {
+        let context = CommittedAggregate {
             aggregate_id: "id".into(),
             aggregate: TestAggregate::default(),
             last_sequence: 0,
+            snapshot_revision: None,
         };
         assert!(matches!(
             store.commit(vec![], context, HashMap::new(), &[]).await,

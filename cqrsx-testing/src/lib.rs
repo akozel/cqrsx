@@ -1,14 +1,15 @@
 // Derived from cqrs-es 0.5.0 (Apache-2.0), copyright upstream contributors.
 // Modified for cqrsx; see doc/components.md#upstream-attribution and cqrsx-testing/licenses/.
 //! Test tools for the code that uses `cqrsx`, written on its public API: [`framework::TestFramework`] (an aggregate's
-//! given/when/then), [`command_executor::TestCommandExecutor`] (a command executor for use-case tests) and the event
-//! stores [`memory_store::MemoryStore`] and [`unavailable_store::UnavailableStore`].
+//! given/when/then), [`command_executor::TestCommandExecutor`] (a command executor for use-case tests, over a journal in
+//! memory or a store of the test's own) and [`unavailable_store::UnavailableStore`] (a store that is never reachable).
 //!
 //! A `TestFramework` should be used to build a comprehensive set of aggregate tests to verify
 //! your application logic: given the events of the history, when a command decides, then one event or
-//! the rejection. It is synchronous: no runtime is needed. The stores in memory stand in for the databases; the
-//! journal in memory, [`MemoryEventRepository`](cqrsx::memory::event_repository::MemoryEventRepository), has the task queue
-//! [`MemoryTaskQueue`](cqrsx::memory::task_queue::MemoryTaskQueue) over its outbox, and the engine in memory
+//! the rejection. It is synchronous: no runtime is needed. The stores in memory stand in for the databases: the
+//! command executor runs the production [`EventSourcedStore`](cqrsx::journal::store::EventSourcedStore) over the journal
+//! in memory, [`MemoryEventRepository`](cqrsx::memory::event_repository::MemoryEventRepository), whose outbox feeds the
+//! task queue [`MemoryTaskQueue`](cqrsx::memory::task_queue::MemoryTaskQueue), and the engine in memory
 //! (`cqrsx_engine::Cqrs` with `event_store(InMemory)`) assembles all of them.
 //!
 //! A failed check is a panic (rule 8 of `.claude/rules/rust-style.md`): the tools say so in `# Panics`.
@@ -136,7 +137,6 @@
 
 pub mod command_executor;
 pub mod framework;
-pub mod memory_store;
 pub mod unavailable_store;
 pub mod validator;
 

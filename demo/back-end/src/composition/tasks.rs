@@ -36,6 +36,8 @@ use crate::{
 use chrono::NaiveDate;
 use cqrsx::{
     command::{CommandExecutor, causation::Causation},
+    journal::store::EventSourcedStore,
+    memory::event_repository::MemoryEventRepository,
     reactions::ReactionsPlanner,
     task::{
         TaskSchedule,
@@ -51,7 +53,7 @@ use cqrsx_engine::{
     settings::Settings,
     setup::{Setup, SetupError},
 };
-use cqrsx_testing::{command_executor::TestCommandExecutor, memory_store::MemoryStore};
+use cqrsx_testing::command_executor::TestCommandExecutor;
 use serde::{Serialize, de::DeserializeOwned};
 use serde_json::json;
 use std::{num::NonZeroU16, sync::Arc, time::Duration};
@@ -223,12 +225,15 @@ fn the_mail_policy_pauses_as_the_mail_client_did() {
 #[tokio::test]
 async fn every_task_row_keeps_its_format_body_schedule_budget_and_derived_id() {
     let policies = policies(&[]).unwrap();
-    let concerts = TestCommandExecutor::configured(MemoryStore::<Concert>::default(), ConcertRules::default(), |executor| {
-        executor.with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
-    });
-    let fans = TestCommandExecutor::configured(MemoryStore::<Fan>::default(), (), |executor| {
-        executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies))
-    });
+    let concerts = TestCommandExecutor::<Concert, _>::configured(
+        EventSourcedStore::new(MemoryEventRepository::default()),
+        ConcertRules::default(),
+        |executor| executor.with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone())),
+    );
+    let fans =
+        TestCommandExecutor::<Fan, _>::configured(EventSourcedStore::new(MemoryEventRepository::default()), (), |executor| {
+            executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies))
+        });
     let concert_id = ConcertId::parse("radiohead-2026-11-21").unwrap();
     let fox = FanId::parse("fox").unwrap();
     let ledger = FanLedgerId::new(&fox, &concert_id);
@@ -407,7 +412,7 @@ fn the_mail_settings_come_from_the_configuration() {
 /// the mail service, which the assembly refuses to leave out.
 #[tokio::test]
 async fn the_four_task_types_have_one_handler_each_with_the_mailer_and_the_ledgers_executor() {
-    let fans = Arc::new(TestCommandExecutor::new(MemoryStore::<Fan>::default(), ()));
+    let fans = Arc::new(TestCommandExecutor::<Fan>::new(()));
     let mail: Arc<Mailer> = Arc::new(RecordingMailer::delivering());
     let activity = Arc::new(ActivityHub::new(1, 1));
     let dispatcher = handlers(fans.clone(), mail.clone(), activity.clone()).unwrap();
@@ -424,14 +429,7 @@ async fn the_four_task_types_have_one_handler_each_with_the_mailer_and_the_ledge
          which nothing provides"
     );
     let mailer = mailer().unwrap();
-    assert!(
-        handlers(
-            Arc::new(TestCommandExecutor::new(MemoryStore::<Fan>::default(), ())),
-            mailer,
-            activity
-        )
-        .is_ok()
-    );
+    assert!(handlers(Arc::new(TestCommandExecutor::<Fan>::new(())), mailer, activity).is_ok());
 }
 
 /// The e-mail handlers report every attempt to the activity log: an assembly without its hub is refused before a

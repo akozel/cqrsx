@@ -138,7 +138,7 @@ mod tests {
     /// races of cancellations and rebookings on one concert run on the engine in memory (`application/tests.rs`).
     mod engine {
         use crate::concert::{
-            application::test_support::{ProbeStore, announce, book, cancel, committed, concert_id, harness},
+            application::test_support::{ProbeStore, announce, book, cancel, committed, concert_id, harness, store_in_memory},
             domain::ConcertError,
         };
         use cqrsx::{
@@ -146,7 +146,7 @@ mod tests {
             journal::AggregateStore,
             task::format::TaskFormat,
         };
-        use cqrsx_testing::{memory_store::MemoryStore, unavailable_store::UnavailableStore};
+        use cqrsx_testing::unavailable_store::UnavailableStore;
         use serde_json::{Value, json};
         use uuid::Uuid;
 
@@ -154,7 +154,7 @@ mod tests {
         /// or rejected; an announcement is nobody's.
         #[tokio::test]
         async fn every_command_is_logged_with_its_type_and_its_fan() {
-            let h = harness(MemoryStore::default());
+            let h = harness(store_in_memory());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
@@ -200,7 +200,7 @@ mod tests {
 
         #[tokio::test]
         async fn an_announcement_publishes_no_task_and_is_logged() {
-            let h = harness(MemoryStore::default());
+            let h = harness(store_in_memory());
             let executed = h.execute(&concert_id(), announce(), CommandMetadata::root("ui")).await;
             assert!(executed.is_ok());
             assert!(committed(&executed).is_empty());
@@ -215,7 +215,7 @@ mod tests {
 
         #[tokio::test]
         async fn a_second_announcement_is_rejected_and_logged_with_its_code() {
-            let h = harness(MemoryStore::default());
+            let h = harness(store_in_memory());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
@@ -228,8 +228,7 @@ mod tests {
 
         #[tokio::test]
         async fn a_booking_publishes_record_ticket_with_the_price_of_the_fact_and_its_causation() {
-            let store = MemoryStore::default();
-            let h = harness(store.clone());
+            let h = harness(store_in_memory());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
@@ -264,14 +263,14 @@ mod tests {
                 "the task id derives from the command"
             );
             assert_eq!(tasks[0].max_attempts().get(), 6);
-            let events = store.load_events(concert_id().as_str()).await.unwrap();
+            let events = h.executor.store().load_events(concert_id().as_str()).await.unwrap();
             assert_eq!(events.len(), 2);
             assert_eq!(events[1].metadata["command_id"], booking_id.to_string());
         }
 
         #[tokio::test]
         async fn an_unknown_seat_is_rejected_and_publishes_no_task() {
-            let h = harness(MemoryStore::default());
+            let h = harness(store_in_memory());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
@@ -288,8 +287,7 @@ mod tests {
 
         #[tokio::test]
         async fn a_taken_seat_is_rejected_and_writes_nothing() {
-            let store = MemoryStore::default();
-            let h = harness(store.clone());
+            let h = harness(store_in_memory());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();
@@ -308,7 +306,7 @@ mod tests {
                 executed,
                 Err(CommandError::Rejected(ConcertError::SeatTaken { .. }))
             ));
-            assert_eq!(store.load_events(concert_id().as_str()).await.unwrap().len(), 2);
+            assert_eq!(h.executor.store().load_events(concert_id().as_str()).await.unwrap().len(), 2);
             assert!(h.executor.take_published_tasks().is_empty());
         }
 
@@ -340,7 +338,7 @@ mod tests {
 
         #[tokio::test]
         async fn cancelling_somebody_elses_ticket_publishes_no_task() {
-            let h = harness(MemoryStore::default());
+            let h = harness(store_in_memory());
             h.execute(&concert_id(), announce(), CommandMetadata::root("ui"))
                 .await
                 .unwrap();

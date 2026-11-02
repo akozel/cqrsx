@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.98"
 publish = false
-description = "Test tools for the code that uses cqrsx: aggregate given/when/then, a command executor and aggregate stores for tests"
+description = "Test tools for the code that uses cqrsx: aggregate given/when/then, a command executor over a journal in memory and a store that is never reachable"
 
 [dependencies]
 cqrsx = { workspace = true, features = ["test-utils"] }
