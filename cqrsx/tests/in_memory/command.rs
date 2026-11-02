@@ -1,6 +1,6 @@
 use crate::support::ledger::*;
 use cqrsx::command::CommandExecutor;
-use cqrsx::{journal::store::JournalEventStore, memory::event_repository::MemoryEventRepository};
+use cqrsx::{journal::store::EventSourcedStore, memory::event_repository::MemoryEventRepository};
 use std::{
     collections::HashMap,
     io,
@@ -12,16 +12,16 @@ use std::{
 };
 use {
     cqrsx::command::CommandError, cqrsx::command::executor::StoreCommandExecutor,
-    cqrsx::command::retry::AggregateConflictRetryPolicy, cqrsx::domain::event::EventEnvelope, cqrsx::journal::EventStore,
+    cqrsx::command::retry::AggregateConflictRetryPolicy, cqrsx::domain::event::EventEnvelope, cqrsx::journal::AggregateStore,
 };
 #[derive(Clone)]
 struct LostAcknowledgementStore {
-    inner: Arc<JournalEventStore<MemoryEventRepository, Ledger>>,
+    inner: Arc<EventSourcedStore<MemoryEventRepository, Ledger>>,
     commits: Arc<AtomicUsize>,
 }
 
-impl EventStore<Ledger> for LostAcknowledgementStore {
-    type Context = <JournalEventStore<MemoryEventRepository, Ledger> as EventStore<Ledger>>::Context;
+impl AggregateStore<Ledger> for LostAcknowledgementStore {
+    type Context = <EventSourcedStore<MemoryEventRepository, Ledger> as AggregateStore<Ledger>>::Context;
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
         self.inner.load_events(id).await
     }
@@ -46,7 +46,7 @@ impl EventStore<Ledger> for LostAcknowledgementStore {
 #[tokio::test]
 async fn unknown_commit_outcome_never_fast_retries_an_already_committed_command() {
     let store = LostAcknowledgementStore {
-        inner: Arc::new(JournalEventStore::new(MemoryEventRepository::default())),
+        inner: Arc::new(EventSourcedStore::new(MemoryEventRepository::default())),
         commits: Arc::default(),
     };
     let observed = store.clone();

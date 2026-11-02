@@ -31,7 +31,7 @@ stays open.
 
 | Directory | What |
 |---|---|
-| `back-end/` | Rust, axum + `cqrsx`, one module per part of the box office, each a directory with its clean-architecture layers inside and its root file next to it: `concert/` (the `Concert` aggregate: `domain` with one file per command and per event, `application` with the use cases, the reactions to its facts, the tasks of a fan's ledger built from them, the concert halls and the time machine, `presentation` with one file per HTTP action), `fan/` (the `Fan` ledger: its four tasks, each a contract with its handler, its reactions, the fan wallets), `operations/` (no aggregate: health, settings, the activity log, Encore!, status, verify) and `shared/` (ids and venue, the ports and the names of the task policies, the ticket limit the UI shows, the HTTP error shape, the HTTP client of the mail service); `tests/architecture.rs` checks who sees whom. The root file of each module registers what it plugs into the cqrsx engine (its aggregate and rules, its read models, its tasks with their policies, its dependencies, its HTTP routes, its variables under `ENCORE_*`); `main.rs` lists the modules for the engine with the demo's defaults (`DEMO_DEFAULTS` in `lib.rs`), and the engine does the rest: settings, connections, executors, processors, task runtime, HTTP server, start and stop |
+| `back-end/` | Rust, axum + `cqrsx`, one module per part of the box office, each a directory with its clean-architecture layers inside and its root file next to it: `concert/` (the `Concert` aggregate: `domain` with one file per command and per event, `application` with the use cases, the reactions to its facts, the tasks of a fan's ledger built from them, the concert halls and the time machine, `presentation/http` with one file (or, for an endpoint with a request to convert, a directory) per endpoint under the kind of engine entry it uses, see [DESIGN.md](DESIGN.md#21-routes)), `fan/` (the `Fan` ledger: its four tasks, each a contract with its handler, their policies, its reactions, the fan wallets), `operations/` (no aggregate: health, settings, the activity log, Encore!, status, verify) and `shared/` (ids and venue, the ports, the ticket limit the UI shows, the HTTP error shape, the HTTP client of the mail service); `tests/architecture.rs` checks who sees whom. The root file of each module registers what it plugs into the cqrsx engine (its aggregate and rules, its read models, its tasks with their policies, its dependencies, its HTTP routes, its variables under `ENCORE_*`); `main.rs` lists the modules for the engine with the demo's defaults (`DEMO_DEFAULTS` in `lib.rs`), and the engine does the rest: settings, connections, executors, processors, task runtime, HTTP server, start and stop |
 | `sidecar/` | Rust, axum, no `cqrsx` dependency: read-only X-ray of PostgreSQL (`events`, `snapshots`, `transactional_outbox`) and MongoDB, SSE stream — plus everything DEMO ONLY: seed, 🧨 wipe, ⟲ reset, the fan's mailbox (`GET /inspect/mail/{fan_id}`) and the moody external mail service the back-end calls (`POST /mail`) |
 | `front-end/` | Vue 3.5 + Vite 8 + Tailwind 4 + Pinia + vue-i18n (RU/EN) |
 | `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx-postgres/sql`) and MongoDB; profile `app` builds the three images |
@@ -50,7 +50,7 @@ application reactions plan tasks; handlers in `fan/application/` continue the ch
 |---|---|
 | `domain` | Aggregate state, commands, decisions, events and business rules. |
 | `application` | Reactions, task handlers, views and use cases for the module. |
-| `presentation` | HTTP routes and translation between API and application contracts. |
+| `presentation` | HTTP routes, by transport and kind of engine entry, and translation between API and application contracts. |
 | `infrastructure` | Implementations of ports, such as the HTTP mail client. |
 
 ## Requirements
@@ -299,8 +299,8 @@ its default on a commented line: copy it to `demo/.env` and uncomment what you c
 `ENCORE_*` plus the library's own `OUTBOX_*` keys (worker pool and storage timeouts, with demo defaults);
 everything DEMO ONLY is the sidecar's `SIDECAR_*`. `RUST_LOG` is a single level (`info`), not a directive
 list. A failed attempt waits by the policy of its task type: an e-mail 1, 2, 4, 8 s, a step of the chain 1 s;
-the library's redelivery backoff (4–300 s) applies to a task type without a policy and to the abnormal paths
-(an expired lease, a handler timeout); `back-end/tests/golden/retry_pauses.txt` pins the pauses.
+the library's redelivery backoff (4–300 s) is the default policy's (no task type of the demo has it) and applies to the
+abnormal paths (an expired lease, a handler timeout); `back-end/tests/golden/retry_pauses.txt` pins the pauses.
 
 ## Troubleshooting
 
@@ -354,8 +354,8 @@ diagram's choreography, the components, the tour and the i18n parity of EN and R
   its default, and the derived values (pools, timeouts, the lease budget); a test also checks that `.env.example`
   documents every variable with the same default;
 - `activity_feed.txt` — every kind of activity entry and the keys of its JSON;
-- `retry_pauses.txt` — the pause after attempt `n` of an e-mail, of a step of the chain and of a task without a
-  policy.
+- `retry_pauses.txt` — the pause after attempt `n` of an e-mail, of a step of the chain and of the default policy
+  (the queue's redelivery backoff).
 
 A change of the configuration, of the activity feed or of a retry policy updates its golden file by hand in the same
 commit: the failing test prints the lines only the golden file has and the lines only the code has. An unexpected

@@ -31,12 +31,16 @@ impl Checkpoints for EngineReadSide {
         self.0.views().status().await
     }
 
-    /// A view the engine does not have is a request nobody registered.
+    /// A view the engine does not have is a request nobody registered; a view whose processor has not started has no
+    /// row yet.
     async fn request_rebuild(&self, key: &CheckpointKey, pace: Duration) -> Result<RebuildReply, CheckpointError> {
         let requested = self.0.views().request_rebuild(key.projection(), pace).await;
         requested.map_err(|error| match error {
+            ViewsError::NotStarted => CheckpointError::NotRegistered,
             ViewsError::Checkpoint(error) => error,
-            _ => CheckpointError::Invalid("no such projection"),
+            ViewsError::Unknown(_) | ViewsError::UnknownAggregateType(_) | ViewsError::Persistence(_) => {
+                CheckpointError::Invalid("no such projection")
+            }
         })
     }
 }
@@ -108,5 +112,31 @@ impl VerifyService {
             view
         });
         Self::new(views.collect())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::testing::test_app;
+    use cqrsx::projection::checkpoint::CheckpointStore;
+
+    #[tokio::test]
+    async fn a_rebuild_request_tells_a_row_not_registered_yet_from_a_view_nobody_has() {
+        let (cqrs, _) = test_app().await;
+        let halls = cqrs.views().keys().into_iter().next().unwrap();
+        let read_side = EngineReadSide(Arc::new(cqrs));
+        let starting = read_side.request_rebuild(&halls, Duration::ZERO).await;
+        assert!(matches!(starting, Err(CheckpointError::NotRegistered)), "{starting:?}");
+        let nobody = read_side
+            .request_rebuild(&CheckpointKey::new("nobody", "Concert"), Duration::ZERO)
+            .await;
+        assert!(
+            matches!(nobody, Err(CheckpointError::Invalid("no such projection"))),
+            "{nobody:?}"
+        );
+        read_side.0.checkpoints().unwrap().register(&halls).await.unwrap();
+        let accepted = read_side.request_rebuild(&halls, Duration::ZERO).await;
+        assert!(matches!(accepted, Ok(RebuildReply::Accepted)), "{accepted:?}");
     }
 }

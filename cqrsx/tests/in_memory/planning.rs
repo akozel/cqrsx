@@ -17,7 +17,7 @@ use cqrsx::{
         repository::EventRepository,
         serialized_event::SerializedEvent,
         snapshot::SerializedSnapshot,
-        store::JournalEventStore,
+        store::EventSourcedStore,
     },
     memory::event_repository::MemoryEventRepository,
     task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat},
@@ -195,7 +195,7 @@ fn claim(task: &NewTask, number: i32) -> TaskAttempt {
 
 /// The wallet step: the task's payload becomes the wallet's command, which continues the task's chain.
 async fn record_in_wallet(
-    wallets: &StoreCommandExecutor<Wallet, JournalEventStore<MemoryEventRepository, Wallet>>,
+    wallets: &StoreCommandExecutor<Wallet, EventSourcedStore<MemoryEventRepository, Wallet>>,
     attempt: &TaskAttempt,
 ) -> Result<Vec<NewTask>, CommandError<AlreadyRecorded>> {
     let step: RecordInWallet = serde_json::from_value(attempt.payload().clone()).unwrap();
@@ -208,14 +208,14 @@ async fn record_in_wallet(
 async fn a_process_plans_across_two_aggregates_and_the_chain_keeps_its_correlation() {
     let journal = MemoryEventRepository::default();
     let shows = StoreCommandExecutor::<Show, _>::new(
-        JournalEventStore::new(journal.clone()),
+        EventSourcedStore::new(journal.clone()),
         (),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
     )
     .with_task_planner(Delivery);
     let wallets = StoreCommandExecutor::<Wallet, _>::new(
-        JournalEventStore::new(journal.clone()),
+        EventSourcedStore::new(journal.clone()),
         (),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
@@ -384,9 +384,9 @@ fn no_delay(attempts: usize) -> AggregateConflictRetryPolicy {
 fn ledger_executor(
     journal: Interfering,
     attempts: usize,
-) -> StoreCommandExecutor<Ledger, JournalEventStore<Interfering, Ledger>> {
+) -> StoreCommandExecutor<Ledger, EventSourcedStore<Interfering, Ledger>> {
     StoreCommandExecutor::new(
-        JournalEventStore::new(journal),
+        EventSourcedStore::new(journal),
         Services::default(),
         no_delay(attempts),
         LockLimits::default(),

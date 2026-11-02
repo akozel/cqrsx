@@ -61,7 +61,7 @@ mod tests {
         record_ticket::record_ticket,
         test_support::{attempt, fans, ledger, steps, ticket},
     };
-    use cqrsx::journal::EventStore;
+    use cqrsx::journal::AggregateStore;
     use cqrsx_testing::memory_store::MemoryStore;
     use uuid::Uuid;
 

@@ -1,5 +1,5 @@
 use super::*;
-use cqrsx::task::policy::{Policies, PolicyName, RetryPause, TaskPolicy};
+use cqrsx::task::policy::{Policies, RetryPause, TaskPolicy};
 use cqrsx::worker::executor::{TaskExecutor, default_executor::HANDLER_PANICKED};
 
 /// An executor of one's own that panics on its first attempt, outside every handler, so that its worker dies: what the
@@ -238,15 +238,8 @@ fn panic_first_dispatcher(
 /// and the worker that ran it takes the next task, in the same Tokio task.
 #[tokio::test]
 async fn a_handler_panic_retries_its_task_after_the_policy_pause_and_the_worker_lives_on() {
-    const DUMMY: PolicyName = PolicyName::try_new("dummy").unwrap();
-    let policies = Policies::builder()
-        .policy(
-            DUMMY,
-            TaskPolicy::new(RetryPause::fixed(Duration::from_secs(7)), NonZeroU16::new(3).unwrap()),
-        )
-        .bind::<DummyTask>(DUMMY)
-        .build()
-        .unwrap();
+    let policy = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(7)), NonZeroU16::new(3).unwrap());
+    let policies = Policies::builder().task::<DummyTask>(policy).build().unwrap();
     let queue = Arc::new(Queue::default());
     let (first, second) = (claimed(), claimed());
     let ids = (first.attempt().task_id(), second.attempt().task_id());

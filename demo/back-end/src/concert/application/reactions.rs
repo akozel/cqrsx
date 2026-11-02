@@ -143,7 +143,7 @@ mod tests {
         };
         use cqrsx::{
             command::{CommandError, metadata::CommandMetadata},
-            journal::EventStore,
+            journal::AggregateStore,
             task::format::TaskFormat,
         };
         use cqrsx_testing::{memory_store::MemoryStore, unavailable_store::UnavailableStore};

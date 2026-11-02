@@ -12,9 +12,20 @@
 //! the ledger's tasks. Of the framework (the crates `cqrsx`, `cqrsx_engine`, `cqrsx_postgres`, `cqrsx_mongodb` and
 //! `cqrsx_testing`, see `FRAMEWORK`) a domain sees the contracts of the core and their derive macros, a presentation the engine
 //! (`cqrsx_engine::Cqrs`: its commands, its views, the dependencies of the modules), the outcomes of a command, the
-//! rejection trait and the documents of the read models. `main.rs` and `lib.rs` compose the modules, `testing.rs` and `composition.rs` with
+//! rejection trait, the documents of the read models and the wrong documents of a verification. `main.rs` and `lib.rs` compose the modules, `testing.rs` and `composition.rs` with
 //! their directories test them as composed: they are exempt. A few rules apply to production code only: test code may use test
 //! tooling. Relative paths (`super::`) are not resolved: one module reaches another only through `crate::`.
+//!
+//! The layout of a presentation is rule 10 of `.claude/rules/cqrsx-application.md` (transport, kind of engine entry,
+//! action), and the names of its input and answer rule 11. What the checks look at: a file in a kind directory names
+//! only the engine entry of its kind, a file outside the kind directories (the URL table `http.rs`, the shared helpers,
+//! the `operations` endpoints of the process, the settings and the activity feed) names none of the four. The entries are
+//! method calls, found textually in the code without comments, string literals and test modules (see `engine_entries` for
+//! what that cannot see). An endpoint that reaches an entry through an application function counts as naming it:
+//! `ENTRY_VIA_APPLICATION` lists those items, and a test keeps the list equal to the application files that name an
+//! entry. Naming: a public type of a presentation that derives `Deserialize` ends in `Request`, one that derives
+//! `Serialize` in `Response` (`NOT_ENDPOINT_TYPES` names the exceptions), and no presentation holds a `json!` but the
+//! error shape (`JSON_BUILDERS`).
 use std::{
     collections::{BTreeMap, BTreeSet},
     fs,
@@ -212,13 +223,16 @@ fn externals(layer: Option<Layer>) -> Externals {
             // The handler takes the engine as its state and hands it a command from the source "ui" (backlog 05/12,
             // design 04 and 07), answers its outcome (the error of a command) and, for a refused one, its code and
             // params (05/04): the rejection trait. A read model is read through the engine's view, a stored document is
-            // what it answers (05/10, design 06). Nothing else. The path `domain::rejection::Rejection` names the trait
+            // what it answers (05/10, design 06); a wrong document of a verification is answered as the engine reports it
+            // (10/05). Nothing else. The path `domain::rejection::Rejection` names the trait
             // and its derive alike (backlog 07/05, decision 2), so a presentation may name both.
             cqrsx_allowed: Some(&[
                 "cqrsx_engine::Cqrs",
                 "cqrsx::command::CommandError",
                 "cqrsx::domain::rejection",
                 "cqrsx::view::repository::StoredView",
+                "cqrsx::view::verify::Difference",
+                "cqrsx::view::verify::DifferenceKind",
             ]),
         },
         Some(Layer::Infrastructure) | None => Externals {
@@ -667,7 +681,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     let contract = "use crate::fan::application::record_ticket::RecordTicketV1;\n";
     assert!(check("concert/application/fan_ledger.rs", contract).is_empty());
     for (file, code) in [
-        ("concert/presentation/get.rs", contract),
+        ("concert/presentation/http/queries/get.rs", contract),
         ("concert/application/x.rs", "use crate::fan::application::app::FanApp;\n"),
         ("fan/application/x.rs", "use crate::concert::domain::Concert;\n"),
         ("fan/domain/x.rs", "use crate::concert::domain::events::SeatBooked;\n"),
@@ -727,7 +741,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         "concert/application/domain/x.rs",
         "concert/domain/concert.rs",
         "fan/application/views/views.rs",
-        "operations/presentation/activity/activity/stream.rs",
+        "operations/presentation/http/maintenance/maintenance.rs",
     ] {
         assert_eq!(check(file, "").len(), 1, "{file}");
     }
@@ -748,7 +762,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     let in_tests = "#[cfg(test)]\nmod tests { use crate::bootstrap::AppState; }\n";
     assert!(
         violations(
-            Path::new("fan/presentation/wallet.rs"),
+            Path::new("fan/presentation/http/queries/wallet.rs"),
             &strip(in_tests),
             false,
             &exceptions,
@@ -769,7 +783,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     assert_eq!(used, BTreeSet::from([(0, 0)]));
     assert_eq!(
         violations(
-            Path::new("fan/presentation/wallet.rs"),
+            Path::new("fan/presentation/http/queries/wallet.rs"),
             &strip(state),
             false,
             &exceptions,
@@ -850,6 +864,29 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
         assert_eq!(broken.len(), 1, "{code}");
         assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
     }
+}
+
+/// The wrong documents a verification found are answered as the engine reports them: the two types that describe one,
+/// nothing else of `view::verify` (its functions and counters stay in the application).
+#[test]
+fn a_difference_of_a_verification_is_visible_in_the_presentation_and_nothing_more_of_verify() {
+    let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
+    for code in [
+        "use cqrsx::view::verify::Difference;\n",
+        "use cqrsx::view::verify::DifferenceKind;\n",
+        "fn f(d: Vec<cqrsx::view::verify::Difference>) {}\n",
+    ] {
+        assert!(check("operations/presentation/x.rs", code).is_empty(), "{code}");
+    }
+    for code in [
+        "use cqrsx::view::verify::Verification;\n",
+        "use cqrsx::view::verify::verify;\n",
+    ] {
+        let broken = check("operations/presentation/x.rs", code);
+        assert_eq!(broken.len(), 1, "{code}");
+        assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
+    }
+    assert!(check("operations/application/x.rs", "use cqrsx::view::verify::Verification;\n").is_empty());
 }
 
 /// Backlog 07/07: the engine is a crate of its own, `cqrsx_engine`; every crate of the framework falls under the
@@ -950,6 +987,650 @@ fn the_command_derives_and_the_decide_contract_are_visible_in_the_domain() {
         assert_eq!(broken.len(), 1, "{code}");
         assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
     }
+}
+
+/// The four entries of the engine's `Cqrs`, which are also the kinds of presentation: what a file under
+/// `presentation/<transport>/` does is told by the directory it lies in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+enum Entry {
+    Commands,
+    Queries,
+    History,
+    Maintenance,
+}
+
+impl Entry {
+    const ALL: [Entry; 4] = [Entry::Commands, Entry::Queries, Entry::History, Entry::Maintenance];
+
+    /// The name of the kind's directory.
+    fn dir(self) -> &'static str {
+        match self {
+            Entry::Commands => "commands",
+            Entry::Queries => "queries",
+            Entry::History => "history",
+            Entry::Maintenance => "maintenance",
+        }
+    }
+
+    /// The calls of the entry, for a message.
+    fn call(self) -> &'static str {
+        match self {
+            Entry::Commands => "`source(..)`",
+            Entry::Queries => "`view::<V>()`",
+            Entry::History => "`history::<A>(..)`",
+            Entry::Maintenance => "`views()` or `view::<V>().rebuild(..)`",
+        }
+    }
+}
+
+/// The transports of a presentation; a new one (a queue, a scheduler) is a sibling directory of `http`.
+const TRANSPORTS: &[&str] = &["http"];
+
+/// Application items that reach an engine entry for a presentation that names them, each with the application file that
+/// calls the entry. A path is an item (never a whole module that also holds items unrelated to the entry). The next
+/// test keeps the files equal to the application files that name an entry.
+const ENTRY_VIA_APPLICATION: &[(&str, &str, Entry)] = &[
+    (
+        "crate::concert::application::time_travel",
+        "concert/application/time_travel.rs",
+        Entry::History,
+    ),
+    (
+        "crate::concert::application::rebuild::rebuild_hall",
+        "concert/application/rebuild.rs",
+        Entry::Maintenance,
+    ),
+    (
+        "crate::operations::application::rebuild::ReadSideService",
+        "operations/application/engine.rs",
+        Entry::Maintenance,
+    ),
+    (
+        "crate::operations::application::verify::VerifyService",
+        "operations/application/engine.rs",
+        Entry::Maintenance,
+    ),
+];
+
+/// The engine entry a call names, if `name_start` (in stripped code) is the name of one. The entries are
+/// `source(`, `history(` or `history::<`, `views(` and `view::<V>(..)`, which is the maintenance entry when `.rebuild`
+/// follows it and a query otherwise; whitespace and line breaks between the parts do not matter (rustfmt breaks
+/// chains). Limits of a textual check: a method named like an entry on another type (`Error::source()`) is reported,
+/// and a view kept in a variable and rebuilt later reads as a query.
+fn entry_at(code: &str, name_start: usize) -> Option<Entry> {
+    let rest = &code[name_start..];
+    let name: String = rest.chars().take_while(|c| is_ident(Some(c))).collect();
+    let after = rest[name.len()..].trim_start();
+    match name.as_str() {
+        "source" => after.starts_with('(').then_some(Entry::Commands),
+        "history" => (after.starts_with('(') || after.starts_with("::")).then_some(Entry::History),
+        "views" => after.starts_with('(').then_some(Entry::Maintenance),
+        "view" => {
+            let mut after = after;
+            if after.starts_with("::<") {
+                let mut depth = 0;
+                let end = after.char_indices().find_map(|(index, c)| {
+                    match c {
+                        '<' => depth += 1,
+                        '>' => depth -= 1,
+                        _ => {}
+                    }
+                    (depth == 0 && c == '>').then_some(index + 1)
+                })?;
+                after = after[end..].trim_start();
+            }
+            if !after.starts_with('(') {
+                return None;
+            }
+            let mut depth = 0;
+            let end = after.char_indices().find_map(|(index, c)| {
+                match c {
+                    '(' => depth += 1,
+                    ')' => depth -= 1,
+                    _ => {}
+                }
+                (depth == 0 && c == ')').then_some(index + 1)
+            })?;
+            let rebuilds = after[end..]
+                .trim_start()
+                .strip_prefix(".rebuild")
+                .is_some_and(|tail| !is_ident(tail.chars().next().as_ref()));
+            Some(if rebuilds { Entry::Maintenance } else { Entry::Queries })
+        }
+        _ => None,
+    }
+}
+
+/// The engine entries a stripped code calls directly, with their lines: `cqrs.source(..)`, `Cqrs::source(..)` and the like.
+fn engine_entries(code: &str) -> Vec<(usize, Entry)> {
+    let line_of = |offset: usize| code[..offset].matches('\n').count() + 1;
+    let dotted = code.match_indices('.').map(|(at, _)| at + 1);
+    let qualified = code
+        .match_indices("Cqrs::")
+        .filter(|(at, _)| !is_ident(code[..*at].chars().last().as_ref()))
+        .map(|(at, _)| at + "Cqrs::".len());
+    let mut found: Vec<(usize, Entry)> = dotted
+        .chain(qualified)
+        .filter_map(|start| entry_at(code, start).map(|entry| (line_of(start), entry)))
+        .collect();
+    found.sort();
+    found
+}
+
+/// The path of a presentation file as components without `.rs`, or `None` for any other file.
+fn presentation_parts(relative: &Path) -> Option<Vec<String>> {
+    let parts: Vec<String> = relative
+        .iter()
+        .map(|part| part.to_string_lossy().trim_end_matches(".rs").to_owned())
+        .collect();
+    let in_module = parts
+        .first()
+        .is_some_and(|first| MODULES.iter().any(|(module, _)| module == first));
+    (in_module && parts.get(1).is_some_and(|layer| layer == "presentation")).then_some(parts)
+}
+
+/// The engine entries a stripped file of production code uses: the calls it makes and the entries of the application
+/// items it names (`ENTRY_VIA_APPLICATION`).
+fn entries_named(code: &str) -> Vec<(usize, Entry)> {
+    let production = without_test_modules(code);
+    let mut found = engine_entries(&production);
+    for (line, path) in paths(&production) {
+        found.extend(
+            ENTRY_VIA_APPLICATION
+                .iter()
+                .filter(|(item, _, _)| starts_with(&path, item))
+                .map(|(_, _, entry)| (line, *entry)),
+        );
+    }
+    found.sort();
+    found.dedup();
+    found
+}
+
+/// The kind rule on one file with stripped `code`: a file under `presentation/<transport>/<kind>/` uses only the entry of its
+/// kind; every other file of a presentation uses none of the four; the transport and the kind are among the known ones.
+fn kind_violations(relative: &Path, code: &str) -> Vec<String> {
+    let Some(parts) = presentation_parts(relative) else {
+        return Vec::new();
+    };
+    let shown = relative.display();
+    if let Some(transport) = parts.get(2)
+        && !TRANSPORTS.contains(&transport.as_str())
+    {
+        return vec![format!(
+            "{shown}: `{transport}` is not a transport ({}): a presentation file lies under `presentation/<transport>/`",
+            TRANSPORTS.join(", ")
+        )];
+    }
+    let own = if parts.len() >= 5 {
+        match Entry::ALL.iter().find(|entry| entry.dir() == parts[3]) {
+            Some(entry) => Some(*entry),
+            None => {
+                return vec![format!(
+                    "{shown}: `{}` is not a kind: a directory of a transport is `commands`, `queries`, `history` or \
+                     `maintenance`",
+                    parts[3]
+                )];
+            }
+        }
+    } else {
+        None
+    };
+    entries_named(code)
+        .into_iter()
+        .filter(|(_, entry)| Some(*entry) != own)
+        .map(|(line, entry)| match own {
+            Some(own) => format!(
+                "{shown}:{line}: uses the {} entry ({}), but the file is in `{}/`",
+                entry.dir(),
+                entry.call(),
+                own.dir()
+            ),
+            None => format!(
+                "{shown}:{line}: uses the {} entry ({}), but a file outside the kind directories uses none of the four",
+                entry.dir(),
+                entry.call()
+            ),
+        })
+        .collect()
+}
+
+/// The stripped source of every file of the crate that is not a test file, with its path relative to `src`.
+fn production_sources() -> Vec<(PathBuf, String)> {
+    let src = Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
+    let mut files = Vec::new();
+    rust_files(&src, &mut files);
+    let stripped: Vec<(PathBuf, String)> = files
+        .iter()
+        .map(|file| {
+            let code = fs::read_to_string(file).unwrap_or_else(|e| panic!("{}: {e}", file.display()));
+            (file.clone(), strip(&code))
+        })
+        .collect();
+    let test_files = test_files(&src, &stripped);
+    stripped
+        .into_iter()
+        .filter(|(file, _)| !test_files.contains(file))
+        .map(|(file, code)| (file.strip_prefix(&src).map(Path::to_path_buf).unwrap_or(file), code))
+        .collect()
+}
+
+/// A file of a presentation names the engine entry of its kind and no other (a presentation file outside the kind
+/// directories none of the four), the transports and the kinds are the known ones, and the production code of the tree
+/// obeys it. Every kind is exercised, so the rule cannot pass for lack of files.
+#[test]
+fn a_presentation_file_names_only_the_engine_entry_of_its_kind() {
+    let mut broken = Vec::new();
+    let (mut checked, mut outside) = (0, 0);
+    let mut exercised = BTreeSet::new();
+    for (relative, code) in production_sources() {
+        let Some(parts) = presentation_parts(&relative) else {
+            continue;
+        };
+        checked += 1;
+        broken.extend(kind_violations(&relative, &code));
+        match parts
+            .get(3)
+            .and_then(|kind| Entry::ALL.iter().find(|entry| entry.dir() == kind))
+        {
+            Some(entry) if parts.len() >= 5 => {
+                if !entries_named(&code).is_empty() {
+                    exercised.insert(*entry);
+                }
+            }
+            Some(_) | None => outside += 1,
+        }
+    }
+    assert!(broken.is_empty(), "kind rule broken:\n{}", broken.join("\n"));
+    assert!(
+        checked >= 12,
+        "only {checked} presentation files: is the layout still presentation/<transport>/<kind>/?"
+    );
+    assert!(outside > 0, "no presentation file outside the kind directories");
+    assert_eq!(
+        exercised,
+        BTreeSet::from(Entry::ALL),
+        "a kind with no file that names its entry"
+    );
+}
+
+/// The kind rule on examples: every wrong entry in every kind, an entry in a file outside the kind directories, an
+/// entry reached through an application item, a stray file and a stray directory are refused; the right entries,
+/// formatted chains, the free calls of the process, comments, strings and test modules are not.
+#[test]
+fn the_kind_rule_refuses_every_wrong_entry() {
+    let check = |file: &str, code: &str| kind_violations(Path::new(file), &strip(code));
+    let (commands, queries) = (
+        "concert/presentation/http/commands/x.rs",
+        "concert/presentation/http/queries/x.rs",
+    );
+    let (history, maintenance) = (
+        "concert/presentation/http/history/x.rs",
+        "concert/presentation/http/maintenance/x.rs",
+    );
+    let free = "operations/presentation/http/health.rs";
+    let source = "fn f(cqrs: &Cqrs) { cqrs.source(\"ui\").execute::<A>(&id, c); }\n";
+    let get = "fn f(cqrs: &Cqrs) { cqrs.view::<V>().get(&id); }\n";
+    let list = "fn f(cqrs: &Cqrs) { cqrs.view::<V>()\n    .list(); }\n";
+    let rebuild = "fn f(cqrs: &Cqrs) { cqrs.view::<V>()\n    .rebuild(&id); }\n";
+    let views = "fn f(cqrs: &Cqrs) { cqrs.views().status(); }\n";
+    let replay = "fn f(cqrs: &Cqrs) { cqrs.history::<A>(&id); }\n";
+    for (file, code) in [
+        (queries, source),
+        (queries, views),
+        (queries, replay),
+        (queries, rebuild),
+        (queries, "fn f(cqrs: &Cqrs) { Cqrs::source(cqrs, \"ui\"); }\n"),
+        (commands, get),
+        (commands, views),
+        ("concert/presentation/http/commands/execute/response.rs", get),
+        (history, source),
+        (history, list),
+        (maintenance, get),
+        (maintenance, source),
+        (maintenance, replay),
+        (free, source),
+        (free, get),
+        (free, replay),
+        (free, views),
+        ("shared/presentation/http.rs", source),
+        ("concert/presentation/http.rs", views),
+        ("concert/presentation.rs", get),
+        // An application item that reaches an entry counts as naming it.
+        (queries, "use crate::concert::application::time_travel;\n"),
+        (commands, "use crate::concert::application::rebuild::rebuild_hall;\n"),
+        (history, "use crate::operations::application::rebuild::ReadSideService;\n"),
+        (free, "use crate::operations::application::verify::{VerifyService, X};\n"),
+        // Where a file lies.
+        ("concert/presentation/get.rs", ""),
+        ("operations/presentation/http/activity/stream.rs", ""),
+    ] {
+        assert_eq!(check(file, code).len(), 1, "{file}: {code}");
+    }
+    let broken = check(queries, "fn f() {}\nfn g(cqrs: &Cqrs) { cqrs.view::<V>().rebuild(&id); }\n");
+    assert_eq!(
+        broken,
+        [
+            "concert/presentation/http/queries/x.rs:2: uses the maintenance entry (`views()` or `view::<V>().rebuild(..)`), \
+          but the file is in `queries/`"
+        ]
+    );
+    assert!(check("operations/presentation/http/activity/stream.rs", "")[0].contains("`activity` is not a kind"));
+    assert!(check("concert/presentation/get.rs", "")[0].contains("`get` is not a transport"));
+    for (file, code) in [
+        (
+            commands,
+            "fn f(cqrs: &Cqrs) {\n    cqrs\n        .source(\"ui\")\n        .execute_with_id::<A>(id, &key, c);\n}\n",
+        ),
+        (commands, source),
+        (queries, get),
+        (queries, list),
+        (queries, "fn f(cqrs: &Cqrs) { wallet_of(&cqrs.view::<Wrapper<V>>(), &id); }\n"),
+        (history, replay),
+        (history, "use crate::concert::application::time_travel;\n"),
+        // A helper next to the endpoints of its kind, and the request and response of a directory endpoint, name no
+        // entry or the entry of their kind.
+        ("concert/presentation/http/history/summary.rs", "fn summary() {}\n"),
+        (
+            "concert/presentation/http/commands/execute/request.rs",
+            "fn into_command() {}\n",
+        ),
+        (
+            "concert/presentation/http/history/state_at/response.rs",
+            "use crate::concert::application::time_travel::ConcertAt;\n",
+        ),
+        (
+            "operations/presentation/http/maintenance/rebuild/response.rs",
+            "use crate::operations::application::rebuild::{RebuildRefused, RebuildStarted};\n",
+        ),
+        (maintenance, views),
+        (maintenance, rebuild),
+        (
+            maintenance,
+            "use crate::operations::application::rebuild::{ReadSideService, RebuildRefused};\n",
+        ),
+        (maintenance, "use crate::concert::application::rebuild::rebuild_hall;\n"),
+        (
+            free,
+            "fn f(cqrs: &Cqrs) { cqrs.settings().snapshot_every(); cqrs.stopping(); dependency::<T>(cqrs)?; }\n",
+        ),
+        (free, "use crate::operations::application::rebuild::RebuildPace;\n"),
+        (
+            "concert/presentation/http.rs",
+            "fn routes() { Router::new().route(\"/x\", get(queries::get::handle)); }\n",
+        ),
+        // Comments, strings, test modules, fields and bindings are no calls.
+        (queries, "// cqrs.source(\"ui\")\nfn f() { let s = \"cqrs.views()\"; }\n"),
+        (
+            queries,
+            "#[cfg(test)]\nmod tests { fn f(cqrs: &Cqrs) { cqrs.source(\"ui\"); } }\n",
+        ),
+        (
+            free,
+            "fn f(stored: S) { let StoredView { id, view, .. } = stored; stored.view.sold; }\n",
+        ),
+    ] {
+        assert!(check(file, code).is_empty(), "{file}: {code}: {:?}", check(file, code));
+    }
+}
+
+/// Public types of a presentation that carry serde derives but are neither the input nor the answer of an endpoint:
+/// the data of a server-sent event.
+const NOT_ENDPOINT_TYPES: &[&str] = &["ActivityHello"];
+
+/// The one file of a presentation that builds JSON by hand: the shape every error answer shares.
+const JSON_BUILDERS: &[&str] = &["shared/presentation/http/error.rs"];
+
+/// A public struct or enum of stripped code with the traits it derives.
+#[derive(Debug, PartialEq, Eq)]
+struct PublicType {
+    line: usize,
+    name: String,
+    derives: Vec<String>,
+}
+
+/// The index of the bracket that opens the one at `close` (`)`, `]` or `}`), in stripped code.
+fn opening(code: &str, close: usize) -> Option<usize> {
+    let mut depth = 0;
+    for (index, c) in code[..=close].char_indices().rev() {
+        match c {
+            ')' | ']' | '}' => depth += 1,
+            '(' | '[' | '{' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(index);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The traits named in the `#[derive(..)]` attributes right before the item that starts at `item`, by their last path
+/// segment (`serde::Serialize` is `Serialize`); other attributes between them are skipped.
+fn derives_before(code: &str, item: usize) -> Vec<String> {
+    let mut derives = Vec::new();
+    let mut end = item;
+    loop {
+        let before = code[..end].trim_end();
+        if !before.ends_with(']') {
+            return derives;
+        }
+        let Some(open) = opening(before, before.len() - 1) else {
+            return derives;
+        };
+        let Some(attribute) = before[..open].strip_suffix('#').map(|_| &before[open..]) else {
+            return derives;
+        };
+        if let Some(list) = attribute.strip_prefix("[derive(").and_then(|rest| rest.strip_suffix(")]")) {
+            derives.extend(
+                list.split(',')
+                    .filter_map(|name| name.rsplit("::").next())
+                    .map(|name| name.trim().to_owned())
+                    .filter(|name| !name.is_empty()),
+            );
+        }
+        end = open - 1;
+    }
+}
+
+/// The public structs and enums of stripped code, `pub` with or without a restriction (`pub(crate)`).
+fn public_types(code: &str) -> Vec<PublicType> {
+    let mut found = Vec::new();
+    for keyword in ["struct", "enum"] {
+        for (at, _) in code.match_indices(keyword) {
+            let rest = &code[at + keyword.len()..];
+            let is_word = !is_ident(code[..at].chars().last().as_ref()) && rest.starts_with(char::is_whitespace);
+            if !is_word {
+                continue;
+            }
+            let mut before = code[..at].trim_end();
+            if before.ends_with(')')
+                && let Some(open) = opening(before, before.len() - 1)
+            {
+                before = before[..open].trim_end();
+            }
+            let Some(item) = before
+                .strip_suffix("pub")
+                .filter(|rest| !is_ident(rest.chars().last().as_ref()))
+            else {
+                continue;
+            };
+            let name: String = rest.trim_start().chars().take_while(|c| is_ident(Some(c))).collect();
+            found.push(PublicType {
+                line: code[..at].matches('\n').count() + 1,
+                name,
+                derives: derives_before(code, item.len()),
+            });
+        }
+    }
+    found.sort_by_key(|item| item.line);
+    found
+}
+
+/// The naming rule on one file with stripped `code`: the input of an endpoint is a `…Request`, its answer a
+/// `…Response`, and no presentation builds JSON by hand outside the error shape. A public type that derives
+/// `Deserialize` ends in `Request`, one that derives `Serialize` in `Response`; the parts of a body are private types
+/// and have any name. Limits of a textual check: a hand-written `impl Serialize` is not seen, and a type that
+/// derives both is held to `Request` first.
+fn wire_violations(relative: &Path, code: &str) -> Vec<String> {
+    if presentation_parts(relative).is_none() {
+        return Vec::new();
+    }
+    let production = without_test_modules(code);
+    let shown = relative.display();
+    let mut broken = Vec::new();
+    for item in public_types(&production) {
+        let has = |name: &str| item.derives.iter().any(|derive| derive == name);
+        let rule = if has("Deserialize") {
+            Some(("Deserialize", "Request"))
+        } else if has("Serialize") {
+            Some(("Serialize", "Response"))
+        } else {
+            None
+        };
+        if let Some((derive, suffix)) = rule
+            && !item.name.ends_with(suffix)
+            && !NOT_ENDPOINT_TYPES.contains(&item.name.as_str())
+        {
+            broken.push(format!(
+                "{shown}:{}: `{}` derives `{derive}`: a public type of a presentation that does is named `<Subject><Action>{suffix}` \
+                 (the parts of a body are private)",
+                item.line, item.name
+            ));
+        }
+    }
+    if !JSON_BUILDERS.iter().any(|file| Path::new(file) == relative) {
+        for (at, _) in production.match_indices("json!") {
+            if !is_ident(production[..at].chars().last().as_ref()) {
+                broken.push(format!(
+                    "{shown}:{}: `json!` builds an answer by hand: a presentation answers with a `…Response` type",
+                    production[..at].matches('\n').count() + 1
+                ));
+            }
+        }
+    }
+    broken
+}
+
+/// Every public type of a presentation that is serialized or deserialized is named for its role, and no presentation
+/// holds a `json!` outside the error shape. Both kinds of type are exercised, so the rule cannot pass for lack of them.
+#[test]
+fn a_presentation_names_its_requests_and_responses_and_builds_no_json_by_hand() {
+    let mut broken = Vec::new();
+    let (mut requests, mut responses) = (0, 0);
+    for (relative, code) in production_sources() {
+        broken.extend(wire_violations(&relative, &code));
+        if presentation_parts(&relative).is_some() {
+            for item in public_types(&without_test_modules(&code)) {
+                requests += usize::from(item.name.ends_with("Request") && item.derives.iter().any(|d| d == "Deserialize"));
+                responses += usize::from(item.name.ends_with("Response") && item.derives.iter().any(|d| d == "Serialize"));
+            }
+        }
+    }
+    assert!(broken.is_empty(), "naming rule broken:\n{}", broken.join("\n"));
+    assert!(
+        requests >= 2,
+        "only {requests} request types: is the rule still looking at the presentations?"
+    );
+    assert!(
+        responses >= 10,
+        "only {responses} response types: is the rule still looking at the presentations?"
+    );
+}
+
+/// The naming rule on examples: a wrong name for a request or a response, in any spelling of the derive and the
+/// visibility, and a hand-built answer are refused; the right names, private parts, the event data, derives that carry
+/// no serde, `json!` in tests and in the error shape, other layers, comments and strings are not.
+#[test]
+fn the_naming_rule_refuses_a_misnamed_wire_type_and_a_hand_built_answer() {
+    let check = |file: &str, code: &str| wire_violations(Path::new(file), &strip(code));
+    let handler = "concert/presentation/http/commands/x.rs";
+    for code in [
+        "#[derive(Debug, Deserialize)]\npub struct CommandDto { a: u8 }\n",
+        "#[derive(Debug, Deserialize)]\npub enum CommandDto { A }\n",
+        "#[derive(Debug, Serialize)]\npub struct Answer { a: u8 }\n",
+        "#[derive(Debug, serde::Serialize)]\npub struct Answer;\n",
+        "#[derive(\n    Debug,\n    Serialize,\n)]\npub struct Answer;\n",
+        "#[derive(Debug)]\n#[derive(Serialize)]\n#[serde(transparent)]\npub struct Answer(Vec<u8>);\n",
+        "#[derive(Serialize)]\npub(crate) struct Answer;\n",
+        "#[derive(Serialize)]\npub struct ResponseOfThings;\n",
+        "#[derive(Deserialize)]\npub struct Request2;\n",
+    ] {
+        let broken = check(handler, code);
+        assert_eq!(broken.len(), 1, "{code}: {broken:?}");
+        assert!(broken[0].contains("derives"), "{broken:?}");
+    }
+    for code in [
+        "fn f() -> Json<Value> { Json(json!({ \"a\": 1 })) }\n",
+        "fn f() { serde_json::json!(1); }\n",
+    ] {
+        let broken = check(handler, code);
+        assert_eq!(broken.len(), 1, "{code}: {broken:?}");
+        assert!(broken[0].contains("`json!`"), "{broken:?}");
+    }
+    for code in [
+        "#[derive(Debug, Deserialize)]\npub struct ConcertCommandRequest { a: u8 }\n",
+        "#[derive(Debug, Serialize)]\n#[serde(transparent)]\npub struct ConcertHallListResponse(Vec<Entry>);\n",
+        "#[derive(Debug, Serialize)]\nstruct Entry { a: u8 }\n",
+        "#[derive(Debug, Serialize)]\npub(super) struct ConcertHallResponse { a: u8 }\n",
+        "#[derive(Debug, Serialize)]\npub struct ActivityHello { a: u8 }\n",
+        "#[derive(Debug, Clone)]\npub struct Anything { a: u8 }\n",
+        "pub struct Plain;\npub enum Plainer {}\n",
+        "#[derive(Debug, Serialize, Deserialize)]\nstruct Both;\n",
+        "// #[derive(Serialize)] pub struct Answer;\nlet s = \"json!(1)\";\n",
+        "#[cfg(test)]\nmod tests { #[derive(Serialize)] pub struct Answer; fn f() { json!(1); } }\n",
+        "fn f() { to_json!(1); my_json!(1); }\n",
+    ] {
+        assert!(check(handler, code).is_empty(), "{code}");
+    }
+    assert!(check("shared/presentation/http/error.rs", "fn f() { json!({}); }\n").is_empty());
+    assert_eq!(check("shared/presentation/http.rs", "fn f() { json!({}); }\n").len(), 1);
+    // Only a presentation is held to the names.
+    let misnamed = "#[derive(Serialize)]\npub struct Answer;\nfn f() { json!(1); }\n";
+    for file in [
+        "concert/application/x.rs",
+        "shared/infrastructure/x.rs",
+        "concert/domain/x.rs",
+        "concert.rs",
+    ] {
+        assert!(check(file, misnamed).is_empty(), "{file}");
+    }
+}
+
+/// The application items that reach an engine entry are listed (`ENTRY_VIA_APPLICATION`): the production code of the
+/// application files that call an entry is exactly the files the list names, with the entries it names. A new
+/// application function over the engine, or one that stops using it, fails here until the list says so.
+#[test]
+fn the_application_items_that_reach_an_engine_entry_are_listed() {
+    let calling: BTreeSet<(String, Entry)> = production_sources()
+        .into_iter()
+        .filter(|(relative, _)| {
+            let parts = relative
+                .iter()
+                .map(|part| part.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            parts.get(1).is_some_and(|layer| layer == "application")
+        })
+        .flat_map(|(relative, code)| {
+            let entries: BTreeSet<Entry> = engine_entries(&without_test_modules(&code))
+                .into_iter()
+                .map(|(_, entry)| entry)
+                .collect();
+            let file = relative.to_string_lossy().into_owned();
+            entries.into_iter().map(move |entry| (file.clone(), entry))
+        })
+        .collect();
+    let listed: BTreeSet<(String, Entry)> = ENTRY_VIA_APPLICATION
+        .iter()
+        .map(|(_, file, entry)| ((*file).to_owned(), *entry))
+        .collect();
+    assert_eq!(
+        calling, listed,
+        "application files that call an engine entry and ENTRY_VIA_APPLICATION differ: list the item a presentation names \
+         to reach it, or remove the row"
+    );
 }
 
 #[test]

@@ -2,7 +2,7 @@
 use super::support::Database;
 use cqrsx::{
     domain::{aggregate::Aggregate, command::Decide, event::Events},
-    journal::{EventStore, repository::EventRepository, store::JournalEventStore},
+    journal::{AggregateStore, repository::EventRepository, store::EventSourcedStore},
 };
 use cqrsx_postgres::event_repository::PostgresEventRepository;
 use serde::{Deserialize, Serialize};
@@ -87,16 +87,16 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
                 .unwrap();
             assert_eq!(&found, expected);
         }
-        let store = JournalEventStore::<_, State>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
+        let store = EventSourcedStore::<_, State>::new(repository).with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
         let context = store.load_aggregate(id).await.unwrap();
         assert_eq!(context.aggregate.value, value);
         assert_eq!(context.last_sequence, sequence);
         assert_eq!(context.snapshot_revision, Some(snapshot));
         assert_eq!(store.load_events(id).await.unwrap().len(), sequence);
-        let events_only = JournalEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()));
+        let events_only = EventSourcedStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()));
         assert_eq!(events_only.load_aggregate(id).await.unwrap().aggregate.value, value);
     }
-    let store = JournalEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
+    let store = EventSourcedStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
         .with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
     let framework = cqrsx::command::executor::StoreCommandExecutor::new(
         store,
@@ -121,7 +121,7 @@ async fn upstream_data_preserves_formats_snapshot_tail_and_next_sequence() {
     assert_eq!(row.get::<String, _>("event_version"), "1");
     assert_eq!(row.get::<Value, _>("payload"), json!({"ValueSet":{"value":50}}));
     assert_eq!(row.get::<Value, _>("metadata"), json!({"correlation_id":"after-fork"}));
-    let store = JournalEventStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
+    let store = EventSourcedStore::<_, State>::new(PostgresEventRepository::new(db.pool.clone()))
         .with_snapshots(std::num::NonZeroUsize::new(2).unwrap());
     let context = store.load_aggregate("old").await.unwrap();
     assert_eq!(context.aggregate.value, 50);

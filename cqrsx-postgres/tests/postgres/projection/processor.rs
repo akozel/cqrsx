@@ -6,7 +6,7 @@ use crate::{
 use cqrsx::{
     command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{EventStore, repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
+    journal::{AggregateStore, repository::EventRepository, store::EventSourcedStore, wakeup::CommitWakeup},
     projection::{
         checkpoint::{CheckpointKey, CheckpointStatus, CheckpointStore, RebuildReply},
         processor::{
@@ -92,13 +92,13 @@ impl ProjectionObserver for Recording {
     }
 }
 
-type Store = JournalEventStore<PostgresEventRepositoryWithOutbox, Ledger>;
+type Store = EventSourcedStore<PostgresEventRepositoryWithOutbox, Ledger>;
 
 fn ledgers(pool: &PgPool, wakeup: &CommitWakeup) -> Arc<StoreCommandExecutor<Ledger, Store>> {
     let repository = PostgresEventRepositoryWithOutbox::new(pool.clone());
     Arc::new(
         StoreCommandExecutor::new(
-            JournalEventStore::new(repository),
+            EventSourcedStore::new(repository),
             (),
             Default::default(),
             LockLimits::default(),
@@ -145,7 +145,7 @@ async fn create_views(pool: &PgPool) {
 }
 
 async fn fold(pool: &PgPool, id: &str) -> Option<Balance> {
-    let store = JournalEventStore::<_, Ledger>::new(PostgresEventRepository::new(pool.clone()));
+    let store = EventSourcedStore::<_, Ledger>::new(PostgresEventRepository::new(pool.clone()));
     let events = store.load_events(id).await.unwrap();
     if events.is_empty() {
         return None;

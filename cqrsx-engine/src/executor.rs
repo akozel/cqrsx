@@ -6,7 +6,7 @@ use cqrsx::{
         observer::{AnyCommandObserver, AnyCommandReport, CommandObserver, CommandReport},
     },
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
-    journal::store::JournalEventStore,
+    journal::store::EventSourcedStore,
     memory::event_repository::MemoryEventRepository,
 };
 #[cfg(feature = "postgres")]
@@ -16,9 +16,9 @@ use std::{collections::HashMap, sync::Arc};
 /// The executor of one aggregate type over the engine's journal: the variants are the stores, so a command from an
 /// entry point waits for the store's own future, without an allocation.
 pub(crate) enum Executor<A: Aggregate> {
-    Memory(StoreCommandExecutor<A, JournalEventStore<MemoryEventRepository, A>>),
+    Memory(StoreCommandExecutor<A, EventSourcedStore<MemoryEventRepository, A>>),
     #[cfg(feature = "postgres")]
-    Postgres(StoreCommandExecutor<A, JournalEventStore<PostgresEventRepositoryWithOutbox, A>>),
+    Postgres(StoreCommandExecutor<A, EventSourcedStore<PostgresEventRepositoryWithOutbox, A>>),
 }
 
 impl<A> CommandExecutor<A> for Executor<A>

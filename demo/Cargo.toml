@@ -11,7 +11,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 cqrsx = { path = "../cqrsx" }
-cqrsx-engine = { path = "../cqrsx-engine", features = ["postgres", "mongodb", "http"] }
+cqrsx-engine = { path = "../cqrsx-engine", features = ["postgres", "mongodb", "http", "operation-utils"] }
 cqrsx-postgres = { path = "../cqrsx-postgres" }
 cqrsx-testing = { path = "../cqrsx-testing" }
 axum = "0.8"

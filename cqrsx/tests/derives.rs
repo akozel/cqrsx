@@ -207,8 +207,6 @@ struct BookSeat {
     seat: String,
     #[label]
     fan_id: String,
-    #[command_id]
-    booking_id: Uuid,
     #[label]
     r#type: u8,
 }
@@ -223,18 +221,16 @@ struct Note<T: Display> {
 }
 
 #[test]
-fn a_derived_command_reports_its_name_id_and_labels_in_field_order() {
+fn a_derived_command_reports_its_name_and_labels_in_field_order() {
     let book = BookSeat {
         seat: "B4".into(),
         fan_id: "fox".into(),
-        booking_id: Uuid::from_u128(7),
         r#type: 2,
     };
     assert_eq!(
-        (book.name(), book.command_id(), book.labels()),
+        (book.name(), book.labels()),
         (
             "BookSeat",
-            Some(Uuid::from_u128(7)),
             vec![
                 Label {
                     name: "fan_id",
@@ -248,7 +244,7 @@ fn a_derived_command_reports_its_name_id_and_labels_in_field_order() {
         )
     );
     assert_eq!(book.seat, "B4", "a field without an attribute is the command's only");
-    assert_eq!((Ping.name(), Ping.command_id(), Ping.labels()), ("Ping", None, vec![]));
+    assert_eq!((Ping.name(), Ping.labels()), ("Ping", vec![]));
     let note = Note { note: 'x' };
     assert_eq!(
         (note.name(), note.labels()),
@@ -303,8 +299,6 @@ impl Aggregate for Tally {
 
 #[derive(Command)]
 struct Add {
-    #[command_id]
-    id: Uuid,
     value: u32,
 }
 
@@ -346,12 +340,7 @@ enum NoCommand {}
 
 #[test]
 fn derived_commands_route_every_variant_to_its_decision_and_report_it() {
-    let add = |value| {
-        TallyCommand::Add(Add {
-            id: Uuid::from_u128(1),
-            value,
-        })
-    };
+    let add = |value| TallyCommand::Add(Add { value });
     let decide = |command: TallyCommand| {
         let mut tally = Tally::default();
         tally.apply(Counted::Added(3));
@@ -362,15 +351,11 @@ fn derived_commands_route_every_variant_to_its_decision_and_report_it() {
     assert_eq!(decide(TallyCommand::Reset(Reset { by: "ops".into() })), Ok(Counted::Reset));
     let reset = TallyCommand::Reset(Reset { by: "ops".into() });
     assert_eq!(
+        [(add(1).name(), add(1).labels()), (reset.name(), reset.labels())],
         [
-            (add(1).name(), add(1).command_id(), add(1).labels()),
-            (reset.name(), reset.command_id(), reset.labels())
-        ],
-        [
-            ("Add", Some(Uuid::from_u128(1)), vec![]),
+            ("Add", vec![]),
             (
                 "Reset",
-                None,
                 vec![Label {
                     name: "by",
                     value: "ops".to_owned()
@@ -409,10 +394,9 @@ enum Reported {
 fn a_command_enum_without_decide_still_reports_its_command() {
     let reported = Reported::Reset(Reset { by: "ops".into() });
     assert_eq!(
-        (reported.name(), reported.command_id(), reported.labels()),
+        (reported.name(), reported.labels()),
         (
             "Reset",
-            None,
             vec![Label {
                 name: "by",
                 value: "ops".to_owned()

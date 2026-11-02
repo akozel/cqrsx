@@ -8,19 +8,18 @@ use crate::{
 };
 use cqrsx::{journal::PersistenceError, view::repository::StoredView};
 use cqrsx_engine::views::ViewQuery;
-use serde::Serialize;
 
 /// One ledger behind the wallet: the concert, the document revision and the last event applied.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct LedgerRef {
     pub concert_id: String,
     pub revision: i64,
     pub last_sequence: i64,
 }
 
-/// The wallet as the API returns it: the ledgers it was assembled from and the merged view, in the
+/// The wallet of a fan: the ledgers it was assembled from and the merged view, in the
 /// shape of one `FanWalletView` (`tickets` keyed by `booking_id`, counters summed).
-#[derive(Debug, Clone, PartialEq, Serialize)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct FanWallet {
     pub fan_id: String,
     pub ledgers: Vec<LedgerRef>,

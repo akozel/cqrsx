@@ -15,7 +15,7 @@
 //! use cqrsx::{
 //!     command::{CommandExecutor, executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
 //!     domain::{aggregate::Aggregate, command::Decide, event::Events},
-//!     journal::store::JournalEventStore,
+//!     journal::store::EventSourcedStore,
 //!     memory::event_repository::MemoryEventRepository,
 //!     reactions::{Decided, Reactions, ReactionsPlanner, Then},
 //!     task::{Task, policy::Policies},
@@ -90,7 +90,7 @@
 //! assert_eq!((tasks[0].format().to_string(), &tasks[0].payload()["total"]), ("ship v1".to_owned(), &30.into()));
 //!
 //! // The executor runs them after every decision and commits the tasks with the event.
-//! let store = JournalEventStore::<_, Order>::new(MemoryEventRepository::default());
+//! let store = EventSourcedStore::<_, Order>::new(MemoryEventRepository::default());
 //! let orders = StoreCommandExecutor::new(store, (), AggregateConflictRetryPolicy::default(), LockLimits::default())
 //!     .with_task_planner(ReactionsPlanner::<Order>::new(Policies::default()));
 //! let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().unwrap();
@@ -243,9 +243,10 @@ impl Then {
 }
 
 /// The task planner of an aggregate's reactions: builds the [`Decided`] of every decision, lets
-/// [`Reactions::react`] plan, and gives every task the attempt budget of its type's policy (a type bound to none
-/// keeps [`DEFAULT_MAX_ATTEMPTS`](crate::task::DEFAULT_MAX_ATTEMPTS)). A task that cannot be built refuses the
-/// command (`TaskPlanError::Task`): it is unavailable and nothing is written.
+/// [`Reactions::react`] plan, and gives every task the attempt budget of its type's policy (a type nobody registered
+/// gets the budget of [`TaskPolicy::default`](crate::task::policy::TaskPolicy::default),
+/// [`DEFAULT_MAX_ATTEMPTS`](crate::task::DEFAULT_MAX_ATTEMPTS)). A task that cannot be built refuses the command
+/// (`TaskPlanError::Task`): it is unavailable and nothing is written.
 pub struct ReactionsPlanner<A> {
     policies: Policies,
     aggregate: PhantomData<fn() -> A>,
@@ -278,13 +279,10 @@ impl<A: Reactions> TaskPlanner<A> for ReactionsPlanner<A> {
         );
         let mut then = Then::default();
         A::react(&decided, &mut then);
-        let tasks = then
-            .into_tasks()?
-            .into_iter()
-            .map(|task| match self.policies.policy_for(task.format()) {
-                Some(policy) => task.with_max_attempts(policy.max_attempts()),
-                None => task,
-            });
+        let tasks = then.into_tasks()?.into_iter().map(|task| {
+            let budget = self.policies.max_attempts(task.format());
+            task.with_max_attempts(budget)
+        });
         Ok(tasks.collect())
     }
 }
@@ -303,7 +301,7 @@ mod tests {
         task::{
             DEFAULT_MAX_ATTEMPTS,
             format::TaskFormat,
-            policy::{PolicyName, RetryPause, TaskPolicy},
+            policy::{RetryPause, TaskPolicy},
         },
     };
     use serde::{Deserialize, Serialize, Serializer};
@@ -455,18 +453,10 @@ mod tests {
         }
     }
 
-    const STEP: PolicyName = PolicyName::try_new("step").unwrap();
-
-    /// Pings are steps of six attempts; pongs and receipts have no policy.
+    /// Pings are steps of six attempts; pongs and receipts are not registered.
     fn policies() -> Policies {
-        Policies::builder()
-            .policy(
-                STEP,
-                TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap()),
-            )
-            .bind::<Ping>(STEP)
-            .build()
-            .unwrap()
+        let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap());
+        Policies::builder().task::<Ping>(step).build().unwrap()
     }
 
     fn planner() -> ReactionsPlanner<Till> {
@@ -631,7 +621,7 @@ mod tests {
     async fn a_task_that_does_not_serialize_makes_the_command_unavailable_writes_nothing_and_is_logged_once() {
         let journal = MemoryEventRepository::default();
         let tills = StoreCommandExecutor::new(
-            crate::journal::store::JournalEventStore::new(journal.clone()),
+            crate::journal::store::EventSourcedStore::new(journal.clone()),
             (),
             AggregateConflictRetryPolicy::default(),
             LockLimits::default(),

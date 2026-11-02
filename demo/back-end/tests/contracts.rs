@@ -8,9 +8,9 @@
 //! - `activity_feed.txt`: every kind of activity entry and the keys of its JSON on the SSE stream; a kind whose entries
 //!   differ by an enumerated field the front-end reads has a line per value (`kind[field=value]`);
 //! - `retry_pauses.txt`: the pause the task runtime waits after attempt `n` of a task failed (`<case>.<n>`): an
-//!   e-mail (`mail`), a step of the chain between the aggregates (`step`), and a task type without a policy
-//!   (`redelivery`, bounds: the library's backoff is random within them). The pauses are the policies of the task
-//!   types (`MAIL`, `STEP`), applied by the runtime.
+//!   e-mail (`mail`), a step of the chain between the aggregates (`step`), and the queue's redelivery backoff, the
+//!   default policy (`redelivery`, bounds: the library's backoff is random within them). The pauses are the mail and
+//!   step policies of `fan::application::policies`, applied by the runtime.
 //!
 //! Every file is `key = value` lines sorted by key, every key once. The entries and the pauses come from their
 //! producers: the command observer, the projection observer, the rebuild service, the mail client and the task
@@ -29,7 +29,7 @@ use cqrsx::{
         observer::{CommandObserver, CommandReport, Outcome},
     },
     domain::event::{EventEnvelope, Events},
-    journal::{EventStore, PersistenceError, feed::Position},
+    journal::{AggregateStore, PersistenceError, feed::Position},
     memory::checkpoint_store::MemoryCheckpointStore,
     projection::{
         checkpoint::CheckpointStore,
@@ -56,13 +56,14 @@ use cqrsx::{projection::checkpoint::CheckpointKey, task::policy::Policies};
 use cqrsx_engine::{
     Cqrs,
     build::{BuildError, Builder},
+    memory::InMemory,
     settings::{Settings, duration_text},
     setup::Setup,
     views::JournalTotals,
 };
 use cqrsx_testing::{
     command_executor::TestCommandExecutor,
-    memory_store::{MemoryStore, MemoryStoreAggregateContext},
+    memory_store::{MemoryCommittedAggregate, MemoryStore},
     unavailable_store::UnavailableStore,
 };
 use encore_backend::{
@@ -93,12 +94,7 @@ use encore_backend::{
         rebuild::{ReadSideLimits, ReadSideService},
     },
     shared::{
-        application::{
-            StorageError, TicketLimit,
-            activity::ActivityHub,
-            mail::Mailer,
-            policies::{MAIL, STEP},
-        },
+        application::{StorageError, TicketLimit, activity::ActivityHub, mail::Mailer},
         domain::{
             ConcertId, FanId, FanLedgerId,
             venue::{SeatId, Zone},
@@ -192,6 +188,8 @@ impl Config {
         let lookup = self.lookup.clone();
         Cqrs::from_lookup("ENCORE", move |name| lookup(name))
             .defaults(DEMO_DEFAULTS)
+            .event_store(InMemory)
+            .projections(InMemory)
             .module(concert::module)
             .module(fan::module)
             .module(operations::module)
@@ -595,8 +593,8 @@ impl Switched {
     }
 }
 
-impl EventStore<Concert> for Switched {
-    type Context = MemoryStoreAggregateContext<Concert>;
+impl AggregateStore<Concert> for Switched {
+    type Context = MemoryCommittedAggregate<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await
@@ -1022,7 +1020,7 @@ async fn retry_pauses_by_attempt_are_the_golden_ones() {
         lines.push((format!("step.{n}"), duration_text(step)));
     }
 
-    // A task type without a policy waits a draw of the queue's backoff, within bounds the library has no function for:
+    // The default policy waits a draw of the queue's redelivery backoff, within bounds the library has no function for:
     // the golden bounds, checked by sampling. The draws fill the range: its lowest and highest tenth both occur.
     let golden = parse(RETRY_PAUSES);
     for n in 1..=8 {
@@ -1042,15 +1040,18 @@ async fn retry_pauses_by_attempt_are_the_golden_ones() {
     assert_golden("retry_pauses.txt", RETRY_PAUSES, &render(lines));
 }
 
-/// The pauses of the task policies, in the lines of the golden file: an e-mail is `MAIL`, a step of the chain `STEP`,
-/// both under the configuration without environment; the runtime applies them (above).
+/// The pauses of the task policies, in the lines of the golden file: an e-mail follows the mail policy, a step of the
+/// chain the step policy, both under the configuration without environment; the runtime applies them (above).
 #[test]
 fn the_task_policies_pause_as_the_golden_ones() {
     let config = Config::from_lookup(|_| None).unwrap();
     let policies = policies(&config).unwrap();
     let mut lines = Vec::new();
-    for (case, name) in [("mail", MAIL), ("step", STEP)] {
-        let retry = policies.policy(name).unwrap().retry();
+    for (case, format) in [
+        ("mail", TaskFormat::of::<SendETicketV1>()),
+        ("step", TaskFormat::of::<RecordTicketV1>()),
+    ] {
+        let retry = policies.policy_for(&format).retry();
         for n in 1..=8 {
             lines.push((format!("{case}.{n}"), duration_text(retry.pause(n))));
         }

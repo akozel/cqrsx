@@ -8,11 +8,11 @@ use super::{
 use crate::{
     command::{AttemptError, CommitReport, attempt::CommandAttempt, retry::AggregateConflictRetryPolicy},
     domain::aggregate::{Aggregate, AggregateKey},
-    journal::{EventStore, wakeup::CommitWakeup},
+    journal::{AggregateStore, wakeup::CommitWakeup},
 };
 use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 
-/// The executor of the commands of one aggregate type over an [`EventStore`]: the attempt it owns
+/// The executor of the commands of one aggregate type over an [`AggregateStore`]: the attempt it owns
 /// for its life holds the store, the rules and the task planner. The engine, the tests and the test executor
 /// build it over a store of their own; there is no preset per database. One long-lived executor per aggregate type
 /// and process, shared (e.g. in an `Arc`) by everything that issues its commands: a second executor of the same
@@ -29,7 +29,7 @@ use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 /// command releases the lock, tells the executor's observer what became of it
 /// ([`with_observer`](Self::with_observer)) and answers with what it committed.
 #[must_use]
-pub struct StoreCommandExecutor<A: Aggregate, S: EventStore<A>> {
+pub struct StoreCommandExecutor<A: Aggregate, S: AggregateStore<A>> {
     attempt: CommandAttempt<A, S>,
     retry_policy: AggregateConflictRetryPolicy,
     locks: AggregateLockRegistry,
@@ -37,7 +37,7 @@ pub struct StoreCommandExecutor<A: Aggregate, S: EventStore<A>> {
     observer: Option<Arc<dyn CommandObserver<A>>>,
 }
 
-impl<A: Aggregate, S: EventStore<A>> fmt::Debug for StoreCommandExecutor<A, S> {
+impl<A: Aggregate, S: AggregateStore<A>> fmt::Debug for StoreCommandExecutor<A, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("StoreCommandExecutor")
             .field("attempt", &self.attempt)
@@ -49,11 +49,11 @@ impl<A: Aggregate, S: EventStore<A>> fmt::Debug for StoreCommandExecutor<A, S> {
     }
 }
 
-impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
+impl<A: Aggregate + 'static, S: AggregateStore<A>> StoreCommandExecutor<A, S> {
     /// An executor over `store` with the rules the commands decide with ([`Aggregate::Rules`]) and a lock
     /// registry of its own, bounded by `lock_limits`, that wakes nobody, tells nobody and plans nothing.
     ///
-    /// For experimentation or testing use the [persistent event store](crate::journal::store::JournalEventStore)
+    /// For experimentation or testing use the [event-sourced store](crate::journal::store::EventSourcedStore)
     /// over the journal in memory ([`MemoryEventRepository`](crate::memory::event_repository::MemoryEventRepository)); for
     /// production, the same store over a database repository.
     ///
@@ -141,10 +141,10 @@ impl<A: Aggregate + 'static, S: EventStore<A>> StoreCommandExecutor<A, S> {
     /// use cqrsx::command::executor::StoreCommandExecutor;
     /// use cqrsx::command::locks::LockLimits;
     /// use cqrsx::command::retry::AggregateConflictRetryPolicy;
-    /// use cqrsx::journal::store::JournalEventStore;
+    /// use cqrsx::journal::store::EventSourcedStore;
     /// use cqrsx::memory::event_repository::MemoryEventRepository;
     ///
-    /// let store = JournalEventStore::<_, MyAggregate>::new(MemoryEventRepository::default());
+    /// let store = EventSourcedStore::<_, MyAggregate>::new(MemoryEventRepository::default());
     /// let rules = MyService::default();
     ///
     /// let executor = StoreCommandExecutor::new(store, rules, AggregateConflictRetryPolicy::default(), LockLimits::default());
@@ -195,7 +195,7 @@ impl<A, S> StoreCommandExecutor<A, S>
 where
     A: Aggregate + Clone + 'static,
     A::Command: Clone,
-    S: EventStore<A> + 'static,
+    S: AggregateStore<A> + 'static,
     S::Context: Send,
 {
     /// Executes without event metadata; see [`execute_with_metadata`](Self::execute_with_metadata).
@@ -283,8 +283,8 @@ where
     /// # use example::MyCommands;
     /// # use example::MyUserError;
     /// # use cqrsx::command::{CommandError, executor::StoreCommandExecutor};
-    /// # use cqrsx::{journal::store::JournalEventStore, memory::event_repository::MemoryEventRepository};
-    /// type MyExecutor = StoreCommandExecutor<MyAggregate, JournalEventStore<MemoryEventRepository, MyAggregate>>;
+    /// # use cqrsx::{journal::store::EventSourcedStore, memory::event_repository::MemoryEventRepository};
+    /// type MyExecutor = StoreCommandExecutor<MyAggregate, EventSourcedStore<MemoryEventRepository, MyAggregate>>;
     ///
     /// async fn do_something(executor: MyExecutor) -> Result<(), CommandError<MyUserError>> {
     ///     let committed = executor.execute(&"agg-id-F39A0C".into(), MyCommands::DoSomething).await?;
@@ -385,10 +385,10 @@ where
     /// # use example::MyCommands;
     /// # use example::MyUserError;
     /// # use cqrsx::command::{CommandError, executor::StoreCommandExecutor};
-    /// # use cqrsx::{journal::store::JournalEventStore, memory::event_repository::MemoryEventRepository};
+    /// # use cqrsx::{journal::store::EventSourcedStore, memory::event_repository::MemoryEventRepository};
     /// # use std::collections::HashMap;
     /// # use chrono;
-    /// type MyExecutor = StoreCommandExecutor<MyAggregate, JournalEventStore<MemoryEventRepository, MyAggregate>>;
+    /// type MyExecutor = StoreCommandExecutor<MyAggregate, EventSourcedStore<MemoryEventRepository, MyAggregate>>;
     ///
     /// async fn do_something(executor: MyExecutor) -> Result<(), CommandError<MyUserError>> {
     ///     let metadata = HashMap::from([("time".to_string(), chrono::Utc::now().to_rfc3339())]);
@@ -473,7 +473,7 @@ where
     A: Aggregate + Clone + 'static,
     A::Command: Clone + 'static,
     A::Rejection: Send + 'static,
-    S: EventStore<A> + 'static,
+    S: AggregateStore<A> + 'static,
     S::Context: Send,
 {
     async fn execute_with_metadata(
@@ -522,9 +522,9 @@ mod tests {
         planner::{Decision, TaskPlanError},
     };
     use crate::domain::aggregate::Aggregate;
-    use crate::journal::{EventStore, PersistenceError};
+    use crate::journal::{AggregateStore, PersistenceError};
     use crate::task::{NewTask, Task};
-    use crate::{journal::store::JournalEventStore, memory::event_repository::MemoryEventRepository};
+    use crate::{journal::store::EventSourcedStore, memory::event_repository::MemoryEventRepository};
     use std::time::Duration;
     use thiserror::Error;
 
@@ -612,7 +612,7 @@ mod tests {
         }
     }
 
-    impl EventStore<DummyAggregate> for DummyStore {
+    impl AggregateStore<DummyAggregate> for DummyStore {
         type Context = DummyContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
@@ -718,7 +718,7 @@ mod tests {
     #[tokio::test]
     async fn executor_accepts_send_commands_without_requiring_sync() {
         let executor = Arc::new(StoreCommandExecutor::new(
-            JournalEventStore::<_, SendOnlyAggregate>::new(MemoryEventRepository::default()),
+            EventSourcedStore::<_, SendOnlyAggregate>::new(MemoryEventRepository::default()),
             (),
             no_delay_policy(1),
             LockLimits::default(),
@@ -740,7 +740,7 @@ mod tests {
     async fn a_planner_reads_a_send_only_command_and_the_future_stays_send() {
         let executor = Arc::new(
             StoreCommandExecutor::new(
-                JournalEventStore::<_, SendOnlyAggregate>::new(MemoryEventRepository::default()),
+                EventSourcedStore::<_, SendOnlyAggregate>::new(MemoryEventRepository::default()),
                 (),
                 no_delay_policy(1),
                 LockLimits::default(),
@@ -795,7 +795,7 @@ mod tests {
         commits: Arc<Mutex<Vec<HashMap<String, String>>>>,
     }
 
-    impl EventStore<DummyAggregate> for MetadataStore {
+    impl AggregateStore<DummyAggregate> for MetadataStore {
         type Context = DummyContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
@@ -1071,7 +1071,7 @@ mod tests {
         }
     }
 
-    impl EventStore<DummyAggregate> for VersionedStore {
+    impl AggregateStore<DummyAggregate> for VersionedStore {
         type Context = VersionedContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<DummyAggregate>>, PersistenceError> {
@@ -1488,7 +1488,7 @@ mod tests {
         }
     }
 
-    impl EventStore<Tally> for TallyStore {
+    impl AggregateStore<Tally> for TallyStore {
         type Context = TallyContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<Tally>>, PersistenceError> {
@@ -1651,7 +1651,7 @@ mod tests {
         commits: Arc<AtomicUsize>,
     }
 
-    impl EventStore<Room> for RoomStore {
+    impl AggregateStore<Room> for RoomStore {
         type Context = RoomContext;
 
         async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<Room>>, PersistenceError> {

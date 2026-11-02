@@ -65,6 +65,10 @@ jobs:
       - name: Run Clippy without features
         run: cargo clippy --locked -p cqrsx -p cqrsx-engine --no-default-features --all-targets -- -D warnings
 
+      # The engine's own dev-dependency on itself gives the targets above its `test-utils`: the library alone does not.
+      - name: Run Clippy on the library alone
+        run: cargo clippy --locked -p cqrsx-engine --no-default-features --lib -- -D warnings
+
       # Alone, a crate gets only the features it asks for: the workspace build no longer hides a missing one.
       - name: Check each crate on its own
         run: |
@@ -173,6 +177,8 @@ jobs:
           - { features: postgres, flags: "--features postgres" }
           - { features: mongodb, flags: "--features mongodb" }
           - { features: http, flags: "--features http" }
+          - { features: operation-utils, flags: "--features operation-utils" }
+          - { features: test-utils, flags: "--features test-utils" }
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -243,6 +249,10 @@ jobs:
 
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
+
+      # The lib and the bins alone do not get `test-utils` of the engine, a dev-dependency of the back-end.
+      - name: Run Clippy on the lib and the bins alone
+        run: cargo clippy --locked --workspace -- -D warnings
 
       # With the architecture rule and the golden files: a test fails when its golden file differs.
       - name: Run the tests

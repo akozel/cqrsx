@@ -25,20 +25,23 @@ pub fn module(setup: &Setup) -> Result<Module, SetupError> {
     }
     Ok(Module::new("concert")
         .aggregate::<Concert>(ConcertRules { ticket_limit })
+        // The UI shows the limit too (`GET /api/config` in `operations`, which does not know `concert`).
         .provide(Arc::new(TicketLimit(ticket_limit)))
         .view::<ConcertHallView, Concert>()
-        .routes(presentation::routes()))
+        .routes(presentation::http::routes()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx_engine::Cqrs;
+    use cqrsx_engine::{Cqrs, memory::InMemory};
 
     async fn limit(value: Option<&'static str>) -> Result<TicketLimit, String> {
         let cqrs = Cqrs::from_lookup("ENCORE", move |name| {
             (name == "ENCORE_TICKET_LIMIT").then(|| value.map(str::to_owned)).flatten()
         })
+        .event_store(InMemory)
+        .projections(InMemory)
         .module(module)
         .build()
         .await

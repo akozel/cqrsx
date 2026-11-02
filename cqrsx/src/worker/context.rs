@@ -105,8 +105,8 @@ impl TaskContext {
         &self.attempt
     }
 
-    /// The pause the executor applies if this attempt answers retry: the policy of the task's type, or the queue's
-    /// redelivery backoff for a type without one, chosen before the handler runs. What a handler reports of its retry
+    /// The pause the executor applies if this attempt answers retry: the policy of the task's type (the queue's
+    /// redelivery backoff with the default policy), chosen before the handler runs. What a handler reports of its retry
     /// (an activity feed) reads it here.
     pub fn retry_pause(&self) -> Duration {
         self.retry_pause

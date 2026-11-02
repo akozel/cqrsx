@@ -13,10 +13,9 @@ version. `#[derive(Events)]` delegates the aggregate's event enum to the single 
 
 ## Commands
 
-`#[derive(Command)]` implements command information on a struct; `#[command_id]` marks at most one UUID
-and `#[label]` identifies a named displayable field. On an enum of single-command variants it delegates to
-each command's implementation. `#[derive(Decide)]` (an enum only) delegates the decision to each
-command's `Decide`; an aggregate's enum of commands derives `Command, Decide`.
+`#[derive(Command)]` implements command information on a struct; `#[label]` marks a named displayable field.
+On an enum of single-command variants it delegates to each command's implementation. `#[derive(Decide)]` (an enum
+only) delegates the decision to each command's `Decide`; an aggregate's enum of commands derives `Command, Decide`.
 
 ## Tasks and labels
 

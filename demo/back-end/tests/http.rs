@@ -15,6 +15,7 @@ use cqrsx::{
 use cqrsx_engine::{
     Cqrs,
     build::Builder,
+    memory::InMemory,
     mongodb::Mongo,
     postgres::{Postgres, PostgresPools},
 };
@@ -23,7 +24,7 @@ use encore_backend::{
     concert::{
         application::views::concert_hall::{ConcertHallView, ConcertSummary},
         domain::{
-            Concert, ConcertCommand,
+            Concert, ConcertCommand, ConcertEvent,
             commands::{AnnounceConcert, BookSeat},
         },
     },
@@ -56,6 +57,11 @@ fn modules() -> Builder {
     .module(concert::module)
     .module(fan::module)
     .module(operations::module)
+}
+
+/// The modules of the process over stores in memory.
+fn memory_app() -> Builder {
+    modules().event_store(InMemory).projections(InMemory)
 }
 
 /// Nothing listens on port 1: the first acquire fails fast instead of retrying for the default 30 s.
@@ -99,7 +105,7 @@ async fn app() -> App {
 /// The process in memory, whose processors do not run: the rows of both read models registered and claimed by `owner`,
 /// three events of the concert halls' journal unapplied.
 async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrs>) {
-    let cqrs = modules().build().await.unwrap();
+    let cqrs = memory_app().build().await.unwrap();
     for key in [
         CheckpointKey::of::<ConcertHallView, Concert>(),
         CheckpointKey::of::<FanWalletView, Fan>(),
@@ -139,7 +145,7 @@ async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrs>) {
 
 /// The process in memory, the documents of both read models written by hand.
 async fn app_reading(halls: Vec<StoredView<ConcertHallView>>, wallets: Vec<StoredView<FanWalletView>>) -> Router {
-    let cqrs = modules().build().await.unwrap();
+    let cqrs = memory_app().build().await.unwrap();
     let hall_documents = cqrs.documents::<ConcertHallView, Concert>().unwrap();
     for document in halls {
         hall_documents
@@ -348,6 +354,43 @@ async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
 }
 
 #[tokio::test]
+async fn a_booking_and_a_cancellation_over_http_are_identified_by_the_command_id_of_the_answer() {
+    let cqrs = Arc::new(memory_app().build().await.unwrap());
+    let router = cqrs.router();
+    let command = |body: Value| post_json("/api/concerts/c-1/commands", &body.to_string());
+    let (status, _) = send(
+        &router,
+        command(json!({ "type": "AnnounceConcert", "artist": "A", "city": "C", "date": "2026-11-21" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, booked) = send(
+        &router,
+        command(json!({ "type": "BookSeat", "seat": "A1", "fan_id": "fox", "fan_name": "Fox" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let (status, cancelled) = send(
+        &router,
+        command(json!({ "type": "CancelBooking", "seat": "A1", "fan_id": "fox" })),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+
+    let events = cqrs.history::<Concert>(&ConcertId::parse("c-1").unwrap()).await.unwrap();
+    let (ConcertEvent::SeatBooked(booking), ConcertEvent::BookingCancelled(cancellation)) =
+        (&events[1].payload, &events[2].payload)
+    else {
+        panic!("a booking and a cancellation follow the announcement: {events:?}");
+    };
+    assert_eq!(json!(booking.booking_id), booked["command_id"]);
+    assert_eq!(events[1].metadata["command_id"], booked["command_id"]);
+    assert_eq!(json!(cancellation.cancellation_id), cancelled["command_id"]);
+    assert_eq!(events[2].metadata["command_id"], cancelled["command_id"]);
+    assert_eq!(json!(cancellation.booking_id), booked["command_id"], "the cancelled booking");
+}
+
+#[tokio::test]
 async fn an_unreachable_store_is_reported_as_unavailable() {
     let app = app().await;
     let (status, body) = send(&app.router, get("/api/concerts/c-1/timeline")).await;
@@ -485,4 +528,254 @@ async fn read_models_are_served_in_the_documented_shapes() {
             },
         })
     );
+}
+
+/// A JSON document with every leaf replaced by the name of its type (`"<string>"`, `"<number>"`, `"<bool>"`, `null`):
+/// the keys and the kinds of the values of an answer, whatever its volatile values (ids, instants) are.
+fn skeleton(value: &Value) -> Value {
+    match value {
+        Value::Null => Value::Null,
+        Value::Bool(_) => json!("<bool>"),
+        Value::Number(_) => json!("<number>"),
+        Value::String(_) => json!("<string>"),
+        Value::Array(items) => Value::Array(items.iter().map(skeleton).collect()),
+        Value::Object(fields) => Value::Object(fields.iter().map(|(key, value)| (key.clone(), skeleton(value))).collect()),
+    }
+}
+
+/// The first message of an SSE answer, as `(event, data)`.
+async fn first_event(router: &Router, uri: &str) -> (String, Value) {
+    let response = router.clone().oneshot(get(uri)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let mut body = response.into_body();
+    let frame = body.frame().await.unwrap().unwrap().into_data().unwrap();
+    let text = String::from_utf8(frame.to_vec()).unwrap();
+    let field = |name: &str| {
+        text.lines()
+            .find_map(|line| line.strip_prefix(name).and_then(|rest| rest.strip_prefix(':')))
+            .unwrap_or_else(|| panic!("no `{name}` in {text:?}"))
+            .trim()
+            .to_owned()
+    };
+    (field("event"), serde_json::from_str(&field("data")).unwrap())
+}
+
+/// The ticket-limit, venue and pace settings the UI shows, whole.
+fn config_document() -> Value {
+    json!({
+        "venue": {
+            "rows": ["A", "B", "C", "D", "E"],
+            "seats_per_row": 8,
+            "zones": [
+                { "id": "vip", "rows": ["A"], "price": 120 },
+                { "id": "standard", "rows": ["B", "C"], "price": 80 },
+                { "id": "balcony", "rows": ["D", "E"], "price": 50 },
+            ],
+        },
+        "ticket_limit": 4,
+        "snapshot_every": 10,
+        "rebuild_slow_pace_ms": 0,
+    })
+}
+
+#[tokio::test]
+async fn health_and_config_answer_in_their_documented_shapes() {
+    let app = app().await;
+    let (status, body) = send(&app.router, get("/api/health")).await;
+    assert_eq!((status, body), (StatusCode::OK, json!({ "status": "ok" })));
+    let (status, body) = send(&app.router, get("/api/config")).await;
+    assert_eq!((status, body), (StatusCode::OK, config_document()));
+}
+
+#[tokio::test]
+async fn the_activity_feed_opens_with_hello_carrying_the_config_and_the_backlog() {
+    let app = app().await;
+    let (event, data) = first_event(&app.router, "/api/activity").await;
+    assert_eq!(event, "hello");
+    assert_eq!(data["config"], config_document());
+    assert!(data["backlog"].is_array(), "{data}");
+    assert_eq!(data.as_object().unwrap().len(), 2, "{data}");
+}
+
+#[tokio::test]
+async fn the_time_machine_answers_in_the_documented_shapes() {
+    let (router, _) = app_with_checkpoints("node-a").await;
+    let (status, body) = send(&router, get("/api/concerts/c-1/timeline")).await;
+    assert_eq!(status, StatusCode::OK);
+    let rows = body.as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    let event_type = |row: &Value| row["event_type"].clone();
+    assert_eq!(
+        rows.iter()
+            .map(|row| (row["sequence"].clone(), event_type(row), row["summary"].clone()))
+            .collect::<Vec<_>>(),
+        [
+            (json!(1), json!("ConcertAnnounced"), json!("A · C")),
+            (json!(2), json!("SeatBooked"), json!("A1 → fox")),
+            (json!(3), json!("SeatBooked"), json!("A2 → panda")),
+        ]
+    );
+    for row in rows {
+        assert_eq!(
+            skeleton(row),
+            json!({ "sequence": "<number>", "event_type": "<string>", "recorded_at": "<string>", "summary": "<string>" })
+        );
+        let mut keys: Vec<&String> = row.as_object().unwrap().keys().collect();
+        keys.sort();
+        assert_eq!(keys, ["event_type", "recorded_at", "sequence", "summary"]);
+    }
+
+    let (status, body) = send(&router, get("/api/concerts/c-1/state-at/2")).await;
+    assert_eq!(status, StatusCode::OK);
+    let mut keys: Vec<&String> = body.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["concert_id", "event", "last_sequence", "sequence", "state"]);
+    assert_eq!(
+        (&body["concert_id"], &body["sequence"], &body["last_sequence"]),
+        (&json!("c-1"), &json!(2), &json!(3))
+    );
+    let state = &body["state"];
+    assert_eq!(
+        (&state["sold"], &state["free_seats"], &state["sold_out"], &state["revenue"]),
+        (&json!(1), &json!(39), &json!(false), &json!(120))
+    );
+    assert_eq!(state["info"], json!({ "artist": "A", "city": "C", "date": "2026-11-21" }));
+    assert_eq!(
+        skeleton(&state["bookings"]),
+        json!({ "A1": skeleton(&state["bookings"]["A1"]) }),
+        "only the first booking existed after event 2"
+    );
+    assert_eq!(state["bookings"]["A1"]["fan_id"], "fox");
+    let event = &body["event"];
+    let mut keys: Vec<&String> = event.as_object().unwrap().keys().collect();
+    keys.sort();
+    assert_eq!(keys, ["event_type", "metadata", "payload", "sequence", "summary"]);
+    assert_eq!(
+        (&event["sequence"], &event["event_type"], &event["summary"]),
+        (&json!(2), &json!("SeatBooked"), &json!("A1 → fox"))
+    );
+    let mut payload = event["payload"].clone();
+    assert_eq!(skeleton(&payload["booking_id"]), json!("<string>"));
+    payload["booking_id"] = json!("<string>");
+    assert_eq!(
+        payload,
+        json!({ "type": "SeatBooked", "seat": "A1", "zone": "vip", "price": 120, "fan_id": "fox", "fan_name": "fox",
+                "booking_id": "<string>" })
+    );
+    assert!(event["metadata"]["command_id"].is_string(), "{event}");
+
+    for uri in [
+        "/api/concerts/c-1/state-at/0",
+        "/api/concerts/c-1/state-at/4",
+        "/api/concerts/c-9/state-at/1",
+    ] {
+        let (status, body) = send(&router, get(uri)).await;
+        assert_eq!(status, StatusCode::NOT_FOUND, "{uri}");
+        assert_eq!(
+            body,
+            json!({ "outcome": "not_found",
+                    "error": { "code": "sequence_out_of_range", "params": {}, "message": "this concert has no such event" } }),
+            "{uri}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn the_status_of_the_read_side_answers_in_its_documented_shapes() {
+    // No checkpoint rows: only the name, the aggregate type and the state of each projection.
+    let app = app().await;
+    let (_, body) = send(&app.router, get("/api/projections/status")).await;
+    assert_eq!(
+        body,
+        json!({
+            "state": "starting",
+            "from_cache": true,
+            "projections": [
+                { "projection": "concert_halls", "aggregate_type": "Concert", "state": "starting" },
+                { "projection": "fan_wallets", "aggregate_type": "Fan", "state": "starting" },
+            ],
+            "running": null,
+            "last_result": null,
+        })
+    );
+
+    let (router, _) = app_with_checkpoints("node-a").await;
+    let (_, body) = send(&router, get("/api/projections/status")).await;
+    let mut halls = body["projections"][0].clone();
+    for (key, kind) in [
+        ("position", "<string>"),
+        ("delivered", "<number>"),
+        ("lease_until", "<string>"),
+    ] {
+        assert_eq!(skeleton(&halls[key]), json!(kind), "{key}");
+        halls[key] = json!(kind);
+    }
+    assert_eq!(
+        halls,
+        json!({
+            "projection": "concert_halls", "aggregate_type": "Concert", "state": "live", "position": "<string>",
+            "delivered": "<number>", "lag": 3, "lag_capped": false, "owner": "node-a", "lease_until": "<string>",
+            "failures": 0, "last_error": null,
+            "rebuild": { "requested": false, "cursor": null, "rebuilt": 0, "pace_ms": 0 },
+        })
+    );
+    assert_eq!(
+        (&body["state"], &body["from_cache"], &body["running"], &body["last_result"]),
+        (&json!("live"), &json!(false), &Value::Null, &Value::Null)
+    );
+    assert_eq!(body.as_object().unwrap().len(), 5);
+
+    // A requested rebuild: this node's `running`, and the rows asked.
+    let (status, started) = send(&router, post("/api/projections/rebuild")).await;
+    assert_eq!(status, StatusCode::ACCEPTED);
+    assert_eq!(
+        skeleton(&started),
+        json!({ "outcome": "<string>", "rebuild_id": "<string>", "pace_ms": "<number>" })
+    );
+    assert_eq!((&started["outcome"], &started["pace_ms"]), (&json!("started"), &json!(0)));
+    let (_, body) = send(&router, get("/api/projections/status")).await;
+    assert_eq!(body["state"], "rebuilding");
+    assert_eq!(
+        skeleton(&body["running"]),
+        json!({ "rebuild_id": "<string>", "pace_ms": "<number>", "started_at": "<string>", "keys_total": "<number>" })
+    );
+    assert_eq!(
+        (
+            &body["running"]["rebuild_id"],
+            &body["running"]["pace_ms"],
+            &body["running"]["keys_total"]
+        ),
+        (&started["rebuild_id"], &json!(0), &json!(1))
+    );
+    assert_eq!(body["projections"][0]["rebuild"]["requested"], true);
+}
+
+#[tokio::test]
+async fn the_verification_answers_in_its_documented_shape() {
+    // One history of three events and no documents: the hall is behind, none is wrong.
+    let (router, _) = app_with_checkpoints("node-a").await;
+    let (status, body) = send(&router, get("/api/projections/verify")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        body,
+        json!({ "ok": true, "checked": { "concert_halls": 1, "fan_wallets": 0 },
+                "behind": { "documents": 1, "events": 3 }, "differences": [] })
+    );
+
+    // A document of a concert without a history is wrong.
+    let hall = StoredView {
+        id: "c-9".to_owned(),
+        revision: 1,
+        last_sequence: 1,
+        view: ConcertHallView::default(),
+    };
+    let router = app_reading(vec![hall], vec![]).await;
+    let (status, body) = send(&router, get("/api/projections/verify")).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], false);
+    assert_eq!(
+        body["differences"],
+        json!([{ "view": "concert_halls", "id": "c-9", "kind": "without_history" }])
+    );
+    assert_eq!(body.as_object().unwrap().len(), 4);
 }

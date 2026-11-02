@@ -4,21 +4,17 @@ use crate::{
     concert::application::views::concert_hall::ConcertHallView,
     shared::{application::StorageError, domain::ConcertId},
 };
-use cqrsx::{projection::checkpoint::CheckpointError, view::View};
 use cqrsx_engine::{Cqrs, views::ViewsError};
 
-/// Asks the owner of the halls to rebuild the hall of `concert_id`. A store that fails, or the halls' row not
-/// registered yet (the read side is starting), is a storage error with a message for the operator.
+/// Asks the owner of the halls to rebuild the hall of `concert_id`. A store that fails, or the read side not started
+/// yet, is a storage error with a message for the operator.
 pub async fn rebuild_hall(cqrs: &Cqrs, concert_id: &ConcertId) -> Result<(), StorageError> {
-    let requested = cqrs
-        .views()
-        .request_rebuild_key(ConcertHallView::NAME, concert_id.as_str())
-        .await;
+    let requested = cqrs.view::<ConcertHallView>().rebuild(concert_id).await;
     requested.map_err(|error| match error {
-        ViewsError::Checkpoint(CheckpointError::Invalid(_)) => {
-            StorageError("the read side is starting: its checkpoints are not registered yet".into())
+        ViewsError::NotStarted => StorageError("the read side is starting: its checkpoints are not registered yet".into()),
+        ViewsError::Unknown(_) | ViewsError::UnknownAggregateType(_) | ViewsError::Checkpoint(_) | ViewsError::Persistence(_) => {
+            StorageError::new(error)
         }
-        other => StorageError::new(other),
     })
 }
 

@@ -27,6 +27,7 @@ dotenvy.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
+cqrsx-engine = { workspace = true, features = ["test-utils"] }
 cqrsx-postgres.workspace = true
 cqrsx-testing.workspace = true
 testcontainers = "0.28"

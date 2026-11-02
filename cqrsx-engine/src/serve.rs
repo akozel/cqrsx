@@ -50,12 +50,16 @@ pub enum ServeError {
     ReadSide(#[from] ReadSideStopped),
 }
 
-/// A setting, a module's variable, a URL or URI of a store and views without a durable journal are an invalid
-/// configuration; the rest as it is. A key described twice with two values is not: the code of the modules (or of the
-/// engine) reads one key in two ways, which no value of a variable mends for good.
+/// A setting, a module's variable, a URL or URI of a store, views without a durable journal and a journal or views
+/// without a store are an invalid configuration; the rest as it is. A key described twice with two values is not: the
+/// code of the modules (or of the engine) reads one key in two ways, which no value of a variable mends for good.
 fn build_error_text(error: &BuildError) -> String {
     let invalid = match error {
-        BuildError::Settings(_) | BuildError::Setup(SetupError::Invalid { .. }) | BuildError::ViewsWithoutJournal(_) => true,
+        BuildError::Settings(_)
+        | BuildError::Setup(SetupError::Invalid { .. })
+        | BuildError::ViewsWithoutJournal(_)
+        | BuildError::NoJournal
+        | BuildError::ViewsWithoutStore => true,
         #[cfg(feature = "postgres")]
         BuildError::DatabaseUrl { .. } => true,
         #[cfg(feature = "mongodb")]
@@ -171,6 +175,7 @@ impl Cqrs {
 mod tests {
     use super::*;
     use crate::{
+        memory::InMemory,
         module::Module,
         settings::SettingsError,
         setup::{Setup, SetupError},
@@ -218,7 +223,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn serve_answers_the_routes_of_its_modules_and_stops_on_the_signal() {
         let mailbox = Arc::new(Mailbox::default());
-        let cqrs = Cqrs::in_memory()
+        let cqrs = memory_builder()
             .module(shows)
             .module(wallets)
             .module(front)
@@ -260,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_engine_without_task_types_serves_until_the_signal() {
-        let cqrs = Cqrs::in_memory().module(front).build().await.unwrap();
+        let cqrs = memory_builder().module(front).build().await.unwrap();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         cqrs.serve(listener, async { Ok(()) }).await.unwrap();
     }
@@ -286,6 +291,8 @@ mod tests {
                 second: "5".into(),
             }),
             ServeError::Build(BuildError::ViewsWithoutJournal("MongoDB")),
+            ServeError::Build(BuildError::NoJournal),
+            ServeError::Build(BuildError::ViewsWithoutStore),
             ServeError::Bind {
                 addr: "127.0.0.1:8080".parse().unwrap(),
                 source: io::Error::other("in use"),
@@ -302,6 +309,8 @@ mod tests {
                 "the aggregate type `show` is registered twice: one executor per aggregate type",
                 "the key `ENCORE_TICKET_LIMIT` is described twice, as `4` and as `5`",
                 "invalid configuration: the views in MongoDB need the journal in PostgreSQL",
+                "invalid configuration: the engine has no journal: give the builder `event_store(..)`",
+                "invalid configuration: the views have no store: give the builder `projections(..)`",
                 "cannot bind 127.0.0.1:8080: in use",
                 "the read side stopped: projection processor halls panicked",
             ]
@@ -349,6 +358,8 @@ mod tests {
                 let serve = || {
                     let addr = addr.clone();
                     Cqrs::from_lookup("SHOP", move |name| (name == "SHOP_HTTP_ADDR").then(|| addr.clone()))
+                        .event_store(InMemory)
+                        .projections(InMemory)
                         .module(shows)
                         .serve()
                 };

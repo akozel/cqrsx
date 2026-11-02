@@ -1,19 +1,16 @@
 //! Task policies: how long a task waits before its next attempt and how many attempts it gets.
 //!
-//! A policy has a name the application chooses ([`PolicyName`], a constant); its value ([`TaskPolicy`]: a [`RetryPause`]
-//! and an attempt budget) comes from the application's configuration. [`Policies`] holds the values by name and binds
-//! every task type to one of them, so a reaction that plans a task never names a policy: the task's type has one. A
-//! type bound to no policy keeps the engine's defaults: [`DEFAULT_MAX_ATTEMPTS`] attempts and the queue's own
-//! redelivery backoff. The planner of the reactions reads the budget from here, the executor of the task runtime the
-//! pause before a retry ([`Policies::pause`]); the registry is shared (`Arc`), so a clone costs nothing.
+//! A policy is a value ([`TaskPolicy`]: a [`RetryPause`] and an attempt budget), `Copy`: types and modules that behave
+//! alike share one by passing the same value. [`Policies`] is the table "task type -> policy" that the planner of the
+//! reactions (the budget, written into the task when the command commits) and the executor of the task runtime (the
+//! pause before a retry, [`Policies::pause`]) read; a reaction or a handler never names a policy. A type nobody
+//! registered gets [`TaskPolicy::default`]: [`DEFAULT_MAX_ATTEMPTS`] attempts and the queue's own redelivery backoff
+//! ([`RetryPause::redelivery`]). The table is shared (`Arc`), so a clone costs nothing.
 //!
 //! ```
-//! use cqrsx::task::{DEFAULT_MAX_ATTEMPTS, Task, format::TaskFormat, policy::{Policies, PolicyName, RetryPause, TaskPolicy}};
+//! use cqrsx::task::{DEFAULT_MAX_ATTEMPTS, Task, format::TaskFormat, policy::{Policies, PolicyError, RetryPause, TaskPolicy}};
 //! use serde::Serialize;
 //! use std::{num::NonZeroU16, time::Duration};
-//!
-//! /// E-mails back off from one second to eight.
-//! const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
 //!
 //! #[derive(Serialize, Task)]
 //! #[task(name = "issue_refund", version = 1)]
@@ -25,65 +22,43 @@
 //! #[task(name = "audit", version = 1)]
 //! struct Audit {}
 //!
+//! #[derive(Serialize, Task)]
+//! #[task(name = "unlisted", version = 1)]
+//! struct Unlisted {}
+//!
+//! // E-mails back off from one second to eight and get six attempts; an audit keeps the defaults.
 //! let mail = RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8));
+//! let policy = TaskPolicy::new(mail, NonZeroU16::new(6).unwrap());
 //! let policies = Policies::builder()
-//!     .policy(MAIL, TaskPolicy::new(mail, NonZeroU16::new(6).unwrap()))
-//!     .bind::<IssueRefund>(MAIL)
+//!     .task::<IssueRefund>(policy)
+//!     .task::<Audit>(TaskPolicy::default())
 //!     .build()?;
 //! let refund = TaskFormat::of::<IssueRefund>();
-//! assert_eq!(policies.name_of(&refund), Some(MAIL));
+//! assert_eq!(policies.policy_for(&refund), policy);
 //! assert_eq!(policies.max_attempts(&refund).get(), 6);
-//! let pauses: Vec<u64> = (1..=5).map(|attempt| mail.pause(attempt).as_secs()).collect();
+//! let pauses: Vec<u64> = (1..=5).map(|attempt| policies.pause(&refund, attempt).as_secs()).collect();
 //! assert_eq!(pauses, [1, 2, 4, 8, 8]);
-//! // A type bound to no policy keeps the engine's defaults.
-//! assert_eq!(policies.max_attempts(&TaskFormat::of::<Audit>()), DEFAULT_MAX_ATTEMPTS);
+//! // A type nobody registered gets the default policy, the one `TaskPolicy::default()` registers.
+//! let unlisted = TaskFormat::of::<Unlisted>();
+//! assert_eq!(policies.policy_for(&unlisted), TaskPolicy::default());
+//! assert_eq!(policies.max_attempts(&unlisted), DEFAULT_MAX_ATTEMPTS);
+//! // A type is registered once.
+//! let twice = Policies::builder().task::<Audit>(policy).task::<Audit>(policy).build();
+//! assert_eq!(twice.unwrap_err(), PolicyError::TaskTwice(TaskFormat::of::<Audit>()));
 //! # Ok::<(), Box<dyn std::error::Error>>(())
-//! ```
-//!
-//! A policy name is never empty: [`PolicyName::try_new`] is `None` for an empty one, so a constant with an empty one
-//! does not compile:
-//!
-//! ```compile_fail
-//! use cqrsx::task::policy::PolicyName;
-//!
-//! const NONE: PolicyName = PolicyName::try_new("").unwrap();
-//!
-//! fn main() {
-//!     println!("{NONE}");
-//! }
 //! ```
 use crate::task::{DEFAULT_MAX_ATTEMPTS, Task, format::TaskFormat};
 use std::{
     collections::{HashMap, hash_map::Entry},
-    fmt,
     num::NonZeroU16,
     sync::Arc,
     time::Duration,
 };
 
-/// The name of a task policy: a constant of the application (`const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PolicyName(&'static str);
-
-impl PolicyName {
-    /// A name that is not empty, `None` for an empty one. A constant unwraps it, so an empty name does not compile.
-    pub const fn try_new(name: &'static str) -> Option<Self> {
-        if name.is_empty() { None } else { Some(Self(name)) }
-    }
-
-    pub const fn as_str(&self) -> &'static str {
-        self.0
-    }
-}
-
-impl fmt::Display for PolicyName {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.0)
-    }
-}
-
-/// The pause before a task's next attempt, by the number of the attempt that failed: the same every time, or doubling
-/// from a base up to a maximum. No jitter: the pause of attempt `n` is always the same.
+/// The pause before a task's next attempt, by the number of the attempt that failed: the same every time
+/// ([`fixed`](Self::fixed)), doubling from a base up to a maximum ([`backoff`](Self::backoff)), or the queue's own
+/// redelivery backoff ([`redelivery`](Self::redelivery)). The first two have no jitter: the pause of attempt `n` is
+/// always the same.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RetryPause(Pause);
 
@@ -91,6 +66,7 @@ pub struct RetryPause(Pause);
 enum Pause {
     Fixed(Duration),
     Backoff { base: Duration, max: Duration },
+    Redelivery,
 }
 
 impl RetryPause {
@@ -105,7 +81,14 @@ impl RetryPause {
         Self(Pause::Backoff { base, max })
     }
 
-    /// The pause after attempt `attempt` failed (the first attempt is 1).
+    /// The queue's redelivery backoff, the one a lease that ran out or a handler that timed out waits as well
+    /// ([`redelivery_backoff`]): 5 s · 2^(n−1) up to 300 s, each pause drawn within ±20 % (a new draw on every call).
+    pub const fn redelivery() -> Self {
+        Self(Pause::Redelivery)
+    }
+
+    /// The pause after attempt `attempt` failed (the first attempt is 1). [`redelivery`](Self::redelivery) draws
+    /// anew on every call.
     #[must_use]
     pub fn pause(&self, attempt: i32) -> Duration {
         match self.0 {
@@ -114,11 +97,12 @@ impl RetryPause {
                 let exponent = u32::try_from(attempt.max(1) - 1).unwrap_or(u32::MAX).min(16);
                 base.saturating_mul(2u32.saturating_pow(exponent)).min(max)
             }
+            Pause::Redelivery => redelivery_backoff(attempt),
         }
     }
 }
 
-/// What a policy decides for the tasks of its types: the pause before the next attempt and the attempt budget, the
+/// What a policy decides for the tasks of a type: the pause before the next attempt and the attempt budget, the
 /// first attempt included. The budget is positive by its type and fits the queue's `max_attempts` column (`INTEGER`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct TaskPolicy {
@@ -140,114 +124,69 @@ impl TaskPolicy {
     }
 }
 
-/// The policies of an application by name and the policy of every task type bound to one. Shared (`Arc`): the
-/// planner of the reactions reads the budget of a task's type here, and a clone is cheap.
-#[derive(Clone, Debug, Default)]
-pub struct Policies(Arc<PolicyTable>);
-
-#[derive(Clone, Debug, Default)]
-struct PolicyTable {
-    policies: HashMap<PolicyName, TaskPolicy>,
-    bindings: HashMap<TaskFormat, PolicyName>,
+/// The engine's defaults: [`DEFAULT_MAX_ATTEMPTS`] attempts and the queue's [`RetryPause::redelivery`].
+impl Default for TaskPolicy {
+    fn default() -> Self {
+        Self::new(RetryPause::redelivery(), DEFAULT_MAX_ATTEMPTS)
+    }
 }
 
+/// The policy of every task type, by format. Shared (`Arc`): the planner of the reactions and the executor of the
+/// task runtime read it, and a clone is cheap. The default table is empty: every type has [`TaskPolicy::default`].
+#[derive(Clone, Debug, Default)]
+pub struct Policies(Arc<HashMap<TaskFormat, TaskPolicy>>);
+
 impl Policies {
-    /// A builder of the policies: the steps are checked when [`build`](PoliciesBuilder::build) replays them.
+    /// A builder of the table: [`task`](PoliciesBuilder::task) per type, checked when
+    /// [`build`](PoliciesBuilder::build) runs.
     pub fn builder() -> PoliciesBuilder {
         PoliciesBuilder::default()
     }
 
-    /// Defines the policy `name`; a name is defined once.
-    fn define(&mut self, name: PolicyName, policy: TaskPolicy) -> Result<(), PolicyError> {
-        match Arc::make_mut(&mut self.0).policies.entry(name) {
-            Entry::Occupied(_) => return Err(PolicyError::DefinedTwice(name)),
-            Entry::Vacant(entry) => entry.insert(policy),
-        };
-        Ok(())
+    /// The policy of the task type `format`; [`TaskPolicy::default`] for a type nobody registered.
+    pub fn policy_for(&self, format: &TaskFormat) -> TaskPolicy {
+        self.0.get(format).copied().unwrap_or_default()
     }
 
-    /// Binds the task type `format` to the policy `name`, which must be defined already; a type is bound once.
-    fn bind(&mut self, format: TaskFormat, name: PolicyName) -> Result<(), PolicyError> {
-        let table = Arc::make_mut(&mut self.0);
-        if !table.policies.contains_key(&name) {
-            return Err(PolicyError::Unknown(name));
-        }
-        match table.bindings.entry(format) {
-            Entry::Occupied(entry) => return Err(PolicyError::BoundTwice(entry.key().clone())),
-            Entry::Vacant(entry) => entry.insert(name),
-        };
-        Ok(())
-    }
-
-    /// The policy named `name`.
-    pub fn policy(&self, name: PolicyName) -> Option<&TaskPolicy> {
-        self.0.policies.get(&name)
-    }
-
-    /// The name of the policy the task type `format` is bound to.
-    pub fn name_of(&self, format: &TaskFormat) -> Option<PolicyName> {
-        self.0.bindings.get(format).copied()
-    }
-
-    /// The policy of the task type `format`; `None` for a type bound to none.
-    pub fn policy_for(&self, format: &TaskFormat) -> Option<&TaskPolicy> {
-        self.name_of(format).and_then(|name| self.policy(name))
-    }
-
-    /// The attempt budget of the task type `format`: its policy's, or [`DEFAULT_MAX_ATTEMPTS`] without one.
+    /// The attempt budget of the task type `format`: its policy's.
     #[must_use]
     pub fn max_attempts(&self, format: &TaskFormat) -> NonZeroU16 {
-        self.policy_for(format).map_or(DEFAULT_MAX_ATTEMPTS, TaskPolicy::max_attempts)
+        self.policy_for(format).max_attempts()
     }
 
-    /// The pause after attempt `attempt` of the task type `format` failed: its policy's, or the queue's jittered
-    /// [`redelivery_backoff`] without one (a new draw on every call).
+    /// The pause after attempt `attempt` of the task type `format` failed: its policy's (for the default policy a new
+    /// draw of [`redelivery_backoff`] on every call).
     #[must_use]
     pub fn pause(&self, format: &TaskFormat, attempt: i32) -> Duration {
-        self.policy_for(format)
-            .map_or_else(|| redelivery_backoff(attempt), |policy| policy.retry().pause(attempt))
+        self.policy_for(format).retry().pause(attempt)
     }
 }
 
-/// The builder of [`Policies`]: keeps the policies and the bindings in the order of the calls, and
-/// [`build`](Self::build) replays them with the checks of each.
+/// The builder of [`Policies`]: keeps the registrations in the order of the calls; [`build`](Self::build) refuses a
+/// type registered twice.
 #[derive(Clone, Debug, Default)]
 pub struct PoliciesBuilder {
-    steps: Vec<Step>,
-}
-
-#[derive(Clone, Debug)]
-enum Step {
-    Policy(PolicyName, TaskPolicy),
-    Bind(TaskFormat, PolicyName),
+    tasks: Vec<(TaskFormat, TaskPolicy)>,
 }
 
 impl PoliciesBuilder {
-    /// Defines the policy `name`; a name is defined once.
+    /// The task type `T` follows `policy`; a type is registered once.
     #[must_use]
-    pub fn policy(mut self, name: PolicyName, policy: TaskPolicy) -> Self {
-        self.steps.push(Step::Policy(name, policy));
+    pub fn task<T: Task>(mut self, policy: TaskPolicy) -> Self {
+        self.tasks.push((TaskFormat::of::<T>(), policy));
         self
     }
 
-    /// Binds the task type `T` to the policy `name`, which must be defined by an earlier call; a type is bound once.
-    #[must_use]
-    pub fn bind<T: Task>(mut self, name: PolicyName) -> Self {
-        self.steps.push(Step::Bind(TaskFormat::of::<T>(), name));
-        self
-    }
-
-    /// The policies, or the first step that was refused: a name defined twice, a binding to a name no earlier call
-    /// defined, a type bound twice.
+    /// The table, or the first type that was registered twice.
     pub fn build(self) -> Result<Policies, PolicyError> {
-        let mut policies = Policies::default();
-        for step in self.steps {
-            match step {
-                Step::Policy(name, policy) => policies.define(name, policy)?,
-                Step::Bind(format, name) => policies.bind(format, name)?,
-            }
+        let mut table = HashMap::with_capacity(self.tasks.len());
+        for (format, policy) in self.tasks {
+            match table.entry(format) {
+                Entry::Occupied(entry) => return Err(PolicyError::TaskTwice(entry.key().clone())),
+                Entry::Vacant(entry) => entry.insert(policy),
+            };
         }
-        Ok(policies)
+        Ok(Policies(Arc::new(table)))
     }
 }
 
@@ -259,24 +198,17 @@ pub fn redelivery_backoff(attempt: i32) -> Duration {
     Duration::from_secs_f64((base as f64 * jitter).min(300.0))
 }
 
-/// Why a policy or a binding was refused.
+/// Why a table of policies was refused.
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
 pub enum PolicyError {
-    #[error("the task policy `{0}` is defined twice")]
-    DefinedTwice(PolicyName),
-    #[error("no task policy is named `{0}`")]
-    Unknown(PolicyName),
-    #[error("the task type `{0}` is bound to a policy twice")]
-    BoundTwice(TaskFormat),
+    #[error("the task type `{0}` is registered twice")]
+    TaskTwice(TaskFormat),
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use serde::Serialize;
-
-    const STEP: PolicyName = PolicyName::try_new("step").unwrap();
-    const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
 
     #[derive(Serialize)]
     struct Step {}
@@ -352,39 +284,42 @@ mod tests {
         assert_eq!((policy.retry(), policy.max_attempts()), (retry, attempts(1)));
     }
 
-    #[test]
-    fn policies_bind_task_types_to_named_policies_and_a_type_without_one_keeps_the_engine_default() {
-        let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), attempts(6));
-        let mail = TaskPolicy::new(
+    fn step() -> TaskPolicy {
+        TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), attempts(6))
+    }
+
+    fn mail() -> TaskPolicy {
+        TaskPolicy::new(
             RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
             attempts(3),
-        );
-        let policies = Policies::builder()
-            .policy(STEP, step)
-            .policy(MAIL, mail)
-            .bind::<Step>(STEP)
-            .bind::<Mail>(MAIL)
-            .build()
-            .unwrap();
-        let shared = policies.clone();
+        )
+    }
+
+    fn policies() -> Policies {
+        Policies::builder().task::<Step>(step()).task::<Mail>(mail()).build().unwrap()
+    }
+
+    fn within_redelivery_bounds(pause: Duration, attempt: i32) -> bool {
+        let (low, high) = match attempt {
+            1 => (4.0, 6.0),
+            3 => (16.0, 24.0),
+            _ => (240.0, 300.0),
+        };
+        (low..=high).contains(&pause.as_secs_f64())
+    }
+
+    #[test]
+    fn policies_hold_a_policy_per_task_type_and_a_type_nobody_registered_gets_the_default() {
+        let shared = policies().clone();
         let (step_format, mail_format) = (TaskFormat::of::<Step>(), TaskFormat::of::<Mail>());
         let unbound = TaskFormat::of::<Unbound>();
-        assert_eq!((shared.policy(STEP), shared.policy(MAIL)), (Some(&step), Some(&mail)));
-        assert_eq!(
-            (
-                shared.name_of(&step_format),
-                shared.name_of(&mail_format),
-                shared.name_of(&unbound)
-            ),
-            (Some(STEP), Some(MAIL), None)
-        );
         assert_eq!(
             (
                 shared.policy_for(&step_format),
                 shared.policy_for(&mail_format),
                 shared.policy_for(&unbound)
             ),
-            (Some(&step), Some(&mail), None)
+            (step(), mail(), TaskPolicy::default())
         );
         assert_eq!(
             (
@@ -394,74 +329,84 @@ mod tests {
             ),
             (attempts(6), attempts(3), DEFAULT_MAX_ATTEMPTS)
         );
+        assert_eq!(Policies::default().policy_for(&step_format), TaskPolicy::default());
         assert_eq!(Policies::default().max_attempts(&step_format), DEFAULT_MAX_ATTEMPTS);
     }
 
     #[test]
     fn a_type_pauses_by_its_policy_and_a_type_without_one_by_the_redelivery_backoff() {
-        let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), attempts(6));
-        let mail = TaskPolicy::new(
-            RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
-            attempts(6),
-        );
-        let policies = Policies::builder()
-            .policy(STEP, step)
-            .policy(MAIL, mail)
-            .bind::<Step>(STEP)
-            .bind::<Mail>(MAIL)
-            .build()
-            .unwrap();
+        let policies = policies();
         let (step_format, mail_format) = (TaskFormat::of::<Step>(), TaskFormat::of::<Mail>());
         let pauses = |format: &TaskFormat| (1..=6).map(|n| policies.pause(format, n).as_secs()).collect::<Vec<_>>();
         assert_eq!(pauses(&step_format), [1; 6]);
         assert_eq!(pauses(&mail_format), [1, 2, 4, 8, 8, 8]);
         let unbound = TaskFormat::of::<Unbound>();
-        for (attempt, low, high) in [(1, 4.0, 6.0), (3, 16.0, 24.0), (7, 240.0, 300.0)] {
-            let pause = policies.pause(&unbound, attempt).as_secs_f64();
-            assert!((low..=high).contains(&pause), "attempt {attempt}: {pause}");
+        for attempt in [1, 3, 7] {
+            let pause = policies.pause(&unbound, attempt);
+            assert!(within_redelivery_bounds(pause, attempt), "attempt {attempt}: {pause:?}");
         }
     }
 
     #[test]
-    fn policies_refuse_a_name_twice_an_unknown_name_and_a_type_bound_twice() {
-        let policy = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), attempts(6));
-        let defined = || Policies::builder().policy(STEP, policy);
-        let twice = defined().policy(STEP, policy).build().unwrap_err();
-        assert_eq!(twice, PolicyError::DefinedTwice(STEP));
-        assert_eq!(twice.to_string(), "the task policy `step` is defined twice");
-        let unknown = defined().bind::<Mail>(MAIL).build().unwrap_err();
-        assert_eq!(unknown, PolicyError::Unknown(MAIL));
-        assert_eq!(unknown.to_string(), "no task policy is named `mail`");
-        let before = Policies::builder()
-            .bind::<Step>(STEP)
-            .policy(STEP, policy)
-            .build()
-            .unwrap_err();
-        assert_eq!(
-            before,
-            PolicyError::Unknown(STEP),
-            "a binding needs a policy defined by an earlier call"
+    fn the_redelivery_pause_is_the_queues_jittered_backoff() {
+        let redelivery = RetryPause::redelivery();
+        for attempt in [1, 3, 7, 8, i32::MAX] {
+            for _ in 0..100 {
+                assert!(
+                    within_redelivery_bounds(redelivery.pause(attempt), attempt),
+                    "attempt {attempt}"
+                );
+            }
+        }
+        for attempt in [i32::MIN, -1, 0] {
+            let pause = redelivery.pause(attempt);
+            assert!(
+                (Duration::from_secs(4)..=Duration::from_secs(6)).contains(&pause),
+                "{pause:?}"
+            );
+        }
+        let draws: Vec<Duration> = (0..50).map(|_| redelivery.pause(3)).collect();
+        assert!(draws.iter().any(|draw| *draw != draws[0]), "a new draw on every call");
+        assert_eq!(redelivery, RetryPause::redelivery());
+        assert_ne!(redelivery, RetryPause::fixed(Duration::from_secs(5)));
+        assert_ne!(
+            redelivery,
+            RetryPause::backoff(Duration::from_secs(5), Duration::from_secs(300))
         );
-        assert!(defined().bind::<Step>(STEP).build().is_ok());
-        let again = defined().bind::<Step>(STEP).bind::<Step>(STEP).build().unwrap_err();
-        assert_eq!(again, PolicyError::BoundTwice(TaskFormat::of::<Step>()));
-        assert_eq!(again.to_string(), "the task type `step v1` is bound to a policy twice");
     }
 
     #[test]
-    fn a_policy_name_is_its_text() {
-        assert_eq!((MAIL.as_str(), MAIL.to_string()), ("mail", "mail".to_owned()));
-        assert_eq!(
-            PolicyName::try_new(std::hint::black_box("mail")),
-            Some(MAIL),
-            "built at run time too"
-        );
-        assert_ne!(MAIL, STEP);
+    fn the_default_policy_is_the_engines_defaults() {
+        let policy = TaskPolicy::default();
+        assert_eq!(policy, TaskPolicy::new(RetryPause::redelivery(), DEFAULT_MAX_ATTEMPTS));
+        assert_eq!((policy.retry(), policy.max_attempts().get()), (RetryPause::redelivery(), 10));
     }
 
     #[test]
-    fn an_empty_policy_name_is_refused() {
-        assert_eq!(PolicyName::try_new(std::hint::black_box("")), None);
+    fn a_type_registered_with_the_default_policy_behaves_as_an_unregistered_one() {
+        let registered = Policies::builder().task::<Step>(TaskPolicy::default()).build().unwrap();
+        let (format, unregistered) = (TaskFormat::of::<Step>(), Policies::default());
+        assert_eq!(registered.policy_for(&format), unregistered.policy_for(&format));
+        assert_eq!(registered.max_attempts(&format), unregistered.max_attempts(&format));
+        for table in [&registered, &unregistered] {
+            let pause = table.pause(&format, 3);
+            assert!(within_redelivery_bounds(pause, 3), "{pause:?}");
+        }
+    }
+
+    #[test]
+    fn a_task_type_registered_twice_is_refused() {
+        let step = step();
+        let twice = Policies::builder().task::<Step>(step).task::<Step>(step).build().unwrap_err();
+        assert_eq!(twice, PolicyError::TaskTwice(TaskFormat::of::<Step>()));
+        assert_eq!(twice.to_string(), "the task type `step v1` is registered twice");
+        let other = Policies::builder()
+            .task::<Step>(step)
+            .task::<Mail>(mail())
+            .task::<Mail>(step)
+            .build();
+        assert_eq!(other.unwrap_err(), PolicyError::TaskTwice(TaskFormat::of::<Mail>()));
+        assert!(Policies::builder().task::<Step>(step).build().is_ok());
     }
 
     #[test]

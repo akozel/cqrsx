@@ -84,9 +84,6 @@ impl Aggregate for Concert {
     type Command = ConcertCommand;
     type Event = ConcertEvent;
     type Rejection = ConcertError;
-    // Each command decides itself (see `commands/`): `ConcertCommand: Decide<Concert>`. Every accepted
-    // command writes exactly ONE event (decision D-02): the outbox repository commits one event plus its
-    // tasks atomically and rejects multi-event batches, so `decide` returns one event, not a list.
     type Rules = ConcertRules;
 
     /// The state machine: how every fact changes the concert. Loading the concert from the journal calls only this.

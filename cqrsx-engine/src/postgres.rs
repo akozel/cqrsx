@@ -27,7 +27,7 @@ pub struct PostgresPools {
     /// Commands, the task queue, the checkpoints and the views in PostgreSQL, the count of a lag: short statements under
     /// the statement timeout.
     pub main: PgPool,
-    /// Whole-history reads: verify, the size of the journal, the history of one aggregate.
+    /// Whole-history reads: verify, the size of the journal, the history of one aggregate (feature `operation-utils`).
     pub history: PgPool,
     /// The processors' reads of the journal, apart from the commands' connections.
     pub projection: PgPool,
@@ -87,7 +87,7 @@ pub(crate) const VARIABLES: [&str; 5] = [
 /// The pools of an engine over PostgreSQL, all over one database: the main pool (commands, the task queue, the
 /// checkpoints and the views in PostgreSQL, the count of a lag) under a statement timeout; the projection pool (the
 /// processors' reads of the journal) under the same timeout but apart from the commands' connections; the history pool
-/// (verify, the size of the journal, the history of one aggregate) without one.
+/// (verify, the size of the journal, the history of one aggregate: feature `operation-utils`) without one.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PostgresSettings {
     url: String,
@@ -446,7 +446,7 @@ mod tests {
                 observer::{CommandObserver, CommandReport, Outcome},
                 retry::AggregateConflictRetryPolicy,
             },
-            journal::store::JournalEventStore,
+            journal::store::EventSourcedStore,
         };
         use cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox;
         use std::sync::{Arc, Mutex};
@@ -466,7 +466,7 @@ mod tests {
             .acquire_timeout(Duration::from_millis(100))
             .connect_lazy("postgres://nobody@127.0.0.1:1/none")
             .unwrap();
-        let store = JournalEventStore::new(PostgresEventRepositoryWithOutbox::new(pool)).with_snapshots(NonZeroUsize::MIN);
+        let store = EventSourcedStore::new(PostgresEventRepositoryWithOutbox::new(pool)).with_snapshots(NonZeroUsize::MIN);
         let heard = Arc::new(Heard::default());
         let executor =
             StoreCommandExecutor::<Show, _>::new(store, (), AggregateConflictRetryPolicy::default(), LockLimits::default())
@@ -486,7 +486,6 @@ mod tests {
         let book = Book {
             seat: "A1".into(),
             fan: "fox".into(),
-            booking_id: None,
         };
         assert_eq!(
             executor.execute(&"show".into(), book).await.map(|report| report.events.len()),
@@ -497,7 +496,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_executors_over_postgres_take_the_settings_of_the_engine() {
-        use crate::{Cqrs, Journal, executor::Executor, test_support::*};
+        use crate::{Cqrs, Journal, executor::Executor, memory::InMemory, test_support::*};
         use cqrsx::{
             command::{locks::LockLimits, retry::AggregateConflictRetryPolicy},
             projection::processor::config::ProcessorConfig,
@@ -525,6 +524,7 @@ mod tests {
         };
         let cqrs = Cqrs::with_settings(settings)
             .event_store(Postgres)
+            .projections(InMemory)
             .postgres_pools(pools)
             .module(shows)
             .build()
@@ -543,6 +543,7 @@ mod tests {
         };
         let store = format!("{:?}", cqrs.postgres_store::<Show>(pools));
         assert!(store.contains("snapshot_policy: Every(3)"), "{store}");
+        #[cfg(feature = "operation-utils")]
         assert!(
             cqrs.history::<Show>(&"s-1".into()).await.is_err(),
             "nobody listens on the history pool"
@@ -558,7 +559,7 @@ mod tests {
             history: lazy(),
             projection: lazy(),
         };
-        let durable = Cqrs::in_memory()
+        let durable = Cqrs::with_settings(Settings::default())
             .event_store(Postgres)
             .projections(Postgres)
             .postgres_pools(pools)

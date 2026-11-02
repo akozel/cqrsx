@@ -9,7 +9,7 @@
 //! | Answer | Outcome |
 //! |---|---|
 //! | `2xx { inbox_id, duplicate }` | done |
-//! | `503 { reason_code }` | retry after the pause of the task type's policy (`MAIL`: 1, 2, 4, 8, 8 s by default) |
+//! | `503 { reason_code }` | retry after the pause of the task type's policy (the mail policy: 1, 2, 4, 8, 8 s by default) |
 //! | `429`, other `5xx` | retry, reason `mail_unavailable` |
 //! | timeout, connection refused | retry, reason `mail_unreachable` |
 //! | other `4xx` | permanent failure: the request itself is wrong |
@@ -215,7 +215,7 @@ mod tests {
         sync::{Arc, Mutex},
     };
 
-    /// The pauses of the `MAIL` policy under the demo defaults: what the task runtime tells an attempt.
+    /// The pauses of the mail policy under the demo defaults: what the task runtime tells an attempt.
     const MAIL_PAUSE: RetryPause = RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8));
 
     /// The mail service, scripted: one `(status, body, delay)` per request, oldest first; when the
@@ -260,7 +260,7 @@ mod tests {
         (HttpMailer::new(client, settings), activity)
     }
 
-    /// Attempt `number` of an e-ticket task, told the pause of the `MAIL` policy.
+    /// Attempt `number` of an e-ticket task, told the pause of the mail policy.
     fn attempt(number: i32) -> TaskContext {
         let attempt = TaskAttempt::try_new(
             Uuid::new_v4(),

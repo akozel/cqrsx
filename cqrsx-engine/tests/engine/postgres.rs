@@ -1,8 +1,11 @@
 //! The modules of `modules.rs` on the engine over PostgreSQL 18.6, with their views in MongoDB 8.2 or in PostgreSQL:
 //! a command, the task its reaction published, the command of the task's chain, the view; the pools the engine opens.
 use crate::{database::Database, modules::*};
+#[cfg(feature = "operation-utils")]
 use cqrsx::{command::causation::CORRELATION_ID, journal::feed::Position};
-use cqrsx_engine::{Cqrs, build::BuildError, postgres::Postgres, settings::Defaults, views::JournalTotals};
+#[cfg(feature = "operation-utils")]
+use cqrsx_engine::views::JournalTotals;
+use cqrsx_engine::{Cqrs, build::BuildError, memory::InMemory, postgres::Postgres, settings::Defaults};
 use cqrsx_fixtures::mongo::Mongo;
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
@@ -37,7 +40,8 @@ async fn book_and_follow_the_chain(cqrs: &Cqrs, outbox: &Outbox) {
     let booking_id = Uuid::now_v7();
     let booked = cqrs
         .source("ui")
-        .execute::<Show>(
+        .execute_with_id::<Show>(
+            booking_id,
             &"s-1".into(),
             BookSeat {
                 seat: "A1".into(),
@@ -58,29 +62,30 @@ async fn book_and_follow_the_chain(cqrs: &Cqrs, outbox: &Outbox) {
         "the step on the queue in PostgreSQL, then its e-mail"
     );
     assert_eq!(*outbox.0.lock().unwrap(), ["fox:A1"]);
-    let recorded = cqrs.history::<Wallet>(&"fox".into()).await.unwrap();
-    assert_eq!(recorded[0].metadata[CORRELATION_ID], booking_id.to_string(), "one chain");
+    #[cfg(feature = "operation-utils")]
+    {
+        let recorded = cqrs.history::<Wallet>(&"fox".into()).await.unwrap();
+        assert_eq!(recorded[0].metadata[CORRELATION_ID], booking_id.to_string(), "one chain");
+    }
     assert_eq!(cqrs.run_tasks().await, 0, "nothing more is due");
     cqrs.catch_up().await;
     let hall = cqrs.view::<Hall>().get(&"s-1").await.unwrap().unwrap();
     assert_eq!(hall.view.seats, BTreeMap::from([("A1".to_owned(), "fox".to_owned())]));
     let views = cqrs.views();
-    assert_eq!(
-        (
-            views.lag("halls").await.unwrap(),
-            views.verify("halls").await.unwrap().differences
-        ),
-        (0, vec![])
-    );
-    assert_eq!(views.count_after("show", Position::START, 10).await.unwrap(), 1);
-    assert_eq!(
-        views.totals().await.unwrap(),
-        JournalTotals {
-            events: 1,
-            aggregates: 1
-        },
-        "the journal of the views' aggregate type"
-    );
+    assert_eq!(views.lag("halls").await.unwrap(), 0);
+    #[cfg(feature = "operation-utils")]
+    {
+        assert_eq!(views.verify("halls").await.unwrap().differences, vec![]);
+        assert_eq!(views.count_after("show", Position::START, 10).await.unwrap(), 1);
+        assert_eq!(
+            views.totals().await.unwrap(),
+            JournalTotals {
+                events: 1,
+                aggregates: 1
+            },
+            "the journal of the views' aggregate type"
+        );
+    }
     let rows = views.status().await.unwrap();
     let owners: Vec<(&str, Option<&str>)> = rows
         .iter()
@@ -159,7 +164,11 @@ async fn the_modules_run_on_postgres_with_their_views_in_postgres() {
 async fn the_engine_opens_its_pools_as_the_plan_says() {
     let database = Database::new().await;
     let outbox = Arc::new(Outbox::default());
-    let cqrs = engine(url(&database), "unused".into(), &outbox).build().await.unwrap();
+    let cqrs = engine(url(&database), "unused".into(), &outbox)
+        .projections(InMemory)
+        .build()
+        .await
+        .unwrap();
     let opened: i64 = sqlx::query_scalar("SELECT count(*) FROM pg_stat_activity WHERE application_name = 'shop-test'")
         .fetch_one(&database.pool)
         .await
@@ -216,7 +225,11 @@ async fn the_engine_opens_its_pools_as_the_plan_says() {
 async fn serve_runs_the_tasks_on_postgres_until_the_signal() {
     let database = Database::new().await;
     let outbox = Arc::new(Outbox::default());
-    let cqrs = engine(url(&database), "unused".into(), &outbox).build().await.unwrap();
+    let cqrs = engine(url(&database), "unused".into(), &outbox)
+        .projections(InMemory)
+        .build()
+        .await
+        .unwrap();
     cqrs.source("ui")
         .execute::<Show>(
             &"s-1".into(),

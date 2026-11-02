@@ -6,18 +6,18 @@ use cqrsx::command::CommandError;
 use cqrsx::command::executor::StoreCommandExecutor;
 use cqrsx::command::locks::LockLimits;
 use cqrsx::command::retry::AggregateConflictRetryPolicy;
-use cqrsx::journal::EventStore;
-use cqrsx::journal::store::JournalEventStore;
+use cqrsx::journal::AggregateStore;
+use cqrsx::journal::store::EventSourcedStore;
 use cqrsx::memory::event_repository::MemoryEventRepository;
 
 use crate::support::scenario::*;
 
 #[tokio::test]
 async fn framework_test() {
-    let event_store = JournalEventStore::<_, TestAggregate>::new(MemoryEventRepository::default());
+    let aggregate_store = EventSourcedStore::<_, TestAggregate>::new(MemoryEventRepository::default());
 
     let cqrs = StoreCommandExecutor::new(
-        event_store.clone(),
+        aggregate_store.clone(),
         TestService,
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
@@ -34,7 +34,7 @@ async fn framework_test() {
         .await
         .unwrap();
 
-    assert_eq!(1, event_store.load_events(&id).await.unwrap().len());
+    assert_eq!(1, aggregate_store.load_events(&id).await.unwrap().len());
     assert_eq!(committed.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), [1]);
 
     let test = "TEST_A";
@@ -50,7 +50,7 @@ async fn framework_test() {
         .unwrap();
 
     assert_eq!(committed.events.iter().map(|e| e.sequence).collect::<Vec<_>>(), [2]);
-    let stored_event_count = event_store.load_events(uuid.clone().as_str()).await.unwrap().len();
+    let stored_event_count = aggregate_store.load_events(uuid.clone().as_str()).await.unwrap().len();
     assert_eq!(2, stored_event_count);
 
     let id = uuid.clone();
@@ -70,7 +70,7 @@ async fn framework_test() {
         _ => panic!("not the expected error"),
     }
 
-    let stored_event_count = event_store.load_events(uuid.clone().as_str()).await.unwrap().len();
+    let stored_event_count = aggregate_store.load_events(uuid.clone().as_str()).await.unwrap().len();
     assert_eq!(2, stored_event_count);
 }
 
@@ -92,8 +92,8 @@ mod contracts {
     use {
         crate::support::ledger::*,
         cqrsx::journal::AggregateContext,
-        cqrsx::journal::EventStore,
-        cqrsx::journal::store::{EventStoreAggregateContext, JournalEventStore},
+        cqrsx::journal::AggregateStore,
+        cqrsx::journal::store::{CommittedAggregate, EventSourcedStore},
         cqrsx::memory::event_repository::MemoryEventRepository,
     };
 
@@ -101,12 +101,12 @@ mod contracts {
 
     #[derive(Clone)]
     struct Store {
-        inner: JournalEventStore<MemoryEventRepository, Ledger>,
+        inner: EventSourcedStore<MemoryEventRepository, Ledger>,
         calls: Calls,
         failure: Option<&'static str>,
     }
-    impl EventStore<Ledger> for Store {
-        type Context = EventStoreAggregateContext<Ledger>;
+    impl AggregateStore<Ledger> for Store {
+        type Context = CommittedAggregate<Ledger>;
         async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Ledger>>, cqrsx::journal::PersistenceError> {
             self.inner.load_events(id).await
         }
@@ -136,7 +136,7 @@ mod contracts {
     /// An executor over `store` with one attempt per command that wakes `wakeup` after a commit with an event.
     fn executor<S>(store: S, calls: &Calls, wakeup: &CommitWakeup) -> StoreCommandExecutor<Ledger, S>
     where
-        S: EventStore<Ledger> + Send + Sync,
+        S: AggregateStore<Ledger> + Send + Sync,
     {
         let services = Services(calls.clone());
         let one_attempt = AggregateConflictRetryPolicy::try_new(1, Duration::ZERO, Duration::ZERO, 0.0).unwrap();
@@ -147,7 +147,7 @@ mod contracts {
     async fn load_decide_commit_preserves_the_rules_and_metadata_and_returns_the_event() {
         let calls = Calls::default();
         let store = Store {
-            inner: JournalEventStore::new(MemoryEventRepository::default()),
+            inner: EventSourcedStore::new(MemoryEventRepository::default()),
             calls: Arc::clone(&calls),
             failure: None,
         };
@@ -181,7 +181,7 @@ mod contracts {
         ] {
             let calls = Calls::default();
             let wakeup = CommitWakeup::new();
-            let inner = JournalEventStore::new(MemoryEventRepository::default());
+            let inner = EventSourcedStore::new(MemoryEventRepository::default());
             let store = Store {
                 inner: inner.clone(),
                 calls: calls.clone(),

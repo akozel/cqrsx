@@ -7,14 +7,14 @@ use cqrsx::{
         retry::AggregateConflictRetryPolicy,
     },
     domain::{aggregate::Aggregate, command::Decide, event::Events},
-    journal::store::JournalEventStore,
+    journal::store::EventSourcedStore,
     memory::event_repository::MemoryEventRepository,
     reactions::{Decided, Reactions, ReactionsPlanner, Then},
     task::{
         DEFAULT_MAX_ATTEMPTS, NewTask, Task, TaskSchedule,
         attempt::TaskAttempt,
         format::TaskFormat,
-        policy::{Policies, PolicyName, RetryPause, TaskPolicy},
+        policy::{Policies, RetryPause, TaskPolicy},
     },
 };
 use serde::{Deserialize, Serialize};
@@ -175,10 +175,8 @@ impl Reactions for Wallet {
     }
 }
 
-const STEP: PolicyName = PolicyName::try_new("step").unwrap();
-const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
-
-/// Steps wait a second and get six attempts, mails back off and get three; reminders keep the engine's defaults.
+/// Steps wait a second and get six attempts, mails back off and get three; reminders are not registered and keep the
+/// engine's defaults.
 fn policies() -> Policies {
     let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap());
     let mail = TaskPolicy::new(
@@ -186,10 +184,8 @@ fn policies() -> Policies {
         NonZeroU16::new(3).unwrap(),
     );
     Policies::builder()
-        .policy(STEP, step)
-        .policy(MAIL, mail)
-        .bind::<RecordInWallet>(STEP)
-        .bind::<MailTicket>(MAIL)
+        .task::<RecordInWallet>(step)
+        .task::<MailTicket>(mail)
         .build()
         .unwrap()
 }
@@ -209,7 +205,7 @@ fn claim(task: &NewTask, number: i32) -> TaskAttempt {
 /// The wallet step: the task's payload becomes the wallet's command, which continues the task's chain; its
 /// causation and the tasks the wallet's reactions planned.
 async fn record_in_wallet(
-    wallets: &StoreCommandExecutor<Wallet, JournalEventStore<MemoryEventRepository, Wallet>>,
+    wallets: &StoreCommandExecutor<Wallet, EventSourcedStore<MemoryEventRepository, Wallet>>,
     attempt: &TaskAttempt,
 ) -> Result<(Causation, Vec<NewTask>), CommandError<AlreadyRecorded>> {
     let step: RecordInWallet = serde_json::from_value(attempt.payload().clone()).unwrap();
@@ -224,14 +220,14 @@ async fn record_in_wallet(
 async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type() {
     let journal = MemoryEventRepository::default();
     let shows = StoreCommandExecutor::<Show, _>::new(
-        JournalEventStore::new(journal.clone()),
+        EventSourcedStore::new(journal.clone()),
         (),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),
     )
     .with_task_planner(ReactionsPlanner::<Show>::new(policies()));
     let wallets = StoreCommandExecutor::<Wallet, _>::new(
-        JournalEventStore::new(journal.clone()),
+        EventSourcedStore::new(journal.clone()),
         (),
         AggregateConflictRetryPolicy::default(),
         LockLimits::default(),

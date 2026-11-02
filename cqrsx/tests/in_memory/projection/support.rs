@@ -7,12 +7,12 @@ use cqrsx::{
     command::{executor::StoreCommandExecutor, locks::LockLimits, retry::AggregateConflictRetryPolicy},
     domain::{aggregate::Aggregate, event::EventEnvelope},
     journal::{
-        EventStore, PersistenceError,
+        AggregateStore, PersistenceError,
         feed::{FeedEntry, Position},
         repository::EventRepository,
         serialized_event::{EventFormat, SerializedEvent},
         snapshot::SerializedSnapshot,
-        store::JournalEventStore,
+        store::EventSourcedStore,
         wakeup::CommitWakeup,
     },
     memory::{
@@ -607,7 +607,7 @@ impl ProjectionObserver for Recording {
     }
 }
 
-type Store = JournalEventStore<MemoryEventRepository, Ledger>;
+type Store = EventSourcedStore<MemoryEventRepository, Ledger>;
 
 /// A running processor.
 pub(crate) struct Node {
@@ -666,7 +666,7 @@ impl Harness {
         let wakeup = CommitWakeup::new();
         let executor = Arc::new(
             StoreCommandExecutor::new(
-                JournalEventStore::new(journal.clone()),
+                EventSourcedStore::new(journal.clone()),
                 Services::default(),
                 AggregateConflictRetryPolicy::default(),
                 LockLimits::default(),
@@ -758,7 +758,7 @@ impl Harness {
 
     /// The fold of the key's whole history, `None` without a history.
     pub(crate) async fn fold(&self, key: &str) -> Option<Balance> {
-        let store = JournalEventStore::<_, Ledger>::new(self.journal.inner.clone());
+        let store = EventSourcedStore::<_, Ledger>::new(self.journal.inner.clone());
         let events = store.load_events(key).await.unwrap();
         if events.is_empty() {
             return None;

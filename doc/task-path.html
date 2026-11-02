@@ -167,7 +167,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
 
 <section id="flow">
   <h2>Overall diagram</h2>
-  <p class="prose">Every process of the engine runs one <code>TaskRuntime</code> over the outbox table, <code>transactional_outbox</code>, through <code>PostgresTaskQueue</code> (or the queue in memory). The runtime has one producer that claims tasks into a bounded buffer and a fixed pool of workers that take them from it. Claim, settlement and recovery are one autocommitted statement each.</p>
+  <p class="prose">Every process of the engine runs one <code>TaskRuntime</code> over the outbox table, <code>transactional_outbox</code>, through <code>PostgresTaskQueue</code> (or, in a test, the queue in memory). The runtime has one producer that claims tasks into a bounded buffer and a fixed pool of workers that take them from it. Claim, settlement and recovery are one autocommitted statement each.</p>
   <figure>
     <div class="scroll diagram">
       <svg viewBox="0 0 1000 560" role="img" aria-label="The supervisor of the task runtime claims ready tasks from the outbox table into a bounded buffer, and on every tick returns expired leases. Workers take tasks from the buffer; the executor checks the lease budget, runs the handler through the dispatcher and the adapter, and settles the outcome in the outbox. A handler may execute the next command, whose commit publishes the next tasks to the outbox." style="min-width:820px">
@@ -259,7 +259,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
     <div><dt>Executor</dt><dd><code>DefaultTaskExecutor</code>: one leased attempt within the lease's deadlines, its settlement in a separate statement. It catches a handler's panic.</dd></div>
     <div><dt>Dispatcher</dt><dd><code>TaskDispatcher</code>, one for every worker: routes a task's format to its adapter and gives the handler its <code>TaskContext</code> (the attempt, the retry pause, the dependencies, the command executors).</dd></div>
     <div><dt>Handler</dt><dd>A <code>TaskHandler&lt;T&gt;</code>, usually a function with <code>#[task_handler]</code>: the decoded task, the context and dependencies by type; it answers <code>TaskResult::Done</code>, <code>Retry { reason }</code> or <code>Fail { reason }</code>.</dd></div>
-    <div><dt>Policies</dt><dd><code>Policies</code> binds each task type to a named <code>TaskPolicy</code>: a <code>RetryPause</code> and an attempt budget. The planner of the reactions reads the budget, the executor the pause.</dd></div>
+    <div><dt>Policies</dt><dd><code>Policies</code> is the table of the task types: each type has a <code>TaskPolicy</code>, a <code>RetryPause</code> and an attempt budget. The planner of the reactions reads the budget, the executor the pause.</dd></div>
   </dl>
 </section>
 
@@ -325,9 +325,9 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
 
 <section id="policy">
   <h2>Pause by policy</h2>
-  <p class="prose">A handler never names a pause. It answers <code>Retry</code>, and the executor waits the pause of the policy its task type is bound to. A policy has a name the application chooses (<code>PolicyName</code>, a constant), and a value from its configuration: <code>RetryPause::fixed(pause)</code>, or <code>RetryPause::backoff(base, max)</code>, which waits <code>min(base · 2<sup>n−1</sup>, max)</code> after attempt <code>n</code>, without jitter; and an attempt budget. In the engine a module defines it with <code>Module::policy(name, pause, attempts)</code> and binds a handler's type with <code>.task(handler).policy(name)</code>; the reactions that plan the task never name it.</p>
+  <p class="prose">A handler never names a pause. It answers <code>Retry</code>, and the executor waits the pause of the policy of its task type. A policy is a value (<code>TaskPolicy</code>): a pause and an attempt budget. The pause is <code>RetryPause::fixed(pause)</code>, <code>RetryPause::backoff(base, max)</code>, which waits <code>min(base · 2<sup>n−1</sup>, max)</code> after attempt <code>n</code>, both without jitter, or <code>RetryPause::redelivery()</code>, the queue's own backoff. In the engine a module registers a handler with its policy, <code>Module::task(handler, policy)</code>; the reactions that plan the task never name it.</p>
   <ul class="plain">
-    <li><strong>A type without a policy</strong> gets <code>DEFAULT_MAX_ATTEMPTS</code> (10) and the queue's own <code>redelivery_backoff</code>: 5&nbsp;s · 2<sup>n−1</sup>, at most 300&nbsp;s, each pause drawn ±20&nbsp;%.</li>
+    <li><strong>The default policy</strong> (<code>TaskPolicy::default()</code>, also the policy of a type nobody registered) gets <code>DEFAULT_MAX_ATTEMPTS</code> (10) and <code>RetryPause::redelivery()</code>, the queue's own <code>redelivery_backoff</code>: 5&nbsp;s · 2<sup>n−1</sup>, at most 300&nbsp;s, each pause drawn ±20&nbsp;%.</li>
     <li><strong>Timeouts and expired leases</strong> always wait the redelivery backoff, whatever the policy: the handler did not answer.</li>
     <li><strong>The budget counts claims.</strong> An attempt is counted when the task is claimed, so a lease that ran out or a timeout spends an attempt like an answered retry. A handler that always panics spends the budget and the task fails.</li>
     <li><strong>In the demo</strong> the steps of a chain (recording a ticket or a cancellation) wait a fixed 1&nbsp;s, the e-mails back off from 1 to 8&nbsp;s, and both have 6 attempts (<code>ENCORE_TASK_MAX_ATTEMPTS</code>, <code>ENCORE_TASK_RETRY_BASE_MS</code>, <code>ENCORE_TASK_RETRY_MAX_MS</code>).</li>

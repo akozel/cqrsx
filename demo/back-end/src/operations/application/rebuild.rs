@@ -13,13 +13,12 @@ use crate::{
     shared::application::{StorageError, activity::ActivityHub},
 };
 use async_trait::async_trait;
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use cqrsx::{
     mutex::lock,
     projection::checkpoint::{CheckpointError, CheckpointKey, CheckpointStatus, CheckpointStore, RebuildReply},
 };
-use serde::Serialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use std::{
     sync::{Arc, Mutex},
     time::Duration,
@@ -93,7 +92,8 @@ pub struct RebuildStarted {
     pub pace: Duration,
 }
 
-#[derive(Debug, Clone, Serialize)]
+/// How the last Encore! this node saw ended.
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RebuildResult {
     pub rebuild_id: Uuid,
     /// Documents rebuilt, as the checkpoint rows count them.
@@ -102,12 +102,72 @@ pub struct RebuildResult {
     pub finished_at: String,
 }
 
-#[derive(Debug, Clone)]
-struct Running {
-    rebuild_id: Uuid,
-    pace: Duration,
-    started_at: String,
-    keys_total: u64,
+/// The Encore! this node started and has not seen end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Running {
+    pub rebuild_id: Uuid,
+    pub pace: Duration,
+    pub started_at: String,
+    pub keys_total: u64,
+}
+
+/// The state of a projection, the worst first: the overall state is the worst of them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum ProjectionState {
+    /// Failing and behind the journal, or failing during a rebuild.
+    Stalled,
+    /// No live owner.
+    Unclaimed,
+    /// Its checkpoint is not registered yet.
+    Starting,
+    Rebuilding,
+    Live,
+}
+
+/// Where the checkpoint row of a projection stands.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionRow {
+    pub position: String,
+    pub delivered: u64,
+    /// Events of its aggregate type above the checkpoint, counted up to the lag cap.
+    pub lag: u64,
+    pub lag_capped: bool,
+    pub owner: Option<String>,
+    pub lease_until: Option<DateTime<Utc>>,
+    pub failures: u32,
+    pub last_error: Option<String>,
+    pub rebuild: RowRebuild,
+}
+
+/// The rebuild of one projection as its row records it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RowRebuild {
+    pub requested: bool,
+    pub cursor: Option<String>,
+    pub rebuilt: u64,
+    pub pace: Duration,
+}
+
+/// One read model: its name, its aggregate type, its state and, once its row exists, the row.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProjectionStatus {
+    pub projection: String,
+    pub aggregate_type: String,
+    pub state: ProjectionState,
+    /// `None` while the projection is `Starting`.
+    pub row: Option<ProjectionRow>,
+}
+
+/// The read side as this node sees it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReadSideStatus {
+    /// The worst state of the projections.
+    pub state: ProjectionState,
+    /// The checkpoint store did not answer in time: the rows are the ones seen last.
+    pub from_cache: bool,
+    pub projections: Vec<ProjectionStatus>,
+    pub running: Option<Running>,
+    pub last_result: Option<RebuildResult>,
 }
 
 #[derive(Default)]
@@ -159,15 +219,14 @@ fn rebuilt(row: &CheckpointStatus) -> u64 {
 
 fn unavailable(error: CheckpointError) -> RebuildRefused {
     match error {
-        CheckpointError::Invalid(_) => {
+        CheckpointError::NotRegistered => {
             RebuildRefused::Unavailable("the read side is starting: its checkpoints are not registered yet".into())
         }
-        other => RebuildRefused::Unavailable(other.to_string()),
+        CheckpointError::Storage(_) | CheckpointError::Corrupt(_) | CheckpointError::Invalid(_) => {
+            RebuildRefused::Unavailable(error.to_string())
+        }
     }
 }
-
-/// The states of a projection, the worst first: the overall state is the worst of them.
-const STATES: [&str; 5] = ["stalled", "unclaimed", "starting", "rebuilding", "live"];
 
 impl<C: Checkpoints + 'static> ReadSideService<C> {
     /// `read_models` are the rows of every read model, the concert halls first.
@@ -207,17 +266,14 @@ impl<C: Checkpoints + 'static> ReadSideService<C> {
         }
     }
 
-    async fn projection(
-        &self,
-        key: &CheckpointKey,
-        row: Option<&CheckpointStatus>,
-    ) -> Result<(&'static str, Value), StorageError> {
+    async fn projection(&self, key: &CheckpointKey, row: Option<&CheckpointStatus>) -> Result<ProjectionStatus, StorageError> {
         let Some(row) = row else {
-            let state = "starting";
-            return Ok((
-                state,
-                json!({ "projection": key.projection(), "aggregate_type": key.aggregate_type(), "state": state }),
-            ));
+            return Ok(ProjectionStatus {
+                projection: key.projection().to_owned(),
+                aggregate_type: key.aggregate_type().to_owned(),
+                state: ProjectionState::Starting,
+                row: None,
+            });
         };
         let lag = self
             .journal
@@ -226,36 +282,35 @@ impl<C: Checkpoints + 'static> ReadSideService<C> {
         let rebuilding = is_rebuilding(row);
         let claimed = row.owner.is_some() && row.lease_until.is_some_and(|until| until > Utc::now());
         let state = if row.failures > 0 && (lag > 0 || rebuilding) {
-            "stalled"
+            ProjectionState::Stalled
         } else if !claimed {
-            "unclaimed"
+            ProjectionState::Unclaimed
         } else if rebuilding {
-            "rebuilding"
+            ProjectionState::Rebuilding
         } else {
-            "live"
+            ProjectionState::Live
         };
-        Ok((
+        Ok(ProjectionStatus {
+            projection: row.projection.clone(),
+            aggregate_type: row.aggregate_type.clone(),
             state,
-            json!({
-                "projection": row.projection,
-                "aggregate_type": row.aggregate_type,
-                "state": state,
-                "position": row.position.to_string(),
-                "delivered": row.delivered,
-                "lag": lag,
-                "lag_capped": lag >= self.limits.lag_cap,
-                "owner": row.owner,
-                "lease_until": row.lease_until.map(|until| until.to_rfc3339_opts(SecondsFormat::Millis, true)),
-                "failures": row.failures,
-                "last_error": row.last_error,
-                "rebuild": {
-                    "requested": row.rebuild_requested,
-                    "cursor": row.rebuild_cursor,
-                    "rebuilt": row.rebuilt,
-                    "pace_ms": u64::try_from(row.rebuild_pace.as_millis()).unwrap_or(u64::MAX),
+            row: Some(ProjectionRow {
+                position: row.position.to_string(),
+                delivered: row.delivered,
+                lag,
+                lag_capped: lag >= self.limits.lag_cap,
+                owner: row.owner.clone(),
+                lease_until: row.lease_until,
+                failures: row.failures,
+                last_error: row.last_error.clone(),
+                rebuild: RowRebuild {
+                    requested: row.rebuild_requested,
+                    cursor: row.rebuild_cursor.clone(),
+                    rebuilt: row.rebuilt,
+                    pace: row.rebuild_pace,
                 },
             }),
-        ))
+        })
     }
 }
 
@@ -307,31 +362,23 @@ async fn watch<C: Checkpoints>(
 
 impl<C: Checkpoints + 'static> ReadSideService<C> {
     /// Every projection's checkpoint, lag and state, plus the rebuild this node started.
-    pub async fn status(&self) -> Result<Value, StorageError> {
+    pub async fn status(&self) -> Result<ReadSideStatus, StorageError> {
         let (rows, from_cache) = self.rows().await;
         let mut projections = Vec::new();
-        let mut worst = STATES.len() - 1;
+        let mut worst = ProjectionState::Live;
         for key in &self.read_models {
-            let (state, projection) = self.projection(key, rows.iter().find(|row| is_row_of(key, row))).await?;
-            worst = worst.min(STATES.iter().position(|known| *known == state).unwrap_or(0));
+            let projection = self.projection(key, rows.iter().find(|row| is_row_of(key, row))).await?;
+            worst = worst.min(projection.state);
             projections.push(projection);
         }
         let state = lock(&self.state.0, "read_side_state");
-        let running = state.running.as_ref().map(|running| {
-            json!({
-                "rebuild_id": running.rebuild_id,
-                "pace_ms": u64::try_from(running.pace.as_millis()).unwrap_or(u64::MAX),
-                "started_at": running.started_at,
-                "keys_total": running.keys_total,
-            })
-        });
-        Ok(json!({
-            "state": STATES[worst],
-            "from_cache": from_cache,
-            "projections": projections,
-            "running": running,
-            "last_result": state.last_result,
-        }))
+        Ok(ReadSideStatus {
+            state: worst,
+            from_cache,
+            projections,
+            running: state.running.clone(),
+            last_result: state.last_result.clone(),
+        })
     }
 
     /// Encore!: asks the owners to rebuild every read model with `pace` between the events of one key.
@@ -540,9 +587,10 @@ mod tests {
         let started = s.service.rebuild(Duration::ZERO).await.unwrap();
         tokio::time::sleep(REBUILD_WATCH_INTERVAL * 3).await;
         assert_eq!(kinds(&s.activity), ["rebuild.started"], "nobody took the requests yet");
+        let running = s.service.status().await.unwrap().running.unwrap();
         assert_eq!(
-            s.service.status().await.unwrap()["running"]["rebuild_id"],
-            json!(started.rebuild_id)
+            (running.rebuild_id, running.pace, running.keys_total),
+            (started.rebuild_id, Duration::ZERO, 3)
         );
         run_rebuild(&s.store, &halls(), 2).await;
         tokio::time::sleep(REBUILD_WATCH_INTERVAL * 2).await;
@@ -556,9 +604,9 @@ mod tests {
         let finished = s.activity.subscribe().0.last().unwrap().clone();
         assert_eq!(finished.fields["keys"], json!(3));
         let status = s.service.status().await.unwrap();
-        assert_eq!(status["running"], Value::Null);
-        assert_eq!(status["last_result"]["keys"], json!(3));
-        assert_eq!(status["last_result"]["rebuild_id"], json!(started.rebuild_id));
+        assert_eq!(status.running, None);
+        let result = status.last_result.unwrap();
+        assert_eq!((result.keys, result.rebuild_id), (3, started.rebuild_id));
     }
 
     #[tokio::test(start_paused = true)]
@@ -587,12 +635,19 @@ mod tests {
         let s = setup(&[halls()]).await;
         let status = s.service.status().await.unwrap();
         assert_eq!(
-            status["projections"][1]["state"], "starting",
+            status.projections[1].state,
+            ProjectionState::Starting,
             "the wallets' row is not registered yet"
         );
-        assert_eq!(status["projections"][0]["state"], "unclaimed", "nobody owns the halls");
+        assert_eq!(status.projections[1].row, None);
         assert_eq!(
-            status["state"], "unclaimed",
+            status.projections[0].state,
+            ProjectionState::Unclaimed,
+            "nobody owns the halls"
+        );
+        assert_eq!(
+            status.state,
+            ProjectionState::Unclaimed,
             "an unowned projection is worse than one starting"
         );
         s.store.register(&wallets()).await.unwrap();
@@ -609,48 +664,44 @@ mod tests {
             .unwrap()
             .unwrap();
         let status = s.service.status().await.unwrap();
-        assert_eq!(status["state"], "live");
-        assert_eq!(
-            (
-                status["projections"][0]["owner"].as_str(),
-                status["projections"][0]["lag"].as_u64()
-            ),
-            (Some("node-a"), Some(0))
-        );
+        assert_eq!(status.state, ProjectionState::Live);
+        let hall = status.projections[0].row.as_ref().unwrap();
+        assert_eq!((hall.owner.as_deref(), hall.lag), (Some("node-a"), 0));
         s.journal.set_lag("Concert", Some(150));
         s.store
             .record_failure(&halls(), halls_owner.token, "concert_halls: connection")
             .await
             .unwrap();
         let status = s.service.status().await.unwrap();
-        let hall = &status["projections"][0];
+        let hall = &status.projections[0];
+        let row = hall.row.as_ref().unwrap();
         assert_eq!(
-            (
-                hall["state"].as_str(),
-                hall["lag"].as_u64(),
-                hall["lag_capped"].as_bool(),
-                hall["last_error"].as_str()
-            ),
-            (Some("stalled"), Some(100), Some(true), Some("concert_halls: connection"))
+            (hall.state, row.lag, row.lag_capped, row.last_error.as_deref()),
+            (ProjectionState::Stalled, 100, true, Some("concert_halls: connection"))
         );
-        assert_eq!(status["state"], "stalled");
+        assert_eq!(status.state, ProjectionState::Stalled);
         s.journal.set_lag("Concert", Some(0));
         let status = s.service.status().await.unwrap();
         assert_eq!(
-            status["projections"][0]["state"], "live",
+            status.projections[0].state,
+            ProjectionState::Live,
             "a failure the journal has moved past is no stall"
         );
         CheckpointStore::request_rebuild(&s.store, &wallets(), Duration::from_millis(80))
             .await
             .unwrap();
         let status = s.service.status().await.unwrap();
-        assert_eq!(status["projections"][1]["state"], "rebuilding");
-        assert_eq!(status["projections"][1]["rebuild"]["pace_ms"], 80);
+        assert_eq!(status.projections[1].state, ProjectionState::Rebuilding);
+        assert_eq!(
+            status.projections[1].row.as_ref().unwrap().rebuild.pace,
+            Duration::from_millis(80)
+        );
         s.store.expire_lease(&wallets());
         tokio::time::sleep(Duration::from_millis(5)).await;
         let status = s.service.status().await.unwrap();
         assert_eq!(
-            status["projections"][1]["state"], "unclaimed",
+            status.projections[1].state,
+            ProjectionState::Unclaimed,
             "an expired lease has no owner"
         );
         s.store.release(&wallets(), wallets_owner.token).await.unwrap();
@@ -660,11 +711,11 @@ mod tests {
     async fn a_store_that_does_not_answer_gives_the_rows_seen_last_and_a_failed_count_is_an_error() {
         let s = setup(&[halls(), wallets()]).await;
         let fresh = s.service.status().await.unwrap();
-        assert_eq!(fresh["from_cache"], false);
+        assert!(!fresh.from_cache);
         s.store.set_unavailable(true);
         let cached = s.service.status().await.unwrap();
-        assert_eq!(cached["from_cache"], true);
-        assert_eq!(cached["projections"], fresh["projections"]);
+        assert!(cached.from_cache);
+        assert_eq!(cached.projections, fresh.projections);
         s.store.set_unavailable(false);
         s.journal.set_lag("Fan", None);
         assert_eq!(

@@ -1,29 +1,23 @@
 //! What a command is to the domain: what is known of it ([`Command`], [`Label`]) and how it decides ([`Decide`]).
 use crate::domain::aggregate::Aggregate;
 pub use cqrsx_macros::{Command, Decide};
-use uuid::Uuid;
 
-/// What is known of a command besides its decision: what an observer reports it by and what an assembly takes its id
-/// from. `#[derive(Command)]` implements it on a command type and on the aggregate's enum of commands, by the
-/// variant's type; the core does not read it.
+/// What is known of a command besides its decision: what an observer reports it by. `#[derive(Command)]` implements it
+/// on a command type and on the aggregate's enum of commands, by the variant's type; the core does not read it. A command
+/// does not know its own id: the entry point gives it when it starts the chain.
 ///
 /// - [`name`](Self::name): the command type's name, `"CancelBooking"`.
-/// - [`command_id`](Self::command_id): the field marked `#[command_id]`, when the business id is the id of the command
-///   (a booking, a cancellation); a `Uuid`, at most one field. Without it, `None`: the id is not the command's.
 /// - [`labels`](Self::labels): the fields marked `#[label]`, in field order, each as its name and its `Display`; what
 ///   an activity feed shows and filters a command by.
 ///
 /// ```
 /// use cqrsx::domain::command::{Command, Decide, Label};
-/// use uuid::Uuid;
 ///
 /// #[derive(Command)]
 /// struct CancelBooking {
 ///     seat: String,
 ///     #[label]
 ///     fan_id: String,
-///     #[command_id]
-///     cancellation_id: Uuid,
 ///     #[label]
 ///     reason: u8,
 /// }
@@ -33,10 +27,8 @@ use uuid::Uuid;
 ///     artist: String,
 /// }
 ///
-/// let cancellation_id = Uuid::now_v7();
-/// let cancel = CancelBooking { seat: "B4".into(), fan_id: "fox".into(), cancellation_id, reason: 2 };
+/// let cancel = CancelBooking { seat: "B4".into(), fan_id: "fox".into(), reason: 2 };
 /// assert_eq!(cancel.name(), "CancelBooking");
-/// assert_eq!(cancel.command_id(), Some(cancellation_id));
 /// assert_eq!(
 ///     cancel.labels(),
 ///     [
@@ -45,29 +37,7 @@ use uuid::Uuid;
 ///     ]
 /// );
 /// let announce = AnnounceConcert { artist: "Radiohead".into() };
-/// assert_eq!((announce.name(), announce.command_id(), announce.labels()), ("AnnounceConcert", None, vec![]));
-/// ```
-///
-/// One field at most is the command id:
-///
-/// ```compile_fail
-/// #[derive(cqrsx::domain::command::Command)]
-/// struct BookSeat {
-///     #[command_id]
-///     booking_id: uuid::Uuid,
-///     #[command_id]
-///     request_id: uuid::Uuid,
-/// }
-/// ```
-///
-/// and it is a `Uuid`:
-///
-/// ```compile_fail
-/// #[derive(cqrsx::domain::command::Command)]
-/// struct BookSeat {
-///     #[command_id]
-///     booking_id: String,
-/// }
+/// assert_eq!((announce.name(), announce.labels()), ("AnnounceConcert", vec![]));
 /// ```
 ///
 /// On an enum of commands the derive delegates to the variants, so the attributes belong to their structs:
@@ -83,11 +53,6 @@ use uuid::Uuid;
 pub trait Command {
     /// The name of the command's type.
     fn name(&self) -> &'static str;
-
-    /// The id of the command, when a field of it is (`#[command_id]`); `None` by default.
-    fn command_id(&self) -> Option<Uuid> {
-        None
-    }
 
     /// The labels of the command in field order (`#[label]`); none by default.
     fn labels(&self) -> Vec<Label> {
@@ -296,7 +261,7 @@ mod tests {
     struct Ping;
 
     #[test]
-    fn a_command_info_derived_inside_the_core_has_no_id_and_no_labels_unless_it_says_so() {
-        assert_eq!((Ping.name(), Ping.command_id(), Ping.labels()), ("Ping", None, vec![]));
+    fn a_command_info_derived_inside_the_core_has_no_labels_unless_it_says_so() {
+        assert_eq!((Ping.name(), Ping.labels()), ("Ping", vec![]));
     }
 }

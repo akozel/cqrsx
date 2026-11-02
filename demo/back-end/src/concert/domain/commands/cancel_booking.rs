@@ -14,8 +14,6 @@ pub struct CancelBooking {
     /// The activity feed shows and filters a cancellation by its fan.
     #[label]
     pub fan_id: FanId,
-    /// The cancellation is identified by its command: the cancellation id is the command id.
-    #[command_id]
     pub cancellation_id: Uuid,
 }
 

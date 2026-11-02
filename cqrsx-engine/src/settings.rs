@@ -158,8 +158,8 @@ pub enum SettingsError {
 ///   checkpoint; the operations over the views count a lag up to [`lag_cap`](Self::lag_cap) and an operator's status
 ///   waits [`status_timeout`](Self::status_timeout) for the checkpoints.
 /// - The task runtime: [`task_runtime`](Self::task_runtime).
-/// - The stores: [`postgres`](Self::postgres) (pools), [`mongodb`](Self::mongodb) (the client and the database of the
-///   views); the HTTP API: [`http_addr`](Self::http_addr); the name of the connections.
+/// - The stores: `postgres` (pools), `mongodb` (the client and the database of the views); the HTTP API: `http_addr`
+///   (each exists with the engine's feature of its name); the name of the connections.
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct Settings {

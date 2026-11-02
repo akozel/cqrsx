@@ -1,4 +1,4 @@
-//! Event-store contracts, persistence errors and repository-backed implementations.
+//! The aggregate store contract, persistence errors and repository-backed implementations.
 pub mod feed;
 pub mod repository;
 pub mod serialized_event;
@@ -15,8 +15,9 @@ use crate::{
 };
 use std::{collections::HashMap, future::Future};
 
-/// The abstract central source for loading past events and committing new events.
-pub trait EventStore<A>: Send + Sync
+/// The aggregate store: the port through which a command executor loads an aggregate from the journal and commits
+/// its new events.
+pub trait AggregateStore<A>: Send + Sync
 where
     A: Aggregate,
 {
@@ -43,7 +44,7 @@ where
 
 /// Returns the aggregate as well as the context around it.
 ///
-/// This is used internally within an `EventStore` to persist an aggregate instance and events
+/// This is used internally within an `AggregateStore` to persist an aggregate instance and events
 /// with its committed context. Command handling uses a separate working copy.
 pub trait AggregateContext<A>
 where
@@ -60,7 +61,7 @@ pub(crate) fn checked_counter_add(current: usize, count: usize) -> Result<usize,
         .ok_or_else(|| crate::journal::PersistenceError::Unexpected("event sequence or snapshot version overflow".into()))
 }
 
-/// Errors for implementations of a persistent event store.
+/// Errors of an aggregate store and of the event repository under it.
 ///
 /// A store that can tell the category and the code of a failure wraps the error of its driver in
 /// [`StorageFailure`](crate::diagnostics::StorageFailure) before it boxes it here; the logs of a failed command or

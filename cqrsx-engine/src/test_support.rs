@@ -2,7 +2,10 @@
 //! e-mail between them, a view of each.
 use crate::{
     Cqrs,
+    build::Builder,
+    memory::InMemory,
     module::Module,
+    settings::Settings,
     setup::{Setup, SetupError},
 };
 use cqrsx::{
@@ -16,7 +19,7 @@ use cqrsx::{
     reactions::{Decided, Reactions, Then},
     task::{
         Task,
-        policy::{PolicyName, RetryPause},
+        policy::{RetryPause, TaskPolicy},
     },
     view::View,
     worker::{TaskHandler, TaskResult, context::TaskContext, dependencies::DependencyId},
@@ -32,7 +35,6 @@ use std::{
     },
     time::Duration,
 };
-use uuid::Uuid;
 
 /// The box office of a show: a seat goes to one fan.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -55,21 +57,16 @@ impl Events for ShowEvent {
     }
 }
 
-/// A booking: its id, when it has one, is the command's.
+/// A booking of a seat by a fan.
 #[derive(Clone, Debug)]
 pub(crate) struct Book {
     pub(crate) seat: String,
     pub(crate) fan: String,
-    pub(crate) booking_id: Option<Uuid>,
 }
 
 impl Command for Book {
     fn name(&self) -> &'static str {
         "Book"
-    }
-
-    fn command_id(&self) -> Option<Uuid> {
-        self.booking_id
     }
 
     fn labels(&self) -> Vec<Label> {
@@ -335,39 +332,38 @@ impl View<Wallet> for Tickets {
     }
 }
 
-/// A step of the chain waits a second.
-pub(crate) const STEP: PolicyName = PolicyName::try_new("step").unwrap();
-/// An e-mail backs off from a second to eight.
-pub(crate) const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
-
 /// The box office: the shows and their halls.
 pub(crate) fn shows(_: &Setup) -> Result<Module, SetupError> {
     Ok(Module::new("shows").aggregate::<Show>(()).view::<Hall, Show>())
 }
 
-/// The wallets: their tickets, the step that records one (`STEP`, three attempts) and its e-mail (`MAIL`, six), and a
-/// mailbox of their own.
+/// The wallets: their tickets, the step that records one (a second between attempts, three attempts) and its e-mail
+/// (backing off from a second to eight, six attempts), and a mailbox of their own.
 pub(crate) fn wallets(_: &Setup) -> Result<Module, SetupError> {
+    let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(3).unwrap());
+    let mail = TaskPolicy::new(
+        RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
+        NonZeroU16::new(6).unwrap(),
+    );
     Ok(Module::new("wallets")
         .aggregate::<Wallet>(())
         .view::<Tickets, Wallet>()
         .provide(Arc::new(Mailbox::default()))
-        .policy(STEP, RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(3).unwrap())
-        .policy(
-            MAIL,
-            RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
-            NonZeroU16::new(6).unwrap(),
-        )
-        .task(RecordInWallet)
-        .policy(STEP)
-        .task(SendMail)
-        .policy(MAIL))
+        .task(RecordInWallet, step)
+        .task(SendMail, mail))
+}
+
+/// A builder over the stores in memory, for the journal and the views: what a test adds its modules to.
+pub(crate) fn memory_builder() -> Builder {
+    Cqrs::with_settings(Settings::default())
+        .event_store(InMemory)
+        .projections(InMemory)
 }
 
 /// Both modules in memory with a mailbox of the test instead of the wallets' own.
 pub(crate) async fn engine() -> (Cqrs, Arc<Mailbox>) {
     let mailbox = Arc::new(Mailbox::default());
-    let cqrs = Cqrs::in_memory()
+    let cqrs = memory_builder()
         .module(shows)
         .module(wallets)
         .provide(mailbox.clone())
@@ -377,12 +373,11 @@ pub(crate) async fn engine() -> (Cqrs, Arc<Mailbox>) {
     (cqrs, mailbox)
 }
 
-/// A booking of `seat` by `fan`, without an id of its own.
+/// A booking of `seat` by `fan`.
 pub(crate) fn book(seat: &str, fan: &str) -> Book {
     Book {
         seat: seat.into(),
         fan: fan.into(),
-        booking_id: None,
     }
 }
 

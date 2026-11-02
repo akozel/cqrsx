@@ -1,8 +1,8 @@
-//! An event store that is never reachable.
-use crate::memory_store::MemoryStoreAggregateContext;
+//! An aggregate store that is never reachable.
+use crate::memory_store::MemoryCommittedAggregate;
 use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{EventStore, PersistenceError},
+    journal::{AggregateStore, PersistenceError},
     task::NewTask,
 };
 use std::collections::HashMap;
@@ -17,8 +17,8 @@ fn unavailable() -> PersistenceError {
     PersistenceError::Connection("the event store is unavailable".into())
 }
 
-impl<A: Aggregate> EventStore<A> for UnavailableStore {
-    type Context = MemoryStoreAggregateContext<A>;
+impl<A: Aggregate> AggregateStore<A> for UnavailableStore {
+    type Context = MemoryCommittedAggregate<A>;
 
     async fn load_events(&self, _: &str) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
         Err(unavailable())
@@ -48,14 +48,14 @@ mod tests {
     async fn every_call_fails_as_a_connection_error() {
         let store = UnavailableStore;
         assert!(matches!(
-            EventStore::<TestAggregate>::load_events(&store, "id").await,
+            AggregateStore::<TestAggregate>::load_events(&store, "id").await,
             Err(PersistenceError::Connection(error)) if error.to_string() == "the event store is unavailable"
         ));
         assert!(matches!(
-            EventStore::<TestAggregate>::load_aggregate(&store, "id").await,
+            AggregateStore::<TestAggregate>::load_aggregate(&store, "id").await,
             Err(PersistenceError::Connection(_))
         ));
-        let context = MemoryStoreAggregateContext {
+        let context = MemoryCommittedAggregate {
             aggregate_id: "id".into(),
             aggregate: TestAggregate::default(),
             last_sequence: 0,

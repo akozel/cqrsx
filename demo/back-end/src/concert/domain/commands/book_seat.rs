@@ -14,8 +14,6 @@ pub struct BookSeat {
     #[label]
     pub fan_id: FanId,
     pub fan_name: String,
-    /// The booking is identified by its command: the booking id is the command id.
-    #[command_id]
     pub booking_id: Uuid,
 }
 

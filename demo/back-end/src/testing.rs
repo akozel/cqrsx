@@ -10,7 +10,7 @@ use cqrsx::{
     task::policy::Policies,
     view::{View, repository::StoredView},
 };
-use cqrsx_engine::{Cqrs, build::Builder, settings::Settings};
+use cqrsx_engine::{Cqrs, build::Builder, memory::InMemory, settings::Settings};
 use std::{collections::HashMap, future::Future, sync::Arc};
 
 /// The modules of the box office as `main.rs` registers them, over the variables `pairs` (full names) and the demo's
@@ -19,6 +19,8 @@ pub fn app(pairs: &[(&str, &str)]) -> Builder {
     let pairs: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
     Cqrs::from_lookup("ENCORE", move |name| pairs.get(name).cloned())
         .defaults(DEMO_DEFAULTS)
+        .event_store(InMemory)
+        .projections(InMemory)
         .module(crate::concert::module)
         .module(crate::fan::module)
         .module(crate::operations::module)

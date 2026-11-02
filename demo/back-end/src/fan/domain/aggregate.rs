@@ -66,8 +66,6 @@ impl Aggregate for Fan {
     type Command = FanCommand;
     type Event = FanEvent;
     type Rejection = FanError;
-    // Each command decides itself (see `commands/`): `FanCommand: Decide<Fan>`; exactly one event per
-    // accepted command (D-02), like `Concert`.
     type Rules = ();
 
     /// The state machine. Cancelled tickets stay in the ledger: they are history.

@@ -13,7 +13,7 @@ use crate::{
     testing::test_app,
 };
 use cqrsx::{
-    journal::{EventStore, store::JournalEventStore},
+    journal::{AggregateStore, store::EventSourcedStore},
     memory::task_queue::TaskStatus,
     task::format::TaskFormat,
     worker::queue::{TaskQueue, settlement::SettlementRequest},
@@ -99,7 +99,7 @@ async fn a_delivery_repeated_after_a_lost_acknowledgement_records_one_ticket_and
 }
 
 /// G-22: a worker of another node holds the step that records the ticket, so the cancellation reaches the ledger first
-/// and is retried (R10) after the second of `STEP`; once the ticket is in, the cancellation is too, and the fan gets
+/// and is retried (R10) after the second of the step policy; once the ticket is in, the cancellation is too, and the fan gets
 /// both letters.
 #[tokio::test(start_paused = true)]
 async fn a_cancellation_that_overtook_its_ticket_is_retried_and_refunds_after_the_ticket() {
@@ -233,9 +233,10 @@ async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_even
         commands.spawn(async move {
             let (ui, id) = (cqrs.source("ui"), Uuid::now_v7());
             if round % 2 == 0 {
-                ui.execute::<Concert>(&concert_id(), book("A1", "fox", id)).await
+                ui.execute_with_id::<Concert>(id, &concert_id(), book("A1", "fox", id)).await
             } else {
-                ui.execute::<Concert>(&concert_id(), cancel("A1", "fox", id)).await
+                ui.execute_with_id::<Concert>(id, &concert_id(), cancel("A1", "fox", id))
+                    .await
             }
         });
     }
@@ -243,7 +244,7 @@ async fn racing_cancellations_and_rebookings_publish_tasks_that_match_their_even
         // Accepted or refused: the events below say which.
         let _ = result.unwrap();
     }
-    let store = JournalEventStore::<_, Concert>::new(cqrs.journal().unwrap().clone());
+    let store = EventSourcedStore::<_, Concert>::new(cqrs.journal().unwrap().clone());
     let cancelled: HashMap<String, Uuid> = store
         .load_events(concert_id().as_str())
         .await

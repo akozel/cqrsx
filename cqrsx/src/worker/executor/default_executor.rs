@@ -27,8 +27,9 @@ pub const HANDLER_PANICKED: &str = "handler panicked";
 /// create shared ownership explicitly with `Arc::new` when needed.
 ///
 /// A retry waits the pause of the task type's policy ([`with_policies`](Self::with_policies)), or the queue's
-/// [`redelivery_backoff`] for a type without one; the handler sees that pause in its context before it answers. A
-/// handler that times out and an attempt the lease cannot fit wait the redelivery backoff whatever the policy.
+/// [`redelivery_backoff`] for a type nobody registered or with the default policy; the handler sees that pause in its
+/// context before it answers. A handler that times out and an attempt the lease cannot fit wait the redelivery backoff
+/// whatever the policy.
 ///
 /// A handler that panics is the boundary's to catch: the panic is logged (`error`, without its message, the payload or
 /// the lease token) and the attempt is settled as a retry with the reason [`HANDLER_PANICKED`] after the policy's
@@ -157,7 +158,7 @@ fn settlement_request(result: TaskResult, retry_pause: Duration) -> SettlementRe
 mod tests {
     use crate::task::{
         format::TaskFormat,
-        policy::{PolicyName, RetryPause, TaskPolicy},
+        policy::{RetryPause, TaskPolicy},
     };
     use crate::worker::{adapter::TaskAdapter, context::TaskContext, queue::lease::LEASE_SAFETY_MARGIN};
 
@@ -412,14 +413,10 @@ mod tests {
         }
     }
 
-    /// The policies binding the dummy task's type to `retry`.
+    /// The policies giving the dummy task's type the pause `retry`.
     fn policies(retry: RetryPause) -> Policies {
-        const DUMMY: PolicyName = PolicyName::try_new("dummy").unwrap();
-        Policies::builder()
-            .policy(DUMMY, TaskPolicy::new(retry, NonZeroU16::new(5).unwrap()))
-            .bind::<DummyTask>(DUMMY)
-            .build()
-            .unwrap()
+        let policy = TaskPolicy::new(retry, NonZeroU16::new(5).unwrap());
+        Policies::builder().task::<DummyTask>(policy).build().unwrap()
     }
 
     /// Answers retry and records the pause its context promised.
@@ -468,11 +465,13 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn without_a_policy_a_retry_waits_the_redelivery_backoff_the_handler_was_told() {
+    async fn without_a_policy_or_with_the_default_one_a_retry_waits_the_redelivery_backoff_the_handler_was_told() {
         let queue = Arc::new(Queue::default());
         for executor in [
             DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()),
             DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default()).with_policies(Policies::default()),
+            DefaultTaskExecutor::new(queue.clone(), TaskStorageConfig::default())
+                .with_policies(policies(RetryPause::redelivery())),
         ] {
             let (told, settled) = told_and_settled(executor, &queue).await;
             assert_eq!(told, settled);

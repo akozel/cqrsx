@@ -60,7 +60,7 @@ pub fn refund_mail(payload: &IssueRefundV1) -> Mail {
 }
 
 /// Sends the refund, reporting the attempt to the activity log; the mail service answers whether it was delivered (a
-/// repeat is delivered once) or is retried after the pause of the `MAIL` policy.
+/// repeat is delivered once) or is retried after the pause of the mail policy.
 #[task_handler]
 pub async fn issue_refund(task: IssueRefundV1, ctx: &TaskContext, mail: &Mailer, activity: &ActivityHub) -> TaskResult {
     mail.send(ctx, activity, refund_mail(&task)).await

@@ -60,7 +60,7 @@ struct State {
 /// by meaning: a claim takes a free or expired lease (by the clock of `tokio::time`, so a paused test clock
 /// drives it), every write is fenced by the token, `advance` and `advance_rebuild` move only forward and
 /// accept a repeat, a rebuild request is refused while one is requested or running, and a request for a
-/// projection nobody registered is `Invalid`.
+/// projection nobody registered is `NotRegistered`.
 ///
 /// Clones share the rows. For tests: [`set_unavailable`](Self::set_unavailable) makes every operation fail
 /// with `CheckpointError::Storage`, [`expire_lease`](Self::expire_lease) lets another owner take a row at once,
@@ -244,7 +244,7 @@ impl CheckpointStore for MemoryCheckpointStore {
         pace_fits(pace)?;
         let mut state = self.open_state()?;
         let Some(row) = state.rows.get_mut(key) else {
-            return Err(CheckpointError::Invalid("projection is not registered"));
+            return Err(CheckpointError::NotRegistered);
         };
         if row.rebuild_requested || row.cursor.is_some() {
             return Ok(RebuildReply::AlreadyRunning);
@@ -258,7 +258,7 @@ impl CheckpointStore for MemoryCheckpointStore {
     async fn request_rebuild_key(&self, key: &CheckpointKey, aggregate_id: &str) -> Result<(), CheckpointError> {
         let mut state = self.open_state()?;
         if !state.rows.contains_key(key) {
-            return Err(CheckpointError::Invalid("projection is not registered"));
+            return Err(CheckpointError::NotRegistered);
         }
         let number = state.next_request;
         let requests = state.keys.entry(key.clone()).or_default();
@@ -458,12 +458,21 @@ mod tests {
         let store = MemoryCheckpointStore::default();
         assert!(matches!(
             store.request_rebuild(&key(), Duration::ZERO).await,
-            Err(CheckpointError::Invalid("projection is not registered"))
+            Err(CheckpointError::NotRegistered)
         ));
         assert!(matches!(
             store.request_rebuild_key(&key(), "c1").await,
-            Err(CheckpointError::Invalid("projection is not registered"))
+            Err(CheckpointError::NotRegistered)
         ));
+        assert!(
+            matches!(
+                store
+                    .request_rebuild(&key(), Duration::from_millis(u64::from(u32::MAX)))
+                    .await,
+                Err(CheckpointError::Invalid(_))
+            ),
+            "the pace is checked before the row"
+        );
         store.register(&key()).await.unwrap();
         assert!(matches!(
             store

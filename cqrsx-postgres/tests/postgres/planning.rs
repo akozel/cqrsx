@@ -402,7 +402,7 @@ async fn a_plan_at_the_bind_limit_commits_and_one_more_task_is_refused_before_an
 #[tokio::test]
 async fn a_store_without_an_outbox_refuses_planned_tasks_and_writes_nothing() {
     let db = Database::new().await;
-    let store = || JournalEventStore::<_, Shelf>::new(PostgresEventRepository::new(db.pool.clone()));
+    let store = || EventSourcedStore::<_, Shelf>::new(PostgresEventRepository::new(db.pool.clone()));
     let planned = StoreCommandExecutor::new(store(), 10, AggregateConflictRetryPolicy::default(), LockLimits::default())
         .with_task_planner(ShelfPlanner::one_per_item());
     let before = database_state(&db.pool).await;

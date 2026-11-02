@@ -115,12 +115,21 @@ async fn rebuild_requests_run_one_at_a_time_and_keys_are_taken_in_request_order_
     let store = PostgresCheckpointStore::new(db.pool.clone());
     assert!(matches!(
         store.request_rebuild(&key(), Duration::ZERO).await,
-        Err(CheckpointError::Invalid("projection is not registered"))
+        Err(CheckpointError::NotRegistered)
     ));
     assert!(matches!(
         store.request_rebuild_key(&key(), "c1").await,
-        Err(CheckpointError::Invalid("projection is not registered"))
+        Err(CheckpointError::NotRegistered)
     ));
+    assert!(
+        matches!(
+            store
+                .request_rebuild(&key(), Duration::from_millis(u64::from(u32::MAX)))
+                .await,
+            Err(CheckpointError::Invalid(_))
+        ),
+        "the pace is checked before the row"
+    );
     store.register(&key()).await.unwrap();
     store.register(&other()).await.unwrap();
     assert!(matches!(

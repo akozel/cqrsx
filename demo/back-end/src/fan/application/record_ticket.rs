@@ -68,7 +68,7 @@ mod tests {
         application::test_support::{attempt, fans, ledger, steps, ticket},
         domain::{FanEvent, events::TicketRecorded},
     };
-    use cqrsx::journal::EventStore;
+    use cqrsx::journal::AggregateStore;
     use cqrsx_testing::memory_store::MemoryStore;
     use serde_json::json;
 

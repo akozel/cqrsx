@@ -13,7 +13,7 @@ CQRS and event sourcing for Rust: the application owns its business rules, and t
 5. A **view** folds the aggregate's journal into a queryable document; its processor keeps a checkpoint.
 
 The application registers these pieces in modules and builds `Cqrs` (crate [`cqrsx-engine`](../cqrsx-engine/README.md))
-in memory or with PostgreSQL and MongoDB.
+with PostgreSQL and MongoDB (in tests, in memory).
 The [typical scenario](../doc/typical_scenario.md) follows a cancellation through a refund.
 
 ## Rules worth knowing
@@ -70,7 +70,7 @@ same answer as an `Outcome`. A task handler answers a `TaskResult`.
 | `Ok(CommitReport)`, `Outcome::Accepted` | the event committed, with the tasks planned from it | nothing |
 | `CommandError::Rejected`, `Outcome::Rejected` | a business rule refused the command (`Rejection::code` and its parameters); nothing was written | do not repeat the same command; a task handler fails the task |
 | `CommandError::Conflict`, `Outcome::Conflict` | every attempt of the conflict retry (`AggregateConflictRetryPolicy`) met a concurrent change; nothing was written | repeat later; a task handler retries |
-| `CommandError::Unavailable`, `Outcome::Unavailable` | not run, or its outcome is unknown: the lock was not acquired within its limits (`LockLimits`), the store failed or timed out, the tasks could not be planned; the reason is logged | repeat later: with a command id (`#[command_id]`) a repeat cannot publish its tasks twice |
+| `CommandError::Unavailable`, `Outcome::Unavailable` | not run, or its outcome is unknown: the lock was not acquired within its limits (`LockLimits`), the store failed or timed out, the tasks could not be planned; the reason is logged | repeat later: with the same command id a repeat cannot publish its tasks twice |
 | `TaskResult::done()` | the effect happened, now or by an earlier attempt | the task is completed |
 | `TaskResult::retry(reason)` | not now | another attempt after the pause of the task type's policy; the last attempt of its budget fails the task |
 | `TaskResult::fail(reason)` | no attempt will help | the task stays failed until an operator requeues it ([retrying a failed task](../cqrsx-engine/README.md#retrying-a-failed-task)) |
@@ -86,10 +86,10 @@ an engine are in [its README](../cqrsx-engine/README.md#errors-of-building-and-s
 |---|---|---|
 | `TestFramework` | `cqrsx-testing` | Aggregate given/when/then tests of a decision and a rejection, without a runtime. |
 | `TestCommandExecutor` | `cqrsx-testing` | Use-case tests over a test store or a journal in memory. |
-| `MemoryStore`, `UnavailableStore` | `cqrsx-testing` | An event store in memory; one that is never reachable, for the unavailable branches. |
+| `MemoryStore`, `UnavailableStore` | `cqrsx-testing` | An aggregate store in memory; one that is never reachable, for the unavailable branches. |
 | `TaskContext::new` | `cqrsx` | Exercise a handler with an attempt, a retry pause, dependencies and executors. |
 | `MemoryTaskQueue` | `cqrsx` | Inspect the in-memory outbox queue, delivery and settlement. |
-| `Cqrs::in_memory()` | `cqrsx-engine` | A whole application: `run_tasks()` runs the due tasks, `catch_up()` waits for the views, a test's `.provide` replaces a dependency by type. |
+| `event_store(InMemory)`, `projections(InMemory)` | `cqrsx-engine` | A whole application over stores in memory: with the engine's feature `test-utils` (a dev-dependency), `run_tasks()` runs the due tasks and `catch_up()` waits for the views; a test's `.provide` replaces a dependency by type. |
 
 ## Crates
 

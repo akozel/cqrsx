@@ -1,4 +1,4 @@
-//! A command executor over a test event store or an in-memory journal, for use-case tests.
+//! A command executor over a test aggregate store or an in-memory journal, for use-case tests.
 use crate::memory_store::MemoryStore;
 use cqrsx::{
     command::{
@@ -6,7 +6,7 @@ use cqrsx::{
         retry::AggregateConflictRetryPolicy,
     },
     domain::aggregate::Aggregate,
-    journal::EventStore,
+    journal::AggregateStore,
     mutex::lock,
     task::NewTask,
 };
@@ -26,7 +26,7 @@ use std::{
 /// observer are registered on the executor handed to [`configured`](Self::configured), before it is shared.
 ///
 /// Over a [`MemoryStore`] ([`new`](Self::new)) the commands only change the aggregates. Over a
-/// [`JournalEventStore`](cqrsx::journal::store::JournalEventStore) on a
+/// [`EventSourcedStore`](cqrsx::journal::store::EventSourcedStore) on a
 /// [`MemoryEventRepository`](cqrsx::memory::event_repository::MemoryEventRepository) ([`configured`](Self::configured))
 /// they append to a journal that projection processors read, and the journal's outbox
 /// ([`MemoryEventRepository::outbox`](cqrsx::memory::event_repository::MemoryEventRepository::outbox)) holds the published tasks: give
@@ -106,13 +106,13 @@ use std::{
 /// # }
 /// ```
 #[must_use]
-pub struct TestCommandExecutor<A: Aggregate, S: EventStore<A> = MemoryStore<A>> {
+pub struct TestCommandExecutor<A: Aggregate, S: AggregateStore<A> = MemoryStore<A>> {
     executor: Arc<StoreCommandExecutor<A, S>>,
     published: Arc<Mutex<Vec<NewTask>>>,
 }
 
 // By hand: the published tasks are not printed, their payloads are the application's data.
-impl<A: Aggregate, S: EventStore<A>> fmt::Debug for TestCommandExecutor<A, S> {
+impl<A: Aggregate, S: AggregateStore<A>> fmt::Debug for TestCommandExecutor<A, S> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("TestCommandExecutor")
             .field("executor", &self.executor)
@@ -120,7 +120,7 @@ impl<A: Aggregate, S: EventStore<A>> fmt::Debug for TestCommandExecutor<A, S> {
     }
 }
 
-impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
+impl<A: Aggregate + 'static, S: AggregateStore<A>> TestCommandExecutor<A, S> {
     /// Execute against `store` with `rules`, the default conflict retry and the default lock limits.
     pub fn new(store: S, rules: A::Rules) -> Self {
         Self::configured(store, rules, |executor| executor)
@@ -153,7 +153,7 @@ impl<A: Aggregate + 'static, S: EventStore<A>> TestCommandExecutor<A, S> {
     }
 }
 
-impl<A: Aggregate, S: EventStore<A>> Clone for TestCommandExecutor<A, S> {
+impl<A: Aggregate, S: AggregateStore<A>> Clone for TestCommandExecutor<A, S> {
     fn clone(&self) -> Self {
         Self {
             executor: self.executor.clone(),
@@ -167,7 +167,7 @@ where
     A: Aggregate + Clone + 'static,
     A::Command: Clone + 'static,
     A::Rejection: Send + 'static,
-    S: EventStore<A> + 'static,
+    S: AggregateStore<A> + 'static,
     S::Context: Send,
 {
     async fn execute_with_metadata(
@@ -195,7 +195,7 @@ mod tests {
             planner::{Decision, TaskPlanError, TaskPlanner},
         },
         domain::{command::Decide, event::Events},
-        journal::{repository::EventRepository, store::JournalEventStore, wakeup::CommitWakeup},
+        journal::{repository::EventRepository, store::EventSourcedStore, wakeup::CommitWakeup},
         memory::event_repository::MemoryEventRepository,
         task::Task,
     };
@@ -264,7 +264,7 @@ mod tests {
     }
 
     /// A test executor over `store` that plans one notification per pushed value.
-    fn notifying<S: EventStore<Stack> + 'static>(store: S, cap: usize) -> TestCommandExecutor<Stack, S> {
+    fn notifying<S: AggregateStore<Stack> + 'static>(store: S, cap: usize) -> TestCommandExecutor<Stack, S> {
         TestCommandExecutor::configured(store, cap, |executor| executor.with_task_planner(Notifier))
     }
 
@@ -309,7 +309,7 @@ mod tests {
     async fn a_journal_executor_publishes_into_the_journal_outbox_and_wakes_its_processors() {
         use std::{future::Future, pin::pin, task::Context, task::Waker};
         let (journal, wakeup) = (MemoryEventRepository::default(), CommitWakeup::new());
-        let executor = TestCommandExecutor::<Stack, _>::configured(JournalEventStore::new(journal.clone()), 2, |executor| {
+        let executor = TestCommandExecutor::<Stack, _>::configured(EventSourcedStore::new(journal.clone()), 2, |executor| {
             executor.with_task_planner(Notifier).with_commit_wakeup(wakeup.clone())
         });
         let mut woken = pin!(wakeup.wait());

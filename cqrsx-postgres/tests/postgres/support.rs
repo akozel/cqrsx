@@ -265,7 +265,7 @@ pub(super) fn executor_with<A: cqrsx::domain::aggregate::Aggregate + 'static>(
     retry: cqrsx::command::retry::AggregateConflictRetryPolicy,
     rules: A::Rules,
 ) -> PostgresExecutor<A> {
-    let store = cqrsx::journal::store::JournalEventStore::new(cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox::new(
+    let store = cqrsx::journal::store::EventSourcedStore::new(cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox::new(
         pool.clone(),
     ))
     .with_snapshots(std::num::NonZeroUsize::new(snapshot_every).unwrap());
@@ -275,7 +275,7 @@ pub(super) fn executor_with<A: cqrsx::domain::aggregate::Aggregate + 'static>(
 /// The executor type of [`executor`].
 pub(super) type PostgresExecutor<A> = cqrsx::command::executor::StoreCommandExecutor<
     A,
-    cqrsx::journal::store::JournalEventStore<cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox, A>,
+    cqrsx::journal::store::EventSourcedStore<cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox, A>,
 >;
 
 /// The task runtime over the task queue on `pool`.

@@ -10,56 +10,34 @@ pub mod presentation;
 use crate::{
     fan::{
         application::{
-            issue_refund::issue_refund, record_cancellation::record_cancellation, record_ticket::record_ticket,
-            send_e_ticket::send_e_ticket, views::fan_wallet::FanWalletView,
+            issue_refund::issue_refund, policies::Policies, record_cancellation::record_cancellation,
+            record_ticket::record_ticket, send_e_ticket::send_e_ticket, views::fan_wallet::FanWalletView,
         },
         domain::Fan,
     },
     shared::{
-        application::{
-            mail::Mailer,
-            policies::{CHAIN_RETRY_AFTER, MAIL, STEP},
-        },
+        application::mail::Mailer,
         infrastructure::http_mailer::{HttpMailer, MailClientSettings},
     },
 };
-use cqrsx::task::policy::RetryPause;
 use cqrsx_engine::{
     module::Module,
     settings::duration_text,
     setup::{Setup, SetupError},
 };
-use std::{num::NonZeroU16, sync::Arc};
-
-/// The attempt budget of both policies without `ENCORE_TASK_MAX_ATTEMPTS`.
-const DEFAULT_TASK_MAX_ATTEMPTS: NonZeroU16 = NonZeroU16::new(6).unwrap();
+use std::sync::Arc;
 
 pub fn module(setup: &Setup) -> Result<Module, SetupError> {
-    let attempts: NonZeroU16 = setup.env("TASK_MAX_ATTEMPTS", DEFAULT_TASK_MAX_ATTEMPTS)?;
-    let (base, max) = (
-        setup.millis("TASK_RETRY_BASE_MS", 1000)?,
-        setup.millis("TASK_RETRY_MAX_MS", 8000)?,
-    );
-    if base > max {
-        let message = format!("must not exceed {}", setup.variable("TASK_RETRY_MAX_MS"));
-        return Err(setup.invalid("TASK_RETRY_BASE_MS", message));
-    }
-    let mail = RetryPause::backoff(base, max);
+    let policies = Policies::from_setup(setup)?;
     Ok(Module::new("fan")
         .aggregate::<Fan>(())
         .provide(mailer(setup)?)
-        .policy(STEP, RetryPause::fixed(CHAIN_RETRY_AFTER), attempts)
-        .policy(MAIL, mail, attempts)
-        .task(record_ticket)
-        .policy(STEP)
-        .task(record_cancellation)
-        .policy(STEP)
-        .task(send_e_ticket)
-        .policy(MAIL)
-        .task(issue_refund)
-        .policy(MAIL)
+        .task(record_ticket, policies.step)
+        .task(record_cancellation, policies.step)
+        .task(send_e_ticket, policies.mail)
+        .task(issue_refund, policies.mail)
         .view::<FanWalletView, Fan>()
-        .routes(presentation::routes()))
+        .routes(presentation::http::routes()))
 }
 
 /// The client of the external mail service: its address (`ENCORE_MAIL_SERVICE_URL`, without a trailing slash) and a

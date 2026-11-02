@@ -11,7 +11,7 @@ use cqrsx::{
     reactions::{Decided, Reactions, Then},
     task::{
         Task,
-        policy::{PolicyName, RetryPause},
+        policy::{RetryPause, TaskPolicy},
     },
     view::View,
     worker::{TaskResult, context::TaskContext, task_handler},
@@ -47,13 +47,12 @@ pub(crate) enum ShowEvent {
     SeatBooked(SeatBooked),
 }
 
-/// A booking: its id is the command's.
+/// A booking, identified by its `booking_id`.
 #[derive(Clone, Debug, Command)]
 pub(crate) struct BookSeat {
     pub(crate) seat: String,
     #[label]
     pub(crate) fan: String,
-    #[command_id]
     pub(crate) booking_id: Uuid,
 }
 
@@ -224,8 +223,6 @@ impl View<Show> for Hall {
     }
 }
 
-pub(crate) const STEP: PolicyName = PolicyName::try_new("step").unwrap();
-pub(crate) const MAIL: PolicyName = PolicyName::try_new("mail").unwrap();
 /// The budget of both policies without `ATTEMPTS`.
 const ATTEMPTS: NonZeroU16 = NonZeroU16::new(3).unwrap();
 
@@ -234,22 +231,16 @@ pub(crate) fn box_office(_: &Setup) -> Result<Module, SetupError> {
     Ok(Module::new("box_office").aggregate::<Show>(()).view::<Hall, Show>())
 }
 
-/// The wallets: the step (`STEP`, a second between attempts) and the e-mail (`MAIL`), both with the budget of
-/// `ATTEMPTS`, and a mail service of their own.
+/// The wallets: the step (a second between attempts) and the e-mail (backing off from a second to eight), both with
+/// the budget of `ATTEMPTS`, and a mail service of their own.
 pub(crate) fn wallets(setup: &Setup) -> Result<Module, SetupError> {
     let attempts = setup.env("ATTEMPTS", ATTEMPTS)?;
-    let mail: Arc<Mailer> = Arc::new(Outbox::default());
+    let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), attempts);
+    let mail = TaskPolicy::new(RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)), attempts);
+    let mailer: Arc<Mailer> = Arc::new(Outbox::default());
     Ok(Module::new("wallets")
         .aggregate::<Wallet>(())
-        .provide(mail)
-        .policy(STEP, RetryPause::fixed(Duration::from_secs(1)), attempts)
-        .policy(
-            MAIL,
-            RetryPause::backoff(Duration::from_secs(1), Duration::from_secs(8)),
-            attempts,
-        )
-        .task(record_ticket)
-        .policy(STEP)
-        .task(mail_ticket)
-        .policy(MAIL))
+        .provide(mailer)
+        .task(record_ticket, step)
+        .task(mail_ticket, mail))
 }
