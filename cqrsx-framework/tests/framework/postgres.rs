@@ -213,7 +213,10 @@ async fn the_framework_opens_its_pools_as_the_plan_says() {
         .err()
         .unwrap();
         assert!(error.to_string().starts_with(refused), "{error}");
-        assert!(matches!(error, BuildError::DatabaseUrl { .. } | BuildError::MongoUri { .. }));
+        assert!(matches!(
+            error,
+            BuildError::DatabaseUrl { .. } | BuildError::MongoDbUri { .. }
+        ));
     }
     database.close().await;
 }

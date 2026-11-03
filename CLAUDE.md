@@ -33,8 +33,9 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
   `projections-mongodb`: views and projection checkpoints in MongoDB), `process.rs` with
   `process/{lifecycle,error,logging}.rs` (the process: the task runtime and the processors next to any server, the
   logger, the shutdown signal; no feature), `axum.rs` (feature `axum`: the HTTP API over axum), `operation_utils.rs`
-  (feature `operation-utils`: the operations that read without a bound or change the read side), `test_utils.rs`
-  (feature `test-utils`: the helpers of a test that drives a framework in memory).
+  (feature `operation-utils`: the operations that read without a bound or change the read side, among them the
+  maintenance of a view behind `Views`), `test_utils.rs` (feature `test-utils`: the helpers of a test that drives a
+  framework in memory).
 - `cqrsx-framework/sql` — the canonical PostgreSQL schemas. `cqrsx-framework/licenses` — the license of postgres-es, from
   which the PostgreSQL stores are derived in part.
 - `cqrsx-framework/tests` — integration tests of the framework; `framework.rs` runs it on PostgreSQL and MongoDB containers

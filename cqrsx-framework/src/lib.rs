@@ -1,11 +1,4 @@
 #![doc = include_str!("../README.md")]
-// Without a store of the views (`test-utils`, `projections-postgres` or `projections-mongodb`) `Builder::projections`
-// has no marker to take and every view is refused, so what installs and serves a view is built but never reached.
-#![cfg_attr(
-    not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
-    allow(dead_code)
-)]
-
 // The framework is the assembly over the stores: without a store feature nothing can be chosen for `event_store(..)`.
 #[cfg(not(any(feature = "event-store-postgres", feature = "test-utils")))]
 compile_error!("cqrsx-framework needs a store: the feature `event-store-postgres`, or `test-utils` for a framework in memory");

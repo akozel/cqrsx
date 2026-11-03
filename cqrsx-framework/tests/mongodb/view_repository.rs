@@ -1,4 +1,4 @@
-//! `MongoViewRepository`: the documented document, optimistic versions and explicit failures.
+//! `MongoDbViewRepository`: the documented document, optimistic versions and explicit failures.
 use crate::support::{Balance, NAME, history, views};
 use cqrsx::{
     journal::PersistenceError,

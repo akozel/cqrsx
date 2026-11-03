@@ -7,21 +7,23 @@
 #[cfg(feature = "test-utils")]
 use crate::memory::{MemoryJournal, MemoryViewStore};
 #[cfg(feature = "projections-mongodb")]
-use crate::mongodb::{checkpoint_store::MongoCheckpointStore, view_repository::MongoViewRepository};
+use crate::mongodb::{MongoDbSettings, checkpoint_store::MongoDbCheckpointStore, view_repository::MongoDbViewRepository};
 #[cfg(feature = "event-store-postgres")]
 use crate::postgres::{
-    PostgresPools, event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox,
+    PostgresPools, PostgresSettings, event_repository::PostgresEventRepository, outbox::PostgresEventRepositoryWithOutbox,
     task_queue::PostgresTaskQueue,
 };
 #[cfg(feature = "projections-postgres")]
 use crate::postgres::{checkpoint_store::PostgresCheckpointStore, view_repository::PostgresViewRepository};
-#[cfg(feature = "operation-utils")]
-use crate::views::JournalTotals;
 use crate::{
     build::{BuildError, ExecutorParts, ViewParts},
-    settings::Settings,
+    settings::{Settings, SettingsError, VariableReader},
     views::Counts,
 };
+#[cfg(feature = "operation-utils")]
+use crate::{operation_utils::Totals, views::JournalTotals};
+#[cfg(all(feature = "operation-utils", feature = "test-utils"))]
+use cqrsx::journal::repository::EventRepository;
 #[cfg(feature = "test-utils")]
 use cqrsx::memory::event_repository::MemoryEventRepository;
 #[cfg(feature = "test-utils")]
@@ -40,11 +42,61 @@ use cqrsx::{
     },
 };
 #[cfg(feature = "operation-utils")]
-use cqrsx::{
-    domain::event::EventEnvelope,
-    journal::{AggregateStore, repository::EventRepository},
-};
+use cqrsx::{domain::event::EventEnvelope, journal::AggregateStore};
 use std::{collections::HashMap, future::Future, num::NonZeroUsize, sync::Arc, time::Duration};
+
+/// The settings of the stores the framework opens: each with the feature of its store.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct StoreSettings {
+    #[cfg(feature = "event-store-postgres")]
+    pub(crate) postgres: PostgresSettings,
+    #[cfg(feature = "projections-mongodb")]
+    pub(crate) mongodb: MongoDbSettings,
+}
+
+impl StoreSettings {
+    /// The stores' settings from their variables.
+    #[cfg_attr(
+        not(any(feature = "event-store-postgres", feature = "projections-mongodb")),
+        expect(unused_variables, reason = "without a store there is no setting of one")
+    )]
+    pub(crate) fn read(read: &VariableReader) -> Result<Self, SettingsError> {
+        Ok(Self {
+            #[cfg(feature = "event-store-postgres")]
+            postgres: PostgresSettings::read(read)?,
+            #[cfg(feature = "projections-mongodb")]
+            mongodb: MongoDbSettings::read(read)?,
+        })
+    }
+
+    /// The names of the stores' variables, in the order of the description.
+    #[cfg_attr(
+        not(any(feature = "event-store-postgres", feature = "projections-mongodb")),
+        expect(unused_mut, reason = "without a store there is no variable of one")
+    )]
+    pub(crate) fn variables() -> Vec<&'static str> {
+        let mut names = Vec::new();
+        #[cfg(feature = "event-store-postgres")]
+        names.extend(crate::postgres::VARIABLES);
+        #[cfg(feature = "projections-mongodb")]
+        names.extend(crate::mongodb::VARIABLES);
+        names
+    }
+
+    /// The stores' entries of the description of the settings.
+    #[cfg_attr(
+        not(any(feature = "event-store-postgres", feature = "projections-mongodb")),
+        expect(unused_variables, unused_mut, reason = "without a store there is no entry of one")
+    )]
+    pub(crate) fn entries(&self, name: &dyn Fn(&str) -> String, application_name: &str) -> Vec<(String, String)> {
+        let mut entries = Vec::new();
+        #[cfg(feature = "event-store-postgres")]
+        entries.extend(self.postgres.entries(name, application_name));
+        #[cfg(feature = "projections-mongodb")]
+        entries.extend(self.mongodb.entries(name, application_name));
+        entries
+    }
+}
 
 // The kinds are `pub` in this private module: the sealed traits of the markers (`build::sealed`) name them in a constant
 // that is reachable at `pub` through `EventStore`/`ProjectionStore`; nothing outside the crate can name the kinds.
@@ -254,8 +306,8 @@ impl Journal {
                 #[cfg(feature = "projections-mongodb")]
                 ViewStore::MongoDb(database) => {
                     let (feed, history, counter) = pools.view_readers();
-                    let documents = Arc::new(MongoViewRepository::<V, A>::new(database));
-                    let checkpoints = Arc::new(MongoCheckpointStore::new(database));
+                    let documents = Arc::new(MongoDbViewRepository::<V, A>::new(database));
+                    let checkpoints = Arc::new(MongoDbCheckpointStore::new(database));
                     parts.register::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
                     Ok(())
                 }
@@ -410,8 +462,17 @@ impl Counts for MemoryEventRepository {
     fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
         MemoryEventRepository::count_after::<A>(self, after, cap)
     }
+}
 
-    #[cfg(feature = "operation-utils")]
+#[cfg(feature = "event-store-postgres")]
+impl Counts for PostgresEventRepository {
+    fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
+        PostgresEventRepository::count_after::<A>(self, after, cap)
+    }
+}
+
+#[cfg(all(feature = "test-utils", feature = "operation-utils"))]
+impl Totals for MemoryEventRepository {
     async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
         let events = MemoryEventRepository::count_after::<A>(self, Position::START, u64::MAX).await?;
         let (mut aggregates, mut after) = (0, String::new());
@@ -426,13 +487,8 @@ impl Counts for MemoryEventRepository {
     }
 }
 
-#[cfg(feature = "event-store-postgres")]
-impl Counts for PostgresEventRepository {
-    fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
-        PostgresEventRepository::count_after::<A>(self, after, cap)
-    }
-
-    #[cfg(feature = "operation-utils")]
+#[cfg(all(feature = "event-store-postgres", feature = "operation-utils"))]
+impl Totals for PostgresEventRepository {
     async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
         let totals = PostgresEventRepository::totals::<A>(self).await?;
         Ok(JournalTotals {

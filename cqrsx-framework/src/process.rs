@@ -55,7 +55,7 @@ fn build_error_text(error: &BuildError) -> String {
         #[cfg(feature = "event-store-postgres")]
         BuildError::DatabaseUrl { .. } => true,
         #[cfg(feature = "projections-mongodb")]
-        BuildError::MongoUri { .. } => true,
+        BuildError::MongoDbUri { .. } => true,
         BuildError::Setup(SetupError::Failed(_))
         | BuildError::AggregateTwice(_)
         | BuildError::ViewTwice(_)
@@ -66,7 +66,7 @@ fn build_error_text(error: &BuildError) -> String {
         #[cfg(feature = "event-store-postgres")]
         BuildError::MainPool(_) | BuildError::HistoryPool(_) | BuildError::ProjectionPool(_) => false,
         #[cfg(feature = "projections-mongodb")]
-        BuildError::MongoClient(_) => false,
+        BuildError::MongoDbClient(_) => false,
     };
     if invalid {
         format!("invalid configuration: {error}")
@@ -254,7 +254,7 @@ mod tests {
         );
         #[cfg(feature = "projections-mongodb")]
         assert!(
-            ServeError::from(BuildError::MongoUri {
+            ServeError::from(BuildError::MongoDbUri {
                 variable: "SHOP_MONGODB_URI".into(),
                 source: ::mongodb::error::Error::custom("no scheme"),
             })

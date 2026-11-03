@@ -3,9 +3,10 @@
 //! under the application's prefix (`ENCORE_SNAPSHOT_EVERY` for the prefix `ENCORE`), the task runtime's from its own
 //! `OUTBOX_*` variables, and takes the application's [`Defaults`] where a variable is absent.
 #[cfg(feature = "projections-mongodb")]
-use crate::mongodb::MongoSettings;
+use crate::mongodb::MongoDbSettings;
 #[cfg(feature = "event-store-postgres")]
 use crate::postgres::PostgresSettings;
+use crate::stores::StoreSettings;
 use cqrsx::{
     command::{
         locks::{DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS, LockLimits, LockLimitsError},
@@ -92,10 +93,7 @@ pub(crate) fn variables() -> Vec<&'static str> {
         PROJECTION_STATUS_TIMEOUT_MS,
         NODE_NAME,
     ];
-    #[cfg(feature = "event-store-postgres")]
-    names.extend(crate::postgres::VARIABLES);
-    #[cfg(feature = "projections-mongodb")]
-    names.extend(crate::mongodb::VARIABLES);
+    names.extend(StoreSettings::variables());
     names.push(HTTP_ADDR);
     names.extend(OUTBOX);
     names
@@ -176,10 +174,7 @@ pub struct Settings {
     lag_cap: u64,
     status_timeout: Duration,
     task_runtime: TaskRuntimeConfig,
-    #[cfg(feature = "event-store-postgres")]
-    postgres: PostgresSettings,
-    #[cfg(feature = "projections-mongodb")]
-    mongodb: MongoSettings,
+    stores: StoreSettings,
     http_addr: SocketAddr,
 }
 
@@ -196,10 +191,7 @@ impl Default for Settings {
             lag_cap: DEFAULT_LAG_CAP,
             status_timeout: DEFAULT_STATUS_TIMEOUT,
             task_runtime: TaskRuntimeConfig::default(),
-            #[cfg(feature = "event-store-postgres")]
-            postgres: PostgresSettings::default(),
-            #[cfg(feature = "projections-mongodb")]
-            mongodb: MongoSettings::default(),
+            stores: StoreSettings::default(),
             http_addr: DEFAULT_HTTP_ADDR,
         }
     }
@@ -250,13 +242,10 @@ impl Settings {
         let task_runtime = TaskRuntimeConfig::from_lookup(|name| lookup(name).or_else(|| defaults.get(name).map(str::to_owned)))?;
         let snapshot_every: usize = read.value(SNAPSHOT_EVERY, DEFAULT_SNAPSHOT_EVERY.get())?;
         let snapshot_every = NonZeroUsize::new(snapshot_every).ok_or_else(|| read.invalid(SNAPSHOT_EVERY, "must be positive"))?;
-        #[cfg(feature = "event-store-postgres")]
-        let postgres = PostgresSettings::read(&read)?;
         let lock_limits = command_lock_limits(&read, task_runtime.worker_pool().handler_timeout())?;
         let processor = projection_config(&read)?;
         let (lag_cap, status_timeout) = view_operations(&read)?;
-        #[cfg(feature = "projections-mongodb")]
-        let mongodb = MongoSettings::read(&read)?;
+        let stores = StoreSettings::read(&read)?;
         Ok(Self {
             prefix: prefix.to_owned(),
             application_name: defaults.application_name().to_owned(),
@@ -268,10 +257,7 @@ impl Settings {
             lag_cap,
             status_timeout,
             task_runtime,
-            #[cfg(feature = "event-store-postgres")]
-            postgres,
-            #[cfg(feature = "projections-mongodb")]
-            mongodb,
+            stores,
             http_addr: read.value(HTTP_ADDR, DEFAULT_HTTP_ADDR)?,
         })
     }
@@ -353,13 +339,13 @@ impl Settings {
     /// The pools of a framework over PostgreSQL.
     #[cfg(feature = "event-store-postgres")]
     pub fn postgres(&self) -> &PostgresSettings {
-        &self.postgres
+        &self.stores.postgres
     }
 
     /// The client of a framework with its views in MongoDB, and their database.
     #[cfg(feature = "projections-mongodb")]
-    pub fn mongodb(&self) -> &MongoSettings {
-        &self.mongodb
+    pub fn mongodb(&self) -> &MongoDbSettings {
+        &self.stores.mongodb
     }
 
     /// Where `Builder::serve` listens.
@@ -430,10 +416,7 @@ impl Settings {
                 duration_text(lease_budget(&self.task_runtime)),
             ),
         ];
-        #[cfg(feature = "event-store-postgres")]
-        entries.extend(self.postgres.entries(&name, &self.application_name));
-        #[cfg(feature = "projections-mongodb")]
-        entries.extend(self.mongodb.entries(&name, &self.application_name));
+        entries.extend(self.stores.entries(&name, &self.application_name));
         entries.push((name(HTTP_ADDR), self.http_addr.to_string()));
         entries
     }
@@ -1083,7 +1066,7 @@ mod tests {
         #[cfg(feature = "event-store-postgres")]
         assert_eq!(settings.postgres(), &PostgresSettings::default());
         #[cfg(feature = "projections-mongodb")]
-        assert_eq!(settings.mongodb(), &MongoSettings::default());
+        assert_eq!(settings.mongodb(), &MongoDbSettings::default());
         assert_eq!(settings.http_addr(), DEFAULT_HTTP_ADDR);
     }
 }

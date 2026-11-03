@@ -1,9 +1,9 @@
 //! The views of a framework in MongoDB (feature `projections-mongodb`): [`MongoDb`] keeps the views and their
 //! checkpoints in one database (`Builder::projections`); the journal stays in PostgreSQL. Its settings are
-//! [`MongoSettings`]; the client connects lazily, when a view or a checkpoint is first read or written.
+//! [`MongoDbSettings`]; the client connects lazily, when a view or a checkpoint is first read or written.
 //!
-//! The module also holds the stores: read-model documents ([`view_repository::MongoViewRepository`]) and the
-//! checkpoints of their projections ([`checkpoint_store::MongoCheckpointStore`]), next to each other in the read
+//! The module also holds the stores: read-model documents ([`view_repository::MongoDbViewRepository`]) and the
+//! checkpoints of their projections ([`checkpoint_store::MongoDbCheckpointStore`]), next to each other in the read
 //! database.
 //!
 //! MongoDB is only the read side here: the journal, the outbox and the task queue stay in PostgreSQL, and a
@@ -173,29 +173,29 @@ pub(crate) async fn client(settings: &Settings) -> Result<Client, BuildError> {
     let mongodb = settings.mongodb();
     let mut options = ClientOptions::parse(mongodb.uri())
         .await
-        .map_err(|source| BuildError::MongoUri {
+        .map_err(|source| BuildError::MongoDbUri {
             variable: settings.variable(MONGODB_URI),
             source,
         })?;
     mongodb.client_plan(settings.application_name()).apply(&mut options);
-    Client::with_options(options).map_err(BuildError::MongoClient)
+    Client::with_options(options).map_err(BuildError::MongoDbClient)
 }
 
 /// The client of a framework with its views in MongoDB and their database.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct MongoSettings {
+pub struct MongoDbSettings {
     uri: String,
     pool_size: NonZeroU32,
     database: String,
 }
 
-impl Default for MongoSettings {
+impl Default for MongoDbSettings {
     fn default() -> Self {
         Self::new(DEFAULT_MONGODB_URI, DEFAULT_MONGODB_POOL_SIZE, DEFAULT_MONGODB_DATABASE)
     }
 }
 
-impl MongoSettings {
+impl MongoDbSettings {
     /// The server `uri`, the connections of the client and the database of the views.
     pub fn new(uri: impl Into<String>, pool_size: NonZeroU32, database: impl Into<String>) -> Self {
         Self {
@@ -311,7 +311,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_mongo_plan_overrides_what_the_uri_says() {
-        let config = MongoSettings::new("mongodb://localhost:27018", NonZeroU32::new(12).unwrap(), "encore_read");
+        let config = MongoDbSettings::new("mongodb://localhost:27018", NonZeroU32::new(12).unwrap(), "encore_read");
         let plan = config.client_plan("encore-backend");
         let mut options = ClientOptions::parse(
             "mongodb://localhost:27018/?maxPoolSize=50&appName=other&connectTimeoutMS=100&serverSelectionTimeoutMS=100",

@@ -87,6 +87,10 @@ pub struct PostgresPools {
 impl PostgresPools {
     /// The journal's readers of a view: its feed on the projection pool, its whole histories on the history pool and
     /// its lag counter on the main pool.
+    #[cfg_attr(
+        not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
+        expect(dead_code, reason = "only a view store reads the journal for a view")
+    )]
     pub(crate) fn view_readers(&self) -> (Arc<PostgresEventRepository>, PostgresEventRepository, PostgresEventRepository) {
         (
             Arc::new(PostgresEventRepository::new(self.projection.clone())),

@@ -19,7 +19,7 @@ use cqrsx::{
     },
     view::{View, projection::ViewProjection, repository::ViewRepository},
 };
-use cqrsx_framework::mongodb::{checkpoint_store::MongoCheckpointStore, view_repository::MongoViewRepository};
+use cqrsx_framework::mongodb::{checkpoint_store::MongoDbCheckpointStore, view_repository::MongoDbViewRepository};
 use mongodb::Database;
 use serde::{Deserialize, Serialize};
 use std::{
@@ -89,8 +89,8 @@ pub(crate) fn key() -> CheckpointKey {
     CheckpointKey::new(NAME, Ledger::TYPE)
 }
 
-pub(crate) fn views(database: &Database) -> MongoViewRepository<Balance, Ledger> {
-    MongoViewRepository::new(database)
+pub(crate) fn views(database: &Database) -> MongoDbViewRepository<Balance, Ledger> {
+    MongoDbViewRepository::new(database)
 }
 
 /// The history `1..=values` of one ledger, event `n` adding `n`.
@@ -172,7 +172,7 @@ impl Node {
         let processor = ProjectionProcessor::new(
             NAME,
             journal,
-            Arc::new(MongoCheckpointStore::new(database)),
+            Arc::new(MongoDbCheckpointStore::new(database)),
             projection,
             config(),
         )
@@ -246,7 +246,7 @@ pub(crate) async fn fold<R: EventRepository>(journal: &R, id: &str) -> Option<Ba
 
 /// Waits until the checkpoint stands at the journal's head and every view equals the fold of its history.
 pub(crate) async fn caught_up<R: EventRepository>(journal: &R, database: &Database, keys: &[&str]) -> CheckpointStatus {
-    let (checkpoints, views) = (MongoCheckpointStore::new(database), views(database));
+    let (checkpoints, views) = (MongoDbCheckpointStore::new(database), views(database));
     tokio::time::timeout(Duration::from_secs(30), async {
         loop {
             let status = checkpoints.status(Some(NAME)).await.unwrap().pop();

@@ -913,7 +913,7 @@ fn every_crate_of_the_library_is_under_the_rules() {
         "use cqrsx_framework::settings::Settings;\n",
         "fn f() { cqrsx_framework::build::Builder::default(); }\n",
         "use cqrsx_framework::postgres::pool::connect_pool;\n",
-        "use cqrsx_framework::mongodb::view_repository::MongoViewRepository;\n",
+        "use cqrsx_framework::mongodb::view_repository::MongoDbViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}: {broken:?}");
@@ -933,7 +933,7 @@ fn every_crate_of_the_library_is_under_the_rules() {
             "cqrsx_framework::postgres",
         ),
         (
-            "fn f() { cqrsx_framework::mongodb::checkpoint_store::MongoCheckpointStore::new(); }\n",
+            "fn f() { cqrsx_framework::mongodb::checkpoint_store::MongoDbCheckpointStore::new(); }\n",
             "cqrsx_framework::mongodb",
         ),
     ] {
@@ -968,7 +968,7 @@ fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_th
         "use cqrsx::view::projection::ViewProjection;\n",
         "use cqrsx::view::repository::ViewMeta;\n",
         "use cqrsx::view::verify::verify;\n",
-        "use cqrsx_framework::mongodb::view_repository::MongoViewRepository;\n",
+        "use cqrsx_framework::mongodb::view_repository::MongoDbViewRepository;\n",
         "use cqrsx::memory::view_repository::MemoryViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);

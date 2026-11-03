@@ -12,7 +12,7 @@ use crate::{
     settings::{Defaults, Settings, SettingsError},
     setup::{Lookup, Setup, SetupError},
     stores::{EventStoreKind, Executor, Journal, ProjectionStoreKind, Stores},
-    views::{CheckpointOperations, Counts, Registry},
+    views::{Counts, History, Registry},
 };
 use cqrsx::{
     command::{
@@ -94,13 +94,13 @@ pub enum BuildError {
     ProjectionPool(sqlx::Error),
     #[cfg(feature = "projections-mongodb")]
     #[error("{variable}: {source}")]
-    MongoUri {
+    MongoDbUri {
         variable: String,
         source: ::mongodb::error::Error,
     },
     #[cfg(feature = "projections-mongodb")]
     #[error("MongoDB client: {0}")]
-    MongoClient(::mongodb::error::Error),
+    MongoDbClient(::mongodb::error::Error),
 }
 
 type ModuleRoot = Box<dyn FnOnce(&Setup) -> Result<Module, SetupError>>;
@@ -613,6 +613,10 @@ where
 
 /// What the registration of a view takes from the framework: borrows of its fields, so that the journal, which the
 /// installation borrows too, stays apart from them.
+#[cfg_attr(
+    not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
+    expect(dead_code, reason = "only a view store installs a view: its parts are read there")
+)]
 pub(crate) struct ViewParts<'a> {
     pub(crate) settings: &'a Settings,
     /// This node: the owner of the processors' checkpoints.
@@ -623,6 +627,10 @@ pub(crate) struct ViewParts<'a> {
     pub(crate) views: &'a mut Registry,
 }
 
+#[cfg_attr(
+    not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
+    expect(dead_code, reason = "only a view store registers a view")
+)]
 impl ViewParts<'_> {
     /// The processor of `V` over `feed` and `checkpoints` into `documents`, and the view's queries and operations: its
     /// checkpoint rows are read and requested through `checkpoints`, its documents verified against `history`, its lag
@@ -640,14 +648,14 @@ impl ViewParts<'_> {
         R: EventRepository + 'static,
         C: CheckpointStore + 'static,
         D: ViewRepository<V, A> + 'static,
-        H: EventRepository + Counts + 'static,
+        H: History + 'static,
         K: Counts + 'static,
     {
-        let operations: Arc<dyn CheckpointOperations> = checkpoints.clone();
-        let processor = self.processor::<V, A, _, _, _>(feed, checkpoints, documents.clone());
+        let processor = self.processor::<V, A, _, _, _>(feed, checkpoints.clone(), documents.clone());
         let processors = get_mut(self.processors, "framework processors");
         *processors = std::mem::take(processors).with_processor(processor);
-        self.views.register::<V, A, _, _, _>(documents, operations, history, counter);
+        self.views
+            .register::<V, A, _, _, _, _>(documents, checkpoints, history, counter);
     }
 
     /// The processor of `V` as every store builds it: the settings' configuration, this node as the owner, the wake-up of

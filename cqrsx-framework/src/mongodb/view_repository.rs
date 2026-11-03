@@ -64,30 +64,30 @@ use std::{fmt, marker::PhantomData};
 /// # }
 /// # use example::{Counter, Total};
 /// use cqrsx::view::projection::ViewProjection;
-/// use cqrsx_framework::mongodb::view_repository::MongoViewRepository;
+/// use cqrsx_framework::mongodb::view_repository::MongoDbViewRepository;
 /// use std::sync::Arc;
 ///
 /// # async fn example() -> Result<(), Box<dyn std::error::Error>> {
 /// let client = mongodb::Client::with_uri_str("mongodb://localhost:27017").await?;
-/// let totals = Arc::new(MongoViewRepository::<Total, Counter>::new(&client.database("read"))); // collection `totals`
+/// let totals = Arc::new(MongoDbViewRepository::<Total, Counter>::new(&client.database("read"))); // collection `totals`
 /// let projection = ViewProjection::new(totals);
 /// # Ok(()) }
 /// ```
-pub struct MongoViewRepository<V, A> {
+pub struct MongoDbViewRepository<V, A> {
     collection: Collection<Document>,
     _phantom: PhantomData<fn() -> (V, A)>,
 }
 
 // By hand: the collection's own `Debug` prints the whole client; its name is enough.
-impl<V, A> fmt::Debug for MongoViewRepository<V, A> {
+impl<V, A> fmt::Debug for MongoDbViewRepository<V, A> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MongoViewRepository")
+        f.debug_struct("MongoDbViewRepository")
             .field("collection", &self.collection.name())
             .finish_non_exhaustive()
     }
 }
 
-impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
+impl<V: View<A>, A: Aggregate> MongoDbViewRepository<V, A> {
     /// The views live in the collection [`View::NAME`] of `database`.
     pub fn new(database: &Database) -> Self {
         Self {
@@ -131,7 +131,7 @@ fn decode<V: View<A>, A: Aggregate>(document: Document) -> Result<StoredView<V>,
     })
 }
 
-impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
+impl<V: View<A>, A: Aggregate> MongoDbViewRepository<V, A> {
     /// The view with its revision and last applied event.
     async fn stored(&self, view_id: &str) -> Result<Option<StoredView<V>>, PersistenceError> {
         let Some(document) = self
@@ -164,7 +164,7 @@ impl<V: View<A>, A: Aggregate> MongoViewRepository<V, A> {
     }
 }
 
-impl<V, A> ViewRepository<V, A> for MongoViewRepository<V, A>
+impl<V, A> ViewRepository<V, A> for MongoDbViewRepository<V, A>
 where
     V: View<A>,
     A: Aggregate,
@@ -236,8 +236,8 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_server_is_a_connection_error_and_a_view_bson_cannot_hold_is_unexpected() {
-        let views = MongoViewRepository::<Huge, Ledger>::new(&crate::mongodb::test_support::unreachable().await);
-        assert_eq!(format!("{views:?}"), r#"MongoViewRepository { collection: "huge", .. }"#);
+        let views = MongoDbViewRepository::<Huge, Ledger>::new(&crate::mongodb::test_support::unreachable().await);
+        assert_eq!(format!("{views:?}"), r#"MongoDbViewRepository { collection: "huge", .. }"#);
         assert!(matches!(views.load("a").await, Err(PersistenceError::Connection(_))));
         assert!(matches!(views.load_stored("a").await, Err(PersistenceError::Connection(_))));
         for version in [0, 1] {
@@ -265,7 +265,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_server_fails_a_listing_and_a_range_as_a_connection_error() {
-        let views = MongoViewRepository::<Huge, Ledger>::new(&crate::mongodb::test_support::unreachable().await);
+        let views = MongoDbViewRepository::<Huge, Ledger>::new(&crate::mongodb::test_support::unreachable().await);
         assert!(matches!(views.list().await, Err(PersistenceError::Connection(_))));
         assert!(matches!(
             views.range("fox:", "fox;").await,

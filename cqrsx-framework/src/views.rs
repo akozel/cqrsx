@@ -2,6 +2,8 @@
 //! The rebuild of one document, the verification, the counts of the journal and the rebuild requests need the feature
 //! `operation-utils`.
 use crate::Cqrs;
+#[cfg(feature = "operation-utils")]
+use crate::operation_utils::{Maintained, Maintenance, Totals};
 use cqrsx::{
     domain::aggregate::Aggregate,
     journal::{PersistenceError, feed::Position, repository::EventRepository},
@@ -11,13 +13,6 @@ use cqrsx::{
         repository::{StoredView, ViewRepository},
     },
 };
-#[cfg(feature = "operation-utils")]
-use cqrsx::{
-    projection::checkpoint::RebuildReply,
-    view::verify::{Verification, verify},
-};
-#[cfg(feature = "operation-utils")]
-use std::time::Duration;
 use std::{
     any::{Any, TypeId, type_name},
     collections::HashMap,
@@ -28,8 +23,8 @@ use std::{
 };
 use thiserror::Error;
 
-type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T, PersistenceError>> + Send + 'a>>;
-type CheckpointAnswer<'a, T> = Pin<Box<dyn Future<Output = Result<T, CheckpointError>> + Send + 'a>>;
+pub(crate) type Answer<'a, T> = Pin<Box<dyn Future<Output = Result<T, PersistenceError>> + Send + 'a>>;
+pub(crate) type CheckpointAnswer<'a, T> = Pin<Box<dyn Future<Output = Result<T, CheckpointError>> + Send + 'a>>;
 
 /// The size of the journal of the views' aggregate types: their events and the aggregates that hold them
 /// ([`Views::totals`]).
@@ -41,34 +36,34 @@ pub struct JournalTotals {
 }
 
 /// What a journal counts of one aggregate type: the events above a position (how far a view is behind) and its size.
+#[cfg_attr(
+    not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
+    expect(dead_code, reason = "only a view store counts a journal for a view")
+)]
 pub(crate) trait Counts: Send + Sync {
     fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send;
-    #[cfg(feature = "operation-utils")]
-    fn totals<A: Aggregate>(&self) -> impl Future<Output = Result<JournalTotals, PersistenceError>> + Send;
 }
+
+/// The journal of whole histories a view is verified against and its size counted on: with the feature
+/// `operation-utils` it also counts its size ([`Totals`]).
+#[cfg(feature = "operation-utils")]
+pub(crate) trait History: EventRepository + Totals {}
+#[cfg(feature = "operation-utils")]
+impl<H: EventRepository + Totals> History for H {}
+/// The journal of whole histories a view is verified against: only the maintenance of a view reads it.
+#[cfg(not(feature = "operation-utils"))]
+pub(crate) trait History: EventRepository {}
+#[cfg(not(feature = "operation-utils"))]
+impl<H: EventRepository> History for H {}
 
 /// What the operations over the views ask of the checkpoints, the store erased.
 pub(crate) trait CheckpointOperations: Send + Sync {
     fn status<'a>(&'a self, projection: Option<&'a str>) -> CheckpointAnswer<'a, Vec<CheckpointStatus>>;
-    #[cfg(feature = "operation-utils")]
-    fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildReply>;
-    #[cfg(feature = "operation-utils")]
-    fn request_rebuild_key<'a>(&'a self, key: &'a CheckpointKey, id: &'a str) -> CheckpointAnswer<'a, ()>;
 }
 
 impl<C: CheckpointStore + 'static> CheckpointOperations for C {
     fn status<'a>(&'a self, projection: Option<&'a str>) -> CheckpointAnswer<'a, Vec<CheckpointStatus>> {
         Box::pin(CheckpointStore::status(self, projection))
-    }
-
-    #[cfg(feature = "operation-utils")]
-    fn request_rebuild<'a>(&'a self, key: &'a CheckpointKey, pace: Duration) -> CheckpointAnswer<'a, RebuildReply> {
-        Box::pin(CheckpointStore::request_rebuild(self, key, pace))
-    }
-
-    #[cfg(feature = "operation-utils")]
-    fn request_rebuild_key<'a>(&'a self, key: &'a CheckpointKey, id: &'a str) -> CheckpointAnswer<'a, ()> {
-        Box::pin(CheckpointStore::request_rebuild_key(self, key, id))
     }
 }
 
@@ -77,10 +72,6 @@ pub(crate) trait Queries<V>: Send + Sync {
     fn get<'a>(&'a self, id: &'a str) -> Answer<'a, Option<StoredView<V>>>;
     fn list(&self) -> Answer<'_, Vec<StoredView<V>>>;
     fn range<'a>(&'a self, lower: &'a str, upper: &'a str) -> Answer<'a, Vec<StoredView<V>>>;
-    #[cfg(feature = "operation-utils")]
-    fn key(&self) -> CheckpointKey;
-    #[cfg(feature = "operation-utils")]
-    fn checkpoints(&self) -> &dyn CheckpointOperations;
 }
 
 /// What the operations need of a view, its types erased. Its name and aggregate type are constants: finding a view by
@@ -92,39 +83,26 @@ pub(crate) trait Operations: Send + Sync {
     fn key(&self) -> CheckpointKey;
     /// The checkpoints of the view's processor, the store erased: what the operations read and request.
     fn checkpoints(&self) -> &dyn CheckpointOperations;
-    #[cfg(feature = "operation-utils")]
-    fn verify(&self) -> Answer<'_, Verification>;
     fn count_after(&self, after: Position, cap: u64) -> Answer<'_, u64>;
-    #[cfg(feature = "operation-utils")]
-    fn totals(&self) -> Answer<'_, JournalTotals>;
 }
 
-/// A view: its documents, the checkpoints of its processor, the journal its documents are verified against and its
-/// size counted on (`history`), and the journal its lag is counted on (`counter`).
-struct Registered<V, A, D, H, K> {
+/// A view: its documents, the checkpoints of its processor and the journal its lag is counted on (`counter`).
+#[cfg_attr(
+    not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
+    expect(dead_code, reason = "only a view store registers a view")
+)]
+struct Registered<V, A, D, K> {
     documents: Arc<D>,
     checkpoints: Arc<dyn CheckpointOperations>,
-    #[cfg_attr(
-        all(
-            not(feature = "operation-utils"),
-            any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")
-        ),
-        expect(
-            dead_code,
-            reason = "only the verification and the totals read the journal of whole histories"
-        )
-    )]
-    history: H,
     counter: K,
     types: std::marker::PhantomData<fn() -> (V, A)>,
 }
 
-impl<V, A, D, H, K> Queries<V> for Registered<V, A, D, H, K>
+impl<V, A, D, K> Queries<V> for Registered<V, A, D, K>
 where
     V: View<A> + 'static,
     A: Aggregate + 'static,
     D: ViewRepository<V, A> + 'static,
-    H: Send + Sync,
     K: Send + Sync,
 {
     fn get<'a>(&'a self, id: &'a str) -> Answer<'a, Option<StoredView<V>>> {
@@ -138,24 +116,13 @@ where
     fn range<'a>(&'a self, lower: &'a str, upper: &'a str) -> Answer<'a, Vec<StoredView<V>>> {
         Box::pin(self.documents.range(lower, upper))
     }
-
-    #[cfg(feature = "operation-utils")]
-    fn key(&self) -> CheckpointKey {
-        CheckpointKey::of::<V, A>()
-    }
-
-    #[cfg(feature = "operation-utils")]
-    fn checkpoints(&self) -> &dyn CheckpointOperations {
-        &*self.checkpoints
-    }
 }
 
-impl<V, A, D, H, K> Operations for Registered<V, A, D, H, K>
+impl<V, A, D, K> Operations for Registered<V, A, D, K>
 where
     V: View<A> + PartialEq + 'static,
     A: Aggregate + 'static,
     D: ViewRepository<V, A> + 'static,
-    H: EventRepository + Counts + 'static,
     K: Counts + 'static,
 {
     fn name(&self) -> &'static str {
@@ -175,18 +142,8 @@ where
         &*self.checkpoints
     }
 
-    #[cfg(feature = "operation-utils")]
-    fn verify(&self) -> Answer<'_, Verification> {
-        Box::pin(verify::<V, A>(&self.history, &*self.documents))
-    }
-
     fn count_after(&self, after: Position, cap: u64) -> Answer<'_, u64> {
         Box::pin(self.counter.count_after::<A>(after, cap))
-    }
-
-    #[cfg(feature = "operation-utils")]
-    fn totals(&self) -> Answer<'_, JournalTotals> {
-        Box::pin(self.history.totals::<A>())
     }
 }
 
@@ -195,32 +152,57 @@ where
 pub(crate) struct Registry {
     queries: HashMap<TypeId, Box<dyn Any + Send + Sync>>,
     pub(crate) operations: Vec<Arc<dyn Operations>>,
+    /// The maintenance of each view, by the view's type.
+    #[cfg(feature = "operation-utils")]
+    pub(crate) maintenance: Vec<(TypeId, Arc<dyn Maintenance>)>,
 }
 
 impl Registry {
-    pub(crate) fn register<V, A, D, H, K>(
-        &mut self,
-        documents: Arc<D>,
-        checkpoints: Arc<dyn CheckpointOperations>,
-        history: H,
-        counter: K,
-    ) where
+    #[cfg_attr(
+        not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
+        expect(dead_code, reason = "only a view store registers a view")
+    )]
+    #[cfg_attr(
+        not(feature = "operation-utils"),
+        expect(
+            unused_variables,
+            clippy::needless_pass_by_value,
+            reason = "only the maintenance of a view reads its history"
+        )
+    )]
+    pub(crate) fn register<V, A, D, C, H, K>(&mut self, documents: Arc<D>, checkpoints: Arc<C>, history: H, counter: K)
+    where
         V: View<A> + PartialEq + 'static,
         A: Aggregate + 'static,
         D: ViewRepository<V, A> + 'static,
-        H: EventRepository + Counts + 'static,
+        C: CheckpointStore + 'static,
+        H: History + 'static,
         K: Counts + 'static,
     {
-        let view = Arc::new(Registered::<V, A, D, H, K> {
+        #[cfg(feature = "operation-utils")]
+        self.maintenance.push((
+            TypeId::of::<V>(),
+            Arc::new(Maintained::<V, A, D, C, H>::new(
+                documents.clone(),
+                checkpoints.clone(),
+                history,
+            )),
+        ));
+        let view = Arc::new(Registered::<V, A, D, K> {
             documents,
             checkpoints,
-            history,
             counter,
             types: std::marker::PhantomData,
         });
         let queries: Arc<dyn Queries<V>> = view.clone();
         self.queries.insert(TypeId::of::<V>(), Box::new(queries));
         self.operations.push(view);
+    }
+
+    /// The queries of the view `V`, if it is registered.
+    fn queries_of<V: 'static>(&self) -> Option<&dyn Queries<V>> {
+        let queries = self.queries.get(&TypeId::of::<V>())?;
+        queries.downcast_ref::<Arc<dyn Queries<V>>>().map(|queries| &**queries)
     }
 
     pub(crate) fn named(&self, name: &str) -> Result<&dyn Operations, ViewsError> {
@@ -233,14 +215,15 @@ impl Registry {
 /// bytes of the ids; with the feature `operation-utils` also the rebuild of one document. A view the framework does not
 /// have answers with an error.
 pub struct ViewQuery<'a, V> {
-    pub(crate) queries: Option<&'a dyn Queries<V>>,
+    pub(crate) registry: &'a Registry,
+    types: std::marker::PhantomData<fn() -> V>,
 }
 
 // By hand: the queries are a trait object; what matters is whether the framework has the view.
-impl<V> fmt::Debug for ViewQuery<'_, V> {
+impl<V: 'static> fmt::Debug for ViewQuery<'_, V> {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("ViewQuery")
-            .field("registered", &self.queries.is_some())
+            .field("registered", &self.registry.queries_of::<V>().is_some())
             .finish_non_exhaustive()
     }
 }
@@ -262,7 +245,9 @@ impl<V: 'static> ViewQuery<'_, V> {
 
     fn queries(&self) -> Result<&dyn Queries<V>, PersistenceError> {
         let unknown = || format!("the view `{}` is not registered", type_name::<V>()).into();
-        self.queries.ok_or_else(|| PersistenceError::Unexpected(unknown()))
+        self.registry
+            .queries_of::<V>()
+            .ok_or_else(|| PersistenceError::Unexpected(unknown()))
     }
 }
 
@@ -338,10 +323,9 @@ impl Views<'_> {
 impl Cqrs {
     /// The queries of the view `V`.
     pub fn view<V: 'static>(&self) -> ViewQuery<'_, V> {
-        let queries = self.views.queries.get(&TypeId::of::<V>());
-        let queries = queries.and_then(|queries| queries.downcast_ref::<Arc<dyn Queries<V>>>());
         ViewQuery {
-            queries: queries.map(|queries| &**queries),
+            registry: &self.views,
+            types: std::marker::PhantomData,
         }
     }
 
@@ -355,15 +339,6 @@ mod tests {
     use super::*;
     use crate::{memory::InMemory, settings::Settings, test_support::*};
     use std::time::Duration;
-
-    async fn book_every(cqrs: &Cqrs, bookings: &[(&str, &str, &str)]) {
-        for (show, seat, fan) in bookings {
-            cqrs.source("ui")
-                .execute::<Show>(&(*show).into(), book(seat, fan))
-                .await
-                .unwrap();
-        }
-    }
 
     #[tokio::test]
     async fn a_view_answers_get_list_and_range_once_caught_up() {
@@ -400,7 +375,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn views_report_their_status_and_lag_verify_and_take_rebuild_requests() {
+    async fn views_report_their_status_and_lag() {
         let (cqrs, _) = framework().await;
         book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
         let views = cqrs.views();
@@ -424,35 +399,6 @@ mod tests {
             })
             .collect();
         assert_eq!(named, [("halls", "show", true), ("tickets", "wallet", true)]);
-        #[cfg(feature = "operation-utils")]
-        {
-            let verified = views.verify("halls").await.unwrap();
-            assert_eq!((verified.checked, verified.differences.len()), (2, 0));
-            assert_eq!(
-                views.request_rebuild("halls", Duration::ZERO).await.unwrap(),
-                RebuildReply::Accepted
-            );
-            assert_eq!(
-                views.request_rebuild("halls", Duration::ZERO).await.unwrap(),
-                RebuildReply::AlreadyRunning
-            );
-            views.request_rebuild_key("halls", "s-1").await.unwrap();
-            while views.status().await.unwrap()[0].rebuilt < 2 {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-            assert_eq!(
-                views.verify("halls").await.unwrap().differences.len(),
-                0,
-                "the rebuild folds the history"
-            );
-            for refused in [
-                views.request_rebuild("seats", Duration::ZERO).await.map(|_| ()),
-                views.request_rebuild_key("seats", "s-1").await,
-                views.verify("seats").await.map(|_| ()),
-            ] {
-                assert_eq!(refused.unwrap_err().to_string(), "the view `seats` is not registered");
-            }
-        }
         assert_eq!(
             views.lag("seats").await.unwrap_err().to_string(),
             "the view `seats` is not registered"
@@ -464,44 +410,6 @@ mod tests {
         assert!(matches!(error, ViewsError::NotStarted), "{error:?}");
         let error: ViewsError = PersistenceError::Conflict.into();
         assert!(!error.to_string().is_empty());
-    }
-
-    #[cfg(feature = "operation-utils")]
-    #[tokio::test]
-    async fn a_view_rebuilds_the_document_of_one_aggregate_on_request() {
-        let (cqrs, _) = framework().await;
-        book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-2", "B2", "panda")]).await;
-        let halls = cqrs.view::<Hall>();
-        let early = halls.rebuild(&"s-1").await.unwrap_err();
-        assert!(matches!(early, ViewsError::NotStarted), "{early:?}");
-        assert_eq!(
-            early.to_string(),
-            "the view's processor has not started: its checkpoint is not registered yet"
-        );
-        let by_name = [
-            cqrs.views().request_rebuild("halls", Duration::ZERO).await.map(|_| ()),
-            cqrs.views().request_rebuild_key("halls", "s-1").await,
-        ];
-        assert!(
-            by_name.iter().all(|result| matches!(result, Err(ViewsError::NotStarted))),
-            "{by_name:?}"
-        );
-        let unknown = cqrs.view::<String>().rebuild(&"s-1").await.unwrap_err();
-        assert_eq!(unknown.to_string(), "the view `alloc::string::String` is not registered");
-
-        cqrs.catch_up().await;
-        let revision = async |id: &str| halls.get(&id).await.unwrap().unwrap().revision;
-        let (first, second) = (revision("s-1").await, revision("s-2").await);
-        halls.rebuild(&String::from("s-1")).await.unwrap();
-        tokio::time::timeout(Duration::from_secs(10), async {
-            while revision("s-1").await == first {
-                tokio::time::sleep(Duration::from_millis(1)).await;
-            }
-        })
-        .await
-        .expect("the document is rebuilt");
-        assert_eq!(revision("s-2").await, second, "the other document is not touched");
-        assert_eq!(cqrs.views().verify("halls").await.unwrap().differences.len(), 0);
     }
 
     /// G-09: a commit wakes the processors of its aggregate type, which read the journal before their poll.
@@ -544,7 +452,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_views_name_their_rows_count_their_journal_and_its_size() {
+    async fn the_views_name_their_rows() {
         let (cqrs, _) = framework().await;
         book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
         let views = cqrs.views();
@@ -554,36 +462,5 @@ mod tests {
             .map(|key| (key.projection().to_owned(), key.aggregate_type()))
             .collect();
         assert_eq!(keys, [("halls".to_owned(), "show"), ("tickets".to_owned(), "wallet")]);
-        #[cfg(feature = "operation-utils")]
-        {
-            assert_eq!(views.count_after("show", Position::START, 10).await.unwrap(), 3);
-            assert_eq!(
-                views.count_after("show", Position::START, 2).await.unwrap(),
-                2,
-                "up to the cap"
-            );
-            assert_eq!(views.count_after("wallet", Position::START, 10).await.unwrap(), 0);
-            assert_eq!(
-                views.count_after("seat", Position::START, 10).await.unwrap_err().to_string(),
-                "no view of the aggregate type `seat` is registered"
-            );
-            assert_eq!(
-                views.totals().await.unwrap(),
-                JournalTotals {
-                    events: 3,
-                    aggregates: 2
-                },
-                "the shows, the wallets have no event yet"
-            );
-            cqrs.run_tasks().await;
-            assert_eq!(
-                views.totals().await.unwrap(),
-                JournalTotals {
-                    events: 5,
-                    aggregates: 4
-                },
-                "every aggregate type of a view once: fox's second A1 is recorded already"
-            );
-        }
     }
 }

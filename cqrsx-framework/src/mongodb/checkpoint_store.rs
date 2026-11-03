@@ -36,20 +36,20 @@ pub const PROJECTION_CHECKPOINTS_COLLECTION: &str = "projection_checkpoints";
 /// clock. The rules are those of `PostgresCheckpointStore` with one difference: a rebuild cursor is accepted
 /// again only when it is the same cursor (the journal orders the keys, the document cannot), so a page
 /// repeated after a lost reply is counted once and never refused. Needs MongoDB 4.2 or later.
-pub struct MongoCheckpointStore {
+pub struct MongoDbCheckpointStore {
     collection: Collection<Document>,
 }
 
 // By hand: the collection's own `Debug` prints the whole client; its name is enough.
-impl fmt::Debug for MongoCheckpointStore {
+impl fmt::Debug for MongoDbCheckpointStore {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("MongoCheckpointStore")
+        f.debug_struct("MongoDbCheckpointStore")
             .field("collection", &self.collection.name())
             .finish_non_exhaustive()
     }
 }
 
-impl MongoCheckpointStore {
+impl MongoDbCheckpointStore {
     pub fn new(database: &Database) -> Self {
         Self {
             collection: database.collection(PROJECTION_CHECKPOINTS_COLLECTION),
@@ -231,7 +231,7 @@ fn defaults() -> Document {
     fields
 }
 
-impl MongoCheckpointStore {
+impl MongoDbCheckpointStore {
     /// One fenced write: `true` when the document was the owner's.
     async fn fenced(&self, operation: &'static str, filter: Document, update: Document) -> Result<bool, CheckpointError> {
         let result = self
@@ -243,7 +243,7 @@ impl MongoCheckpointStore {
     }
 }
 
-impl CheckpointStore for MongoCheckpointStore {
+impl CheckpointStore for MongoDbCheckpointStore {
     async fn register(&self, key: &CheckpointKey) -> Result<(), CheckpointError> {
         match self
             .collection
@@ -587,10 +587,10 @@ mod tests {
 
     #[tokio::test]
     async fn an_unreachable_server_fails_every_operation_with_a_logged_storage_error() {
-        let store = MongoCheckpointStore::new(&crate::mongodb::test_support::unreachable().await);
+        let store = MongoDbCheckpointStore::new(&crate::mongodb::test_support::unreachable().await);
         assert_eq!(
             format!("{store:?}"),
-            format!("MongoCheckpointStore {{ collection: {PROJECTION_CHECKPOINTS_COLLECTION:?}, .. }}")
+            format!("MongoDbCheckpointStore {{ collection: {PROJECTION_CHECKPOINTS_COLLECTION:?}, .. }}")
         );
         let key = CheckpointKey::new("halls", "Concert");
         let token = LeaseToken::new(Uuid::new_v4());

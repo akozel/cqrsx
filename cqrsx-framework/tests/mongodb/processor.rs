@@ -8,7 +8,7 @@ use cqrsx::{
     view::repository::ViewRepository,
 };
 use cqrsx_fixtures::mongo::Mongo;
-use cqrsx_framework::mongodb::checkpoint_store::{MongoCheckpointStore, PROJECTION_CHECKPOINTS_COLLECTION};
+use cqrsx_framework::mongodb::checkpoint_store::{MongoDbCheckpointStore, PROJECTION_CHECKPOINTS_COLLECTION};
 use mongodb::bson::Document;
 use std::{sync::Arc, time::Duration};
 
@@ -45,7 +45,7 @@ async fn forty_commands_over_five_ledgers_reach_the_mongo_views_in_order() {
         assert_eq!(balance.history, (1..=8).map(|n| (n, n as i32)).collect::<Vec<_>>());
     }
     node.stop().await;
-    let after = MongoCheckpointStore::new(&mongo.database)
+    let after = MongoDbCheckpointStore::new(&mongo.database)
         .status(Some(NAME))
         .await
         .unwrap()
@@ -67,7 +67,7 @@ async fn a_rebuild_under_concurrent_commits_ends_in_the_fold_of_the_journal() {
     let keys = ["l1", "l2", "l3", "l4", "l5"];
     commit(&journal, &wakeup, &keys, 4).await;
     caught_up(&journal, &mongo.database, &keys).await;
-    let store = MongoCheckpointStore::new(&mongo.database);
+    let store = MongoDbCheckpointStore::new(&mongo.database);
     assert_eq!(
         store.request_rebuild(&key(), Duration::ZERO).await.unwrap(),
         RebuildReply::Accepted

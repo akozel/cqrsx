@@ -381,6 +381,16 @@ pub(crate) fn book(seat: &str, fan: &str) -> Book {
     }
 }
 
+/// Every booking `(show, seat, fan)` through the source `ui`.
+pub(crate) async fn book_every(cqrs: &Cqrs, bookings: &[(&str, &str, &str)]) {
+    for (show, seat, fan) in bookings {
+        cqrs.source("ui")
+            .execute::<Show>(&(*show).into(), book(seat, fan))
+            .await
+            .unwrap();
+    }
+}
+
 /// The output of `future`, which must not wait: a framework in memory builds without one.
 pub(crate) fn ready<F: std::future::Future>(future: F) -> F::Output {
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
