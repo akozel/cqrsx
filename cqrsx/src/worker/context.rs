@@ -181,7 +181,7 @@ impl Executors {
         Ok(self)
     }
 
-    /// The executor of `A`, if one is registered: what `TaskContext::execute` and the engine's `execute` run.
+    /// The executor of `A`, if one is registered: what `TaskContext::execute` and the framework's `execute` run.
     pub(crate) fn get<A: Aggregate + 'static>(&self) -> Option<&Arc<dyn ErasedExecutor<A>>> {
         self.0.get(&TypeId::of::<A>())?.downcast_ref()
     }

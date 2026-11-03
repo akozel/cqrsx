@@ -1,6 +1,6 @@
 //! `fan_wallets` read model: one document per fan ledger (a fan and a concert, D-14), built only
 //! from that ledger's `Fan` events; the wallet a fan sees is assembled from all of their ledgers
-//! (`fan::application::wallet`). The engine applies a ledger's events to its document in order and only once
+//! (`fan::application::wallet`). The framework applies a ledger's events to its document in order and only once
 //! (the document's `last_sequence`), so the fold needs no check of its own: every event changes its ticket,
 //! keyed by `booking_id`. A ticket keeps the `sequence` (the event number inside the ledger's stream) and the
 //! time of the event that last changed it. Derived counters are recomputed, never incremented.
@@ -280,7 +280,7 @@ mod tests {
         }
     }
 
-    /// The engine hands a ledger's document its events in order and once each (`last_sequence`): on every such
+    /// The framework hands a ledger's document its events in order and once each (`last_sequence`): on every such
     /// history the fold without a check of its own is the document the fold with the LWW check made.
     #[test]
     fn an_ordered_history_folds_into_the_same_wallet_with_and_without_the_lww_check() {

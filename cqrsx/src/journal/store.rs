@@ -40,7 +40,7 @@ impl SnapshotPolicy {
     }
 }
 
-/// Storage engine using a database backing.
+/// Storage using a database backing.
 ///
 /// This defaults to an event-sourced store (i.e., events are the single source of truth),
 /// and can use snapshots when a large number of events belong to one aggregate instance. A clone shares the

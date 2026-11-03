@@ -1,5 +1,5 @@
 //! `GET /api/activity` — Server-Sent Events. First a `hello` with the recent backlog, then live
-//! `activity` events. The stream ends when the engine stops so Ctrl+C never waits for open tabs.
+//! `activity` events. The stream ends when the framework stops so Ctrl+C never waits for open tabs.
 use crate::{
     operations::presentation::http::config::ConfigResponse,
     shared::{
@@ -11,7 +11,7 @@ use axum::{
     extract::State,
     response::sse::{Event, KeepAlive, Sse},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use futures::{StreamExt, stream};
 use serde::Serialize;
 use std::{convert::Infallible, sync::Arc, time::Duration};

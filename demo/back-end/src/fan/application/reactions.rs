@@ -106,8 +106,8 @@ mod tests {
         );
     }
 
-    /// The ledger through a test engine, as the chain steps run it: what the activity feed says of its commands.
-    mod engine {
+    /// The ledger through a test framework, as the chain steps run it: what the activity feed says of its commands.
+    mod framework {
         use crate::{
             fan::{
                 application::test_support::{fan_command, ledger, ticket},

@@ -13,7 +13,7 @@ use crate::{
 use std::{collections::HashMap, error::Error, fmt, sync::Arc};
 
 /// The executor of the commands of one aggregate type over an [`AggregateStore`]: the attempt it owns
-/// for its life holds the store, the rules and the task planner. The engine, the tests and the test executor
+/// for its life holds the store, the rules and the task planner. The framework, the tests and the test executor
 /// build it over a store of their own; there is no preset per database. One long-lived executor per aggregate type
 /// and process, shared (e.g. in an `Arc`) by everything that issues its commands: a second executor of the same
 /// type has locks of its own.

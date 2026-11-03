@@ -575,15 +575,28 @@ dependencies = [
 ]
 
 [[package]]
-name = "cqrsx-engine"
+name = "cqrsx-fixtures"
+version = "0.1.0"
+dependencies = [
+ "mongodb",
+ "sqlx",
+ "testcontainers",
+ "tokio",
+ "tracing",
+ "tracing-subscriber",
+ "uuid",
+]
+
+[[package]]
+name = "cqrsx-framework"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
  "chrono",
  "cqrsx",
- "cqrsx-engine",
  "cqrsx-fixtures",
+ "cqrsx-framework",
  "futures",
  "log",
  "mongodb",
@@ -594,19 +607,6 @@ dependencies = [
  "tokio",
  "tokio-util",
  "tower-http",
- "tracing",
- "tracing-subscriber",
- "uuid",
-]
-
-[[package]]
-name = "cqrsx-fixtures"
-version = "0.1.0"
-dependencies = [
- "mongodb",
- "sqlx",
- "testcontainers",
- "tokio",
  "tracing",
  "tracing-subscriber",
  "uuid",

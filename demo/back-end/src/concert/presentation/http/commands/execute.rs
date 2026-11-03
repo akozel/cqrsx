@@ -11,14 +11,14 @@ use axum::{
     Json,
     extract::{Path, State, rejection::JsonRejection},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use request::ConcertCommandRequest;
 use response::ConcertCommandResponse;
 use serde_json::Value;
 use std::sync::Arc;
 use uuid::Uuid;
 
-/// The command goes to the engine from the source `ui`: its id is chosen here, so that every answer names it, and is
+/// The command goes to the framework from the source `ui`: its id is chosen here, so that every answer names it, and is
 /// the id of a booking and a cancellation.
 pub async fn handle(
     State(cqrs): State<Arc<Cqrs>>,

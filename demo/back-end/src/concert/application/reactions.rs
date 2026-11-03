@@ -133,10 +133,10 @@ mod tests {
         );
     }
 
-    /// The box office through a test engine, as the HTTP handler runs it: the executor with the reactions' planner
+    /// The box office through a test framework, as the HTTP handler runs it: the executor with the reactions' planner
     /// and the activity feed's observer. What each command publishes with its event and what the feed says of it; the
-    /// races of cancellations and rebookings on one concert run on the engine in memory (`application/tests.rs`).
-    mod engine {
+    /// races of cancellations and rebookings on one concert run on the framework in memory (`application/tests.rs`).
+    mod framework {
         use crate::concert::{
             application::test_support::{ProbeStore, announce, book, cancel, committed, concert_id, harness, store_in_memory},
             domain::ConcertError,

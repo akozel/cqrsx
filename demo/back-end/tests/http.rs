@@ -1,6 +1,6 @@
-//! The HTTP API of the box office on the engine (moved from `bootstrap/routes/tests.rs` with the routes): every branch
+//! The HTTP API of the box office on the framework (moved from `bootstrap/routes/tests.rs` with the routes): every branch
 //! that answers before storage is touched (validation, the error shape), the endpoints that need no storage, and the
-//! read side, on the engine in memory or over databases nobody listens on.
+//! read side, on the framework in memory or over databases nobody listens on.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 use axum::{
     Router,
@@ -12,7 +12,7 @@ use cqrsx::{
     projection::checkpoint::{CheckpointKey, CheckpointStore},
     view::repository::StoredView,
 };
-use cqrsx_engine::{
+use cqrsx_framework::{
     Cqrs,
     build::Builder,
     memory::InMemory,

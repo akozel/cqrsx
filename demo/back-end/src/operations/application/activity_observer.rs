@@ -1,4 +1,4 @@
-//! The engine's reports as activity log entries: what the command executors did (`command.*`, one observer for every
+//! The framework's reports as activity log entries: what the command executors did (`command.*`, one observer for every
 //! aggregate) and what the feed and the X-ray show of the read side (`projection.*`, an observer per read model). The
 //! modules write nothing for the feed: an entry names a command by what its derives say of it (`Command`: its
 //! type's name and its `#[label]` fields) and a rejection by its code and params (`Rejection`). An executor calls its

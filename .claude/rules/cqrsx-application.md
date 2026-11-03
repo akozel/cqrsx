@@ -13,7 +13,7 @@ code style is `.claude/rules/rust-style.md`.
 ## Modules and layers
 
 1. A module is a directory with its layers (`domain`, `application`, `presentation`, `infrastructure` where needed)
-   and a root file next to it (`concert.rs`). The root registers what the module plugs into the engine, one line each:
+   and a root file next to it (`concert.rs`). The root registers what the module plugs into the framework, one line each:
    `Module::new("fan").aggregate::<Fan>(rules).provide(..).task(handler, policy).view::<V, A>().routes(..)`.
 2. Inside a module a layer sees the layers below it and the same layers of `shared`; one module reaches another only
    through `crate::` and only where the rules allow. *Checked:* `every_layer_imports_only_what_it_may`.
@@ -33,7 +33,7 @@ code style is `.claude/rules/rust-style.md`.
 7. A task's policy is a value given where the task is registered: `.task(record_ticket, policies.step)`. The module
    builds its policies from the setup (`fan/application/policies.rs`); a task type registered without one gets
    `TaskPolicy::default()`.
-8. An application function returns data: domain or engine types, or a type of its own where it computes something
+8. An application function returns data: domain or framework types, or a type of its own where it computes something
    (a sum, the worst state). It never builds the wire shape of a transport, such as the `json!` of an HTTP answer.
 
 ## Command ids
@@ -45,11 +45,11 @@ code style is `.claude/rules/rust-style.md`.
 
 ## Presentation
 
-10. A presentation is laid out by transport, then by kind of engine entry, then by action:
+10. A presentation is laid out by transport, then by kind of framework entry, then by action:
     `<module>/presentation/<transport>/<kind>/<action>.rs`, with one URL table per module in `presentation/http.rs`
     (a section per kind, a line per endpoint). The kinds are the four entries of `Cqrs`:
 
-    | Kind | What it does | Engine entry |
+    | Kind | What it does | Framework entry |
     |---|---|---|
     | `commands` | changes the state | `cqrs.source(..).execute::<A>(..)`, `execute_with_id` |
     | `queries` | reads a projection | `cqrs.view::<V>()` with `get`, `list`, `range` |
@@ -58,13 +58,13 @@ code style is `.claude/rules/rust-style.md`.
 
     `history` reads a stream without a bound and `maintenance` changes the read side or counts without a bound, so their
     calls (`history`, `views().{request_rebuild, request_rebuild_key, verify, count_after, totals}`,
-    `view::<V>().rebuild(..)`) exist only with the engine's feature `operation-utils`, which the application enables in
-    its `Cargo.toml`; `views().{keys, status, lag}` need no feature. The criterion is the engine's API rule in
+    `view::<V>().rebuild(..)`) exist only with the framework's feature `operation-utils`, which the application enables in
+    its `Cargo.toml`; `views().{keys, status, lag}` need no feature. The criterion is the framework's API rule in
     `doc/components.md`.
 
     An endpoint that uses none of the four (health, settings, an event stream) lies directly in `presentation/http/`.
     Another transport (a queue, a scheduler) is a sibling directory of `http`. *Checked:*
-    `a_presentation_file_names_only_the_engine_entry_of_its_kind`.
+    `a_presentation_file_names_only_the_framework_entry_of_its_kind`.
 11. The input and the answer of an endpoint are types named `<Subject><Action>Request` and `<Subject><Action>Response`:
     the subject is a noun of the domain (the aggregate or the view the endpoint serves), the action is added only when
     the subject has several endpoints: `ConcertCommandRequest`, `ConcertHallResponse`, `FanWalletResponse`,
@@ -90,12 +90,12 @@ code style is `.claude/rules/rust-style.md`.
 
 ## Tests
 
-14. An application names its stores when it builds the engine: `event_store(Postgres)` and, with views,
+14. An application names its stores when it builds the framework: `event_store(Postgres)` and, with views,
     `projections(Postgres)` or `projections(MongoDb)`; without them `build()` refuses (`BuildError::NoJournal`,
-    `BuildError::ViewsWithoutStore`). Its tests build the engine in memory with `event_store(InMemory)` and
+    `BuildError::ViewsWithoutStore`). Its tests build the framework in memory with `event_store(InMemory)` and
     `projections(InMemory)` and reach its helpers (`run_tasks`, `catch_up`, and the stores themselves: `journal`,
-    `outbox`, `checkpoints`, `documents`) through the engine's feature `test-utils`, which the application enables only
-    in the `[dev-dependencies]` of the crate that tests (`cqrsx-engine = { workspace = true, features = ["test-utils"] }`).
+    `outbox`, `checkpoints`, `documents`) through the framework's feature `test-utils`, which the application enables only
+    in the `[dev-dependencies]` of the crate that tests (`cqrsx-framework = { workspace = true, features = ["test-utils"] }`).
     `InMemory` and the helpers exist only with that feature, so they lie only in test code (a `#[cfg(test)]` module or
-    `tests/*`) and a production build cannot start in memory. The criterion is the engine's API rule in
+    `tests/*`) and a production build cannot start in memory. The criterion is the framework's API rule in
     `doc/components.md`.

@@ -13,7 +13,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use serde::Serialize;
 use std::sync::Arc;
 

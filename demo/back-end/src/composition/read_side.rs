@@ -1,12 +1,12 @@
 //! The read side of the process: one processor per read model under its name, the documents as MongoDB stores them,
-//! the verification of a read model by the engine.
+//! the verification of a read model by the framework.
 use crate::{
     concert::{
         application::views::concert_hall::{ConcertHallView, ConcertSummary, SeatEntry, SeatState},
         domain::{Concert, ConcertEvent, events::ConcertAnnounced},
     },
     fan::application::views::fan_wallet::{FanWalletView, TicketEntry, TicketEntryState},
-    operations::application::{engine::EngineView, verify::VerifiedReadModel},
+    operations::application::{framework::FrameworkView, verify::VerifiedReadModel},
     shared::{application::StorageError, domain::venue::Zone},
     testing::test_app,
 };
@@ -25,7 +25,7 @@ use std::{
     sync::Arc,
 };
 
-/// The engine of the process runs one projection processor per read model the modules register.
+/// The framework of the process runs one projection processor per read model the modules register.
 #[tokio::test]
 async fn the_read_side_is_wired_with_one_processor_per_read_model() {
     let (cqrs, _) = test_app().await;
@@ -96,10 +96,10 @@ fn both_views_survive_the_bson_round_trip() {
     assert_eq!(from_bson::<FanWalletView>(to_bson(&wallet).unwrap()).unwrap(), wallet);
 }
 
-/// The operations verify a read model with the engine's verify, under the view's name; a failed read is a
-/// storage error with the engine's text.
+/// The operations verify a read model with the framework's verify, under the view's name; a failed read is a
+/// storage error with the framework's text.
 #[tokio::test]
-async fn a_read_model_is_verified_by_the_engine_under_the_name_of_its_view() {
+async fn a_read_model_is_verified_by_the_framework_under_the_name_of_its_view() {
     let announced = EventEnvelope::<Concert> {
         aggregate_id: "c-1".into(),
         sequence: 1,
@@ -122,7 +122,7 @@ async fn a_read_model_is_verified_by_the_engine_under_the_name_of_its_view() {
     let mut hall = ConcertHallView::default();
     hall.apply(&announced);
     halls.put("c-1", 1, 1, &hall).unwrap();
-    let verification = EngineView::new(cqrs.clone(), ConcertHallView::NAME);
+    let verification = FrameworkView::new(cqrs.clone(), ConcertHallView::NAME);
     assert_eq!(verification.name(), "concert_halls");
     assert_eq!(
         verification.verify().await.unwrap(),

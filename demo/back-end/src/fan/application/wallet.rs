@@ -1,13 +1,13 @@
 //! Use case "show a fan's wallet". A `fan_wallets` document is one ledger (a fan and a concert,
 //! D-14); the wallet the fan sees is assembled here from all of their ledgers. The ledgers of a fan
-//! sit in one id range (`FanLedgerId::id_range`), so the read is one range query of the engine's
+//! sit in one id range (`FanLedgerId::id_range`), so the read is one range query of the framework's
 //! view (on the `_id` index in MongoDB) and needs nothing else.
 use crate::{
     fan::application::views::fan_wallet::FanWalletView,
     shared::domain::{FanId, FanLedgerId},
 };
 use cqrsx::{journal::PersistenceError, view::repository::StoredView};
-use cqrsx_engine::views::ViewQuery;
+use cqrsx_framework::views::ViewQuery;
 
 /// One ledger behind the wallet: the concert, the document revision and the last event applied.
 #[derive(Debug, Clone, PartialEq, Eq)]

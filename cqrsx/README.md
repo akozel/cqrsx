@@ -1,8 +1,8 @@
 # cqrsx
 
 CQRS and event sourcing for Rust: the application owns its business rules, and the components of this core
-(journal, transactional outbox, task runtime, projections) are assembled by the engine, the crate
-[`cqrsx-engine`](../cqrsx-engine/README.md).
+(journal, transactional outbox, task runtime, projections) are assembled by the framework, the crate
+[`cqrsx-framework`](../cqrsx-framework/README.md).
 
 ## At a glance
 
@@ -12,7 +12,7 @@ CQRS and event sourcing for Rust: the application owns its business rules, and t
 4. A **task handler** runs a follow-up command or external effect with its context and dependencies.
 5. A **view** folds the aggregate's journal into a queryable document; its processor keeps a checkpoint.
 
-The application registers these pieces in modules and builds `Cqrs` (crate [`cqrsx-engine`](../cqrsx-engine/README.md))
+The application registers these pieces in modules and builds `Cqrs` (crate [`cqrsx-framework`](../cqrsx-framework/README.md))
 with PostgreSQL and MongoDB (in tests, in memory).
 The [typical scenario](../doc/typical_scenario.md) follows a cancellation through a refund.
 
@@ -41,7 +41,7 @@ The [typical scenario](../doc/typical_scenario.md) follows a cancellation throug
   (`failures`, `last_error`, the observer), and the round is retried after a growing pause; only a document
   that refused an event as a gap is rebuilt from its history on the spot.
 - **A checkpoint belongs to its journal.** It holds a position of the journal, so the two are reset together
-  ([resetting the databases](../cqrsx-engine/README.md#resetting-the-databases)).
+  ([resetting the databases](../cqrsx-framework/README.md#resetting-the-databases)).
 - **A view document takes only the next event of its aggregate.** It is the fold of `View::apply` over the
   contiguous prefix `1..=last_sequence` of its aggregate's events, and the document, not the sender, decides what is
   new: delivery may repeat events and come from several processes (a rebuild next to live delivery, two nodes). A
@@ -73,12 +73,12 @@ same answer as an `Outcome`. A task handler answers a `TaskResult`.
 | `CommandError::Unavailable`, `Outcome::Unavailable` | not run, or its outcome is unknown: the lock was not acquired within its limits (`LockLimits`), the store failed or timed out, the tasks could not be planned; the reason is logged | repeat later: with the same command id a repeat cannot publish its tasks twice |
 | `TaskResult::done()` | the effect happened, now or by an earlier attempt | the task is completed |
 | `TaskResult::retry(reason)` | not now | another attempt after the pause of the task type's policy; the last attempt of its budget fails the task |
-| `TaskResult::fail(reason)` | no attempt will help | the task stays failed until an operator requeues it ([retrying a failed task](../cqrsx-engine/README.md#retrying-a-failed-task)) |
+| `TaskResult::fail(reason)` | no attempt will help | the task stays failed until an operator requeues it ([retrying a failed task](../cqrsx-framework/README.md#retrying-a-failed-task)) |
 
 The answer of `ctx.execute::<A>(..)` converts into a `TaskResult` with `.into()`: accepted is done, a rejection fails
 the task with its code, a conflict or unavailability retries it. A handler that panics or outlives the handler timeout
 is retried like `retry`, with the reason `handler panicked` or `handler timed out`. The errors of building and running
-an engine are in [its README](../cqrsx-engine/README.md#errors-of-building-and-serving).
+a framework are in [its README](../cqrsx-framework/README.md#errors-of-building-and-serving).
 
 ## Testing
 
@@ -89,12 +89,12 @@ an engine are in [its README](../cqrsx-engine/README.md#errors-of-building-and-s
 | `UnavailableStore` | `cqrsx` (feature `test-utils`) | An aggregate store that is never reachable, for the unavailable branches. |
 | `TaskContext::new` | `cqrsx` | Exercise a handler with an attempt, a retry pause, dependencies and executors. |
 | `MemoryEventRepository`, `MemoryTaskQueue`, `MemoryCheckpointStore`, `MemoryViewRepository` | `cqrsx` (feature `test-utils`) | The stores in memory (`cqrsx::memory`): the journal with its outbox, the task queue over that outbox (inspect its delivery and settlement), the checkpoints and the views. |
-| `event_store(InMemory)`, `projections(InMemory)` | `cqrsx-engine` | A whole application over stores in memory: with the engine's feature `test-utils` (a dev-dependency), `run_tasks()` runs the due tasks and `catch_up()` waits for the views; a test's `.provide` replaces a dependency by type. |
+| `event_store(InMemory)`, `projections(InMemory)` | `cqrsx-framework` | A whole application over stores in memory: with the framework's feature `test-utils` (a dev-dependency), `run_tasks()` runs the due tasks and `catch_up()` waits for the views; a test's `.provide` replaces a dependency by type. |
 
 ## Crates
 
 The core has one feature, `test-utils` (the stores in memory and the test tools, for tests), and does not know a database.
-The engine, which holds the PostgreSQL and MongoDB stores as modules behind features, and the derive macros are crates
+The framework, which holds the PostgreSQL and MongoDB stores as modules behind features, and the derive macros are crates
 of their own:
 [Crates and their boundaries](../doc/crates.md).
 
@@ -102,13 +102,13 @@ of their own:
 
 - [`doc/components.md`](../doc/components.md): the inventory of components, the naming contract and the
   integration rules in full.
-- [`doc/guarantees.md`](../doc/guarantees.md): every guarantee of the engine, with the code that holds it and its tests.
+- [`doc/guarantees.md`](../doc/guarantees.md): every guarantee of the framework, with the code that holds it and its tests.
 - [Command path](../doc/command-path.html), [read path](../doc/read-path.html), [task path](../doc/task-path.html): how
-  a command, an event and a task travel through the engine, step by step, with their guarantees and weak spots.
+  a command, an event and a task travel through the framework, step by step, with their guarantees and weak spots.
 - [`../demo`](../demo/README.md): a complete application on the library, with a UI, an X-ray of both
   databases and load tests.
 - [`../README.md`](../README.md): building, the local database, the test suite and coverage.
-- [`../cqrsx-engine/sql/`](../cqrsx-engine/sql/): the canonical schemas and the operator script that requeues a failed task.
+- [`../cqrsx-framework/sql/`](../cqrsx-framework/sql/): the canonical schemas and the operator script that requeues a failed task.
 
 ## Attribution
 

@@ -1,6 +1,6 @@
 //! What the flows of several modules share: the activity log, the port to the outside world (the mail service) and
 //! the ticket limit the UI shows. The adapters live in `shared::infrastructure`; tests use
-//! in-memory doubles. The commands and the queries of the read models are the engine's.
+//! in-memory doubles. The commands and the queries of the read models are the framework's.
 pub mod activity;
 pub mod mail;
 #[cfg(test)]
@@ -19,6 +19,6 @@ impl StorageError {
 }
 
 /// The tickets one fan may hold for one concert (rule R6), as the UI shows it (`GET /api/config`): the box office
-/// provides it with its rules (`concert::module`), the operations read it from the engine.
+/// provides it with its rules (`concert::module`), the operations read it from the framework.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TicketLimit(pub usize);

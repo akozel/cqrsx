@@ -1,6 +1,6 @@
 //! The HTTP API of the ledger: the wallet of a fan, read from the read model.
 use axum::{Router, routing::get};
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use std::sync::Arc;
 
 /// Read a projection: `cqrs.view::<V>()`.

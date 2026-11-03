@@ -9,8 +9,8 @@
 //! the rejection. It is synchronous: no runtime is needed. The stores in memory stand in for the databases: the
 //! command executor runs the production [`EventSourcedStore`](crate::journal::store::EventSourcedStore) over the journal
 //! in memory, [`MemoryEventRepository`](crate::memory::event_repository::MemoryEventRepository), whose outbox feeds the
-//! task queue [`MemoryTaskQueue`](crate::memory::task_queue::MemoryTaskQueue), and the engine in memory
-//! (`cqrsx_engine::Cqrs` with `event_store(InMemory)`) assembles all of them.
+//! task queue [`MemoryTaskQueue`](crate::memory::task_queue::MemoryTaskQueue), and the framework in memory
+//! (`cqrsx_framework::Cqrs` with `event_store(InMemory)`) assembles all of them.
 //!
 //! A failed check is a panic (rule 8 of `.claude/rules/rust-style.md`): the tools say so in `# Panics`.
 //!

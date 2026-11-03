@@ -11,7 +11,7 @@ license = "Apache-2.0"
 
 [workspace.dependencies]
 cqrsx = { path = "../cqrsx" }
-cqrsx-engine = { path = "../cqrsx-engine", features = ["projections-mongodb", "axum", "operation-utils"] }
+cqrsx-framework = { path = "../cqrsx-framework", features = ["projections-mongodb", "axum", "operation-utils"] }
 axum = "0.8"
 tower-http = { version = "0.7", features = ["trace"] }
 tokio = { version = "1", features = ["full"] }

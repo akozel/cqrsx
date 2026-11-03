@@ -15,7 +15,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap},

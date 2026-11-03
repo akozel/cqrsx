@@ -1,4 +1,4 @@
-//! The box office end to end on the engine in memory (`testing::test_app`): its commands, the tasks they start in the
+//! The box office end to end on the framework in memory (`testing::test_app`): its commands, the tasks they start in the
 //! fans' ledgers, the letters those end in and the concert halls; and the races of cancellations and rebookings on one
 //! concert, as the HTTP API issues them.
 use crate::{
@@ -18,7 +18,7 @@ use cqrsx::{
     task::format::TaskFormat,
     worker::queue::{TaskQueue, settlement::SettlementRequest},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use serde_json::json;
 use std::{collections::HashMap, sync::Arc, time::Duration};
 use uuid::Uuid;

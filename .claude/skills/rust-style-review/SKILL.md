@@ -1,6 +1,6 @@
 ---
 name: rust-style-review
-description: Check Rust code of this repository (cqrsx, cqrsx-engine, cqrsx-postgres, cqrsx-mongodb, cqrsx-macros, cqrsx-fixtures, demo) against the project's code guidelines in .claude/rules/rust-style.md, report verified findings by rule and, when asked, fix them and enable the matching lints. Use when the user asks for a guidelines, style or code-quality review or audit of the Rust code.
+description: Check Rust code of this repository (cqrsx, cqrsx-framework, cqrsx-macros, cqrsx-fixtures, demo) against the project's code guidelines in .claude/rules/rust-style.md, report verified findings by rule and, when asked, fix them and enable the matching lints. Use when the user asks for a guidelines, style or code-quality review or audit of the Rust code.
 ---
 
 # Rust style review

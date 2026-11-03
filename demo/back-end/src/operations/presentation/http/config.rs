@@ -10,11 +10,11 @@ use crate::{
     },
 };
 use axum::{Json, extract::State};
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use serde::Serialize;
 use std::sync::Arc;
 
-/// The venue, the ticket limit of the box office, the snapshot interval of the engine and the slow motion of Encore!.
+/// The venue, the ticket limit of the box office, the snapshot interval of the framework and the slow motion of Encore!.
 #[derive(Debug, Serialize)]
 pub struct ConfigResponse {
     venue: Venue,
@@ -41,7 +41,7 @@ struct Zone {
 impl TryFrom<&Cqrs> for ConfigResponse {
     type Error = ApiError;
 
-    /// The settings of the engine and the dependencies of the modules, or `503` when one is missing.
+    /// The settings of the framework and the dependencies of the modules, or `503` when one is missing.
     fn try_from(cqrs: &Cqrs) -> Result<Self, ApiError> {
         let (limit, rebuild_pace) = (dependency::<TicketLimit>(cqrs)?, dependency::<RebuildPace>(cqrs)?);
         Ok(Self {

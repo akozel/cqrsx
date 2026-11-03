@@ -1,5 +1,5 @@
 //! A fan's ticket ledger: the `Fan` aggregate and its layers. The root registers what the ledger plugs into the
-//! engine: the aggregate, its tasks with the policies of their types (a step of the chain waits a second, an e-mail
+//! framework: the aggregate, its tasks with the policies of their types (a step of the chain waits a second, an e-mail
 //! backs off from `ENCORE_TASK_RETRY_BASE_MS` to `ENCORE_TASK_RETRY_MAX_MS`; both get `ENCORE_TASK_MAX_ATTEMPTS`
 //! attempts, positive), the mail service its e-mails go through (`ENCORE_MAIL_SERVICE_URL`), the fan wallets and the
 //! HTTP route of the wallet.
@@ -20,7 +20,7 @@ use crate::{
         infrastructure::http_mailer::{HttpMailer, MailClientSettings},
     },
 };
-use cqrsx_engine::{
+use cqrsx_framework::{
     module::Module,
     settings::duration_text,
     setup::{Setup, SetupError},
@@ -42,7 +42,7 @@ pub fn module(setup: &Setup) -> Result<Module, SetupError> {
 
 /// The client of the external mail service: its address (`ENCORE_MAIL_SERVICE_URL`, without a trailing slash) and a
 /// request timeout that ends a second before the handler's, never below a second (`mail.request_timeout` in the
-/// engine's description).
+/// framework's description).
 pub fn mail_settings(setup: &Setup) -> Result<MailClientSettings, SetupError> {
     let base_url: String = setup.env("MAIL_SERVICE_URL", "http://127.0.0.1:8090".to_owned())?;
     let timeout = MailClientSettings::request_timeout(setup.settings().handler_timeout());
@@ -68,10 +68,10 @@ mod tests {
         command::locks::LockLimits,
         worker::runtime::{config::TaskRuntimeConfig, worker_pool_config::TaskWorkerPoolConfig},
     };
-    use cqrsx_engine::settings::Settings;
+    use cqrsx_framework::settings::Settings;
     use std::time::Duration;
 
-    /// The mail settings of the demo's engine: its defaults, or its task runtime with a handler that may run a second
+    /// The mail settings of the demo's framework: its defaults, or its task runtime with a handler that may run a second
     /// (and a lock that waits less).
     fn mail_request_timeout(one_second_handler: bool) -> Duration {
         let mut settings = crate::testing::settings();

@@ -1,5 +1,5 @@
 //! Operations over the whole box office, without an aggregate: health, settings, the activity log and the read side.
-//! The root registers with the engine the activity log (the hub every entry goes to, which the mail service's attempts
+//! The root registers with the framework the activity log (the hub every entry goes to, which the mail service's attempts
 //! take as a dependency, the observer of every command and the observer of every projection processor), the pace of
 //! Encore! (`ENCORE_REBUILD_SLOW_PACE_MS` at most `ENCORE_REBUILD_MAX_PACE_MS`), what this node sees of Encore! and the
 //! service routes.
@@ -13,7 +13,7 @@ use crate::{
     },
     shared::application::activity::ActivityHub,
 };
-use cqrsx_engine::{
+use cqrsx_framework::{
     module::Module,
     setup::{Setup, SetupError},
 };
@@ -58,7 +58,7 @@ fn rebuild_pace(setup: &Setup) -> Result<RebuildPace, SetupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx_engine::settings::Settings;
+    use cqrsx_framework::settings::Settings;
     use std::{collections::HashMap, time::Duration};
 
     const SLOW_PACE: &str = "ENCORE_REBUILD_SLOW_PACE_MS";
@@ -74,7 +74,7 @@ mod tests {
     }
 
     /// The part of the configuration's read side the `operations` module reads (the lag cap and the status timeout are
-    /// the engine's settings).
+    /// the framework's settings).
     #[test]
     fn the_rebuild_pace_defaults_and_names_the_variable_it_rejects() {
         assert_eq!(

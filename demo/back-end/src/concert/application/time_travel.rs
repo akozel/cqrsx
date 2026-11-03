@@ -1,4 +1,4 @@
-//! ⏳ Time machine: the state of one concert after event `n`, computed from its events alone: the engine's history of
+//! ⏳ Time machine: the state of one concert after event `n`, computed from its events alone: the framework's history of
 //! the concert reads no snapshot — the point is "this state is stored nowhere".
 use crate::{
     concert::domain::{Concert, ConcertEvent},
@@ -8,7 +8,7 @@ use cqrsx::domain::{
     aggregate::Aggregate,
     event::{EventEnvelope, Events},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use std::collections::HashMap;
 
 /// One event of a concert's history: its place in it, what it was and when it was recorded.
@@ -18,7 +18,7 @@ pub struct RecordedEvent {
     /// The name of the event's kind, as the journal stores it.
     pub event_type: &'static str,
     pub payload: ConcertEvent,
-    /// What the engine recorded with the event: the command, the correlation, the source, the instant.
+    /// What the framework recorded with the event: the command, the correlation, the source, the instant.
     pub metadata: HashMap<String, String>,
 }
 
@@ -32,7 +32,7 @@ impl RecordedEvent {
         }
     }
 
-    /// The instant the engine recorded the event at, as it wrote it.
+    /// The instant the framework recorded the event at, as it wrote it.
     pub fn recorded_at(&self) -> Option<&str> {
         self.metadata.get("recorded_at").map(String::as_str)
     }

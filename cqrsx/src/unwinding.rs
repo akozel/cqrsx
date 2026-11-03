@@ -1,6 +1,6 @@
 //! The boundary with user code run by long-lived workers: a panic of a projection's handler or rebuilder, or of a
 //! task's handler, is caught here and becomes an error, so that the worker lives on. Never control flow inside the
-//! engine.
+//! library.
 use std::{future::Future, panic::AssertUnwindSafe, task::Poll};
 
 /// A polled future panicked. The panic's payload is dropped unread: it may hold the data the callee handled.

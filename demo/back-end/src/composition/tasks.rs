@@ -47,7 +47,7 @@ use cqrsx::{
     testing::command_executor::TestCommandExecutor,
     worker::{adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, handlers::TaskHandlers},
 };
-use cqrsx_engine::{
+use cqrsx_framework::{
     Cqrs,
     build::BuildError,
     memory::InMemory,
@@ -64,7 +64,7 @@ fn policies(pairs: &[(&str, &str)]) -> Result<Policies, BuildError> {
     ready(app(pairs).build()).map(|cqrs| cqrs.policies().clone())
 }
 
-/// The setup of a module under the variables `pairs` in the demo's engine.
+/// The setup of a module under the variables `pairs` in the demo's framework.
 fn setup(pairs: &'static [(&'static str, &'static str)]) -> Setup {
     let settings = Settings::from_lookup("ENCORE", |_| None, &crate::DEMO_DEFAULTS).unwrap();
     Setup::new(
@@ -433,7 +433,7 @@ async fn the_four_task_types_have_one_handler_each_with_the_mailer_and_the_ledge
 }
 
 /// The e-mail handlers report every attempt to the activity log: an assembly without its hub is refused before a
-/// worker could run one, whether it assembles the handlers itself or the engine does.
+/// worker could run one, whether it assembles the handlers itself or the framework does.
 #[test]
 fn an_assembly_without_the_activity_hub_is_refused() {
     let mail: Arc<Mailer> = Arc::new(RecordingMailer::delivering());

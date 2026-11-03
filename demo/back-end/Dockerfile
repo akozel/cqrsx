@@ -9,7 +9,7 @@ COPY rust-toolchain.toml rustfmt.toml ./
 RUN rustup show active-toolchain || rustup toolchain install
 COPY Cargo.toml ./
 COPY cqrsx ./cqrsx
-COPY cqrsx-engine ./cqrsx-engine
+COPY cqrsx-framework ./cqrsx-framework
 COPY cqrsx-fixtures ./cqrsx-fixtures
 COPY cqrsx-macros ./cqrsx-macros
 COPY demo/Cargo.toml demo/Cargo.lock ./demo/
@@ -21,7 +21,7 @@ COPY demo/sidecar ./demo/sidecar
 # sources are touched first, so they are always recompiled. The binary is copied out of the cache.
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/src/demo/target \
-    find cqrsx cqrsx-engine cqrsx-fixtures cqrsx-macros \
+    find cqrsx cqrsx-framework cqrsx-fixtures cqrsx-macros \
         demo/back-end demo/sidecar \
         -type f -exec touch {} + \
     && cd demo && cargo build --release --locked -p encore-backend \

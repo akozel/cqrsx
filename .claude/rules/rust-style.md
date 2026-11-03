@@ -6,8 +6,8 @@ paths:
 # Rust code guidelines
 
 The [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html) adapted to this project
-(agreed 2026-10-30). It applies to all Rust code: `cqrsx`, `cqrsx-engine`, `cqrsx-postgres`, `cqrsx-mongodb`,
-`cqrsx-macros` and the test tools `cqrsx::testing` are library code, the demo is
+(agreed 2026-10-30). It applies to all Rust code: `cqrsx`, `cqrsx-framework`, `cqrsx-macros` and the test tools
+`cqrsx::testing` are library code, the demo is
 application code where API rules are strong recommendations and simplicity beats generality. Google rules that
 are not listed here are not adopted. `/rust-style-review` checks code against these rules; findings cite the
 rule numbers.
@@ -51,7 +51,7 @@ a wrong result, a wrong doc) is fixed wherever it is found. Lints in `[lints]` k
     shared helper (`cqrsx::mutex::{lock, get_mut}`): on poison it logs `error!` naming the lock, calls `clear_poison()` and continues. A lock that
     guards a change of several steps (data may stay half-updated) does not recover: it returns `Err`.
 11. `catch_unwind` only at the boundary with user code (handlers run by long-lived workers, where a handler's
-    panic must not kill the worker) and in tests; never as control flow inside the engine.
+    panic must not kill the worker) and in tests; never as control flow inside the library.
 
 ## API and types
 

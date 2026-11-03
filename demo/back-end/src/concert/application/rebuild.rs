@@ -4,7 +4,7 @@ use crate::{
     concert::application::views::concert_hall::ConcertHallView,
     shared::{application::StorageError, domain::ConcertId},
 };
-use cqrsx_engine::{Cqrs, views::ViewsError};
+use cqrsx_framework::{Cqrs, views::ViewsError};
 
 /// Asks the owner of the halls to rebuild the hall of `concert_id`. A store that fails, or the read side not started
 /// yet, is a storage error with a message for the operator.

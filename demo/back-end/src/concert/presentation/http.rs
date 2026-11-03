@@ -1,12 +1,12 @@
 //! `/api/concerts`: the box office — its one write endpoint, the read model, the rebuild of one hall and the time
-//! machine. A handler lies in the directory of the kind of engine entry it uses; the URL table below has a section per
+//! machine. A handler lies in the directory of the kind of framework entry it uses; the URL table below has a section per
 //! kind. The command endpoint is a directory (`commands/execute/{request,response}.rs`), because its input is converted
 //! and checked.
 use axum::{
     Router,
     routing::{get, post},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use std::sync::Arc;
 
 /// Change the state: `cqrs.source(..).execute`.

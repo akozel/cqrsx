@@ -204,7 +204,7 @@ async fn cancellation_of_supervisor_aborts_owned_workers_without_detaching_them(
     wait_until(|| probe.active.load(Ordering::SeqCst) == 1 && queue.incoming.lock().unwrap().is_empty()).await;
     supervisor_task.abort();
     assert!(supervisor_task.await.unwrap_err().is_cancelled());
-    assert!(shutdown.is_cancelled(), "supervisor abort must notify the host");
+    assert!(shutdown.is_cancelled(), "supervisor abort must notify the caller");
     wait_until(|| probe.active.load(Ordering::SeqCst) == 0).await;
     assert!(queue.outcomes.lock().unwrap().is_empty());
 }

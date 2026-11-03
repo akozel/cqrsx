@@ -9,7 +9,7 @@ use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use request::ProjectionRebuildRequest;
 use response::ProjectionRebuildResponse;
 use std::sync::Arc;

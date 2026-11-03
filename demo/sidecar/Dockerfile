@@ -5,7 +5,7 @@ FROM docker.io/library/rust:1.98-bookworm AS build
 WORKDIR /src
 COPY Cargo.toml rust-toolchain.toml rustfmt.toml ./
 COPY cqrsx ./cqrsx
-COPY cqrsx-engine ./cqrsx-engine
+COPY cqrsx-framework ./cqrsx-framework
 COPY cqrsx-fixtures ./cqrsx-fixtures
 COPY cqrsx-macros ./cqrsx-macros
 COPY demo/Cargo.toml demo/Cargo.lock ./demo/

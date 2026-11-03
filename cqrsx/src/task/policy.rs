@@ -124,7 +124,7 @@ impl TaskPolicy {
     }
 }
 
-/// The engine's defaults: [`DEFAULT_MAX_ATTEMPTS`] attempts and the queue's [`RetryPause::redelivery`].
+/// The framework's defaults: [`DEFAULT_MAX_ATTEMPTS`] attempts and the queue's [`RetryPause::redelivery`].
 impl Default for TaskPolicy {
     fn default() -> Self {
         Self::new(RetryPause::redelivery(), DEFAULT_MAX_ATTEMPTS)
@@ -376,7 +376,7 @@ mod tests {
     }
 
     #[test]
-    fn the_default_policy_is_the_engines_defaults() {
+    fn the_default_policy_is_the_frameworks_defaults() {
         let policy = TaskPolicy::default();
         assert_eq!(policy, TaskPolicy::new(RetryPause::redelivery(), DEFAULT_MAX_ATTEMPTS));
         assert_eq!((policy.retry(), policy.max_attempts().get()), (RetryPause::redelivery(), 10));

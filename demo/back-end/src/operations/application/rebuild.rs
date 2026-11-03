@@ -6,8 +6,8 @@
 //! on whatever node, walks the keys of the journal and replaces the documents in place through the same key
 //! workers as the live events, so commands keep running and nothing is wiped. This service only asks, then
 //! watches the rows until both rebuilds have ended and reports what it saw. It reads the rows through the port
-//! [`Checkpoints`] and the journal through [`JournalStats`]: the engine's views in the process
-//! ([`EngineReadSide`](super::engine::EngineReadSide)), doubles in the tests.
+//! [`Checkpoints`] and the journal through [`JournalStats`]: the framework's views in the process
+//! ([`FrameworkReadSide`](super::framework::FrameworkReadSide)), doubles in the tests.
 use crate::{
     operations::application::journal::JournalStats,
     shared::application::{StorageError, activity::ActivityHub},
@@ -44,7 +44,7 @@ pub struct RebuildPace {
     pub max_pace: Duration,
 }
 
-/// The bounds of the read side's operations: the lag cap and the status timeout of the engine, the longest pace of
+/// The bounds of the read side's operations: the lag cap and the status timeout of the framework, the longest pace of
 /// [`RebuildPace`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReadSideLimits {
@@ -432,7 +432,7 @@ impl<C: Checkpoints + 'static> ReadSideService<C> {
 mod tests {
     use super::*;
     use cqrsx::{journal::feed::Position, memory::checkpoint_store::MemoryCheckpointStore};
-    use cqrsx_engine::views::JournalTotals;
+    use cqrsx_framework::views::JournalTotals;
     use std::collections::HashMap;
 
     fn halls() -> CheckpointKey {

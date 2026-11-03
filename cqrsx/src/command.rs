@@ -32,7 +32,7 @@ pub mod retry;
 /// Implement [`execute_with_metadata`](Self::execute_with_metadata) with an
 /// ordinary `async fn`, without `async_trait`. The future must be `Send` and may
 /// borrow the aggregate ID through awaits. Commands are `Send` ([`Aggregate::Command`]); the CQRS
-/// retry engine additionally needs `Clone`, never `Sync`.
+/// retry machinery additionally needs `Clone`, never `Sync`.
 /// A future holding non-Send state across await violates the contract:
 /// ```compile_fail
 /// use cqrsx::domain::aggregate::Aggregate;

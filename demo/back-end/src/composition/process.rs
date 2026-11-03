@@ -1,4 +1,4 @@
-//! The process without a single variable and with some: the engine's settings of the demo ([`DEMO_DEFAULTS`]), the
+//! The process without a single variable and with some: the framework's settings of the demo ([`DEMO_DEFAULTS`]), the
 //! values the modules read, one executor per aggregate type and the activity log the e-mails report to.
 use crate::{
     DEMO_DEFAULTS,
@@ -36,7 +36,7 @@ use cqrsx::{
     },
     worker::TaskResult,
 };
-use cqrsx_engine::{
+use cqrsx_framework::{
     Cqrs,
     build::BuildError,
     memory::InMemory,
@@ -48,7 +48,7 @@ use std::{collections::HashMap, num::NonZeroU16, sync::Arc, time::Duration};
 /// The owner name a process writes on the checkpoints it holds, unless `ENCORE_NODE_NAME` names it.
 const DEFAULT_NODE_NAME: &str = "encore-backend";
 
-/// What the process makes of the variables `pairs`: the engine's settings and the client of the mail service.
+/// What the process makes of the variables `pairs`: the framework's settings and the client of the mail service.
 struct Configured {
     settings: Settings,
     mail: MailClientSettings,
@@ -64,11 +64,11 @@ async fn from_pairs(pairs: &[(&str, &str)]) -> Result<Configured, BuildError> {
     })
 }
 
-/// G-01, G-05, G-07: the engine of the process builds its executors and processors with the settings of the demo,
-/// which are the library's lock limits and conflict retry, a snapshot every ten events (the engine's default too), the
+/// G-01, G-05, G-07: the framework of the process builds its executors and processors with the settings of the demo,
+/// which are the library's lock limits and conflict retry, a snapshot every ten events (the framework's default too), the
 /// library's projection settings but the demo's settle, this node and the task runtime's budgets of the demo.
 #[test]
-fn the_engine_settings_are_the_configuration_and_the_library_constants() {
+fn the_framework_settings_are_the_configuration_and_the_library_constants() {
     let settings = Settings::from_lookup("ENCORE", |_| None, &DEMO_DEFAULTS).unwrap();
     let library = LockLimits::try_new(DEFAULT_LOCK_MAX_WAIT, DEFAULT_LOCK_MAX_WAITERS.get()).unwrap();
     assert_eq!(
@@ -179,10 +179,10 @@ async fn the_modules_default_to_the_values_of_the_configuration() {
     assert_eq!(mail_of(&configured, "http://mail:8025").base_url, "http://mail:8025");
 }
 
-/// G-11: the engine of the process runs one executor per aggregate type the modules register, and the views they
+/// G-11: the framework of the process runs one executor per aggregate type the modules register, and the views they
 /// register; an aggregate type no module registers runs nowhere.
 #[tokio::test]
-async fn the_engine_runs_every_aggregate_and_view_the_modules_register() {
+async fn the_framework_runs_every_aggregate_and_view_the_modules_register() {
     let (cqrs, _) = test_app().await;
     let names: Vec<String> = cqrs.views().keys().iter().map(|key| key.projection().to_owned()).collect();
     assert_eq!(names, ["concert_halls", "fan_wallets"]);

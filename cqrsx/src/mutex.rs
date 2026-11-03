@@ -1,11 +1,11 @@
-//! The one way to take a `std::sync::Mutex` in cqrsx and in the crates built on it (`cqrsx-engine`), so
+//! The one way to take a `std::sync::Mutex` in cqrsx and in the crates built on it (`cqrsx-framework`), so
 //! that a poisoned mutex is handled in one place (rule 10 of `.claude/rules/rust-style.md`).
 //!
 //! # Contract
 //!
 //! Under the mutex runs one short operation on a container (insert, remove, take, read a field): never user code and
 //! never an `.await`. A panic of another thread then cannot leave the data half-changed, so a poisoned mutex is safe to
-//! use on: [`lock`] and [`get_mut`] log an `error!` naming the lock (the `name` argument, e.g. `"engine processors"`,
+//! use on: [`lock`] and [`get_mut`] log an `error!` naming the lock (the `name` argument, e.g. `"framework processors"`,
 //! as the field `lock`), clear the poison and hand out the data. A lock that guards a change of several steps, where
 //! data may stay half-updated, does not belong here: it must return `Err` on poison instead.
 use crate::diagnostics;

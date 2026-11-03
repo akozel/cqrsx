@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{Json, extract::State};
 use cqrsx::view::verify::Difference;
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use serde::Serialize;
 use std::{collections::BTreeMap, sync::Arc};
 

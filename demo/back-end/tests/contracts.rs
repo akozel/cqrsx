@@ -58,7 +58,7 @@ use cqrsx::{
     },
 };
 use cqrsx::{projection::checkpoint::CheckpointKey, task::policy::Policies};
-use cqrsx_engine::{
+use cqrsx_framework::{
     Cqrs,
     build::{BuildError, Builder},
     memory::InMemory,
@@ -169,7 +169,7 @@ fn duration(text: &str) -> Duration {
 /// A lookup of variables by their full names.
 type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
-/// The variables of a process (full names), as the engine and its modules read them.
+/// The variables of a process (full names), as the framework and its modules read them.
 #[derive(Clone)]
 struct Config {
     lookup: Lookup,
@@ -183,8 +183,8 @@ impl Config {
         })
     }
 
-    /// The engine of the process over these variables, as `main.rs` builds it, in memory.
-    fn engine(&self) -> Builder {
+    /// The framework of the process over these variables, as `main.rs` builds it, in memory.
+    fn framework(&self) -> Builder {
         let lookup = self.lookup.clone();
         Cqrs::from_lookup("ENCORE", move |name| lookup(name))
             .defaults(DEMO_DEFAULTS)
@@ -195,18 +195,22 @@ impl Config {
             .module(operations::module)
     }
 
-    /// The engine's settings of these variables.
+    /// The framework's settings of these variables.
     fn settings(&self) -> Settings {
         Settings::from_lookup("ENCORE", &*self.lookup, &DEMO_DEFAULTS).unwrap()
     }
 
     /// The ticket limit the box office reads.
     fn ticket_limit(&self) -> usize {
-        ready(self.engine().build()).unwrap().dependency::<TicketLimit>().unwrap().0
+        ready(self.framework().build())
+            .unwrap()
+            .dependency::<TicketLimit>()
+            .unwrap()
+            .0
     }
 }
 
-/// The output of `future`, which must not wait: an engine in memory builds without one.
+/// The output of `future`, which must not wait: a framework in memory builds without one.
 fn ready<F: std::future::Future>(future: F) -> F::Output {
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     match std::pin::pin!(future).poll(&mut context) {
@@ -217,7 +221,7 @@ fn ready<F: std::future::Future>(future: F) -> F::Output {
 
 /// The policies of the task types of the process.
 fn policies(config: &Config) -> Result<Policies, BuildError> {
-    ready(config.engine().build()).map(|cqrs| cqrs.policies().clone())
+    ready(config.framework().build()).map(|cqrs| cqrs.policies().clone())
 }
 
 /// The mail service of the process, one for every worker.
@@ -237,7 +241,7 @@ fn handlers<E: CommandExecutor<Fan> + 'static>(
     mail: Arc<Mailer>,
     activity: Arc<ActivityHub>,
 ) -> Result<TaskDispatcher<BoxedTaskAdapter>, BuildError> {
-    let modules = Config::from_lookup(|_| None)?.engine().provide(mail).provide(activity);
+    let modules = Config::from_lookup(|_| None)?.framework().provide(mail).provide(activity);
     Ok(modules.task_handlers()?.executor(fans).build()?)
 }
 
@@ -251,10 +255,10 @@ fn checkpoint_keys() -> Vec<CheckpointKey> {
 
 // --- effective configuration ---------------------------------------------------------------------------------
 
-/// The settings of the engine and what its modules read, without a single variable.
+/// The settings of the framework and what its modules read, without a single variable.
 async fn effective_configuration() -> String {
     let config = Config::from_lookup(|_| None).unwrap();
-    let cqrs = config.engine().build().await.unwrap();
+    let cqrs = config.framework().build().await.unwrap();
     render(cqrs.description())
 }
 
@@ -280,7 +284,7 @@ async fn every_variable_the_process_reads_is_in_the_golden_configuration() {
         None
     })
     .unwrap()
-    .engine()
+    .framework()
     .build()
     .await
     .unwrap();

@@ -1,9 +1,9 @@
-//! The port to the journal: its size and how far a reader of it is behind. The adapter is the engine's views
-//! (`engine::EngineReadSide`); tests use in-memory doubles.
+//! The port to the journal: its size and how far a reader of it is behind. The adapter is the framework's views
+//! (`framework::FrameworkReadSide`); tests use in-memory doubles.
 use crate::shared::application::StorageError;
 use async_trait::async_trait;
 use cqrsx::journal::feed::Position;
-use cqrsx_engine::views::JournalTotals;
+use cqrsx_framework::views::JournalTotals;
 
 /// The size of the journal and how far a reader of it is behind.
 #[async_trait]

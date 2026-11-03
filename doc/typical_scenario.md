@@ -1,17 +1,17 @@
 # A typical application on cqrsx
 
-This guide describes the API implemented by the engine. A complete running application is
-[Encore](../demo/README.md); the standalone [quick start](../cqrsx-engine/README.md#quick-start) exercises the same
+This guide describes the API implemented by the framework. A complete running application is
+[Encore](../demo/README.md); the standalone [quick start](../cqrsx-framework/README.md#quick-start) exercises the same
 shape in memory. The detailed contracts and lower-level components are in [Components](components.md).
 
 ## Overview and module boundaries
 
 An application contains modules such as a concert box office and a fan's ledger. Each module owns its
 domain (aggregate, commands, events and rules), application (reactions, tasks, views), and presentation
-(HTTP routes by transport and kind of engine entry). A file inside a module is named by its role (`domain/aggregate.rs`,
+(HTTP routes by transport and kind of framework entry). A file inside a module is named by its role (`domain/aggregate.rs`,
 `domain/commands/`, `domain/events/`), never by a name its path already says. A module root registers its pieces. Shared
 contracts and infrastructure live outside the modules; modules do not reach into each other's
-internals. The engine assembles their components; it does not decide business rules. See the [concert root](../demo/back-end/src/concert.rs),
+internals. The framework assembles their components; it does not decide business rules. See the [concert root](../demo/back-end/src/concert.rs),
 [fan root](../demo/back-end/src/fan.rs), and [architecture tests](../demo/back-end/tests/architecture.rs).
 
 ## Aggregate, events and typed ID
@@ -25,7 +25,7 @@ and [Fan](../demo/back-end/src/fan/domain/aggregate.rs).
 ## Commands and decisions
 
 Each command implements `Decide<A>`: given the current aggregate and its rules it returns one event or
-a rejection, without side effects. `Command` and `Decide` derive, for an aggregate's enum of commands, the information the engine needs and the routing of the decision;
+a rejection, without side effects. `Command` and `Decide` derive, for an aggregate's enum of commands, the information the framework needs and the routing of the decision;
 `Rejection` supplies a code and parameters. A caller uses `cqrs.source("ui").execute::<A>(&id, command)`
 (`execute_with_id` when the caller must name the command before the outcome is known);
 inside a task, `ctx.execute::<A>` continues the task's causation. The executor serializes commands per
@@ -35,7 +35,7 @@ key in a process; an optimistic conflict across processes reloads and retries th
 ## Reactions and commit
 
 `Reactions::react` is a pure, synchronous match over an aggregate's events. A reaction receives a
-`Decided` and adds follow-up tasks with `Then::task`; it does not execute them or do I/O. The engine
+`Decided` and adds follow-up tasks with `Then::task`; it does not execute them or do I/O. The framework
 plans again on a conflict and commits the event, optional snapshot and tasks atomically. Rejections
 publish no tasks. Command metadata carries causation and correlation through the chain. See
 [concert reactions](../demo/back-end/src/concert/application/reactions.rs) and
@@ -56,12 +56,12 @@ The task ID is suitable as an idempotency key. See
 
 ## Views and queries
 
-A `View<A>` names a collection and folds events from one aggregate stream. The engine keeps a
+A `View<A>` names a collection and folds events from one aggregate stream. The framework keeps a
 checkpoint and applies events per key in order. A view document remembers its last applied sequence:
 duplicate delivery is skipped and a gap stops the write; the processor can rebuild from history.
-One collection has one projection. The engine offers get, list and range queries and operations such
+One collection has one projection. The framework offers get, list and range queries and operations such
 as status, rebuild and verify. Verify compares each document with the fold of its applied history. Rebuild and
-verify are behind the engine's feature `operation-utils`; status and lag are not.
+verify are behind the framework's feature `operation-utils`; status and lag are not.
 See [concert hall](../demo/back-end/src/concert/application/views/concert_hall.rs) and
 [fan wallet](../demo/back-end/src/fan/application/views/fan_wallet.rs).
 
@@ -70,12 +70,12 @@ See [concert hall](../demo/back-end/src/concert/application/views/concert_hall.r
 The same module registrations are assembled over in-memory stores in a test (`event_store(InMemory)`,
 `projections(InMemory)`) and over PostgreSQL and MongoDB in the process (`event_store(Postgres)`,
 `projections(MongoDb)`); the builder has no default store and refuses to build without them. For a durable
-application, `Cqrs::from_env("ENCORE")` reads engine and module keys with that prefix; `OUTBOX_*`
+application, `Cqrs::from_env("ENCORE")` reads framework and module keys with that prefix; `OUTBOX_*`
 remain unprefixed. `.defaults(DEMO_DEFAULTS)` supplies application defaults only when a variable is
 absent. Register `Postgres`, `MongoDb` and module roots, then `serve()` with the `axum` feature. `Setup`
-provides module-local configuration and engine settings, not shared infrastructure. The exact running
+provides module-local configuration and framework settings, not shared infrastructure. The exact running
 assembly is [main.rs](../demo/back-end/src/main.rs); configuration and feature flags are in the
-[README](../cqrsx-engine/README.md#configuration).
+[README](../cqrsx-framework/README.md#configuration).
 
 ## Cancellation to refund
 
@@ -95,8 +95,8 @@ The code is in [cancel booking](../demo/back-end/src/concert/domain/commands/can
 
 ## Testing and rules
 
-`TestFramework` (`cqrsx::testing`, feature `test-utils`) tests an aggregate's decisions; an engine over `InMemory` stores tests modules
-and their chains; `run_tasks()` runs due work and `catch_up()` waits for views (the engine's feature `test-utils`, in
+`TestFramework` (`cqrsx::testing`, feature `test-utils`) tests an aggregate's decisions; a framework over `InMemory` stores tests modules
+and their chains; `run_tasks()` runs due work and `catch_up()` waits for views (the framework's feature `test-utils`, in
 the application's `[dev-dependencies]`). A task context and `MemoryTaskQueue` permit focused task tests. Modules register one executor per aggregate and one owner per view name; handlers
 must tolerate repeat delivery, while reactions must stay pure. The tests in
-[`tests/engine/scenario.rs`](../cqrsx-engine/tests/engine/scenario.rs) cover the full in-memory path.
+[`tests/framework/scenario.rs`](../cqrsx-framework/tests/framework/scenario.rs) cover the full in-memory path.

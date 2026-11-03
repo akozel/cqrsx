@@ -74,7 +74,7 @@ impl TaskHandlers {
     }
 
     /// The handlers of `adapters` with `dependencies` already provided, to which more can still be registered: for an
-    /// assembly that gathered both from several modules, as `cqrsx-engine` does.
+    /// assembly that gathered both from several modules, as `cqrsx-framework` does.
     pub fn from_adapters(adapters: Vec<BoxedTaskAdapter>, dependencies: Dependencies) -> Self {
         Self {
             adapters,

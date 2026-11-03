@@ -542,7 +542,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "cqrsx-engine"
+name = "cqrsx-framework"
 version = "0.1.0"
 dependencies = [
  "async-trait",
@@ -872,7 +872,7 @@ dependencies = [
  "axum",
  "chrono",
  "cqrsx",
- "cqrsx-engine",
+ "cqrsx-framework",
  "dotenvy",
  "futures",
  "http-body-util",

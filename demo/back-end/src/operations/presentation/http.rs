@@ -1,10 +1,10 @@
-//! The HTTP API of the operations. The read side lies in the directory of its kind of engine entry; health, settings
+//! The HTTP API of the operations. The read side lies in the directory of its kind of framework entry; health, settings
 //! and the activity stream use none of the four entries and lie directly in `http/`.
 use axum::{
     Router,
     routing::{get, post},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use std::sync::Arc;
 
 pub mod activity;
@@ -24,7 +24,7 @@ pub fn routes() -> Router<Arc<Cqrs>> {
         .route("/api/projections/rebuild", post(maintenance::rebuild::handle))
         .route("/api/projections/status", get(maintenance::status::handle))
         .route("/api/projections/verify", get(maintenance::verify::handle))
-        // no engine entry: the process, the UI's settings, the activity feed
+        // no framework entry: the process, the UI's settings, the activity feed
         .route("/api/health", get(health::handle))
         .route("/api/config", get(config::handle))
         .route("/api/activity", get(activity::handle))

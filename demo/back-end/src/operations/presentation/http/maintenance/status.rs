@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{Json, extract::State};
 use chrono::{DateTime, SecondsFormat, Utc};
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrs;
 use serde::Serialize;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
