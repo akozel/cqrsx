@@ -4,12 +4,12 @@ use crate::{
     concert::application::views::concert_hall::ConcertHallView,
     shared::{application::StorageError, domain::ConcertId},
 };
-use cqrsx_framework::{Cqrs, views::ViewsError};
+use cqrsx_framework::{Cqrsx, views::ViewsError};
 
 /// Asks the owner of the halls to rebuild the hall of `concert_id`. A store that fails, or the read side not started
 /// yet, is a storage error with a message for the operator.
-pub async fn rebuild_hall(cqrs: &Cqrs, concert_id: &ConcertId) -> Result<(), StorageError> {
-    let requested = cqrs.view::<ConcertHallView>().rebuild(concert_id).await;
+pub async fn rebuild_hall(cqrsx: &Cqrsx, concert_id: &ConcertId) -> Result<(), StorageError> {
+    let requested = cqrsx.view::<ConcertHallView>().rebuild(concert_id).await;
     requested.map_err(|error| match error {
         ViewsError::NotStarted => StorageError("the read side is starting: its checkpoints are not registered yet".into()),
         ViewsError::Unknown(_) | ViewsError::UnknownAggregateType(_) | ViewsError::Checkpoint(_) | ViewsError::Persistence(_) => {
@@ -31,16 +31,16 @@ mod tests {
 
     #[tokio::test(start_paused = true)]
     async fn one_concert_is_rebuilt_on_request_by_the_owner_of_the_halls() {
-        let (cqrs, _) = test_app().await;
+        let (cqrsx, _) = test_app().await;
         let c1 = ConcertId::parse("c-1").unwrap();
-        let starting = rebuild_hall(&cqrs, &c1).await.unwrap_err();
+        let starting = rebuild_hall(&cqrsx, &c1).await.unwrap_err();
         assert_eq!(
             starting.0,
             "the read side is starting: its checkpoints are not registered yet"
         );
-        let store = cqrs.checkpoints().unwrap();
+        let store = cqrsx.checkpoints().unwrap();
         store.register(&halls()).await.unwrap();
-        rebuild_hall(&cqrs, &c1).await.unwrap();
+        rebuild_hall(&cqrsx, &c1).await.unwrap();
         let owner = store
             .claim(&halls(), "node-a", Duration::from_secs(10))
             .await
@@ -49,6 +49,6 @@ mod tests {
         let requests = store.take_rebuild_requests(&halls(), owner.token, 10).await.unwrap().unwrap();
         assert_eq!((requests.rebuild_pace, requests.keys), (None, vec!["c-1".to_owned()]));
         store.set_unavailable(true);
-        assert!(rebuild_hall(&cqrs, &c1).await.is_err(), "a store that does not answer");
+        assert!(rebuild_hall(&cqrsx, &c1).await.is_err(), "a store that does not answer");
     }
 }

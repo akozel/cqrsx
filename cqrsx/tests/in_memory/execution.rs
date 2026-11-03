@@ -16,7 +16,7 @@ use crate::support::scenario::*;
 async fn framework_test() {
     let aggregate_store = EventSourcedStore::<_, TestAggregate>::new(MemoryEventRepository::default());
 
-    let cqrs = StoreCommandExecutor::new(
+    let cqrsx = StoreCommandExecutor::new(
         aggregate_store.clone(),
         TestService,
         AggregateConflictRetryPolicy::default(),
@@ -25,7 +25,7 @@ async fn framework_test() {
     let uuid = uuid::Uuid::new_v4().to_string();
     let id = uuid.clone();
     let metadata = metadata();
-    let committed = cqrs
+    let committed = cqrsx
         .execute_with_metadata(
             &id,
             TestCommand::ConfirmTest(ConfirmTest { test_name: uuid.clone() }),
@@ -39,7 +39,7 @@ async fn framework_test() {
 
     let test = "TEST_A";
     let id = uuid.clone();
-    let committed = cqrs
+    let committed = cqrsx
         .execute(
             &id,
             TestCommand::ConfirmTest(ConfirmTest {
@@ -54,7 +54,7 @@ async fn framework_test() {
     assert_eq!(2, stored_event_count);
 
     let id = uuid.clone();
-    let err = cqrs
+    let err = cqrsx
         .execute(
             &id,
             TestCommand::ConfirmTest(ConfirmTest {

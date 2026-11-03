@@ -20,7 +20,7 @@ pub struct Setup {
     lookup: Lookup,
     settings: Settings,
     /// What the modules read and described, in the order described: the framework's build merges it with its settings
-    /// by key, and `Cqrs::description` lists the result.
+    /// by key, and `Cqrsx::description` lists the result.
     described: Mutex<Vec<(String, String)>>,
 }
 
@@ -71,7 +71,7 @@ impl Setup {
 
     /// The variable `name` under the prefix (`ENCORE_TICKET_LIMIT` for `TICKET_LIMIT`), trimmed and parsed; `default`
     /// when it is not set or blank. A value that does not parse names the variable. The value the module gets is
-    /// described under the variable's name (`Cqrs::description`).
+    /// described under the variable's name (`Cqrsx::description`).
     pub fn env<T: FromStr + Display>(&self, name: &str, default: T) -> Result<T, SetupError>
     where
         T::Err: Display,

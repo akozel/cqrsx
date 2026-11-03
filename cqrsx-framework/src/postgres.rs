@@ -564,7 +564,7 @@ mod tests {
     #[tokio::test]
     async fn a_framework_without_a_store_of_the_views_installs_no_view() {
         use crate::{
-            Cqrs,
+            Cqrsx,
             build::BuildError,
             test_support::{Hall, Show},
         };
@@ -578,14 +578,14 @@ mod tests {
             history: lazy(),
             projection: lazy(),
         };
-        let mut cqrs = Cqrs::with_settings(Settings::default())
+        let mut cqrsx = Cqrsx::with_settings(Settings::default())
             .event_store(Postgres)
             .postgres_pools(pools)
             .build()
             .await
             .unwrap();
         assert!(matches!(
-            cqrs.install_view::<Hall, Show>(),
+            cqrsx.install_view::<Hall, Show>(),
             Err(BuildError::ViewsWithoutStore)
         ));
     }
@@ -593,7 +593,7 @@ mod tests {
     #[tokio::test]
     async fn the_executors_over_postgres_take_the_settings_of_the_framework() {
         use crate::{
-            Cqrs,
+            Cqrsx,
             memory::InMemory,
             stores::{Executor, Journal},
             test_support::*,
@@ -623,7 +623,7 @@ mod tests {
             history: lazy(),
             projection: lazy(),
         };
-        let cqrs = Cqrs::with_settings(settings)
+        let cqrsx = Cqrsx::with_settings(settings)
             .event_store(Postgres)
             .projections(InMemory)
             .postgres_pools(pools)
@@ -631,7 +631,7 @@ mod tests {
             .build()
             .await
             .unwrap();
-        let Some(Executor::Postgres(executor)) = cqrs.executor_of::<Show>() else {
+        let Some(Executor::Postgres(executor)) = cqrsx.executor_of::<Show>() else {
             panic!("the executor of a framework over PostgreSQL is PostgreSQL's");
         };
         let printed = format!("{executor:?}");
@@ -640,22 +640,22 @@ mod tests {
             "{printed}"
         );
         assert!(
-            matches!(&cqrs.journal, Journal::Postgres { .. }),
+            matches!(&cqrsx.journal, Journal::Postgres { .. }),
             "the journal of a framework over PostgreSQL is PostgreSQL's"
         );
         let store = format!("{:?}", executor.store());
         assert!(store.contains("snapshot_policy: Every(3)"), "{store}");
         #[cfg(feature = "operation-utils")]
         assert!(
-            cqrs.history::<Show>(&"s-1".into()).await.is_err(),
+            cqrsx.history::<Show>(&"s-1".into()).await.is_err(),
             "nobody listens on the history pool"
         );
-        assert!(cqrs.documents::<Hall, Show>().is_some(), "the views in memory");
+        assert!(cqrsx.documents::<Hall, Show>().is_some(), "the views in memory");
         assert!(
-            cqrs.journal().is_none() && cqrs.outbox().is_none(),
+            cqrsx.journal().is_none() && cqrsx.outbox().is_none(),
             "the journal and the outbox are in PostgreSQL"
         );
-        assert!(cqrs.checkpoints().is_some(), "the views and their checkpoints in memory");
+        assert!(cqrsx.checkpoints().is_some(), "the views and their checkpoints in memory");
         #[cfg(feature = "projections-postgres")]
         {
             let pools = PostgresPools {
@@ -663,7 +663,7 @@ mod tests {
                 history: lazy(),
                 projection: lazy(),
             };
-            let durable = Cqrs::with_settings(Settings::default())
+            let durable = Cqrsx::with_settings(Settings::default())
                 .event_store(Postgres)
                 .projections(Postgres)
                 .postgres_pools(pools)

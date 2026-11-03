@@ -169,9 +169,9 @@ mod tests {
 
     #[tokio::test]
     async fn wallet_of_reads_only_the_fans_own_range() {
-        let (cqrs, _) = testing::test_app().await;
+        let (cqrsx, _) = testing::test_app().await;
         testing::put::<_, Fan>(
-            &cqrs,
+            &cqrsx,
             vec![
                 ledger("fox-2:c-1", 1, "b-9", "c-1", 50, 1),
                 ledger("fox:c-1", 1, "b-1", "c-1", 80, 1),
@@ -179,7 +179,7 @@ mod tests {
                 ledger("panda:c-1", 1, "b-7", "c-1", 50, 1),
             ],
         );
-        let wallets = cqrs.view::<FanWalletView>();
+        let wallets = cqrsx.view::<FanWalletView>();
         let wallet = wallet_of(&wallets, &fox()).await.unwrap().unwrap();
         assert_eq!(wallet.ledgers.len(), 1);
         assert_eq!((wallet.ledgers[0].concert_id.as_str(), wallet.view.total_spent), ("c-1", 80));

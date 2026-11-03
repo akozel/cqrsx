@@ -14,7 +14,7 @@ event-store-postgres = ["dep:sqlx", "dep:async-trait", "dep:chrono", "dep:future
 projections-postgres = ["event-store-postgres"]
 # The views and their checkpoints in MongoDB: the marker `MongoDb` of `projections(..)`.
 projections-mongodb = ["event-store-postgres", "dep:mongodb"]
-# The HTTP API over axum: `Module::routes`, `Cqrs::router`, `axum::server`.
+# The HTTP API over axum: `Module::routes`, `Cqrsx::router`, `axum::server`.
 axum = ["dep:axum", "dep:tower-http"]
 operation-utils = []
 test-utils = ["cqrsx/test-utils"]

@@ -34,10 +34,10 @@ pub fn module(setup: &Setup) -> Result<Module, SetupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx_framework::{Cqrs, memory::InMemory};
+    use cqrsx_framework::{Cqrsx, memory::InMemory};
 
     async fn limit(value: Option<&'static str>) -> Result<TicketLimit, String> {
-        let cqrs = Cqrs::from_lookup("ENCORE", move |name| {
+        let cqrsx = Cqrsx::from_lookup("ENCORE", move |name| {
             (name == "ENCORE_TICKET_LIMIT").then(|| value.map(str::to_owned)).flatten()
         })
         .event_store(InMemory)
@@ -46,7 +46,7 @@ mod tests {
         .build()
         .await
         .map_err(|error| error.to_string())?;
-        Ok(*cqrs.dependency::<TicketLimit>().unwrap())
+        Ok(*cqrsx.dependency::<TicketLimit>().unwrap())
     }
 
     #[tokio::test]

@@ -272,7 +272,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
     <figcaption>Black arrows: the command's own way. The write is one statement with three parts; the tasks are inserted only when the event was. The wake-up reaches the processors of this process only; the task runtime finds the tasks at its next claim.</figcaption>
   </figure>
   <dl class="parts">
-    <div><dt>Entry point</dt><dd><code>Cqrs::source(name)</code> gives a <code>Source</code>; <code>execute</code> and <code>execute_with_id</code> find the executor of the aggregate type and start a causation chain from this source. A task handler uses <code>TaskContext::execute</code>, which continues the task's chain.</dd></div>
+    <div><dt>Entry point</dt><dd><code>Cqrsx::source(name)</code> gives a <code>Source</code>; <code>execute</code> and <code>execute_with_id</code> find the executor of the aggregate type and start a causation chain from this source. A task handler uses <code>TaskContext::execute</code>, which continues the task's chain.</dd></div>
     <div><dt>Executor</dt><dd><code>StoreCommandExecutor</code>: the lock registry, the conflict retry policy, one <code>CommandAttempt</code> for its life, the commit wake-up and the observer. A second executor of the same type is like a second process: it has locks of its own.</dd></div>
     <div><dt>Aggregate lock</dt><dd>A private registry with one line per key that is busy right now; an idle registry is empty. Limits: <code>LockLimits</code>, defaults <code>DEFAULT_LOCK_MAX_WAIT</code> (1 s) and <code>DEFAULT_LOCK_MAX_WAITERS</code> (128).</dd></div>
     <div><dt>Decision</dt><dd><code>Decide::decide(self, &amp;state, &amp;rules)</code>: a command decides one event or a rejection, pure and synchronous, on the committed state.</dd></div>
@@ -283,7 +283,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
 
 <section id="steps">
   <h2>One command step by step</h2>
-  <p class="prose">The demo books a seat: <code>POST /api/concerts/{id}/commands</code> with <code>BookSeat</code>. Its handler calls <code>cqrs.source("ui").execute_with_id::&lt;Concert&gt;(command_id, &amp;concert_id, command)</code>; the concert decides <code>SeatBooked</code>, and its reactions plan the task <code>encore_record_ticket</code> for the fan's ledger.</p>
+  <p class="prose">The demo books a seat: <code>POST /api/concerts/{id}/commands</code> with <code>BookSeat</code>. Its handler calls <code>cqrsx.source("ui").execute_with_id::&lt;Concert&gt;(command_id, &amp;concert_id, command)</code>; the concert decides <code>SeatBooked</code>, and its reactions plan the task <code>encore_record_ticket</code> for the fan's ledger.</p>
   <div class="tablewrap">
     <table class="steps">
       <thead><tr><th>Step</th><th>What happens</th><th>Storage</th><th>If it fails here</th></tr></thead>

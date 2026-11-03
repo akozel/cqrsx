@@ -1,7 +1,7 @@
 //! Fixtures of the framework's tests: a box office of shows and the fans' wallets as two modules, a step of a chain and an
 //! e-mail between them, a view of each.
 use crate::{
-    Cqrs,
+    Cqrsx,
     build::Builder,
     memory::InMemory,
     module::Module,
@@ -355,22 +355,22 @@ pub(crate) fn wallets(_: &Setup) -> Result<Module, SetupError> {
 
 /// A builder over the stores in memory, for the journal and the views: what a test adds its modules to.
 pub(crate) fn memory_builder() -> Builder {
-    Cqrs::with_settings(Settings::default())
+    Cqrsx::with_settings(Settings::default())
         .event_store(InMemory)
         .projections(InMemory)
 }
 
 /// Both modules in memory with a mailbox of the test instead of the wallets' own.
-pub(crate) async fn framework() -> (Cqrs, Arc<Mailbox>) {
+pub(crate) async fn framework() -> (Cqrsx, Arc<Mailbox>) {
     let mailbox = Arc::new(Mailbox::default());
-    let cqrs = memory_builder()
+    let cqrsx = memory_builder()
         .module(shows)
         .module(wallets)
         .provide(mailbox.clone())
         .build()
         .await
         .unwrap();
-    (cqrs, mailbox)
+    (cqrsx, mailbox)
 }
 
 /// A booking of `seat` by `fan`.
@@ -382,9 +382,10 @@ pub(crate) fn book(seat: &str, fan: &str) -> Book {
 }
 
 /// Every booking `(show, seat, fan)` through the source `ui`.
-pub(crate) async fn book_every(cqrs: &Cqrs, bookings: &[(&str, &str, &str)]) {
+pub(crate) async fn book_every(cqrsx: &Cqrsx, bookings: &[(&str, &str, &str)]) {
     for (show, seat, fan) in bookings {
-        cqrs.source("ui")
+        cqrsx
+            .source("ui")
             .execute::<Show>(&(*show).into(), book(seat, fan))
             .await
             .unwrap();

@@ -1,7 +1,7 @@
 //! Encore back-end: the box office on the cqrsx framework. The framework reads its settings from the `ENCORE_*` variables
 //! (and the library's `OUTBOX_*`), keeps the journal in PostgreSQL and the read models in MongoDB, and serves the HTTP
 //! API of the modules next to the task runtime and the projection processors until a signal.
-use cqrsx_framework::{Cqrs, mongodb::MongoDb, postgres::Postgres};
+use cqrsx_framework::{Cqrsx, mongodb::MongoDb, postgres::Postgres};
 use encore_backend::{DEMO_DEFAULTS, concert, fan, operations};
 
 fn fail(message: impl std::fmt::Display) -> ! {
@@ -13,7 +13,7 @@ fn fail(message: impl std::fmt::Display) -> ! {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
-    let served = Cqrs::from_env("ENCORE")
+    let served = Cqrsx::from_env("ENCORE")
         .defaults(DEMO_DEFAULTS)
         .event_store(Postgres)
         .projections(MongoDb)

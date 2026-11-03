@@ -37,7 +37,7 @@ use cqrsx::{
     worker::TaskResult,
 };
 use cqrsx_framework::{
-    Cqrs,
+    Cqrsx,
     build::BuildError,
     memory::InMemory,
     settings::{DEFAULT_SNAPSHOT_EVERY, Settings, SettingsError},
@@ -55,11 +55,11 @@ struct Configured {
 }
 
 async fn from_pairs(pairs: &[(&str, &str)]) -> Result<Configured, BuildError> {
-    let cqrs = app(pairs).build().await?;
+    let cqrsx = app(pairs).build().await?;
     let owned: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    let setup = Setup::new("ENCORE", move |name| owned.get(name).cloned(), cqrs.settings().clone());
+    let setup = Setup::new("ENCORE", move |name| owned.get(name).cloned(), cqrsx.settings().clone());
     Ok(Configured {
-        settings: cqrs.settings().clone(),
+        settings: cqrsx.settings().clone(),
         mail: fan::mail_settings(&setup).unwrap(),
     })
 }
@@ -149,7 +149,7 @@ async fn the_modules_default_to_the_values_of_the_configuration() {
         .build()
         .await
         .unwrap();
-    let limit = |cqrs: &Cqrs| *cqrs.dependency::<TicketLimit>().unwrap();
+    let limit = |cqrsx: &Cqrsx| *cqrsx.dependency::<TicketLimit>().unwrap();
     assert_eq!((limit(&defaults), limit(&configured)), (TicketLimit(4), TicketLimit(7)));
     let formats = [
         "encore_record_ticket",
@@ -167,9 +167,9 @@ async fn the_modules_default_to_the_values_of_the_configuration() {
         formats.map(|format| defaults.policies().policy_for(&format)),
         [step, step, mail, mail]
     );
-    let mail_of = |cqrs: &Cqrs, url: &'static str| {
+    let mail_of = |cqrsx: &Cqrsx, url: &'static str| {
         let lookup = move |name: &str| (name == "ENCORE_MAIL_SERVICE_URL" && !url.is_empty()).then(|| url.to_owned());
-        fan::mail_settings(&Setup::new("ENCORE", lookup, cqrs.settings().clone())).unwrap()
+        fan::mail_settings(&Setup::new("ENCORE", lookup, cqrsx.settings().clone())).unwrap()
     };
     let default_mail = mail_of(&defaults, "");
     assert_eq!(
@@ -183,8 +183,8 @@ async fn the_modules_default_to_the_values_of_the_configuration() {
 /// register; an aggregate type no module registers runs nowhere.
 #[tokio::test]
 async fn the_framework_runs_every_aggregate_and_view_the_modules_register() {
-    let (cqrs, _) = test_app().await;
-    let names: Vec<String> = cqrs.views().keys().iter().map(|key| key.projection().to_owned()).collect();
+    let (cqrsx, _) = test_app().await;
+    let names: Vec<String> = cqrsx.views().keys().iter().map(|key| key.projection().to_owned()).collect();
     assert_eq!(names, ["concert_halls", "fan_wallets"]);
     let concert_id = ConcertId::parse("radiohead-2026-11-21").unwrap();
     let announce = AnnounceConcert {
@@ -192,7 +192,7 @@ async fn the_framework_runs_every_aggregate_and_view_the_modules_register() {
         city: "Tbilisi".into(),
         date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
     };
-    let ui = cqrs.source("ui");
+    let ui = cqrsx.source("ui");
     ui.execute::<Concert>(&concert_id, ConcertCommand::AnnounceConcert(announce))
         .await
         .unwrap();
@@ -208,7 +208,7 @@ async fn the_framework_runs_every_aggregate_and_view_the_modules_register() {
     ui.execute::<Fan>(&ledger, FanCommand::RecordTicket(record.clone()))
         .await
         .unwrap();
-    let without_fan = Cqrs::with_settings(Settings::default())
+    let without_fan = Cqrsx::with_settings(Settings::default())
         .event_store(InMemory)
         .projections(InMemory)
         .module(concert::module)
@@ -225,7 +225,7 @@ async fn the_framework_runs_every_aggregate_and_view_the_modules_register() {
 /// The e-mails of the process report their attempts to the hub of the activity log the HTTP API streams.
 #[tokio::test]
 async fn the_task_handlers_report_their_attempts_to_the_feeds_hub() {
-    let cqrs = app(&[("ENCORE_MAIL_SERVICE_URL", "http://127.0.0.1:1")])
+    let cqrsx = app(&[("ENCORE_MAIL_SERVICE_URL", "http://127.0.0.1:1")])
         .build()
         .await
         .unwrap();
@@ -238,7 +238,7 @@ async fn the_task_handlers_report_their_attempts_to_the_feeds_hub() {
         price: 80,
     };
     let attempt = TaskAttempt::try_first(&task, serde_json::json!({})).unwrap();
-    let answer = cqrs
+    let answer = cqrsx
         .dispatcher()
         .unwrap()
         .dispatch(Arc::new(attempt), Duration::from_secs(1))
@@ -248,7 +248,7 @@ async fn the_task_handlers_report_their_attempts_to_the_feeds_hub() {
         TaskResult::retry("mail_unreachable"),
         "nobody listens on the test's mail address"
     );
-    let kinds: Vec<String> = cqrs
+    let kinds: Vec<String> = cqrsx
         .dependency::<ActivityHub>()
         .unwrap()
         .subscribe()

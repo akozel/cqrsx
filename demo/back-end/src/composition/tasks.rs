@@ -48,7 +48,7 @@ use cqrsx::{
     worker::{adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher, handlers::TaskHandlers},
 };
 use cqrsx_framework::{
-    Cqrs,
+    Cqrsx,
     build::BuildError,
     memory::InMemory,
     settings::Settings,
@@ -61,7 +61,7 @@ use uuid::Uuid;
 
 /// The policies of the four task types under the variables `pairs`, as the `fan` module declares them.
 fn policies(pairs: &[(&str, &str)]) -> Result<Policies, BuildError> {
-    ready(app(pairs).build()).map(|cqrs| cqrs.policies().clone())
+    ready(app(pairs).build()).map(|cqrsx| cqrsx.policies().clone())
 }
 
 /// The setup of a module under the variables `pairs` in the demo's framework.
@@ -449,7 +449,7 @@ fn an_assembly_without_the_activity_hub_is_refused() {
          which nothing provides"
     );
     let without_operations = ready(
-        Cqrs::with_settings(Settings::default())
+        Cqrsx::with_settings(Settings::default())
             .event_store(InMemory)
             .projections(InMemory)
             .module(concert::module)

@@ -11,7 +11,7 @@ use axum::{
     Json,
     extract::{Path, State, rejection::JsonRejection},
 };
-use cqrsx_framework::Cqrs;
+use cqrsx_framework::Cqrsx;
 use request::ConcertCommandRequest;
 use response::ConcertCommandResponse;
 use serde_json::Value;
@@ -21,7 +21,7 @@ use uuid::Uuid;
 /// The command goes to the framework from the source `ui`: its id is chosen here, so that every answer names it, and is
 /// the id of a booking and a cancellation.
 pub async fn handle(
-    State(cqrs): State<Arc<Cqrs>>,
+    State(cqrsx): State<Arc<Cqrsx>>,
     Path(concert_id): Path<String>,
     body: Result<Json<Value>, JsonRejection>,
 ) -> Result<ConcertCommandResponse, ApiError> {
@@ -29,7 +29,7 @@ pub async fn handle(
     let request = ConcertCommandRequest::from_body(body)?;
     let command_id = Uuid::now_v7();
     let command = request.into_command(command_id)?;
-    let outcome = cqrs
+    let outcome = cqrsx
         .source("ui")
         .execute_with_id::<Concert>(command_id, &concert_id, command)
         .await

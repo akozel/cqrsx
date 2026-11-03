@@ -51,7 +51,7 @@ use tokio_util::sync::{CancellationToken, DropGuard};
 
 /// A framework: its executors, views and task handlers over its stores, assembled from its modules. Dropping it stops
 /// its projection processors.
-pub struct Cqrs {
+pub struct Cqrsx {
     settings: Settings,
     /// This node: the owner of the processors' checkpoints and of the claimed tasks.
     owner: String,
@@ -79,9 +79,9 @@ pub struct Cqrs {
 
 // By hand: the settings and what the modules described hold the database URLs with their passwords; the stores, the
 // executors, the observers and the processors are not printed either.
-impl fmt::Debug for Cqrs {
+impl fmt::Debug for Cqrsx {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_struct("Cqrs")
+        f.debug_struct("Cqrsx")
             .field("owner", &self.owner)
             .field("command_executors", &self.command_executors.len())
             .field("views", &self.views().keys())
@@ -92,7 +92,7 @@ impl fmt::Debug for Cqrs {
     }
 }
 
-impl Cqrs {
+impl Cqrsx {
     /// A framework with `settings` (e.g. [`Settings::default`], or read with [`Settings::from_lookup`] and changed by a
     /// test); its modules read no variable.
     pub fn with_settings(settings: Settings) -> build::Builder {
@@ -158,71 +158,73 @@ mod tests {
             setup.describe("shop.limit_twice", "8");
             Ok(module::Module::new("reader"))
         };
-        let cqrs = Cqrs::from_lookup("SHOP", |name| (name == "SHOP_LIMIT").then(|| "5".to_owned()))
+        let cqrsx = Cqrsx::from_lookup("SHOP", |name| (name == "SHOP_LIMIT").then(|| "5".to_owned()))
             .event_store(InMemory)
             .module(read)
             .build()
             .await
             .unwrap();
-        let described = cqrs.description();
+        let described = cqrsx.description();
         let value = |key: &str| described.get(key).map(String::as_str);
         assert_eq!(
             (value("SHOP_LIMIT"), value("shop.limit_twice"), value("SHOP_SNAPSHOT_EVERY")),
             (Some("5"), Some("8"), Some("10"))
         );
-        assert_eq!(cqrs.settings().prefix(), "SHOP");
-        let stopping = cqrs.stopping();
+        assert_eq!(cqrsx.settings().prefix(), "SHOP");
+        let stopping = cqrsx.stopping();
         stopping.cancel();
-        assert!(!cqrs.shutdown.is_cancelled(), "cancelling the child stops nothing");
-        let stopping = cqrs.stopping();
-        drop(cqrs);
+        assert!(!cqrsx.shutdown.is_cancelled(), "cancelling the child stops nothing");
+        let stopping = cqrsx.stopping();
+        drop(cqrsx);
         assert!(stopping.is_cancelled(), "a dropped framework has stopped");
     }
 
     #[tokio::test]
     async fn a_framework_and_its_entry_points_print_what_they_hold_but_never_a_url() {
-        let (cqrs, _) = framework().await;
-        let printed = format!("{cqrs:?}");
+        let (cqrsx, _) = framework().await;
+        let printed = format!("{cqrsx:?}");
         let head = format!(
-            "Cqrs {{ owner: {:?}, command_executors: 2, views: {:?}, ",
-            cqrs.owner,
-            cqrs.views().keys()
+            "Cqrsx {{ owner: {:?}, command_executors: 2, views: {:?}, ",
+            cqrsx.owner,
+            cqrsx.views().keys()
         );
         assert!(printed.starts_with(&head), "{printed}");
         assert!(printed.contains("dispatcher: Some(TaskDispatcher {"), "{printed}");
         assert!(!printed.contains("://"), "no URL of a store: {printed}");
-        assert_eq!(format!("{:?}", cqrs.source("ui")), r#"Source { source: "ui", .. }"#);
-        assert_eq!(format!("{:?}", cqrs.view::<Hall>()), "ViewQuery { registered: true, .. }");
-        assert_eq!(format!("{:?}", cqrs.view::<String>()), "ViewQuery { registered: false, .. }");
+        assert_eq!(format!("{:?}", cqrsx.source("ui")), r#"Source { source: "ui", .. }"#);
+        assert_eq!(format!("{:?}", cqrsx.view::<Hall>()), "ViewQuery { registered: true, .. }");
+        assert_eq!(format!("{:?}", cqrsx.view::<String>()), "ViewQuery { registered: false, .. }");
         assert_eq!(
-            format!("{:?}", cqrs.views()),
-            format!("Views {{ keys: {:?}, .. }}", cqrs.views().keys())
+            format!("{:?}", cqrsx.views()),
+            format!("Views {{ keys: {:?}, .. }}", cqrsx.views().keys())
         );
     }
 
     #[tokio::test]
     async fn the_history_of_an_aggregate_is_its_journal_without_snapshots() {
-        let (cqrs, _) = framework().await;
+        let (cqrsx, _) = framework().await;
         for seat in ["A1", "A2"] {
-            cqrs.source("ui")
+            cqrsx
+                .source("ui")
                 .execute::<Show>(&"s-1".into(), book(seat, "fox"))
                 .await
                 .unwrap();
         }
         #[cfg(feature = "operation-utils")]
         {
-            let history = cqrs.history::<Show>(&"s-1".into()).await.unwrap();
+            let history = cqrsx.history::<Show>(&"s-1".into()).await.unwrap();
             assert_eq!(history.iter().map(|event| event.sequence).collect::<Vec<_>>(), [1, 2]);
-            assert!(cqrs.history::<Show>(&"s-9".into()).await.unwrap().is_empty());
+            assert!(cqrsx.history::<Show>(&"s-9".into()).await.unwrap().is_empty());
         }
         assert_eq!(
-            cqrs.policies()
+            cqrsx
+                .policies()
                 .max_attempts(&cqrsx::task::format::TaskFormat::of::<MailTicket>())
                 .get(),
             6
         );
         #[cfg(feature = "operation-utils")]
-        assert!(cqrs.dispatcher().is_some());
+        assert!(cqrsx.dispatcher().is_some());
     }
 
     #[test]
@@ -231,17 +233,17 @@ mod tests {
         if let Some(scenario) = test_support::scenario() {
             assert_eq!(scenario, "variables");
             let read = |setup: &setup::Setup| setup.env("LIMIT", 4).map(|_| module::Module::new("reader"));
-            let cqrs = ready(
-                Cqrs::from_env("CQRSX_FRAMEWORK_TEST")
+            let cqrsx = ready(
+                Cqrsx::from_env("CQRSX_FRAMEWORK_TEST")
                     .event_store(InMemory)
                     .module(read)
                     .build(),
             )
             .unwrap();
-            let described = cqrs.description();
+            let described = cqrsx.description();
             let value = |key: &str| described.get(key).cloned();
             assert_eq!(
-                (cqrs.settings().snapshot_every().get(), value("CQRSX_FRAMEWORK_TEST_LIMIT")),
+                (cqrsx.settings().snapshot_every().get(), value("CQRSX_FRAMEWORK_TEST_LIMIT")),
                 (7, Some("3".to_owned()))
             );
             return;

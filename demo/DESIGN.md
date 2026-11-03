@@ -128,7 +128,7 @@ atomic transaction "event + its tasks".
 - **Event metadata** is a map of strings: `command_id`, `correlation_id`, `causation_id`, `source`, `recorded_at`
   (fixed-width RFC 3339, microseconds). For UI commands `correlation_id = causation_id = command_id`,
   `source = "ui"`. For a command from a task `correlation_id` is inherited from the task, `causation_id` is the task
-  id, `source = "task:<task type>"`. The framework creates the metadata: `cqrs.source("ui")` at the entry, `TaskContext`
+  id, `source = "task:<task type>"`. The framework creates the metadata: `cqrsx.source("ui")` at the entry, `TaskContext`
   in a handler; the keys and the inheritance rule — `cqrsx::command::causation::Causation`, `recorded_at` is added by
   `cqrsx::command::metadata::CommandMetadata`.
 
@@ -284,7 +284,7 @@ again".
 - An observer on the node that accepted the request reads the checkpoint rows every 250 ms and publishes
   `rebuild.started`, `rebuild.progress`, `rebuild.finished` (§2.3); every replaced document gives `projection.rebuilt`.
 - **⟲ One hall** (`POST /api/concerts/{id}/rebuild`, `202`): the owner of the halls' checkpoint replaces one document
-  (`cqrs.view::<ConcertHallView>().rebuild(&id)`), nothing else is touched.
+  (`cqrsx.view::<ConcertHallView>().rebuild(&id)`), nothing else is touched.
   The framework's rebuild, verify, history and journal-size calls are behind its feature `operation-utils`, which the demo
   enables in `demo/Cargo.toml`.
 - **Status** (`GET /api/projections/status`): per projection the checkpoint, the lag in events (capped at
@@ -302,7 +302,7 @@ run, no tasks are created.
 ### 1.9 Time machine
 
 `GET /api/concerts/{id}/state-at/{sequence}`: the back-end reads the history of the concert without snapshots
-(`cqrs.history::<Concert>`), applies `apply` to an empty aggregate up to the given `sequence` and returns the state
+(`cqrsx.history::<Concert>`), applies `apply` to an empty aggregate up to the given `sequence` and returns the state
 and the event itself. In the UI — the ⏳ slider under the seat map: the hall is redrawn "in the past" (sepia, the
 banner "This state isn't stored anywhere — it was computed from events 1…n").
 
@@ -347,7 +347,7 @@ The body is JSON with a `type` field; the internal commands of `Fan` cannot be e
 
 `concert/presentation/http/commands/execute.rs` picks `command_id = Uuid::now_v7()`, makes it the `booking_id` or
 `cancellation_id` of the command (`execute/request.rs` turns the body into the command) and runs it with
-`cqrs.source("ui").execute_with_id(command_id, ..)`; the framework adds the metadata (§1.4) and the tasks (§1.6).
+`cqrsx.source("ui").execute_with_id(command_id, ..)`; the framework adds the metadata (§1.4) and the tasks (§1.6).
 `execute/response.rs` gives the outcome its status and body.
 
 ```json

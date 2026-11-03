@@ -1,7 +1,7 @@
 //! The views of a framework: the queries of one view ([`ViewQuery`]) and the operations over all of them ([`Views`]).
 //! The rebuild of one document, the verification, the counts of the journal and the rebuild requests need the feature
 //! `operation-utils`.
-use crate::Cqrs;
+use crate::Cqrsx;
 #[cfg(feature = "operation-utils")]
 use crate::operation_utils::{Maintained, Maintenance, Totals};
 use cqrsx::{
@@ -211,7 +211,7 @@ impl Registry {
     }
 }
 
-/// The queries of the view `V` ([`Cqrs::view`]): a document by id, every document and a range of ids, ordered by the
+/// The queries of the view `V` ([`Cqrsx::view`]): a document by id, every document and a range of ids, ordered by the
 /// bytes of the ids; with the feature `operation-utils` also the rebuild of one document. A view the framework does not
 /// have answers with an error.
 pub struct ViewQuery<'a, V> {
@@ -279,11 +279,11 @@ impl From<CheckpointError> for ViewsError {
     }
 }
 
-/// The operations over the views of a framework ([`Cqrs::views`]), by a view's name: its checkpoint and how far it is
+/// The operations over the views of a framework ([`Cqrsx::views`]), by a view's name: its checkpoint and how far it is
 /// behind; with the feature `operation-utils` also the requests of a rebuild its processor takes, the verification of
 /// its documents and the size of the journal.
 pub struct Views<'a> {
-    pub(crate) cqrs: &'a Cqrs,
+    pub(crate) cqrsx: &'a Cqrsx,
 }
 
 // By hand: the framework is not printed with its views, only their keys.
@@ -297,14 +297,14 @@ impl Views<'_> {
     /// The rows of the views' checkpoints, in the order the modules registered the views: the projection (the view's
     /// name) and the aggregate type of each.
     pub fn keys(&self) -> Vec<CheckpointKey> {
-        self.cqrs.views.operations.iter().map(|view| view.key()).collect()
+        self.cqrsx.views.operations.iter().map(|view| view.key()).collect()
     }
 
     /// The checkpoint rows of the framework's views, in the order the modules registered them: positions, owners, leases,
     /// failures and rebuilds.
     pub async fn status(&self) -> Result<Vec<CheckpointStatus>, CheckpointError> {
         let mut rows = Vec::new();
-        for view in &self.cqrs.views.operations {
+        for view in &self.cqrsx.views.operations {
             rows.extend(view.checkpoints().status(Some(view.name())).await?);
         }
         Ok(rows)
@@ -313,14 +313,14 @@ impl Views<'_> {
     /// The events of its aggregate type above the checkpoint of the view `name`, counted up to the lag cap of the
     /// settings.
     pub async fn lag(&self, name: &str) -> Result<u64, ViewsError> {
-        let view = self.cqrs.views.named(name)?;
+        let view = self.cqrsx.views.named(name)?;
         let rows = view.checkpoints().status(Some(name)).await?;
         let after = rows.first().map_or(Position::START, |row| row.position);
-        Ok(view.count_after(after, self.cqrs.settings.lag_cap()).await?)
+        Ok(view.count_after(after, self.cqrsx.settings.lag_cap()).await?)
     }
 }
 
-impl Cqrs {
+impl Cqrsx {
     /// The queries of the view `V`.
     pub fn view<V: 'static>(&self) -> ViewQuery<'_, V> {
         ViewQuery {
@@ -330,7 +330,7 @@ impl Cqrs {
     }
 
     pub fn views(&self) -> Views<'_> {
-        Views { cqrs: self }
+        Views { cqrsx: self }
     }
 }
 
@@ -342,11 +342,11 @@ mod tests {
 
     #[tokio::test]
     async fn a_view_answers_get_list_and_range_once_caught_up() {
-        let (cqrs, _) = framework().await;
-        book_every(&cqrs, &[("s-2", "A1", "fox"), ("s-1", "B2", "panda"), ("s-3", "C3", "fox")]).await;
-        cqrs.catch_up().await;
-        cqrs.catch_up().await;
-        let halls = cqrs.view::<Hall>();
+        let (cqrsx, _) = framework().await;
+        book_every(&cqrsx, &[("s-2", "A1", "fox"), ("s-1", "B2", "panda"), ("s-3", "C3", "fox")]).await;
+        cqrsx.catch_up().await;
+        cqrsx.catch_up().await;
+        let halls = cqrsx.view::<Hall>();
         let hall = halls.get(&"s-2").await.unwrap().unwrap();
         assert_eq!(
             (
@@ -360,7 +360,7 @@ mod tests {
         let ids = |documents: Vec<StoredView<Hall>>| documents.into_iter().map(|document| document.id).collect::<Vec<_>>();
         assert_eq!(ids(halls.list().await.unwrap()), ["s-1", "s-2", "s-3"]);
         assert_eq!(ids(halls.range("s-1", "s-3").await.unwrap()), ["s-1", "s-2"]);
-        let unknown = cqrs.view::<String>();
+        let unknown = cqrsx.view::<String>();
         let errors = [
             unknown.get(&"s-1").await.unwrap_err().to_string(),
             unknown.list().await.unwrap_err().to_string(),
@@ -376,16 +376,16 @@ mod tests {
 
     #[tokio::test]
     async fn views_report_their_status_and_lag() {
-        let (cqrs, _) = framework().await;
-        book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
-        let views = cqrs.views();
+        let (cqrsx, _) = framework().await;
+        book_every(&cqrsx, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
+        let views = cqrsx.views();
         assert_eq!(
             views.lag("halls").await.unwrap(),
             3,
             "nothing applied before the processors run"
         );
         assert!(views.status().await.unwrap().is_empty());
-        cqrs.catch_up().await;
+        cqrsx.catch_up().await;
         assert_eq!(views.lag("halls").await.unwrap(), 0);
         let rows = views.status().await.unwrap();
         let named: Vec<(&str, &str, bool)> = rows
@@ -394,7 +394,7 @@ mod tests {
                 (
                     row.projection.as_str(),
                     row.aggregate_type.as_str(),
-                    row.owner.as_deref() == Some(&cqrs.owner),
+                    row.owner.as_deref() == Some(&cqrsx.owner),
                 )
             })
             .collect();
@@ -431,17 +431,17 @@ mod tests {
             defaults.task_runtime().clone(),
         )
         .unwrap();
-        let cqrs = Cqrs::with_settings(settings)
+        let cqrsx = Cqrsx::with_settings(settings)
             .event_store(InMemory)
             .projections(InMemory)
             .module(shows)
             .build()
             .await
             .unwrap();
-        cqrs.catch_up().await;
+        cqrsx.catch_up().await;
         let start = tokio::time::Instant::now();
-        book_every(&cqrs, &[("s-1", "A1", "fox")]).await;
-        while cqrs.view::<Hall>().get(&"s-1").await.unwrap().is_none() {
+        book_every(&cqrsx, &[("s-1", "A1", "fox")]).await;
+        while cqrsx.view::<Hall>().get(&"s-1").await.unwrap().is_none() {
             tokio::time::sleep(Duration::from_millis(1)).await;
         }
         assert!(
@@ -453,9 +453,9 @@ mod tests {
 
     #[tokio::test]
     async fn the_views_name_their_rows() {
-        let (cqrs, _) = framework().await;
-        book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
-        let views = cqrs.views();
+        let (cqrsx, _) = framework().await;
+        book_every(&cqrsx, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
+        let views = cqrsx.views();
         let keys: Vec<(String, &str)> = views
             .keys()
             .iter()

@@ -17,13 +17,13 @@ use cqrsx::{
     view::verify::Verification,
 };
 use cqrsx_framework::{
-    Cqrs,
+    Cqrsx,
     views::{JournalTotals, ViewsError},
 };
 use std::{sync::Arc, time::Duration};
 
 /// The views of the framework.
-pub struct FrameworkReadSide(pub Arc<Cqrs>);
+pub struct FrameworkReadSide(pub Arc<Cqrsx>);
 
 #[async_trait]
 impl Checkpoints for FrameworkReadSide {
@@ -59,14 +59,17 @@ impl JournalStats for FrameworkReadSide {
 
 /// One view of the framework, verified by the framework under its name.
 pub struct FrameworkView {
-    cqrs: Arc<Cqrs>,
+    cqrsx: Arc<Cqrsx>,
     name: String,
 }
 
 impl FrameworkView {
-    /// The view `name` of `cqrs`.
-    pub fn new(cqrs: Arc<Cqrs>, name: impl Into<String>) -> Self {
-        Self { cqrs, name: name.into() }
+    /// The view `name` of `cqrsx`.
+    pub fn new(cqrsx: Arc<Cqrsx>, name: impl Into<String>) -> Self {
+        Self {
+            cqrsx,
+            name: name.into(),
+        }
     }
 }
 
@@ -77,7 +80,7 @@ impl VerifiedReadModel for FrameworkView {
     }
 
     async fn verify(&self) -> Result<Verification, StorageError> {
-        self.cqrs.views().verify(&self.name).await.map_err(StorageError::new)
+        self.cqrsx.views().verify(&self.name).await.map_err(StorageError::new)
     }
 }
 
@@ -85,30 +88,30 @@ impl ReadSideService<FrameworkReadSide> {
     /// The service of one request over the framework: its views, the lag cap and the status timeout of its settings, the
     /// pace of Encore! ([`RebuildPace`]), the activity log and what this node saw ([`ReadSideState`]), which the `operations`
     /// module provides; a watcher of Encore! stops with the framework.
-    pub fn of(cqrs: &Arc<Cqrs>) -> Result<Self, StorageError> {
+    pub fn of(cqrsx: &Arc<Cqrsx>) -> Result<Self, StorageError> {
         let missing = StorageError::new;
         let (rebuild_pace, state) = (
-            cqrs.dependency::<RebuildPace>().map_err(missing)?,
-            cqrs.dependency::<ReadSideState>().map_err(missing)?,
+            cqrsx.dependency::<RebuildPace>().map_err(missing)?,
+            cqrsx.dependency::<ReadSideState>().map_err(missing)?,
         );
-        let activity = cqrs.dependency::<ActivityHub>().map_err(missing)?;
-        let settings = cqrs.settings();
+        let activity = cqrsx.dependency::<ActivityHub>().map_err(missing)?;
+        let settings = cqrsx.settings();
         let limits = ReadSideLimits {
             lag_cap: settings.lag_cap(),
             max_pace: rebuild_pace.max_pace,
             status_timeout: settings.status_timeout(),
         };
-        let views = Arc::new(FrameworkReadSide(cqrs.clone()));
-        let service = Self::new(views.clone(), cqrs.views().keys(), views, activity, limits, cqrs.stopping());
+        let views = Arc::new(FrameworkReadSide(cqrsx.clone()));
+        let service = Self::new(views.clone(), cqrsx.views().keys(), views, activity, limits, cqrsx.stopping());
         Ok(service.with_state(state))
     }
 }
 
 impl VerifyService {
     /// Every view of the framework, verified by the framework.
-    pub fn of(cqrs: &Arc<Cqrs>) -> Self {
-        let views = cqrs.views().keys().into_iter().map(|key| {
-            let view: Arc<dyn VerifiedReadModel> = Arc::new(FrameworkView::new(cqrs.clone(), key.projection()));
+    pub fn of(cqrsx: &Arc<Cqrsx>) -> Self {
+        let views = cqrsx.views().keys().into_iter().map(|key| {
+            let view: Arc<dyn VerifiedReadModel> = Arc::new(FrameworkView::new(cqrsx.clone(), key.projection()));
             view
         });
         Self::new(views.collect())
@@ -123,9 +126,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_rebuild_request_tells_a_row_not_registered_yet_from_a_view_nobody_has() {
-        let (cqrs, _) = test_app().await;
-        let halls = cqrs.views().keys().into_iter().next().unwrap();
-        let read_side = FrameworkReadSide(Arc::new(cqrs));
+        let (cqrsx, _) = test_app().await;
+        let halls = cqrsx.views().keys().into_iter().next().unwrap();
+        let read_side = FrameworkReadSide(Arc::new(cqrsx));
         let starting = read_side.request_rebuild(&halls, Duration::ZERO).await;
         assert!(matches!(starting, Err(CheckpointError::NotRegistered)), "{starting:?}");
         let nobody = read_side

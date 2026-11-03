@@ -13,7 +13,7 @@ use cqrsx::{
     view::repository::StoredView,
 };
 use cqrsx_framework::{
-    Cqrs,
+    Cqrsx,
     build::Builder,
     memory::InMemory,
     mongodb::MongoDb,
@@ -47,7 +47,7 @@ use uuid::Uuid;
 /// The modules of the process over the variables of the router tests: a mail service nobody listens on, Encore! at
 /// full speed only (no slow motion).
 fn modules() -> Builder {
-    Cqrs::from_lookup("ENCORE", |name| match name {
+    Cqrsx::from_lookup("ENCORE", |name| match name {
         "ENCORE_MAIL_SERVICE_URL" => Some("http://127.0.0.1:1".to_owned()),
         "ENCORE_REBUILD_SLOW_PACE_MS" => Some("0".to_owned()),
         "ENCORE_MONGODB_DATABASE" => Some("encore_read_test".to_owned()),
@@ -89,7 +89,7 @@ async fn app() -> App {
         history: lazy_pool(),
         projection: lazy_pool(),
     };
-    let cqrs = modules()
+    let cqrsx = modules()
         .event_store(Postgres)
         .postgres_pools(pools)
         .projections(MongoDb)
@@ -98,20 +98,21 @@ async fn app() -> App {
         .await
         .unwrap();
     App {
-        router: Arc::new(cqrs).router(),
+        router: Arc::new(cqrsx).router(),
     }
 }
 
 /// The process in memory, whose processors do not run: the rows of both read models registered and claimed by `owner`,
 /// three events of the concert halls' journal unapplied.
-async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrs>) {
-    let cqrs = memory_app().build().await.unwrap();
+async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrsx>) {
+    let cqrsx = memory_app().build().await.unwrap();
     for key in [
         CheckpointKey::of::<ConcertHallView, Concert>(),
         CheckpointKey::of::<FanWalletView, Fan>(),
     ] {
-        cqrs.checkpoints().unwrap().register(&key).await.unwrap();
-        cqrs.checkpoints()
+        cqrsx.checkpoints().unwrap().register(&key).await.unwrap();
+        cqrsx
+            .checkpoints()
             .unwrap()
             .claim(&key, owner, Duration::from_secs(60))
             .await
@@ -124,7 +125,7 @@ async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrs>) {
         city: "C".into(),
         date: NaiveDate::from_ymd_opt(2026, 11, 21).unwrap(),
     };
-    let ui = cqrs.source("ui");
+    let ui = cqrsx.source("ui");
     ui.execute::<Concert>(&concert_id, ConcertCommand::AnnounceConcert(announce))
         .await
         .unwrap();
@@ -139,26 +140,26 @@ async fn app_with_checkpoints(owner: &str) -> (Router, Arc<Cqrs>) {
             .await
             .unwrap();
     }
-    let cqrs = Arc::new(cqrs);
-    (cqrs.router(), cqrs)
+    let cqrsx = Arc::new(cqrsx);
+    (cqrsx.router(), cqrsx)
 }
 
 /// The process in memory, the documents of both read models written by hand.
 async fn app_reading(halls: Vec<StoredView<ConcertHallView>>, wallets: Vec<StoredView<FanWalletView>>) -> Router {
-    let cqrs = memory_app().build().await.unwrap();
-    let hall_documents = cqrs.documents::<ConcertHallView, Concert>().unwrap();
+    let cqrsx = memory_app().build().await.unwrap();
+    let hall_documents = cqrsx.documents::<ConcertHallView, Concert>().unwrap();
     for document in halls {
         hall_documents
             .put(&document.id, document.revision, document.last_sequence, &document.view)
             .unwrap();
     }
-    let wallet_documents = cqrs.documents::<FanWalletView, Fan>().unwrap();
+    let wallet_documents = cqrsx.documents::<FanWalletView, Fan>().unwrap();
     for document in wallets {
         wallet_documents
             .put(&document.id, document.revision, document.last_sequence, &document.view)
             .unwrap();
     }
-    Arc::new(cqrs).router()
+    Arc::new(cqrsx).router()
 }
 
 async fn send(router: &Router, request: Request<Body>) -> (StatusCode, Value) {
@@ -302,7 +303,7 @@ async fn a_command_for_a_malformed_concert_id_is_refused_before_it_runs() {
 
 #[tokio::test]
 async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
-    let (router, cqrs) = app_with_checkpoints("node-a").await;
+    let (router, cqrsx) = app_with_checkpoints("node-a").await;
     let (status, body) = send(&router, get("/api/projections/status")).await;
     assert_eq!(
         (status, body["state"].as_str(), body["from_cache"].as_bool()),
@@ -345,7 +346,7 @@ async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
         (status, body),
         (StatusCode::ACCEPTED, json!({ "outcome": "requested", "concert_id": "c-1" }))
     );
-    cqrs.checkpoints().unwrap().set_unavailable(true);
+    cqrsx.checkpoints().unwrap().set_unavailable(true);
     let (status, body) = send(&router, post("/api/concerts/c-1/rebuild")).await;
     assert_eq!(
         (status, body["outcome"].as_str()),
@@ -355,8 +356,8 @@ async fn the_read_side_asks_the_owners_and_reports_their_checkpoints() {
 
 #[tokio::test]
 async fn a_booking_and_a_cancellation_over_http_are_identified_by_the_command_id_of_the_answer() {
-    let cqrs = Arc::new(memory_app().build().await.unwrap());
-    let router = cqrs.router();
+    let cqrsx = Arc::new(memory_app().build().await.unwrap());
+    let router = cqrsx.router();
     let command = |body: Value| post_json("/api/concerts/c-1/commands", &body.to_string());
     let (status, _) = send(
         &router,
@@ -377,7 +378,7 @@ async fn a_booking_and_a_cancellation_over_http_are_identified_by_the_command_id
     .await;
     assert_eq!(status, StatusCode::OK);
 
-    let events = cqrs.history::<Concert>(&ConcertId::parse("c-1").unwrap()).await.unwrap();
+    let events = cqrsx.history::<Concert>(&ConcertId::parse("c-1").unwrap()).await.unwrap();
     let (ConcertEvent::SeatBooked(booking), ConcertEvent::BookingCancelled(cancellation)) =
         (&events[1].payload, &events[2].payload)
     else {

@@ -28,15 +28,15 @@ use std::{
 /// The framework of the process runs one projection processor per read model the modules register.
 #[tokio::test]
 async fn the_read_side_is_wired_with_one_processor_per_read_model() {
-    let (cqrs, _) = test_app().await;
-    assert_eq!(cqrs.views().keys().len(), 2, "the concert halls and the fan wallets");
+    let (cqrsx, _) = test_app().await;
+    assert_eq!(cqrsx.views().keys().len(), 2, "the concert halls and the fan wallets");
 }
 
 #[tokio::test]
 async fn the_read_models_keep_their_collection_and_checkpoint_names() {
     assert_eq!((ConcertHallView::NAME, FanWalletView::NAME), ("concert_halls", "fan_wallets"));
-    let (cqrs, _) = test_app().await;
-    let rows: Vec<(String, &str)> = cqrs
+    let (cqrsx, _) = test_app().await;
+    let rows: Vec<(String, &str)> = cqrsx
         .views()
         .keys()
         .iter()
@@ -111,18 +111,18 @@ async fn a_read_model_is_verified_by_the_framework_under_the_name_of_its_view() 
         }),
         metadata: HashMap::new(),
     };
-    let (cqrs, _) = test_app().await;
-    let cqrs = Arc::new(cqrs);
-    let journal = cqrs.journal().unwrap();
+    let (cqrsx, _) = test_app().await;
+    let cqrsx = Arc::new(cqrsx);
+    let journal = cqrsx.journal().unwrap();
     journal
         .persist::<Concert>(&[SerializedEvent::try_from(&announced).unwrap()], None)
         .await
         .unwrap();
-    let halls = cqrs.documents::<ConcertHallView, Concert>().unwrap();
+    let halls = cqrsx.documents::<ConcertHallView, Concert>().unwrap();
     let mut hall = ConcertHallView::default();
     hall.apply(&announced);
     halls.put("c-1", 1, 1, &hall).unwrap();
-    let verification = FrameworkView::new(cqrs.clone(), ConcertHallView::NAME);
+    let verification = FrameworkView::new(cqrsx.clone(), ConcertHallView::NAME);
     assert_eq!(verification.name(), "concert_halls");
     assert_eq!(
         verification.verify().await.unwrap(),

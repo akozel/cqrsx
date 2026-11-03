@@ -12,7 +12,7 @@ CQRS and event sourcing for Rust: the application owns its business rules, and t
 4. A **task handler** runs a follow-up command or external effect with its context and dependencies.
 5. A **view** folds the aggregate's journal into a queryable document; its processor keeps a checkpoint.
 
-The application registers these pieces in modules and builds `Cqrs` (crate [`cqrsx-framework`](../cqrsx-framework/README.md))
+The application registers these pieces in modules and builds `Cqrsx` (crate [`cqrsx-framework`](../cqrsx-framework/README.md))
 with PostgreSQL and MongoDB (in tests, in memory).
 The [typical scenario](../doc/typical_scenario.md) follows a cancellation through a refund.
 

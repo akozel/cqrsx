@@ -1,6 +1,6 @@
 //! The helpers of the feature `test-utils`: what a test does with a framework in memory. Their criterion is the API rule
 //! of the framework in [`doc/components.md`](../../doc/components.md#naming-and-integration-rules).
-use crate::{Cqrs, stores::Queue};
+use crate::{Cqrsx, stores::Queue};
 use cqrsx::{
     domain::aggregate::Aggregate,
     memory::{
@@ -18,7 +18,7 @@ use cqrsx::{
 };
 use std::{sync::Arc, time::Duration};
 
-impl Cqrs {
+impl Cqrsx {
     /// The journal in memory: the events, the snapshots and the outbox of every aggregate type; `None` when the framework
     /// keeps its journal in PostgreSQL.
     pub fn journal(&self) -> Option<&MemoryEventRepository> {
@@ -94,7 +94,7 @@ impl Cqrs {
 
 #[cfg(test)]
 mod tests {
-    use crate::{Cqrs, test_support::*};
+    use crate::{Cqrsx, test_support::*};
     use cqrsx::{
         command::causation::{CAUSATION_ID, CORRELATION_ID, SOURCE},
         journal::repository::EventRepository,
@@ -104,8 +104,8 @@ mod tests {
     };
     use std::{sync::atomic::Ordering, time::Duration};
 
-    fn statuses(cqrs: &Cqrs) -> Vec<(String, TaskStatus, i32)> {
-        let tasks = cqrs.outbox().unwrap().tasks();
+    fn statuses(cqrsx: &Cqrsx) -> Vec<(String, TaskStatus, i32)> {
+        let tasks = cqrsx.outbox().unwrap().tasks();
         tasks
             .into_iter()
             .map(|task| (task.entry.task.format().to_string(), task.status, task.attempts))
@@ -116,17 +116,17 @@ mod tests {
     /// booking, and a retry waits the pause of its policy.
     #[tokio::test(start_paused = true)]
     async fn run_tasks_runs_a_chain_across_two_aggregates_to_its_end_and_leaves_a_paused_retry_for_the_clock() {
-        let (cqrs, mailbox) = framework().await;
+        let (cqrsx, mailbox) = framework().await;
         mailbox.refusals.store(1, Ordering::SeqCst);
-        let booked = cqrs
+        let booked = cqrsx
             .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        let _ = cqrs.source("ui").execute::<Show>(&"s-1".into(), book("A1", "panda")).await;
-        assert_eq!(cqrs.run_tasks().await, 2, "the step and the first attempt of its e-mail");
+        let _ = cqrsx.source("ui").execute::<Show>(&"s-1".into(), book("A1", "panda")).await;
+        assert_eq!(cqrsx.run_tasks().await, 2, "the step and the first attempt of its e-mail");
         assert_eq!(
-            statuses(&cqrs),
+            statuses(&cqrsx),
             [
                 ("record_ticket v1".to_owned(), TaskStatus::Completed, 1),
                 ("mail_ticket v1".to_owned(), TaskStatus::Pending, 1)
@@ -134,12 +134,12 @@ mod tests {
             "only the booking that committed published a task"
         );
         assert!(mailbox.sent().is_empty());
-        assert_eq!(cqrs.run_tasks().await, 0, "the retry waits a second (the mail policy)");
+        assert_eq!(cqrsx.run_tasks().await, 0, "the retry waits a second (the mail policy)");
         tokio::time::advance(Duration::from_secs(1)).await;
-        assert_eq!(cqrs.run_tasks().await, 1);
+        assert_eq!(cqrsx.run_tasks().await, 1);
         assert_eq!(mailbox.sent(), ["fox:A1"]);
-        let step = &cqrs.outbox().unwrap().tasks()[0].entry.task;
-        let recorded = cqrs.journal().unwrap().events::<Wallet>("fox").await.unwrap();
+        let step = &cqrsx.outbox().unwrap().tasks()[0].entry.task;
+        let recorded = cqrsx.journal().unwrap().events::<Wallet>("fox").await.unwrap();
         let metadata = &recorded[0].metadata;
         let correlation = booked.tasks[0].metadata()[CORRELATION_ID].clone();
         assert_eq!(
@@ -157,20 +157,21 @@ mod tests {
     /// runner lives on.
     #[tokio::test(start_paused = true)]
     async fn a_handler_that_always_panics_spends_the_budget_of_its_policy_and_its_task_fails() {
-        let (cqrs, mailbox) = framework().await;
+        let (cqrsx, mailbox) = framework().await;
         mailbox.crashes.store(usize::MAX, Ordering::SeqCst);
-        cqrs.source("ui")
+        cqrsx
+            .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        assert_eq!(cqrs.run_tasks().await, 2, "the step and the first attempt of its e-mail");
+        assert_eq!(cqrsx.run_tasks().await, 2, "the step and the first attempt of its e-mail");
         for pause in [1, 2, 4, 8, 8] {
-            assert_eq!(cqrs.run_tasks().await, 0, "the retry waits {pause} s");
+            assert_eq!(cqrsx.run_tasks().await, 0, "the retry waits {pause} s");
             tokio::time::advance(Duration::from_secs(pause)).await;
-            assert_eq!(cqrs.run_tasks().await, 1);
+            assert_eq!(cqrsx.run_tasks().await, 1);
         }
         assert_eq!(
-            statuses(&cqrs),
+            statuses(&cqrsx),
             [
                 ("record_ticket v1".to_owned(), TaskStatus::Completed, 1),
                 ("mail_ticket v1".to_owned(), TaskStatus::Failed, 6)
@@ -183,20 +184,21 @@ mod tests {
     /// leases run out. The step is done by R9 and publishes nothing twice; the e-mail goes out again.
     #[tokio::test(start_paused = true)]
     async fn a_step_redelivered_after_a_lost_acknowledgement_is_done_and_publishes_nothing_twice() {
-        let (cqrs, mailbox) = framework().await;
-        cqrs.source("ui")
+        let (cqrsx, mailbox) = framework().await;
+        cqrsx
+            .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        cqrs.outbox().unwrap().lose_settlements(true);
-        assert_eq!(cqrs.run_tasks().await, 2);
-        cqrs.outbox().unwrap().lose_settlements(false);
-        tokio::time::advance(cqrs.settings().task_lease()).await;
-        assert_eq!(cqrs.run_tasks().await, 0, "returned, they wait the redelivery backoff");
+        cqrsx.outbox().unwrap().lose_settlements(true);
+        assert_eq!(cqrsx.run_tasks().await, 2);
+        cqrsx.outbox().unwrap().lose_settlements(false);
+        tokio::time::advance(cqrsx.settings().task_lease()).await;
+        assert_eq!(cqrsx.run_tasks().await, 0, "returned, they wait the redelivery backoff");
         tokio::time::advance(Duration::from_secs(6)).await;
-        assert_eq!(cqrs.run_tasks().await, 2, "both again");
+        assert_eq!(cqrsx.run_tasks().await, 2, "both again");
         assert_eq!(
-            statuses(&cqrs),
+            statuses(&cqrsx),
             [
                 ("record_ticket v1".to_owned(), TaskStatus::Completed, 2),
                 ("mail_ticket v1".to_owned(), TaskStatus::Completed, 2)
@@ -204,34 +206,36 @@ mod tests {
             "one e-mail task: one ticket"
         );
         assert_eq!(mailbox.sent(), ["fox:A1", "fox:A1"], "at least once");
-        cqrs.catch_up().await;
-        let tickets = cqrs.view::<Tickets>().get(&"fox").await.unwrap().unwrap();
+        cqrsx.catch_up().await;
+        let tickets = cqrsx.view::<Tickets>().get(&"fox").await.unwrap().unwrap();
         assert_eq!(tickets.view.seats, ["A1"]);
     }
 
     #[tokio::test]
     async fn a_framework_without_task_types_runs_none() {
-        let cqrs = memory_builder().module(shows).build().await.unwrap();
-        cqrs.source("ui")
+        let cqrsx = memory_builder().module(shows).build().await.unwrap();
+        cqrsx
+            .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        assert_eq!(cqrs.run_tasks().await, 0);
-        assert_eq!(statuses(&cqrs), [("record_ticket v1".to_owned(), TaskStatus::Pending, 0)]);
+        assert_eq!(cqrsx.run_tasks().await, 0);
+        assert_eq!(statuses(&cqrsx), [("record_ticket v1".to_owned(), TaskStatus::Pending, 0)]);
     }
 
     #[tokio::test]
     async fn a_test_reaches_the_checkpoints_and_the_documents_in_memory() {
-        let (cqrs, _) = framework().await;
-        cqrs.source("ui")
+        let (cqrsx, _) = framework().await;
+        cqrsx
+            .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        cqrs.catch_up().await;
-        let halls = cqrs.documents::<Hall, Show>().unwrap();
+        cqrsx.catch_up().await;
+        let halls = cqrsx.documents::<Hall, Show>().unwrap();
         assert!(halls.load("s-1").await.unwrap().is_some(), "the processor wrote it");
-        assert!(cqrs.documents::<Tickets, Wallet>().unwrap().list().await.unwrap().is_empty());
-        let rows = cqrs.checkpoints().unwrap().status(None).await.unwrap();
+        assert!(cqrsx.documents::<Tickets, Wallet>().unwrap().list().await.unwrap().is_empty());
+        let rows = cqrsx.checkpoints().unwrap().status(None).await.unwrap();
         assert_eq!(rows.len(), 2, "both processors registered their rows");
         let wallets_only = memory_builder().module(wallets).build().await.unwrap();
         assert!(wallets_only.documents::<Hall, Show>().is_none(), "no such view");

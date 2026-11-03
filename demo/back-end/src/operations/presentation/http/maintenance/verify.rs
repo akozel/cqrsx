@@ -7,7 +7,7 @@ use crate::{
 };
 use axum::{Json, extract::State};
 use cqrsx::view::verify::Difference;
-use cqrsx_framework::Cqrs;
+use cqrsx_framework::Cqrsx;
 use serde::Serialize;
 use std::{collections::BTreeMap, sync::Arc};
 
@@ -41,8 +41,8 @@ impl From<VerifyReport> for ProjectionVerifyResponse {
     }
 }
 
-pub async fn handle(State(cqrs): State<Arc<Cqrs>>) -> Result<Json<ProjectionVerifyResponse>, ApiError> {
-    Ok(Json(VerifyService::of(&cqrs).run().await?.into()))
+pub async fn handle(State(cqrsx): State<Arc<Cqrsx>>) -> Result<Json<ProjectionVerifyResponse>, ApiError> {
+    Ok(Json(VerifyService::of(&cqrsx).run().await?.into()))
 }
 
 #[cfg(test)]

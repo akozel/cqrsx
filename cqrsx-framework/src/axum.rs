@@ -1,7 +1,7 @@
 //! The HTTP API of a framework (feature `axum`, axum 0.8): every module routes its requests under the framework as their
-//! state ([`Module::routes`]); [`Cqrs::router`] is the routes of every module with a trace of every request, and
-//! [`server`] serves it for [`Builder::serve`](crate::build::Builder::serve) and [`Cqrs::run`].
-use crate::{Cqrs, module::Module};
+//! state ([`Module::routes`]); [`Cqrsx::router`] is the routes of every module with a trace of every request, and
+//! [`server`] serves it for [`Builder::serve`](crate::build::Builder::serve) and [`Cqrsx::run`].
+use crate::{Cqrsx, module::Module};
 use ::axum::Router;
 use std::{io, sync::Arc};
 use tokio::net::TcpListener;
@@ -9,30 +9,30 @@ use tower_http::trace::TraceLayer;
 
 impl Module {
     /// The routes of the module, one of its [endpoints](Module::endpoints): its handlers take the framework as their
-    /// state (`State<Arc<Cqrs>>`) and reach the commands, the views and the module's dependencies through it. Two
+    /// state (`State<Arc<Cqrsx>>`) and reach the commands, the views and the module's dependencies through it. Two
     /// modules routing one path fail the build of the framework with axum's panic.
-    pub fn routes(self, routes: Router<Arc<Cqrs>>) -> Self {
+    pub fn routes(self, routes: Router<Arc<Cqrsx>>) -> Self {
         self.endpoints(routes)
     }
 }
 
-impl Cqrs {
+impl Cqrsx {
     /// The routes of every module under this framework, in the order the modules were registered, with a trace of every
     /// request (`TraceLayer::new_for_http`). Two modules routing one path fail with axum's panic.
     pub fn router(self: &Arc<Self>) -> Router {
-        self.endpoints::<Router<Arc<Cqrs>>>()
+        self.endpoints::<Router<Arc<Cqrsx>>>()
             .fold(Router::new(), |router, routes| router.merge(routes.clone()))
             .layer(TraceLayer::new_for_http())
             .with_state(self.clone())
     }
 }
 
-/// Serves [`Cqrs::router`] on `listener` until the framework stops ([`Cqrs::stopping`]): the server of
-/// [`Builder::serve`](crate::build::Builder::serve) and the `inbound` of [`Cqrs::run`].
-pub async fn server(listener: TcpListener, cqrs: Arc<Cqrs>) -> io::Result<()> {
+/// Serves [`Cqrsx::router`] on `listener` until the framework stops ([`Cqrsx::stopping`]): the server of
+/// [`Builder::serve`](crate::build::Builder::serve) and the `inbound` of [`Cqrsx::run`].
+pub async fn server(listener: TcpListener, cqrsx: Arc<Cqrsx>) -> io::Result<()> {
     // axum 0.8: `with_graceful_shutdown` returns an `IntoFuture`, not a `Future`: awaiting it converts.
-    ::axum::serve(listener, cqrs.router())
-        .with_graceful_shutdown(cqrs.stopping().cancelled_owned())
+    ::axum::serve(listener, cqrsx.router())
+        .with_graceful_shutdown(cqrsx.stopping().cancelled_owned())
         .await
 }
 
@@ -56,8 +56,8 @@ mod tests {
 
     /// The front of the box office: a hall by its show, and a health check, routed in two calls.
     fn front(_: &Setup) -> Result<Module, SetupError> {
-        async fn hall(State(cqrs): State<Arc<Cqrs>>, Path(show): Path<String>) -> String {
-            match cqrs.view::<Hall>().get(&show).await {
+        async fn hall(State(cqrsx): State<Arc<Cqrsx>>, Path(show): Path<String>) -> String {
+            match cqrsx.view::<Hall>().get(&show).await {
                 Ok(Some(hall)) => format!("{:?}", hall.view.seats),
                 _ => "none".to_owned(),
             }
@@ -84,7 +84,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn the_axum_server_answers_the_routes_of_its_modules_and_stops_on_the_signal() {
         let mailbox = Arc::new(Mailbox::default());
-        let cqrs = Arc::new(
+        let cqrsx = Arc::new(
             memory_builder()
                 .module(shows)
                 .module(wallets)
@@ -94,22 +94,24 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        cqrs.source("ui")
+        cqrsx
+            .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        let checkpoints = cqrs.checkpoints().unwrap().clone();
+        let checkpoints = cqrsx.checkpoints().unwrap().clone();
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let served = tokio::spawn({
-            let cqrs = cqrs.clone();
+            let cqrsx = cqrsx.clone();
             async move {
-                cqrs.run(server(listener, cqrs.clone()), async move {
-                    let _ = stopped.await;
-                    Ok(())
-                })
-                .await
+                cqrsx
+                    .run(server(listener, cqrsx.clone()), async move {
+                        let _ = stopped.await;
+                        Ok(())
+                    })
+                    .await
             }
         });
         assert_eq!(fetch(addr, "/health").await, ("HTTP/1.1 200 OK".to_owned(), "ok".to_owned()));
@@ -134,8 +136,8 @@ mod tests {
 
     #[tokio::test]
     async fn a_framework_without_task_types_runs_the_axum_server_until_the_signal() {
-        let cqrs = Arc::new(memory_builder().module(front).build().await.unwrap());
+        let cqrsx = Arc::new(memory_builder().module(front).build().await.unwrap());
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
-        cqrs.run(server(listener, cqrs.clone()), async { Ok(()) }).await.unwrap();
+        cqrsx.run(server(listener, cqrsx.clone()), async { Ok(()) }).await.unwrap();
     }
 }

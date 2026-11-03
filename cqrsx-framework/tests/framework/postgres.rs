@@ -6,7 +6,7 @@ use cqrsx::{command::causation::CORRELATION_ID, journal::feed::Position};
 use cqrsx_fixtures::mongo::Mongo;
 #[cfg(feature = "operation-utils")]
 use cqrsx_framework::views::JournalTotals;
-use cqrsx_framework::{Cqrs, build::BuildError, memory::InMemory, postgres::Postgres, settings::Defaults};
+use cqrsx_framework::{Cqrsx, build::BuildError, memory::InMemory, postgres::Postgres, settings::Defaults};
 use std::{collections::BTreeMap, sync::Arc};
 use uuid::Uuid;
 
@@ -36,9 +36,9 @@ fn variables(url: String, read_db: String) -> impl Fn(&str) -> Option<String> + 
 }
 
 /// Books A1 for fox, runs the step and the e-mail, lets the halls catch up: what both stores of the views show alike.
-async fn book_and_follow_the_chain(cqrs: &Cqrs, outbox: &Outbox) {
+async fn book_and_follow_the_chain(cqrsx: &Cqrsx, outbox: &Outbox) {
     let booking_id = Uuid::now_v7();
-    let booked = cqrs
+    let booked = cqrsx
         .source("ui")
         .execute_with_id::<Show>(
             booking_id,
@@ -57,21 +57,21 @@ async fn book_and_follow_the_chain(cqrs: &Cqrs, outbox: &Outbox) {
         "the policy's budget from SHOP_ATTEMPTS"
     );
     assert_eq!(
-        cqrs.run_tasks().await,
+        cqrsx.run_tasks().await,
         2,
         "the step on the queue in PostgreSQL, then its e-mail"
     );
     assert_eq!(*outbox.0.lock().unwrap(), ["fox:A1"]);
     #[cfg(feature = "operation-utils")]
     {
-        let recorded = cqrs.history::<Wallet>(&"fox".into()).await.unwrap();
+        let recorded = cqrsx.history::<Wallet>(&"fox".into()).await.unwrap();
         assert_eq!(recorded[0].metadata[CORRELATION_ID], booking_id.to_string(), "one chain");
     }
-    assert_eq!(cqrs.run_tasks().await, 0, "nothing more is due");
-    cqrs.catch_up().await;
-    let hall = cqrs.view::<Hall>().get(&"s-1").await.unwrap().unwrap();
+    assert_eq!(cqrsx.run_tasks().await, 0, "nothing more is due");
+    cqrsx.catch_up().await;
+    let hall = cqrsx.view::<Hall>().get(&"s-1").await.unwrap().unwrap();
     assert_eq!(hall.view.seats, BTreeMap::from([("A1".to_owned(), "fox".to_owned())]));
-    let views = cqrs.views();
+    let views = cqrsx.views();
     assert_eq!(views.lag("halls").await.unwrap(), 0);
     #[cfg(feature = "operation-utils")]
     {
@@ -96,7 +96,7 @@ async fn book_and_follow_the_chain(cqrs: &Cqrs, outbox: &Outbox) {
 
 fn framework(url: String, read_db: String, outbox: &Arc<Outbox>) -> cqrsx_framework::build::Builder {
     let mail: Arc<Mailer> = outbox.clone();
-    Cqrs::from_lookup("SHOP", move |name| match name {
+    Cqrsx::from_lookup("SHOP", move |name| match name {
         "SHOP_NODE_NAME" => Some("node-a".to_owned()),
         other => variables(url.clone(), read_db.clone())(other),
     })
@@ -113,13 +113,13 @@ async fn the_modules_run_on_postgres_with_their_views_in_mongodb() {
     let (database, mongo) = (Database::new().await, Mongo::start().await);
     let outbox = Arc::new(Outbox::default());
     let read_db = mongo.database.name().to_owned();
-    let cqrs = framework(url(&database), read_db, &outbox)
+    let cqrsx = framework(url(&database), read_db, &outbox)
         .projections(cqrsx_framework::mongodb::MongoDb)
         .mongodb_client(mongo.database.client().clone())
         .build()
         .await
         .unwrap();
-    book_and_follow_the_chain(&cqrs, &outbox).await;
+    book_and_follow_the_chain(&cqrsx, &outbox).await;
     let stored = mongo
         .database
         .collection::<mongodb::bson::Document>("halls")
@@ -127,7 +127,7 @@ async fn the_modules_run_on_postgres_with_their_views_in_mongodb() {
         .await
         .unwrap();
     assert_eq!(stored, 1, "the hall is a document of the read database");
-    drop(cqrs);
+    drop(cqrsx);
     mongo.close().await;
     database.close().await;
 }
@@ -143,18 +143,18 @@ async fn the_modules_run_on_postgres_with_their_views_in_postgres() {
     .await
     .unwrap();
     let outbox = Arc::new(Outbox::default());
-    let cqrs = framework(url(&database), "unused".into(), &outbox)
+    let cqrsx = framework(url(&database), "unused".into(), &outbox)
         .projections(Postgres)
         .build()
         .await
         .unwrap();
-    book_and_follow_the_chain(&cqrs, &outbox).await;
+    book_and_follow_the_chain(&cqrsx, &outbox).await;
     let stored: i64 = sqlx::query_scalar("SELECT count(*) FROM projection_checkpoints WHERE projection = 'halls'")
         .fetch_one(&database.pool)
         .await
         .unwrap();
     assert_eq!(stored, 1, "the checkpoint is a row of the database");
-    drop(cqrs);
+    drop(cqrsx);
     database.close().await;
 }
 
@@ -164,7 +164,7 @@ async fn the_modules_run_on_postgres_with_their_views_in_postgres() {
 async fn the_framework_opens_its_pools_as_the_plan_says() {
     let database = Database::new().await;
     let outbox = Arc::new(Outbox::default());
-    let cqrs = framework(url(&database), "unused".into(), &outbox)
+    let cqrsx = framework(url(&database), "unused".into(), &outbox)
         .projections(InMemory)
         .build()
         .await
@@ -177,8 +177,8 @@ async fn the_framework_opens_its_pools_as_the_plan_says() {
         opened, 3,
         "the main, the projection and the history pool, one connection each"
     );
-    drop(cqrs);
-    let lazy = Cqrs::from_lookup("SHOP", {
+    drop(cqrsx);
+    let lazy = Cqrsx::from_lookup("SHOP", {
         let url = url(&database);
         move |name| match name {
             "SHOP_DATABASE_URL" => Some(url.clone()),
@@ -201,7 +201,7 @@ async fn the_framework_opens_its_pools_as_the_plan_says() {
         ("SHOP_MONGODB_URI", "nonsense://", "SHOP_MONGODB_URI: "),
     ] {
         let url = url(&database);
-        let error = Cqrs::from_lookup("SHOP", move |asked| match asked {
+        let error = Cqrsx::from_lookup("SHOP", move |asked| match asked {
             asked if asked == name => Some(value.to_owned()),
             "SHOP_DATABASE_URL" => Some(url.clone()),
             _ => None,
@@ -228,14 +228,15 @@ async fn the_framework_opens_its_pools_as_the_plan_says() {
 async fn the_process_runs_the_tasks_on_postgres_until_the_signal() {
     let database = Database::new().await;
     let outbox = Arc::new(Outbox::default());
-    let cqrs = Arc::new(
+    let cqrsx = Arc::new(
         framework(url(&database), "unused".into(), &outbox)
             .projections(InMemory)
             .build()
             .await
             .unwrap(),
     );
-    cqrs.source("ui")
+    cqrsx
+        .source("ui")
         .execute::<Show>(
             &"s-1".into(),
             BookSeat {
@@ -249,13 +250,14 @@ async fn the_process_runs_the_tasks_on_postgres_until_the_signal() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
     let served = tokio::spawn({
-        let cqrs = cqrs.clone();
+        let cqrsx = cqrsx.clone();
         async move {
-            cqrs.run(cqrsx_framework::axum::server(listener, cqrs.clone()), async move {
-                let _ = stopped.await;
-                Ok(())
-            })
-            .await
+            cqrsx
+                .run(cqrsx_framework::axum::server(listener, cqrsx.clone()), async move {
+                    let _ = stopped.await;
+                    Ok(())
+                })
+                .await
         }
     });
     tokio::time::timeout(std::time::Duration::from_secs(30), async {

@@ -2,7 +2,7 @@
 
 **What.** On PostgreSQL the framework opens three pools: main, projection and history
 ([`cqrsx-framework/src/postgres.rs`](../../cqrsx-framework/src/postgres.rs)). Only the operations of the feature
-`operation-utils` read the history pool: `Cqrs::history`, `Views::verify` and `Views::totals`. A framework built without
+`operation-utils` read the history pool: `Cqrsx::history`, `Views::verify` and `Views::totals`. A framework built without
 the feature still opens it, and the variable `DATABASE_HISTORY_POOL_SIZE` is read and described although it changes
 nothing. The field `Registered.history` of [`cqrsx-framework/src/views.rs`](../../cqrsx-framework/src/views.rs) carries
 `expect(dead_code)` in that build.
@@ -24,7 +24,7 @@ feature uses.
 The pool exists for three methods, and the value of each in the framework is not established. If none of them belongs in
 the framework, the pool, its variable and this issue go with them.
 
-- **`Cqrs::history`**: every event of one aggregate, without a bound. Its one user is the demo's time machine
+- **`Cqrsx::history`**: every event of one aggregate, without a bound. Its one user is the demo's time machine
   (`concert/application/time_travel.rs`). The use case it serves in general is an audit trail of an entity; whether an
   application needs it from the framework rather than from a view of its own is open.
 - **`Views::totals`**: `count(*)` and `count(DISTINCT aggregate_id)` over the whole journal of every aggregate type

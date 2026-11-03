@@ -7,7 +7,7 @@ use crate::postgres::Postgres;
 #[cfg(feature = "event-store-postgres")]
 use crate::postgres::PostgresPools;
 use crate::{
-    Cqrs,
+    Cqrsx,
     module::{AggregateEntry, Module, ObservedProcessor, ProjectionObserverFactory, ViewEntry},
     settings::{Defaults, Settings, SettingsError},
     setup::{Lookup, Setup, SetupError},
@@ -63,7 +63,7 @@ pub enum BuildError {
     ViewTwice(&'static str),
     #[error("the module `{0}` registers a second observer of the commands or of the processors")]
     ObserverTwice(&'static str),
-    /// One key of the framework's description ([`Cqrs::description`]) with two values: from the framework's settings, a module
+    /// One key of the framework's description ([`Cqrsx::description`]) with two values: from the framework's settings, a module
     /// (`Setup::describe`, `Setup::env`) or two modules. The same value twice is one entry.
     #[error("the key `{key}` is described twice, as `{first}` and as `{second}`")]
     DescribedTwice { key: String, first: String, second: String },
@@ -207,7 +207,7 @@ impl Builder {
         }
     }
 
-    /// The application's values where a variable is absent, and its name (`Cqrs::from_env`, `Cqrs::from_lookup`).
+    /// The application's values where a variable is absent, and its name (`Cqrsx::from_env`, `Cqrsx::from_lookup`).
     pub fn defaults(mut self, defaults: Defaults) -> Self {
         self.defaults = defaults;
         self
@@ -266,7 +266,7 @@ impl Builder {
 
     /// The framework: its settings, its modules set up and checked, its stores opened (or taken from the application),
     /// its components assembled over them; or the first refusal.
-    pub async fn build(self) -> Result<Cqrs, BuildError> {
+    pub async fn build(self) -> Result<Cqrsx, BuildError> {
         self.assemble()?.open().await
     }
 
@@ -348,33 +348,33 @@ impl Builder {
 impl Assembly {
     /// The framework: its stores opened (or taken from the application), its components installed over them from the
     /// assembly; or the first refusal.
-    pub(crate) async fn open(mut self) -> Result<Cqrs, BuildError> {
+    pub(crate) async fn open(mut self) -> Result<Cqrsx, BuildError> {
         let event_store = self.stores.ensure_chosen(!self.views.is_empty())?;
         let aggregates = std::mem::take(&mut self.aggregates);
         let views = std::mem::take(&mut self.views);
         let adapters = std::mem::take(&mut self.adapters);
         let stores = std::mem::take(&mut self.stores);
         let journal = stores.open(event_store, &self.settings).await?;
-        let mut cqrs = self.over(journal);
+        let mut cqrsx = self.over(journal);
         for entry in aggregates {
             // The rules are gone only when a test took them.
-            entry.rules.map_or(Ok(()), |rules| (entry.install)(&mut cqrs, rules))?;
+            entry.rules.map_or(Ok(()), |rules| (entry.install)(&mut cqrsx, rules))?;
         }
         for entry in views {
-            (entry.install)(&mut cqrs)?;
+            (entry.install)(&mut cqrsx)?;
         }
         // A dispatcher needs a handler: a framework without task types runs none.
         if !adapters.is_empty() {
-            let dispatcher = TaskDispatcher::assemble(adapters, cqrs.dependencies.clone(), cqrs.executors.clone())?;
-            cqrs.dispatcher = Some(Arc::new(dispatcher));
+            let dispatcher = TaskDispatcher::assemble(adapters, cqrsx.dependencies.clone(), cqrsx.executors.clone())?;
+            cqrsx.dispatcher = Some(Arc::new(dispatcher));
         }
-        Ok(cqrs)
+        Ok(cqrsx)
     }
 
-    /// The framework before its components: the assembly over the opened stores, the one place that makes a [`Cqrs`].
-    fn over(self, journal: Journal) -> Cqrs {
+    /// The framework before its components: the assembly over the opened stores, the one place that makes a [`Cqrsx`].
+    fn over(self, journal: Journal) -> Cqrsx {
         let shutdown = CancellationToken::new();
-        Cqrs {
+        Cqrsx {
             settings: self.settings,
             owner: self.owner,
             policies: self.policies,
@@ -503,7 +503,7 @@ impl Assembly {
     }
 }
 
-impl Cqrs {
+impl Cqrsx {
     /// Installs the executor of `A` over the framework's journal, with the rules its module registered: one per aggregate
     /// type, shared by the entry points (`source(..).execute`) and the task handlers (`ctx.execute`).
     pub(crate) fn install_aggregate<A>(&mut self, rules: Box<dyn Any + Send>) -> Result<(), BuildError>
@@ -713,14 +713,14 @@ mod tests {
         time::Duration,
     };
 
-    fn view_parts(cqrs: &mut Cqrs) -> ViewParts<'_> {
+    fn view_parts(cqrsx: &mut Cqrsx) -> ViewParts<'_> {
         ViewParts {
-            settings: &cqrs.settings,
-            owner: &cqrs.owner,
-            projection_observer: &cqrs.projection_observer,
-            wakeups: &mut cqrs.wakeups,
-            processors: &mut cqrs.processors,
-            views: &mut cqrs.views,
+            settings: &cqrsx.settings,
+            owner: &cqrsx.owner,
+            projection_observer: &cqrsx.projection_observer,
+            wakeups: &mut cqrsx.wakeups,
+            processors: &mut cqrsx.processors,
+            views: &mut cqrsx.views,
         }
     }
 
@@ -742,7 +742,7 @@ mod tests {
         );
         let in_one_module = module(|module| module.aggregate::<Show>(()).aggregate::<Show>(()));
         assert!(matches!(
-            Cqrs::with_settings(Settings::default())
+            Cqrsx::with_settings(Settings::default())
                 .module(in_one_module)
                 .assemble()
                 .err(),
@@ -786,10 +786,10 @@ mod tests {
     fn a_task_type_has_the_policy_it_was_registered_with() {
         let slow = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(9)), NonZeroU16::new(2).unwrap());
         let roots = module(move |module| module.provide(Arc::new(Mailbox::default())).task(RecordInWallet, slow));
-        let assembly = Cqrs::with_settings(Settings::default()).module(roots).assemble().unwrap();
+        let assembly = Cqrsx::with_settings(Settings::default()).module(roots).assemble().unwrap();
         let policies = assembly.policies();
         assert_eq!(policies.policy_for(&TaskFormat::of::<RecordTicket>()), slow);
-        let defaults = Cqrs::with_settings(Settings::default()).module(wallets).assemble().unwrap();
+        let defaults = Cqrsx::with_settings(Settings::default()).module(wallets).assemble().unwrap();
         assert_eq!(
             defaults.policies().policy_for(&TaskFormat::of::<RecordTicket>()),
             TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(3).unwrap())
@@ -806,7 +806,7 @@ mod tests {
                 .provide(Arc::new(Mailbox::default()))
                 .task(SendMail, TaskPolicy::default())
         });
-        let kept = Cqrs::with_settings(Settings::default()).module(kept).assemble().unwrap();
+        let kept = Cqrsx::with_settings(Settings::default()).module(kept).assemble().unwrap();
         assert_eq!(
             kept.policies().policy_for(&TaskFormat::of::<MailTicket>()),
             TaskPolicy::default()
@@ -838,7 +838,7 @@ mod tests {
 
     #[test]
     fn a_key_described_with_two_values_fails_the_build() {
-        let lookup = || Cqrs::from_lookup("SHOP", |_| None);
+        let lookup = || Cqrsx::from_lookup("SHOP", |_| None);
         let snapshots = |setup: &Setup| -> Result<Module, SetupError> {
             setup.describe("SHOP_SNAPSHOT_EVERY", "11");
             Ok(Module::new("snapshots"))
@@ -880,11 +880,11 @@ mod tests {
             Ok(Module::new("reader"))
         };
         let other = |setup: &Setup| setup.env("LIMIT", 4).map(|_| Module::new("other"));
-        let builder = Cqrs::from_lookup("SHOP", |name| (name == "SHOP_LIMIT").then(|| "5".to_owned()))
+        let builder = Cqrsx::from_lookup("SHOP", |name| (name == "SHOP_LIMIT").then(|| "5".to_owned()))
             .event_store(InMemory)
             .projections(InMemory);
-        let cqrs = ready(builder.module(reader).module(other).build()).unwrap();
-        let described = cqrs.description();
+        let cqrsx = ready(builder.module(reader).module(other).build()).unwrap();
+        let described = cqrsx.description();
         assert_eq!(
             (described.get("SHOP_LIMIT"), described.get("SHOP_SNAPSHOT_EVERY")),
             (Some(&"5".to_owned()), Some(&"10".to_owned())),
@@ -895,7 +895,7 @@ mod tests {
     #[test]
     fn a_module_whose_setup_fails_fails_the_build() {
         let limit = |setup: &Setup| setup.env::<u32>("LIMIT", 1).map(|_| Module::new("limited"));
-        let builder = Cqrs::from_lookup("APP", |name| (name == "APP_LIMIT").then(|| "x".to_owned()));
+        let builder = Cqrsx::from_lookup("APP", |name| (name == "APP_LIMIT").then(|| "x".to_owned()));
         let refused = refusal(builder.module(limit));
         assert_eq!(
             refused.to_string(),
@@ -925,24 +925,25 @@ mod tests {
 
     #[tokio::test]
     async fn the_last_provide_wins_so_a_test_replaces_a_modules_dependency() {
-        let (cqrs, mailbox) = framework().await;
-        assert!(Arc::ptr_eq(&cqrs.dependency::<Mailbox>().unwrap(), &mailbox));
+        let (cqrsx, mailbox) = framework().await;
+        assert!(Arc::ptr_eq(&cqrsx.dependency::<Mailbox>().unwrap(), &mailbox));
         assert_eq!(
-            cqrs.dependency::<String>().unwrap_err().to_string(),
+            cqrsx.dependency::<String>().unwrap_err().to_string(),
             "the dependency `alloc::string::String` is not provided"
         );
-        cqrs.source("ui")
+        cqrsx
+            .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        cqrs.run_tasks().await;
+        cqrsx.run_tasks().await;
         assert_eq!(mailbox.sent(), ["fox:A1"], "the letter went to the mailbox of the test");
     }
 
     #[test]
     fn a_builder_a_setup_and_a_module_print_what_they_name_but_never_a_url() {
         let secret = |_: &str| Some("postgres://shop:s3cret@db/shop".to_owned());
-        let builder = Cqrs::from_lookup("SHOP", secret)
+        let builder = Cqrsx::from_lookup("SHOP", secret)
             .event_store(InMemory)
             .projections(InMemory)
             .module(shows)
@@ -970,18 +971,18 @@ mod tests {
 
     #[tokio::test]
     async fn a_processor_and_the_read_side_print_their_names() {
-        let mut cqrs = memory_builder().module(shows).build().await.unwrap();
+        let mut cqrsx = memory_builder().module(shows).build().await.unwrap();
         let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemoryCheckpointStore::default());
         let documents = Arc::new(MemoryViewRepository::<Hall, Show>::default());
-        let journal = Arc::new(cqrs.journal.memory().unwrap().journal.clone());
-        let processor = view_parts(&mut cqrs).processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
+        let journal = Arc::new(cqrsx.journal.memory().unwrap().journal.clone());
+        let processor = view_parts(&mut cqrsx).processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
         assert_eq!(
             format!("{processor:?}"),
             format!(
                 "ProjectionProcessor {{ name: {:?}, aggregate_type: {:?}, owner: {:?}, upcasters: 0, config: {:?}, .. }}",
                 Hall::NAME,
                 Show::TYPE,
-                cqrs.owner,
+                cqrsx.owner,
                 ProcessorConfig::default()
             )
         );
@@ -1008,7 +1009,7 @@ mod tests {
             .with_conflict_retry(retry)
             .with_node_name("node-a");
         let defaults = memory_builder().module(shows).build().await.unwrap();
-        let set = Cqrs::with_settings(settings)
+        let set = Cqrsx::with_settings(settings)
             .event_store(InMemory)
             .projections(InMemory)
             .module(shows)
@@ -1016,16 +1017,16 @@ mod tests {
             .await
             .unwrap();
         let mut built = Vec::new();
-        for mut cqrs in [defaults, set] {
-            let Some(Executor::Memory(executor)) = cqrs.executor_of::<Show>() else {
+        for mut cqrsx in [defaults, set] {
+            let Some(Executor::Memory(executor)) = cqrsx.executor_of::<Show>() else {
                 panic!("the executor of a framework in memory is the one in memory");
             };
             let (executor, store) = (format!("{executor:?}"), format!("{:?}", executor.store()));
             let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemoryCheckpointStore::default());
             let documents = Arc::new(MemoryViewRepository::<Hall, Show>::default());
-            let journal = Arc::new(cqrs.journal.memory().unwrap().journal.clone());
-            let processor = view_parts(&mut cqrs).processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
-            built.push((executor, store, format!("{processor:?}"), cqrs.owner.clone()));
+            let journal = Arc::new(cqrsx.journal.memory().unwrap().journal.clone());
+            let processor = view_parts(&mut cqrsx).processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
+            built.push((executor, store, format!("{processor:?}"), cqrsx.owner.clone()));
         }
         let executor = |retry: AggregateConflictRetryPolicy, limits: LockLimits| {
             format!("retry_policy: {retry:?}, lock_limits: {limits:?}, commit_wakeup: true, observer: false")
@@ -1054,11 +1055,11 @@ mod tests {
         assert!(set_store.contains("snapshot_policy: Every(3)"), "{set_store}");
         assert!(set_processor.contains(&printed(set_owner, processor)), "{set_processor}");
         assert_eq!(set_owner, "node-a");
-        let named = Cqrs::with_settings(Settings::default().with_node_name("node-a"));
+        let named = Cqrsx::with_settings(Settings::default().with_node_name("node-a"));
         assert_eq!(named.assemble().unwrap().owner, "node-a");
         // The reactions plan with the budget of each task type's policy.
-        let (cqrs, _) = framework().await;
-        let booked = cqrs
+        let (cqrsx, _) = framework().await;
+        let booked = cqrsx
             .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
@@ -1109,7 +1110,7 @@ mod tests {
             ))
         };
         let node = Settings::default().with_node_name("node-a");
-        let cqrs = Cqrs::with_settings(node)
+        let cqrsx = Cqrsx::with_settings(node)
             .event_store(InMemory)
             .projections(InMemory)
             .module(shows)
@@ -1118,11 +1119,11 @@ mod tests {
             .build()
             .await
             .unwrap();
-        assert_eq!(cqrs.settings().node_name(), Some("node-a"));
-        let ui = cqrs.source("ui");
+        assert_eq!(cqrsx.settings().node_name(), Some("node-a"));
+        let ui = cqrsx.source("ui");
         ui.execute::<Show>(&"s-1".into(), book("A1", "fox")).await.unwrap();
         ui.execute::<Show>(&"s-1".into(), book("A1", "panda")).await.unwrap_err();
-        cqrs.run_tasks().await;
+        cqrsx.run_tasks().await;
         let again = ui.execute::<Wallet>(&"fox".into(), Record { seat: "A1".into() }).await;
         assert_eq!(again.unwrap_err(), cqrsx::command::CommandError::Rejected(AlreadyRecorded));
         assert_eq!(
@@ -1143,7 +1144,7 @@ mod tests {
         struct Routes(&'static str);
         #[derive(Debug, PartialEq)]
         struct Topics(&'static str);
-        let cqrs = memory_event_store()
+        let cqrsx = memory_event_store()
             .module(module(|module| module.endpoints(Routes("a")).endpoints(Topics("x"))))
             .module(module(|module| module.endpoints(Routes("b"))))
             .module(module(|module| module.endpoints(Topics("y")).endpoints(Routes("c"))))
@@ -1151,11 +1152,11 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            cqrs.endpoints::<Routes>().collect::<Vec<_>>(),
+            cqrsx.endpoints::<Routes>().collect::<Vec<_>>(),
             [&Routes("a"), &Routes("b"), &Routes("c")]
         );
-        assert_eq!(cqrs.endpoints::<Topics>().collect::<Vec<_>>(), [&Topics("x"), &Topics("y")]);
-        assert_eq!(cqrs.endpoints::<String>().count(), 0, "nobody registered a String");
+        assert_eq!(cqrsx.endpoints::<Topics>().collect::<Vec<_>>(), [&Topics("x"), &Topics("y")]);
+        assert_eq!(cqrsx.endpoints::<String>().count(), 0, "nobody registered a String");
         assert_eq!(
             format!("{:?}", Module::new("m").endpoints(Routes("a"))),
             r#"Module { name: "m", aggregates: [], views: [], tasks: 0, dependencies: Dependencies { count: 0 }, endpoints: 1, .. }"#
@@ -1171,7 +1172,7 @@ mod tests {
                 .observe_commands(feed)
                 .observe_projections(|_| Arc::new(Silent)))
         };
-        let builder = Cqrs::with_settings(Settings::default())
+        let builder = Cqrsx::with_settings(Settings::default())
             .module(shows)
             .module(wallets)
             .module(observers);
@@ -1216,31 +1217,31 @@ mod tests {
             dispatcher.formats(),
             [TaskFormat::of::<RecordTicket>(), TaskFormat::of::<MailTicket>()]
         );
-        let mut bare = Cqrs::with_settings(Settings::default()).module(shows).assemble().unwrap();
+        let mut bare = Cqrsx::with_settings(Settings::default()).module(shows).assemble().unwrap();
         assert!(bare.command_observer::<Show>().is_none() && bare.projection_observer("halls").is_none());
         assert!(bare.take_task_handlers().build().is_err(), "no task type");
     }
 
     /// A builder with the journal in memory and nothing else chosen.
     fn memory_event_store() -> Builder {
-        Cqrs::with_settings(Settings::default()).event_store(InMemory)
+        Cqrsx::with_settings(Settings::default()).event_store(InMemory)
     }
 
     #[test]
     fn a_framework_has_no_default_journal() {
-        let none = refusal(Cqrs::with_settings(Settings::default()).module(shows));
+        let none = refusal(Cqrsx::with_settings(Settings::default()).module(shows));
         assert!(matches!(none, BuildError::NoJournal), "{none:?}");
         assert_eq!(
             none.to_string(),
             "the framework has no journal: give the builder `event_store(..)`"
         );
         // Views in memory are no journal, and a framework without modules still needs one.
-        let views_only = refusal(Cqrs::with_settings(Settings::default()).projections(InMemory).module(shows));
+        let views_only = refusal(Cqrsx::with_settings(Settings::default()).projections(InMemory).module(shows));
         assert!(matches!(views_only, BuildError::NoJournal), "{views_only:?}");
-        let empty = refusal(Cqrs::with_settings(Settings::default()));
+        let empty = refusal(Cqrsx::with_settings(Settings::default()));
         assert!(matches!(empty, BuildError::NoJournal), "{empty:?}");
         // Its own refusals come first: the modules are checked before the stores.
-        let twice = refusal(Cqrs::with_settings(Settings::default()).module(shows).module(shows));
+        let twice = refusal(Cqrsx::with_settings(Settings::default()).module(shows).module(shows));
         assert!(matches!(twice, BuildError::AggregateTwice("show")), "{twice:?}");
     }
 
@@ -1259,7 +1260,12 @@ mod tests {
         let built = ready(memory_event_store().module(commands_only).build());
         assert!(built.is_ok(), "{:?}", built.err());
         // The task handlers need no store at all.
-        assert!(Cqrs::with_settings(Settings::default()).module(shows).task_handlers().is_ok());
+        assert!(
+            Cqrsx::with_settings(Settings::default())
+                .module(shows)
+                .task_handlers()
+                .is_ok()
+        );
     }
 
     #[test]
@@ -1274,7 +1280,7 @@ mod tests {
             refusal(memory_event_store().projections(crate::mongodb::MongoDb).module(shows)),
             BuildError::ViewsWithoutJournal("MongoDB")
         ));
-        let settings = refusal(Cqrs::from_lookup("APP", |name| {
+        let settings = refusal(Cqrsx::from_lookup("APP", |name| {
             (name == "APP_SNAPSHOT_EVERY").then(|| "x".to_owned())
         }));
         assert!(matches!(settings, BuildError::Settings(_)), "{settings:?}");
@@ -1283,7 +1289,7 @@ mod tests {
     #[tokio::test]
     async fn task_handlers_are_the_modules_with_their_dependencies() {
         let mailbox = Arc::new(Mailbox::default());
-        let handlers = Cqrs::with_settings(Settings::default())
+        let handlers = Cqrsx::with_settings(Settings::default())
             .module(shows)
             .module(wallets)
             .provide(mailbox.clone())
@@ -1304,7 +1310,7 @@ mod tests {
         .unwrap();
         assert_eq!(dispatcher.dispatch(Arc::new(attempt), Duration::ZERO).await, TaskResult::Done);
         assert_eq!(mailbox.sent(), ["fox:A1"], "the builder's mailbox, not the module's");
-        let refused = Cqrs::with_settings(Settings::default())
+        let refused = Cqrsx::with_settings(Settings::default())
             .module(shows)
             .module(shows)
             .task_handlers()

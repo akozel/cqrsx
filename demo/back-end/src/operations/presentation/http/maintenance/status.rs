@@ -8,7 +8,7 @@ use crate::{
 };
 use axum::{Json, extract::State};
 use chrono::{DateTime, SecondsFormat, Utc};
-use cqrsx_framework::Cqrs;
+use cqrsx_framework::Cqrsx;
 use serde::Serialize;
 use std::{sync::Arc, time::Duration};
 use uuid::Uuid;
@@ -156,8 +156,8 @@ impl From<ReadSideStatus> for ProjectionStatusResponse {
     }
 }
 
-pub async fn handle(State(cqrs): State<Arc<Cqrs>>) -> Result<Json<ProjectionStatusResponse>, ApiError> {
-    Ok(Json(ReadSideService::of(&cqrs)?.status().await?.into()))
+pub async fn handle(State(cqrsx): State<Arc<Cqrsx>>) -> Result<Json<ProjectionStatusResponse>, ApiError> {
+    Ok(Json(ReadSideService::of(&cqrsx)?.status().await?.into()))
 }
 
 #[cfg(test)]

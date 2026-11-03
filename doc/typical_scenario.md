@@ -26,7 +26,7 @@ and [Fan](../demo/back-end/src/fan/domain/aggregate.rs).
 
 Each command implements `Decide<A>`: given the current aggregate and its rules it returns one event or
 a rejection, without side effects. `Command` and `Decide` derive, for an aggregate's enum of commands, the information the framework needs and the routing of the decision;
-`Rejection` supplies a code and parameters. A caller uses `cqrs.source("ui").execute::<A>(&id, command)`
+`Rejection` supplies a code and parameters. A caller uses `cqrsx.source("ui").execute::<A>(&id, command)`
 (`execute_with_id` when the caller must name the command before the outcome is known);
 inside a task, `ctx.execute::<A>` continues the task's causation. The executor serializes commands per
 key in a process; an optimistic conflict across processes reloads and retries the decision. See
@@ -70,7 +70,7 @@ See [concert hall](../demo/back-end/src/concert/application/views/concert_hall.r
 The same module registrations are assembled over in-memory stores in a test (`event_store(InMemory)`,
 `projections(InMemory)`) and over PostgreSQL and MongoDB in the process (`event_store(Postgres)`,
 `projections(MongoDb)`); the builder has no default store and refuses to build without them. For a durable
-application, `Cqrs::from_env("ENCORE")` reads framework and module keys with that prefix; `OUTBOX_*`
+application, `Cqrsx::from_env("ENCORE")` reads framework and module keys with that prefix; `OUTBOX_*`
 remain unprefixed. `.defaults(DEMO_DEFAULTS)` supplies application defaults only when a variable is
 absent. Register `Postgres`, `MongoDb` and module roots, then `serve(cqrsx_framework::axum::server)` with the `axum` feature (any other server fits `serve` too). `Setup`
 provides module-local configuration and framework settings, not shared infrastructure. The exact running

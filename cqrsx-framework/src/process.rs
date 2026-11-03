@@ -1,20 +1,20 @@
 //! The process of a framework: the task runtime and the projection processors side by side with the server of the
 //! application until a signal, then stopped in order: the server, the task runtime, the processors (they finish what is
 //! in flight and give their checkpoints back), the pools. The server is any future over the framework that ends when
-//! [`Cqrs::stopping`] is cancelled: `cqrsx_framework::axum::server` (feature `axum`), a server of another protocol the
+//! [`Cqrsx::stopping`] is cancelled: `cqrsx_framework::axum::server` (feature `axum`), a server of another protocol the
 //! application brings, or none.
 //!
 //! Requires a running Tokio runtime. The process observes the shutdown signal, shares one cancellation token and drains
 //! its components; the task runtime enforces its own drain budget, and the process imposes no inbound or cleanup
 //! timeout. Dropping a polled process cancels its token and detaches the task runtime task for independent drain,
-//! without guaranteeing inbound or resource cleanup. The parts are private: [`Builder::serve`] and [`Cqrs::run`] are
+//! without guaranteeing inbound or resource cleanup. The parts are private: [`Builder::serve`] and [`Cqrsx::run`] are
 //! the way in, [`ServeError`] is what comes out, [`shutdown_signal`] is the signal.
 mod error;
 mod lifecycle;
 mod logging;
 
 use crate::{
-    Cqrs,
+    Cqrsx,
     build::{BuildError, Builder},
     setup::SetupError,
 };
@@ -84,26 +84,26 @@ type TaskRuntimeRun = Pin<Box<dyn Future<Output = Result<(), TaskRuntimeError>> 
 
 impl Builder {
     /// The process: installs the logger (`RUST_LOG`, one level, once per process), builds the framework, binds the
-    /// address of its settings and [runs](Cqrs::run) it until SIGINT or SIGTERM with `server`, which gets the listener and
+    /// address of its settings and [runs](Cqrsx::run) it until SIGINT or SIGTERM with `server`, which gets the listener and
     /// the framework and returns the future that serves it: `cqrsx_framework::axum::server` (feature `axum`), or the
     /// server of another protocol the application brings.
     pub async fn serve<S, F>(self, server: S) -> Result<(), ServeError>
     where
-        S: FnOnce(TcpListener, Arc<Cqrs>) -> F,
+        S: FnOnce(TcpListener, Arc<Cqrsx>) -> F,
         F: Future<Output = io::Result<()>>,
     {
         logging::LoggingConfig::from_env()
             .map_err(|error| ServeError::Logging(error.to_string()))?
             .try_init()
             .map_err(|error| ServeError::Logging(error.to_string()))?;
-        let cqrs = Arc::new(self.build().await?);
-        let addr = cqrs.settings().http_addr();
+        let cqrsx = Arc::new(self.build().await?);
+        let addr = cqrsx.settings().http_addr();
         let listener = TcpListener::bind(addr)
             .await
             .map_err(|source| ServeError::Bind { addr, source })?;
-        tracing::info!("{} listening on {addr}", cqrs.settings().application_name());
-        let inbound = server(listener, cqrs.clone());
-        Ok(cqrs.run(inbound, shutdown_signal()).await?)
+        tracing::info!("{} listening on {addr}", cqrsx.settings().application_name());
+        let inbound = server(listener, cqrsx.clone());
+        Ok(cqrsx.run(inbound, shutdown_signal()).await?)
     }
 }
 
@@ -135,10 +135,10 @@ async fn wait_for_signal(
     }
 }
 
-impl Cqrs {
+impl Cqrsx {
     /// Runs the framework next to the task runtime (over the framework's queue, the policies of the task types) and the
     /// projection processors until `signal` or the framework is asked to stop. `inbound` is a server over the framework
-    /// that ends when [`stopping`](Cqrs::stopping) is cancelled (`cqrsx_framework::axum::server` with the feature `axum`,
+    /// that ends when [`stopping`](Cqrsx::stopping) is cancelled (`cqrsx_framework::axum::server` with the feature `axum`,
     /// or a server the application brings), or for a process without one a future that waits for the same
     /// (`async { stopping.cancelled().await; Ok(()) }` over a clone of `stopping()`): an `inbound` that ends before the
     /// stop is a failure of the process, and the stop waits for it. `signal` ends the process ([`shutdown_signal`], or a
@@ -280,7 +280,7 @@ mod tests {
                 let addr = taken.local_addr().unwrap().to_string();
                 let serve = || {
                     let addr = addr.clone();
-                    Cqrs::from_lookup("SHOP", move |name| (name == "SHOP_HTTP_ADDR").then(|| addr.clone()))
+                    Cqrsx::from_lookup("SHOP", move |name| (name == "SHOP_HTTP_ADDR").then(|| addr.clone()))
                         .event_store(InMemory)
                         .projections(InMemory)
                         .module(shows)
@@ -301,7 +301,7 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_process_without_a_server_runs_the_tasks_and_the_processors_until_the_signal() {
         let mailbox = Arc::new(Mailbox::default());
-        let cqrs = Arc::new(
+        let cqrsx = Arc::new(
             memory_builder()
                 .module(shows)
                 .module(wallets)
@@ -310,29 +310,31 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        cqrs.source("ui")
+        cqrsx
+            .source("ui")
             .execute::<Show>(&"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        let checkpoints = cqrs.checkpoints().unwrap().clone();
+        let checkpoints = cqrsx.checkpoints().unwrap().clone();
         let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
         let running = tokio::spawn({
-            let cqrs = cqrs.clone();
+            let cqrsx = cqrsx.clone();
             async move {
-                let stopping = cqrs.stopping();
+                let stopping = cqrsx.stopping();
                 let no_server = async move {
                     stopping.cancelled().await;
                     Ok(())
                 };
-                cqrs.run(no_server, async move {
-                    let _ = stopped.await;
-                    Ok(())
-                })
-                .await
+                cqrsx
+                    .run(no_server, async move {
+                        let _ = stopped.await;
+                        Ok(())
+                    })
+                    .await
             }
         });
         tokio::time::timeout(Duration::from_secs(10), async {
-            while mailbox.sent().is_empty() || cqrs.view::<Hall>().get(&"s-1").await.unwrap().is_none() {
+            while mailbox.sent().is_empty() || cqrsx.view::<Hall>().get(&"s-1").await.unwrap().is_none() {
                 tokio::time::sleep(Duration::from_millis(10)).await;
             }
         })

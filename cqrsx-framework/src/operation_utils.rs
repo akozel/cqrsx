@@ -2,7 +2,7 @@
 //! mechanism that runs tasks. Their criterion, and what stays public without the feature, is the API rule of the
 //! framework in [`doc/components.md`](../../doc/components.md#naming-and-integration-rules).
 use crate::{
-    Cqrs,
+    Cqrsx,
     views::{Answer, CheckpointAnswer, JournalTotals, Registry, ViewQuery, Views, ViewsError},
 };
 use cqrsx::{
@@ -119,7 +119,7 @@ impl Registry {
     }
 }
 
-impl Cqrs {
+impl Cqrsx {
     /// The task handlers of every module in one dispatcher, with their dependencies and the executors of every
     /// aggregate type; `None` without a task type.
     pub fn dispatcher(&self) -> Option<&TaskDispatcher<BoxedTaskAdapter>> {
@@ -147,23 +147,23 @@ impl<V: 'static> ViewQuery<'_, V> {
 impl Views<'_> {
     /// Asks the processor of the view `name` to rebuild every document, `pace` between the events of a key.
     pub async fn request_rebuild(&self, name: &str, pace: Duration) -> Result<RebuildReply, ViewsError> {
-        Ok(self.cqrs.views.maintained(name)?.request_rebuild(pace).await?)
+        Ok(self.cqrsx.views.maintained(name)?.request_rebuild(pace).await?)
     }
 
     /// Asks the processor of the view `name` to rebuild the document of the aggregate `id`.
     pub async fn request_rebuild_key(&self, name: &str, id: &str) -> Result<(), ViewsError> {
-        Ok(self.cqrs.views.maintained(name)?.request_rebuild_key(id).await?)
+        Ok(self.cqrsx.views.maintained(name)?.request_rebuild_key(id).await?)
     }
 
     /// Every document of the view `name` against the fold of the part of its history it applied (D-20).
     pub async fn verify(&self, name: &str) -> Result<Verification, ViewsError> {
-        Ok(self.cqrs.views.maintained(name)?.verify().await?)
+        Ok(self.cqrsx.views.maintained(name)?.verify().await?)
     }
 
     /// The events of `aggregate_type` above `after`, counted up to `cap`: how far a view of the type whose checkpoint
     /// stands at `after` is behind.
     pub async fn count_after(&self, aggregate_type: &str, after: Position, cap: u64) -> Result<u64, ViewsError> {
-        let views = &self.cqrs.views.operations;
+        let views = &self.cqrsx.views.operations;
         let view = views.iter().find(|view| view.aggregate_type() == aggregate_type);
         let view = view.ok_or_else(|| ViewsError::UnknownAggregateType(aggregate_type.to_owned()))?;
         Ok(view.count_after(after, cap).await?)
@@ -173,7 +173,7 @@ impl Views<'_> {
     pub async fn totals(&self) -> Result<JournalTotals, ViewsError> {
         let mut counted = Vec::new();
         let mut totals = JournalTotals::default();
-        for (_, view) in &self.cqrs.views.maintenance {
+        for (_, view) in &self.cqrsx.views.maintenance {
             let aggregate_type = view.aggregate_type();
             if counted.contains(&aggregate_type) {
                 continue;
@@ -194,10 +194,10 @@ mod tests {
 
     #[tokio::test]
     async fn views_verify_and_take_rebuild_requests() {
-        let (cqrs, _) = framework().await;
-        book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
-        let views = cqrs.views();
-        cqrs.catch_up().await;
+        let (cqrsx, _) = framework().await;
+        book_every(&cqrsx, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
+        let views = cqrsx.views();
+        cqrsx.catch_up().await;
         let verified = views.verify("halls").await.unwrap();
         assert_eq!((verified.checked, verified.differences.len()), (2, 0));
         assert_eq!(
@@ -228,9 +228,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_view_rebuilds_the_document_of_one_aggregate_on_request() {
-        let (cqrs, _) = framework().await;
-        book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-2", "B2", "panda")]).await;
-        let halls = cqrs.view::<Hall>();
+        let (cqrsx, _) = framework().await;
+        book_every(&cqrsx, &[("s-1", "A1", "fox"), ("s-2", "B2", "panda")]).await;
+        let halls = cqrsx.view::<Hall>();
         let early = halls.rebuild(&"s-1").await.unwrap_err();
         assert!(matches!(early, ViewsError::NotStarted), "{early:?}");
         assert_eq!(
@@ -238,17 +238,17 @@ mod tests {
             "the view's processor has not started: its checkpoint is not registered yet"
         );
         let by_name = [
-            cqrs.views().request_rebuild("halls", Duration::ZERO).await.map(|_| ()),
-            cqrs.views().request_rebuild_key("halls", "s-1").await,
+            cqrsx.views().request_rebuild("halls", Duration::ZERO).await.map(|_| ()),
+            cqrsx.views().request_rebuild_key("halls", "s-1").await,
         ];
         assert!(
             by_name.iter().all(|result| matches!(result, Err(ViewsError::NotStarted))),
             "{by_name:?}"
         );
-        let unknown = cqrs.view::<String>().rebuild(&"s-1").await.unwrap_err();
+        let unknown = cqrsx.view::<String>().rebuild(&"s-1").await.unwrap_err();
         assert_eq!(unknown.to_string(), "the view `alloc::string::String` is not registered");
 
-        cqrs.catch_up().await;
+        cqrsx.catch_up().await;
         let revision = async |id: &str| halls.get(&id).await.unwrap().unwrap().revision;
         let (first, second) = (revision("s-1").await, revision("s-2").await);
         halls.rebuild(&String::from("s-1")).await.unwrap();
@@ -260,14 +260,14 @@ mod tests {
         .await
         .expect("the document is rebuilt");
         assert_eq!(revision("s-2").await, second, "the other document is not touched");
-        assert_eq!(cqrs.views().verify("halls").await.unwrap().differences.len(), 0);
+        assert_eq!(cqrsx.views().verify("halls").await.unwrap().differences.len(), 0);
     }
 
     #[tokio::test]
     async fn the_views_count_their_journal_and_its_size() {
-        let (cqrs, _) = framework().await;
-        book_every(&cqrs, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
-        let views = cqrs.views();
+        let (cqrsx, _) = framework().await;
+        book_every(&cqrsx, &[("s-1", "A1", "fox"), ("s-1", "A2", "panda"), ("s-2", "A1", "fox")]).await;
+        let views = cqrsx.views();
         assert_eq!(views.count_after("show", Position::START, 10).await.unwrap(), 3);
         assert_eq!(
             views.count_after("show", Position::START, 2).await.unwrap(),
@@ -287,7 +287,7 @@ mod tests {
             },
             "the shows, the wallets have no event yet"
         );
-        cqrs.run_tasks().await;
+        cqrsx.run_tasks().await;
         assert_eq!(
             views.totals().await.unwrap(),
             JournalTotals {

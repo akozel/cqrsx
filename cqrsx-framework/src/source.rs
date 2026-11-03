@@ -1,5 +1,5 @@
 //! A command from an entry point of the application ([`Source`]) and what became of it ([`CommandResult`]).
-use crate::Cqrs;
+use crate::Cqrsx;
 use crate::diagnostics;
 use cqrsx::{
     command::{CommandError, CommandExecutor, CommitReport, metadata::CommandMetadata},
@@ -12,13 +12,13 @@ use uuid::Uuid;
 /// after every retry, or unavailable (not run, or its outcome unknown). The same answer as the command executors'.
 pub type CommandResult<A> = Result<CommitReport<A>, CommandError<<A as Aggregate>::Rejection>>;
 
-/// An entry point of the application, e.g. the HTTP API (`cqrs.source("ui")`): the source of the commands it issues.
+/// An entry point of the application, e.g. the HTTP API (`cqrsx.source("ui")`): the source of the commands it issues.
 ///
 /// The id of a command that starts a chain is the argument of [`execute_with_id`](Source::execute_with_id);
 /// [`execute`](Source::execute) generates one. A command never tells the framework its own id: a field of it that is a
 /// `Uuid` is data.
 pub struct Source<'a> {
-    cqrs: &'a Cqrs,
+    cqrsx: &'a Cqrsx,
     source: String,
 }
 
@@ -66,7 +66,7 @@ impl Source<'_> {
             let causation = &mut metadata.causation;
             (causation.command_id, causation.correlation_id, causation.causation_id) = (command_id, command_id, command_id);
         }
-        let Some(executor) = self.cqrs.executor_of::<A>() else {
+        let Some(executor) = self.cqrsx.executor_of::<A>() else {
             diagnostics::log_unregistered_aggregate(A::TYPE);
             return Err(CommandError::Unavailable);
         };
@@ -74,11 +74,11 @@ impl Source<'_> {
     }
 }
 
-impl Cqrs {
+impl Cqrsx {
     /// The entry point `source` of the application: its commands start their chains from it.
     pub fn source(&self, source: impl Into<String>) -> Source<'_> {
         Source {
-            cqrs: self,
+            cqrsx: self,
             source: source.into(),
         }
     }
@@ -100,21 +100,24 @@ mod tests {
 
     #[tokio::test]
     async fn a_command_gets_the_given_id_or_a_fresh_one_and_the_metadata_of_its_source() {
-        let (cqrs, _) = framework().await;
+        let (cqrsx, _) = framework().await;
         let given = Uuid::now_v7();
-        cqrs.source("ui")
+        cqrsx
+            .source("ui")
             .execute_with_id::<Show>(given, &"s-1".into(), book("A1", "fox"))
             .await
             .unwrap();
-        cqrs.source("kiosk")
+        cqrsx
+            .source("kiosk")
             .execute::<Show>(&"s-1".into(), book("A2", "panda"))
             .await
             .unwrap();
-        cqrs.source("kiosk")
+        cqrsx
+            .source("kiosk")
             .execute::<Show>(&"s-1".into(), book("A3", "wolf"))
             .await
             .unwrap();
-        let events = cqrs.journal().unwrap().events::<Show>("s-1").await.unwrap();
+        let events = cqrsx.journal().unwrap().events::<Show>("s-1").await.unwrap();
         let metadata: Vec<&serde_json::Value> = events.iter().map(|event| &event.metadata).collect();
         let keys: BTreeSet<&str> = metadata[0].as_object().unwrap().keys().map(String::as_str).collect();
         assert_eq!(
@@ -159,8 +162,8 @@ mod tests {
 
     #[tokio::test]
     async fn execute_answers_a_rejection_and_an_unregistered_aggregate_is_unavailable() {
-        let (cqrs, _) = framework().await;
-        let ui = cqrs.source("ui");
+        let (cqrsx, _) = framework().await;
+        let ui = cqrsx.source("ui");
         ui.execute::<Show>(&"s-1".into(), book("A1", "fox")).await.unwrap();
         assert_eq!(
             ui.execute::<Show>(&"s-1".into(), book("A1", "panda")).await.unwrap_err(),

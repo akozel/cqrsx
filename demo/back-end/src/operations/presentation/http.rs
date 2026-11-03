@@ -4,13 +4,13 @@ use axum::{
     Router,
     routing::{get, post},
 };
-use cqrsx_framework::Cqrs;
+use cqrsx_framework::Cqrsx;
 use std::sync::Arc;
 
 pub mod activity;
 pub mod config;
 pub mod health;
-/// Serve the read side: `cqrs.views()`, `cqrs.view::<V>().rebuild(..)`.
+/// Serve the read side: `cqrsx.views()`, `cqrsx.view::<V>().rebuild(..)`.
 pub mod maintenance {
     pub mod rebuild;
     pub mod status;
@@ -18,7 +18,7 @@ pub mod maintenance {
 }
 
 /// The URL table of the operations: a section per kind, one line per endpoint.
-pub fn routes() -> Router<Arc<Cqrs>> {
+pub fn routes() -> Router<Arc<Cqrsx>> {
     Router::new()
         // maintenance: the read side
         .route("/api/projections/rebuild", post(maintenance::rebuild::handle))

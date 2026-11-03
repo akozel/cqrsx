@@ -10,14 +10,14 @@ use cqrsx::{
     task::policy::Policies,
     view::{View, repository::StoredView},
 };
-use cqrsx_framework::{Cqrs, build::Builder, memory::InMemory, settings::Settings};
+use cqrsx_framework::{Cqrsx, build::Builder, memory::InMemory, settings::Settings};
 use std::{collections::HashMap, future::Future, sync::Arc};
 
 /// The modules of the box office as `main.rs` registers them, over the variables `pairs` (full names) and the demo's
 /// defaults, in memory.
 pub fn app(pairs: &[(&str, &str)]) -> Builder {
     let pairs: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
-    Cqrs::from_lookup("ENCORE", move |name| pairs.get(name).cloned())
+    Cqrsx::from_lookup("ENCORE", move |name| pairs.get(name).cloned())
         .defaults(DEMO_DEFAULTS)
         .event_store(InMemory)
         .projections(InMemory)
@@ -28,11 +28,11 @@ pub fn app(pairs: &[(&str, &str)]) -> Builder {
 
 /// The box office on the framework in memory: the modules `concert`, `fan` and `operations` as the process registers
 /// them, with a mail service that records the letters instead of the module's (a test's `provide` wins).
-pub async fn test_app() -> (Cqrs, Arc<RecordingMailer>) {
+pub async fn test_app() -> (Cqrsx, Arc<RecordingMailer>) {
     let mail = Arc::new(RecordingMailer::delivering());
     let mailer: Arc<Mailer> = mail.clone();
-    let cqrs = app(&[]).provide(mailer).build().await.expect("the modules assemble");
-    (cqrs, mail)
+    let cqrsx = app(&[]).provide(mailer).build().await.expect("the modules assemble");
+    (cqrsx, mail)
 }
 
 /// The activity feed's observer of the command executors, publishing to `activity`: what the composition registers
@@ -62,8 +62,8 @@ pub fn ready<F: Future>(future: F) -> F::Output {
 }
 
 /// Writes `documents` into the repository of the view `V` of the framework in memory, as a processor would have.
-pub fn put<V: View<A> + 'static, A: Aggregate + 'static>(cqrs: &Cqrs, documents: impl IntoIterator<Item = StoredView<V>>) {
-    let repository = cqrs.documents::<V, A>().expect("a view of the framework in memory");
+pub fn put<V: View<A> + 'static, A: Aggregate + 'static>(cqrsx: &Cqrsx, documents: impl IntoIterator<Item = StoredView<V>>) {
+    let repository = cqrsx.documents::<V, A>().expect("a view of the framework in memory");
     for document in documents {
         repository
             .put(&document.id, document.revision, document.last_sequence, &document.view)

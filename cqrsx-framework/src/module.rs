@@ -1,5 +1,5 @@
 //! A module: what one part of an application plugs into the framework, registered in its root.
-use crate::{Cqrs, build::BuildError};
+use crate::{Cqrsx, build::BuildError};
 use cqrsx::{
     command::observer::AnyCommandObserver,
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
@@ -104,7 +104,7 @@ impl Module {
             id: TypeId::of::<A>(),
             name: A::TYPE,
             rules: Some(Box::new(rules)),
-            install: Cqrs::install_aggregate::<A>,
+            install: Cqrsx::install_aggregate::<A>,
         });
         self
     }
@@ -113,7 +113,7 @@ impl Module {
     pub fn view<V: View<A> + PartialEq + 'static, A: Aggregate + 'static>(mut self) -> Self {
         self.views.push(ViewEntry {
             name: V::NAME,
-            install: Cqrs::install_view::<V, A>,
+            install: Cqrsx::install_view::<V, A>,
         });
         self
     }
@@ -158,7 +158,7 @@ impl Module {
 
     /// The endpoints of the module in the type of the server that serves them: the routes of axum
     /// ([`Module::routes`], feature `axum`), or those of a server of another protocol the application brings; the
-    /// framework keeps them in the order of registration for [`Cqrs::endpoints`].
+    /// framework keeps them in the order of registration for [`Cqrsx::endpoints`].
     pub fn endpoints<T: Any + Send + Sync>(mut self, endpoints: T) -> Self {
         self.endpoints.push(Box::new(endpoints));
         self
@@ -170,11 +170,11 @@ pub(crate) struct AggregateEntry {
     pub(crate) id: TypeId,
     pub(crate) name: &'static str,
     pub(crate) rules: Option<Box<dyn Any + Send>>,
-    pub(crate) install: fn(&mut Cqrs, Box<dyn Any + Send>) -> Result<(), BuildError>,
+    pub(crate) install: fn(&mut Cqrsx, Box<dyn Any + Send>) -> Result<(), BuildError>,
 }
 
 /// A registered view: its name and how the framework installs its processor.
 pub(crate) struct ViewEntry {
     pub(crate) name: &'static str,
-    pub(crate) install: fn(&mut Cqrs) -> Result<(), BuildError>,
+    pub(crate) install: fn(&mut Cqrsx) -> Result<(), BuildError>,
 }

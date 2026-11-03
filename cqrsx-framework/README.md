@@ -7,7 +7,7 @@ features. The framework holds no logic of its own: the components it assembles, 
 rules are in the README of the core, the crates and their boundaries in
 [`doc/crates.md`](../doc/crates.md).
 
-The application registers its pieces in modules and builds `Cqrs` over the stores it names: `event_store(Postgres)` and
+The application registers its pieces in modules and builds `Cqrsx` over the stores it names: `event_store(Postgres)` and
 `projections(Postgres)` or `projections(MongoDb)`; a test names `InMemory` for both.
 The [typical scenario](../doc/typical_scenario.md) follows a cancellation through a refund.
 
@@ -43,7 +43,7 @@ use cqrsx::{
     view::View,
     worker::{TaskResult, context::TaskContext, task_handler},
 };
-use cqrsx_framework::{Cqrs, memory::InMemory, module::Module, setup::{Setup, SetupError}};
+use cqrsx_framework::{Cqrsx, memory::InMemory, module::Module, setup::{Setup, SetupError}};
 use serde::{Deserialize, Serialize};
 use std::{
     collections::BTreeMap,
@@ -272,18 +272,18 @@ fn wallets(setup: &Setup) -> Result<Module, SetupError> {
 async fn main() {
     let outbox = Arc::new(Outbox::default());
     let mail: Arc<Mailer> = outbox.clone();
-    let cqrs = Cqrs::from_lookup("SHOP", |_| None)
+    let cqrsx = Cqrsx::from_lookup("SHOP", |_| None)
         .event_store(InMemory).projections(InMemory)
         .module(box_office).module(wallets)
         .provide(mail).build().await.unwrap();
     let booking_id = Uuid::now_v7();
-    cqrs.source("ui").execute::<Show>(&"show-1".into(), BookSeat {
+    cqrsx.source("ui").execute::<Show>(&"show-1".into(), BookSeat {
         seat: "A1".into(), fan: "fox".into(), booking_id,
     }).await.unwrap();
-    assert_eq!(cqrs.run_tasks().await, 2); // record the ticket, then mail it
+    assert_eq!(cqrsx.run_tasks().await, 2); // record the ticket, then mail it
     assert_eq!(*outbox.0.lock().unwrap(), ["fox:A1"]);
-    cqrs.catch_up().await;
-    let hall = cqrs.view::<Hall>().get(&"show-1").await.unwrap().unwrap();
+    cqrsx.catch_up().await;
+    let hall = cqrsx.view::<Hall>().get(&"show-1").await.unwrap().unwrap();
     assert_eq!(hall.view.seats.get("A1").map(String::as_str), Some("fox"));
 }
 ```
@@ -300,7 +300,7 @@ applied before the first start ([Applying the schemas](#applying-the-schemas)).
 //! Encore back-end: the box office on the cqrsx framework. The framework reads its settings from the `ENCORE_*` variables
 //! (and the library's `OUTBOX_*`), keeps the journal in PostgreSQL and the read models in MongoDB, and serves the HTTP
 //! API of the modules next to the task runtime and the projection processors until a signal.
-use cqrsx_framework::{Cqrs, mongodb::MongoDb, postgres::Postgres};
+use cqrsx_framework::{Cqrsx, mongodb::MongoDb, postgres::Postgres};
 use encore_backend::{DEMO_DEFAULTS, concert, fan, operations};
 
 fn fail(message: impl std::fmt::Display) -> ! {
@@ -312,7 +312,7 @@ fn fail(message: impl std::fmt::Display) -> ! {
 #[tokio::main]
 async fn main() {
     dotenvy::dotenv().ok();
-    let served = Cqrs::from_env("ENCORE")
+    let served = Cqrsx::from_env("ENCORE")
         .defaults(DEMO_DEFAULTS)
         .event_store(Postgres)
         .projections(MongoDb)
@@ -334,9 +334,9 @@ async fn main() {
 | `event-store-postgres` | the event store (the journal, the snapshots, the outbox and the task queue) in PostgreSQL: the marker `Postgres` of `Builder::event_store`, and the module `postgres` with the stores, the pools and the schemas | yes |
 | `projections-postgres` | the views and the checkpoints of their processors in PostgreSQL: the marker `Postgres` of `Builder::projections`; includes `event-store-postgres` | no |
 | `projections-mongodb` | the views and the checkpoints of their processors in MongoDB: the marker `MongoDb` of `Builder::projections`, and the module `mongodb`; includes `event-store-postgres` | no |
-| `axum` | the HTTP API over axum 0.8: `Module::routes`, `Cqrs::router` (with `TraceLayer`) and the server `axum::server`; the process (logger, shutdown signals, the coordinated stop of the server, the task runtime and the processors) is the crate's own, whatever the feature. `Cqrs::run` takes any server, and `Module::endpoints` holds a module's endpoints in the type of a server the application brings (gRPC, MQTT) | no |
-| `operation-utils` | the operations that read without a bound or change the read side: `Cqrs::history` and `Cqrs::dispatcher`; `Views::{totals, verify, count_after, request_rebuild, request_rebuild_key}`; `ViewQuery::rebuild`. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
-| `test-utils` | the framework in memory: the marker `memory::InMemory` for `Builder::event_store` and `Builder::projections`, and the helpers of a test that drives it: `Cqrs::{run_tasks, catch_up}` and the raw stores, `journal`, `outbox`, `checkpoints`, `documents::<V, A>` (the stores themselves come with the core's feature `test-utils`, which this one enables). An application enables it in `[dev-dependencies]`; the crate's own tests have it. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
+| `axum` | the HTTP API over axum 0.8: `Module::routes`, `Cqrsx::router` (with `TraceLayer`) and the server `axum::server`; the process (logger, shutdown signals, the coordinated stop of the server, the task runtime and the processors) is the crate's own, whatever the feature. `Cqrsx::run` takes any server, and `Module::endpoints` holds a module's endpoints in the type of a server the application brings (gRPC, MQTT) | no |
+| `operation-utils` | the operations that read without a bound or change the read side: `Cqrsx::history` and `Cqrsx::dispatcher`; `Views::{totals, verify, count_after, request_rebuild, request_rebuild_key}`; `ViewQuery::rebuild`. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
+| `test-utils` | the framework in memory: the marker `memory::InMemory` for `Builder::event_store` and `Builder::projections`, and the helpers of a test that drives it: `Cqrsx::{run_tasks, catch_up}` and the raw stores, `journal`, `outbox`, `checkpoints`, `documents::<V, A>` (the stores themselves come with the core's feature `test-utils`, which this one enables). An application enables it in `[dev-dependencies]`; the crate's own tests have it. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
 
 The framework needs a store feature, `event-store-postgres` (the default) or `test-utils`: without both it does not compile
 (`compile_error!`), for there would be nothing to give `event_store(..)`. A builder has no default stores either:
@@ -349,10 +349,10 @@ are refused when the framework is built).
 
 ## Configuration
 
-A `Builder` starts from settings of one's own (`Cqrs::with_settings`, e.g. `Settings::default()`, the library's) or from
-variables (`Cqrs::from_env`, `Cqrs::from_lookup`). Every tunable is a checked value
+A `Builder` starts from settings of one's own (`Cqrsx::with_settings`, e.g. `Settings::default()`, the library's) or from
+variables (`Cqrsx::from_env`, `Cqrsx::from_lookup`). Every tunable is a checked value
 with a default. The framework reads its settings from variables under the
-application's prefix (`Cqrs::from_env("SHOP")`: `SHOP_SNAPSHOT_EVERY`, …) and the task runtime's `OUTBOX_*` as they
+application's prefix (`Cqrsx::from_env("SHOP")`: `SHOP_SNAPSHOT_EVERY`, …) and the task runtime's `OUTBOX_*` as they
 are, with the application's `Defaults` where a variable is absent. A variable of the prefix is trimmed and counts as
 absent when blank; a value that does not parse or is out of its bounds fails the build and names its variable. A
 module reads its own variables through its `Setup`, under the same prefix.
@@ -395,14 +395,14 @@ The table lists every variable with the library's default, as `Settings::descrip
 | `MONGODB_DATABASE` | `read` | the database of the views and their checkpoints |
 | `HTTP_ADDR` | `127.0.0.1:8080` | where `Builder::serve` listens |
 
-`Cqrs::description()` (and `Settings::description()`) lists the values a running framework uses under the same names,
+`Cqrsx::description()` (and `Settings::description()`) lists the values a running framework uses under the same names,
 with the values derived from them under dotted names in lower case (`outbox.lease_budget`, the plan of each pool:
 `postgres.main.max_connections`, …) and the keys its modules describe. It holds `DATABASE_URL` as given, password
 included.
 
 ## Testing
 
-`Cqrs::with_settings(Settings::default()).event_store(InMemory).projections(InMemory)` assembles the application's
+`Cqrsx::with_settings(Settings::default()).event_store(InMemory).projections(InMemory)` assembles the application's
 modules over the stores in memory; the tools for an aggregate, a use case and a handler are in the
 [testing table of the core](../cqrsx/README.md#testing). `InMemory`, `run_tasks()`, `catch_up()` and the stores of the
 framework in memory need the feature `test-utils` in the test's `[dev-dependencies]`.
@@ -440,9 +440,9 @@ The script takes the task's id as its one parameter: from Rust
 
 ### Rebuilding and verifying views
 
-`cqrs.views()` operates the views by name; the application exposes what it needs (the demo routes them over HTTP).
+`cqrsx.views()` operates the views by name; the application exposes what it needs (the demo routes them over HTTP).
 `keys()`, `status()` and `lag(name)` are always there; the requests of a rebuild, `verify`, `count_after` and `totals`, and
-`cqrs.view::<V>().rebuild(&id)`, need the feature `operation-utils`.
+`cqrsx.view::<V>().rebuild(&id)`, need the feature `operation-utils`.
 
 - `status()`: the checkpoint rows of the framework's views, with position, owner and lease, `failures` and `last_error` of
   a failing key, and the progress of a rebuild. A failing key stops its checkpoint before it and is retried after a
@@ -450,7 +450,7 @@ The script takes the task's id as its one parameter: from Rust
 - `lag(name)`: the events above the checkpoint, counted up to `PROJECTION_LAG_CAP`.
 - `request_rebuild(name, pace)`: every document from its history, `pace` between the events of a key;
   `request_rebuild_key(name, id)`: one document. The processor that holds the checkpoint takes the request on any
-  node; live delivery goes on meanwhile. `cqrs.view::<V>().rebuild(&id)` is the same one-document request by the
+  node; live delivery goes on meanwhile. `cqrsx.view::<V>().rebuild(&id)` is the same one-document request by the
   view's type. Both ways answer `ViewsError::NotStarted` while the view's processor has not registered its
   checkpoint; repeat the request later.
 - `verify(name)`: every document against the fold of the part of its history it applied; documents behind are

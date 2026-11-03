@@ -38,7 +38,7 @@ code style is `.claude/rules/rust-style.md`.
 
 ## Command ids
 
-9. The id of a command that starts a chain is the argument of `cqrs.source("ui").execute_with_id(command_id, &id, command)`,
+9. The id of a command that starts a chain is the argument of `cqrsx.source("ui").execute_with_id(command_id, &id, command)`,
    chosen by an entry point that answers with it; `execute` generates one. A fact identified by its command gets the id
    as an explicit line where the command is built (`booking_id: command_id`). The id keys the tracing of the chain and
    the publication of its tasks (the same id twice on one aggregate publishes them once); it is not an idempotency key.
@@ -47,14 +47,14 @@ code style is `.claude/rules/rust-style.md`.
 
 10. A presentation is laid out by transport, then by kind of framework entry, then by action:
     `<module>/presentation/<transport>/<kind>/<action>.rs`, with one URL table per module in `presentation/http.rs`
-    (a section per kind, a line per endpoint). The kinds are the four entries of `Cqrs`:
+    (a section per kind, a line per endpoint). The kinds are the four entries of `Cqrsx`:
 
     | Kind | What it does | Framework entry |
     |---|---|---|
-    | `commands` | changes the state | `cqrs.source(..).execute::<A>(..)`, `execute_with_id` |
-    | `queries` | reads a projection | `cqrs.view::<V>()` with `get`, `list`, `range` |
-    | `history` | replays the journal | `cqrs.history::<A>(..)` (`operation-utils`) |
-    | `maintenance` | serves the read side | `cqrs.views()`, `cqrs.view::<V>().rebuild(..)` |
+    | `commands` | changes the state | `cqrsx.source(..).execute::<A>(..)`, `execute_with_id` |
+    | `queries` | reads a projection | `cqrsx.view::<V>()` with `get`, `list`, `range` |
+    | `history` | replays the journal | `cqrsx.history::<A>(..)` (`operation-utils`) |
+    | `maintenance` | serves the read side | `cqrsx.views()`, `cqrsx.view::<V>().rebuild(..)` |
 
     `history` reads a stream without a bound and `maintenance` changes the read side or counts without a bound, so their
     calls (`history`, `views().{request_rebuild, request_rebuild_key, verify, count_after, totals}`,

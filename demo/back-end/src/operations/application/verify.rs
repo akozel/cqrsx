@@ -1,5 +1,5 @@
 //! 🔍 Verify (D-20): every read model against the history of its aggregate, by the framework (cqrsx
-//! `view::verify`, through `cqrs.views().verify`). Documents behind the journal are counted apart; only a wrong
+//! `view::verify`, through `cqrsx.views().verify`). Documents behind the journal are counted apart; only a wrong
 //! document is a difference.
 use crate::shared::application::StorageError;
 use async_trait::async_trait;

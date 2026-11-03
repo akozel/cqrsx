@@ -59,7 +59,7 @@ use cqrsx::{
 };
 use cqrsx::{projection::checkpoint::CheckpointKey, task::policy::Policies};
 use cqrsx_framework::{
-    Cqrs,
+    Cqrsx,
     build::{BuildError, Builder},
     memory::InMemory,
     settings::{Settings, duration_text},
@@ -186,7 +186,7 @@ impl Config {
     /// The framework of the process over these variables, as `main.rs` builds it, in memory.
     fn framework(&self) -> Builder {
         let lookup = self.lookup.clone();
-        Cqrs::from_lookup("ENCORE", move |name| lookup(name))
+        Cqrsx::from_lookup("ENCORE", move |name| lookup(name))
             .defaults(DEMO_DEFAULTS)
             .event_store(InMemory)
             .projections(InMemory)
@@ -221,7 +221,7 @@ fn ready<F: std::future::Future>(future: F) -> F::Output {
 
 /// The policies of the task types of the process.
 fn policies(config: &Config) -> Result<Policies, BuildError> {
-    ready(config.framework().build()).map(|cqrs| cqrs.policies().clone())
+    ready(config.framework().build()).map(|cqrsx| cqrsx.policies().clone())
 }
 
 /// The mail service of the process, one for every worker.
@@ -258,8 +258,8 @@ fn checkpoint_keys() -> Vec<CheckpointKey> {
 /// The settings of the framework and what its modules read, without a single variable.
 async fn effective_configuration() -> String {
     let config = Config::from_lookup(|_| None).unwrap();
-    let cqrs = config.framework().build().await.unwrap();
-    render(cqrs.description())
+    let cqrsx = config.framework().build().await.unwrap();
+    render(cqrsx.description())
 }
 
 /// The keys of the settings read from a variable: the names of the variables.
