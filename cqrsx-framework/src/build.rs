@@ -291,8 +291,7 @@ impl Builder {
         let settings = setup.settings().clone();
         let described = merge_described(settings.entries().into_iter().chain(setup.described()))?;
         let (mut dependencies, mut command_observer, mut projection_observer) = (Dependencies::default(), None, None);
-        #[cfg(feature = "axum")]
-        let mut routes = axum::Router::new();
+        let mut endpoints = Vec::new();
         let mut policies = Policies::builder();
         let (mut registered, mut named) = (HashSet::new(), HashSet::new());
         let (mut aggregates, mut views, mut adapters) = (Vec::new(), Vec::new(), Vec::new());
@@ -327,10 +326,7 @@ impl Builder {
                     return Err(twice);
                 }
             }
-            #[cfg(feature = "axum")]
-            if let Some(module_routes) = module.routes {
-                routes = routes.merge(module_routes);
-            }
+            endpoints.extend(module.endpoints);
         }
         Ok(Assembly {
             owner: settings.node_name().map_or_else(|| Uuid::new_v4().to_string(), str::to_owned),
@@ -340,8 +336,7 @@ impl Builder {
             command_observer,
             projection_observer,
             described,
-            #[cfg(feature = "axum")]
-            routes,
+            endpoints,
             aggregates,
             views,
             adapters,
@@ -394,8 +389,7 @@ impl Assembly {
             described: self.described,
             journal,
             processors: Mutex::new(ProjectionRuntime::new()),
-            #[cfg(feature = "axum")]
-            routes: self.routes,
+            endpoints: self.endpoints,
             _stop: shutdown.clone().drop_guard(),
             shutdown,
         }
@@ -437,8 +431,8 @@ pub(crate) struct Assembly {
     projection_observer: Option<ProjectionObserverFactory>,
     /// The settings and what the modules read and described when they were set up, by key.
     described: BTreeMap<String, String>,
-    #[cfg(feature = "axum")]
-    routes: axum::Router<Arc<Cqrs>>,
+    /// The endpoints of every module in the order the modules were registered.
+    endpoints: Vec<Box<dyn Any + Send + Sync>>,
     aggregates: Vec<AggregateEntry>,
     views: Vec<ViewEntry>,
     adapters: Vec<BoxedTaskAdapter>,
@@ -957,12 +951,12 @@ mod tests {
         assert_eq!(format!("{setup:?}"), r#"Setup { prefix: "SHOP", .. }"#);
         assert_eq!(
             format!("{:?}", wallets(&setup).unwrap()),
-            r#"Module { name: "wallets", aggregates: ["wallet"], views: ["tickets"], tasks: 2, dependencies: Dependencies { count: 1 }, .. }"#
+            r#"Module { name: "wallets", aggregates: ["wallet"], views: ["tickets"], tasks: 2, dependencies: Dependencies { count: 1 }, endpoints: 0, .. }"#
         );
         let entry = Module::new("mail").task(SendMail, TaskPolicy::default());
         assert_eq!(
             format!("{entry:?}"),
-            r#"Module { name: "mail", aggregates: [], views: [], tasks: 1, dependencies: Dependencies { count: 0 }, .. }"#
+            r#"Module { name: "mail", aggregates: [], views: [], tasks: 1, dependencies: Dependencies { count: 0 }, endpoints: 0, .. }"#
         );
     }
 
@@ -1133,6 +1127,31 @@ mod tests {
             ]
         );
         assert_eq!(*observed.0.lock().unwrap(), ["halls@node-a", "tickets@node-a"]);
+    }
+
+    #[tokio::test]
+    async fn the_endpoints_of_the_modules_come_out_by_their_type_in_the_order_of_registration() {
+        #[derive(Debug, PartialEq)]
+        struct Routes(&'static str);
+        #[derive(Debug, PartialEq)]
+        struct Topics(&'static str);
+        let cqrs = memory_event_store()
+            .module(module(|module| module.endpoints(Routes("a")).endpoints(Topics("x"))))
+            .module(module(|module| module.endpoints(Routes("b"))))
+            .module(module(|module| module.endpoints(Topics("y")).endpoints(Routes("c"))))
+            .build()
+            .await
+            .unwrap();
+        assert_eq!(
+            cqrs.endpoints::<Routes>().collect::<Vec<_>>(),
+            [&Routes("a"), &Routes("b"), &Routes("c")]
+        );
+        assert_eq!(cqrs.endpoints::<Topics>().collect::<Vec<_>>(), [&Topics("x"), &Topics("y")]);
+        assert_eq!(cqrs.endpoints::<String>().count(), 0, "nobody registered a String");
+        assert_eq!(
+            format!("{:?}", Module::new("m").endpoints(Routes("a"))),
+            r#"Module { name: "m", aggregates: [], views: [], tasks: 0, dependencies: Dependencies { count: 0 }, endpoints: 1, .. }"#
+        );
     }
 
     #[tokio::test]

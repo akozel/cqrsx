@@ -48,7 +48,8 @@ pub(crate) struct TaskEntry {
 /// - what the handlers depend on, by type ([`provide`](Self::provide));
 /// - the observers of every command and every processor of the framework ([`observe_commands`](Self::observe_commands),
 ///   [`observe_projections`](Self::observe_projections)), e.g. for an activity feed;
-/// - with the feature `axum`, its HTTP routes, served with the routes of every module (`routes`).
+/// - its endpoints, in the type of the server that serves them ([`endpoints`](Self::endpoints); with the feature `axum`
+///   `routes`).
 #[must_use = "a module takes effect once its root returns it to the framework's builder"]
 pub struct Module {
     pub(crate) name: &'static str,
@@ -58,8 +59,7 @@ pub struct Module {
     pub(crate) dependencies: Dependencies,
     pub(crate) command_observers: Vec<Arc<dyn AnyCommandObserver>>,
     pub(crate) projection_observers: Vec<ProjectionObserverFactory>,
-    #[cfg(feature = "axum")]
-    pub(crate) routes: Option<axum::Router<Arc<Cqrs>>>,
+    pub(crate) endpoints: Vec<Box<dyn Any + Send + Sync>>,
 }
 
 // By hand: the registrations hold closures and trait objects; they print as what they name.
@@ -73,6 +73,7 @@ impl fmt::Debug for Module {
             .field("views", &views)
             .field("tasks", &self.tasks.len())
             .field("dependencies", &self.dependencies)
+            .field("endpoints", &self.endpoints.len())
             .finish_non_exhaustive()
     }
 }
@@ -87,8 +88,7 @@ impl Module {
             dependencies: Dependencies::default(),
             command_observers: Vec::new(),
             projection_observers: Vec::new(),
-            #[cfg(feature = "axum")]
-            routes: None,
+            endpoints: Vec::new(),
         }
     }
 
@@ -153,6 +153,14 @@ impl Module {
         observers: impl Fn(ObservedProcessor<'_>) -> Arc<dyn ProjectionObserver> + Send + Sync + 'static,
     ) -> Self {
         self.projection_observers.push(Arc::new(observers));
+        self
+    }
+
+    /// The endpoints of the module in the type of the server that serves them: the routes of axum
+    /// ([`Module::routes`], feature `axum`), or those of a server of another protocol the application brings; the
+    /// framework keeps them in the order of registration for [`Cqrs::endpoints`].
+    pub fn endpoints<T: Any + Send + Sync>(mut self, endpoints: T) -> Self {
+        self.endpoints.push(Box::new(endpoints));
         self
     }
 }

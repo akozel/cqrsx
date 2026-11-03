@@ -72,7 +72,7 @@ The same module registrations are assembled over in-memory stores in a test (`ev
 `projections(MongoDb)`); the builder has no default store and refuses to build without them. For a durable
 application, `Cqrs::from_env("ENCORE")` reads framework and module keys with that prefix; `OUTBOX_*`
 remain unprefixed. `.defaults(DEMO_DEFAULTS)` supplies application defaults only when a variable is
-absent. Register `Postgres`, `MongoDb` and module roots, then `serve()` with the `axum` feature. `Setup`
+absent. Register `Postgres`, `MongoDb` and module roots, then `serve(cqrsx_framework::axum::server)` with the `axum` feature (any other server fits `serve` too). `Setup`
 provides module-local configuration and framework settings, not shared infrastructure. The exact running
 assembly is [main.rs](../demo/back-end/src/main.rs); configuration and feature flags are in the
 [README](../cqrsx-framework/README.md#configuration).

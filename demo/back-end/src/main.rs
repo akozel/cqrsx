@@ -20,7 +20,7 @@ async fn main() {
         .module(concert::module)
         .module(fan::module)
         .module(operations::module)
-        .serve()
+        .serve(cqrsx_framework::axum::server)
         .await;
     if let Err(error) = served {
         fail(error)

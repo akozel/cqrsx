@@ -209,7 +209,8 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::worker::runtime",
                 "cqrsx_framework::postgres",
                 "cqrsx_framework::mongodb",
-                "cqrsx_framework::serve",
+                "cqrsx_framework::process",
+                "cqrsx_framework::axum",
                 "sqlx",
                 "mongodb",
                 "axum",
@@ -921,7 +922,8 @@ fn every_crate_of_the_library_is_under_the_rules() {
     // An application assembles nothing of the process and opens no store, but may use the framework's settings.
     assert!(check("operations/application/x.rs", "use cqrsx_framework::settings::Settings;\n").is_empty());
     for (code, prefix) in [
-        ("use cqrsx_framework::serve::ServeError;\n", "cqrsx_framework::serve"),
+        ("use cqrsx_framework::process::ServeError;\n", "cqrsx_framework::process"),
+        ("use cqrsx_framework::axum::server;\n", "cqrsx_framework::axum"),
         (
             "use cqrsx_framework::postgres::pool::connect_pool;\n",
             "cqrsx_framework::postgres",

@@ -274,7 +274,6 @@ impl Journal {
     }
 
     /// Closes the pools of a framework over PostgreSQL: the main pool, the history pool, the projection pool.
-    #[cfg(feature = "axum")]
     pub(crate) async fn close(&self) {
         match self {
             #[cfg(feature = "test-utils")]

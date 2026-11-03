@@ -14,7 +14,8 @@ event-store-postgres = ["dep:sqlx", "dep:async-trait", "dep:chrono", "dep:future
 projections-postgres = ["event-store-postgres"]
 # The views and their checkpoints in MongoDB: the marker `MongoDb` of `projections(..)`.
 projections-mongodb = ["event-store-postgres", "dep:mongodb"]
-axum = ["dep:axum", "dep:tower-http", "dep:tracing-subscriber", "tokio/net", "tokio/signal"]
+# The HTTP API over axum: `Module::routes`, `Cqrs::router`, `axum::server`.
+axum = ["dep:axum", "dep:tower-http"]
 operation-utils = []
 test-utils = ["cqrsx/test-utils"]
 
@@ -29,11 +30,11 @@ serde.workspace = true
 serde_json.workspace = true
 sqlx = { workspace = true, optional = true }
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net", "signal"] }
 tokio-util.workspace = true
 tower-http = { workspace = true, optional = true }
 tracing.workspace = true
-tracing-subscriber = { workspace = true, optional = true }
+tracing-subscriber.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]

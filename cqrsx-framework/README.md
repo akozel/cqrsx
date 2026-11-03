@@ -319,7 +319,7 @@ async fn main() {
         .module(concert::module)
         .module(fan::module)
         .module(operations::module)
-        .serve()
+        .serve(cqrsx_framework::axum::server)
         .await;
     if let Err(error) = served {
         fail(error)
@@ -334,7 +334,7 @@ async fn main() {
 | `event-store-postgres` | the event store (the journal, the snapshots, the outbox and the task queue) in PostgreSQL: the marker `Postgres` of `Builder::event_store`, and the module `postgres` with the stores, the pools and the schemas | yes |
 | `projections-postgres` | the views and the checkpoints of their processors in PostgreSQL: the marker `Postgres` of `Builder::projections`; includes `event-store-postgres` | no |
 | `projections-mongodb` | the views and the checkpoints of their processors in MongoDB: the marker `MongoDb` of `Builder::projections`, and the module `mongodb`; includes `event-store-postgres` | no |
-| `axum` | the HTTP routes of the modules and `serve` (axum 0.8, `TraceLayer`): the process logger, the shutdown signals and the coordinated stop of the server, the task runtime and the processors | no |
+| `axum` | the HTTP API over axum 0.8: `Module::routes`, `Cqrs::router` (with `TraceLayer`) and the server `axum::server`; the process (logger, shutdown signals, the coordinated stop of the server, the task runtime and the processors) is the crate's own, whatever the feature. `Cqrs::run` takes any server, and `Module::endpoints` holds a module's endpoints in the type of a server the application brings (gRPC, MQTT) | no |
 | `operation-utils` | the operations that read without a bound or change the read side: `Cqrs::history` and `Cqrs::dispatcher`; `Views::{totals, verify, count_after, request_rebuild, request_rebuild_key}`; `ViewQuery::rebuild`. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
 | `test-utils` | the framework in memory: the marker `memory::InMemory` for `Builder::event_store` and `Builder::projections`, and the helpers of a test that drives it: `Cqrs::{run_tasks, catch_up}` and the raw stores, `journal`, `outbox`, `checkpoints`, `documents::<V, A>` (the stores themselves come with the core's feature `test-utils`, which this one enables). An application enables it in `[dev-dependencies]`; the crate's own tests have it. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
 
@@ -393,7 +393,7 @@ The table lists every variable with the library's default, as `Settings::descrip
 | `MONGODB_URI` | `mongodb://localhost:27017` | the MongoDB server (feature `projections-mongodb`); the client waits 3 s to select a server and to connect |
 | `MONGODB_POOL_SIZE` | `10` | connections of the MongoDB client |
 | `MONGODB_DATABASE` | `read` | the database of the views and their checkpoints |
-| `HTTP_ADDR` | `127.0.0.1:8080` | where `serve` listens (feature `axum`) |
+| `HTTP_ADDR` | `127.0.0.1:8080` | where `Builder::serve` listens |
 
 `Cqrs::description()` (and `Settings::description()`) lists the values a running framework uses under the same names,
 with the values derived from them under dotted names in lower case (`outbox.lease_budget`, the plan of each pool:
@@ -411,8 +411,8 @@ framework in memory need the feature `test-utils` in the test's `[dev-dependenci
 
 ### Logs
 
-`serve` installs the process logger: `RUST_LOG` is one level (`error`, `warn`, `info`, `debug`, `trace` or `off`,
-default `info`), not a list of directives. An application that does not call `serve` installs a `tracing` subscriber of
+`Builder::serve` installs the process logger: `RUST_LOG` is one level (`error`, `warn`, `info`, `debug`, `trace` or `off`,
+default `info`), not a list of directives. An application that does not call `Builder::serve` installs a `tracing` subscriber of
 its own. A log line names the failure by category and code (`storage_category`, `storage_code`), never by the message of a
 driver or the data of a command.
 
@@ -481,7 +481,7 @@ own process only; the others find it at their next poll (`PROJECTION_POLL_MS`).
 aggregate type, a view, an observer or a task type registered twice, one key of the description with two values, the
 task handlers refused, no journal (`event_store(..)` not called), views with no store (`projections(..)` not called),
 views in a database over a journal in memory, a URL or URI that does not parse, a database not reachable (each pool
-named). `serve` adds `ServeError`: the logger, the address taken, or the read side stopped (a
+named). `Builder::serve` adds `ServeError`: the logger, the address taken, or the read side stopped (a
 processor panicked); a `BuildError` of a setting, a module's variable, a URL or URI or the store choice is written as
 `invalid configuration: …`.
 

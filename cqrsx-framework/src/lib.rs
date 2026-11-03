@@ -10,10 +10,10 @@
 #[cfg(not(any(feature = "event-store-postgres", feature = "test-utils")))]
 compile_error!("cqrsx-framework needs a store: the feature `event-store-postgres`, or `test-utils` for a framework in memory");
 
+#[cfg(feature = "axum")]
+pub mod axum;
 pub mod build;
 mod diagnostics;
-#[cfg(feature = "axum")]
-pub mod http;
 // The stores in memory and their marker `InMemory`: the feature `test-utils` only.
 #[cfg(feature = "test-utils")]
 pub mod memory;
@@ -24,8 +24,7 @@ pub mod mongodb;
 mod operation_utils;
 #[cfg(feature = "event-store-postgres")]
 pub mod postgres;
-#[cfg(feature = "axum")]
-pub mod serve;
+pub mod process;
 pub mod settings;
 pub mod setup;
 pub mod source;
@@ -78,8 +77,8 @@ pub struct Cqrs {
     described: BTreeMap<String, String>,
     journal: stores::Journal,
     processors: Mutex<ProjectionRuntime>,
-    #[cfg(feature = "axum")]
-    routes: axum::Router<Arc<Cqrs>>,
+    /// The endpoints of every module in the order the modules were registered.
+    endpoints: Vec<Box<dyn Any + Send + Sync>>,
     shutdown: CancellationToken,
     /// Cancels `shutdown` when the framework is dropped.
     _stop: DropGuard,
@@ -126,6 +125,12 @@ impl Cqrs {
         self.dependencies.shared::<T>().ok_or(MissingDependency(type_name::<T>()))
     }
 
+    /// The endpoints the modules registered ([`Module::endpoints`](module::Module::endpoints)) in the type `T` of the
+    /// server that serves them, in the order the modules were registered.
+    pub fn endpoints<T: Any>(&self) -> impl Iterator<Item = &T> {
+        self.endpoints.iter().filter_map(|endpoints| endpoints.downcast_ref::<T>())
+    }
+
     pub fn settings(&self) -> &Settings {
         &self.settings
     }
@@ -142,7 +147,7 @@ impl Cqrs {
     }
 
     /// A token cancelled once the framework stops (it is served no more, or dropped); cancelling it stops nothing. A
-    /// stream of the HTTP API ends with it.
+    /// server and its streams end with it.
     pub fn stopping(&self) -> CancellationToken {
         self.shutdown.child_token()
     }

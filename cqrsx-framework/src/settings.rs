@@ -22,9 +22,14 @@ use cqrsx::{
         runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
     },
 };
-#[cfg(feature = "axum")]
-use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
-use std::{collections::BTreeMap, fmt::Display, num::NonZeroUsize, str::FromStr, time::Duration};
+use std::{
+    collections::BTreeMap,
+    fmt::Display,
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4},
+    num::NonZeroUsize,
+    str::FromStr,
+    time::Duration,
+};
 use thiserror::Error;
 
 /// A snapshot of an aggregate every ten events.
@@ -35,8 +40,7 @@ pub const DEFAULT_LAG_CAP: u64 = 100_000;
 pub const DEFAULT_STATUS_TIMEOUT: Duration = Duration::from_secs(1);
 /// The name the framework gives its connections (PostgreSQL's `application_name`, MongoDB's `appName`) and its log lines.
 pub const DEFAULT_APPLICATION_NAME: &str = "cqrsx";
-/// Where the HTTP API of the modules listens.
-#[cfg(feature = "axum")]
+/// Where [`Builder::serve`](crate::build::Builder::serve) listens.
 pub const DEFAULT_HTTP_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8080));
 
 const SNAPSHOT_EVERY: &str = "SNAPSHOT_EVERY";
@@ -55,7 +59,6 @@ const PROJECTION_WAKE_DELAY_MS: &str = "PROJECTION_WAKE_DELAY_MS";
 const PROJECTION_LAG_CAP: &str = "PROJECTION_LAG_CAP";
 const PROJECTION_STATUS_TIMEOUT_MS: &str = "PROJECTION_STATUS_TIMEOUT_MS";
 const NODE_NAME: &str = "NODE_NAME";
-#[cfg(feature = "axum")]
 const HTTP_ADDR: &str = "HTTP_ADDR";
 /// The task runtime's own variables, read without the prefix and untrimmed (`TaskRuntimeConfig::from_lookup`).
 const OUTBOX: [&str; 7] = [
@@ -93,7 +96,6 @@ pub(crate) fn variables() -> Vec<&'static str> {
     names.extend(crate::postgres::VARIABLES);
     #[cfg(feature = "projections-mongodb")]
     names.extend(crate::mongodb::VARIABLES);
-    #[cfg(feature = "axum")]
     names.push(HTTP_ADDR);
     names.extend(OUTBOX);
     names
@@ -158,9 +160,9 @@ pub enum SettingsError {
 ///   checkpoint; the operations over the views count a lag up to [`lag_cap`](Self::lag_cap) and an operator's status
 ///   waits [`status_timeout`](Self::status_timeout) for the checkpoints.
 /// - The task runtime: [`task_runtime`](Self::task_runtime).
-/// - The stores: `postgres` (pools), `mongodb` (the client and the database of the views); the HTTP API: `http_addr`
-///   (each exists with the feature that enables it: `event-store-postgres`, `projections-mongodb`, `axum`); the name of
-///   the connections.
+/// - The stores: `postgres` (pools), `mongodb` (the client and the database of the views); the process: `http_addr`
+///   (`postgres` and `mongodb` exist with the feature that enables them: `event-store-postgres`, `projections-mongodb`);
+///   the name of the connections.
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct Settings {
@@ -178,7 +180,6 @@ pub struct Settings {
     postgres: PostgresSettings,
     #[cfg(feature = "projections-mongodb")]
     mongodb: MongoSettings,
-    #[cfg(feature = "axum")]
     http_addr: SocketAddr,
 }
 
@@ -199,7 +200,6 @@ impl Default for Settings {
             postgres: PostgresSettings::default(),
             #[cfg(feature = "projections-mongodb")]
             mongodb: MongoSettings::default(),
-            #[cfg(feature = "axum")]
             http_addr: DEFAULT_HTTP_ADDR,
         }
     }
@@ -272,7 +272,6 @@ impl Settings {
             postgres,
             #[cfg(feature = "projections-mongodb")]
             mongodb,
-            #[cfg(feature = "axum")]
             http_addr: read.value(HTTP_ADDR, DEFAULT_HTTP_ADDR)?,
         })
     }
@@ -363,8 +362,7 @@ impl Settings {
         &self.mongodb
     }
 
-    /// Where `serve` listens.
-    #[cfg(feature = "axum")]
+    /// Where `Builder::serve` listens.
     pub fn http_addr(&self) -> SocketAddr {
         self.http_addr
     }
@@ -389,11 +387,7 @@ impl Settings {
         let (locks, projection) = (&self.lock_limits, &self.processor);
         let delivery = projection.delivery_limits();
         let worker = self.task_runtime.worker_pool();
-        // The stores' and the process's own entries are appended only with their features.
-        #[cfg_attr(
-            not(any(feature = "event-store-postgres", feature = "projections-mongodb", feature = "axum")),
-            expect(unused_mut, reason = "nothing is appended without a feature")
-        )]
+        // The stores' entries are appended only with their features.
         let mut entries = vec![
             (name(SNAPSHOT_EVERY), self.snapshot_every.to_string()),
             (name(COMMAND_LOCK_MAX_WAIT_MS), duration_text(locks.max_wait())),
@@ -440,7 +434,6 @@ impl Settings {
         entries.extend(self.postgres.entries(&name, &self.application_name));
         #[cfg(feature = "projections-mongodb")]
         entries.extend(self.mongodb.entries(&name, &self.application_name));
-        #[cfg(feature = "axum")]
         entries.push((name(HTTP_ADDR), self.http_addr.to_string()));
         entries
     }
@@ -1044,13 +1037,11 @@ mod tests {
         let mut names: Vec<&str> = variables();
         names.sort();
         assert_eq!(described, names, "every variable is described under its name");
-        let counted = 16 + 7;
+        let counted = 16 + 7 + 1;
         #[cfg(feature = "event-store-postgres")]
         let counted = counted + 5;
         #[cfg(feature = "projections-mongodb")]
         let counted = counted + 3;
-        #[cfg(feature = "axum")]
-        let counted = counted + 1;
         assert_eq!(names.len(), counted);
     }
 
@@ -1093,7 +1084,6 @@ mod tests {
         assert_eq!(settings.postgres(), &PostgresSettings::default());
         #[cfg(feature = "projections-mongodb")]
         assert_eq!(settings.mongodb(), &MongoSettings::default());
-        #[cfg(feature = "axum")]
         assert_eq!(settings.http_addr(), DEFAULT_HTTP_ADDR);
     }
 }

@@ -218,18 +218,20 @@ async fn the_framework_opens_its_pools_as_the_plan_says() {
     database.close().await;
 }
 
-/// G-30 over PostgreSQL: the task runtime of `serve` runs on the queue of the main pool, and on the signal the server,
+/// G-30 over PostgreSQL: the task runtime of the process runs on the queue of the main pool, and on the signal the server,
 /// the runtime and the processors stop before the pools close.
 #[cfg(feature = "axum")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn serve_runs_the_tasks_on_postgres_until_the_signal() {
+async fn the_process_runs_the_tasks_on_postgres_until_the_signal() {
     let database = Database::new().await;
     let outbox = Arc::new(Outbox::default());
-    let cqrs = framework(url(&database), "unused".into(), &outbox)
-        .projections(InMemory)
-        .build()
-        .await
-        .unwrap();
+    let cqrs = Arc::new(
+        framework(url(&database), "unused".into(), &outbox)
+            .projections(InMemory)
+            .build()
+            .await
+            .unwrap(),
+    );
     cqrs.source("ui")
         .execute::<Show>(
             &"s-1".into(),
@@ -243,10 +245,16 @@ async fn serve_runs_the_tasks_on_postgres_until_the_signal() {
         .unwrap();
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
-    let served = tokio::spawn(cqrs.serve(listener, async move {
-        let _ = stopped.await;
-        Ok(())
-    }));
+    let served = tokio::spawn({
+        let cqrs = cqrs.clone();
+        async move {
+            cqrs.run(cqrsx_framework::axum::server(listener, cqrs.clone()), async move {
+                let _ = stopped.await;
+                Ok(())
+            })
+            .await
+        }
+    });
     tokio::time::timeout(std::time::Duration::from_secs(30), async {
         while outbox.0.lock().unwrap().is_empty() {
             tokio::time::sleep(std::time::Duration::from_millis(20)).await;
