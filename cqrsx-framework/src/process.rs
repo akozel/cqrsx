@@ -139,11 +139,10 @@ impl Cqrsx {
     /// Runs the framework next to the task runtime (over the framework's queue, the policies of the task types) and the
     /// projection processors until `signal` or the framework is asked to stop. `inbound` is a server over the framework
     /// that ends when [`stopping`](Cqrsx::stopping) is cancelled (`cqrsx_framework::axum::server` with the feature `axum`,
-    /// or a server the application brings), or for a process without one a future that waits for the same
-    /// (`async { stopping.cancelled().await; Ok(()) }` over a clone of `stopping()`): an `inbound` that ends before the
-    /// stop is a failure of the process, and the stop waits for it. `signal` ends the process ([`shutdown_signal`], or a
-    /// test's future). Then the server stops taking requests, the task runtime drains,
-    /// the processors finish what is in flight and give their checkpoints back, and the pools close. A failure of the
+    /// or a server the application brings), or [`no_server`](Cqrsx::no_server) for a process without one: an `inbound`
+    /// that ends before the stop is a failure of the process, and the stop waits for it. `signal` ends the process
+    /// ([`shutdown_signal`], or a test's future). Then the server stops taking requests, the task runtime drains, the
+    /// processors finish what is in flight and give their checkpoints back, and the pools close. A failure of the
     /// server or the task runtime is logged; a panicking processor fails the process. The processors run once: a second
     /// call runs the rest without them.
     pub async fn run(
@@ -162,6 +161,16 @@ impl Cqrsx {
         self.close().await;
         tracing::info!("{name} stopped");
         stopped.read_side
+    }
+
+    /// The `inbound` of [`run`](Cqrsx::run) for a process without a server: it waits for the framework to stop and answers
+    /// `Ok`, so that the stop does not wait for a server that is not there.
+    pub fn no_server(&self) -> impl Future<Output = io::Result<()>> + Send + 'static {
+        let stopping = self.stopping();
+        async move {
+            stopping.cancelled().await;
+            Ok(())
+        }
     }
 
     /// The task runtime over the framework's queue, prepared now and started by its first poll; without a task type, a
@@ -296,8 +305,8 @@ mod tests {
         test_support::isolated(concat!(module_path!(), "::a_taken_address_fails_the_start"), "taken", |_| {});
     }
 
-    /// G-30 without a server: the task runtime runs the chain and the processor writes the hall until the signal; then
-    /// the processors give their checkpoints back.
+    /// G-30 without a server (`no_server`): the task runtime runs the chain and the processor writes the hall until the
+    /// signal; then the processors give their checkpoints back.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn a_process_without_a_server_runs_the_tasks_and_the_processors_until_the_signal() {
         let mailbox = Arc::new(Mailbox::default());
@@ -320,13 +329,8 @@ mod tests {
         let running = tokio::spawn({
             let cqrsx = cqrsx.clone();
             async move {
-                let stopping = cqrsx.stopping();
-                let no_server = async move {
-                    stopping.cancelled().await;
-                    Ok(())
-                };
                 cqrsx
-                    .run(no_server, async move {
+                    .run(cqrsx.no_server(), async move {
                         let _ = stopped.await;
                         Ok(())
                     })
