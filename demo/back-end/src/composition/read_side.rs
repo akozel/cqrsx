@@ -1,12 +1,12 @@
 //! The read side of the process: one processor per read model under its name, the documents as MongoDB stores them,
-//! the verification of a read model by the engine.
+//! the verification of a read model by the framework.
 use crate::{
     concert::{
         application::views::concert_hall::{ConcertHallView, ConcertSummary, SeatEntry, SeatState},
         domain::{Concert, ConcertEvent, events::ConcertAnnounced},
     },
     fan::application::views::fan_wallet::{FanWalletView, TicketEntry, TicketEntryState},
-    operations::application::{engine::EngineView, verify::VerifiedReadModel},
+    operations::application::{framework::FrameworkView, verify::VerifiedReadModel},
     shared::{application::StorageError, domain::venue::Zone},
     testing::test_app,
 };
@@ -25,18 +25,18 @@ use std::{
     sync::Arc,
 };
 
-/// The engine of the process runs one projection processor per read model the modules register.
+/// The framework of the process runs one projection processor per read model the modules register.
 #[tokio::test]
 async fn the_read_side_is_wired_with_one_processor_per_read_model() {
-    let (cqrs, _) = test_app().await;
-    assert_eq!(cqrs.views().keys().len(), 2, "the concert halls and the fan wallets");
+    let (cqrsx, _) = test_app().await;
+    assert_eq!(cqrsx.views().keys().len(), 2, "the concert halls and the fan wallets");
 }
 
 #[tokio::test]
 async fn the_read_models_keep_their_collection_and_checkpoint_names() {
     assert_eq!((ConcertHallView::NAME, FanWalletView::NAME), ("concert_halls", "fan_wallets"));
-    let (cqrs, _) = test_app().await;
-    let rows: Vec<(String, &str)> = cqrs
+    let (cqrsx, _) = test_app().await;
+    let rows: Vec<(String, &str)> = cqrsx
         .views()
         .keys()
         .iter()
@@ -96,10 +96,10 @@ fn both_views_survive_the_bson_round_trip() {
     assert_eq!(from_bson::<FanWalletView>(to_bson(&wallet).unwrap()).unwrap(), wallet);
 }
 
-/// The operations verify a read model with the engine's verify, under the view's name; a failed read is a
-/// storage error with the engine's text.
+/// The operations verify a read model with the framework's verify, under the view's name; a failed read is a
+/// storage error with the framework's text.
 #[tokio::test]
-async fn a_read_model_is_verified_by_the_engine_under_the_name_of_its_view() {
+async fn a_read_model_is_verified_by_the_framework_under_the_name_of_its_view() {
     let announced = EventEnvelope::<Concert> {
         aggregate_id: "c-1".into(),
         sequence: 1,
@@ -111,18 +111,18 @@ async fn a_read_model_is_verified_by_the_engine_under_the_name_of_its_view() {
         }),
         metadata: HashMap::new(),
     };
-    let (cqrs, _) = test_app().await;
-    let cqrs = Arc::new(cqrs);
-    let journal = cqrs.journal().unwrap();
+    let (cqrsx, _) = test_app().await;
+    let cqrsx = Arc::new(cqrsx);
+    let journal = cqrsx.journal().unwrap();
     journal
         .persist::<Concert>(&[SerializedEvent::try_from(&announced).unwrap()], None)
         .await
         .unwrap();
-    let halls = cqrs.documents::<ConcertHallView, Concert>().unwrap();
+    let halls = cqrsx.documents::<ConcertHallView, Concert>().unwrap();
     let mut hall = ConcertHallView::default();
     hall.apply(&announced);
     halls.put("c-1", 1, 1, &hall).unwrap();
-    let verification = EngineView::new(cqrs.clone(), ConcertHallView::NAME);
+    let verification = FrameworkView::new(cqrsx.clone(), ConcertHallView::NAME);
     assert_eq!(verification.name(), "concert_halls");
     assert_eq!(
         verification.verify().await.unwrap(),

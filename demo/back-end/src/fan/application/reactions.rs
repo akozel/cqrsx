@@ -106,8 +106,8 @@ mod tests {
         );
     }
 
-    /// The ledger through a test engine, as the chain steps run it: what the activity feed says of its commands.
-    mod engine {
+    /// The ledger through a test framework, as the chain steps run it: what the activity feed says of its commands.
+    mod framework {
         use crate::{
             fan::{
                 application::test_support::{fan_command, ledger, ticket},
@@ -118,9 +118,11 @@ mod tests {
                 domain::{ConcertId, FanId, FanLedgerId},
             },
         };
-        use cqrsx::command::{CommandError, CommandExecutor, metadata::CommandMetadata};
-        use cqrsx_testing::{
-            command_executor::TestCommandExecutor, memory_store::MemoryStore, unavailable_store::UnavailableStore,
+        use cqrsx::{
+            command::{CommandError, CommandExecutor, metadata::CommandMetadata},
+            journal::store::EventSourcedStore,
+            memory::event_repository::MemoryEventRepository,
+            testing::{command_executor::TestCommandExecutor, unavailable_store::UnavailableStore},
         };
         use std::sync::Arc;
         use uuid::Uuid;
@@ -156,9 +158,11 @@ mod tests {
         #[tokio::test]
         async fn every_ledger_command_is_logged_with_its_type_and_the_ledgers_fan() {
             let activity = Arc::new(ActivityHub::new(8, 8));
-            let fans = TestCommandExecutor::<Fan>::configured(MemoryStore::default(), (), |executor| {
-                executor.with_observer(crate::testing::command_feed(&activity))
-            });
+            let fans = TestCommandExecutor::<Fan>::configured(
+                EventSourcedStore::new(MemoryEventRepository::default()),
+                (),
+                |executor| executor.with_observer(crate::testing::command_feed(&activity)),
+            );
             fans.execute_with_metadata(&ledger(), fan_command(), CommandMetadata::root("ui").to_map())
                 .await
                 .unwrap();

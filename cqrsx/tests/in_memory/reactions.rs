@@ -176,7 +176,7 @@ impl Reactions for Wallet {
 }
 
 /// Steps wait a second and get six attempts, mails back off and get three; reminders are not registered and keep the
-/// engine's defaults.
+/// framework's defaults.
 fn policies() -> Policies {
     let step = TaskPolicy::new(RetryPause::fixed(Duration::from_secs(1)), NonZeroU16::new(6).unwrap());
     let mail = TaskPolicy::new(
@@ -288,7 +288,7 @@ async fn reactions_plan_across_two_aggregates_with_the_policy_of_each_task_type(
                 TaskSchedule::after(Duration::from_secs(3600)).unwrap()
             )
         ],
-        "the budget of each type's policy; a type without one keeps the engine's"
+        "the budget of each type's policy; a type without one keeps the framework's"
     );
     for task in &follow_ups {
         assert_eq!(

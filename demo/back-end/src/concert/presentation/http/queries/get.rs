@@ -8,7 +8,7 @@ use axum::{
     extract::{Path, State},
 };
 use cqrsx::view::repository::StoredView;
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrsx;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -31,11 +31,11 @@ impl From<StoredView<ConcertHallView>> for ConcertHallResponse {
 }
 
 pub async fn handle(
-    State(cqrs): State<Arc<Cqrs>>,
+    State(cqrsx): State<Arc<Cqrsx>>,
     Path(concert_id): Path<String>,
 ) -> Result<Json<ConcertHallResponse>, ApiError> {
     let concert_id = parse_concert_id(&concert_id)?;
-    match cqrs
+    match cqrsx
         .view::<ConcertHallView>()
         .get(&concert_id)
         .await

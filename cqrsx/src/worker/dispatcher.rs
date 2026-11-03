@@ -82,7 +82,7 @@ impl<A: TaskAdapter> TaskDispatcher<A> {
 
     /// A dispatcher over `adapters` whose handlers get `dependencies` and `executors`; every dependency an adapter
     /// declares must be provided, or the dispatcher is refused ([`TaskDispatcherError`]). For an assembly that gathers
-    /// the adapters, dependencies and command executors of several modules itself, as `cqrsx-engine` does;
+    /// the adapters, dependencies and command executors of several modules itself, as `cqrsx-framework` does;
     /// [`TaskHandlers`](super::handlers::TaskHandlers) is the way for an application that registers its handlers one by
     /// one.
     pub fn assemble(adapters: Vec<A>, dependencies: Dependencies, executors: Executors) -> Result<Self, TaskDispatcherError> {

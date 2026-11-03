@@ -6,8 +6,8 @@ paths:
 # Rust code guidelines
 
 The [Google Rust Style Guide](https://google.github.io/styleguide/rustguide.html) adapted to this project
-(agreed 2026-10-30). It applies to all Rust code: `cqrsx`, `cqrsx-engine`, `cqrsx-postgres`, `cqrsx-mongodb`,
-`cqrsx-testing` and `cqrsx-macros` are library code, the demo is
+(agreed 2026-10-30). It applies to all Rust code: `cqrsx`, `cqrsx-framework`, `cqrsx-macros` and the test tools
+`cqrsx::testing` are library code, the demo is
 application code where API rules are strong recommendations and simplicity beats generality. Google rules that
 are not listed here are not adopted. `/rust-style-review` checks code against these rules; findings cite the
 rule numbers.
@@ -43,7 +43,7 @@ a wrong result, a wrong doc) is fixed wherever it is found. Lints in `[lints]` k
 7. Hence no `unwrap`, `expect`, `panic!`, `unreachable!`, `todo!`, `unimplemented!` or `assert!` outside tests,
    and no indexing or slicing that can go out of range: use `get()`, iterators and patterns. Values given by the
    caller (version strings, names) are checked by a `try_new` that returns `Result`.
-8. Exceptions: tests and the test helpers (the crates `cqrsx-testing` and `cqrsx-fixtures`), where a panic is the failed
+8. Exceptions: tests and the test helpers (`cqrsx::testing` and the crate `cqrsx-fixtures`), where a panic is the failed
    check; such a public helper documents it in `# Panics` and its assertion message explains the violation instead
    of repeating the condition. A panic in user code (a handler) is caught at the boundary and becomes an error (rule 11).
 9. Pattern matching instead of check-then-unwrap: `if let`, `let … else`, `match`.
@@ -51,7 +51,7 @@ a wrong result, a wrong doc) is fixed wherever it is found. Lints in `[lints]` k
     shared helper (`cqrsx::mutex::{lock, get_mut}`): on poison it logs `error!` naming the lock, calls `clear_poison()` and continues. A lock that
     guards a change of several steps (data may stay half-updated) does not recover: it returns `Err`.
 11. `catch_unwind` only at the boundary with user code (handlers run by long-lived workers, where a handler's
-    panic must not kill the worker) and in tests; never as control flow inside the engine.
+    panic must not kill the worker) and in tests; never as control flow inside the library.
 
 ## API and types
 

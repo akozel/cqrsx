@@ -287,7 +287,7 @@ export default {
     done: 'Close',
     events: {
       title: '① Event store',
-      body: 'Nothing is ever edited or deleted. Every accepted decision — "seat B4 sold to Fox" — is appended to the events table, like a journal. The current state of the hall is simply all of the concert\'s records read in order. Every 10 events the engine stores a snapshot so it doesn\'t have to reread the whole book.',
+      body: 'Nothing is ever edited or deleted. Every accepted decision — "seat B4 sold to Fox" — is appended to the events table, like a journal. The current state of the hall is simply all of the concert\'s records read in order. Every 10 events the framework stores a snapshot so it doesn\'t have to reread the whole book.',
       try: 'Book a random seat and find the new row in 🐘 events; drag the ⏳ time machine.',
     },
     rules: {

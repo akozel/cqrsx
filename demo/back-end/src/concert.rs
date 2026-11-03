@@ -1,5 +1,5 @@
 //! The box office: the `Concert` aggregate and its layers. The root registers what the box office plugs into the
-//! engine: the aggregate with its rules (`ENCORE_TICKET_LIMIT`, 4 unless set, positive), the ticket limit the UI shows,
+//! framework: the aggregate with its rules (`ENCORE_TICKET_LIMIT`, 4 unless set, positive), the ticket limit the UI shows,
 //! the concert halls and the HTTP routes of the box office.
 pub mod application;
 pub mod domain;
@@ -12,7 +12,7 @@ use crate::{
     },
     shared::application::TicketLimit,
 };
-use cqrsx_engine::{
+use cqrsx_framework::{
     module::Module,
     setup::{Setup, SetupError},
 };
@@ -34,10 +34,10 @@ pub fn module(setup: &Setup) -> Result<Module, SetupError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cqrsx_engine::{Cqrs, memory::InMemory};
+    use cqrsx_framework::{Cqrsx, memory::InMemory};
 
     async fn limit(value: Option<&'static str>) -> Result<TicketLimit, String> {
-        let cqrs = Cqrs::from_lookup("ENCORE", move |name| {
+        let cqrsx = Cqrsx::from_lookup("ENCORE", move |name| {
             (name == "ENCORE_TICKET_LIMIT").then(|| value.map(str::to_owned)).flatten()
         })
         .event_store(InMemory)
@@ -46,7 +46,7 @@ mod tests {
         .build()
         .await
         .map_err(|error| error.to_string())?;
-        Ok(*cqrs.dependency::<TicketLimit>().unwrap())
+        Ok(*cqrsx.dependency::<TicketLimit>().unwrap())
     }
 
     #[tokio::test]

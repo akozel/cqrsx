@@ -13,7 +13,7 @@ use axum::{
     http::StatusCode,
     response::{IntoResponse, Response},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrsx;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -40,10 +40,10 @@ impl IntoResponse for ConcertHallRebuildResponse {
 }
 
 pub async fn handle(
-    State(cqrs): State<Arc<Cqrs>>,
+    State(cqrsx): State<Arc<Cqrsx>>,
     Path(concert_id): Path<String>,
 ) -> Result<ConcertHallRebuildResponse, ApiError> {
     let concert_id = parse_concert_id(&concert_id)?;
-    rebuild_hall(&cqrs, &concert_id).await?;
+    rebuild_hall(&cqrsx, &concert_id).await?;
     Ok(concert_id.into())
 }

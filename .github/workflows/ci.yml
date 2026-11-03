@@ -63,18 +63,20 @@ jobs:
         run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       - name: Run Clippy without features
-        run: cargo clippy --locked -p cqrsx -p cqrsx-engine --no-default-features --all-targets -- -D warnings
+        run: cargo clippy --locked -p cqrsx -p cqrsx-framework --no-default-features --all-targets -- -D warnings
 
-      # The engine's own dev-dependency on itself gives the targets above its `test-utils`: the library alone does not.
+      # The framework's own dev-dependency on itself gives the targets above its `test-utils`: the library alone does not,
+      # and without a store feature it does not compile.
       - name: Run Clippy on the library alone
-        run: cargo clippy --locked -p cqrsx-engine --no-default-features --lib -- -D warnings
+        run: cargo clippy --locked -p cqrsx-framework --no-default-features --features event-store-postgres --lib -- -D warnings
 
       # Alone, a crate gets only the features it asks for: the workspace build no longer hides a missing one.
       - name: Check each crate on its own
         run: |
-          for package in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-testing cqrsx-fixtures; do
+          for package in cqrsx cqrsx-macros cqrsx-fixtures; do
             cargo check --locked -p "$package" --lib
           done
+          cargo check --locked -p cqrsx --lib --features test-utils
 
   docs:
     needs: formatting
@@ -94,6 +96,10 @@ jobs:
 
       - name: Cache the build
         uses: Swatinem/rust-cache@v2
+
+      # The edges between the crates of doc/crates.md against `cargo metadata` of both workspaces.
+      - name: Check the crate graph of the documentation
+        run: python3 .github/scripts/check-crate-graph.py
 
       - name: Build the documentation
         env:
@@ -143,9 +149,7 @@ jobs:
       matrix:
         include:
           - { package: cqrsx, flags: "" }
-          - { package: cqrsx-postgres, flags: "" }
-          - { package: cqrsx-mongodb, flags: "" }
-          - { package: cqrsx-engine, flags: "--all-features" }
+          - { package: cqrsx-framework, flags: "--all-features" }
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -164,21 +168,21 @@ jobs:
       - name: Run the tests of the crate alone with coverage (97%)
         run: cargo llvm-cov --locked -p ${{ matrix.package }} ${{ matrix.flags }} --color never --fail-under-lines 97
 
-  engine:
+  framework:
     needs: formatting
-    name: 'Engine: ${{ matrix.features }}'
+    name: 'Framework: ${{ matrix.features }}'
     runs-on: ubuntu-latest
     timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
         include:
-          - { features: in-memory, flags: "" }
-          - { features: postgres, flags: "--features postgres" }
-          - { features: mongodb, flags: "--features mongodb" }
-          - { features: http, flags: "--features http" }
-          - { features: operation-utils, flags: "--features operation-utils" }
+          - { features: event-store-postgres, flags: "--features event-store-postgres" }
+          - { features: projections-postgres, flags: "--features projections-postgres" }
+          - { features: projections-mongodb, flags: "--features projections-mongodb" }
           - { features: test-utils, flags: "--features test-utils" }
+          - { features: "test-utils,axum", flags: "--features test-utils,axum" }
+          - { features: "test-utils,operation-utils", flags: "--features test-utils,operation-utils" }
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
@@ -192,10 +196,10 @@ jobs:
           key: ${{ matrix.features }}
 
       - name: Check the library without dev-dependencies
-        run: cargo check --locked -p cqrsx-engine --no-default-features --lib ${{ matrix.flags }}
+        run: cargo check --locked -p cqrsx-framework --no-default-features --lib ${{ matrix.flags }}
 
       - name: Run the tests
-        run: cargo test --locked -p cqrsx-engine --no-default-features ${{ matrix.flags }}
+        run: cargo test --locked -p cqrsx-framework --no-default-features ${{ matrix.flags }}
 
   properties:
     needs: formatting
@@ -217,7 +221,7 @@ jobs:
         run: |
           export PROPTEST_RNG_SEED=$(printf '%u' "0x${GITHUB_SHA:0:16}")
           printf 'Property test seed: %s\n' "$PROPTEST_RNG_SEED"
-          cargo test --locked -p cqrsx -p cqrsx-postgres -p cqrsx-mongodb property_
+          cargo test --locked -p cqrsx property_
 
       - name: Upload minimized property regressions
         if: failure()
@@ -250,7 +254,7 @@ jobs:
       - name: Run Clippy
         run: cargo clippy --locked --workspace --all-targets -- -D warnings
 
-      # The lib and the bins alone do not get `test-utils` of the engine, a dev-dependency of the back-end.
+      # The lib and the bins alone do not get `test-utils` of the framework, a dev-dependency of the back-end.
       - name: Run Clippy on the lib and the bins alone
         run: cargo clippy --locked --workspace -- -D warnings
 

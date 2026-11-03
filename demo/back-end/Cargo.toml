@@ -8,7 +8,7 @@ description = "Encore: box-office demo for the cqrsx library (write side, outbox
 
 [dependencies]
 cqrsx.workspace = true
-cqrsx-engine.workspace = true
+cqrsx-framework.workspace = true
 axum.workspace = true
 tokio.workspace = true
 tokio-util.workspace = true
@@ -27,9 +27,8 @@ dotenvy.workspace = true
 reqwest.workspace = true
 
 [dev-dependencies]
-cqrsx-engine = { workspace = true, features = ["test-utils"] }
-cqrsx-postgres.workspace = true
-cqrsx-testing.workspace = true
+cqrsx = { workspace = true, features = ["test-utils"] }
+cqrsx-framework = { workspace = true, features = ["test-utils"] }
 testcontainers = "0.28"
 tower = { version = "0.5", features = ["util"] }
 tokio = { workspace = true, features = ["test-util"] }

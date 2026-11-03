@@ -31,10 +31,10 @@ stays open.
 
 | Directory | What |
 |---|---|
-| `back-end/` | Rust, axum + `cqrsx`, one module per part of the box office, each a directory with its clean-architecture layers inside and its root file next to it: `concert/` (the `Concert` aggregate: `domain` with one file per command and per event, `application` with the use cases, the reactions to its facts, the tasks of a fan's ledger built from them, the concert halls and the time machine, `presentation/http` with one file (or, for an endpoint with a request to convert, a directory) per endpoint under the kind of engine entry it uses, see [DESIGN.md](DESIGN.md#21-routes)), `fan/` (the `Fan` ledger: its four tasks, each a contract with its handler, their policies, its reactions, the fan wallets), `operations/` (no aggregate: health, settings, the activity log, Encore!, status, verify) and `shared/` (ids and venue, the ports, the ticket limit the UI shows, the HTTP error shape, the HTTP client of the mail service); `tests/architecture.rs` checks who sees whom. The root file of each module registers what it plugs into the cqrsx engine (its aggregate and rules, its read models, its tasks with their policies, its dependencies, its HTTP routes, its variables under `ENCORE_*`); `main.rs` lists the modules for the engine with the demo's defaults (`DEMO_DEFAULTS` in `lib.rs`), and the engine does the rest: settings, connections, executors, processors, task runtime, HTTP server, start and stop |
+| `back-end/` | Rust, axum + `cqrsx`, one module per part of the box office, each a directory with its clean-architecture layers inside and its root file next to it: `concert/` (the `Concert` aggregate: `domain` with one file per command and per event, `application` with the use cases, the reactions to its facts, the tasks of a fan's ledger built from them, the concert halls and the time machine, `presentation/http` with one file (or, for an endpoint with a request to convert, a directory) per endpoint under the kind of framework entry it uses, see [DESIGN.md](DESIGN.md#21-routes)), `fan/` (the `Fan` ledger: its four tasks, each a contract with its handler, their policies, its reactions, the fan wallets), `operations/` (no aggregate: health, settings, the activity log, Encore!, status, verify) and `shared/` (ids and venue, the ports, the ticket limit the UI shows, the HTTP error shape, the HTTP client of the mail service); `tests/architecture.rs` checks who sees whom. The root file of each module registers what it plugs into the cqrsx framework (its aggregate and rules, its read models, its tasks with their policies, its dependencies, its HTTP routes, its variables under `ENCORE_*`); `main.rs` lists the modules for the framework with the demo's defaults (`DEMO_DEFAULTS` in `lib.rs`), and the framework does the rest: settings, connections, executors, processors, task runtime, HTTP server, start and stop |
 | `sidecar/` | Rust, axum, no `cqrsx` dependency: read-only X-ray of PostgreSQL (`events`, `snapshots`, `transactional_outbox`) and MongoDB, SSE stream — plus everything DEMO ONLY: seed, 🧨 wipe, ⟲ reset, the fan's mailbox (`GET /inspect/mail/{fan_id}`) and the moody external mail service the back-end calls (`POST /mail`) |
 | `front-end/` | Vue 3.5 + Vite 8 + Tailwind 4 + Pinia + vue-i18n (RU/EN) |
-| `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx-postgres/sql`) and MongoDB; profile `app` builds the three images |
+| `compose.yaml` | PostgreSQL 18 (schemas from `../cqrsx-framework/sql`) and MongoDB; profile `app` builds the three images |
 | `infra/` | read-only PostgreSQL role for the sidecar, nginx config for the `app` profile |
 | `scripts/` | `dev.sh` (everything in one terminal), `wait-db.sh`, `compare-projections.sh` |
 | `load/` | k6 load tests on an isolated stand (own compose project, no ports, mail stub instead of the sidecar): hot aggregate, new aggregates, spread bookings, outbox drain; chaos scenes (`chaos.sh`, `chaos/`); PostgreSQL measurements (`perf/`) — see `load/README.md` |
@@ -50,7 +50,7 @@ application reactions plan tasks; handlers in `fan/application/` continue the ch
 |---|---|
 | `domain` | Aggregate state, commands, decisions, events and business rules. |
 | `application` | Reactions, task handlers, views and use cases for the module. |
-| `presentation` | HTTP routes, by transport and kind of engine entry, and translation between API and application contracts. |
+| `presentation` | HTTP routes, by transport and kind of framework entry, and translation between API and application contracts. |
 | `infrastructure` | Implementations of ports, such as the HTTP mail client. |
 
 ## Requirements
@@ -77,7 +77,7 @@ podman compose --profile app ps               # all five containers Up, postgres
 ```
 
 `down -v` wipes the event journal, the snapshots, the outbox, both read models and the mail inbox: the next
-start initialises the schemas from `../cqrsx-postgres/sql` again and the sidecar announces the three default
+start initialises the schemas from `../cqrsx-framework/sql` again and the sidecar announces the three default
 concerts anew through the back-end's public API (exactly three `ConcertAnnounced` rows in `events`).
 Without a code change `--build` can be dropped.
 
@@ -334,15 +334,15 @@ cd front-end && npm test                                              # vitest
 
 `back-end/tests/write_side.rs` starts PostgreSQL in a container (`testcontainers`): `cargo test` needs a container
 engine and `DOCKER_HOST` pointing at its socket (Docker's default socket works as is; with Podman, the socket of
-`podman system service`, as above). Nothing else needs a database: the other tests run the engine in memory or
+`podman system service`, as above). Nothing else needs a database: the other tests run the framework in memory or
 against databases nobody listens on.
 
 | Back-end target | What it checks |
 |---|---|
-| unit tests next to the code | rules R1–R11 one by one, one event per command, the reactions and the task handlers (the table of answers of `DESIGN.md` §1.6), the folds of the read models, the wallet assembled from the fan's ledgers, the module scenarios on the engine in memory |
+| unit tests next to the code | rules R1–R11 one by one, one event per command, the reactions and the task handlers (the table of answers of `DESIGN.md` §1.6), the folds of the read models, the wallet assembled from the fan's ledgers, the module scenarios on the framework in memory |
 | `tests/architecture.rs` | the module and layer rules, read from the source text: who may name whom inside a module, across modules and of the framework; a file or directory never repeats a name its path already says (`concert/domain/aggregate.rs`, not `concert/domain/concert.rs`) |
 | `tests/contracts.rs` | what the operator and the front-end rely on, against the golden files (below), plus the values of the activity entries and the task settlements on every outcome |
-| `tests/http.rs` | the HTTP API on the engine in memory: validation, the error shape, the read side |
+| `tests/http.rs` | the HTTP API on the framework in memory: validation, the error shape, the read side |
 | `tests/write_side.rs` | against a real PostgreSQL (the read models in memory): an accepted command writes one event and one task with one correlation id, a rejected one writes nothing, metadata is stored, bookings racing for one concert wait for its lock; the concert halls follow the journal, are rebuilt in place, healed and restored after a wipe |
 
 The sidecar's unit tests cover the X-ray (hash, whitelist, queries), the demo lifecycle and the moody mail

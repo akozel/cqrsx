@@ -166,7 +166,7 @@ impl<'a, A: Aggregate> Outcome<'a, A> {
 }
 
 /// Hears the commands of every aggregate type, e.g. an activity feed in a module that names no aggregate: the report
-/// of a [`CommandObserver`] with the aggregate's type erased ([`AnyCommandReport::of`]). An engine tells it about the
+/// of a [`CommandObserver`] with the aggregate's type erased ([`AnyCommandReport::of`]). A framework tells it about the
 /// commands of every executor it builds; when and how often is [`CommandObserver`]'s.
 pub trait AnyCommandObserver: Send + Sync {
     /// One command, as its executor ran it.

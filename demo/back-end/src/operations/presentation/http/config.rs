@@ -10,11 +10,11 @@ use crate::{
     },
 };
 use axum::{Json, extract::State};
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrsx;
 use serde::Serialize;
 use std::sync::Arc;
 
-/// The venue, the ticket limit of the box office, the snapshot interval of the engine and the slow motion of Encore!.
+/// The venue, the ticket limit of the box office, the snapshot interval of the framework and the slow motion of Encore!.
 #[derive(Debug, Serialize)]
 pub struct ConfigResponse {
     venue: Venue,
@@ -38,12 +38,12 @@ struct Zone {
     price: u32,
 }
 
-impl TryFrom<&Cqrs> for ConfigResponse {
+impl TryFrom<&Cqrsx> for ConfigResponse {
     type Error = ApiError;
 
-    /// The settings of the engine and the dependencies of the modules, or `503` when one is missing.
-    fn try_from(cqrs: &Cqrs) -> Result<Self, ApiError> {
-        let (limit, rebuild_pace) = (dependency::<TicketLimit>(cqrs)?, dependency::<RebuildPace>(cqrs)?);
+    /// The settings of the framework and the dependencies of the modules, or `503` when one is missing.
+    fn try_from(cqrsx: &Cqrsx) -> Result<Self, ApiError> {
+        let (limit, rebuild_pace) = (dependency::<TicketLimit>(cqrsx)?, dependency::<RebuildPace>(cqrsx)?);
         Ok(Self {
             venue: Venue {
                 rows: ROWS.iter().map(char::to_string).collect(),
@@ -58,12 +58,12 @@ impl TryFrom<&Cqrs> for ConfigResponse {
                     .collect(),
             },
             ticket_limit: limit.0,
-            snapshot_every: cqrs.settings().snapshot_every().get(),
+            snapshot_every: cqrsx.settings().snapshot_every().get(),
             rebuild_slow_pace_ms: u64::try_from(rebuild_pace.slow_pace.as_millis()).unwrap_or(u64::MAX),
         })
     }
 }
 
-pub async fn handle(State(cqrs): State<Arc<Cqrs>>) -> Result<Json<ConfigResponse>, ApiError> {
-    Ok(Json(ConfigResponse::try_from(&*cqrs)?))
+pub async fn handle(State(cqrsx): State<Arc<Cqrsx>>) -> Result<Json<ConfigResponse>, ApiError> {
+    Ok(Json(ConfigResponse::try_from(&*cqrsx)?))
 }

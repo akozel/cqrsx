@@ -15,7 +15,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrsx;
 use serde::Serialize;
 use std::{
     collections::{BTreeMap, HashMap},
@@ -84,11 +84,11 @@ impl From<ConcertAt> for ConcertStateResponse {
 }
 
 pub async fn handle(
-    State(cqrs): State<Arc<Cqrs>>,
+    State(cqrsx): State<Arc<Cqrsx>>,
     Path((concert_id, sequence)): Path<(String, usize)>,
 ) -> Result<Json<ConcertStateResponse>, ApiError> {
     let concert_id = parse_concert_id(&concert_id)?;
-    match time_travel::state_at(&cqrs, &concert_id, sequence).await? {
+    match time_travel::state_at(&cqrsx, &concert_id, sequence).await? {
         Some(at) => Ok(Json(at.into())),
         None => Err(ApiError::not_found("sequence_out_of_range", "this concert has no such event")),
     }

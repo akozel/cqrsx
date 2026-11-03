@@ -9,16 +9,16 @@ use axum::{
     Json,
     extract::{State, rejection::JsonRejection},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrsx;
 use request::ProjectionRebuildRequest;
 use response::ProjectionRebuildResponse;
 use std::sync::Arc;
 
 pub async fn handle(
-    State(cqrs): State<Arc<Cqrs>>,
+    State(cqrsx): State<Arc<Cqrsx>>,
     body: Result<Json<ProjectionRebuildRequest>, JsonRejection>,
 ) -> Result<ProjectionRebuildResponse, ApiError> {
     let request = ProjectionRebuildRequest::from_body(body)?;
-    let started = ReadSideService::of(&cqrs)?.rebuild(request.pace()).await?;
+    let started = ReadSideService::of(&cqrsx)?.rebuild(request.pace()).await?;
     Ok(started.into())
 }

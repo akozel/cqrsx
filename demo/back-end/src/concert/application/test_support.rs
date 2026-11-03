@@ -18,13 +18,14 @@ use chrono::NaiveDate;
 use cqrsx::{
     command::{CommandError, CommandExecutor, CommitReport, metadata::CommandMetadata},
     domain::event::EventEnvelope,
-    journal::{AggregateStore, PersistenceError},
+    journal::{
+        AggregateStore, PersistenceError,
+        store::{CommittedAggregate, EventSourcedStore},
+    },
+    memory::event_repository::MemoryEventRepository,
     reactions::ReactionsPlanner,
     task::NewTask,
-};
-use cqrsx_testing::{
-    command_executor::TestCommandExecutor,
-    memory_store::{MemoryCommittedAggregate, MemoryStore},
+    testing::command_executor::TestCommandExecutor,
 };
 use std::{
     collections::HashMap,
@@ -87,11 +88,25 @@ pub fn committed(answer: &Answer) -> Vec<String> {
     }
 }
 
-/// An in-memory store that counts the aggregate loads.
-#[derive(Clone, Default)]
+/// The box office's store over a journal in memory of its own: what a test runs `harness` over unless it wraps the store.
+pub fn store_in_memory() -> EventSourcedStore<MemoryEventRepository, Concert> {
+    EventSourcedStore::new(MemoryEventRepository::default())
+}
+
+/// A store in memory that counts the aggregate loads.
+#[derive(Clone)]
 pub struct ProbeStore {
-    inner: MemoryStore<Concert>,
+    inner: EventSourcedStore<MemoryEventRepository, Concert>,
     loads: Arc<AtomicUsize>,
+}
+
+impl Default for ProbeStore {
+    fn default() -> Self {
+        Self {
+            inner: store_in_memory(),
+            loads: Arc::default(),
+        }
+    }
 }
 
 impl ProbeStore {
@@ -101,7 +116,7 @@ impl ProbeStore {
 }
 
 impl AggregateStore<Concert> for ProbeStore {
-    type Context = MemoryCommittedAggregate<Concert>;
+    type Context = CommittedAggregate<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await

@@ -1,6 +1,6 @@
 //! `concert_halls` read model: one document per concert, built only from `Concert` events.
 //!
-//! The engine applies the events of a concert to its document strictly in order and only once (the
+//! The framework applies the events of a concert to its document strictly in order and only once (the
 //! document's `last_sequence`); a document is never created from the middle of a history: a booking after a
 //! wipe makes the projection processor rebuild the document from the whole history. So the fold needs no
 //! check of its own: every event changes its seat. A seat entry keeps the `sequence` and the time of the
@@ -337,7 +337,7 @@ mod tests {
         }
     }
 
-    /// The engine hands a document the events of its concert in order and once each (`last_sequence`): on every
+    /// The framework hands a document the events of its concert in order and once each (`last_sequence`): on every
     /// such history the fold without a check of its own is the document the fold with the LWW check made.
     #[test]
     fn an_ordered_history_folds_into_the_same_document_with_and_without_the_lww_check() {

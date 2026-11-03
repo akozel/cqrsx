@@ -4,7 +4,7 @@ Procedural macros for [cqrsx](../cqrsx/README.md). Each derive is re-exported by
 implements (`cqrsx::domain::event::{Event, Events}`, `cqrsx::domain::command::{Command, Decide}`,
 `cqrsx::task::Task`, `cqrsx::domain::rejection::Rejection`, `cqrsx::worker::task_handler`), so one `use` brings
 the trait and its derive. The macro crate has no feature flags. Examples of the derives and handler together
-are in [`cqrsx-engine/tests/engine/modules.rs`](../cqrsx-engine/tests/engine/modules.rs).
+are in [`cqrsx-framework/tests/framework/modules.rs`](../cqrsx-framework/tests/framework/modules.rs).
 
 ## Events
 
@@ -30,7 +30,7 @@ override its code with `#[rejection(code = "...")]`.
 ## Task handlers and dependencies
 
 `#[task_handler]` turns an async function into a registered handler. Its arguments identify the task,
-optional context and dependencies supplied by type when the engine is built. The function returns a
+optional context and dependencies supplied by type when the framework is built. The function returns a
 `TaskResult`. See the [handler guide](../doc/typical_scenario.md#task-handlers-policies-and-dependencies).
 
 ## Validation

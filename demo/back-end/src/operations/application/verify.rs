@@ -1,12 +1,12 @@
-//! 🔍 Verify (D-20): every read model against the history of its aggregate, by the engine (cqrsx
-//! `view::verify`, through `cqrs.views().verify`). Documents behind the journal are counted apart; only a wrong
+//! 🔍 Verify (D-20): every read model against the history of its aggregate, by the framework (cqrsx
+//! `view::verify`, through `cqrsx.views().verify`). Documents behind the journal are counted apart; only a wrong
 //! document is a difference.
 use crate::shared::application::StorageError;
 use async_trait::async_trait;
 use cqrsx::view::verify::{Difference, Verification};
 use std::{collections::BTreeMap, sync::Arc};
 
-/// What verify needs from every read model, whatever its view type: the engine's view in the process
+/// What verify needs from every read model, whatever its view type: the framework's view in the process
 /// (`VerifyService::of`), doubles in the tests.
 #[async_trait]
 pub trait VerifiedReadModel: Send + Sync {

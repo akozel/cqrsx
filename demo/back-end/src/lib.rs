@@ -1,6 +1,6 @@
 //! Encore back-end library: one module per part of the box office, each a directory with its clean-architecture layers
 //! inside (`domain`, `application`, `presentation`) and its root file next to it, which registers what the module plugs
-//! into the cqrsx engine:
+//! into the cqrsx framework:
 //!
 //! - [`concert`]: the box office, the `Concert` aggregate: its commands, what follows each of its facts (the tasks of a
 //!   fan's ledger), the concert halls and the time machine;
@@ -11,7 +11,7 @@
 //! - [`shared`]: what several modules need: the ids and the venue, the ports and the names of the task policies, the
 //!   HTTP error shape, the HTTP client of the external mail service.
 //!
-//! The binary (`main.rs`) lists the modules for the engine with [`DEMO_DEFAULTS`]; the engine does the rest: settings,
+//! The binary (`main.rs`) lists the modules for the framework with [`DEMO_DEFAULTS`]; the framework does the rest: settings,
 //! connections, executors, processors, task runtime, HTTP server, start and stop.
 #![cfg_attr(test, allow(clippy::unwrap_used, clippy::expect_used))]
 // `ApiError` is an HTTP response payload built only on error paths; its size is irrelevant.
@@ -25,9 +25,9 @@ pub mod shared;
 #[cfg(test)]
 pub mod testing;
 
-use cqrsx_engine::settings::Defaults;
+use cqrsx_framework::settings::Defaults;
 
-/// The demo's values of the engine's settings where they differ from the library's, used only when the variable is
+/// The demo's values of the framework's settings where they differ from the library's, used only when the variable is
 /// absent (`demo/.env.example` shows each), and the name of its connections (PostgreSQL's `application_name`, MongoDB's
 /// `appName`) and log lines.
 ///

@@ -10,7 +10,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrsx;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -49,9 +49,9 @@ impl From<FanWallet> for FanWalletResponse {
     }
 }
 
-pub async fn handle(State(cqrs): State<Arc<Cqrs>>, Path(fan_id): Path<String>) -> Result<Json<FanWalletResponse>, ApiError> {
+pub async fn handle(State(cqrsx): State<Arc<Cqrsx>>, Path(fan_id): Path<String>) -> Result<Json<FanWalletResponse>, ApiError> {
     let fan_id = parse_fan_id(&fan_id)?;
-    match wallet_of(&cqrs.view::<FanWalletView>(), &fan_id)
+    match wallet_of(&cqrsx.view::<FanWalletView>(), &fan_id)
         .await
         .map_err(ApiError::read_model_unavailable)?
     {

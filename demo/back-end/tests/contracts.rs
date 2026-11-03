@@ -29,14 +29,19 @@ use cqrsx::{
         observer::{CommandObserver, CommandReport, Outcome},
     },
     domain::event::{EventEnvelope, Events},
-    journal::{AggregateStore, PersistenceError, feed::Position},
-    memory::checkpoint_store::MemoryCheckpointStore,
+    journal::{
+        AggregateStore, PersistenceError,
+        feed::Position,
+        store::{CommittedAggregate, EventSourcedStore},
+    },
+    memory::{checkpoint_store::MemoryCheckpointStore, event_repository::MemoryEventRepository},
     projection::{
         checkpoint::CheckpointStore,
         processor::observer::{Applied, Failed, FailureCategory, LeaseChange, ProjectionObserver, RebuildReason, Rebuilt},
     },
     reactions::ReactionsPlanner,
     task::{NewTask, Task, attempt::TaskAttempt, format::TaskFormat, policy::redelivery_backoff},
+    testing::{command_executor::TestCommandExecutor, unavailable_store::UnavailableStore},
     worker::{
         TaskHandler, TaskResult,
         adapter::boxed::BoxedTaskAdapter,
@@ -53,18 +58,13 @@ use cqrsx::{
     },
 };
 use cqrsx::{projection::checkpoint::CheckpointKey, task::policy::Policies};
-use cqrsx_engine::{
-    Cqrs,
+use cqrsx_framework::{
+    Cqrsx,
     build::{BuildError, Builder},
     memory::InMemory,
     settings::{Settings, duration_text},
     setup::Setup,
     views::JournalTotals,
-};
-use cqrsx_testing::{
-    command_executor::TestCommandExecutor,
-    memory_store::{MemoryCommittedAggregate, MemoryStore},
-    unavailable_store::UnavailableStore,
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,
@@ -169,7 +169,7 @@ fn duration(text: &str) -> Duration {
 /// A lookup of variables by their full names.
 type Lookup = Arc<dyn Fn(&str) -> Option<String> + Send + Sync>;
 
-/// The variables of a process (full names), as the engine and its modules read them.
+/// The variables of a process (full names), as the framework and its modules read them.
 #[derive(Clone)]
 struct Config {
     lookup: Lookup,
@@ -183,10 +183,10 @@ impl Config {
         })
     }
 
-    /// The engine of the process over these variables, as `main.rs` builds it, in memory.
-    fn engine(&self) -> Builder {
+    /// The framework of the process over these variables, as `main.rs` builds it, in memory.
+    fn framework(&self) -> Builder {
         let lookup = self.lookup.clone();
-        Cqrs::from_lookup("ENCORE", move |name| lookup(name))
+        Cqrsx::from_lookup("ENCORE", move |name| lookup(name))
             .defaults(DEMO_DEFAULTS)
             .event_store(InMemory)
             .projections(InMemory)
@@ -195,18 +195,22 @@ impl Config {
             .module(operations::module)
     }
 
-    /// The engine's settings of these variables.
+    /// The framework's settings of these variables.
     fn settings(&self) -> Settings {
         Settings::from_lookup("ENCORE", &*self.lookup, &DEMO_DEFAULTS).unwrap()
     }
 
     /// The ticket limit the box office reads.
     fn ticket_limit(&self) -> usize {
-        ready(self.engine().build()).unwrap().dependency::<TicketLimit>().unwrap().0
+        ready(self.framework().build())
+            .unwrap()
+            .dependency::<TicketLimit>()
+            .unwrap()
+            .0
     }
 }
 
-/// The output of `future`, which must not wait: an engine in memory builds without one.
+/// The output of `future`, which must not wait: a framework in memory builds without one.
 fn ready<F: std::future::Future>(future: F) -> F::Output {
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
     match std::pin::pin!(future).poll(&mut context) {
@@ -217,7 +221,7 @@ fn ready<F: std::future::Future>(future: F) -> F::Output {
 
 /// The policies of the task types of the process.
 fn policies(config: &Config) -> Result<Policies, BuildError> {
-    ready(config.engine().build()).map(|cqrs| cqrs.policies().clone())
+    ready(config.framework().build()).map(|cqrsx| cqrsx.policies().clone())
 }
 
 /// The mail service of the process, one for every worker.
@@ -237,7 +241,7 @@ fn handlers<E: CommandExecutor<Fan> + 'static>(
     mail: Arc<Mailer>,
     activity: Arc<ActivityHub>,
 ) -> Result<TaskDispatcher<BoxedTaskAdapter>, BuildError> {
-    let modules = Config::from_lookup(|_| None)?.engine().provide(mail).provide(activity);
+    let modules = Config::from_lookup(|_| None)?.framework().provide(mail).provide(activity);
     Ok(modules.task_handlers()?.executor(fans).build()?)
 }
 
@@ -251,11 +255,11 @@ fn checkpoint_keys() -> Vec<CheckpointKey> {
 
 // --- effective configuration ---------------------------------------------------------------------------------
 
-/// The settings of the engine and what its modules read, without a single variable.
+/// The settings of the framework and what its modules read, without a single variable.
 async fn effective_configuration() -> String {
     let config = Config::from_lookup(|_| None).unwrap();
-    let cqrs = config.engine().build().await.unwrap();
-    render(cqrs.description())
+    let cqrsx = config.framework().build().await.unwrap();
+    render(cqrsx.description())
 }
 
 /// The keys of the settings read from a variable: the names of the variables.
@@ -280,7 +284,7 @@ async fn every_variable_the_process_reads_is_in_the_golden_configuration() {
         None
     })
     .unwrap()
-    .engine()
+    .framework()
     .build()
     .await
     .unwrap();
@@ -576,12 +580,23 @@ async fn the_activity_feed_has_thirteen_kinds_with_the_golden_fields() {
 
 /// The box office's store in memory with switches: every commit conflicts, every load fails, every load waits at a
 /// closed gate (holding the concert's lock).
-#[derive(Clone, Default)]
+#[derive(Clone)]
 struct Switched {
-    inner: MemoryStore<Concert>,
+    inner: EventSourcedStore<MemoryEventRepository, Concert>,
     conflict: Arc<AtomicBool>,
     unavailable: Arc<AtomicBool>,
     gate: Arc<Mutex<Option<Arc<Semaphore>>>>,
+}
+
+impl Default for Switched {
+    fn default() -> Self {
+        Self {
+            inner: EventSourcedStore::new(MemoryEventRepository::default()),
+            conflict: Arc::default(),
+            unavailable: Arc::default(),
+            gate: Arc::default(),
+        }
+    }
 }
 
 impl Switched {
@@ -594,7 +609,7 @@ impl Switched {
 }
 
 impl AggregateStore<Concert> for Switched {
-    type Context = MemoryCommittedAggregate<Concert>;
+    type Context = CommittedAggregate<Concert>;
 
     async fn load_events(&self, id: &str) -> Result<Vec<EventEnvelope<Concert>>, PersistenceError> {
         self.inner.load_events(id).await
@@ -645,7 +660,7 @@ impl Feed {
                 .with_task_planner(ReactionsPlanner::<Concert>::new(policies.clone()))
                 .with_observer(observer.clone())
         });
-        let fans = TestCommandExecutor::configured(MemoryStore::default(), (), |executor| {
+        let fans = TestCommandExecutor::configured(EventSourcedStore::new(MemoryEventRepository::default()), (), |executor| {
             executor
                 .with_task_planner(ReactionsPlanner::<Fan>::new(policies))
                 .with_observer(observer)
@@ -665,6 +680,11 @@ impl Feed {
     async fn fan(&self, command: FanCommand, metadata: CommandMetadata) {
         let _ = self.fans.execute_with_metadata(&ledger(), command, metadata.to_map()).await;
     }
+}
+
+/// The ledgers' executor over a store that is never reachable: every step of the chain finds its ledger unavailable.
+fn unreachable_ledgers() -> Arc<TestCommandExecutor<Fan, UnavailableStore>> {
+    Arc::new(TestCommandExecutor::configured(UnavailableStore, (), |executor| executor))
 }
 
 fn ledger() -> FanLedgerId {
@@ -965,7 +985,7 @@ async fn retry_pauses_by_attempt_are_the_golden_ones() {
     // E-mails: the provider refuses every delivery for now.
     let config = config_with_mail(&mail_service(std::iter::repeat_n(503, 16)).await);
     // Chain steps: the fan ledger is unreachable.
-    let fans = Arc::new(TestCommandExecutor::new(UnavailableStore, ()));
+    let fans = unreachable_ledgers();
     let ticket = RecordTicketV1 {
         booking_id: Uuid::now_v7(),
         concert_id: concert(),
@@ -1168,7 +1188,7 @@ fn config_with_mail(url: &str) -> Config {
 /// The handlers of the composition with its mail service at the address of `config`, writing to `activity`; the
 /// steps of the ledger on a ledger nobody reaches.
 fn mail_dispatcher(config: &Config, activity: &Arc<ActivityHub>) -> TaskDispatcher<BoxedTaskAdapter> {
-    let fans = Arc::new(TestCommandExecutor::new(UnavailableStore, ()));
+    let fans = unreachable_ledgers();
     handlers(fans, mailer(config).unwrap(), activity.clone()).unwrap()
 }
 
@@ -1381,12 +1401,13 @@ async fn every_mail_attempt_is_logged_with_its_values_and_settled_with_the_pause
 #[tokio::test]
 async fn every_answer_of_the_ledger_settles_its_step_as_the_table_of_answers_says() {
     let config = Config::from_lookup(|_| None).unwrap();
-    let store = MemoryStore::<Fan>::default();
-    let fans = Arc::new(TestCommandExecutor::configured(store.clone(), (), |executor| {
-        executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies(&config).unwrap()))
-    }));
+    let fans = Arc::new(TestCommandExecutor::<Fan, _>::configured(
+        EventSourcedStore::new(MemoryEventRepository::default()),
+        (),
+        |executor| executor.with_task_planner(ReactionsPlanner::<Fan>::new(policies(&config).unwrap())),
+    ));
     let steps = step_dispatcher(fans.clone());
-    let unavailable = step_dispatcher(Arc::new(TestCommandExecutor::new(UnavailableStore, ())));
+    let unavailable = step_dispatcher(unreachable_ledgers());
     let queue = Arc::new(MemQueue::default());
     let executor = task_executor(&queue, &config);
     let ticket = RecordTicketV1 {
@@ -1442,7 +1463,7 @@ async fn every_answer_of_the_ledger_settles_its_step_as_the_table_of_answers_say
             retry(&cancellation_down, "unavailable"),
         ]
     );
-    let events = store.load_events(ledger().as_str()).await.unwrap();
+    let events = fans.store().load_events(ledger().as_str()).await.unwrap();
     assert_eq!(
         events.iter().map(|event| event.payload.event_type()).collect::<Vec<_>>(),
         ["TicketRecorded", "TicketCancelled"],

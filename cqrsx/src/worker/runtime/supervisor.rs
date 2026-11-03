@@ -22,7 +22,7 @@ const RECOVERY_BATCH_LIMIT: usize = 32;
 /// an executor of one's own: the executor catches a handler's panic) gets it again. Token cancellation
 /// stops admission/dequeue and drains only started invocations for a common H+S budget.
 /// A configuration error cancels the supplied token before returning. Pass a
-/// child token to isolate a pool; clones share cancellation with the host. Dropping a
+/// child token to isolate a pool; clones share cancellation with the caller. Dropping a
 /// token handle does not request shutdown: lifecycle owners should use a drop guard.
 /// Dropping/aborting this supervisor cancels the token and aborts its owned workers;
 /// asynchronous graceful draining requires cancelling the token and awaiting `run`.
@@ -45,7 +45,7 @@ pub async fn run<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapt
     .await
 }
 
-/// Shared execution engine for a ready dispatcher and the low-level entry point.
+/// Shared execution loop for a ready dispatcher and the low-level entry point.
 pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'static, A: TaskAdapter + 'static>(
     context: super::QueueAndExecutor<Q, E>,
     config: TaskWorkerPoolConfig,
@@ -128,7 +128,7 @@ pub(super) async fn run_prepared<Q: TaskQueue + 'static, E: TaskExecutor + 'stat
             Err(error) => error!(component = "task", operation = "claim", error = %error, "task claim failed"),
         }
     }
-    // Notify the host before waiting for healthy workers.
+    // Notify the caller before waiting for healthy workers.
     shutdown.cancel();
     pool.drain().await;
     drop(sender);

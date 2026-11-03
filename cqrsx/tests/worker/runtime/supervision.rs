@@ -277,7 +277,7 @@ async fn a_handler_panic_retries_its_task_after_the_policy_pause_and_the_worker_
     assert_eq!(built.load(Ordering::SeqCst), 1);
     assert_eq!(records.len(), 2);
     assert_eq!(records[0], records[1], "one dispatcher, one worker: the panic did not end it");
-    assert!(!stop.is_cancelled(), "a handler panic must not cancel the host");
+    assert!(!stop.is_cancelled(), "a handler panic must not cancel the caller");
     stop.cancel();
     supervisor_task.await.unwrap().unwrap();
 }
@@ -312,7 +312,7 @@ async fn a_worker_that_dies_restarts_without_poll_tick_with_the_shared_dispatche
         "the replacement delivers with the shared dispatcher"
     );
     assert_eq!(queue.recovery_calls.load(Ordering::SeqCst), 1);
-    assert!(!stop.is_cancelled(), "a worker panic must not cancel the host");
+    assert!(!stop.is_cancelled(), "a worker panic must not cancel the caller");
     stop.cancel();
     supervisor_task.await.unwrap().unwrap();
 }

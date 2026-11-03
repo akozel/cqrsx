@@ -1,4 +1,4 @@
-//! Test fixtures shared by the crates of the framework: PostgreSQL and MongoDB containers, leased host ports, captured
+//! Test fixtures shared by the crates of the library: PostgreSQL and MongoDB containers, leased host ports, captured
 //! log lines and tests that run in a process of their own. Not published; a crate takes it as a dev-dependency.
 //!
 //! It does not depend on `cqrsx` or on the adapters: what is specific to them (the schemas, how a pool is made, the log

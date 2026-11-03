@@ -9,18 +9,18 @@
 //! expanded to full paths and every other qualified path is collected, with comments and string literals removed
 //! first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
-//! the ledger's tasks. Of the framework (the crates `cqrsx`, `cqrsx_engine`, `cqrsx_postgres`, `cqrsx_mongodb` and
-//! `cqrsx_testing`, see `FRAMEWORK`) a domain sees the contracts of the core and their derive macros, a presentation the engine
-//! (`cqrsx_engine::Cqrs`: its commands, its views, the dependencies of the modules), the outcomes of a command, the
+//! the ledger's tasks. Of the library (the crates `cqrsx` and `cqrsx_framework`, see
+//! `LIBRARY`; `cqrsx::testing` and `cqrsx::memory` are test code only) a domain sees the contracts of the core and their derive macros, a presentation the framework
+//! (`cqrsx_framework::Cqrsx`: its commands, its views, the dependencies of the modules), the outcomes of a command, the
 //! rejection trait, the documents of the read models and the wrong documents of a verification. `main.rs` and `lib.rs` compose the modules, `testing.rs` and `composition.rs` with
 //! their directories test them as composed: they are exempt. A few rules apply to production code only: test code may use test
 //! tooling. Relative paths (`super::`) are not resolved: one module reaches another only through `crate::`.
 //!
-//! The layout of a presentation is rule 10 of `.claude/rules/cqrsx-application.md` (transport, kind of engine entry,
+//! The layout of a presentation is rule 10 of `.claude/rules/cqrsx-application.md` (transport, kind of framework entry,
 //! action), and the names of its input and answer rule 11. What the checks look at: a file in a kind directory names
-//! only the engine entry of its kind, a file outside the kind directories (the URL table `http.rs`, the shared helpers,
+//! only the framework entry of its kind, a file outside the kind directories (the URL table `http.rs`, the shared helpers,
 //! the `operations` endpoints of the process, the settings and the activity feed) names none of the four. The entries are
-//! method calls, found textually in the code without comments, string literals and test modules (see `engine_entries` for
+//! method calls, found textually in the code without comments, string literals and test modules (see `framework_entries` for
 //! what that cannot see). An endpoint that reaches an entry through an application function counts as naming it:
 //! `ENTRY_VIA_APPLICATION` lists those items, and a test keeps the list equal to the application files that name an
 //! entry. Naming: a public type of a presentation that derives `Deserialize` ends in `Request`, one that derives
@@ -64,7 +64,7 @@ const MODULES: &[(&str, &[Layer])] = &[
     ),
 ];
 
-/// The composition (`main.rs` lists the modules for the engine, `lib.rs` its defaults) and the tests of the modules as
+/// The composition (`main.rs` lists the modules for the framework, `lib.rs` its defaults) and the tests of the modules as
 /// composed: they see everything and are not checked.
 const EXEMPT: &[&str] = &["main", "lib", "testing", "composition"];
 
@@ -95,7 +95,7 @@ struct Exception {
     why: &'static str,
 }
 
-/// The engine serves the modules (backlog 05/12): I-1 (`AppState` in the presentation), I-2 (`Config` in `/api/config`)
+/// The framework serves the modules (backlog 05/12): I-1 (`AppState` in the presentation), I-2 (`Config` in `/api/config`)
 /// and I-3 (the rebuild of one hall by the operations' service) are gone with the composition root.
 const EXCEPTIONS: &[Exception] = &[];
 
@@ -181,7 +181,7 @@ struct Externals {
     forbidden: &'static [&'static str],
     /// Path prefixes only test code of the layer may use.
     test_only: &'static [&'static str],
-    /// When set, every path of a crate of the framework ([`FRAMEWORK`]) must start with one of these prefixes.
+    /// When set, every path of a crate of the library ([`LIBRARY`]) must start with one of these prefixes.
     cqrsx_allowed: Option<&'static [&'static str]>,
 }
 
@@ -189,7 +189,7 @@ fn externals(layer: Option<Layer>) -> Externals {
     match layer {
         Some(Layer::Domain) => Externals {
             forbidden: &["sqlx", "mongodb", "axum", "tokio"],
-            test_only: &["serde_json", "cqrsx_testing"],
+            test_only: &["serde_json", "cqrsx::testing"],
             // The contracts of the domain, each with its derive macro under the same path (backlog 07/05): what is
             // known of a command (`Command`), the decision of a command (`Decide`), an event's name and version and
             // the enum of events (`domain::event`), the code and params of a rejection (`domain::rejection`).
@@ -199,7 +199,7 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::domain::command::Decide",
                 "cqrsx::domain::event",
                 "cqrsx::domain::rejection",
-                "cqrsx_testing",
+                "cqrsx::testing",
             ]),
         },
         Some(Layer::Application) => Externals {
@@ -207,27 +207,28 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::worker::adapter",
                 "cqrsx::worker::dispatcher",
                 "cqrsx::worker::runtime",
-                "cqrsx_postgres",
-                "cqrsx_mongodb",
-                "cqrsx_engine::serve",
+                "cqrsx_framework::postgres",
+                "cqrsx_framework::mongodb",
+                "cqrsx_framework::process",
+                "cqrsx_framework::axum",
                 "sqlx",
                 "mongodb",
                 "axum",
             ],
-            test_only: &["cqrsx_testing", "cqrsx::memory"],
+            test_only: &["cqrsx::testing", "cqrsx::memory"],
             cqrsx_allowed: None,
         },
         Some(Layer::Presentation) => Externals {
             forbidden: &["sqlx", "mongodb"],
             test_only: &[],
-            // The handler takes the engine as its state and hands it a command from the source "ui" (backlog 05/12,
+            // The handler takes the framework as its state and hands it a command from the source "ui" (backlog 05/12,
             // design 04 and 07), answers its outcome (the error of a command) and, for a refused one, its code and
-            // params (05/04): the rejection trait. A read model is read through the engine's view, a stored document is
-            // what it answers (05/10, design 06); a wrong document of a verification is answered as the engine reports it
+            // params (05/04): the rejection trait. A read model is read through the framework's view, a stored document is
+            // what it answers (05/10, design 06); a wrong document of a verification is answered as the framework reports it
             // (10/05). Nothing else. The path `domain::rejection::Rejection` names the trait
             // and its derive alike (backlog 07/05, decision 2), so a presentation may name both.
             cqrsx_allowed: Some(&[
-                "cqrsx_engine::Cqrs",
+                "cqrsx_framework::Cqrsx",
                 "cqrsx::command::CommandError",
                 "cqrsx::domain::rejection",
                 "cqrsx::view::repository::StoredView",
@@ -331,7 +332,7 @@ fn violations(
             );
         }
         if let Some(allowed) = outside.cqrsx_allowed
-            && is_framework_path(&path)
+            && is_library_path(&path)
             && !allowed.iter().any(|prefix| starts_with(&path, prefix))
         {
             why.push("uses a cqrsx module outside its allowlist".to_owned());
@@ -543,7 +544,7 @@ fn paths(code: &str) -> Vec<(usize, String)> {
     }
     let roots = ["crate", "sqlx", "mongodb", "axum", "tokio", "serde_json"]
         .iter()
-        .chain(&FRAMEWORK)
+        .chain(&LIBRARY)
         .map(|root| format!("{root}::"));
     for root in roots {
         let root = root.as_str();
@@ -568,14 +569,13 @@ fn paths(code: &str) -> Vec<(usize, String)> {
     found
 }
 
-/// The crates of the framework: the core and every crate built on it. A path into any of them is a path into
-/// "cqrsx" for the allowlists, so that a crate split off the core (the engine, the adapters, the testing tools) does not
-/// slip out of the rules.
-const FRAMEWORK: [&str; 5] = ["cqrsx", "cqrsx_engine", "cqrsx_postgres", "cqrsx_mongodb", "cqrsx_testing"];
+/// The crates of the library: the core and the framework. A path into any of them is a path into
+/// "cqrsx" for the allowlists, so that a crate split off the core does not slip out of the rules.
+const LIBRARY: [&str; 2] = ["cqrsx", "cqrsx_framework"];
 
-/// Whether `path` goes into a crate of the framework (a bare crate name is not a path into it).
-fn is_framework_path(path: &str) -> bool {
-    FRAMEWORK.iter().any(|name| starts_with(path, name) && path != *name)
+/// Whether `path` goes into a crate of the library (a bare crate name is not a path into it).
+fn is_library_path(path: &str) -> bool {
+    LIBRARY.iter().any(|name| starts_with(path, name) && path != *name)
 }
 
 fn starts_with(path: &str, prefix: &str) -> bool {
@@ -700,10 +700,13 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ),
         ("concert/domain/x.rs", "use crate::concert::application::app::ConcertApp;\n"),
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
-        ("concert/domain/x.rs", "use cqrsx_postgres::pool::connect_pool;\n"),
+        ("concert/domain/x.rs", "use cqrsx_framework::postgres::pool::connect_pool;\n"),
         ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
-        ("fan/application/x.rs", "use cqrsx_testing::memory_store::MemoryStore;\n"),
-        ("concert/domain/x.rs", "use cqrsx_testing::framework::TestFramework;\n"),
+        (
+            "fan/application/x.rs",
+            "use cqrsx::testing::unavailable_store::UnavailableStore;\n",
+        ),
+        ("concert/domain/x.rs", "use cqrsx::testing::framework::TestFramework;\n"),
         (
             "concert/domain/x.rs",
             "use cqrsx::memory::event_repository::MemoryEventRepository;\n",
@@ -719,7 +722,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     assert!(
         check(
             "fan/application/x.rs",
-            "#[cfg(test)]\nmod tests { use cqrsx_testing::memory_store::MemoryStore; use crate::testing; }\n"
+            "#[cfg(test)]\nmod tests { use cqrsx::testing::unavailable_store::UnavailableStore; use crate::testing; }\n"
         )
         .is_empty(),
         "test tooling in test code"
@@ -727,7 +730,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
     assert!(
         check(
             "concert/domain/x.rs",
-            "#[cfg(test)]\nmod tests { use cqrsx_testing::framework::TestFramework; }\n"
+            "#[cfg(test)]\nmod tests { use cqrsx::testing::framework::TestFramework; }\n"
         )
         .is_empty(),
         "test tooling in the test code of a domain"
@@ -838,15 +841,15 @@ fn the_derive_macros_and_the_rejection_trait_are_visible_where_they_belong() {
     }
 }
 
-/// Backlog 05/08: the HTTP handler hands a command to the engine and answers its outcome; nothing else of the command
-/// path reaches a presentation. Backlog 05/12: the engine is the port, the metadata of the command its own.
+/// Backlog 05/08: the HTTP handler hands a command to the framework and answers its outcome; nothing else of the command
+/// path reaches a presentation. Backlog 05/12: the framework is the port, the metadata of the command its own.
 #[test]
 fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::command::CommandError;\nuse cqrsx_engine::Cqrs;\n",
+        "use cqrsx::command::CommandError;\nuse cqrsx_framework::Cqrsx;\n",
         "fn f(e: cqrsx::command::CommandError<()>) {}\n",
-        "fn f(cqrs: &cqrsx_engine::Cqrs) {}\n",
+        "fn f(cqrsx: &cqrsx_framework::Cqrsx) {}\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
     }
@@ -856,9 +859,9 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
         "use cqrsx::domain::command::Command;\n",
         "use cqrsx::command::observer::CommandObserver;\n",
         "use cqrsx::command::CommitReport;\n",
-        "use cqrsx_testing::command_executor::TestCommandExecutor;\n",
+        "use cqrsx::testing::command_executor::TestCommandExecutor;\n",
         "use cqrsx::command::executor::StoreCommandExecutor;\n",
-        "use cqrsx_engine::build::Builder;\n",
+        "use cqrsx_framework::build::Builder;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}");
@@ -866,7 +869,7 @@ fn the_command_port_is_visible_in_the_presentation_and_nothing_more() {
     }
 }
 
-/// The wrong documents a verification found are answered as the engine reports them: the two types that describe one,
+/// The wrong documents a verification found are answered as the framework reports them: the two types that describe one,
 /// nothing else of `view::verify` (its functions and counters stay in the application).
 #[test]
 fn a_difference_of_a_verification_is_visible_in_the_presentation_and_nothing_more_of_verify() {
@@ -889,41 +892,49 @@ fn a_difference_of_a_verification_is_visible_in_the_presentation_and_nothing_mor
     assert!(check("operations/application/x.rs", "use cqrsx::view::verify::Verification;\n").is_empty());
 }
 
-/// Backlog 07/07: the engine is a crate of its own, `cqrsx_engine`; every crate of the framework falls under the
+/// Backlog 07/07: the framework is a crate of its own, `cqrsx_framework`; every crate of the framework falls under the
 /// allowlists, not only the path segment `cqrsx`.
 #[test]
-fn every_crate_of_the_framework_is_under_the_rules() {
+fn every_crate_of_the_library_is_under_the_rules() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
-    // A domain names no part of the engine, in a `use` tree or inline.
+    // A domain names no part of the library, in a `use` tree or inline.
     for (code, reports) in [
-        ("use cqrsx_engine::Cqrs;\n", 1),
-        ("use cqrsx_engine::{Cqrs, build::Builder};\n", 2),
-        ("fn f(cqrs: &cqrsx_engine::Cqrs) {}\n", 1),
+        ("use cqrsx_framework::Cqrsx;\n", 1),
+        ("use cqrsx_framework::{Cqrsx, build::Builder};\n", 2),
+        ("fn f(cqrsx: &cqrsx_framework::Cqrsx) {}\n", 1),
     ] {
         let broken = check("concert/domain/x.rs", code);
         assert_eq!(broken.len(), reports, "{code}: {broken:?}");
         assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
     }
-    // A presentation names the engine itself and nothing else of it.
-    assert!(check("concert/presentation/x.rs", "use cqrsx_engine::Cqrs;\n").is_empty());
+    // A presentation names the framework itself and nothing else of it.
+    assert!(check("concert/presentation/x.rs", "use cqrsx_framework::Cqrsx;\n").is_empty());
     for code in [
-        "use cqrsx_engine::settings::Settings;\n",
-        "fn f() { cqrsx_engine::build::Builder::default(); }\n",
-        "use cqrsx_postgres::pool::connect_pool;\n",
-        "use cqrsx_mongodb::view_repository::MongoViewRepository;\n",
+        "use cqrsx_framework::settings::Settings;\n",
+        "fn f() { cqrsx_framework::build::Builder::default(); }\n",
+        "use cqrsx_framework::postgres::pool::connect_pool;\n",
+        "use cqrsx_framework::mongodb::view_repository::MongoDbViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}: {broken:?}");
         assert!(broken[0].contains("uses a cqrsx module outside its allowlist"), "{broken:?}");
     }
-    // An application assembles nothing of the process and opens no store, but may use the engine's settings.
-    assert!(check("operations/application/x.rs", "use cqrsx_engine::settings::Settings;\n").is_empty());
+    // An application assembles nothing of the process and opens no store, but may use the framework's settings.
+    assert!(check("operations/application/x.rs", "use cqrsx_framework::settings::Settings;\n").is_empty());
     for (code, prefix) in [
-        ("use cqrsx_engine::serve::ServeError;\n", "cqrsx_engine::serve"),
-        ("use cqrsx_postgres::pool::connect_pool;\n", "cqrsx_postgres"),
+        ("use cqrsx_framework::process::ServeError;\n", "cqrsx_framework::process"),
+        ("use cqrsx_framework::axum::server;\n", "cqrsx_framework::axum"),
         (
-            "fn f() { cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(); }\n",
-            "cqrsx_mongodb",
+            "use cqrsx_framework::postgres::pool::connect_pool;\n",
+            "cqrsx_framework::postgres",
+        ),
+        (
+            "use cqrsx_framework::{Cqrsx, postgres::Postgres};\n",
+            "cqrsx_framework::postgres",
+        ),
+        (
+            "fn f() { cqrsx_framework::mongodb::checkpoint_store::MongoDbCheckpointStore::new(); }\n",
+            "cqrsx_framework::mongodb",
         ),
     ] {
         let broken = check("operations/application/x.rs", code);
@@ -931,33 +942,33 @@ fn every_crate_of_the_framework_is_under_the_rules() {
         assert!(broken[0].contains(&format!("uses `{prefix}`")), "{broken:?}");
     }
     // A bare crate name is no path into it; an inline path of any crate of the framework is collected.
-    assert!(!is_framework_path("cqrsx_engine") && is_framework_path("cqrsx_engine::Cqrs"));
-    assert!(!is_framework_path("cqrsx_other::Cqrs"));
-    let found: Vec<String> = paths("fn f() { cqrsx_testing::framework::TestFramework::default(); }\n")
+    assert!(!is_library_path("cqrsx_framework") && is_library_path("cqrsx_framework::Cqrsx"));
+    assert!(!is_library_path("cqrsx_other::Cqrsx"));
+    let found: Vec<String> = paths("fn f() { cqrsx::testing::framework::TestFramework::default(); }\n")
         .into_iter()
         .map(|(_, path)| path)
         .collect();
-    assert_eq!(found, ["cqrsx_testing::framework::TestFramework::default"]);
+    assert_eq!(found, ["cqrsx::testing::framework::TestFramework::default"]);
 }
 
-/// Backlog 05/10: a presentation reads a read model through the engine and answers its stored documents; nothing else
-/// of the read side reaches it. Backlog 05/12: the engine's view (`cqrs.view::<V>()`) instead of a repository.
+/// Backlog 05/10: a presentation reads a read model through the framework and answers its stored documents; nothing else
+/// of the read side reaches it. Backlog 05/12: the framework's view (`cqrsx.view::<V>()`) instead of a repository.
 #[test]
 fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_the_read_side() {
     let check = |file: &str, code: &str| violations(Path::new(file), &strip(code), false, &[], &mut BTreeSet::new());
     for code in [
-        "use cqrsx::view::repository::StoredView;\nuse cqrsx_engine::Cqrs;\n",
+        "use cqrsx::view::repository::StoredView;\nuse cqrsx_framework::Cqrsx;\n",
         "fn f(d: cqrsx::view::repository::StoredView<()>) {}\n",
     ] {
         assert!(check("concert/presentation/x.rs", code).is_empty(), "{code}");
     }
     for code in [
         "use cqrsx::view::repository::ViewRepository;\n",
-        "use cqrsx_engine::views::Views;\n",
+        "use cqrsx_framework::views::Views;\n",
         "use cqrsx::view::projection::ViewProjection;\n",
         "use cqrsx::view::repository::ViewMeta;\n",
         "use cqrsx::view::verify::verify;\n",
-        "use cqrsx_mongodb::view_repository::MongoViewRepository;\n",
+        "use cqrsx_framework::mongodb::view_repository::MongoDbViewRepository;\n",
         "use cqrsx::memory::view_repository::MemoryViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
@@ -989,7 +1000,7 @@ fn the_command_derives_and_the_decide_contract_are_visible_in_the_domain() {
     }
 }
 
-/// The four entries of the engine's `Cqrs`, which are also the kinds of presentation: what a file under
+/// The four entries of the framework's `Cqrsx`, which are also the kinds of presentation: what a file under
 /// `presentation/<transport>/` does is told by the directory it lies in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 enum Entry {
@@ -1026,7 +1037,7 @@ impl Entry {
 /// The transports of a presentation; a new one (a queue, a scheduler) is a sibling directory of `http`.
 const TRANSPORTS: &[&str] = &["http"];
 
-/// Application items that reach an engine entry for a presentation that names them, each with the application file that
+/// Application items that reach a framework entry for a presentation that names them, each with the application file that
 /// calls the entry. A path is an item (never a whole module that also holds items unrelated to the entry). The next
 /// test keeps the files equal to the application files that name an entry.
 const ENTRY_VIA_APPLICATION: &[(&str, &str, Entry)] = &[
@@ -1042,17 +1053,17 @@ const ENTRY_VIA_APPLICATION: &[(&str, &str, Entry)] = &[
     ),
     (
         "crate::operations::application::rebuild::ReadSideService",
-        "operations/application/engine.rs",
+        "operations/application/framework.rs",
         Entry::Maintenance,
     ),
     (
         "crate::operations::application::verify::VerifyService",
-        "operations/application/engine.rs",
+        "operations/application/framework.rs",
         Entry::Maintenance,
     ),
 ];
 
-/// The engine entry a call names, if `name_start` (in stripped code) is the name of one. The entries are
+/// The framework entry a call names, if `name_start` (in stripped code) is the name of one. The entries are
 /// `source(`, `history(` or `history::<`, `views(` and `view::<V>(..)`, which is the maintenance entry when `.rebuild`
 /// follows it and a query otherwise; whitespace and line breaks between the parts do not matter (rustfmt breaks
 /// chains). Limits of a textual check: a method named like an entry on another type (`Error::source()`) is reported,
@@ -1101,14 +1112,14 @@ fn entry_at(code: &str, name_start: usize) -> Option<Entry> {
     }
 }
 
-/// The engine entries a stripped code calls directly, with their lines: `cqrs.source(..)`, `Cqrs::source(..)` and the like.
-fn engine_entries(code: &str) -> Vec<(usize, Entry)> {
+/// The framework entries a stripped code calls directly, with their lines: `cqrsx.source(..)`, `Cqrsx::source(..)` and the like.
+fn framework_entries(code: &str) -> Vec<(usize, Entry)> {
     let line_of = |offset: usize| code[..offset].matches('\n').count() + 1;
     let dotted = code.match_indices('.').map(|(at, _)| at + 1);
     let qualified = code
-        .match_indices("Cqrs::")
+        .match_indices("Cqrsx::")
         .filter(|(at, _)| !is_ident(code[..*at].chars().last().as_ref()))
-        .map(|(at, _)| at + "Cqrs::".len());
+        .map(|(at, _)| at + "Cqrsx::".len());
     let mut found: Vec<(usize, Entry)> = dotted
         .chain(qualified)
         .filter_map(|start| entry_at(code, start).map(|entry| (line_of(start), entry)))
@@ -1129,11 +1140,11 @@ fn presentation_parts(relative: &Path) -> Option<Vec<String>> {
     (in_module && parts.get(1).is_some_and(|layer| layer == "presentation")).then_some(parts)
 }
 
-/// The engine entries a stripped file of production code uses: the calls it makes and the entries of the application
+/// The framework entries a stripped file of production code uses: the calls it makes and the entries of the application
 /// items it names (`ENTRY_VIA_APPLICATION`).
 fn entries_named(code: &str) -> Vec<(usize, Entry)> {
     let production = without_test_modules(code);
-    let mut found = engine_entries(&production);
+    let mut found = framework_entries(&production);
     for (line, path) in paths(&production) {
         found.extend(
             ENTRY_VIA_APPLICATION
@@ -1215,11 +1226,11 @@ fn production_sources() -> Vec<(PathBuf, String)> {
         .collect()
 }
 
-/// A file of a presentation names the engine entry of its kind and no other (a presentation file outside the kind
+/// A file of a presentation names the framework entry of its kind and no other (a presentation file outside the kind
 /// directories none of the four), the transports and the kinds are the known ones, and the production code of the tree
 /// obeys it. Every kind is exercised, so the rule cannot pass for lack of files.
 #[test]
-fn a_presentation_file_names_only_the_engine_entry_of_its_kind() {
+fn a_presentation_file_names_only_the_framework_entry_of_its_kind() {
     let mut broken = Vec::new();
     let (mut checked, mut outside) = (0, 0);
     let mut exercised = BTreeSet::new();
@@ -1269,18 +1280,18 @@ fn the_kind_rule_refuses_every_wrong_entry() {
         "concert/presentation/http/maintenance/x.rs",
     );
     let free = "operations/presentation/http/health.rs";
-    let source = "fn f(cqrs: &Cqrs) { cqrs.source(\"ui\").execute::<A>(&id, c); }\n";
-    let get = "fn f(cqrs: &Cqrs) { cqrs.view::<V>().get(&id); }\n";
-    let list = "fn f(cqrs: &Cqrs) { cqrs.view::<V>()\n    .list(); }\n";
-    let rebuild = "fn f(cqrs: &Cqrs) { cqrs.view::<V>()\n    .rebuild(&id); }\n";
-    let views = "fn f(cqrs: &Cqrs) { cqrs.views().status(); }\n";
-    let replay = "fn f(cqrs: &Cqrs) { cqrs.history::<A>(&id); }\n";
+    let source = "fn f(cqrsx: &Cqrsx) { cqrsx.source(\"ui\").execute::<A>(&id, c); }\n";
+    let get = "fn f(cqrsx: &Cqrsx) { cqrsx.view::<V>().get(&id); }\n";
+    let list = "fn f(cqrsx: &Cqrsx) { cqrsx.view::<V>()\n    .list(); }\n";
+    let rebuild = "fn f(cqrsx: &Cqrsx) { cqrsx.view::<V>()\n    .rebuild(&id); }\n";
+    let views = "fn f(cqrsx: &Cqrsx) { cqrsx.views().status(); }\n";
+    let replay = "fn f(cqrsx: &Cqrsx) { cqrsx.history::<A>(&id); }\n";
     for (file, code) in [
         (queries, source),
         (queries, views),
         (queries, replay),
         (queries, rebuild),
-        (queries, "fn f(cqrs: &Cqrs) { Cqrs::source(cqrs, \"ui\"); }\n"),
+        (queries, "fn f(cqrsx: &Cqrsx) { Cqrsx::source(cqrsx, \"ui\"); }\n"),
         (commands, get),
         (commands, views),
         ("concert/presentation/http/commands/execute/response.rs", get),
@@ -1307,7 +1318,10 @@ fn the_kind_rule_refuses_every_wrong_entry() {
     ] {
         assert_eq!(check(file, code).len(), 1, "{file}: {code}");
     }
-    let broken = check(queries, "fn f() {}\nfn g(cqrs: &Cqrs) { cqrs.view::<V>().rebuild(&id); }\n");
+    let broken = check(
+        queries,
+        "fn f() {}\nfn g(cqrsx: &Cqrsx) { cqrsx.view::<V>().rebuild(&id); }\n",
+    );
     assert_eq!(
         broken,
         [
@@ -1320,12 +1334,15 @@ fn the_kind_rule_refuses_every_wrong_entry() {
     for (file, code) in [
         (
             commands,
-            "fn f(cqrs: &Cqrs) {\n    cqrs\n        .source(\"ui\")\n        .execute_with_id::<A>(id, &key, c);\n}\n",
+            "fn f(cqrsx: &Cqrsx) {\n    cqrsx\n        .source(\"ui\")\n        .execute_with_id::<A>(id, &key, c);\n}\n",
         ),
         (commands, source),
         (queries, get),
         (queries, list),
-        (queries, "fn f(cqrs: &Cqrs) { wallet_of(&cqrs.view::<Wrapper<V>>(), &id); }\n"),
+        (
+            queries,
+            "fn f(cqrsx: &Cqrsx) { wallet_of(&cqrsx.view::<Wrapper<V>>(), &id); }\n",
+        ),
         (history, replay),
         (history, "use crate::concert::application::time_travel;\n"),
         // A helper next to the endpoints of its kind, and the request and response of a directory endpoint, name no
@@ -1352,7 +1369,7 @@ fn the_kind_rule_refuses_every_wrong_entry() {
         (maintenance, "use crate::concert::application::rebuild::rebuild_hall;\n"),
         (
             free,
-            "fn f(cqrs: &Cqrs) { cqrs.settings().snapshot_every(); cqrs.stopping(); dependency::<T>(cqrs)?; }\n",
+            "fn f(cqrsx: &Cqrsx) { cqrsx.settings().snapshot_every(); cqrsx.stopping(); dependency::<T>(cqrsx)?; }\n",
         ),
         (free, "use crate::operations::application::rebuild::RebuildPace;\n"),
         (
@@ -1360,10 +1377,10 @@ fn the_kind_rule_refuses_every_wrong_entry() {
             "fn routes() { Router::new().route(\"/x\", get(queries::get::handle)); }\n",
         ),
         // Comments, strings, test modules, fields and bindings are no calls.
-        (queries, "// cqrs.source(\"ui\")\nfn f() { let s = \"cqrs.views()\"; }\n"),
+        (queries, "// cqrsx.source(\"ui\")\nfn f() { let s = \"cqrsx.views()\"; }\n"),
         (
             queries,
-            "#[cfg(test)]\nmod tests { fn f(cqrs: &Cqrs) { cqrs.source(\"ui\"); } }\n",
+            "#[cfg(test)]\nmod tests { fn f(cqrsx: &Cqrsx) { cqrsx.source(\"ui\"); } }\n",
         ),
         (
             free,
@@ -1599,11 +1616,11 @@ fn the_naming_rule_refuses_a_misnamed_wire_type_and_a_hand_built_answer() {
     }
 }
 
-/// The application items that reach an engine entry are listed (`ENTRY_VIA_APPLICATION`): the production code of the
+/// The application items that reach a framework entry are listed (`ENTRY_VIA_APPLICATION`): the production code of the
 /// application files that call an entry is exactly the files the list names, with the entries it names. A new
-/// application function over the engine, or one that stops using it, fails here until the list says so.
+/// application function over the framework, or one that stops using it, fails here until the list says so.
 #[test]
-fn the_application_items_that_reach_an_engine_entry_are_listed() {
+fn the_application_items_that_reach_a_framework_entry_are_listed() {
     let calling: BTreeSet<(String, Entry)> = production_sources()
         .into_iter()
         .filter(|(relative, _)| {
@@ -1614,7 +1631,7 @@ fn the_application_items_that_reach_an_engine_entry_are_listed() {
             parts.get(1).is_some_and(|layer| layer == "application")
         })
         .flat_map(|(relative, code)| {
-            let entries: BTreeSet<Entry> = engine_entries(&without_test_modules(&code))
+            let entries: BTreeSet<Entry> = framework_entries(&without_test_modules(&code))
                 .into_iter()
                 .map(|(_, entry)| entry)
                 .collect();
@@ -1628,7 +1645,7 @@ fn the_application_items_that_reach_an_engine_entry_are_listed() {
         .collect();
     assert_eq!(
         calling, listed,
-        "application files that call an engine entry and ENTRY_VIA_APPLICATION differ: list the item a presentation names \
+        "application files that call a framework entry and ENTRY_VIA_APPLICATION differ: list the item a presentation names \
          to reach it, or remove the row"
     );
 }
@@ -1639,14 +1656,14 @@ fn the_checker_sees_grouped_imports_inline_paths_and_ignores_comments_and_string
         "use crate::{application::x, infrastructure::{mongo::Repo as R, self}};\n\
          // use crate::presentation::http;\n\
          let s = \"sqlx::query\"; let r = r#\"mongodb::x\"#; let c = '\"';\n\
-         fn f<'a>() { cqrsx_postgres::connect(); }\n\
+         fn f<'a>() { cqrsx_framework::postgres::connect(); }\n\
          #[cfg(test)]\nmod tests { use serde_json::json; }\n",
     );
     let found: Vec<String> = paths(&code).into_iter().map(|(_, p)| p).collect();
     assert!(found.contains(&"crate::application::x".to_owned()), "{found:?}");
     assert!(found.contains(&"crate::infrastructure::mongo::Repo".to_owned()), "{found:?}");
     assert!(found.contains(&"crate::infrastructure".to_owned()), "{found:?}");
-    assert!(found.contains(&"cqrsx_postgres::connect".to_owned()), "{found:?}");
+    assert!(found.contains(&"cqrsx_framework::postgres::connect".to_owned()), "{found:?}");
     assert!(found.contains(&"serde_json::json".to_owned()), "{found:?}");
     assert!(
         !found
@@ -1662,9 +1679,9 @@ fn the_checker_sees_grouped_imports_inline_paths_and_ignores_comments_and_string
     );
 }
 
-/// G-11 (backlog 05/02; since 05/11 the engine refuses a second registration of an aggregate type, since 05/12 it
+/// G-11 (backlog 05/02; since 05/11 the framework refuses a second registration of an aggregate type, since 05/12 it
 /// builds the executors of the process): one command executor per aggregate type and process. The demo builds none of
-/// its own: the engine builds one per aggregate type a module registers, and `main.rs` builds the engine once, with
+/// its own: the framework builds one per aggregate type a module registers, and `main.rs` builds the framework once, with
 /// every module once. The HTTP commands and the task handlers' commands to one aggregate share it, and with it the
 /// locks; a second executor of one type would be another process to them, meeting the first only at the optimistic
 /// check.
@@ -1693,11 +1710,15 @@ fn the_process_builds_one_command_executor_per_aggregate_type() {
     }
     assert!(
         built.is_empty(),
-        "command executors in production code: the engine builds them: {built:?}"
+        "command executors in production code: the framework builds them: {built:?}"
     );
     let main = src.join("main.rs");
     let main = strip(&fs::read_to_string(&main).unwrap_or_else(|e| panic!("{}: {e}", main.display())));
-    assert_eq!(main.matches("Cqrs::from_env(").count(), 1, "main.rs builds the engine once");
+    assert_eq!(
+        main.matches("Cqrsx::from_env(").count(),
+        1,
+        "main.rs builds the framework once"
+    );
     for module in ["concert", "fan", "operations"] {
         assert_eq!(
             main.matches(&format!(".module({module}::module)")).count(),

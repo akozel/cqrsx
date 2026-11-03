@@ -29,18 +29,17 @@ use cqrsx::{
     reactions::ReactionsPlanner,
     view::{View, projection::ViewProjection, repository::ViewRepository},
 };
-use cqrsx_engine::{
-    Cqrs,
+use cqrsx_framework::{
+    Cqrsx,
     memory::InMemory,
-    mongodb::Mongo,
-    postgres::{Postgres, PostgresPools},
+    mongodb::MongoDb,
+    postgres::{
+        EVENT_STORE_SCHEMA, Postgres, PostgresPools, TRANSACTIONAL_OUTBOX_SCHEMA,
+        event_repository::PostgresEventRepository,
+        outbox::PostgresEventRepositoryWithOutbox,
+        pool::{ConnectionPingPolicy, StatementTimeout, connect_pool},
+    },
     settings::{DEFAULT_SNAPSHOT_EVERY, Settings},
-};
-use cqrsx_postgres::{
-    EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA,
-    event_repository::PostgresEventRepository,
-    outbox::PostgresEventRepositoryWithOutbox,
-    pool::{ConnectionPingPolicy, StatementTimeout, connect_pool},
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,
@@ -94,9 +93,9 @@ fn committed(answer: &Result<CommitReport<Concert>, CommandError<ConcertError>>)
     }
 }
 
-/// The engine of the process over the variables of nobody: its modules as `main.rs` registers them.
-fn process() -> cqrsx_engine::build::Builder {
-    Cqrs::from_lookup("ENCORE", |_| None)
+/// The framework of the process over the variables of nobody: its modules as `main.rs` registers them.
+fn process() -> cqrsx_framework::build::Builder {
+    Cqrsx::from_lookup("ENCORE", |_| None)
         .defaults(DEMO_DEFAULTS)
         .event_store(InMemory)
         .projections(InMemory)
@@ -107,15 +106,15 @@ fn process() -> cqrsx_engine::build::Builder {
 
 /// The box office's reactions with the policies of the configuration without environment, as the process plans.
 fn concert_reactions() -> ReactionsPlanner<Concert> {
-    // An engine in memory builds without waiting.
+    // A framework in memory builds without waiting.
     let mut context = std::task::Context::from_waker(std::task::Waker::noop());
-    let std::task::Poll::Ready(cqrs) = std::pin::pin!(process().build()).poll(&mut context) else {
-        panic!("the engine in memory waits");
+    let std::task::Poll::Ready(cqrsx) = std::pin::pin!(process().build()).poll(&mut context) else {
+        panic!("the framework in memory waits");
     };
-    ReactionsPlanner::new(cqrs.expect("configuration").policies().clone())
+    ReactionsPlanner::new(cqrsx.expect("configuration").policies().clone())
 }
 
-/// The box office's command executor over PostgreSQL as the engine builds it: a snapshot store on the outbox
+/// The box office's command executor over PostgreSQL as the framework builds it: a snapshot store on the outbox
 /// repository, the default snapshot interval and lock limits, the conflict retry `retry`.
 fn concert_executor(
     pool: &PgPool,
@@ -148,7 +147,7 @@ async fn database() -> (PgPool, testcontainers::ContainerAsync<GenericImage>) {
         loop {
             if let Ok(pool) = connect_pool(
                 options.clone(),
-                ConnectionPingPolicy::Idle(cqrsx_postgres::pool::DEFAULT_IDLE_PING_AFTER),
+                ConnectionPingPolicy::Idle(cqrsx_framework::postgres::pool::DEFAULT_IDLE_PING_AFTER),
                 StatementTimeout::Default,
             )
             .await
@@ -306,10 +305,10 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
         history: pool.clone(),
         projection: pool.clone(),
     };
-    let cqrs = Cqrs::with_settings(settings)
+    let cqrsx = Cqrsx::with_settings(settings)
         .event_store(Postgres)
         .postgres_pools(pools)
-        .projections(Mongo)
+        .projections(MongoDb)
         .mongodb_client(mongodb::Client::with_options(mongo).expect("client"))
         .module(concert::module)
         .module(fan::module)
@@ -317,8 +316,8 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
         .build()
         .await
         .expect("wiring");
-    let cqrs = Arc::new(cqrs);
-    let router = cqrs.router();
+    let cqrsx = Arc::new(cqrsx);
+    let router = cqrsx.router();
 
     let (status, announced) = post_command(
         &router,
@@ -395,7 +394,8 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
     )
     .expect("attempt");
     assert_eq!(
-        cqrs.dispatcher()
+        cqrsx
+            .dispatcher()
             .expect("task handlers")
             .dispatch(Arc::new(attempt), Duration::ZERO)
             .await,
@@ -407,7 +407,7 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
         .await
         .expect("the ledger's event");
 
-    let entries: Vec<(String, Value)> = cqrs
+    let entries: Vec<(String, Value)> = cqrsx
         .dependency::<ActivityHub>()
         .expect("the activity log")
         .subscribe()

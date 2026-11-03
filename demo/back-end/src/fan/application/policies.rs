@@ -2,7 +2,7 @@
 //! A reaction never names a policy and nor does a handler: the module root gives each task type its policy
 //! ([`fan::module`](crate::fan::module)) and the task runtime pauses a retry by it.
 use cqrsx::task::policy::{RetryPause, TaskPolicy};
-use cqrsx_engine::setup::{Setup, SetupError};
+use cqrsx_framework::setup::{Setup, SetupError};
 use std::{num::NonZeroU16, time::Duration};
 
 /// The pause of the step policy before every next attempt.
@@ -46,7 +46,7 @@ impl Policies {
 mod tests {
     use super::*;
 
-    /// The policies under the variables `pairs`, with the settings of the demo's engine.
+    /// The policies under the variables `pairs`, with the settings of the demo's framework.
     fn from_pairs(pairs: &'static [(&'static str, &'static str)]) -> Result<Policies, SetupError> {
         let lookup = move |name: &str| {
             pairs

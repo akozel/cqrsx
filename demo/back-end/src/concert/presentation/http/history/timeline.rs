@@ -10,7 +10,7 @@ use axum::{
     Json,
     extract::{Path, State},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrsx;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -44,10 +44,10 @@ impl From<Vec<RecordedEvent>> for ConcertTimelineResponse {
 }
 
 pub async fn handle(
-    State(cqrs): State<Arc<Cqrs>>,
+    State(cqrsx): State<Arc<Cqrsx>>,
     Path(concert_id): Path<String>,
 ) -> Result<Json<ConcertTimelineResponse>, ApiError> {
     let concert_id = parse_concert_id(&concert_id)?;
-    let events = time_travel::timeline(&cqrs, &concert_id).await?;
+    let events = time_travel::timeline(&cqrsx, &concert_id).await?;
     Ok(Json(events.into()))
 }

@@ -1,5 +1,5 @@
 //! `GET /api/activity` — Server-Sent Events. First a `hello` with the recent backlog, then live
-//! `activity` events. The stream ends when the engine stops so Ctrl+C never waits for open tabs.
+//! `activity` events. The stream ends when the framework stops so Ctrl+C never waits for open tabs.
 use crate::{
     operations::presentation::http::config::ConfigResponse,
     shared::{
@@ -11,7 +11,7 @@ use axum::{
     extract::State,
     response::sse::{Event, KeepAlive, Sse},
 };
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrsx;
 use futures::{StreamExt, stream};
 use serde::Serialize;
 use std::{convert::Infallible, sync::Arc, time::Duration};
@@ -25,11 +25,11 @@ pub struct ActivityHello {
 }
 
 pub async fn handle(
-    State(cqrs): State<Arc<Cqrs>>,
+    State(cqrsx): State<Arc<Cqrsx>>,
 ) -> Result<Sse<impl futures::Stream<Item = Result<Event, Infallible>>>, ApiError> {
-    let (backlog, receiver) = dependency::<ActivityHub>(&cqrs)?.subscribe();
+    let (backlog, receiver) = dependency::<ActivityHub>(&cqrsx)?.subscribe();
     let hello = ActivityHello {
-        config: ConfigResponse::try_from(&*cqrs)?,
+        config: ConfigResponse::try_from(&*cqrsx)?,
         backlog,
     };
     let hello = Event::default()
@@ -47,7 +47,7 @@ pub async fn handle(
             Err(BroadcastStreamRecvError::Lagged(_)) => None,
         }
     });
-    let stopping = cqrs.stopping();
+    let stopping = cqrsx.stopping();
     Ok(Sse::new(first.chain(live).take_until(stopping.cancelled_owned()))
         .keep_alive(KeepAlive::new().interval(Duration::from_secs(15)).text("keep-alive")))
 }

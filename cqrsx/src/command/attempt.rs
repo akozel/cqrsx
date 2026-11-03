@@ -172,7 +172,7 @@ mod tests {
 
     type Mem<A> = EventSourcedStore<MemoryEventRepository, A>;
 
-    /// A journal in memory under the store, as the engine in memory has it.
+    /// A journal in memory under the store, as the framework in memory has it.
     fn mem_store<A: Aggregate>() -> Mem<A> {
         EventSourcedStore::new(MemoryEventRepository::default())
     }

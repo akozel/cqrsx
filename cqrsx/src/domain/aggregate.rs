@@ -252,8 +252,8 @@ impl AggregateKey {
     }
 }
 
-/// A ledger of deltas, the aggregate the unit tests of the stores and the projections write and
-/// read; its one command decides a zero delta and is never executed.
+/// A ledger of deltas, the aggregate the unit tests of the stores, the projections and the test tools write and read;
+/// its one command settles the ledger: the delta that brings the balance to zero, refused for a negative balance.
 #[cfg(test)]
 pub(crate) mod tests {
     use crate::domain::{aggregate::Aggregate, command::Decide, event::Events};
@@ -290,8 +290,11 @@ pub(crate) mod tests {
         }
     }
     impl Decide<Ledger> for () {
-        fn decide(self, _: &Ledger, _: &()) -> Result<Delta, Rejected> {
-            Ok(Delta(0))
+        fn decide(self, ledger: &Ledger, _: &()) -> Result<Delta, Rejected> {
+            match i32::try_from(ledger.balance) {
+                Ok(balance) if balance >= 0 => Ok(Delta(-balance)),
+                _ => Err(Rejected),
+            }
         }
     }
 }

@@ -167,7 +167,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
 
 <section id="flow">
   <h2>Overall diagram</h2>
-  <p class="prose">Every process of the engine runs one <code>TaskRuntime</code> over the outbox table, <code>transactional_outbox</code>, through <code>PostgresTaskQueue</code> (or, in a test, the queue in memory). The runtime has one producer that claims tasks into a bounded buffer and a fixed pool of workers that take them from it. Claim, settlement and recovery are one autocommitted statement each.</p>
+  <p class="prose">Every process of the framework runs one <code>TaskRuntime</code> over the outbox table, <code>transactional_outbox</code>, through <code>PostgresTaskQueue</code> (or, in a test, the queue in memory). The runtime has one producer that claims tasks into a bounded buffer and a fixed pool of workers that take them from it. Claim, settlement and recovery are one autocommitted statement each.</p>
   <figure>
     <div class="scroll diagram">
       <svg viewBox="0 0 1000 560" role="img" aria-label="The supervisor of the task runtime claims ready tasks from the outbox table into a bounded buffer, and on every tick returns expired leases. Workers take tasks from the buffer; the executor checks the lease budget, runs the handler through the dispatcher and the adapter, and settles the outcome in the outbox. A handler may execute the next command, whose commit publishes the next tasks to the outbox." style="min-width:820px">
@@ -325,7 +325,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
 
 <section id="policy">
   <h2>Pause by policy</h2>
-  <p class="prose">A handler never names a pause. It answers <code>Retry</code>, and the executor waits the pause of the policy of its task type. A policy is a value (<code>TaskPolicy</code>): a pause and an attempt budget. The pause is <code>RetryPause::fixed(pause)</code>, <code>RetryPause::backoff(base, max)</code>, which waits <code>min(base · 2<sup>n−1</sup>, max)</code> after attempt <code>n</code>, both without jitter, or <code>RetryPause::redelivery()</code>, the queue's own backoff. In the engine a module registers a handler with its policy, <code>Module::task(handler, policy)</code>; the reactions that plan the task never name it.</p>
+  <p class="prose">A handler never names a pause. It answers <code>Retry</code>, and the executor waits the pause of the policy of its task type. A policy is a value (<code>TaskPolicy</code>): a pause and an attempt budget. The pause is <code>RetryPause::fixed(pause)</code>, <code>RetryPause::backoff(base, max)</code>, which waits <code>min(base · 2<sup>n−1</sup>, max)</code> after attempt <code>n</code>, both without jitter, or <code>RetryPause::redelivery()</code>, the queue's own backoff. In the framework a module registers a handler with its policy, <code>Module::task(handler, policy)</code>; the reactions that plan the task never name it.</p>
   <ul class="plain">
     <li><strong>The default policy</strong> (<code>TaskPolicy::default()</code>, also the policy of a type nobody registered) gets <code>DEFAULT_MAX_ATTEMPTS</code> (10) and <code>RetryPause::redelivery()</code>, the queue's own <code>redelivery_backoff</code>: 5&nbsp;s · 2<sup>n−1</sup>, at most 300&nbsp;s, each pause drawn ±20&nbsp;%.</li>
     <li><strong>Timeouts and expired leases</strong> always wait the redelivery backoff, whatever the policy: the handler did not answer.</li>
@@ -342,12 +342,12 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
     <div><span class="k">Library defaults</span><span class="v">60 s &gt; 53 s</span><span class="d">S 6 s, H 15 s, Q = C = 128: 12 + 15 + 5 + 21</span></div>
     <div><span class="k">Demo</span><span class="v">30 s &gt; 24 s</span><span class="d">S 3 s, H 5 s, Q = C = 2: 6 + 5 + 5 + 8</span></div>
   </div>
-  <p class="prose">A command from a handler waits for its aggregate's lock; the engine therefore refuses a lock wait (<code>COMMAND_LOCK_MAX_WAIT_MS</code>) that is not shorter than the handler timeout (<code>OUTBOX_HANDLER_TIMEOUT_MS</code>).</p>
+  <p class="prose">A command from a handler waits for its aggregate's lock; the framework therefore refuses a lock wait (<code>COMMAND_LOCK_MAX_WAIT_MS</code>) that is not shorter than the handler timeout (<code>OUTBOX_HANDLER_TIMEOUT_MS</code>).</p>
 </section>
 
 <section id="failed">
   <h2>Failed tasks</h2>
-  <p class="prose">A task fails when its handler answers <code>Fail</code>, when a retry or an expired lease comes on its last attempt, or when its row cannot be delivered at all. A failure is logged once, with the task's id, format, attempt and cause (<code>permanent failure</code>, <code>retry limit reached</code>, <code>worker lease expired</code>), never the payload; the row keeps <code>last_error</code>. Nothing retries it automatically. An operator who has fixed the cause runs <code>REQUEUE_FAILED_OUTBOX_TASK</code> (<code>cqrsx-postgres/sql/requeue-failed-outbox.sql</code>) with the task's id: the row returns to <code>pending</code> with its attempts at zero and keeps its id and payload, so a receiver that deduplicates by the task id still recognises it. The operations section of <a href="../cqrsx-engine/README.md">cqrsx-engine</a> describes it.</p>
+  <p class="prose">A task fails when its handler answers <code>Fail</code>, when a retry or an expired lease comes on its last attempt, or when its row cannot be delivered at all. A failure is logged once, with the task's id, format, attempt and cause (<code>permanent failure</code>, <code>retry limit reached</code>, <code>worker lease expired</code>), never the payload; the row keeps <code>last_error</code>. Nothing retries it automatically. An operator who has fixed the cause runs <code>REQUEUE_FAILED_OUTBOX_TASK</code> (<code>cqrsx-framework/sql/requeue-failed-outbox.sql</code>) with the task's id: the row returns to <code>pending</code> with its attempts at zero and keeps its id and payload, so a receiver that deduplicates by the task id still recognises it. The operations section of <a href="../cqrsx-framework/README.md">cqrsx-framework</a> describes it.</p>
 </section>
 
 <section id="guarantees">
@@ -401,10 +401,10 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
     <li><a href="components.md#inventory">Components, inventory</a>: the queue, the runtime, the executor, the dispatcher, the policies and their settings.</li>
     <li><a href="typical_scenario.md">A typical application</a>: reactions, task handlers, policies and dependencies.</li>
     <li><a href="guarantees.md">Guarantees</a> G-13 to G-22.</li>
-    <li><a href="../cqrsx-engine/README.md">cqrsx-engine</a>: the <code>OUTBOX_*</code> settings and the operations, including the requeue of a failed task; <a href="crates.md">crates and their boundaries</a>.</li>
+    <li><a href="../cqrsx-framework/README.md">cqrsx-framework</a>: the <code>OUTBOX_*</code> settings and the operations, including the requeue of a failed task; <a href="crates.md">crates and their boundaries</a>.</li>
     <li>Before: <a href="command-path.html">command path</a>. Beside: <a href="read-path.html">read path</a>.</li>
   </ul>
-  <p class="foot">Verified against the code of <code>cqrsx::worker</code> (runtime, supervisor, poller, worker pool, executor, lease budget, dispatcher, queue port), <code>cqrsx::task</code> (policies), <code>cqrsx::reactions</code>, <code>cqrsx_postgres::task_queue</code> and <code>sql/</code>, and <code>cqrsx_engine</code> (module policies, settings). Defaults are the library's; the engine reads them from the <code>OUTBOX_*</code> variables.</p>
+  <p class="foot">Verified against the code of <code>cqrsx::worker</code> (runtime, supervisor, poller, worker pool, executor, lease budget, dispatcher, queue port), <code>cqrsx::task</code> (policies), <code>cqrsx::reactions</code>, <code>cqrsx_framework::postgres::task_queue</code> and <code>sql/</code>, and <code>cqrsx_framework</code> (module policies, settings). Defaults are the library's; the framework reads them from the <code>OUTBOX_*</code> variables.</p>
 </section>
 </div>
 </body>

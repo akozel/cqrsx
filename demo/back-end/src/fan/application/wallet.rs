@@ -1,13 +1,13 @@
 //! Use case "show a fan's wallet". A `fan_wallets` document is one ledger (a fan and a concert,
 //! D-14); the wallet the fan sees is assembled here from all of their ledgers. The ledgers of a fan
-//! sit in one id range (`FanLedgerId::id_range`), so the read is one range query of the engine's
+//! sit in one id range (`FanLedgerId::id_range`), so the read is one range query of the framework's
 //! view (on the `_id` index in MongoDB) and needs nothing else.
 use crate::{
     fan::application::views::fan_wallet::FanWalletView,
     shared::domain::{FanId, FanLedgerId},
 };
 use cqrsx::{journal::PersistenceError, view::repository::StoredView};
-use cqrsx_engine::views::ViewQuery;
+use cqrsx_framework::views::ViewQuery;
 
 /// One ledger behind the wallet: the concert, the document revision and the last event applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,9 +169,9 @@ mod tests {
 
     #[tokio::test]
     async fn wallet_of_reads_only_the_fans_own_range() {
-        let (cqrs, _) = testing::test_app().await;
+        let (cqrsx, _) = testing::test_app().await;
         testing::put::<_, Fan>(
-            &cqrs,
+            &cqrsx,
             vec![
                 ledger("fox-2:c-1", 1, "b-9", "c-1", 50, 1),
                 ledger("fox:c-1", 1, "b-1", "c-1", 80, 1),
@@ -179,7 +179,7 @@ mod tests {
                 ledger("panda:c-1", 1, "b-7", "c-1", 50, 1),
             ],
         );
-        let wallets = cqrs.view::<FanWalletView>();
+        let wallets = cqrsx.view::<FanWalletView>();
         let wallet = wallet_of(&wallets, &fox()).await.unwrap().unwrap();
         assert_eq!(wallet.ledgers.len(), 1);
         assert_eq!((wallet.ledgers[0].concert_id.as_str(), wallet.view.total_spent), ("c-1", 80));

@@ -195,7 +195,7 @@ impl<'a, A: Aggregate> Decided<'a, A> {
         }
     }
 
-    /// The command's metadata, stored with its event: its causation, its time and the like. The engine carries it
+    /// The command's metadata, stored with its event: its causation, its time and the like. The framework carries it
     /// on to the tasks itself; a reaction only reads it.
     pub fn metadata(&self) -> &'a HashMap<String, String> {
         self.metadata

@@ -6,7 +6,7 @@ use crate::{
 };
 use axum::{Json, extract::State};
 use cqrsx::view::repository::StoredView;
-use cqrsx_engine::Cqrs;
+use cqrsx_framework::Cqrsx;
 use serde::Serialize;
 use std::sync::Arc;
 
@@ -58,8 +58,8 @@ impl From<Vec<StoredView<ConcertHallView>>> for ConcertHallListResponse {
     }
 }
 
-pub async fn handle(State(cqrs): State<Arc<Cqrs>>) -> Result<Json<ConcertHallListResponse>, ApiError> {
-    let halls = cqrs
+pub async fn handle(State(cqrsx): State<Arc<Cqrsx>>) -> Result<Json<ConcertHallListResponse>, ApiError> {
+    let halls = cqrsx
         .view::<ConcertHallView>()
         .list()
         .await

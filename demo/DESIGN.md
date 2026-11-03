@@ -15,7 +15,7 @@ Principles:
   them a human explanation and the query that fetched the data.
 - **The UI does not check business rules.** A click on a taken seat still sends the command: only the aggregate
   judges.
-- **No mocks at run time:** real PostgreSQL and MongoDB, the real `cqrsx` engine. Everything only the demo needs
+- **No mocks at run time:** real PostgreSQL and MongoDB, the real `cqrsx` framework. Everything only the demo needs
   (mail chaos, reset, personas) lives in the sidecar and is marked `DEMO ONLY`; the back-end is a model of a
   production service.
 
@@ -117,7 +117,7 @@ atomic transaction "event + its tasks".
 
 - **One command — one event** (D-02): each command implements `Decide<A>` and returns one event or a domain
   rejection. A rejection writes neither events nor tasks.
-- **The aggregate's reactions choose the tasks:** `Reactions` decides per event which tasks follow; the engine calls
+- **The aggregate's reactions choose the tasks:** `Reactions` decides per event which tasks follow; the framework calls
   the reaction after the decision and writes the event, the snapshot and the tasks in one statement. The chain reads
   by task types in `concert/application/reactions.rs` and `fan/application/reactions.rs`.
 - **An event stores a fact**, not a formula: the `price` that was paid. The refund amount `refund` comes from the
@@ -128,7 +128,7 @@ atomic transaction "event + its tasks".
 - **Event metadata** is a map of strings: `command_id`, `correlation_id`, `causation_id`, `source`, `recorded_at`
   (fixed-width RFC 3339, microseconds). For UI commands `correlation_id = causation_id = command_id`,
   `source = "ui"`. For a command from a task `correlation_id` is inherited from the task, `causation_id` is the task
-  id, `source = "task:<task type>"`. The engine creates the metadata: `cqrs.source("ui")` at the entry, `TaskContext`
+  id, `source = "task:<task type>"`. The framework creates the metadata: `cqrsx.source("ui")` at the entry, `TaskContext`
   in a handler; the keys and the inheritance rule — `cqrsx::command::causation::Causation`, `recorded_at` is added by
   `cqrsx::command::metadata::CommandMetadata`.
 
@@ -197,7 +197,7 @@ An e-mail goes to an external mail service over HTTP: the client is `back-end/sr
 ### 1.7 Read models
 
 The read models live in MongoDB, database `encore_read`, and are built **only** from events by **projection
-processors**: the engine builds a processor for each read model a module registers. A processor follows the journal by
+processors**: the framework builds a processor for each read model a module registers. A processor follows the journal by
 its checkpoint (`projection_checkpoints` next to the read models), wakes up on every commit and reads new events in
 pages; a failed round is repeated after a pause, nothing is lost. The command answers "accepted" right after the
 commit (D-17); the read model catches up a moment later. At any moment one node owns a checkpoint (a lease); another
@@ -284,8 +284,8 @@ again".
 - An observer on the node that accepted the request reads the checkpoint rows every 250 ms and publishes
   `rebuild.started`, `rebuild.progress`, `rebuild.finished` (§2.3); every replaced document gives `projection.rebuilt`.
 - **⟲ One hall** (`POST /api/concerts/{id}/rebuild`, `202`): the owner of the halls' checkpoint replaces one document
-  (`cqrs.view::<ConcertHallView>().rebuild(&id)`), nothing else is touched.
-  The engine's rebuild, verify, history and journal-size calls are behind its feature `operation-utils`, which the demo
+  (`cqrsx.view::<ConcertHallView>().rebuild(&id)`), nothing else is touched.
+  The framework's rebuild, verify, history and journal-size calls are behind its feature `operation-utils`, which the demo
   enables in `demo/Cargo.toml`.
 - **Status** (`GET /api/projections/status`): per projection the checkpoint, the lag in events (capped at
   `ENCORE_PROJECTION_LAG_CAP`), the owner, failures and state; the overall state is the worst in the order `stalled` >
@@ -302,7 +302,7 @@ run, no tasks are created.
 ### 1.9 Time machine
 
 `GET /api/concerts/{id}/state-at/{sequence}`: the back-end reads the history of the concert without snapshots
-(`cqrs.history::<Concert>`), applies `apply` to an empty aggregate up to the given `sequence` and returns the state
+(`cqrsx.history::<Concert>`), applies `apply` to an empty aggregate up to the given `sequence` and returns the state
 and the event itself. In the UI — the ⏳ slider under the seat map: the hall is redrawn "in the past" (sepia, the
 banner "This state isn't stored anywhere — it was computed from events 1…n").
 
@@ -312,7 +312,7 @@ banner "This state isn't stored anywhere — it was computed from events 1…n")
 
 The root of each module (`concert.rs`, `fan.rs`, `operations.rs`) registers `presentation::http::routes()`: one URL
 table in the module's `presentation/http.rs`, a section per kind, one line per endpoint. How a presentation is laid out
-(transport, kind of engine entry, action), how the request and the response of an endpoint are named and where their
+(transport, kind of framework entry, action), how the request and the response of an endpoint are named and where their
 conversions live are rules 10–12 of [Writing an application on cqrsx](../.claude/rules/cqrsx-application.md#presentation);
 `tests/architecture.rs` checks the layout and the names.
 
@@ -347,7 +347,7 @@ The body is JSON with a `type` field; the internal commands of `Fan` cannot be e
 
 `concert/presentation/http/commands/execute.rs` picks `command_id = Uuid::now_v7()`, makes it the `booking_id` or
 `cancellation_id` of the command (`execute/request.rs` turns the body into the command) and runs it with
-`cqrs.source("ui").execute_with_id(command_id, ..)`; the engine adds the metadata (§1.4) and the tasks (§1.6).
+`cqrsx.source("ui").execute_with_id(command_id, ..)`; the framework adds the metadata (§1.4) and the tasks (§1.6).
 `execute/response.rs` gives the outcome its status and body.
 
 ```json
