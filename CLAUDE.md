@@ -24,7 +24,8 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
   of a failed storage operation, which a store's crate gives the core's logs); the log lines are private.
 - `cqrsx/src/mutex.rs` — `lock`, `get_mut`: the one public helper that takes a `std::sync::Mutex` (rule 10).
 - `cqrsx-framework/src` — the framework, a crate of its own on top of `cqrsx`: `lib.rs` (`Cqrs`),
-  `build.rs` (`Builder`, the assembly over the stores), `executor.rs`, `settings.rs`, `module.rs`, `setup.rs`, `source.rs`,
+  `build.rs` (`Builder`, the assembly over the stores), `stores.rs` (the store switch: `Journal`, the executor and the
+  task queue over the chosen stores, what every store gives the views), `settings.rs`, `module.rs`, `setup.rs`, `source.rs`,
   `views.rs`, `memory.rs` (feature `test-utils`: the marker `InMemory` and the stores in memory, over `cqrsx::memory`),
   `diagnostics.rs` (the framework's own log line);
   `postgres.rs` + `postgres/` (feature `event-store-postgres`: the event repository, outbox, task queue, pools;

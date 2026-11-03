@@ -1,33 +1,28 @@
 //! How a framework is built: its settings are read, its modules set up, their registrations merged and checked into an
 //! `Assembly`, its stores opened, and the components installed from the assembly over the stores.
-#[cfg(feature = "test-utils")]
-use crate::memory::MemoryBackend;
 #[cfg(feature = "projections-mongodb")]
-use crate::mongodb::{MongoDb, checkpoint_store::MongoCheckpointStore, view_repository::MongoViewRepository};
-#[cfg(feature = "projections-postgres")]
-use crate::postgres::{checkpoint_store::PostgresCheckpointStore, view_repository::PostgresViewRepository};
+use crate::mongodb::MongoDb;
+#[cfg(feature = "event-store-postgres")]
+use crate::postgres::Postgres;
+#[cfg(feature = "event-store-postgres")]
+use crate::postgres::PostgresPools;
 use crate::{
-    Cqrs, Journal,
-    executor::{AnyObserverAdapter, Executor},
+    Cqrs,
     module::{AggregateEntry, Module, ObservedProcessor, ProjectionObserverFactory, ViewEntry},
     settings::{Defaults, Settings, SettingsError},
     setup::{Lookup, Setup, SetupError},
-    views::{CheckpointOperations, Counts},
+    stores::{EventStoreKind, Executor, Journal, ProjectionStoreKind, Stores},
+    views::{CheckpointOperations, Counts, Registry},
 };
-#[cfg(feature = "event-store-postgres")]
-use crate::{
-    ViewStore,
-    postgres::{Postgres, PostgresPools, outbox::PostgresEventRepositoryWithOutbox},
-};
-#[cfg(feature = "test-utils")]
-use cqrsx::memory::event_repository::MemoryEventRepository;
 use cqrsx::{
     command::{
         executor::StoreCommandExecutor,
-        observer::{AnyCommandObserver, CommandObserver},
+        locks::LockLimits,
+        observer::{AnyCommandObserver, AnyCommandReport, CommandObserver, CommandReport},
+        retry::AggregateConflictRetryPolicy,
     },
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
-    journal::{AggregateStore, repository::EventRepository, store::EventSourcedStore, wakeup::CommitWakeup},
+    journal::{AggregateStore, repository::EventRepository, wakeup::CommitWakeup},
     mutex::get_mut,
     projection::{
         RebuildableProjection, checkpoint::CheckpointStore, processor::ProjectionProcessor, runtime::ProjectionRuntime,
@@ -47,7 +42,7 @@ use cqrsx::{
 use cqrsx::{projection::processor::observer::ProjectionObserver, worker::dependencies::MissingDependency};
 use std::{
     any::{Any, TypeId},
-    collections::{BTreeMap, HashSet, btree_map::Entry},
+    collections::{BTreeMap, HashMap, HashSet, btree_map::Entry},
     fmt,
     sync::{Arc, Mutex},
 };
@@ -120,51 +115,7 @@ pub trait EventStore: sealed::SealedEventStore {}
 pub trait ProjectionStore: sealed::SealedProjectionStore {}
 
 mod sealed {
-    /// The journal a framework is built with.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum EventStoreKind {
-        #[cfg(feature = "test-utils")]
-        Memory,
-        #[cfg(feature = "event-store-postgres")]
-        Postgres,
-    }
-
-    impl EventStoreKind {
-        /// Whether the journal outlives the process.
-        pub fn is_durable(self) -> bool {
-            match self {
-                #[cfg(feature = "test-utils")]
-                Self::Memory => false,
-                #[cfg(feature = "event-store-postgres")]
-                Self::Postgres => true,
-            }
-        }
-    }
-
-    /// The views' store a framework is built with.
-    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-    pub enum ProjectionStoreKind {
-        #[cfg(feature = "test-utils")]
-        Memory,
-        #[cfg(feature = "projections-postgres")]
-        Postgres,
-        #[cfg(feature = "projections-mongodb")]
-        MongoDb,
-    }
-
-    impl ProjectionStoreKind {
-        /// The name of the store when it outlives the process.
-        pub fn durable_name(self) -> Option<&'static str> {
-            match self {
-                #[cfg(feature = "test-utils")]
-                Self::Memory => None,
-                #[cfg(feature = "projections-postgres")]
-                Self::Postgres => Some("PostgreSQL"),
-                #[cfg(feature = "projections-mongodb")]
-                Self::MongoDb => Some("MongoDB"),
-            }
-        }
-    }
+    use crate::stores::{EventStoreKind, ProjectionStoreKind};
 
     pub trait SealedEventStore {
         const KIND: EventStoreKind;
@@ -174,8 +125,6 @@ mod sealed {
         const KIND: ProjectionStoreKind;
     }
 }
-
-use sealed::{EventStoreKind, ProjectionStoreKind};
 
 #[cfg(feature = "test-utils")]
 impl sealed::SealedEventStore for crate::memory::InMemory {
@@ -216,28 +165,6 @@ impl sealed::SealedProjectionStore for MongoDb {
 
 #[cfg(feature = "projections-mongodb")]
 impl ProjectionStore for MongoDb {}
-
-/// The stores a framework is built over, and what the application opened for them.
-#[derive(Default)]
-struct Stores {
-    event_store: Option<EventStoreKind>,
-    views: Option<ProjectionStoreKind>,
-    #[cfg(feature = "event-store-postgres")]
-    pools: Option<PostgresPools>,
-    #[cfg(feature = "projections-mongodb")]
-    client: Option<::mongodb::Client>,
-}
-
-impl Stores {
-    /// The framework has its journal, and its views have a store when there are views: the kind of the journal.
-    fn ensure_chosen(&self, has_views: bool) -> Result<EventStoreKind, BuildError> {
-        let event_store = self.event_store.ok_or(BuildError::NoJournal)?;
-        if has_views && self.views.is_none() {
-            return Err(BuildError::ViewsWithoutStore);
-        }
-        Ok(event_store)
-    }
-}
 
 /// What a framework is built from: its settings (given, or read from the variables when it is built, with the
 /// application's defaults), the roots of its modules and the variables they read, its stores, and the dependencies
@@ -432,7 +359,8 @@ impl Assembly {
         let views = std::mem::take(&mut self.views);
         let adapters = std::mem::take(&mut self.adapters);
         let stores = std::mem::take(&mut self.stores);
-        let mut cqrs = self.open_stores(event_store, stores).await?;
+        let journal = stores.open(event_store, &self.settings).await?;
+        let mut cqrs = self.over(journal);
         for entry in aggregates {
             // The rules are gone only when a test took them.
             entry.rules.map_or(Ok(()), |rules| (entry.install)(&mut cqrs, rules))?;
@@ -448,63 +376,8 @@ impl Assembly {
         Ok(cqrs)
     }
 
-    /// The framework over its stores, opened now or taken from the application: in memory (a test), or the pools of
-    /// PostgreSQL in the order of the plan (main, projection, history) with the views in PostgreSQL (the main pool), in
-    /// MongoDB (a lazy client) or in memory. The checkpoints live with the views: a framework without views has none.
-    async fn open_stores(self, event_store: EventStoreKind, stores: Stores) -> Result<Cqrs, BuildError> {
-        #[cfg(feature = "test-utils")]
-        let memory = MemoryBackend::new();
-        match event_store {
-            #[cfg(feature = "test-utils")]
-            EventStoreKind::Memory => {
-                // Nothing to open in memory.
-                let _ = stores;
-                Ok(self.over(
-                    Journal::Memory,
-                    #[cfg(feature = "event-store-postgres")]
-                    ViewStore::Memory,
-                    memory,
-                ))
-            }
-            #[cfg(feature = "event-store-postgres")]
-            EventStoreKind::Postgres => {
-                let pools = match stores.pools {
-                    Some(pools) => pools,
-                    None => crate::postgres::open(&self.settings).await?,
-                };
-                let view_store = match stores.views {
-                    #[cfg(feature = "test-utils")]
-                    Some(ProjectionStoreKind::Memory) => ViewStore::Memory,
-                    #[cfg(feature = "projections-mongodb")]
-                    Some(ProjectionStoreKind::MongoDb) => {
-                        let client = match stores.client {
-                            Some(client) => client,
-                            None => crate::mongodb::client(&self.settings).await?,
-                        };
-                        ViewStore::MongoDb(client.database(self.settings.mongodb().database()))
-                    }
-                    #[cfg(feature = "projections-postgres")]
-                    Some(ProjectionStoreKind::Postgres) => ViewStore::Postgres,
-                    // Without views nothing reads a store of the views.
-                    None => ViewStore::None,
-                };
-                Ok(self.over(
-                    Journal::Postgres(pools),
-                    view_store,
-                    #[cfg(feature = "test-utils")]
-                    memory,
-                ))
-            }
-        }
-    }
-
     /// The framework before its components: the assembly over the opened stores, the one place that makes a [`Cqrs`].
-    fn over(
-        self,
-        journal: Journal,
-        #[cfg(feature = "event-store-postgres")] view_store: ViewStore,
-        #[cfg(feature = "test-utils")] memory: MemoryBackend,
-    ) -> Cqrs {
+    fn over(self, journal: Journal) -> Cqrs {
         let shutdown = CancellationToken::new();
         Cqrs {
             settings: self.settings,
@@ -519,11 +392,7 @@ impl Assembly {
             dispatcher: None,
             views: Default::default(),
             described: self.described,
-            #[cfg(feature = "test-utils")]
-            memory,
             journal,
-            #[cfg(feature = "event-store-postgres")]
-            view_store,
             processors: Mutex::new(ProjectionRuntime::new()),
             #[cfg(feature = "axum")]
             routes: self.routes,
@@ -653,53 +522,21 @@ impl Cqrs {
         let Ok(rules) = rules.downcast::<A::Rules>() else {
             return Ok(());
         };
-        let executor = match &self.journal {
-            #[cfg(feature = "test-utils")]
-            Journal::Memory => Executor::Memory(self.executor::<A, _>(self.store::<A>(), *rules)),
-            #[cfg(feature = "event-store-postgres")]
-            Journal::Postgres(pools) => Executor::Postgres(self.executor::<A, _>(self.postgres_store::<A>(pools), *rules)),
+        let settings = &self.settings;
+        let parts = ExecutorParts::<A> {
+            rules: *rules,
+            conflict_retry: settings.conflict_retry(),
+            lock_limits: settings.lock_limits(),
+            planner: ReactionsPlanner::<A>::new(self.policies.clone()),
+            wakeup: wakeup::<A>(&mut self.wakeups),
+            observer: self.command_observer::<A>(),
         };
+        let executor = self.journal.executor::<A>(settings.snapshot_every(), parts);
         let executor = Arc::new(executor);
         let executors = self.executors.clone().register::<A, _>(executor.clone());
         self.executors = executors.map_err(|twice| BuildError::AggregateTwice(twice.0))?;
         self.command_executors.insert(TypeId::of::<A>(), executor);
         Ok(())
-    }
-
-    /// The store of the commands of `A` in PostgreSQL: the journal with its outbox, a snapshot every `snapshot_every`
-    /// events.
-    #[cfg(feature = "event-store-postgres")]
-    pub(crate) fn postgres_store<A: Aggregate>(
-        &self,
-        pools: &PostgresPools,
-    ) -> EventSourcedStore<PostgresEventRepositoryWithOutbox, A> {
-        EventSourcedStore::new(PostgresEventRepositoryWithOutbox::new(pools.main.clone()))
-            .with_snapshots(self.settings.snapshot_every())
-    }
-
-    /// The store of the commands of `A` in memory: the journal, a snapshot every `snapshot_every` events.
-    #[cfg(feature = "test-utils")]
-    fn store<A: Aggregate>(&self) -> EventSourcedStore<MemoryEventRepository, A> {
-        EventSourcedStore::new(self.memory.journal.clone()).with_snapshots(self.settings.snapshot_every())
-    }
-
-    /// The executor of `A` over `store` as every backend builds it: the settings' conflict retry and lock limits, the
-    /// reactions with the policies, the wake-up of the processors of `A`, the observer of every command.
-    fn executor<A, S>(&mut self, store: S, rules: A::Rules) -> StoreCommandExecutor<A, S>
-    where
-        A: Reactions + 'static,
-        A::Command: Command + Clone,
-        A::Rejection: Rejection,
-        S: AggregateStore<A>,
-    {
-        let settings = &self.settings;
-        let executor = StoreCommandExecutor::new(store, rules, settings.conflict_retry(), settings.lock_limits())
-            .with_task_planner(ReactionsPlanner::<A>::new(self.policies.clone()))
-            .with_commit_wakeup(self.wakeup::<A>());
-        match self.command_observer::<A>() {
-            Some(observer) => executor.with_observer(observer),
-            None => executor,
-        }
     }
 
     /// The observer of every command, as the observer of the commands of `A`.
@@ -714,66 +551,96 @@ impl Cqrs {
 
     /// Installs the processor of `V` over the framework's journal and checkpoints, and the repository of its documents,
     /// which the queries read.
-    #[cfg_attr(
-        not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
-        expect(
-            unused_variables,
-            clippy::extra_unused_type_parameters,
-            reason = "without a store of the views no view is installed"
-        )
-    )]
     pub(crate) fn install_view<V: View<A> + PartialEq + 'static, A: Aggregate + 'static>(&mut self) -> Result<(), BuildError> {
-        match &self.journal {
-            #[cfg(feature = "test-utils")]
-            Journal::Memory => {
-                let documents = self.memory.documents::<V, A>();
-                let journal = self.memory.journal.clone();
-                let checkpoints = self.memory.checkpoints.clone();
-                self.register_view::<V, A, _, _, _, _, _>(
-                    Arc::new(journal.clone()),
-                    checkpoints,
-                    documents,
-                    journal.clone(),
-                    journal,
-                );
-                Ok(())
-            }
-            #[cfg(feature = "event-store-postgres")]
-            Journal::Postgres(pools) => match &self.view_store {
-                ViewStore::None => Err(BuildError::ViewsWithoutStore),
-                #[cfg(feature = "test-utils")]
-                ViewStore::Memory => {
-                    let (feed, history, counter) = pools.view_readers();
-                    let (documents, checkpoints) = (self.memory.documents::<V, A>(), self.memory.checkpoints.clone());
-                    self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
-                    Ok(())
-                }
-                #[cfg(feature = "projections-postgres")]
-                ViewStore::Postgres => {
-                    let (feed, history, counter) = pools.view_readers();
-                    let main = pools.main.clone();
-                    let documents = Arc::new(PostgresViewRepository::<V, A>::new(main.clone()));
-                    let checkpoints = Arc::new(PostgresCheckpointStore::new(main));
-                    self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
-                    Ok(())
-                }
-                #[cfg(feature = "projections-mongodb")]
-                ViewStore::MongoDb(database) => {
-                    let (feed, history, counter) = pools.view_readers();
-                    let documents = Arc::new(MongoViewRepository::<V, A>::new(database));
-                    let checkpoints = Arc::new(MongoCheckpointStore::new(database));
-                    self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
-                    Ok(())
-                }
-            },
-        }
+        let parts = ViewParts {
+            settings: &self.settings,
+            owner: &self.owner,
+            projection_observer: &self.projection_observer,
+            wakeups: &mut self.wakeups,
+            processors: &mut self.processors,
+            views: &mut self.views,
+        };
+        self.journal.install_view::<V, A>(parts)
     }
 
+    /// The executor of `A`, if a module registered the aggregate type.
+    pub(crate) fn executor_of<A: Aggregate + 'static>(&self) -> Option<&Executor<A>> {
+        self.command_executors.get(&TypeId::of::<A>())?.downcast_ref::<Executor<A>>()
+    }
+}
+
+/// The wake-up of the processors of `A` in `wakeups`, shared by its executor.
+fn wakeup<A: 'static>(wakeups: &mut HashMap<TypeId, CommitWakeup>) -> CommitWakeup {
+    wakeups.entry(TypeId::of::<A>()).or_default().clone()
+}
+
+/// The observer of every command as the observer of the commands of one aggregate type.
+struct AnyObserverAdapter(Arc<dyn AnyCommandObserver>);
+
+impl<A: Aggregate> CommandObserver<A> for AnyObserverAdapter
+where
+    A::Command: Command,
+    A::Rejection: Rejection,
+{
+    fn observe(&self, report: &CommandReport<'_, A>) {
+        self.0.observe(&AnyCommandReport::of(report));
+    }
+}
+
+/// What the executor of one aggregate type is made of apart from its store: the journal builds the store of the variant
+/// it keeps and hands it to [`over`](Self::over).
+pub(crate) struct ExecutorParts<A: Reactions> {
+    pub(crate) rules: A::Rules,
+    pub(crate) conflict_retry: AggregateConflictRetryPolicy,
+    pub(crate) lock_limits: LockLimits,
+    pub(crate) planner: ReactionsPlanner<A>,
+    pub(crate) wakeup: CommitWakeup,
+    pub(crate) observer: Option<Arc<dyn CommandObserver<A>>>,
+}
+
+impl<A> ExecutorParts<A>
+where
+    A: Reactions + 'static,
+    A::Command: Command + Clone,
+    A::Rejection: Rejection,
+{
+    /// The executor of `A` over `store` as every store builds it: the settings' conflict retry and lock limits, the
+    /// reactions with the policies, the wake-up of the processors of `A`, the observer of every command.
+    pub(crate) fn over<S: AggregateStore<A>>(self, store: S) -> StoreCommandExecutor<A, S> {
+        let executor = StoreCommandExecutor::new(store, self.rules, self.conflict_retry, self.lock_limits)
+            .with_task_planner(self.planner)
+            .with_commit_wakeup(self.wakeup);
+        match self.observer {
+            Some(observer) => executor.with_observer(observer),
+            None => executor,
+        }
+    }
+}
+
+/// What the registration of a view takes from the framework: borrows of its fields, so that the journal, which the
+/// installation borrows too, stays apart from them.
+pub(crate) struct ViewParts<'a> {
+    pub(crate) settings: &'a Settings,
+    /// This node: the owner of the processors' checkpoints.
+    pub(crate) owner: &'a str,
+    pub(crate) projection_observer: &'a Option<ProjectionObserverFactory>,
+    pub(crate) wakeups: &'a mut HashMap<TypeId, CommitWakeup>,
+    pub(crate) processors: &'a mut Mutex<ProjectionRuntime>,
+    pub(crate) views: &'a mut Registry,
+}
+
+impl ViewParts<'_> {
     /// The processor of `V` over `feed` and `checkpoints` into `documents`, and the view's queries and operations: its
     /// checkpoint rows are read and requested through `checkpoints`, its documents verified against `history`, its lag
     /// counted on `counter`.
-    fn register_view<V, A, R, C, D, H, K>(&mut self, feed: Arc<R>, checkpoints: Arc<C>, documents: Arc<D>, history: H, counter: K)
-    where
+    pub(crate) fn register<V, A, R, C, D, H, K>(
+        mut self,
+        feed: Arc<R>,
+        checkpoints: Arc<C>,
+        documents: Arc<D>,
+        history: H,
+        counter: K,
+    ) where
         V: View<A> + PartialEq + 'static,
         A: Aggregate + 'static,
         R: EventRepository + 'static,
@@ -784,13 +651,13 @@ impl Cqrs {
     {
         let operations: Arc<dyn CheckpointOperations> = checkpoints.clone();
         let processor = self.processor::<V, A, _, _, _>(feed, checkpoints, documents.clone());
-        let processors = get_mut(&mut self.processors, "framework processors");
+        let processors = get_mut(self.processors, "framework processors");
         *processors = std::mem::take(processors).with_processor(processor);
         self.views.register::<V, A, _, _, _>(documents, operations, history, counter);
     }
 
-    /// The processor of `V` as every backend builds it: the settings' configuration, this node as the owner, the
-    /// wake-up of `A`, the observer of every processor.
+    /// The processor of `V` as every store builds it: the settings' configuration, this node as the owner, the wake-up of
+    /// `A`, the observer of every processor.
     fn processor<V, A, R, C, D>(
         &mut self,
         journal: Arc<R>,
@@ -806,25 +673,15 @@ impl Cqrs {
     {
         let projection: Arc<dyn RebuildableProjection<A>> = Arc::new(ViewProjection::new(documents));
         let processor = ProjectionProcessor::new(V::NAME, journal, checkpoints, projection, self.settings.processor())
-            .with_commit_wakeup(self.wakeup::<A>())
-            .with_owner(self.owner.clone());
-        match &self.projection_observer {
+            .with_commit_wakeup(wakeup::<A>(self.wakeups))
+            .with_owner(self.owner.to_owned());
+        match self.projection_observer {
             Some(observers) => processor.with_observer(observers(ObservedProcessor {
                 projection: V::NAME,
-                node: &self.owner,
+                node: self.owner,
             })),
             None => processor,
         }
-    }
-
-    /// The wake-up of the processors of `A`, shared by its executor.
-    fn wakeup<A: 'static>(&mut self) -> CommitWakeup {
-        self.wakeups.entry(TypeId::of::<A>()).or_default().clone()
-    }
-
-    /// The executor of `A`, if a module registered the aggregate type.
-    pub(crate) fn executor_of<A: Aggregate + 'static>(&self) -> Option<&Executor<A>> {
-        self.command_executors.get(&TypeId::of::<A>())?.downcast_ref::<Executor<A>>()
     }
 }
 
@@ -853,6 +710,17 @@ mod tests {
         num::{NonZeroU16, NonZeroUsize},
         time::Duration,
     };
+
+    fn view_parts(cqrs: &mut Cqrs) -> ViewParts<'_> {
+        ViewParts {
+            settings: &cqrs.settings,
+            owner: &cqrs.owner,
+            projection_observer: &cqrs.projection_observer,
+            wakeups: &mut cqrs.wakeups,
+            processors: &mut cqrs.processors,
+            views: &mut cqrs.views,
+        }
+    }
 
     fn refusal(builder: Builder) -> BuildError {
         ready(builder.build()).err().unwrap()
@@ -1103,8 +971,8 @@ mod tests {
         let mut cqrs = memory_builder().module(shows).build().await.unwrap();
         let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemoryCheckpointStore::default());
         let documents = Arc::new(MemoryViewRepository::<Hall, Show>::default());
-        let journal = Arc::new(cqrs.memory.journal.clone());
-        let processor = cqrs.processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
+        let journal = Arc::new(cqrs.journal.memory().unwrap().journal.clone());
+        let processor = view_parts(&mut cqrs).processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
         assert_eq!(
             format!("{processor:?}"),
             format!(
@@ -1147,18 +1015,15 @@ mod tests {
             .unwrap();
         let mut built = Vec::new();
         for mut cqrs in [defaults, set] {
-            let store = cqrs.store::<Show>();
-            let executor = cqrs.executor::<Show, _>(store, ());
+            let Some(Executor::Memory(executor)) = cqrs.executor_of::<Show>() else {
+                panic!("the executor of a framework in memory is the one in memory");
+            };
+            let (executor, store) = (format!("{executor:?}"), format!("{:?}", executor.store()));
             let checkpoints = Arc::new(cqrsx::memory::checkpoint_store::MemoryCheckpointStore::default());
             let documents = Arc::new(MemoryViewRepository::<Hall, Show>::default());
-            let journal = Arc::new(cqrs.memory.journal.clone());
-            let processor = cqrs.processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
-            built.push((
-                format!("{executor:?}"),
-                format!("{:?}", cqrs.store::<Show>()),
-                format!("{processor:?}"),
-                cqrs.owner.clone(),
-            ));
+            let journal = Arc::new(cqrs.journal.memory().unwrap().journal.clone());
+            let processor = view_parts(&mut cqrs).processor::<Hall, Show, _, _, _>(journal, checkpoints, documents);
+            built.push((executor, store, format!("{processor:?}"), cqrs.owner.clone()));
         }
         let executor = |retry: AggregateConflictRetryPolicy, limits: LockLimits| {
             format!("retry_policy: {retry:?}, lock_limits: {limits:?}, commit_wakeup: true, observer: false")

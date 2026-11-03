@@ -1,15 +1,13 @@
 //! The operations of the feature `operation-utils`: what changes the read side or reads without a bound, and the
 //! mechanism that runs tasks. Their criterion, and what stays public without the feature, is the API rule of the
 //! framework in [`doc/components.md`](../../doc/components.md#naming-and-integration-rules).
-#[cfg(feature = "event-store-postgres")]
-use crate::postgres::event_repository::PostgresEventRepository;
 use crate::{
-    Cqrs, Journal,
+    Cqrs,
     views::{JournalTotals, ViewQuery, Views, ViewsError},
 };
 use cqrsx::{
     domain::{aggregate::Aggregate, event::EventEnvelope},
-    journal::{AggregateStore, PersistenceError, feed::Position, store::EventSourcedStore},
+    journal::{PersistenceError, feed::Position},
     projection::checkpoint::RebuildReply,
     view::verify::Verification,
     worker::{adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher},
@@ -26,21 +24,7 @@ impl Cqrs {
     /// The committed events of the aggregate `id` of type `A`, from its journal alone, without a snapshot (on
     /// PostgreSQL through the pool of whole-history reads, without a statement timeout).
     pub async fn history<A: Aggregate>(&self, id: &A::Id) -> Result<Vec<EventEnvelope<A>>, PersistenceError> {
-        let id = id.to_string();
-        match &self.journal {
-            #[cfg(feature = "test-utils")]
-            Journal::Memory => {
-                EventSourcedStore::<_, A>::new(self.memory.journal.clone())
-                    .load_events(&id)
-                    .await
-            }
-            #[cfg(feature = "event-store-postgres")]
-            Journal::Postgres(pools) => {
-                EventSourcedStore::<_, A>::new(PostgresEventRepository::new(pools.history.clone()))
-                    .load_events(&id)
-                    .await
-            }
-        }
+        self.journal.history::<A>(&id.to_string()).await
     }
 }
 

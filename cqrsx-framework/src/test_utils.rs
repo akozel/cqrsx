@@ -1,10 +1,6 @@
 //! The helpers of the feature `test-utils`: what a test does with a framework in memory. Their criterion is the API rule
 //! of the framework in [`doc/components.md`](../../doc/components.md#naming-and-integration-rules).
-#[cfg(feature = "event-store-postgres")]
-use crate::ViewStore;
-#[cfg(feature = "event-store-postgres")]
-use crate::postgres::task_queue::PostgresTaskQueue;
-use crate::{Cqrs, Journal};
+use crate::{Cqrs, stores::Queue};
 use cqrsx::{
     domain::aggregate::Aggregate,
     memory::{
@@ -20,37 +16,31 @@ use cqrsx::{
         queue::TaskQueue,
     },
 };
-use std::{any::TypeId, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 impl Cqrs {
     /// The journal in memory: the events, the snapshots and the outbox of every aggregate type; `None` when the framework
     /// keeps its journal in PostgreSQL.
     pub fn journal(&self) -> Option<&MemoryEventRepository> {
-        matches!(self.journal, Journal::Memory).then_some(&self.memory.journal)
+        self.journal.memory().map(|memory| &memory.journal)
     }
 
     /// The task queue over the journal's outbox in memory: every task with its delivery; `None` when the framework keeps
     /// its journal, and with it the outbox, in PostgreSQL.
     pub fn outbox(&self) -> Option<&MemoryTaskQueue> {
-        matches!(self.journal, Journal::Memory).then_some(self.memory.queue.as_ref())
+        self.journal.memory().map(|memory| memory.queue.as_ref())
     }
 
     /// The checkpoints of the processors in memory, e.g. for a test that plays an owner or a store that does not
     /// answer; `None` when the framework keeps its views, and with them the checkpoints, in PostgreSQL or MongoDB.
     pub fn checkpoints(&self) -> Option<&MemoryCheckpointStore> {
-        let in_memory = match &self.journal {
-            Journal::Memory => true,
-            #[cfg(feature = "event-store-postgres")]
-            Journal::Postgres(_) => matches!(self.view_store, ViewStore::Memory),
-        };
-        in_memory.then_some(self.memory.checkpoints.as_ref())
+        self.journal.memory_views().map(|views| views.checkpoints.as_ref())
     }
 
     /// The documents of the view `V` of the aggregate `A` in memory, e.g. for a test that writes them by hand; `None`
     /// for a view the framework keeps elsewhere or does not have.
     pub fn documents<V: View<A> + 'static, A: Aggregate + 'static>(&self) -> Option<&MemoryViewRepository<V, A>> {
-        let documents = self.memory.documents.get(&TypeId::of::<V>())?;
-        documents.downcast_ref::<MemoryViewRepository<V, A>>()
+        self.journal.memory_views()?.find::<V, A>()
     }
 
     /// Runs the tasks until none is due: every task due now, those they publish included, one at a time, by type in the
@@ -62,17 +52,10 @@ impl Cqrs {
         let Some(dispatcher) = &self.dispatcher else {
             return 0;
         };
-        match &self.journal {
-            Journal::Memory => self.run_due(&self.memory.queue, dispatcher).await,
-            #[cfg(feature = "event-store-postgres")]
-            Journal::Postgres(pools) => {
-                let queue = Arc::new(PostgresTaskQueue::new(pools.main.clone()));
-                self.run_due(&queue, dispatcher).await
-            }
-        }
+        self.run_due(&self.journal.task_queue(), dispatcher).await
     }
 
-    async fn run_due<Q: TaskQueue + 'static>(&self, queue: &Arc<Q>, dispatcher: &TaskDispatcher<BoxedTaskAdapter>) -> usize {
+    async fn run_due(&self, queue: &Arc<Queue>, dispatcher: &TaskDispatcher<BoxedTaskAdapter>) -> usize {
         let settings = &self.settings;
         let executor = DefaultTaskExecutor::new(queue.clone(), *settings.task_storage()).with_policies(self.policies.clone());
         let mut attempts = 0;

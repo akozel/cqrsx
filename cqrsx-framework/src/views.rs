@@ -2,8 +2,6 @@
 //! The rebuild of one document, the verification, the counts of the journal and the rebuild requests need the feature
 //! `operation-utils`.
 use crate::Cqrs;
-#[cfg(feature = "test-utils")]
-use cqrsx::memory::event_repository::MemoryEventRepository;
 use cqrsx::{
     domain::aggregate::Aggregate,
     journal::{PersistenceError, feed::Position, repository::EventRepository},
@@ -47,43 +45,6 @@ pub(crate) trait Counts: Send + Sync {
     fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send;
     #[cfg(feature = "operation-utils")]
     fn totals<A: Aggregate>(&self) -> impl Future<Output = Result<JournalTotals, PersistenceError>> + Send;
-}
-
-#[cfg(feature = "test-utils")]
-impl Counts for MemoryEventRepository {
-    fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
-        MemoryEventRepository::count_after::<A>(self, after, cap)
-    }
-
-    #[cfg(feature = "operation-utils")]
-    async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
-        let events = MemoryEventRepository::count_after::<A>(self, Position::START, u64::MAX).await?;
-        let (mut aggregates, mut after) = (0, String::new());
-        loop {
-            let page = self.aggregate_ids_after::<A>(&after, 100).await?;
-            let Some(last) = page.last() else {
-                return Ok(JournalTotals { events, aggregates });
-            };
-            after = last.clone();
-            aggregates += page.len() as u64;
-        }
-    }
-}
-
-#[cfg(feature = "event-store-postgres")]
-impl Counts for crate::postgres::event_repository::PostgresEventRepository {
-    fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
-        crate::postgres::event_repository::PostgresEventRepository::count_after::<A>(self, after, cap)
-    }
-
-    #[cfg(feature = "operation-utils")]
-    async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
-        let totals = crate::postgres::event_repository::PostgresEventRepository::totals::<A>(self).await?;
-        Ok(JournalTotals {
-            events: totals.events,
-            aggregates: totals.aggregates,
-        })
-    }
 }
 
 /// What the operations over the views ask of the checkpoints, the store erased.

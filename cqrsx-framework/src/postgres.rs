@@ -588,7 +588,12 @@ mod tests {
 
     #[tokio::test]
     async fn the_executors_over_postgres_take_the_settings_of_the_framework() {
-        use crate::{Cqrs, Journal, executor::Executor, memory::InMemory, test_support::*};
+        use crate::{
+            Cqrs,
+            memory::InMemory,
+            stores::{Executor, Journal},
+            test_support::*,
+        };
         use cqrsx::{
             command::{locks::LockLimits, retry::AggregateConflictRetryPolicy},
             projection::processor::config::ProcessorConfig,
@@ -630,10 +635,11 @@ mod tests {
             printed.contains(&format!("retry_policy: {retry:?}, lock_limits: {limits:?}")),
             "{printed}"
         );
-        let Journal::Postgres(pools) = &cqrs.journal else {
-            panic!("the journal of a framework over PostgreSQL is PostgreSQL's");
-        };
-        let store = format!("{:?}", cqrs.postgres_store::<Show>(pools));
+        assert!(
+            matches!(&cqrs.journal, Journal::Postgres { .. }),
+            "the journal of a framework over PostgreSQL is PostgreSQL's"
+        );
+        let store = format!("{:?}", executor.store());
         assert!(store.contains("snapshot_policy: Every(3)"), "{store}");
         #[cfg(feature = "operation-utils")]
         assert!(

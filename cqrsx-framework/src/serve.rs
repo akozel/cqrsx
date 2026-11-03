@@ -12,10 +12,8 @@ mod lifecycle;
 mod logging;
 mod signal;
 
-#[cfg(feature = "event-store-postgres")]
-use crate::postgres::task_queue::PostgresTaskQueue;
 use crate::{
-    Cqrs, Journal,
+    Cqrs,
     build::{BuildError, Builder},
     setup::SetupError,
 };
@@ -145,34 +143,12 @@ impl Cqrs {
             });
         };
         let (config, policies) = (self.settings.task_runtime().clone(), self.policies.clone());
-        match &self.journal {
-            #[cfg(feature = "test-utils")]
-            Journal::Memory => Box::pin(prepare(self.memory.queue.clone(), dispatcher, config, policies).run(shutdown)),
-            #[cfg(feature = "event-store-postgres")]
-            Journal::Postgres(pools) => Box::pin(
-                prepare(
-                    Arc::new(PostgresTaskQueue::new(pools.main.clone())),
-                    dispatcher,
-                    config,
-                    policies,
-                )
-                .run(shutdown),
-            ),
-        }
+        Box::pin(prepare(self.journal.task_queue(), dispatcher, config, policies).run(shutdown))
     }
 
     /// Closes the pools of a framework over PostgreSQL: the main pool, the history pool, the projection pool.
     async fn close(&self) {
-        match &self.journal {
-            #[cfg(feature = "test-utils")]
-            Journal::Memory => {}
-            #[cfg(feature = "event-store-postgres")]
-            Journal::Postgres(pools) => {
-                pools.main.close().await;
-                pools.history.close().await;
-                pools.projection.close().await;
-            }
-        }
+        self.journal.close().await;
     }
 }
 

@@ -12,7 +12,6 @@ compile_error!("cqrsx-framework needs a store: the feature `event-store-postgres
 
 pub mod build;
 mod diagnostics;
-mod executor;
 #[cfg(feature = "axum")]
 pub mod http;
 // The stores in memory and their marker `InMemory`: the feature `test-utils` only.
@@ -30,6 +29,7 @@ pub mod serve;
 pub mod settings;
 pub mod setup;
 pub mod source;
+mod stores;
 #[cfg(test)]
 mod test_support;
 #[cfg(feature = "test-utils")]
@@ -67,7 +67,7 @@ pub struct Cqrs {
     dependencies: Dependencies,
     command_observer: Option<Arc<dyn AnyCommandObserver>>,
     projection_observer: Option<ProjectionObserverFactory>,
-    /// The executor of every aggregate type, by its type: an `Arc<Executor<A>>`.
+    /// The executor of every aggregate type, by its type: an `Arc<stores::Executor<A>>`.
     command_executors: HashMap<TypeId, Arc<dyn Any + Send + Sync>>,
     executors: Executors,
     wakeups: HashMap<TypeId, CommitWakeup>,
@@ -76,11 +76,7 @@ pub struct Cqrs {
     /// The settings and what the modules read and described when they were set up, by key: one value per key, checked
     /// when the framework was built.
     described: BTreeMap<String, String>,
-    #[cfg(feature = "test-utils")]
-    memory: memory::MemoryBackend,
-    journal: Journal,
-    #[cfg(feature = "event-store-postgres")]
-    view_store: ViewStore,
+    journal: stores::Journal,
     processors: Mutex<ProjectionRuntime>,
     #[cfg(feature = "axum")]
     routes: axum::Router<Arc<Cqrs>>,
@@ -102,27 +98,6 @@ impl fmt::Debug for Cqrs {
             .field("dispatcher", &self.dispatcher)
             .finish_non_exhaustive()
     }
-}
-
-/// Where the framework keeps the journal, the snapshots, the outbox and the task queue.
-pub(crate) enum Journal {
-    #[cfg(feature = "test-utils")]
-    Memory,
-    #[cfg(feature = "event-store-postgres")]
-    Postgres(postgres::PostgresPools),
-}
-
-/// Where a framework over PostgreSQL keeps the views and their checkpoints.
-#[cfg(feature = "event-store-postgres")]
-pub(crate) enum ViewStore {
-    #[cfg(feature = "test-utils")]
-    Memory,
-    #[cfg(feature = "projections-postgres")]
-    Postgres,
-    #[cfg(feature = "projections-mongodb")]
-    MongoDb(::mongodb::Database),
-    /// The framework has no views: nothing reads a store of the views.
-    None,
 }
 
 impl Cqrs {
