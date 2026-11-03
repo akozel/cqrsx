@@ -412,7 +412,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
     <li><a href="../cqrsx/README.md">cqrsx</a> and <a href="../cqrsx-engine/README.md">cqrsx-engine</a>: the crates, their settings (<code>COMMAND_LOCK_MAX_WAIT_MS</code>, <code>COMMAND_LOCK_MAX_WAITERS</code>, <code>SNAPSHOT_EVERY</code> under the application's prefix) and operations; <a href="crates.md">crates and their boundaries</a>.</li>
     <li>Next: <a href="read-path.html">read path</a>, how the event reaches the views; <a href="task-path.html">task path</a>, how the task reaches its handler.</li>
   </ul>
-  <p class="foot">Verified against the code of <code>cqrsx::command</code> (executor, attempt, locks, retry, planner, observer), <code>cqrsx::journal::store</code>, <code>cqrsx::reactions</code>, <code>cqrsx_postgres::outbox</code> and <code>cqrsx_engine</code> (<code>Source</code>, the assembly of the executors). Defaults are the library's and the engine's; an application may set its own.</p>
+  <p class="foot">Verified against the code of <code>cqrsx::command</code> (executor, attempt, locks, retry, planner, observer), <code>cqrsx::journal::store</code>, <code>cqrsx::reactions</code>, <code>cqrsx_engine::postgres::outbox</code> and <code>cqrsx_engine</code> (<code>Source</code>, the assembly of the executors). Defaults are the library's and the engine's; an application may set its own.</p>
 </section>
 </div>
 </body>

@@ -1,4 +1,6 @@
 //! The executor of one aggregate type over the engine's stores, and the adapter of the observer of every command.
+#[cfg(feature = "event-store-postgres")]
+use crate::postgres::outbox::PostgresEventRepositoryWithOutbox;
 #[cfg(feature = "test-utils")]
 use cqrsx::memory::event_repository::MemoryEventRepository;
 use cqrsx::{
@@ -10,8 +12,6 @@ use cqrsx::{
     domain::{aggregate::Aggregate, command::Command, rejection::Rejection},
     journal::store::EventSourcedStore,
 };
-#[cfg(feature = "postgres")]
-use cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox;
 use std::{collections::HashMap, sync::Arc};
 
 /// The executor of one aggregate type over the engine's journal: the variants are the stores, so a command from an
@@ -19,7 +19,7 @@ use std::{collections::HashMap, sync::Arc};
 pub(crate) enum Executor<A: Aggregate> {
     #[cfg(feature = "test-utils")]
     Memory(StoreCommandExecutor<A, EventSourcedStore<MemoryEventRepository, A>>),
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     Postgres(StoreCommandExecutor<A, EventSourcedStore<PostgresEventRepositoryWithOutbox, A>>),
 }
 
@@ -38,7 +38,7 @@ where
         match self {
             #[cfg(feature = "test-utils")]
             Self::Memory(executor) => executor.execute_with_metadata(id, command, metadata).await,
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             Self::Postgres(executor) => executor.execute_with_metadata(id, command, metadata).await,
         }
     }

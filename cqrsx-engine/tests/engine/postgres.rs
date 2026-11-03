@@ -114,7 +114,7 @@ async fn the_modules_run_on_postgres_with_their_views_in_mongodb() {
     let outbox = Arc::new(Outbox::default());
     let read_db = mongo.database.name().to_owned();
     let cqrs = engine(url(&database), read_db, &outbox)
-        .projections(cqrsx_engine::mongodb::Mongo)
+        .projections(cqrsx_engine::mongodb::MongoDb)
         .mongodb_client(mongo.database.client().clone())
         .build()
         .await
@@ -187,7 +187,7 @@ async fn the_engine_opens_its_pools_as_the_plan_says() {
         }
     })
     .event_store(Postgres)
-    .projections(cqrsx_engine::mongodb::Mongo)
+    .projections(cqrsx_engine::mongodb::MongoDb)
     .module(box_office)
     .build()
     .await;
@@ -207,7 +207,7 @@ async fn the_engine_opens_its_pools_as_the_plan_says() {
             _ => None,
         })
         .event_store(Postgres)
-        .projections(cqrsx_engine::mongodb::Mongo)
+        .projections(cqrsx_engine::mongodb::MongoDb)
         .build()
         .await
         .err()
@@ -220,7 +220,7 @@ async fn the_engine_opens_its_pools_as_the_plan_says() {
 
 /// G-30 over PostgreSQL: the task runtime of `serve` runs on the queue of the main pool, and on the signal the server,
 /// the runtime and the processors stop before the pools close.
-#[cfg(feature = "http")]
+#[cfg(feature = "axum")]
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn serve_runs_the_tasks_on_postgres_until_the_signal() {
     let database = Database::new().await;

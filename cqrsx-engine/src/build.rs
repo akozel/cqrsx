@@ -2,8 +2,10 @@
 //! `Assembly`, its stores opened, and the components installed from the assembly over the stores.
 #[cfg(feature = "test-utils")]
 use crate::memory::MemoryBackend;
-#[cfg(feature = "mongodb")]
-use crate::mongodb::Mongo;
+#[cfg(feature = "projections-mongodb")]
+use crate::mongodb::{MongoDb, checkpoint_store::MongoCheckpointStore, view_repository::MongoViewRepository};
+#[cfg(feature = "projections-postgres")]
+use crate::postgres::{checkpoint_store::PostgresCheckpointStore, view_repository::PostgresViewRepository};
 use crate::{
     Cqrs, Journal,
     executor::{AnyObserverAdapter, Executor},
@@ -12,10 +14,10 @@ use crate::{
     setup::{Lookup, Setup, SetupError},
     views::{CheckpointOperations, Counts},
 };
-#[cfg(feature = "postgres")]
+#[cfg(feature = "event-store-postgres")]
 use crate::{
     ViewStore,
-    postgres::{Postgres, PostgresPools},
+    postgres::{Postgres, PostgresPools, outbox::PostgresEventRepositoryWithOutbox},
 };
 #[cfg(feature = "test-utils")]
 use cqrsx::memory::event_repository::MemoryEventRepository;
@@ -43,11 +45,6 @@ use cqrsx::{
 };
 #[cfg(test)]
 use cqrsx::{projection::processor::observer::ProjectionObserver, worker::dependencies::MissingDependency};
-#[cfg(feature = "postgres")]
-use cqrsx_postgres::{
-    checkpoint_store::PostgresCheckpointStore, event_repository::PostgresEventRepository,
-    outbox::PostgresEventRepositoryWithOutbox, view_repository::PostgresViewRepository,
-};
 use std::{
     any::{Any, TypeId},
     collections::{BTreeMap, HashSet, btree_map::Entry},
@@ -88,25 +85,25 @@ pub enum BuildError {
     /// Modules registered views and there is no `Builder::projections(..)`: an engine has no default store for them.
     #[error("the views have no store: give the builder `projections(..)`")]
     ViewsWithoutStore,
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     #[error("{variable}: {source}")]
     DatabaseUrl { variable: String, source: sqlx::Error },
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     #[error("cannot connect to PostgreSQL: {0}")]
     MainPool(sqlx::Error),
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     #[error("cannot connect the history pool to PostgreSQL: {0}")]
     HistoryPool(sqlx::Error),
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     #[error("cannot connect the projection pool to PostgreSQL: {0}")]
     ProjectionPool(sqlx::Error),
-    #[cfg(feature = "mongodb")]
+    #[cfg(feature = "projections-mongodb")]
     #[error("{variable}: {source}")]
     MongoUri {
         variable: String,
         source: ::mongodb::error::Error,
     },
-    #[cfg(feature = "mongodb")]
+    #[cfg(feature = "projections-mongodb")]
     #[error("MongoDB client: {0}")]
     MongoClient(::mongodb::error::Error),
 }
@@ -114,11 +111,12 @@ pub enum BuildError {
 type ModuleRoot = Box<dyn FnOnce(&Setup) -> Result<Module, SetupError>>;
 
 /// Where the event store of an engine lives (its journal, snapshots, outbox and task queue): `Builder::event_store`
-/// takes one of these, PostgreSQL (feature `postgres`) or `InMemory` (feature `test-utils`). There is no default.
+/// takes one of these, `Postgres` (feature `event-store-postgres`) or `InMemory` (feature `test-utils`). There is no default.
 pub trait EventStore: sealed::SealedEventStore {}
 
-/// Where the views of an engine live: `Builder::projections` takes one of these, PostgreSQL or MongoDB (features
-/// `postgres`, `mongodb`) or `InMemory` (feature `test-utils`). There is no default.
+/// Where the views of an engine live: `Builder::projections` takes one of these, `Postgres` (feature
+/// `projections-postgres`), `MongoDb` (feature `projections-mongodb`) or `InMemory` (feature `test-utils`). There is no
+/// default.
 pub trait ProjectionStore: sealed::SealedProjectionStore {}
 
 mod sealed {
@@ -127,7 +125,7 @@ mod sealed {
     pub enum EventStoreKind {
         #[cfg(feature = "test-utils")]
         Memory,
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "event-store-postgres")]
         Postgres,
     }
 
@@ -137,7 +135,7 @@ mod sealed {
             match self {
                 #[cfg(feature = "test-utils")]
                 Self::Memory => false,
-                #[cfg(feature = "postgres")]
+                #[cfg(feature = "event-store-postgres")]
                 Self::Postgres => true,
             }
         }
@@ -148,10 +146,10 @@ mod sealed {
     pub enum ProjectionStoreKind {
         #[cfg(feature = "test-utils")]
         Memory,
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "projections-postgres")]
         Postgres,
-        #[cfg(feature = "mongodb")]
-        Mongo,
+        #[cfg(feature = "projections-mongodb")]
+        MongoDb,
     }
 
     impl ProjectionStoreKind {
@@ -160,10 +158,10 @@ mod sealed {
             match self {
                 #[cfg(feature = "test-utils")]
                 Self::Memory => None,
-                #[cfg(feature = "postgres")]
+                #[cfg(feature = "projections-postgres")]
                 Self::Postgres => Some("PostgreSQL"),
-                #[cfg(feature = "mongodb")]
-                Self::Mongo => Some("MongoDB"),
+                #[cfg(feature = "projections-mongodb")]
+                Self::MongoDb => Some("MongoDB"),
             }
         }
     }
@@ -195,38 +193,38 @@ impl sealed::SealedProjectionStore for crate::memory::InMemory {
 #[cfg(feature = "test-utils")]
 impl ProjectionStore for crate::memory::InMemory {}
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "event-store-postgres")]
 impl sealed::SealedEventStore for Postgres {
     const KIND: EventStoreKind = EventStoreKind::Postgres;
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "event-store-postgres")]
 impl EventStore for Postgres {}
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "projections-postgres")]
 impl sealed::SealedProjectionStore for Postgres {
     const KIND: ProjectionStoreKind = ProjectionStoreKind::Postgres;
 }
 
-#[cfg(feature = "postgres")]
+#[cfg(feature = "projections-postgres")]
 impl ProjectionStore for Postgres {}
 
-#[cfg(feature = "mongodb")]
-impl sealed::SealedProjectionStore for Mongo {
-    const KIND: ProjectionStoreKind = ProjectionStoreKind::Mongo;
+#[cfg(feature = "projections-mongodb")]
+impl sealed::SealedProjectionStore for MongoDb {
+    const KIND: ProjectionStoreKind = ProjectionStoreKind::MongoDb;
 }
 
-#[cfg(feature = "mongodb")]
-impl ProjectionStore for Mongo {}
+#[cfg(feature = "projections-mongodb")]
+impl ProjectionStore for MongoDb {}
 
 /// The stores an engine is built over, and what the application opened for them.
 #[derive(Default)]
 struct Stores {
     event_store: Option<EventStoreKind>,
     views: Option<ProjectionStoreKind>,
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     pools: Option<PostgresPools>,
-    #[cfg(feature = "mongodb")]
+    #[cfg(feature = "projections-mongodb")]
     client: Option<::mongodb::Client>,
 }
 
@@ -307,14 +305,14 @@ impl Builder {
 
     /// The pools of the engine over PostgreSQL as the application opened them (e.g. pools that connect lazily, for a
     /// test over a database nobody listens on): the engine opens none.
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     pub fn postgres_pools(mut self, pools: PostgresPools) -> Self {
         self.stores.pools = Some(pools);
         self
     }
 
     /// The client of the views in MongoDB as the application made it: the engine makes none.
-    #[cfg(feature = "mongodb")]
+    #[cfg(feature = "projections-mongodb")]
     pub fn mongodb_client(mut self, client: ::mongodb::Client) -> Self {
         self.stores.client = Some(client);
         self
@@ -366,7 +364,7 @@ impl Builder {
         let settings = setup.settings().clone();
         let described = merge_described(settings.entries().into_iter().chain(setup.described()))?;
         let (mut dependencies, mut command_observer, mut projection_observer) = (Dependencies::default(), None, None);
-        #[cfg(feature = "http")]
+        #[cfg(feature = "axum")]
         let mut routes = axum::Router::new();
         let mut policies = Policies::builder();
         let (mut registered, mut named) = (HashSet::new(), HashSet::new());
@@ -402,7 +400,7 @@ impl Builder {
                     return Err(twice);
                 }
             }
-            #[cfg(feature = "http")]
+            #[cfg(feature = "axum")]
             if let Some(module_routes) = module.routes {
                 routes = routes.merge(module_routes);
             }
@@ -415,7 +413,7 @@ impl Builder {
             command_observer,
             projection_observer,
             described,
-            #[cfg(feature = "http")]
+            #[cfg(feature = "axum")]
             routes,
             aggregates,
             views,
@@ -440,7 +438,7 @@ impl Assembly {
             entry.rules.map_or(Ok(()), |rules| (entry.install)(&mut cqrs, rules))?;
         }
         for entry in views {
-            (entry.install)(&mut cqrs);
+            (entry.install)(&mut cqrs)?;
         }
         // A dispatcher needs a handler: an engine without task types runs none.
         if !adapters.is_empty() {
@@ -463,12 +461,12 @@ impl Assembly {
                 let _ = stores;
                 Ok(self.over(
                     Journal::Memory,
-                    #[cfg(feature = "postgres")]
+                    #[cfg(feature = "event-store-postgres")]
                     ViewStore::Memory,
                     memory,
                 ))
             }
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             EventStoreKind::Postgres => {
                 let pools = match stores.pools {
                     Some(pools) => pools,
@@ -477,16 +475,18 @@ impl Assembly {
                 let view_store = match stores.views {
                     #[cfg(feature = "test-utils")]
                     Some(ProjectionStoreKind::Memory) => ViewStore::Memory,
-                    #[cfg(feature = "mongodb")]
-                    Some(ProjectionStoreKind::Mongo) => {
+                    #[cfg(feature = "projections-mongodb")]
+                    Some(ProjectionStoreKind::MongoDb) => {
                         let client = match stores.client {
                             Some(client) => client,
                             None => crate::mongodb::client(&self.settings).await?,
                         };
-                        ViewStore::Mongo(client.database(self.settings.mongodb().database()))
+                        ViewStore::MongoDb(client.database(self.settings.mongodb().database()))
                     }
-                    // Without views nothing reads the store of the views.
-                    Some(ProjectionStoreKind::Postgres) | None => ViewStore::Postgres,
+                    #[cfg(feature = "projections-postgres")]
+                    Some(ProjectionStoreKind::Postgres) => ViewStore::Postgres,
+                    // Without views nothing reads a store of the views.
+                    None => ViewStore::None,
                 };
                 Ok(self.over(
                     Journal::Postgres(pools),
@@ -502,7 +502,7 @@ impl Assembly {
     fn over(
         self,
         journal: Journal,
-        #[cfg(feature = "postgres")] view_store: ViewStore,
+        #[cfg(feature = "event-store-postgres")] view_store: ViewStore,
         #[cfg(feature = "test-utils")] memory: MemoryBackend,
     ) -> Cqrs {
         let shutdown = CancellationToken::new();
@@ -522,10 +522,10 @@ impl Assembly {
             #[cfg(feature = "test-utils")]
             memory,
             journal,
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             view_store,
             processors: Mutex::new(ProjectionRuntime::new()),
-            #[cfg(feature = "http")]
+            #[cfg(feature = "axum")]
             routes: self.routes,
             _stop: shutdown.clone().drop_guard(),
             shutdown,
@@ -568,7 +568,7 @@ pub(crate) struct Assembly {
     projection_observer: Option<ProjectionObserverFactory>,
     /// The settings and what the modules read and described when they were set up, by key.
     described: BTreeMap<String, String>,
-    #[cfg(feature = "http")]
+    #[cfg(feature = "axum")]
     routes: axum::Router<Arc<Cqrs>>,
     aggregates: Vec<AggregateEntry>,
     views: Vec<ViewEntry>,
@@ -656,7 +656,7 @@ impl Cqrs {
         let executor = match &self.journal {
             #[cfg(feature = "test-utils")]
             Journal::Memory => Executor::Memory(self.executor::<A, _>(self.store::<A>(), *rules)),
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             Journal::Postgres(pools) => Executor::Postgres(self.executor::<A, _>(self.postgres_store::<A>(pools), *rules)),
         };
         let executor = Arc::new(executor);
@@ -668,7 +668,7 @@ impl Cqrs {
 
     /// The store of the commands of `A` in PostgreSQL: the journal with its outbox, a snapshot every `snapshot_every`
     /// events.
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     pub(crate) fn postgres_store<A: Aggregate>(
         &self,
         pools: &PostgresPools,
@@ -714,7 +714,15 @@ impl Cqrs {
 
     /// Installs the processor of `V` over the engine's journal and checkpoints, and the repository of its documents,
     /// which the queries read.
-    pub(crate) fn install_view<V: View<A> + PartialEq + 'static, A: Aggregate + 'static>(&mut self) {
+    #[cfg_attr(
+        not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
+        expect(
+            unused_variables,
+            clippy::extra_unused_type_parameters,
+            reason = "without a store of the views no view is installed"
+        )
+    )]
+    pub(crate) fn install_view<V: View<A> + PartialEq + 'static, A: Aggregate + 'static>(&mut self) -> Result<(), BuildError> {
         match &self.journal {
             #[cfg(feature = "test-utils")]
             Journal::Memory => {
@@ -728,32 +736,36 @@ impl Cqrs {
                     journal.clone(),
                     journal,
                 );
+                Ok(())
             }
-            #[cfg(feature = "postgres")]
-            Journal::Postgres(pools) => {
-                let feed = Arc::new(PostgresEventRepository::new(pools.projection.clone()));
-                let history = PostgresEventRepository::new(pools.history.clone());
-                let counter = PostgresEventRepository::new(pools.main.clone());
-                let main = pools.main.clone();
-                match &self.view_store {
-                    #[cfg(feature = "test-utils")]
-                    ViewStore::Memory => {
-                        let (documents, checkpoints) = (self.memory.documents::<V, A>(), self.memory.checkpoints.clone());
-                        self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
-                    }
-                    ViewStore::Postgres => {
-                        let documents = Arc::new(PostgresViewRepository::<V, A>::new(main.clone()));
-                        let checkpoints = Arc::new(PostgresCheckpointStore::new(main));
-                        self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
-                    }
-                    #[cfg(feature = "mongodb")]
-                    ViewStore::Mongo(database) => {
-                        let documents = Arc::new(cqrsx_mongodb::view_repository::MongoViewRepository::<V, A>::new(database));
-                        let checkpoints = Arc::new(cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(database));
-                        self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
-                    }
+            #[cfg(feature = "event-store-postgres")]
+            Journal::Postgres(pools) => match &self.view_store {
+                ViewStore::None => Err(BuildError::ViewsWithoutStore),
+                #[cfg(feature = "test-utils")]
+                ViewStore::Memory => {
+                    let (feed, history, counter) = pools.view_readers();
+                    let (documents, checkpoints) = (self.memory.documents::<V, A>(), self.memory.checkpoints.clone());
+                    self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
+                    Ok(())
                 }
-            }
+                #[cfg(feature = "projections-postgres")]
+                ViewStore::Postgres => {
+                    let (feed, history, counter) = pools.view_readers();
+                    let main = pools.main.clone();
+                    let documents = Arc::new(PostgresViewRepository::<V, A>::new(main.clone()));
+                    let checkpoints = Arc::new(PostgresCheckpointStore::new(main));
+                    self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
+                    Ok(())
+                }
+                #[cfg(feature = "projections-mongodb")]
+                ViewStore::MongoDb(database) => {
+                    let (feed, history, counter) = pools.view_readers();
+                    let documents = Arc::new(MongoViewRepository::<V, A>::new(database));
+                    let checkpoints = Arc::new(MongoCheckpointStore::new(database));
+                    self.register_view::<V, A, _, _, _, _, _>(feed, checkpoints, documents, history, counter);
+                    Ok(())
+                }
+            },
         }
     }
 
@@ -1360,14 +1372,14 @@ mod tests {
 
     #[test]
     fn views_outside_memory_need_the_journal_in_postgres() {
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "projections-postgres")]
         assert_eq!(
             refusal(memory_event_store().projections(crate::postgres::Postgres).module(shows)).to_string(),
             "the views in PostgreSQL need the journal in PostgreSQL"
         );
-        #[cfg(feature = "mongodb")]
+        #[cfg(feature = "projections-mongodb")]
         assert!(matches!(
-            refusal(memory_event_store().projections(crate::mongodb::Mongo).module(shows)),
+            refusal(memory_event_store().projections(crate::mongodb::MongoDb).module(shows)),
             BuildError::ViewsWithoutJournal("MongoDB")
         ));
         let settings = refusal(Cqrs::from_lookup("APP", |name| {

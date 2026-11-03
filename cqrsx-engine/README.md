@@ -2,12 +2,13 @@
 
 The engine of [cqrsx](../cqrsx/README.md): the application's modules assembled into one running application over
 PostgreSQL and MongoDB stores (in tests, over stores in memory), with its settings read from the environment and, with
-the feature `http`, served until a signal. The engine holds no logic of its own: the components it assembles, the contracts of an
-application and the rules are in the README of the core, the crates and their boundaries in
+the feature `axum`, served until a signal. The stores are modules of the engine (`postgres`, `mongodb`) behind
+features. The engine holds no logic of its own: the components it assembles, the contracts of an application and the
+rules are in the README of the core, the crates and their boundaries in
 [`doc/crates.md`](../doc/crates.md).
 
 The application registers its pieces in modules and builds `Cqrs` over the stores it names: `event_store(Postgres)` and
-`projections(Postgres)` or `projections(Mongo)`; a test names `InMemory` for both.
+`projections(Postgres)` or `projections(MongoDb)`; a test names `InMemory` for both.
 The [typical scenario](../doc/typical_scenario.md) follows a cancellation through a refund.
 
 ## Quick start
@@ -18,7 +19,7 @@ PostgreSQL, its views in MongoDB and an HTTP API, tested in memory:
 ```toml
 [dependencies]
 cqrsx = { git = "https://github.com/akozel/cqrsx" }
-cqrsx-engine = { git = "https://github.com/akozel/cqrsx", features = ["postgres", "mongodb", "http"] }
+cqrsx-engine = { git = "https://github.com/akozel/cqrsx", features = ["projections-mongodb", "axum"] }
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
 tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
@@ -289,8 +290,8 @@ async fn main() {
 
 ## Running on PostgreSQL
 
-The complete [`demo/back-end/src/main.rs`](../demo/back-end/src/main.rs) below uses the `postgres`, `mongodb`
-and `http` features; it is application source, not a standalone example. `DEMO_DEFAULTS` and the module roots
+The complete [`demo/back-end/src/main.rs`](../demo/back-end/src/main.rs) below uses the `projections-mongodb`
+and `axum` features; it is application source, not a standalone example. `DEMO_DEFAULTS` and the module roots
 are defined by `encore_backend`. The engine opens PostgreSQL pools and configures the MongoDB read side, then
 serves the module routes alongside the workers and projection processors. It creates no tables: the schemas are
 applied before the first start ([Applying the schemas](#applying-the-schemas)).
@@ -299,7 +300,7 @@ applied before the first start ([Applying the schemas](#applying-the-schemas)).
 //! Encore back-end: the box office on the cqrsx engine. The engine reads its settings from the `ENCORE_*` variables
 //! (and the library's `OUTBOX_*`), keeps the journal in PostgreSQL and the read models in MongoDB, and serves the HTTP
 //! API of the modules next to the task runtime and the projection processors until a signal.
-use cqrsx_engine::{Cqrs, mongodb::Mongo, postgres::Postgres};
+use cqrsx_engine::{Cqrs, mongodb::MongoDb, postgres::Postgres};
 use encore_backend::{DEMO_DEFAULTS, concert, fan, operations};
 
 fn fail(message: impl std::fmt::Display) -> ! {
@@ -314,7 +315,7 @@ async fn main() {
     let served = Cqrs::from_env("ENCORE")
         .defaults(DEMO_DEFAULTS)
         .event_store(Postgres)
-        .projections(Mongo)
+        .projections(MongoDb)
         .module(concert::module)
         .module(fan::module)
         .module(operations::module)
@@ -330,19 +331,20 @@ async fn main() {
 
 | Feature | Adds | Default |
 |---|---|---|
-| `postgres` | the event store (the journal, the snapshots, the outbox and the task queue) in PostgreSQL (`Builder::event_store`) and the views in PostgreSQL (`Builder::projections`), over the crate `cqrsx-postgres` | yes |
-| `mongodb` | the views and the checkpoints of their processors in MongoDB, over the crate `cqrsx-mongodb`; includes `postgres` | no |
-| `http` | the HTTP routes of the modules and `serve` (axum 0.8, `TraceLayer`): the process logger, the shutdown signals and the coordinated stop of the server, the task runtime and the processors | no |
+| `event-store-postgres` | the event store (the journal, the snapshots, the outbox and the task queue) in PostgreSQL: the marker `Postgres` of `Builder::event_store`, and the module `postgres` with the stores, the pools and the schemas | yes |
+| `projections-postgres` | the views and the checkpoints of their processors in PostgreSQL: the marker `Postgres` of `Builder::projections`; includes `event-store-postgres` | no |
+| `projections-mongodb` | the views and the checkpoints of their processors in MongoDB: the marker `MongoDb` of `Builder::projections`, and the module `mongodb`; includes `event-store-postgres` | no |
+| `axum` | the HTTP routes of the modules and `serve` (axum 0.8, `TraceLayer`): the process logger, the shutdown signals and the coordinated stop of the server, the task runtime and the processors | no |
 | `operation-utils` | the operations that read without a bound or change the read side: `Cqrs::history` and `Cqrs::dispatcher`; `Views::{totals, verify, count_after, request_rebuild, request_rebuild_key}`; `ViewQuery::rebuild`. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
 | `test-utils` | the engine in memory: the marker `memory::InMemory` for `Builder::event_store` and `Builder::projections`, and the helpers of a test that drives it: `Cqrs::{run_tasks, catch_up}` and the raw stores, `journal`, `outbox`, `checkpoints`, `documents::<V, A>` (the stores themselves come with the core's feature `test-utils`, which this one enables). An application enables it in `[dev-dependencies]`; the crate's own tests have it. The criterion is the API rule in [components](../doc/components.md#naming-and-integration-rules) | no |
 
-The engine needs a store feature, `postgres` (the default) or `test-utils`: without both it does not compile
+The engine needs a store feature, `event-store-postgres` (the default) or `test-utils`: without both it does not compile
 (`compile_error!`), for there would be nothing to give `event_store(..)`. A builder has no default stores either:
 without `event_store(..)` the build is refused (`BuildError::NoJournal`), and modules with views and no
 `projections(..)` are refused too (`BuildError::ViewsWithoutStore`). A test takes `test-utils`, names `InMemory` and
-drives the engine with `run_tasks()` and `catch_up()`. A durable application takes `postgres` and `http`: `serve` runs
-the routes, the task runtime and the processors in one process. It adds `mongodb` to keep its views in MongoDB; the
-journal stays in PostgreSQL, since a checkpoint holds a position of it (views in a database over a journal in memory
+drives the engine with `run_tasks()` and `catch_up()`. A durable application takes `event-store-postgres`, a feature
+for its views (`projections-postgres` or `projections-mongodb`) and `axum`: `serve` runs the routes, the task runtime
+and the processors in one process. The views in MongoDB leave the journal in PostgreSQL, since a checkpoint holds a position of it (views in a database over a journal in memory
 are refused when the engine is built).
 
 ## Configuration
@@ -383,15 +385,15 @@ The table lists every variable with the library's default, as `Settings::descrip
 | `OUTBOX_HANDLER_TIMEOUT_MS` | `15 s` | how long a handler runs; then its attempt is retried |
 | `OUTBOX_LEASE_MS` | `60 s` | how long a claim lasts; it must cover the wait in the buffer, the handler and the storage calls (checked, see `outbox.lease_budget` in the description) |
 | `OUTBOX_STORAGE_TIMEOUT_MS` | `6 s` | the budget of one call to the task queue's storage: a claim, a settlement, a recovery |
-| `DATABASE_URL` | `postgresql://cqrsx:cqrsx@localhost:5433/cqrsx` | the PostgreSQL database (feature `postgres`) |
+| `DATABASE_URL` | `postgresql://cqrsx:cqrsx@localhost:5433/cqrsx` | the PostgreSQL database (feature `event-store-postgres`) |
 | `DATABASE_MAIN_POOL_SIZE` | `10` | connections for the commands, the task queue, the checkpoints and the views in PostgreSQL |
 | `DATABASE_STATEMENT_TIMEOUT_MS` | `4 s` | the statement timeout of the main and the projection pools; 0: no cap |
 | `DATABASE_HISTORY_POOL_SIZE` | `1` | connections for whole-history reads: verify, the size of the journal, the history of one aggregate (feature `operation-utils`) |
 | `DATABASE_PROJECTION_POOL_SIZE` | `4` | connections for the processors' reads of the journal |
-| `MONGODB_URI` | `mongodb://localhost:27017` | the MongoDB server (feature `mongodb`); the client waits 3 s to select a server and to connect |
+| `MONGODB_URI` | `mongodb://localhost:27017` | the MongoDB server (feature `projections-mongodb`); the client waits 3 s to select a server and to connect |
 | `MONGODB_POOL_SIZE` | `10` | connections of the MongoDB client |
 | `MONGODB_DATABASE` | `read` | the database of the views and their checkpoints |
-| `HTTP_ADDR` | `127.0.0.1:8080` | where `serve` listens (feature `http`) |
+| `HTTP_ADDR` | `127.0.0.1:8080` | where `serve` listens (feature `axum`) |
 
 `Cqrs::description()` (and `Settings::description()`) lists the values a running engine uses under the same names,
 with the values derived from them under dotted names in lower case (`outbox.lease_budget`, the plan of each pool:
@@ -417,16 +419,15 @@ driver or the data of a command.
 ### Applying the schemas
 
 The engine creates no tables. Before the first start apply the schemas of
-[`cqrsx-postgres/sql/`](../cqrsx-postgres/sql/) in the order of their numbers (the documentation of `cqrsx-postgres`
-says how); each view kept in PostgreSQL also needs a table of its own, whose shape `PostgresViewRepository::new`
+[`sql/`](sql/) in the order of their numbers (the documentation of the module `postgres` says how); each view kept in PostgreSQL also needs a table of its own, whose shape `PostgresViewRepository::new`
 gives. MongoDB needs nothing: a collection appears with its first document.
 
 ### Retrying a failed task
 
 A task that failed (its handler answered `fail`, or its last attempt `retry`) keeps its row in `transactional_outbox`
 with `status = 'failed'` and its `last_error`. Once the cause is fixed, the operator script
-[`requeue-failed-outbox.sql`](../cqrsx-postgres/sql/requeue-failed-outbox.sql) (the constant
-`cqrsx_postgres::REQUEUE_FAILED_OUTBOX_TASK`) returns it to `pending` with a fresh attempt budget; it keeps the id and
+[`requeue-failed-outbox.sql`](sql/requeue-failed-outbox.sql) (the constant
+`cqrsx_engine::postgres::REQUEUE_FAILED_OUTBOX_TASK`) returns it to `pending` with a fresh attempt budget; it keeps the id and
 the payload, so an idempotent receiver recognises the repeat. The failed tasks:
 
 ```sql

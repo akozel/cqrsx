@@ -347,7 +347,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
 
 <section id="failed">
   <h2>Failed tasks</h2>
-  <p class="prose">A task fails when its handler answers <code>Fail</code>, when a retry or an expired lease comes on its last attempt, or when its row cannot be delivered at all. A failure is logged once, with the task's id, format, attempt and cause (<code>permanent failure</code>, <code>retry limit reached</code>, <code>worker lease expired</code>), never the payload; the row keeps <code>last_error</code>. Nothing retries it automatically. An operator who has fixed the cause runs <code>REQUEUE_FAILED_OUTBOX_TASK</code> (<code>cqrsx-postgres/sql/requeue-failed-outbox.sql</code>) with the task's id: the row returns to <code>pending</code> with its attempts at zero and keeps its id and payload, so a receiver that deduplicates by the task id still recognises it. The operations section of <a href="../cqrsx-engine/README.md">cqrsx-engine</a> describes it.</p>
+  <p class="prose">A task fails when its handler answers <code>Fail</code>, when a retry or an expired lease comes on its last attempt, or when its row cannot be delivered at all. A failure is logged once, with the task's id, format, attempt and cause (<code>permanent failure</code>, <code>retry limit reached</code>, <code>worker lease expired</code>), never the payload; the row keeps <code>last_error</code>. Nothing retries it automatically. An operator who has fixed the cause runs <code>REQUEUE_FAILED_OUTBOX_TASK</code> (<code>cqrsx-engine/sql/requeue-failed-outbox.sql</code>) with the task's id: the row returns to <code>pending</code> with its attempts at zero and keeps its id and payload, so a receiver that deduplicates by the task id still recognises it. The operations section of <a href="../cqrsx-engine/README.md">cqrsx-engine</a> describes it.</p>
 </section>
 
 <section id="guarantees">
@@ -404,7 +404,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
     <li><a href="../cqrsx-engine/README.md">cqrsx-engine</a>: the <code>OUTBOX_*</code> settings and the operations, including the requeue of a failed task; <a href="crates.md">crates and their boundaries</a>.</li>
     <li>Before: <a href="command-path.html">command path</a>. Beside: <a href="read-path.html">read path</a>.</li>
   </ul>
-  <p class="foot">Verified against the code of <code>cqrsx::worker</code> (runtime, supervisor, poller, worker pool, executor, lease budget, dispatcher, queue port), <code>cqrsx::task</code> (policies), <code>cqrsx::reactions</code>, <code>cqrsx_postgres::task_queue</code> and <code>sql/</code>, and <code>cqrsx_engine</code> (module policies, settings). Defaults are the library's; the engine reads them from the <code>OUTBOX_*</code> variables.</p>
+  <p class="foot">Verified against the code of <code>cqrsx::worker</code> (runtime, supervisor, poller, worker pool, executor, lease budget, dispatcher, queue port), <code>cqrsx::task</code> (policies), <code>cqrsx::reactions</code>, <code>cqrsx_engine::postgres::task_queue</code> and <code>sql/</code>, and <code>cqrsx_engine</code> (module policies, settings). Defaults are the library's; the engine reads them from the <code>OUTBOX_*</code> variables.</p>
 </section>
 </div>
 </body>

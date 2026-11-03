@@ -1,4 +1,4 @@
-//! The HTTP API of an engine (feature `http`, axum 0.8): every module routes its requests under the engine as their
+//! The HTTP API of an engine (feature `axum`, axum 0.8): every module routes its requests under the engine as their
 //! state ([`Module::routes`]); [`Cqrs::router`] is the routes of every module with a trace of every request, what
 //! `serve` serves and a test sends its requests to.
 use crate::{Cqrs, module::Module};

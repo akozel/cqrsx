@@ -8,12 +8,12 @@
     clippy::unreachable,
     clippy::indexing_slicing
 )]
-#[cfg(all(feature = "postgres", feature = "mongodb"))]
+#[cfg(all(feature = "projections-postgres", feature = "projections-mongodb"))]
 #[path = "engine/database.rs"]
 mod database;
 #[path = "engine/modules.rs"]
 mod modules;
-#[cfg(all(feature = "postgres", feature = "mongodb"))]
+#[cfg(all(feature = "projections-postgres", feature = "projections-mongodb"))]
 #[path = "engine/postgres.rs"]
 mod postgres;
 #[path = "engine/scenario.rs"]

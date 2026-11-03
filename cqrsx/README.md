@@ -94,7 +94,8 @@ an engine are in [its README](../cqrsx-engine/README.md#errors-of-building-and-s
 ## Crates
 
 The core has one feature, `test-utils` (the stores in memory and the test tools, for tests), and does not know a database.
-The stores (`cqrsx-postgres`, `cqrsx-mongodb`), the engine and the derive macros are crates of their own:
+The engine, which holds the PostgreSQL and MongoDB stores as modules behind features, and the derive macros are crates
+of their own:
 [Crates and their boundaries](../doc/crates.md).
 
 ## Further reading
@@ -107,7 +108,7 @@ The stores (`cqrsx-postgres`, `cqrsx-mongodb`), the engine and the derive macros
 - [`../demo`](../demo/README.md): a complete application on the library, with a UI, an X-ray of both
   databases and load tests.
 - [`../README.md`](../README.md): building, the local database, the test suite and coverage.
-- [`../cqrsx-postgres/sql/`](../cqrsx-postgres/sql/): the canonical schemas and the operator script that requeues a failed task.
+- [`../cqrsx-engine/sql/`](../cqrsx-engine/sql/): the canonical schemas and the operator script that requeues a failed task.
 
 ## Attribution
 

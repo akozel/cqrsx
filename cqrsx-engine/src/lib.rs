@@ -1,25 +1,31 @@
 #![doc = include_str!("../README.md")]
+// Without a store of the views (`test-utils`, `projections-postgres` or `projections-mongodb`) `Builder::projections`
+// has no marker to take and every view is refused, so what installs and serves a view is built but never reached.
+#![cfg_attr(
+    not(any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")),
+    allow(dead_code)
+)]
 
 // The engine is the assembly over the stores: without a store feature nothing can be chosen for `event_store(..)`.
-#[cfg(not(any(feature = "postgres", feature = "test-utils")))]
-compile_error!("cqrsx-engine needs a store: the feature `postgres`, or `test-utils` for an engine in memory");
+#[cfg(not(any(feature = "event-store-postgres", feature = "test-utils")))]
+compile_error!("cqrsx-engine needs a store: the feature `event-store-postgres`, or `test-utils` for an engine in memory");
 
 pub mod build;
 mod diagnostics;
 mod executor;
-#[cfg(feature = "http")]
+#[cfg(feature = "axum")]
 pub mod http;
 // The stores in memory and their marker `InMemory`: the feature `test-utils` only.
 #[cfg(feature = "test-utils")]
 pub mod memory;
 pub mod module;
-#[cfg(feature = "mongodb")]
+#[cfg(feature = "projections-mongodb")]
 pub mod mongodb;
 #[cfg(feature = "operation-utils")]
 mod operation_utils;
-#[cfg(feature = "postgres")]
+#[cfg(feature = "event-store-postgres")]
 pub mod postgres;
-#[cfg(feature = "http")]
+#[cfg(feature = "axum")]
 pub mod serve;
 pub mod settings;
 pub mod setup;
@@ -73,10 +79,10 @@ pub struct Cqrs {
     #[cfg(feature = "test-utils")]
     memory: memory::MemoryBackend,
     journal: Journal,
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     view_store: ViewStore,
     processors: Mutex<ProjectionRuntime>,
-    #[cfg(feature = "http")]
+    #[cfg(feature = "axum")]
     routes: axum::Router<Arc<Cqrs>>,
     shutdown: CancellationToken,
     /// Cancels `shutdown` when the engine is dropped.
@@ -102,18 +108,21 @@ impl fmt::Debug for Cqrs {
 pub(crate) enum Journal {
     #[cfg(feature = "test-utils")]
     Memory,
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     Postgres(postgres::PostgresPools),
 }
 
 /// Where an engine over PostgreSQL keeps the views and their checkpoints.
-#[cfg(feature = "postgres")]
+#[cfg(feature = "event-store-postgres")]
 pub(crate) enum ViewStore {
     #[cfg(feature = "test-utils")]
     Memory,
+    #[cfg(feature = "projections-postgres")]
     Postgres,
-    #[cfg(feature = "mongodb")]
-    Mongo(::mongodb::Database),
+    #[cfg(feature = "projections-mongodb")]
+    MongoDb(::mongodb::Database),
+    /// The engine has no views: nothing reads a store of the views.
+    None,
 }
 
 impl Cqrs {

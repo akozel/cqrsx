@@ -51,7 +51,7 @@ delegates to an external Compose provider; install `podman-compose` and make sur
 it is available on your `PATH`.
 
 Compose creates the `cqrsx` database and applies the event-store, outbox and
-projection-checkpoint schemas of `cqrsx-postgres/sql` when starting with a fresh volume. Use this connection URL:
+projection-checkpoint schemas of `cqrsx-engine/sql` when starting with a fresh volume. Use this connection URL:
 
 ```text
 postgresql://cqrsx:cqrsx@localhost:5433/cqrsx
@@ -86,7 +86,7 @@ If your environment already provides `DOCKER_HOST` for a mounted Podman socket,
 keep that value and skip the socket setup above.
 
 Integration tests create their own PostgreSQL `18.6-alpine` containers and apply the schemas, and their own
-MongoDB `8.2` containers for the `cqrsx-mongodb` tests and the engine's `mongodb` feature (the containers come from the
+MongoDB `8.2` containers for the tests of the engine's `projections-mongodb` feature (the containers come from the
 `cqrsx-fixtures` crate); they do not require the Compose database. The first run needs access to the image registry.
 
 The commands CI runs (formatting, clippy with and without features, the documentation and its links, the full suite

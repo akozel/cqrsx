@@ -16,7 +16,7 @@ use cqrsx_engine::{
     Cqrs,
     build::Builder,
     memory::InMemory,
-    mongodb::Mongo,
+    mongodb::MongoDb,
     postgres::{Postgres, PostgresPools},
 };
 use encore_backend::{
@@ -92,7 +92,7 @@ async fn app() -> App {
     let cqrs = modules()
         .event_store(Postgres)
         .postgres_pools(pools)
-        .projections(Mongo)
+        .projections(MongoDb)
         .mongodb_client(lazy_mongo().await)
         .build()
         .await

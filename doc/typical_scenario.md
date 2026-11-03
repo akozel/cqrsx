@@ -69,10 +69,10 @@ See [concert hall](../demo/back-end/src/concert/application/views/concert_hall.r
 
 The same module registrations are assembled over in-memory stores in a test (`event_store(InMemory)`,
 `projections(InMemory)`) and over PostgreSQL and MongoDB in the process (`event_store(Postgres)`,
-`projections(Mongo)`); the builder has no default store and refuses to build without them. For a durable
+`projections(MongoDb)`); the builder has no default store and refuses to build without them. For a durable
 application, `Cqrs::from_env("ENCORE")` reads engine and module keys with that prefix; `OUTBOX_*`
 remain unprefixed. `.defaults(DEMO_DEFAULTS)` supplies application defaults only when a variable is
-absent. Register `Postgres`, `Mongo` and module roots, then `serve()` with the `http` feature. `Setup`
+absent. Register `Postgres`, `MongoDb` and module roots, then `serve()` with the `axum` feature. `Setup`
 provides module-local configuration and engine settings, not shared infrastructure. The exact running
 assembly is [main.rs](../demo/back-end/src/main.rs); configuration and feature flags are in the
 [README](../cqrsx-engine/README.md#configuration).

@@ -1,4 +1,4 @@
-//! The process of an engine (feature `http`): the HTTP API of its modules, the task runtime and the projection
+//! The process of an engine (feature `axum`): the HTTP API of its modules, the task runtime and the projection
 //! processors side by side until a signal, then stopped in order: the server, the task runtime, the processors (they
 //! finish what is in flight and give their checkpoints back), the pools.
 //!
@@ -12,6 +12,8 @@ mod lifecycle;
 mod logging;
 mod signal;
 
+#[cfg(feature = "event-store-postgres")]
+use crate::postgres::task_queue::PostgresTaskQueue;
 use crate::{
     Cqrs, Journal,
     build::{BuildError, Builder},
@@ -21,8 +23,6 @@ use cqrsx::{
     mutex::lock,
     worker::runtime::{TaskRuntimeError, prepare},
 };
-#[cfg(feature = "postgres")]
-use cqrsx_postgres::task_queue::PostgresTaskQueue;
 use lifecycle::run_with_processors;
 use signal::shutdown_signal;
 use std::{
@@ -60,9 +60,9 @@ fn build_error_text(error: &BuildError) -> String {
         | BuildError::ViewsWithoutJournal(_)
         | BuildError::NoJournal
         | BuildError::ViewsWithoutStore => true,
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "event-store-postgres")]
         BuildError::DatabaseUrl { .. } => true,
-        #[cfg(feature = "mongodb")]
+        #[cfg(feature = "projections-mongodb")]
         BuildError::MongoUri { .. } => true,
         BuildError::Setup(SetupError::Failed(_))
         | BuildError::AggregateTwice(_)
@@ -71,9 +71,9 @@ fn build_error_text(error: &BuildError) -> String {
         | BuildError::DescribedTwice { .. }
         | BuildError::Policy(_)
         | BuildError::Tasks(_) => false,
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "event-store-postgres")]
         BuildError::MainPool(_) | BuildError::HistoryPool(_) | BuildError::ProjectionPool(_) => false,
-        #[cfg(feature = "mongodb")]
+        #[cfg(feature = "projections-mongodb")]
         BuildError::MongoClient(_) => false,
     };
     if invalid {
@@ -148,7 +148,7 @@ impl Cqrs {
         match &self.journal {
             #[cfg(feature = "test-utils")]
             Journal::Memory => Box::pin(prepare(self.memory.queue.clone(), dispatcher, config, policies).run(shutdown)),
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             Journal::Postgres(pools) => Box::pin(
                 prepare(
                     Arc::new(PostgresTaskQueue::new(pools.main.clone())),
@@ -166,7 +166,7 @@ impl Cqrs {
         match &self.journal {
             #[cfg(feature = "test-utils")]
             Journal::Memory => {}
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             Journal::Postgres(pools) => {
                 pools.main.close().await;
                 pools.history.close().await;
@@ -325,7 +325,7 @@ mod tests {
     /// A URL or URI of a store that does not parse is an invalid configuration too.
     #[test]
     fn an_unparsable_store_address_is_an_invalid_configuration() {
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "event-store-postgres")]
         assert_eq!(
             ServeError::from(BuildError::DatabaseUrl {
                 variable: "SHOP_DATABASE_URL".into(),
@@ -334,7 +334,7 @@ mod tests {
             .to_string(),
             "invalid configuration: SHOP_DATABASE_URL: error with configuration: invalid port number"
         );
-        #[cfg(feature = "mongodb")]
+        #[cfg(feature = "projections-mongodb")]
         assert!(
             ServeError::from(BuildError::MongoUri {
                 variable: "SHOP_MONGODB_URI".into(),
@@ -343,7 +343,7 @@ mod tests {
             .to_string()
             .starts_with("invalid configuration: SHOP_MONGODB_URI: ")
         );
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "event-store-postgres")]
         assert_eq!(
             ServeError::from(BuildError::MainPool(sqlx::Error::PoolTimedOut)).to_string(),
             "cannot connect to PostgreSQL: pool timed out while waiting for an open connection"

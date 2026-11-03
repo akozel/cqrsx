@@ -27,18 +27,19 @@ hold the read side), Tokio runs background tasks. No binary: `cargo run` is unav
   `build.rs` (`Builder`, the assembly over the stores), `executor.rs`, `settings.rs`, `module.rs`, `setup.rs`, `source.rs`,
   `views.rs`, `memory.rs` (feature `test-utils`: the marker `InMemory` and the stores in memory, over `cqrsx::memory`),
   `diagnostics.rs` (the engine's own log line);
-  `postgres.rs` (feature `postgres`), `mongodb.rs` (feature `mongodb`), `http.rs` and `serve.rs` with
-  `serve/{lifecycle,signal,error,logging}.rs` (feature `http`), `operation_utils.rs` (feature `operation-utils`: the
+  `postgres.rs` + `postgres/` (feature `event-store-postgres`: the event repository, outbox, task queue, pools;
+  `checkpoint_store` and `view_repository` with `projections-postgres`), `mongodb.rs` + `mongodb/` (feature
+  `projections-mongodb`: views and projection checkpoints in MongoDB), `http.rs` and `serve.rs` with
+  `serve/{lifecycle,signal,error,logging}.rs` (feature `axum`), `operation_utils.rs` (feature `operation-utils`: the
   operations that read without a bound or change the read side), `test_utils.rs` (feature `test-utils`: the helpers of a
   test that drives an engine in memory).
+- `cqrsx-engine/sql` — the canonical PostgreSQL schemas. `cqrsx-engine/licenses` — the license of postgres-es, from
+  which the PostgreSQL stores are derived in part.
 - `cqrsx-engine/tests` — integration tests of the engine; `engine.rs` runs it on PostgreSQL and MongoDB containers
-  (from `cqrsx-fixtures`).
+  (from `cqrsx-fixtures`); `postgres.rs` starts PostgreSQL via `testcontainers` and runs the stores against it,
+  `log_fallback.rs` checks the logs without a `tracing` subscriber; `mongodb.rs` starts MongoDB, `journal_in_postgres`
+  also PostgreSQL.
 - `cqrsx/tests` — integration tests of the core, in memory.
-- `cqrsx-postgres` — the PostgreSQL stores: event repository, outbox, task queue, checkpoints, views, pools, `sql/`
-  (no features); `tests/postgres.rs` starts PostgreSQL via `testcontainers`, `tests/log_fallback.rs` checks the logs
-  without a `tracing` subscriber. Derived in part from postgres-es: `licenses/`.
-- `cqrsx-mongodb` — views and projection checkpoints in MongoDB (no features); `tests/mongo.rs` starts MongoDB,
-  `journal_in_postgres` also PostgreSQL.
 - `cqrsx-macros` — the derive macros (`Event`, `Events`, `Command`, `Decide`, `Task`, `Rejection`) and `#[task_handler]`.
 - `cqrsx-fixtures` — a dev-dependency of the crates' tests: PostgreSQL and MongoDB containers on leased ports, captured
   logs, isolated test processes.
@@ -95,13 +96,13 @@ there in the same change, a changed decision edits its rule, and the code follow
 Every change ships with tests. Cover new code paths, including error branches, with unit tests
 next to the code, integration tests in the crate's `tests`, or doctests.
 
-Verification target: CI enforces **97% line coverage** for the workspace and for `cqrsx`, `cqrsx-postgres`,
-`cqrsx-mongodb` and `cqrsx-engine` alone (`cqrsx-fixtures` counts only in the workspace total). The core has one
-feature, `test-utils` (the backend in memory and the test tools): its own tests always have it, the tests of the other
-crates enable it. Keep every feature of the engine (`postgres`, `mongodb`, `http`, `operation-utils`, `test-utils`) compiling
-and tested on its own together with a store feature, `postgres` (the default) or `test-utils`: without either the
-engine does not compile. The other crates have no features. The engine's own tests get `test-utils` from its
-dev-dependency on itself.
+Verification target: CI enforces **97% line coverage** for the workspace, for `cqrsx` and for `cqrsx-engine` alone
+(`cqrsx-fixtures` counts only in the workspace total). The core has one feature, `test-utils` (the backend in memory and
+the test tools): its own tests always have it, the tests of the other crates enable it. Keep every feature of the engine
+(`event-store-postgres`, `projections-postgres`, `projections-mongodb`, `axum`, `operation-utils`, `test-utils`)
+compiling and tested on its own together with a store feature, `event-store-postgres` (the default) or `test-utils`:
+without either the engine does not compile. The other crates have no features. The engine's own tests get `test-utils`
+from its dev-dependency on itself.
 
 Integration tests need the Podman API socket; `DOCKER_HOST` must point to it
 (`unix:///run/podman/podman.sock` in this environment). Fix failures, never relax thresholds or
@@ -113,19 +114,22 @@ ignore tests.
 cargo fmt --all --check
 cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 cargo clippy --locked -p cqrsx -p cqrsx-engine --no-default-features --all-targets -- -D warnings
-cargo clippy --locked -p cqrsx-engine --no-default-features --features postgres --lib -- -D warnings   # the library alone: no test-utils
-for p in cqrsx cqrsx-macros cqrsx-postgres cqrsx-mongodb cqrsx-fixtures; do cargo check --locked -p $p --lib; done
+# the library alone: no test-utils
+cargo clippy --locked -p cqrsx-engine --no-default-features --features event-store-postgres --lib -- -D warnings
+for p in cqrsx cqrsx-macros cqrsx-fixtures; do cargo check --locked -p $p --lib; done
 cargo check --locked -p cqrsx --lib --features test-utils
-cargo check --locked -p cqrsx-engine --no-default-features --features postgres --lib   # also with --features test-utils, mongodb, test-utils,http, test-utils,operation-utils
+cargo check --locked -p cqrsx-engine --no-default-features --features event-store-postgres --lib
+# also: projections-postgres, projections-mongodb, test-utils, test-utils,axum, test-utils,operation-utils
 RUSTDOCFLAGS=-Dwarnings cargo doc --locked --workspace --all-features --no-deps
 python3 .github/scripts/check-links.py                       # relative links and anchors of the documentation
 RUST_TEST_THREADS=2 PROPTEST_RNG_SEED=42 cargo test --locked --workspace --all-features
-cargo test --locked -p cqrsx                                  # the crates without features, one by one
-cargo test --locked -p cqrsx-postgres                         # also: -p cqrsx-mongodb
-cargo test --locked -p cqrsx-engine --no-default-features     # engine in memory (without the flag the default feature `postgres` runs the container tests too)
-cargo test --locked -p cqrsx-engine --no-default-features --features postgres   # also: mongodb, test-utils, test-utils,http, test-utils,operation-utils
+cargo test --locked -p cqrsx                                  # the core alone
+# the engine in memory (without the flag the default feature `event-store-postgres` runs the container tests too)
+cargo test --locked -p cqrsx-engine --no-default-features
+cargo test --locked -p cqrsx-engine --no-default-features --features event-store-postgres
+# also: projections-postgres, projections-mongodb, test-utils, test-utils,axum, test-utils,operation-utils
 cargo llvm-cov --locked --workspace --all-features --fail-under-lines 97
-cargo llvm-cov --locked -p cqrsx --fail-under-lines 97     # also: -p cqrsx-postgres, -p cqrsx-mongodb
+cargo llvm-cov --locked -p cqrsx --fail-under-lines 97
 cargo llvm-cov --locked -p cqrsx-engine --all-features --fail-under-lines 97
 ```
 

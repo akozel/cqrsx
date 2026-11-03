@@ -34,7 +34,7 @@ stays open.
 | `back-end/` | Rust, axum + `cqrsx`, one module per part of the box office, each a directory with its clean-architecture layers inside and its root file next to it: `concert/` (the `Concert` aggregate: `domain` with one file per command and per event, `application` with the use cases, the reactions to its facts, the tasks of a fan's ledger built from them, the concert halls and the time machine, `presentation/http` with one file (or, for an endpoint with a request to convert, a directory) per endpoint under the kind of engine entry it uses, see [DESIGN.md](DESIGN.md#21-routes)), `fan/` (the `Fan` ledger: its four tasks, each a contract with its handler, their policies, its reactions, the fan wallets), `operations/` (no aggregate: health, settings, the activity log, Encore!, status, verify) and `shared/` (ids and venue, the ports, the ticket limit the UI shows, the HTTP error shape, the HTTP client of the mail service); `tests/architecture.rs` checks who sees whom. The root file of each module registers what it plugs into the cqrsx engine (its aggregate and rules, its read models, its tasks with their policies, its dependencies, its HTTP routes, its variables under `ENCORE_*`); `main.rs` lists the modules for the engine with the demo's defaults (`DEMO_DEFAULTS` in `lib.rs`), and the engine does the rest: settings, connections, executors, processors, task runtime, HTTP server, start and stop |
 | `sidecar/` | Rust, axum, no `cqrsx` dependency: read-only X-ray of PostgreSQL (`events`, `snapshots`, `transactional_outbox`) and MongoDB, SSE stream — plus everything DEMO ONLY: seed, 🧨 wipe, ⟲ reset, the fan's mailbox (`GET /inspect/mail/{fan_id}`) and the moody external mail service the back-end calls (`POST /mail`) |
 | `front-end/` | Vue 3.5 + Vite 8 + Tailwind 4 + Pinia + vue-i18n (RU/EN) |
-| `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx-postgres/sql`) and MongoDB; profile `app` builds the three images |
+| `compose.yaml` | PostgreSQL 18 (schemas mounted from `../cqrsx-engine/sql`) and MongoDB; profile `app` builds the three images |
 | `infra/` | read-only PostgreSQL role for the sidecar, nginx config for the `app` profile |
 | `scripts/` | `dev.sh` (everything in one terminal), `wait-db.sh`, `compare-projections.sh` |
 | `load/` | k6 load tests on an isolated stand (own compose project, no ports, mail stub instead of the sidecar): hot aggregate, new aggregates, spread bookings, outbox drain; chaos scenes (`chaos.sh`, `chaos/`); PostgreSQL measurements (`perf/`) — see `load/README.md` |
@@ -77,7 +77,7 @@ podman compose --profile app ps               # all five containers Up, postgres
 ```
 
 `down -v` wipes the event journal, the snapshots, the outbox, both read models and the mail inbox: the next
-start initialises the schemas from `../cqrsx-postgres/sql` again and the sidecar announces the three default
+start initialises the schemas from `../cqrsx-engine/sql` again and the sidecar announces the three default
 concerts anew through the back-end's public API (exactly three `ConcertAnnounced` rows in `events`).
 Without a code change `--build` can be dropped.
 

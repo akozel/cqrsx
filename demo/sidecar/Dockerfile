@@ -8,8 +8,6 @@ COPY cqrsx ./cqrsx
 COPY cqrsx-engine ./cqrsx-engine
 COPY cqrsx-fixtures ./cqrsx-fixtures
 COPY cqrsx-macros ./cqrsx-macros
-COPY cqrsx-mongodb ./cqrsx-mongodb
-COPY cqrsx-postgres ./cqrsx-postgres
 COPY demo/Cargo.toml demo/Cargo.lock ./demo/
 COPY demo/back-end ./demo/back-end
 COPY demo/sidecar ./demo/sidecar

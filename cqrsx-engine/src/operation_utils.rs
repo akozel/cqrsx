@@ -1,6 +1,8 @@
 //! The operations of the feature `operation-utils`: what changes the read side or reads without a bound, and the
 //! mechanism that runs tasks. Their criterion, and what stays public without the feature, is the API rule of the
 //! engine in [`doc/components.md`](../../doc/components.md#naming-and-integration-rules).
+#[cfg(feature = "event-store-postgres")]
+use crate::postgres::event_repository::PostgresEventRepository;
 use crate::{
     Cqrs, Journal,
     views::{JournalTotals, ViewQuery, Views, ViewsError},
@@ -12,8 +14,6 @@ use cqrsx::{
     view::verify::Verification,
     worker::{adapter::boxed::BoxedTaskAdapter, dispatcher::TaskDispatcher},
 };
-#[cfg(feature = "postgres")]
-use cqrsx_postgres::event_repository::PostgresEventRepository;
 use std::{any::type_name, fmt::Display, time::Duration};
 
 impl Cqrs {
@@ -34,7 +34,7 @@ impl Cqrs {
                     .load_events(&id)
                     .await
             }
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             Journal::Postgres(pools) => {
                 EventSourcedStore::<_, A>::new(PostgresEventRepository::new(pools.history.clone()))
                     .load_events(&id)

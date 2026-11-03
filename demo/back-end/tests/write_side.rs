@@ -32,15 +32,14 @@ use cqrsx::{
 use cqrsx_engine::{
     Cqrs,
     memory::InMemory,
-    mongodb::Mongo,
-    postgres::{Postgres, PostgresPools},
+    mongodb::MongoDb,
+    postgres::{
+        EVENT_STORE_SCHEMA, Postgres, PostgresPools, TRANSACTIONAL_OUTBOX_SCHEMA,
+        event_repository::PostgresEventRepository,
+        outbox::PostgresEventRepositoryWithOutbox,
+        pool::{ConnectionPingPolicy, StatementTimeout, connect_pool},
+    },
     settings::{DEFAULT_SNAPSHOT_EVERY, Settings},
-};
-use cqrsx_postgres::{
-    EVENT_STORE_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA,
-    event_repository::PostgresEventRepository,
-    outbox::PostgresEventRepositoryWithOutbox,
-    pool::{ConnectionPingPolicy, StatementTimeout, connect_pool},
 };
 use encore_backend::{
     DEMO_DEFAULTS, concert,
@@ -148,7 +147,7 @@ async fn database() -> (PgPool, testcontainers::ContainerAsync<GenericImage>) {
         loop {
             if let Ok(pool) = connect_pool(
                 options.clone(),
-                ConnectionPingPolicy::Idle(cqrsx_postgres::pool::DEFAULT_IDLE_PING_AFTER),
+                ConnectionPingPolicy::Idle(cqrsx_engine::postgres::pool::DEFAULT_IDLE_PING_AFTER),
                 StatementTimeout::Default,
             )
             .await
@@ -309,7 +308,7 @@ async fn the_command_endpoint_answers_in_its_shapes_and_the_feed_logs_every_comm
     let cqrs = Cqrs::with_settings(settings)
         .event_store(Postgres)
         .postgres_pools(pools)
-        .projections(Mongo)
+        .projections(MongoDb)
         .mongodb_client(mongodb::Client::with_options(mongo).expect("client"))
         .module(concert::module)
         .module(fan::module)

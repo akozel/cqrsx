@@ -70,15 +70,15 @@ impl Counts for MemoryEventRepository {
     }
 }
 
-#[cfg(feature = "postgres")]
-impl Counts for cqrsx_postgres::event_repository::PostgresEventRepository {
+#[cfg(feature = "event-store-postgres")]
+impl Counts for crate::postgres::event_repository::PostgresEventRepository {
     fn count_after<A: Aggregate>(&self, after: Position, cap: u64) -> impl Future<Output = Result<u64, PersistenceError>> + Send {
-        cqrsx_postgres::event_repository::PostgresEventRepository::count_after::<A>(self, after, cap)
+        crate::postgres::event_repository::PostgresEventRepository::count_after::<A>(self, after, cap)
     }
 
     #[cfg(feature = "operation-utils")]
     async fn totals<A: Aggregate>(&self) -> Result<JournalTotals, PersistenceError> {
-        let totals = cqrsx_postgres::event_repository::PostgresEventRepository::totals::<A>(self).await?;
+        let totals = crate::postgres::event_repository::PostgresEventRepository::totals::<A>(self).await?;
         Ok(JournalTotals {
             events: totals.events,
             aggregates: totals.aggregates,
@@ -144,7 +144,10 @@ struct Registered<V, A, D, H, K> {
     documents: Arc<D>,
     checkpoints: Arc<dyn CheckpointOperations>,
     #[cfg_attr(
-        not(feature = "operation-utils"),
+        all(
+            not(feature = "operation-utils"),
+            any(feature = "test-utils", feature = "projections-postgres", feature = "projections-mongodb")
+        ),
         expect(
             dead_code,
             reason = "only the verification and the totals read the journal of whole histories"

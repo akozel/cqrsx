@@ -578,12 +578,13 @@ dependencies = [
 name = "cqrsx-engine"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
+ "chrono",
  "cqrsx",
  "cqrsx-engine",
  "cqrsx-fixtures",
- "cqrsx-mongodb",
- "cqrsx-postgres",
+ "futures",
  "log",
  "mongodb",
  "serde",
@@ -619,45 +620,6 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
-]
-
-[[package]]
-name = "cqrsx-mongodb"
-version = "0.1.0"
-dependencies = [
- "chrono",
- "cqrsx",
- "cqrsx-fixtures",
- "cqrsx-postgres",
- "log",
- "mongodb",
- "serde",
- "sqlx",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
-]
-
-[[package]]
-name = "cqrsx-postgres"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "chrono",
- "cqrsx",
- "cqrsx-fixtures",
- "futures",
- "log",
- "serde",
- "serde_json",
- "sqlx",
- "thiserror",
- "tokio",
- "tokio-util",
- "tracing",
- "uuid",
 ]
 
 [[package]]

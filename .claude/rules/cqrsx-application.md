@@ -91,7 +91,7 @@ code style is `.claude/rules/rust-style.md`.
 ## Tests
 
 14. An application names its stores when it builds the engine: `event_store(Postgres)` and, with views,
-    `projections(Postgres)` or `projections(Mongo)`; without them `build()` refuses (`BuildError::NoJournal`,
+    `projections(Postgres)` or `projections(MongoDb)`; without them `build()` refuses (`BuildError::NoJournal`,
     `BuildError::ViewsWithoutStore`). Its tests build the engine in memory with `event_store(InMemory)` and
     `projections(InMemory)` and reach its helpers (`run_tasks`, `catch_up`, and the stores themselves: `journal`,
     `outbox`, `checkpoints`, `documents`) through the engine's feature `test-utils`, which the application enables only

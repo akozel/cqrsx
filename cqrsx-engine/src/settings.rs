@@ -2,9 +2,9 @@
 //! (and the defaults of the components' own settings); [`Settings::from_lookup`] reads every setting from a variable
 //! under the application's prefix (`ENCORE_SNAPSHOT_EVERY` for the prefix `ENCORE`), the task runtime's from its own
 //! `OUTBOX_*` variables, and takes the application's [`Defaults`] where a variable is absent.
-#[cfg(feature = "mongodb")]
+#[cfg(feature = "projections-mongodb")]
 use crate::mongodb::MongoSettings;
-#[cfg(feature = "postgres")]
+#[cfg(feature = "event-store-postgres")]
 use crate::postgres::PostgresSettings;
 use cqrsx::{
     command::{
@@ -22,7 +22,7 @@ use cqrsx::{
         runtime::config::{TaskRuntimeConfig, TaskRuntimeConfigError},
     },
 };
-#[cfg(feature = "http")]
+#[cfg(feature = "axum")]
 use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::{collections::BTreeMap, fmt::Display, num::NonZeroUsize, str::FromStr, time::Duration};
 use thiserror::Error;
@@ -36,7 +36,7 @@ pub const DEFAULT_STATUS_TIMEOUT: Duration = Duration::from_secs(1);
 /// The name the engine gives its connections (PostgreSQL's `application_name`, MongoDB's `appName`) and its log lines.
 pub const DEFAULT_APPLICATION_NAME: &str = "cqrsx";
 /// Where the HTTP API of the modules listens.
-#[cfg(feature = "http")]
+#[cfg(feature = "axum")]
 pub const DEFAULT_HTTP_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 8080));
 
 const SNAPSHOT_EVERY: &str = "SNAPSHOT_EVERY";
@@ -55,7 +55,7 @@ const PROJECTION_WAKE_DELAY_MS: &str = "PROJECTION_WAKE_DELAY_MS";
 const PROJECTION_LAG_CAP: &str = "PROJECTION_LAG_CAP";
 const PROJECTION_STATUS_TIMEOUT_MS: &str = "PROJECTION_STATUS_TIMEOUT_MS";
 const NODE_NAME: &str = "NODE_NAME";
-#[cfg(feature = "http")]
+#[cfg(feature = "axum")]
 const HTTP_ADDR: &str = "HTTP_ADDR";
 /// The task runtime's own variables, read without the prefix and untrimmed (`TaskRuntimeConfig::from_lookup`).
 const OUTBOX: [&str; 7] = [
@@ -89,11 +89,11 @@ pub(crate) fn variables() -> Vec<&'static str> {
         PROJECTION_STATUS_TIMEOUT_MS,
         NODE_NAME,
     ];
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     names.extend(crate::postgres::VARIABLES);
-    #[cfg(feature = "mongodb")]
+    #[cfg(feature = "projections-mongodb")]
     names.extend(crate::mongodb::VARIABLES);
-    #[cfg(feature = "http")]
+    #[cfg(feature = "axum")]
     names.push(HTTP_ADDR);
     names.extend(OUTBOX);
     names
@@ -159,7 +159,8 @@ pub enum SettingsError {
 ///   waits [`status_timeout`](Self::status_timeout) for the checkpoints.
 /// - The task runtime: [`task_runtime`](Self::task_runtime).
 /// - The stores: `postgres` (pools), `mongodb` (the client and the database of the views); the HTTP API: `http_addr`
-///   (each exists with the engine's feature of its name); the name of the connections.
+///   (each exists with the feature that enables it: `event-store-postgres`, `projections-mongodb`, `axum`); the name of
+///   the connections.
 #[derive(Clone, Debug)]
 #[must_use]
 pub struct Settings {
@@ -173,11 +174,11 @@ pub struct Settings {
     lag_cap: u64,
     status_timeout: Duration,
     task_runtime: TaskRuntimeConfig,
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     postgres: PostgresSettings,
-    #[cfg(feature = "mongodb")]
+    #[cfg(feature = "projections-mongodb")]
     mongodb: MongoSettings,
-    #[cfg(feature = "http")]
+    #[cfg(feature = "axum")]
     http_addr: SocketAddr,
 }
 
@@ -194,11 +195,11 @@ impl Default for Settings {
             lag_cap: DEFAULT_LAG_CAP,
             status_timeout: DEFAULT_STATUS_TIMEOUT,
             task_runtime: TaskRuntimeConfig::default(),
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             postgres: PostgresSettings::default(),
-            #[cfg(feature = "mongodb")]
+            #[cfg(feature = "projections-mongodb")]
             mongodb: MongoSettings::default(),
-            #[cfg(feature = "http")]
+            #[cfg(feature = "axum")]
             http_addr: DEFAULT_HTTP_ADDR,
         }
     }
@@ -249,12 +250,12 @@ impl Settings {
         let task_runtime = TaskRuntimeConfig::from_lookup(|name| lookup(name).or_else(|| defaults.get(name).map(str::to_owned)))?;
         let snapshot_every: usize = read.value(SNAPSHOT_EVERY, DEFAULT_SNAPSHOT_EVERY.get())?;
         let snapshot_every = NonZeroUsize::new(snapshot_every).ok_or_else(|| read.invalid(SNAPSHOT_EVERY, "must be positive"))?;
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "event-store-postgres")]
         let postgres = PostgresSettings::read(&read)?;
         let lock_limits = command_lock_limits(&read, task_runtime.worker_pool().handler_timeout())?;
         let processor = projection_config(&read)?;
         let (lag_cap, status_timeout) = view_operations(&read)?;
-        #[cfg(feature = "mongodb")]
+        #[cfg(feature = "projections-mongodb")]
         let mongodb = MongoSettings::read(&read)?;
         Ok(Self {
             prefix: prefix.to_owned(),
@@ -267,11 +268,11 @@ impl Settings {
             lag_cap,
             status_timeout,
             task_runtime,
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             postgres,
-            #[cfg(feature = "mongodb")]
+            #[cfg(feature = "projections-mongodb")]
             mongodb,
-            #[cfg(feature = "http")]
+            #[cfg(feature = "axum")]
             http_addr: read.value(HTTP_ADDR, DEFAULT_HTTP_ADDR)?,
         })
     }
@@ -351,19 +352,19 @@ impl Settings {
     }
 
     /// The pools of an engine over PostgreSQL.
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     pub fn postgres(&self) -> &PostgresSettings {
         &self.postgres
     }
 
     /// The client of an engine with its views in MongoDB, and their database.
-    #[cfg(feature = "mongodb")]
+    #[cfg(feature = "projections-mongodb")]
     pub fn mongodb(&self) -> &MongoSettings {
         &self.mongodb
     }
 
     /// Where `serve` listens.
-    #[cfg(feature = "http")]
+    #[cfg(feature = "axum")]
     pub fn http_addr(&self) -> SocketAddr {
         self.http_addr
     }
@@ -390,7 +391,7 @@ impl Settings {
         let worker = self.task_runtime.worker_pool();
         // The stores' and the process's own entries are appended only with their features.
         #[cfg_attr(
-            not(any(feature = "postgres", feature = "mongodb", feature = "http")),
+            not(any(feature = "event-store-postgres", feature = "projections-mongodb", feature = "axum")),
             expect(unused_mut, reason = "nothing is appended without a feature")
         )]
         let mut entries = vec![
@@ -435,11 +436,11 @@ impl Settings {
                 duration_text(lease_budget(&self.task_runtime)),
             ),
         ];
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "event-store-postgres")]
         entries.extend(self.postgres.entries(&name, &self.application_name));
-        #[cfg(feature = "mongodb")]
+        #[cfg(feature = "projections-mongodb")]
         entries.extend(self.mongodb.entries(&name, &self.application_name));
-        #[cfg(feature = "http")]
+        #[cfg(feature = "axum")]
         entries.push((name(HTTP_ADDR), self.http_addr.to_string()));
         entries
     }
@@ -473,7 +474,7 @@ pub(crate) struct VariableReader<'a> {
 }
 
 impl<'a> VariableReader<'a> {
-    #[cfg(all(test, feature = "postgres"))]
+    #[cfg(all(test, feature = "event-store-postgres"))]
     pub(crate) fn over(prefix: &'a str, lookup: &'a dyn Fn(&str) -> Option<String>, defaults: &'a Defaults) -> Self {
         Self {
             prefix,
@@ -655,7 +656,7 @@ mod tests {
     );
 
     // The variables by their names under the demo's prefix, as its configuration's tests named them.
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     const STATEMENT_TIMEOUT: &str = "ENCORE_DATABASE_STATEMENT_TIMEOUT_MS";
     const LOCK_MAX_WAIT: &str = "ENCORE_COMMAND_LOCK_MAX_WAIT_MS";
     const LOCK_MAX_WAITERS: &str = "ENCORE_COMMAND_LOCK_MAX_WAITERS";
@@ -673,7 +674,7 @@ mod tests {
     const STATUS_TIMEOUT: &str = "ENCORE_PROJECTION_STATUS_TIMEOUT_MS";
 
     /// The settings of the variables `pairs` (full names) under the prefix `ENCORE`, the demo's defaults elsewhere.
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     fn from_pairs(pairs: &[(&str, &str)]) -> Result<Settings, SettingsError> {
         let pairs: HashMap<String, String> = pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
         Settings::from_lookup("ENCORE", |name| pairs.get(name).cloned(), &DEMO)
@@ -756,7 +757,7 @@ mod tests {
         assert_eq!(duration_text(Duration::from_micros(1500)), "1500000 ns");
     }
 
-    #[cfg(feature = "postgres")]
+    #[cfg(feature = "event-store-postgres")]
     #[test]
     fn the_description_names_every_setting_once_in_its_unit() {
         let config = from_pairs(&[
@@ -1044,11 +1045,11 @@ mod tests {
         names.sort();
         assert_eq!(described, names, "every variable is described under its name");
         let counted = 16 + 7;
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "event-store-postgres")]
         let counted = counted + 5;
-        #[cfg(feature = "mongodb")]
+        #[cfg(feature = "projections-mongodb")]
         let counted = counted + 3;
-        #[cfg(feature = "http")]
+        #[cfg(feature = "axum")]
         let counted = counted + 1;
         assert_eq!(names.len(), counted);
     }
@@ -1088,11 +1089,11 @@ mod tests {
             ),
             (3, Some("node-b"), DEFAULT_LAG_CAP, DEFAULT_STATUS_TIMEOUT)
         );
-        #[cfg(feature = "postgres")]
+        #[cfg(feature = "event-store-postgres")]
         assert_eq!(settings.postgres(), &PostgresSettings::default());
-        #[cfg(feature = "mongodb")]
+        #[cfg(feature = "projections-mongodb")]
         assert_eq!(settings.mongodb(), &MongoSettings::default());
-        #[cfg(feature = "http")]
+        #[cfg(feature = "axum")]
         assert_eq!(settings.http_addr(), DEFAULT_HTTP_ADDR);
     }
 }

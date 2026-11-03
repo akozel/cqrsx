@@ -9,7 +9,7 @@
 //! expanded to full paths and every other qualified path is collected, with comments and string literals removed
 //! first (docs link across modules). Inside a module a layer sees the layers
 //! below it and the same layers of `shared`; across modules only the box office's application names the contracts of
-//! the ledger's tasks. Of the framework (the crates `cqrsx`, `cqrsx_engine`, `cqrsx_postgres` and `cqrsx_mongodb`, see
+//! the ledger's tasks. Of the framework (the crates `cqrsx` and `cqrsx_engine`, see
 //! `FRAMEWORK`; `cqrsx::testing` and `cqrsx::memory` are test code only) a domain sees the contracts of the core and their derive macros, a presentation the engine
 //! (`cqrsx_engine::Cqrs`: its commands, its views, the dependencies of the modules), the outcomes of a command, the
 //! rejection trait, the documents of the read models and the wrong documents of a verification. `main.rs` and `lib.rs` compose the modules, `testing.rs` and `composition.rs` with
@@ -207,8 +207,8 @@ fn externals(layer: Option<Layer>) -> Externals {
                 "cqrsx::worker::adapter",
                 "cqrsx::worker::dispatcher",
                 "cqrsx::worker::runtime",
-                "cqrsx_postgres",
-                "cqrsx_mongodb",
+                "cqrsx_engine::postgres",
+                "cqrsx_engine::mongodb",
                 "cqrsx_engine::serve",
                 "sqlx",
                 "mongodb",
@@ -568,10 +568,9 @@ fn paths(code: &str) -> Vec<(usize, String)> {
     found
 }
 
-/// The crates of the framework: the core and every crate built on it. A path into any of them is a path into
-/// "cqrsx" for the allowlists, so that a crate split off the core (the engine, the adapters) does not
-/// slip out of the rules.
-const FRAMEWORK: [&str; 4] = ["cqrsx", "cqrsx_engine", "cqrsx_postgres", "cqrsx_mongodb"];
+/// The crates of the framework: the core and the engine. A path into any of them is a path into
+/// "cqrsx" for the allowlists, so that a crate split off the core does not slip out of the rules.
+const FRAMEWORK: [&str; 2] = ["cqrsx", "cqrsx_engine"];
 
 /// Whether `path` goes into a crate of the framework (a bare crate name is not a path into it).
 fn is_framework_path(path: &str) -> bool {
@@ -700,7 +699,7 @@ fn the_module_rules_catch_a_reach_into_another_module() {
         ),
         ("concert/domain/x.rs", "use crate::concert::application::app::ConcertApp;\n"),
         ("concert/application/x.rs", "use crate::bootstrap::AppState;\n"),
-        ("concert/domain/x.rs", "use cqrsx_postgres::pool::connect_pool;\n"),
+        ("concert/domain/x.rs", "use cqrsx_engine::postgres::pool::connect_pool;\n"),
         ("concert/presentation/x.rs", "use cqrsx::command::planner::TaskPlanner;\n"),
         (
             "fan/application/x.rs",
@@ -912,8 +911,8 @@ fn every_crate_of_the_framework_is_under_the_rules() {
     for code in [
         "use cqrsx_engine::settings::Settings;\n",
         "fn f() { cqrsx_engine::build::Builder::default(); }\n",
-        "use cqrsx_postgres::pool::connect_pool;\n",
-        "use cqrsx_mongodb::view_repository::MongoViewRepository;\n",
+        "use cqrsx_engine::postgres::pool::connect_pool;\n",
+        "use cqrsx_engine::mongodb::view_repository::MongoViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
         assert_eq!(broken.len(), 1, "{code}: {broken:?}");
@@ -923,10 +922,11 @@ fn every_crate_of_the_framework_is_under_the_rules() {
     assert!(check("operations/application/x.rs", "use cqrsx_engine::settings::Settings;\n").is_empty());
     for (code, prefix) in [
         ("use cqrsx_engine::serve::ServeError;\n", "cqrsx_engine::serve"),
-        ("use cqrsx_postgres::pool::connect_pool;\n", "cqrsx_postgres"),
+        ("use cqrsx_engine::postgres::pool::connect_pool;\n", "cqrsx_engine::postgres"),
+        ("use cqrsx_engine::{Cqrs, postgres::Postgres};\n", "cqrsx_engine::postgres"),
         (
-            "fn f() { cqrsx_mongodb::checkpoint_store::MongoCheckpointStore::new(); }\n",
-            "cqrsx_mongodb",
+            "fn f() { cqrsx_engine::mongodb::checkpoint_store::MongoCheckpointStore::new(); }\n",
+            "cqrsx_engine::mongodb",
         ),
     ] {
         let broken = check("operations/application/x.rs", code);
@@ -960,7 +960,7 @@ fn the_read_model_queries_are_visible_in_the_presentation_and_nothing_more_of_th
         "use cqrsx::view::projection::ViewProjection;\n",
         "use cqrsx::view::repository::ViewMeta;\n",
         "use cqrsx::view::verify::verify;\n",
-        "use cqrsx_mongodb::view_repository::MongoViewRepository;\n",
+        "use cqrsx_engine::mongodb::view_repository::MongoViewRepository;\n",
         "use cqrsx::memory::view_repository::MemoryViewRepository;\n",
     ] {
         let broken = check("fan/presentation/x.rs", code);
@@ -1642,14 +1642,14 @@ fn the_checker_sees_grouped_imports_inline_paths_and_ignores_comments_and_string
         "use crate::{application::x, infrastructure::{mongo::Repo as R, self}};\n\
          // use crate::presentation::http;\n\
          let s = \"sqlx::query\"; let r = r#\"mongodb::x\"#; let c = '\"';\n\
-         fn f<'a>() { cqrsx_postgres::connect(); }\n\
+         fn f<'a>() { cqrsx_engine::postgres::connect(); }\n\
          #[cfg(test)]\nmod tests { use serde_json::json; }\n",
     );
     let found: Vec<String> = paths(&code).into_iter().map(|(_, p)| p).collect();
     assert!(found.contains(&"crate::application::x".to_owned()), "{found:?}");
     assert!(found.contains(&"crate::infrastructure::mongo::Repo".to_owned()), "{found:?}");
     assert!(found.contains(&"crate::infrastructure".to_owned()), "{found:?}");
-    assert!(found.contains(&"cqrsx_postgres::connect".to_owned()), "{found:?}");
+    assert!(found.contains(&"cqrsx_engine::postgres::connect".to_owned()), "{found:?}");
     assert!(found.contains(&"serde_json::json".to_owned()), "{found:?}");
     assert!(
         !found

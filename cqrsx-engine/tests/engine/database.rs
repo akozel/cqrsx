@@ -1,9 +1,9 @@
 //! The database of one test: a PostgreSQL container with the cqrsx schemas.
-use cqrsx_fixtures::postgres::Postgres;
-use cqrsx_postgres::{
+use cqrsx_engine::postgres::{
     EVENT_STORE_SCHEMA, PROJECTION_CHECKPOINTS_SCHEMA, TRANSACTIONAL_OUTBOX_SCHEMA,
     pool::{ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, StatementTimeout, connect_pool},
 };
+use cqrsx_fixtures::postgres::Postgres;
 use sqlx::PgPool;
 use std::time::Duration;
 

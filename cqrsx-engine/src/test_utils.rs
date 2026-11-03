@@ -1,7 +1,9 @@
 //! The helpers of the feature `test-utils`: what a test does with an engine in memory. Their criterion is the API rule
 //! of the engine in [`doc/components.md`](../../doc/components.md#naming-and-integration-rules).
-#[cfg(feature = "postgres")]
+#[cfg(feature = "event-store-postgres")]
 use crate::ViewStore;
+#[cfg(feature = "event-store-postgres")]
+use crate::postgres::task_queue::PostgresTaskQueue;
 use crate::{Cqrs, Journal};
 use cqrsx::{
     domain::aggregate::Aggregate,
@@ -18,8 +20,6 @@ use cqrsx::{
         queue::TaskQueue,
     },
 };
-#[cfg(feature = "postgres")]
-use cqrsx_postgres::task_queue::PostgresTaskQueue;
 use std::{any::TypeId, sync::Arc, time::Duration};
 
 impl Cqrs {
@@ -40,7 +40,7 @@ impl Cqrs {
     pub fn checkpoints(&self) -> Option<&MemoryCheckpointStore> {
         let in_memory = match &self.journal {
             Journal::Memory => true,
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             Journal::Postgres(_) => matches!(self.view_store, ViewStore::Memory),
         };
         in_memory.then_some(self.memory.checkpoints.as_ref())
@@ -64,7 +64,7 @@ impl Cqrs {
         };
         match &self.journal {
             Journal::Memory => self.run_due(&self.memory.queue, dispatcher).await,
-            #[cfg(feature = "postgres")]
+            #[cfg(feature = "event-store-postgres")]
             Journal::Postgres(pools) => {
                 let queue = Arc::new(PostgresTaskQueue::new(pools.main.clone()));
                 self.run_due(&queue, dispatcher).await

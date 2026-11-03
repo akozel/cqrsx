@@ -442,7 +442,7 @@ ul.plain { margin: 0; padding-left: 1.2em; display: grid; gap: 8px; max-width: v
     <li><a href="../cqrsx-engine/README.md">cqrsx-engine</a>: the <code>PROJECTION_*</code> settings and the operations (rebuild, verify, status, resetting the databases together); <a href="crates.md">crates and their boundaries</a>.</li>
     <li>Before: <a href="command-path.html">command path</a>. Beside: <a href="task-path.html">task path</a>.</li>
   </ul>
-  <p class="foot">Verified against the code of <code>cqrsx::projection</code> (processor, owner, lease, delivery, rebuild, checkpoint), <code>cqrsx::view</code>, <code>cqrsx::journal</code> (feed, wake-up), <code>cqrsx_postgres</code> (feed SQL, checkpoint store), <code>cqrsx_mongodb</code> and <code>cqrsx_engine</code>. Defaults are the library's; the engine reads them from <code>PROJECTION_*</code> variables under the application's prefix.</p>
+  <p class="foot">Verified against the code of <code>cqrsx::projection</code> (processor, owner, lease, delivery, rebuild, checkpoint), <code>cqrsx::view</code>, <code>cqrsx::journal</code> (feed, wake-up), <code>cqrsx_engine::postgres</code> (feed SQL, checkpoint store), <code>cqrsx_engine::mongodb</code> and <code>cqrsx_engine</code>. Defaults are the library's; the engine reads them from <code>PROJECTION_*</code> variables under the application's prefix.</p>
 </section>
 </div>
 </body>

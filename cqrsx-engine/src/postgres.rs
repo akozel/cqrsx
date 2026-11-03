@@ -1,24 +1,75 @@
-//! The engine over PostgreSQL (feature `postgres`): [`Postgres`] is the store of the journal, the snapshots, the
-//! outbox and the task queue (`Builder::event_store`) and may hold the views and their checkpoints too
-//! (`Builder::projections`). Its settings are the three pools of [`PostgresSettings`], opened as their [`PoolPlan`]
-//! says when the engine is built: one connection each, an unreachable database fails the build.
+//! The engine over PostgreSQL (feature `event-store-postgres`): [`Postgres`] is the store of the journal, the snapshots,
+//! the outbox and the task queue (`Builder::event_store`) and, with the feature `projections-postgres`, may hold the
+//! views and their checkpoints too (`Builder::projections`). Its settings are the three pools of [`PostgresSettings`],
+//! opened as their [`PoolPlan`] says when the engine is built: one connection each, an unreachable database fails the
+//! build.
+//!
+//! The module also holds the stores themselves: the event repository with snapshots and the feed
+//! ([`event_repository`]), atomic publication of events and tasks through the outbox ([`outbox`]), the task queue
+//! ([`task_queue`]), the pools ([`pool`]) and, with `projections-postgres`, the checkpoints of the projection processors
+//! ([`checkpoint_store`]) and the view repository ([`view_repository`]), with the canonical SQL of their tables.
+//!
+//! The core knows none of it: the stores implement its ports (`cqrsx::journal::repository::EventRepository`,
+//! `cqrsx::worker::queue::TaskQueue`, ...), and the builder assembles them (`event_store(Postgres)`,
+//! `projections(Postgres)`). Where a driver error becomes an error of the core, it is wrapped in
+//! `cqrsx::diagnostics::StorageFailure`, so that the core's logs carry its category and SQLSTATE; the message of the
+//! driver is never logged.
+//!
+//! Nothing here creates a table. The schemas are applied before the stores are used, in the order of their numbers:
+//! `sql/001-event-store.sql` (the journal and the snapshots), `sql/002-transactional-outbox.sql` (the outbox and the
+//! task queue) and `sql/003-projection-checkpoints.sql` (the checkpoints and the requested rebuild keys). Each is
+//! idempotent (`CREATE … IF NOT EXISTS`), so a deployment runs them at every start with `psql -f`, as an init script
+//! of the database container, or from code through the same texts in [`EVENT_STORE_SCHEMA`],
+//! [`TRANSACTIONAL_OUTBOX_SCHEMA`] and `PROJECTION_CHECKPOINTS_SCHEMA` (`sqlx::raw_sql(EVENT_STORE_SCHEMA)`). A view
+//! kept in PostgreSQL has a table of its own, created by the application in the shape
+//! `PostgresViewRepository::new` gives. `sql/requeue-failed-outbox.sql` ([`REQUEUE_FAILED_OUTBOX_TASK`]) is an
+//! operator's statement, not a schema: it returns one failed task to the queue.
+//!
+//! Derived in part from `postgres-es` 0.5.0 (Apache-2.0), copyright 2023 Serverless Technology Consulting, LLC; the
+//! text of the license is in `cqrsx-engine/licenses/`, the notice in `doc/components.md#upstream-attribution`.
+#[cfg(feature = "projections-postgres")]
+pub mod checkpoint_store;
+mod error;
+pub mod event_repository;
+pub mod outbox;
+pub mod pool;
+mod storage_failure;
+pub mod task_queue;
+#[cfg(feature = "projections-postgres")]
+pub mod view_repository;
+
+use self::{
+    event_repository::PostgresEventRepository,
+    pool::{ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, DEFAULT_MAX_CONNECTIONS, StatementTimeout, connect_pool_with},
+};
 use crate::{
     build::BuildError,
     settings::{Settings, SettingsError, VariableReader, duration_text},
-};
-use cqrsx_postgres::pool::{
-    ConnectionPingPolicy, DEFAULT_IDLE_PING_AFTER, DEFAULT_MAX_CONNECTIONS, StatementTimeout, connect_pool_with,
 };
 use sqlx::{
     PgPool,
     postgres::{PgConnectOptions, PgPoolOptions},
 };
-use std::{collections::BTreeMap, num::NonZeroU32, time::Duration};
+use std::{collections::BTreeMap, num::NonZeroU32, sync::Arc, time::Duration};
 
 /// The journal, the snapshots, the outbox and the task queue in PostgreSQL (`Builder::event_store`), or the views and
 /// their checkpoints (`Builder::projections`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Postgres;
+
+/// Canonical PostgreSQL event-store schema used by this runtime.
+pub const EVENT_STORE_SCHEMA: &str = include_str!("../sql/001-event-store.sql");
+
+/// Canonical PostgreSQL transactional-outbox schema used by this runtime.
+pub const TRANSACTIONAL_OUTBOX_SCHEMA: &str = include_str!("../sql/002-transactional-outbox.sql");
+
+/// Canonical PostgreSQL schema of the projection checkpoints and the requested rebuild keys (feature
+/// `projections-postgres`).
+#[cfg(feature = "projections-postgres")]
+pub const PROJECTION_CHECKPOINTS_SCHEMA: &str = include_str!("../sql/003-projection-checkpoints.sql");
+
+/// Operational statement for explicitly requeuing one failed task.
+pub const REQUEUE_FAILED_OUTBOX_TASK: &str = include_str!("../sql/requeue-failed-outbox.sql");
 
 /// The three pools of an engine over PostgreSQL, opened by the engine as the settings plan them, or by the application
 /// (`Builder::postgres_pools`).
@@ -31,6 +82,18 @@ pub struct PostgresPools {
     pub history: PgPool,
     /// The processors' reads of the journal, apart from the commands' connections.
     pub projection: PgPool,
+}
+
+impl PostgresPools {
+    /// The journal's readers of a view: its feed on the projection pool, its whole histories on the history pool and
+    /// its lag counter on the main pool.
+    pub(crate) fn view_readers(&self) -> (Arc<PostgresEventRepository>, PostgresEventRepository, PostgresEventRepository) {
+        (
+            Arc::new(PostgresEventRepository::new(self.projection.clone())),
+            PostgresEventRepository::new(self.history.clone()),
+            PostgresEventRepository::new(self.main.clone()),
+        )
+    }
 }
 
 /// Opens the pools the settings plan, over the database of the settings, in the order main, projection, history: each
@@ -437,6 +500,7 @@ mod tests {
     /// a store that does not answer is `Unavailable` and heard as such by its observer.
     #[tokio::test]
     async fn an_executor_over_postgres_prints_its_attempt_and_reports_an_unreachable_store_to_its_observer() {
+        use crate::postgres::outbox::PostgresEventRepositoryWithOutbox;
         use crate::test_support::{Book, Show};
         use cqrsx::{
             command::{
@@ -448,7 +512,6 @@ mod tests {
             },
             journal::store::EventSourcedStore,
         };
-        use cqrsx_postgres::outbox::PostgresEventRepositoryWithOutbox;
         use std::sync::{Arc, Mutex};
         /// Notes the outcome of every command.
         #[derive(Default)]
@@ -492,6 +555,35 @@ mod tests {
             Err(CommandError::Unavailable)
         );
         assert_eq!(*heard.0.lock().unwrap(), ["unavailable"]);
+    }
+
+    #[tokio::test]
+    async fn an_engine_without_a_store_of_the_views_installs_no_view() {
+        use crate::{
+            Cqrs,
+            build::BuildError,
+            test_support::{Hall, Show},
+        };
+        let lazy = || {
+            PgPoolOptions::new()
+                .acquire_timeout(Duration::from_millis(200))
+                .connect_lazy_with("postgresql://shop@127.0.0.1:1/shop".parse().unwrap())
+        };
+        let pools = PostgresPools {
+            main: lazy(),
+            history: lazy(),
+            projection: lazy(),
+        };
+        let mut cqrs = Cqrs::with_settings(Settings::default())
+            .event_store(Postgres)
+            .postgres_pools(pools)
+            .build()
+            .await
+            .unwrap();
+        assert!(matches!(
+            cqrs.install_view::<Hall, Show>(),
+            Err(BuildError::ViewsWithoutStore)
+        ));
     }
 
     #[tokio::test]
@@ -554,19 +646,22 @@ mod tests {
             "the journal and the outbox are in PostgreSQL"
         );
         assert!(cqrs.checkpoints().is_some(), "the views and their checkpoints in memory");
-        let pools = PostgresPools {
-            main: lazy(),
-            history: lazy(),
-            projection: lazy(),
-        };
-        let durable = Cqrs::with_settings(Settings::default())
-            .event_store(Postgres)
-            .projections(Postgres)
-            .postgres_pools(pools)
-            .module(shows)
-            .build()
-            .await
-            .unwrap();
-        assert!(durable.checkpoints().is_none(), "the checkpoints are in PostgreSQL");
+        #[cfg(feature = "projections-postgres")]
+        {
+            let pools = PostgresPools {
+                main: lazy(),
+                history: lazy(),
+                projection: lazy(),
+            };
+            let durable = Cqrs::with_settings(Settings::default())
+                .event_store(Postgres)
+                .projections(Postgres)
+                .postgres_pools(pools)
+                .module(shows)
+                .build()
+                .await
+                .unwrap();
+            assert!(durable.checkpoints().is_none(), "the checkpoints are in PostgreSQL");
+        }
     }
 }

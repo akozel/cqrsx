@@ -1,6 +1,6 @@
 //! The table of variables in the crate's README against the code: every variable the engine reads, with the default
 //! `Settings::description` writes for it. Built with every feature, the only build that reads all of them.
-#![cfg(all(feature = "postgres", feature = "mongodb", feature = "http"))]
+#![cfg(all(feature = "projections-mongodb", feature = "axum"))]
 // Test code: a panic is the failed check (rule 8 of .claude/rules/rust-style.md).
 #![allow(clippy::unwrap_used, clippy::panic)]
 
